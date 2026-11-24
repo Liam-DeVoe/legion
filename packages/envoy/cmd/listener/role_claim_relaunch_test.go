@@ -62,7 +62,7 @@ func (r *roleClaimRelaunchRig) register(instance string) {
 }
 
 // claim is the soft claim the lane makes when the lookup does not name this session and this
-// process (packages/pi-envoy/src/registration-state.ts, reassertRole).
+// process (packages/pi-envoy/src/task-queue.ts, reassertRole).
 func (r *roleClaimRelaunchRig) claim(instance string) *httptest.ResponseRecorder {
 	body := fmt.Sprintf(`{"session_id":%q,"role":%q,"soft":true,"client_instance_id":%q}`, r.session, r.role, instance)
 	return r.send(http.MethodPost, "/v1/roles/set", body)
@@ -119,7 +119,7 @@ func (r *roleClaimRelaunchRig) stored() store.RoleClaim {
 //   - once nobody has answered for the claim inside that window - which is what the dead process
 //     not answering means - the next re-claim is granted and the stored claim names the
 //     relaunched process. That is the step that moves the claim's instance, and it is the lane's
-//     own heartbeat that makes it (packages/pi-envoy/src/registration-state.ts, reassertRole);
+//     own heartbeat that makes it (packages/pi-envoy/src/task-queue.ts, reassertRole);
 //   - and the relaunched holder's own clean stop then frees the role at once, rather than leaving
 //     it to the role claim reaper, because by then the claim names the process handing it back.
 func TestARelaunchedRoleHolderReclaimsItsRoleAndItsOwnStopFreesIt(t *testing.T) {

@@ -368,7 +368,7 @@ interface StandinHooks {
    * answers one, the role read names that session and a claim of the role is refused 409 with
    * it, as the listener refuses a claim of a role another live session holds. The heartbeat's
    * re-assertion then ends the role here (`reassertRole` in
-   * packages/pi-envoy/src/registration-state.ts).
+   * packages/pi-envoy/src/task-queue.ts).
    */
   readonly roleHeldBy?: () => string | undefined;
 }

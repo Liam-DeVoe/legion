@@ -165,7 +165,7 @@ func TestACancelKeepsAnEntryStartAndACheckLookQueuedBesideAWake(t *testing.T) {
 }
 
 // The release's record and a cancel made while the project is paused rewrite the task of each
-// start a wake took under the mark (retellWakesUnderRelease, retellWakesUnderPause). The root
+// start a wake took under the mark (retellWakesUnderRelease, retellWakesOf). The root
 // architect's entry start and a production check's look are no wake's start, and keep their tasks.
 // The store does not import the workflow, so each rule here is a stand-in, as in
 // TestARecordedReleaseRetellsTheStartOfAHeldWakeTakenUnderItsMark.
