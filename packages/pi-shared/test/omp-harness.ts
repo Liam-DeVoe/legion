@@ -17,6 +17,8 @@ import {
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { loopbackHost } from "@legion/test-fixtures/loopback-host";
+import { readStandinBody } from "@legion/test-fixtures/standin-body";
 import { Terminal } from "@xterm/headless";
 import { linkOmpNatives } from "./omp-natives";
 
@@ -67,28 +69,37 @@ export async function ompRoot(
 
 /**
  * Serves every request with `answer`, recording each first. `answer` gets the request's parsed JSON
- * body, empty for a GET. Returns the recorded requests and the server's base URL.
+ * body, empty for a GET, and the request itself, whose `signal` aborts when the client gives the
+ * request up. Returns the recorded requests and the server's base URL.
  */
 export function serveStandin(
   cleanup: Cleanup,
-  answer: (url: URL, body: Record<string, unknown>) => Response | Promise<Response>
+  answer: (
+    url: URL,
+    body: Record<string, unknown>,
+    request: globalThis.Request
+  ) => Response | Promise<Response>
 ): { readonly requests: Request[]; readonly base: string } {
   const requests: Request[] = [];
   const server = Bun.serve({
     port: 0,
-    hostname: "127.0.0.1",
+    // An address of its own, out of reach of a client of another test that still dials this port
+    // at 127.0.0.1 (`loopbackHost`); the clients' URLs are built from `base` below.
+    hostname: loopbackHost(),
     async fetch(request) {
       const url = new URL(request.url);
-      const text = request.method === "POST" ? await request.text() : "";
-      const body = text === "" ? {} : (JSON.parse(text) as Record<string, unknown>);
+      // A body that is no JSON object is refused by name, and is neither recorded nor handed to
+      // `answer` (`readStandinBody`).
+      const { body, refusal } = await readStandinBody(request);
+      if (refusal !== undefined) return refusal;
       requests.push({ path: url.pathname, body });
-      return answer(url, body);
+      return answer(url, body, request);
     },
   });
   cleanup.push(async () => {
     await server.stop(true);
   });
-  return { requests, base: `http://127.0.0.1:${server.port}` };
+  return { requests, base: server.url.origin };
 }
 
 /** The stream the stand-in listener's answers and relay frames name, one for every case here. */
@@ -377,6 +388,9 @@ export interface Rpc {
    * exited, so a case that expects it alive races it against its own clock.
    */
   readonly exited: Promise<number>;
+  /** The process id of the omp it started: the one process whose own steps a timer record a
+   *  case hands it through the environment is read for. */
+  readonly pid: number;
 }
 
 /**
@@ -445,6 +459,7 @@ export function spawnRpc(
     },
     closed,
     exited: child.exited,
+    pid: child.pid,
   };
 }
 
