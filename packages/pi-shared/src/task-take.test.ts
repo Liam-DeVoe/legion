@@ -1080,7 +1080,7 @@ test("a value that arrives after the run's last tool result gets no note, and is
   expect(take.noteFor()).toBe(4);
 });
 
-test("a take refused in-turn is ended by a delete, during the run or after its end, and one whose refusal meets an idle host stays pending until a run starts", async () => {
+test("a take refused in-turn is ended by a delete, during the run or after its end", async () => {
   // A delete ends it, during the run or after its end, and nothing is pending.
   const deletedInRun = await refusedInTurnDuringRun();
   expect(deletedInRun.take.pending()).toBe(true);
@@ -1095,32 +1095,6 @@ test("a take refused in-turn is ended by a delete, during the run or after its e
   await deleted.advance(0);
   expect(deleted.take.pending()).toBe(false);
   expect(deleted.routed("take")).toEqual([body(4, 12)]);
-
-  // An in-turn answer can meet an idle host: the daemon decided the take while it counted the run
-  // that overtook it as going, and writes the value again only once it reads that run's agent_end
-  // frame from the stream, so its write may still be to come. The take stays pending, a callback
-  // held for it is not called, and a run that starts ends the refusal.
-  const idle = rig();
-  idle.take.ready();
-  const answer = Promise.withResolvers<LegionTake>();
-  idle.takes.push({ late: answer.promise });
-  idle.take.relayed(put(4, 12));
-  await idle.advance(0);
-  idle.take.runStarted();
-  idle.take.runEnded(false);
-  let calls = 0;
-  expect(
-    idle.take.deferUntilSettled(() => {
-      calls += 1;
-    })
-  ).toBe(4);
-  answer.resolve(refused("in-turn"));
-  await idle.advance(0);
-  expect(idle.take.pending()).toBe(true);
-  expect(calls).toBe(0);
-  idle.take.runStarted();
-  expect(idle.take.pending()).toBe(false);
-  expect(calls).toBe(0);
 });
 
 // A stall abort that ends a run whose take was refused `in-turn` holds its restart message for
@@ -1224,38 +1198,62 @@ test("a take refused in-turn stays pending at most IN_TURN_REWRITE_BOUND_MS afte
 // A take asked while the host is idle can be overtaken by a short run that ends before the
 // daemon's answer comes back: the refusal `in-turn` then meets an idle host with no race at the
 // run's end. The bound starts at the later of the run's end and the refusal, so here at the
-// refusal.
-test("a take asked while the host is idle, overtaken by a short run and refused in-turn after that run's end, stays pending at most IN_TURN_REWRITE_BOUND_MS after the refusal", async () => {
-  const { take, takes, routed, advance } = rig();
-  take.ready();
+// refusal. A run that starts after the refusal ends it.
+test("a take asked while the host is idle, overtaken by a short run and refused in-turn after that run's end, stays pending at most IN_TURN_REWRITE_BOUND_MS after the refusal, and a run that starts ends it", async () => {
+  const bounded = rig();
+  bounded.take.ready();
   const answer = Promise.withResolvers<LegionTake>();
-  takes.push({ late: answer.promise });
-  take.relayed(put(4, 12));
-  await advance(0);
-  expect(routed("take")).toEqual([body(4, 12)]);
+  bounded.takes.push({ late: answer.promise });
+  bounded.take.relayed(put(4, 12));
+  await bounded.advance(0);
+  expect(bounded.routed("take")).toEqual([body(4, 12)]);
 
   // A short run starts and ends before the answer comes back; a restart is held during it.
-  take.runStarted();
+  bounded.take.runStarted();
   let calls = 0;
   expect(
-    take.deferUntilSettled(() => {
+    bounded.take.deferUntilSettled(() => {
       calls += 1;
     })
   ).toBe(4);
-  expect(take.runEnded(false)).toBeUndefined();
-  await advance(1_000);
+  expect(bounded.take.runEnded(false)).toBeUndefined();
+  await bounded.advance(1_000);
   expect(calls).toBe(0);
 
   answer.resolve(refused("in-turn"));
-  await advance(0);
-  expect(take.pending()).toBe(true);
+  await bounded.advance(0);
+  expect(bounded.take.pending()).toBe(true);
   expect(calls).toBe(0);
-  await advance(IN_TURN_REWRITE_BOUND_MS - 1);
-  expect(take.pending()).toBe(true);
+  await bounded.advance(IN_TURN_REWRITE_BOUND_MS - 1);
+  expect(bounded.take.pending()).toBe(true);
   expect(calls).toBe(0);
-  await advance(1);
-  expect(take.pending()).toBe(false);
+  await bounded.advance(1);
+  expect(bounded.take.pending()).toBe(false);
   expect(calls).toBe(1);
+
+  // A run that starts after such a refusal ends it: the take stays pending until then, and the
+  // callback held for it is not called, since the worker is working again.
+  const started = rig();
+  started.take.ready();
+  const startedAnswer = Promise.withResolvers<LegionTake>();
+  started.takes.push({ late: startedAnswer.promise });
+  started.take.relayed(put(4, 12));
+  await started.advance(0);
+  started.take.runStarted();
+  started.take.runEnded(false);
+  let startedCalls = 0;
+  expect(
+    started.take.deferUntilSettled(() => {
+      startedCalls += 1;
+    })
+  ).toBe(4);
+  startedAnswer.resolve(refused("in-turn"));
+  await started.advance(0);
+  expect(started.take.pending()).toBe(true);
+  expect(startedCalls).toBe(0);
+  started.take.runStarted();
+  expect(started.take.pending()).toBe(false);
+  expect(startedCalls).toBe(0);
 });
 
 test("pending() holds a value the take has not asked about, idle before the ready or busy, and lets it go once refused", async () => {

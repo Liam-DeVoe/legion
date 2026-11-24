@@ -1627,7 +1627,7 @@ export type LegionTakeRequestBody = z.output<typeof LegionTakeRequest>;
  * `launch-waits`, `stale-plugin`, `root-hears`, `provider-error`, `session-not-held`,
  * `adoption`, `project-paused`), since a hold a later daemon adds must not refuse the answer
  * (contract 223). A worker acts on one by name, `in-turn`: `TaskTake.pending` in
- * `@legion/pi-shared/task-take`, and the bridge's `refusedInTurn` in
+ * `@legion/pi-shared/task-take`, and the bridge's `takePending` in
  * `packages/daemon/internal/claudebridge/take.go`, say how. */
 export const LegionTakeResponse = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("accepted"), text: nonEmptyString }),

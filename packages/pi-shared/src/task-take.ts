@@ -561,11 +561,17 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
   };
 
   /** No run is going while the take stands refused `in-turn`, at the end of the run the refusal
-   *  came during or at a refusal that met the host idle: the take stays pending for the daemon's
-   *  write of the value, for at most `IN_TURN_REWRITE_BOUND_MS` from now. A bound that passes with
-   *  no newer revision, delete, run that starts, or `close` ends the refusal, so the reminding and
-   *  a held restart go on. */
-  const startInTurnBound = (): void => {
+   *  came during or at a refusal that met the host idle. Where the held value is still owed, the
+   *  take stays pending for the daemon's write of it, for at most `IN_TURN_REWRITE_BOUND_MS` from
+   *  now. A bound that passes with no newer revision, delete, run that starts, or `close` ends the
+   *  refusal, so the reminding and a held restart go on. A held value owed nothing ends the
+   *  refusal at once. It is owed nothing where it names the running task's own number, which that
+   *  run's end finished, or a number that a reading says finished. */
+  const boundInTurnRefusal = (): void => {
+    if (!refusedInTurn || !owed(held)) {
+      endInTurnRefusal();
+      return;
+    }
     inTurnBound?.abort();
     const bound = new AbortController();
     inTurnBound = bound;
@@ -582,15 +588,6 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       }
       settle();
     });
-  };
-
-  /** No run is going while the take stands refused `in-turn`, since the run the refusal came
-   *  during has ended or the refusal met the host idle: the bound starts where the held value is
-   *  still owed, and the refusal of a value owed nothing (the running task's own number, which
-   *  that run's end finished) ends here. */
-  const boundInTurnRefusal = (): void => {
-    if (refusedInTurn && owed(held)) startInTurnBound();
-    else endInTurnRefusal();
   };
 
   /** A request for a pair other than `key`'s is replaced: it is sent no more. */

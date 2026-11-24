@@ -152,8 +152,14 @@ type bridge struct {
 	// refusedInTurn is a take of the held value the daemon refused in-turn during the turn
 	// running: the daemon writes the value again at that turn's end, so the take counts as pending
 	// (takePending) until that turn ends (runEnded) or a newer value is held (valueHanded). A
-	// refusal that lands while no turn runs sets nothing: the daemon's write follows that turn's
-	// end, which has already come.
+	// refusal that lands while no turn runs sets nothing (takeAnswered), and one can land then. A
+	// turn's end emits agent_end (result) and then asks the take over HTTP (idle, ask), and that
+	// request races the frame: a take the daemon decides before it reads the frame is refused
+	// in-turn after the turn has ended. Nothing is then pending, so idle can send a queued Envoy
+	// delivery as a turn ahead of the task. The daemon writes the value again once it reads that
+	// turn's agent_end, and the bridge takes that write at the end of the turn the delivery
+	// started. No reminder reads this state: the Stop hook has already answered, and the timer
+	// comes 5 minutes later.
 	refusedInTurn bool
 	// command is the command_uuid of the slash command Claude Code is running for a mod of the
 	// plugin's ($.command.run), and "" when it runs none. A command writes a block of its own on
