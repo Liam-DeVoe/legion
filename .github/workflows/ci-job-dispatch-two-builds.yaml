@@ -220,21 +220,26 @@ jobs:
         run: packages/envoy/scripts/build-dispatch-build.sh --commit "$FIRST_ROLLOUT_COMMIT" --out "$DISPATCH_FIRST_ROLLOUT_BUILD"
       # The going-runs build: the release c25 of INFRA-1588 runs beside the head on one database,
       # fixed rather than the newest, because its sweep deletes going_requests older than an hour.
-      # Pinned and cached as the first-rollout build is.
+      # Pinned as the first-rollout build is: this step fails when the release's tag names another
+      # commit than the pin, and its output is the pin, which the restore below and ci-caches.yaml's
+      # dispatch-builds job both key the entry on.
       - name: Resolve the going-runs build's commit
+        id: going-release
         run: |
           resolved=$(packages/envoy/scripts/build-dispatch-build.sh --commit legion-envoy-v32.15.0 --resolve)
           if [[ "$resolved" != "$GOING_RELEASE_COMMIT" ]]; then
             echo "::error::The tag legion-envoy-v32.15.0 names commit $resolved. GOING_RELEASE_COMMIT pins the going-runs build to commit $GOING_RELEASE_COMMIT, and goingReleaseCommit in packages/envoy/cmd/dispatch/twobuild_going_runs_test.go holds the same commit. Move the tag back to $GOING_RELEASE_COMMIT, or change the pin in both places."
             exit 1
           fi
-      - name: Cache the going-runs build
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+          echo "commit=$GOING_RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
+      # Restored only, as the previous build is: ci-caches.yaml's dispatch-builds job fills it on main.
+      - name: Restore the going-runs build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ${{ runner.temp }}/dispatch-going-release
             !${{ runner.temp }}/dispatch-going-release/src
-          key: dispatch-going-release-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ env.GOING_RELEASE_COMMIT }}
+          key: dispatch-going-release-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.going-release.outputs.commit }}
       - name: Build the going-runs build
         env:
           DISPATCH_GOING_RELEASE_BUILD: ${{ runner.temp }}/dispatch-going-release
