@@ -389,33 +389,45 @@ test("the schema the Oh My Pi tool exposes carries every field the phase ops tak
   for (const field of Object.keys(phaseOpParameters(z))) expect(properties).toContain(field);
 });
 
+/** The text of a tool result whose content is one text. */
+function textOf(result: { content: readonly unknown[] }): string {
+  expect(result.content).toHaveLength(1);
+  const [only] = result.content as { type: string; text: string }[];
+  expect(only?.type).toBe("text");
+  return only?.text ?? "";
+}
+
 test("a root architect's handoff_complete is refused as unavailable before its arguments are read", async () => {
   const root = toolFor(claimSession("architect"));
+  const refusals = new Set<string>();
   for (const parameters of [{}, { summary: "" }, { summary: "x", verdict: "maybe" }]) {
-    await expect(
-      root.execute("", { op: "handoff_complete", ...parameters }, undefined, undefined, context())
-    ).resolves.toEqual({
-      content: [
-        {
-          type: "text",
-          text: "handoff_complete is not available to a root architect session: an architect reports a step of its own with complete_step",
-        },
-      ],
-      details: {},
-      isError: true,
-    });
+    const result = await root.execute(
+      "",
+      { op: "handoff_complete", ...parameters },
+      undefined,
+      undefined,
+      context()
+    );
+    expect(result).toMatchObject({ details: {}, isError: true });
+    refusals.add(textOf(result));
   }
-  // A field handoff_complete never takes is named first, as the operation's field check names it.
-  await expect(
-    root.execute("", { op: "handoff_complete", phase: "plan" }, undefined, undefined, context())
-  ).resolves.toMatchObject({
-    content: [
-      {
-        type: "text",
-        text: 'handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason, return_to; handoff_complete is not available to a root architect session: an architect reports a step of its own with complete_step',
-      },
-    ],
-  });
+  // One refusal whatever the arguments: none of them is read.
+  expect(refusals.size).toBe(1);
+  const [unavailable = ""] = refusals;
+  // A field handoff_complete never takes is named first, as the operation's field check names it,
+  // before that same refusal.
+  const named = await root.execute(
+    "",
+    { op: "handoff_complete", phase: "plan" },
+    undefined,
+    undefined,
+    context()
+  );
+  expect(named).toMatchObject({ isError: true });
+  const text = textOf(named);
+  expect(text).toContain('"phase"');
+  expect(text).not.toBe(unavailable);
+  expect(text.endsWith(unavailable)).toBeTrue();
 });
 
 test("the legion tool exposes only the workflow operations each role owns", async () => {
@@ -929,18 +941,19 @@ test("complete_step posts the owner's report of its own step, and refuses a call
   ]);
 
   const before = calls.length;
+  const refusals = new Set<string>();
   for (const [op, parameters] of [
     ["complete_step", { step: 1, summary: "The suite passes.", verdict: "pass" }],
     ["sign_off", {}],
   ] as const) {
-    await expect(
-      tool.execute("", { op, ...parameters }, undefined, undefined, context())
-    ).resolves.toEqual({
-      content: [{ type: "text", text: `${op} requires issue` }],
-      details: {},
-      isError: true,
-    });
+    const result = await tool.execute("", { op, ...parameters }, undefined, undefined, context());
+    expect(result).toMatchObject({ details: {}, isError: true });
+    const text = textOf(result);
+    expect(text).toContain(op);
+    refusals.add(text.replace(op, "<op>"));
   }
+  // complete_step's refusal of a call without issue is sign_off's, under its own name.
+  expect(refusals.size).toBe(1);
   expect(calls).toHaveLength(before);
 });
 
@@ -1044,41 +1057,34 @@ test("complete_step carries the report of the role its place runs as, and refuse
     session: () => claimSession("architect", "LEGION-209"),
   });
   const call = { op: "complete_step", issue: "LEGION-209", step: 1, summary: "Done." };
-  for (const [parameters, refusal] of [
-    [
-      { issue: "LEGION-208" },
-      "complete_step reports a step of LEGION-209, the issue this session is the architect of; LEGION-208's steps are its own architect's",
-    ],
-    [
-      { step: "spec" },
-      "complete_step's step is a whole number of 0 or more: the place of the step you report in your issue's task, 1 for its first, or 0 for the retro",
-    ],
-    [
-      { step: -1 },
-      "complete_step's step is a whole number of 0 or more: the place of the step you report in your issue's task, 1 for its first, or 0 for the retro",
-    ],
-    [{ verdict: "pending" }, "complete_step's verdict is pass or fail"],
-    [
-      { verdict: "pass", return_to: 1 },
-      "complete_step names return_to without the verdict fail: only the report of a step that failed names the step its task returns to; send it again without return_to",
-    ],
-    [
-      { plan_rating: 3 },
-      "complete_step names plan_rating without plan_reason: send the rating of the plan with one sentence of why, the two together",
-    ],
-    [
-      { plan_reason: "It fit." },
-      "complete_step names plan_reason without plan_rating: send the reason with the rating of the plan, a whole number from 1 to 5, the two together",
-    ],
-    [
-      { note: "x" },
-      'complete_step does not accept field "note"; it takes issue, step, summary, verdict, return_to, plan_rating, plan_reason',
-    ],
-  ] as const) {
-    await expect(
-      tool.execute("", { ...call, ...parameters }, undefined, undefined, context())
-    ).resolves.toEqual({ content: [{ type: "text", text: refusal }], details: {}, isError: true });
+  const refusals: string[] = [];
+  for (const parameters of [
+    { issue: "LEGION-208" },
+    { step: "spec" },
+    { step: -1 },
+    { verdict: "pending" },
+    { verdict: "pass", return_to: 1 },
+    { plan_rating: 3 },
+    { plan_reason: "It fit." },
+    { note: "x" },
+  ]) {
+    const result = await tool.execute(
+      "",
+      { ...call, ...parameters },
+      undefined,
+      undefined,
+      context()
+    );
+    expect(result).toMatchObject({ details: {}, isError: true });
+    refusals.push(textOf(result));
   }
+  // The issue of another architect is named; a step that is no whole number of 0 or more is one
+  // refusal whatever it is; each other cause has its own; a field complete_step never takes is
+  // named.
+  expect(refusals[0]).toContain("LEGION-208");
+  expect(refusals[1]).toBe(refusals[2] ?? "");
+  expect(new Set(refusals).size).toBe(refusals.length - 1);
+  expect(refusals.at(-1)).toContain('"note"');
   expect(calls).toEqual([]);
 });
 

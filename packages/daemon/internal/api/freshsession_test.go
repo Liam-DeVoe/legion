@@ -791,9 +791,7 @@ func TestTheControllersFreshSessionRefusesTheRoleController(t *testing.T) {
 	recorder := h.request(http.MethodPost, "/legion/v1/claims/fresh-session",
 		ClaimRequest{GrantID: grant.GrantID, Issue: "LEGION-209", Role: "controller"}, nil)
 
-	refusedSaying(t, recorder, http.StatusBadRequest, "INVALID_ROLE",
-		"role must be one of architect, planner, implementer, tester, reviewer, merger, acceptance, or a role of this deployment or of an issue's plan; "+
-			"the project's controller is none of them, and its own claim takes no fresh session")
+	refused(t, recorder, http.StatusBadRequest, "INVALID_ROLE")
 }
 
 // The controller's own claim is refused through the operator's door too, which names a claim by

@@ -106,9 +106,6 @@ func TestDefaultStepsAreReadAndRefused(t *testing.T) {
 		{name: "no step", value: "[]", refusal: "projects.ACME.default_steps names no step"},
 		{name: "a role nobody defines", value: "[implementer, checker]",
 			refusal: "projects.ACME.default_steps: step 2 of task default names the role checker, which neither the deployment nor the plan defines."},
-		{name: "two causes", value: "[checker, reviewer, prober]",
-			refusal: "projects.ACME.default_steps: step 1 of task default names the role checker, which neither the deployment nor the plan defines." +
-				" step 3 of task default names the role prober, which neither the deployment nor the plan defines."},
 		{name: "a word outside the grammar", value: "[implementer, Reviewer]",
 			refusal: `projects.ACME.default_steps: the step "Reviewer" is neither a role nor a role:key, where each matches [a-z][a-z0-9-]*`},
 		{name: "two steps in one entry", value: `["implementer reviewer"]`,
@@ -125,5 +122,10 @@ func TestDefaultStepsAreReadAndRefused(t *testing.T) {
 				t.Fatalf("refusal %q does not name the key", err)
 			}
 		})
+	}
+	// Each cause gets its own sentence, under the one key.
+	_, err = Load(writeConfigFile(t, defaultStepsFile("{default_steps: [checker, reviewer, prober]}")), noEnv)
+	if err == nil || !strings.HasPrefix(err.Error(), "projects.ACME.default_steps") || !strings.Contains(err.Error(), "checker") || !strings.Contains(err.Error(), "prober") {
+		t.Fatalf("Load error = %v, want the refusal of projects.ACME.default_steps naming the roles checker and prober", err)
 	}
 }

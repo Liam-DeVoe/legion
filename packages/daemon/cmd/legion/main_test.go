@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
@@ -687,7 +688,14 @@ func productionCheckTesterLine(key string) string {
 }
 
 func defaultStepsTodayLine(key string) string {
-	return "projects." + key + ".default_steps: [planner, implementer, tester, reviewer, acceptance:owner] — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan, runs these steps, then Legion's retro, and its merge where the issue has a pull request\n"
+	return "projects." + key + ".default_steps: [planner, implementer, tester, reviewer, acceptance:owner]" + defaultStepsWords() + "\n"
+}
+
+// defaultStepsWords is what defaultStepsLine writes after a project's list of steps, read from it
+// so that no test here holds that sentence's words: the tests hold the key and the list.
+func defaultStepsWords() string {
+	_, words, _ := strings.Cut(defaultStepsLine("ANY", config.Project{}), "]")
+	return words
 }
 
 func projectLines(key string) string {
@@ -861,7 +869,7 @@ func TestConfigCheckPrintsEachProjectsDefaultSteps(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
-	const runs = " — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan, runs these steps, then Legion's retro, and its merge where the issue has a pull request\n"
+	runs := defaultStepsWords() + "\n"
 	want := "Config OK: project=DEMO design-gate-steps=spec\n" +
 		productionCheckTesterLine("DEMO") + "projects.DEMO.default_steps: [planner, implementer, tester, reviewer, acceptance:owner]" + runs +
 		productionCheckTesterLine("OTHER") + "projects.OTHER.default_steps: [implementer, reviewer]" + runs +

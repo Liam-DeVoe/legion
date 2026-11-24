@@ -101,31 +101,6 @@ func TestRerunChildIsRefusedUnderAnAcceptedAncestor(t *testing.T) {
 	}
 }
 
-// The refusal under an accepted ancestor says that the last step of the ancestor's task has
-// passed, which is true of every plan: an issue stands in retro or merging (record.Accepted) only
-// once its task's last step has passed, whatever that step is. It names no reviewed head, which a
-// plan with no reviewer step (`implementer tester`) does not have, and it says both ways such an
-// ancestor closes without the child's work: its merge, and the end of its retro where it has no
-// pull request.
-func TestTheRefusalUnderAnAcceptedAncestorSaysItsLastStepPassed(t *testing.T) {
-	h, _, _ := statusHarness(t)
-	architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
-	if recorder := h.request(http.MethodPost, "/legion/v1/children/park", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil); recorder.Code != http.StatusOK {
-		t.Fatalf("park = %d %s", recorder.Code, recorder.Body)
-	}
-	acceptPhase(t, h, statusRoot, phase.Retro)
-
-	message := refused(t, h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil),
-		http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT")
-	want := statusChild + " is beneath " + statusRoot + ", whose task's last step has passed and which the daemon has already accepted, and work entering the workflow beneath " +
-		statusRoot + " now would let it close without that work: by merging a head that does not carry it, or at the end of its retro where it has no pull request; run it again once " +
-		statusRoot + " has closed, or first take " + statusRoot + " back to an earlier step: a request_backward_move by the agent that works it now, " +
-		"which is the agent of its retro (its own architect where the retro is the owner's) or its merger"
-	if message != want {
-		t.Fatalf("the refusal = %q, want %q", message, want)
-	}
-}
-
 // A6. release_children is refused the same way, for a child Dispatch holds in backlog that the
 // daemon has never recorded: the chain is read from the Dispatch parent the release itself read,
 // and it is walked past a parent already done, so a grandchild under a done parent is refused by

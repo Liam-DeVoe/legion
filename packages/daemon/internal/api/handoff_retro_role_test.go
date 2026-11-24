@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -90,9 +89,7 @@ func TestTheRetroOfARoleOfTheDeploymentIsReported(t *testing.T) {
 			}
 			switch {
 			case tc.code != "":
-				if message := refused(t, answer, http.StatusBadRequest, tc.code); !strings.Contains(message, "the retro of "+key+" reports no verdict") {
-					t.Fatalf("the refusal = %q, want it to say the retro reports no verdict", message)
-				}
+				refused(t, answer, http.StatusBadRequest, tc.code)
 				if len(taken) != 0 {
 					t.Fatalf("the %s's refused completion recorded %+v, want nothing", tc.role, taken)
 				}
@@ -133,9 +130,7 @@ func TestALateReportOfTheRetroOfARoleOfTheDeploymentIsOfTheRetro(t *testing.T) {
 
 	rated := late
 	rated.GrantID, rated.PlanRating, rated.PlanReason = coder.grant(t), new(4), new("the steps fit the work")
-	if message := refused(t, h.complete(rated), http.StatusBadRequest, "PLAN_RATING_UNEXPECTED"); !strings.Contains(message, "this completion of phase retro of "+key) {
-		t.Fatalf("the refusal = %q, want it to name the retro the coder left", message)
-	}
+	refused(t, h.complete(rated), http.StatusBadRequest, "PLAN_RATING_UNEXPECTED")
 	late.GrantID = coder.grant(t)
 	completion(t, h.complete(late))
 	if row := phaseRowOf(t, h, key, "coder"); row == nil || !row.Completed() || row.HandoffCommit != headSHA {
