@@ -580,7 +580,8 @@ const make = (fields: Record<string, unknown>) => ({
 const SUMMARY = "The change adds a step that finds a rule's reason before its deletion.";
 
 /** The written-case reader's input: alpha's base text, one session case, no navigation line, the
- *  context session's first user message, and at most two tasks. */
+ *  context session's checkout (a made-up acme/proj, every file listed), its first user message,
+ *  and at most two tasks. */
 const writtenCaseInput = {
   skill: "alpha",
   files: [{ path: "SKILL.md", text: SKILL_MD }],
@@ -588,7 +589,13 @@ const writtenCaseInput = {
   sessionCases: [
     { step: '[tool call: write] {"path":"checklist.md","content":"1. ok"}', criterion: CRITERION },
   ],
-  checkout: null,
+  checkout: {
+    repo: "acme/proj",
+    root: "/work/acme/proj",
+    cwd: "/work/acme/proj",
+    files: ["README.md", "src/app.py"],
+    whole: true,
+  },
   firstMessage: "Make the alpha checklist of the fixture project for the release.",
   count: 2,
 };
@@ -1606,16 +1613,6 @@ test("the written-case reader's request gives the navigation lines and the check
     `</file>\n</skill>\n\n<navigation>\n<line file="SKILL.md" number="8">\n${NAVIGATION_LINE.text}\n</line>\n</navigation>\n\n<session-cases>\n`
   );
   expect(userText(writtenCaseInput)).toContain(
-    "</session-cases>\n\n<checkout>\nNone.\n</checkout>\n\n<first-message>\n"
-  );
-  const checkout = {
-    repo: "acme/proj",
-    root: "/work/acme/proj",
-    cwd: "/work/acme/proj",
-    files: ["README.md", "src/app.py"],
-    whole: true,
-  };
-  expect(userText({ ...writtenCaseInput, checkout })).toContain(
     '<checkout repo="acme/proj" root="/work/acme/proj" cwd="/work/acme/proj" listing="every file">\nREADME.md\nsrc/app.py\n</checkout>\n\n<first-message>\n'
   );
   const prompt = loadPrompt("written-case").text;

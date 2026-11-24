@@ -223,9 +223,15 @@ function readFrom(dir: string) {
   };
 }
 
-/** A change of F1 that puts a read call of `target` (its id `callId`) and its successful result,
+/** A change of F1 that puts a `name` call with `args` (its id `callId`) and its successful result,
  *  whose text is `text`, after F1's prompt: the two lines' ids are `<id>1` and `<id>2`. */
-function readAfterPrompt(id: string, callId: string, target: string, text: string) {
+function callAfterPrompt(
+  id: string,
+  callId: string,
+  name: string,
+  args: Record<string, unknown>,
+  text: string
+) {
   return (lines: Record<string, unknown>[]) => {
     const prompt = lines.filter((line) => line.type === "message")[0] ?? {};
     const call = {
@@ -234,7 +240,7 @@ function readAfterPrompt(id: string, callId: string, target: string, text: strin
       timestamp: "2026-11-20T01:59:45.000Z",
       message: {
         role: "assistant",
-        content: [{ type: "toolCall", id: callId, name: "read", arguments: { path: target } }],
+        content: [{ type: "toolCall", id: callId, name, arguments: args }],
       },
     };
     const result = {
@@ -244,7 +250,7 @@ function readAfterPrompt(id: string, callId: string, target: string, text: strin
       message: {
         role: "toolResult",
         toolCallId: callId,
-        toolName: "read",
+        toolName: name,
         isError: false,
         content: [{ type: "text", text }],
       },
@@ -259,7 +265,7 @@ function readAfterPrompt(id: string, callId: string, target: string, text: strin
  *  `<id>1` and `<id>2`. */
 function readFirst(id: string, url: string, header: string, text: string) {
   const callId = `toolu_${url.slice("skill://".length)}`;
-  return readAfterPrompt(id, callId, url, `[Skill file: ${header}]\n${text}`);
+  return callAfterPrompt(id, callId, "read", { path: url }, `[Skill file: ${header}]\n${text}`);
 }
 
 /** pinned-units' change of F1: before alpha, a read of acme/powers' power-one (a package
@@ -5009,37 +5015,13 @@ test("build-cases --written records on the case's checkout whether its context s
   const file = "/sessions/proj-jj.jsonl";
   const text = sessionText("proj-jj", (lines) => {
     workingDirectory("/home/dev/src/proj")(lines);
-    const prompt = lines.filter((line) => line.type === "message")[0] ?? {};
-    const call = {
-      type: "message",
-      id: "b0b0b001",
-      timestamp: "2026-11-20T01:59:45.000Z",
-      message: {
-        role: "assistant",
-        content: [
-          {
-            type: "toolCall",
-            id: "toolu_jj",
-            name: "bash",
-            arguments: { command: "cd /home/dev/src/proj && jj status" },
-          },
-        ],
-      },
-    };
-    const result = {
-      type: "message",
-      id: "b0b0b002",
-      timestamp: "2026-11-20T01:59:45.100Z",
-      message: {
-        role: "toolResult",
-        toolCallId: "toolu_jj",
-        toolName: "bash",
-        isError: false,
-        content: [{ type: "text", text: "The working copy has no changes." }],
-      },
-    };
-    insertAfter(lines, prompt, call);
-    insertAfter(lines, call, result);
+    callAfterPrompt(
+      "b0b0b00",
+      "toolu_jj",
+      "bash",
+      { command: "cd /home/dev/src/proj && jj status" },
+      "The working copy has no changes."
+    )(lines);
   });
   const store = changedStore("proj-jj", (files) => {
     (files.store_a ?? {})[file] = text;
@@ -5248,30 +5230,7 @@ function readsInProj(request: string, command: string) {
   return (lines: Record<string, unknown>[]) => {
     workingDirectory("/home/dev/src/proj")(lines);
     setText(lines, 0, () => request);
-    const prompt = lines.filter((line) => line.type === "message")[0] ?? {};
-    const call = {
-      type: "message",
-      id: "0d0d0001",
-      timestamp: "2026-11-20T01:59:45.000Z",
-      message: {
-        role: "assistant",
-        content: [{ type: "toolCall", id: "toolu_cat", name: "bash", arguments: { command } }],
-      },
-    };
-    const result = {
-      type: "message",
-      id: "0d0d0002",
-      timestamp: "2026-11-20T01:59:45.100Z",
-      message: {
-        role: "toolResult",
-        toolCallId: "toolu_cat",
-        toolName: "bash",
-        isError: false,
-        content: [{ type: "text", text: "diff --git a/x b/x" }],
-      },
-    };
-    insertAfter(lines, prompt, call);
-    insertAfter(lines, call, result);
+    callAfterPrompt("0d0d000", "toolu_cat", "bash", { command }, "diff --git a/x b/x")(lines);
   };
 }
 
@@ -7684,7 +7643,7 @@ function readingIn(cwd: string, file: string): string {
     .split("\n")
     .filter((line) => line !== "")
     .map((line) => JSON.parse(line) as Record<string, unknown>);
-  readAfterPrompt("f11e000", "toolu_file", file, "# Made-up notes\n")(lines);
+  callAfterPrompt("f11e000", "toolu_file", "read", { path: file }, "# Made-up notes\n")(lines);
   return inDirectory(lines.map((line) => `${JSON.stringify(line)}\n`).join(""), cwd);
 }
 

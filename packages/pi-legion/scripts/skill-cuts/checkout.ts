@@ -7,7 +7,7 @@
  * `;` or line ends of pipelines joined by `&&` or `||` of commands joined by pipes, each command a
  * simple one, a subshell `( … )` or a group `{ …; }`, every simple command among them, and every
  * one inside a command substitution (`$(…)`, or a backtick with no `\` in it), one of
- * READ_ONLY_PROGRAMS (`commandReadsOnly`): `cd` (naming a directory), `cat`, `head`, `tail`,
+ * READ_ONLY_PROGRAMS (`commandReadsOnly`): `cd`, `cat`, `head`, `tail`,
  * `ls`, `find` with none of FIND_ACTIONS (`-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`,
  * `-fprint`, `-fprint0`, `-fprintf`, `-fls`, `-files0-from`), `grep`, `rg`, `wc`, `sed` with `-n`
  * and a script that only reads (`sedReadsOnly`), `nl`, `stat`, `file`, `tree`, `pwd`, `true`,
@@ -15,8 +15,9 @@
  * (its `-v NAME` or `-vNAME` naming a variable an assignment may set), `env` with no command
  * (ENV_PRINTS: options that print the environment, `-u NAME`, then assignments), `unset` (of no
  * variable of UNSET_PROTECTED: PATH, HOME, PWD, GIT_OPTIONAL_LOCKS, and the answers' git and jj
- * settings GIT_CONFIG_COUNT, GIT_CONFIG_KEY_n, GIT_CONFIG_VALUE_n, GIT_CONFIG_SYSTEM and
- * JJ_CONFIG), `export`, an assignment `NAME=value` alone or before a command, `git` (with at most
+ * settings GIT_CONFIG_COUNT, GIT_CONFIG_KEY_n, GIT_CONFIG_VALUE_n, GIT_CONFIG_SYSTEM,
+ * GIT_CONFIG_PARAMETERS and JJ_CONFIG), `export`, an assignment `NAME=value` alone or before a
+ * command, `git` (with at most
  * the global options `-C <dir>`, `--no-pager` and `-P`) whose subcommand is one of READ_ONLY_GIT
  * (`log`, `show`, `diff`, `status`, `grep`, `ls-files`, `blame`, `rev-parse`), `worktree list`,
  * `remote` (alone, `-v`, `show`, `get-url`) or `branch` with no name (alone, `-a`, `-r`, `-v`,
@@ -310,6 +311,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  type Stats,
   statSync,
 } from "node:fs";
 import path from "node:path";
@@ -317,7 +319,7 @@ import { fileURLToPath } from "node:url";
 import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
 import { fileTag, type PathRows, pathAnswer, pathRangeAnswer, readRange, shownPath } from "./arms";
 import { type Case, insideRoot, resolvedReadPath, textLines } from "./cases";
-import { eachChunk, firstLine, timeLimit } from "./common";
+import { bytesAt, eachChunk, firstLine, timeLimit } from "./common";
 
 /** The tools whose every call is read-only. */
 export const READ_ONLY_TOOLS = ["read", "grep", "glob", "find", "ls"] as const;
@@ -373,14 +375,25 @@ const READ_ONLY_JJ = [
   "bookmark list",
   "workspace list",
 ] as const;
-/** jj's options that take the next word as their value. */
-const JJ_VALUE_OPTIONS: Readonly<Record<string, true>> = {
-  "-R": true,
-  "--repository": true,
-  "--at-op": true,
-  "--at-operation": true,
-  "--color": true,
+/** jj's options that name the repository a command reads (`-R`, `--repository`), and its other
+ *  global options that take a value, as `parseOptions` reads them. */
+const JJ_REPOSITORY: OptionSpec = {
+  values: "R",
+  long: {
+    repository: "required",
+    "at-op": "required",
+    "at-operation": "required",
+    color: "required",
+  },
 };
+/** The words of jj's options that take the next word as their value (JJ_REPOSITORY's, as written
+ *  in full), as `jjReadsOnly` reads them. */
+const JJ_VALUE_OPTIONS: ReadonlySet<string> = new Set([
+  ...[...JJ_REPOSITORY.values].map((letter) => `-${letter}`),
+  ...Object.entries(JJ_REPOSITORY.long).flatMap(([name, takes]) =>
+    takes === "required" ? [`--${name}`] : []
+  ),
+]);
 /** How a program reads its options (`parseOptions`, the one rule of every program's options):
  *  `flags`, its short options that take no value (read only where `strict`); `values`, those that
  *  take one (the rest of their word, else the next word); `optional`, those whose value is only the
@@ -454,13 +467,8 @@ const ENV_OPTIONS: OptionSpec = {
 };
 /** The options of env that print the environment, less the variables `-u` names. */
 const ENV_PRINTS = ["i", "0", "u", "ignore-environment", "null", "unset"];
-/** The options of git's read-only subcommands that run a program, write a file or read one no
- *  word names: `--output=<file>` (log, show, diff), `-O` (`git grep -O[<pager>]` runs the pager on
- *  the files found; log, show and diff read an order file), `--open-files-in-pager`, `--ext-diff`
- *  (a diff program), `--no-index` (`git diff` of files outside the repository) and
- *  `--show-signature` (runs gpg); git takes any start of a long option's name that is no other's. */
-const GIT_RUNS = ["O", "output", "open-files-in-pager", "ext-diff", "no-index", "show-signature"];
-/** git's long options GIT_RUNS names, for their abbreviations. */
+/** git's long options that run a program, write a file or read one no word names, with whether
+ *  each takes a value, for their abbreviations (GIT_RUNS). */
 const GIT_LONG: OptionSpec["long"] = {
   output: "required",
   "open-files-in-pager": "optional",
@@ -468,6 +476,12 @@ const GIT_LONG: OptionSpec["long"] = {
   "no-index": "none",
   "show-signature": "none",
 };
+/** The options of git's read-only subcommands that run a program, write a file or read one no
+ *  word names: `--output=<file>` (log, show, diff), `-O` (`git grep -O[<pager>]` runs the pager on
+ *  the files found; log, show and diff read an order file), `--open-files-in-pager`, `--ext-diff`
+ *  (a diff program), `--no-index` (`git diff` of files outside the repository) and
+ *  `--show-signature` (runs gpg); git takes any start of a long option's name that is no other's. */
+const GIT_RUNS = ["O", ...Object.keys(GIT_LONG)];
 /** The short options of each read-only git subcommand that take a value, so a letter of a value is
  *  no option: grep's pattern, file, context and count; log's, show's and diff's pickaxe (`-S`,
  *  `-G`), log's and show's count (`-n`), log's and blame's range (`-L`), blame's revisions file. */
@@ -577,8 +591,9 @@ const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const PROTECTED_NAME =
   /^(PATH|HOME|PWD|OLDPWD|CDPATH|IFS|ENV|SHELLOPTS|GLOBIGNORE|PS4|PROMPT_COMMAND|SHELL|TMPDIR|PAGER|MANPAGER|EDITOR|VISUAL|MAGIC|RIPGREP_CONFIG_PATH|GCONV_PATH|LOCPATH|NLSPATH|GLIBC_TUNABLES|TERMINFO|TERMINFO_DIRS|(BASH|GIT_|JJ_|LD_|DYLD_|XDG_|LESS)\w*)$/;
 /** The variables `unset` may not unset: with no PATH the shell runs a program of the checkout's,
- *  and the others are the answers' own (SANDBOX_ENV: git's configuration through
- *  GIT_CONFIG_COUNT, jj's through JJ_CONFIG). */
+ *  and the others are the answers' own git and jj settings (SANDBOX_ENV: git's configuration
+ *  through GIT_CONFIG_COUNT, jj's through JJ_CONFIG) and GIT_CONFIG_PARAMETERS, the configuration
+ *  git's `-c` gives. */
 const UNSET_PROTECTED =
   /^(PATH|HOME|PWD|GIT_OPTIONAL_LOCKS|GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+|SYSTEM|PARAMETERS)|JJ_CONFIG)$/;
 /** The shell's own variables a read-only command may expand without assigning them. */
@@ -1016,6 +1031,24 @@ function valuesOf(word: Word, state: ShellState, walk: Walk): Values {
   return values;
 }
 
+/** The one value `word` takes at `state` (`valuesOf`), or undefined when it may take several or
+ *  one unknown. */
+function oneValue(word: Word, state: ShellState, walk: Walk): string | undefined {
+  const held = valuesOf(word, state, walk);
+  return held?.size === 1 ? [...held][0] : undefined;
+}
+
+/** Every word of `command`, in order: a simple command's words and its assignments' values, then
+ *  each redirection's target. */
+function commandWords(command: SimpleCommand | Group): Word[] {
+  return [
+    ...(command.kind === "simple"
+      ? [...command.words, ...command.assignments.map((each) => each.value)]
+      : []),
+    ...command.redirects.map((each) => each.target),
+  ];
+}
+
 /** Walks `script` from `state` (see the file's header): gives `walk.check` each simple command at
  *  its point (a group's redirections as a command of no words), each command substitution's
  *  before the command that holds it; and keeps in `state` what each command's assignments,
@@ -1048,11 +1081,7 @@ function walkCommand(
   maybe: boolean,
   walk: Walk
 ): string | undefined {
-  const words =
-    command.kind === "simple"
-      ? [...command.words, ...command.assignments.map((each) => each.value)]
-      : [];
-  for (const word of [...words, ...command.redirects.map((each) => each.target)]) {
+  for (const word of commandWords(command)) {
     for (const part of word) {
       if (part.kind !== "sub") continue;
       const why = walkScript(part.script, forked(state), false, walk);
@@ -1099,12 +1128,7 @@ function changeState(command: SimpleCommand, state: ShellState, maybe: boolean, 
   } else if (program === "unset" && !texts.includes("-f")) {
     for (const name of texts) if (name !== undefined && NAME.test(name)) set(name, new Set([""]));
   } else if (program === "printf") {
-    const name = printfTarget(
-      args.map((word) => {
-        const held = valuesOf(word, state, walk);
-        return held?.size === 1 ? [...held][0] : undefined;
-      })
-    );
+    const name = printfTarget(args.map((word) => oneValue(word, state, walk)));
     if (name !== undefined && name !== "") set(name, undefined);
   } else if (program === "cd") {
     const operands = args.filter((word) => !(literal(word) ?? "").startsWith("-"));
@@ -1452,11 +1476,13 @@ function jjReadsOnly(args: readonly string[]): boolean {
   const named: string[] = [];
   for (let at = 0; at < args.length; at++) {
     const arg = args[at] ?? "";
-    if (Object.hasOwn(JJ_VALUE_OPTIONS, arg)) at++;
+    if (JJ_VALUE_OPTIONS.has(arg)) at++;
     else if (!arg.startsWith("-")) named.push(arg);
   }
   const [first = "", second = ""] = named;
-  const command = ["file", "bookmark", "workspace"].includes(first) ? `${first} ${second}` : first;
+  const command = READ_ONLY_JJ.some((each) => each.startsWith(`${first} `))
+    ? `${first} ${second}`
+    : first;
   return (READ_ONLY_JJ as readonly string[]).includes(command);
 }
 
@@ -1551,17 +1577,9 @@ const READ_ONLY_WALK: Walk = {
 function readOnlyFault(command: SimpleCommand, state: ShellState): string | undefined {
   // A word's one value, or undefined when it may take several or one unknown: a word whose
   // unquoted text holds a glob character takes the names of the files it matches.
-  const values = (word: Word) => {
-    if (globbed(word)) return undefined;
-    const held = valuesOf(word, state, READ_ONLY_WALK);
-    return held?.size === 1 ? [...held][0] : undefined;
-  };
-  const words = [
-    ...command.words,
-    ...command.assignments.map((each) => each.value),
-    ...command.redirects.map((each) => each.target),
-  ];
-  for (const part of words.flat()) {
+  const values = (word: Word) =>
+    globbed(word) ? undefined : oneValue(word, state, READ_ONLY_WALK);
+  for (const part of commandWords(command).flat()) {
     if (part.kind === "var" && !state.vars.has(part.name) && !Object.hasOwn(SHELL_OWN, part.name)) {
       return `it expands $${part.name}, which it does not assign`;
     }
@@ -1618,11 +1636,7 @@ function readOnlyScript(command: unknown): Script | undefined {
 /** The simple commands of `script`, those of its groups and command substitutions among them. */
 function simpleCommands(script: Script): SimpleCommand[] {
   return script.flat(2).flatMap((command): SimpleCommand[] => {
-    const words =
-      command.kind === "simple"
-        ? [...command.words, ...command.assignments.map((each) => each.value)]
-        : [];
-    const subs = [...words, ...command.redirects.map((each) => each.target)]
+    const subs = commandWords(command)
       .flat()
       .flatMap((part) => (part.kind === "sub" ? simpleCommands(part.script) : []));
     return [...(command.kind === "simple" ? [command] : simpleCommands(command.script)), ...subs];
@@ -1647,17 +1661,19 @@ export function readOnlyCall(name: string | undefined, input: unknown): boolean 
  *  context session ran jj (cli.ts), true when the copy was made a colocated jj repository
  *  (`colocateJj`), whose jj commands answer as in a jj workspace at the commit, else why it could
  *  not be, and no jj command is answered (absent, a jj command answers as jj does in a checkout
- *  that is no jj repository); `answers`, the answers given so far to its `read`, `grep` and `glob`
- *  calls, by tool, rows and input (the copy is read-only once made, so each such answer depends on
- *  those alone; a `bash` answer is not kept, its wall time being its own run's), which one stage's
- *  runs share (cli.ts); absent, none is kept. */
+ *  that is no jj repository); `answers`, the answers to its `read`, `grep` and `glob` calls, by
+ *  tool, rows and input, each kept from when the call is first made (so the same call made again
+ *  while its answer is still worked out waits for that one; an answer whose working out fails is
+ *  dropped) (the copy is read-only once made, so each such answer depends on those alone; a `bash`
+ *  answer is not kept, its wall time being its own run's), which one stage's runs share (cli.ts);
+ *  absent, none is kept. */
 export interface CheckoutCopy {
   readonly dir: string;
   readonly root: string;
   readonly cwd: string;
   readonly git: boolean;
   readonly jj?: true | Unanswered;
-  readonly answers?: Map<string, CheckoutAnswer | Unanswered>;
+  readonly answers?: Map<string, Promise<CheckoutAnswer | Unanswered>>;
 }
 
 /** A call's answer: the text the tool gives, whether it is an error, and, for a read of a file the
@@ -1805,18 +1821,18 @@ function hiddenPaths(env: Readonly<Record<string, string | undefined>>): {
     if (value === undefined || !path.isAbsolute(value)) continue;
     const file = name.endsWith("_FILE");
     const dir = real(file ? path.dirname(value) : value);
-    if (dir === undefined || dir === "/mnt" || dir.startsWith("/mnt/")) continue;
-    if (dir !== "/" && !SANDBOX_NEEDS.some((need) => need === dir || need.startsWith(`${dir}/`))) {
+    if (dir === undefined || insideRoot("/mnt", dir) !== undefined) continue;
+    if (dir !== "/" && !SANDBOX_NEEDS.some((need) => insideRoot(dir, need) !== undefined)) {
       found.add(dir);
     } else if (file) found.add(path.join(dir, path.basename(value)));
   }
   const sorted = [...found].sort();
   const paths = sorted.filter(
-    (each, n) => !sorted.slice(0, n).some((other) => each.startsWith(`${other}/`))
+    (each, n) => !sorted.slice(0, n).some((other) => insideRoot(other, each) !== undefined)
   );
   const home = env.HOME === undefined || !path.isAbsolute(env.HOME) ? "" : (real(env.HOME) ?? "");
   const homeTree =
-    home === "" ? "" : (paths.find((each) => home === each || home.startsWith(`${each}/`)) ?? "");
+    home === "" ? "" : (paths.find((each) => insideRoot(each, home) !== undefined) ?? "");
   return { paths, home, homeTree };
 }
 
@@ -1844,13 +1860,13 @@ shift 10
 fail() { printf '%s\\n' "$1" >&2; exit 125; }
 command -v setpriv >/dev/null || fail "find setpriv"
 mount -t tmpfs -o mode=0755 checkout-sandbox /mnt || fail "mount a file system of its own at /mnt"
-mkdir /mnt/checkout /mnt/home /mnt/bin /mnt/jj || fail "make its directories"
+mkdir ${CHECKOUT_MOUNT} ${SANDBOX_HOME} /mnt/bin /mnt/jj || fail "make its directories"
 homemounted=
 {
   if [ "$mode" = ro ]; then
-    printf '%s /mnt/checkout none bind,ro 0 0\\n' "$copyfs"
+    printf '%s ${CHECKOUT_MOUNT} none bind,ro 0 0\\n' "$copyfs"
   else
-    printf '%s /mnt/checkout none bind 0 0\\n' "$copyfs"
+    printf '%s ${CHECKOUT_MOUNT} none bind 0 0\\n' "$copyfs"
   fi
   if [ -n "$jjfs" ]; then printf '%s /mnt/jj none bind,ro 0 0\\n' "$jjfs"; fi
   while [ $# -gt 1 ]; do
@@ -1877,10 +1893,10 @@ fi
 if [ -n "$jjfs" ]; then
   { printf '%s' "$wrapper" > /mnt/bin/jj && chmod 0755 /mnt/bin/jj; } || fail "write jj's wrapper"
 fi
-printf '%s' "$jjconfig" > /mnt/jj.toml || fail "write jj's configuration"
+printf '%s' "$jjconfig" > ${SANDBOX_JJ_CONFIG} || fail "write jj's configuration"
 mount -o remount,ro /mnt || fail "make its /mnt read-only"
 hostname checkout 2>/dev/null
-cd -P "/mnt/checkout/$cwd" || fail "enter the working directory"
+cd -P "${CHECKOUT_MOUNT}/$cwd" || fail "enter the working directory"
 for program in $programs; do
   type -P "$program" >/dev/null || { printf 'lacks %s\\n' "$program" >&2; exit 125; }
 done
@@ -2089,10 +2105,7 @@ export function bashFileReads(command: string, cwd: string): string[] {
     check: (simple, state) => {
       const [first, ...args] = simple.words;
       const program = first === undefined ? undefined : literal(first);
-      const values = args.map((word) => {
-        const held = valuesOf(word, state, walk);
-        return held?.size === 1 ? [...held][0] : undefined;
-      });
+      const values = args.map((word) => oneValue(word, state, walk));
       let files: (string | undefined)[] = [];
       if (program === "cat") files = parseOptions(values, { values: "", long: {} })?.operands ?? [];
       else if (program === "head" || program === "tail") {
@@ -2217,6 +2230,18 @@ function relativeToCwd(copy: CheckoutCopy, full: string): string {
   return full.startsWith(`${copy.cwd}/`) ? full.slice(copy.cwd.length + 1) : full;
 }
 
+/** The session's path of `inside`, a path inside the checkout ("" for its root): the reverse of
+ *  `insideRoot(copy.root, …)`. */
+function sessionPath(copy: CheckoutCopy, inside: string): string {
+  return inside === "" ? copy.root : `${copy.root}/${inside}`;
+}
+
+/** What the copy holds at `inside`, a path inside the checkout (its links followed), or undefined
+ *  where it holds nothing. */
+function copyStat(copy: CheckoutCopy, inside: string): Stats | undefined {
+  return statSync(path.join(copy.dir, inside), { throwIfNoEntry: false });
+}
+
 /** The session's absolute path that the search target `target` names, inside the root, and its
  *  path in the checkout; or why not. */
 function searchTarget(
@@ -2269,7 +2294,7 @@ function readAnswer(
   if (leavesCopy(copy, inside)) {
     return { why: `${target} resolves, through a symbolic link, outside the checkout` };
   }
-  if (statSync(path.join(copy.dir, inside), { throwIfNoEntry: false })?.isDirectory()) {
+  if (copyStat(copy, inside)?.isDirectory()) {
     if (ranged !== undefined) {
       return {
         why: `${target} is a ranged read of a directory, whose sliced listing the runner does not rebuild`,
@@ -2533,14 +2558,15 @@ function timedExec(regex: RegExp, text: string): RegExpExecArray | null | Unansw
 
 /** A matching line as grep shows it, with whether it was cut, or why not (render.rs lines 36-139,
  *  grep.ts line 1196): its trailing whitespace taken off; past GREP_COLUMNS bytes, the head that
- *  `grepContextLine` keeps where `regex`'s first match ends in it, else a window of
- *  GREP_COLUMNS - 6 bytes centred on that match and marked `...` on each cut side (`...` and the
- *  line's last GREP_COLUMNS - 3 bytes where the window reaches its end), then ` [col <n>]`, the
- *  match's first character's column. `utf8`: whether the line's file is UTF-8, without which the
- *  native search's offsets in it are not the decoded text's. */
+ *  `grepContextLine` keeps where `found`, the line's first match (the test of the line that found
+ *  it), ends in it, else a window of GREP_COLUMNS - 6 bytes centred on that match and marked
+ *  `...` on each cut side (`...` and the line's last GREP_COLUMNS - 3 bytes where the window
+ *  reaches its end), then ` [col <n>]`, the match's first character's column. `utf8`: whether the
+ *  line's file is UTF-8, without which the native search's offsets in it are not the decoded
+ *  text's. */
 function grepMatchLine(
   line: string,
-  regex: RegExp,
+  found: RegExpExecArray,
   utf8: boolean
 ): { text: string; cut: boolean } | Unanswered {
   const shown = trimLineEnd(line);
@@ -2553,9 +2579,6 @@ function grepMatchLine(
   }
   const headEnd = floorBoundary(bytes, GREP_COLUMNS - 3);
   const head = `${bytes.subarray(0, headEnd).toString("utf8")}...`;
-  const found = timedExec(regex, line);
-  if (found !== null && "why" in found) return found;
-  if (found === null) return { text: head, cut: true };
   const byteAt = (index: number) =>
     floorBoundary(bytes, Math.min(Buffer.byteLength(line.slice(0, index)), bytes.length));
   const start = byteAt(found.index);
@@ -2594,10 +2617,12 @@ interface GrepMatch {
  *  `cap`, as grep's native search reports them (scan.rs lines 221-385, line mode): none where a
  *  NUL byte is in its first GREP_BINARY_WINDOW bytes; each with up to GREP_CONTEXT_BEFORE lines
  *  before it that no earlier report holds and up to GREP_CONTEXT_AFTER lines after it before the
- *  next matching line; ending before a line to report that holds a NUL byte. Why not, where a
- *  matching line is shown in a form the runner does not place (`grepMatchLine`), or a test of
- *  `regex` took past REGEX_TEST_MS (`timedExec`). */
-function grepScan(
+ *  next matching line; ending before a line to report that holds a NUL byte. Each line is tested
+ *  once, and a match line is shown from that test's match. Why not, where a matching line is
+ *  shown in a form the runner does not place (`grepMatchLine`), or a test of `regex` took past
+ *  REGEX_TEST_MS (`timedExec`). Exported for checkout.test.ts, whose row gives it a regular
+ *  expression slow on a second test of a line. */
+export function grepScan(
   file: string,
   bytes: Buffer,
   regex: RegExp,
@@ -2639,7 +2664,7 @@ function grepScan(
       before.push({ n: at, text: grepContextLine(text) });
     }
     if (line.includes("\0")) return out;
-    const shown = grepMatchLine(line, regex, utf8);
+    const shown = grepMatchLine(line, found, utf8);
     if ("why" in shown) return { why: `line ${n} of ${file}: ${shown.why}` };
     const match: GrepMatch = { file, n, ...shown, before, after: [] };
     out.push(match);
@@ -2765,7 +2790,7 @@ function grepExclusions(
   patterns: readonly string[],
   root: string
 ): { regex?: RegExp } | Unanswered {
-  const rootFull = path.posix.resolve(root === "" ? copy.root : `${copy.root}/${root}`);
+  const rootFull = path.posix.resolve(sessionPath(copy, root));
   const sources: string[] = [];
   for (const given of patterns) {
     const pattern = given.trim().replace(/\\/g, "/").replace(/\/+$/, "");
@@ -2872,10 +2897,8 @@ function grepScope(
     }
     found.push({ entry: each, full, inside });
   }
-  const statOf = (inside: string) =>
-    statSync(path.join(copy.dir, inside), { throwIfNoEntry: false });
   // One path is searched as it is; of several, each the checkout holds, the others noted.
-  const valid = found.length > 1 ? found.filter((each) => statOf(each.inside)) : found;
+  const valid = found.length > 1 ? found.filter((each) => copyStat(copy, each.inside)) : found;
   const missing = found.filter((each) => !valid.includes(each)).map((each) => each.entry);
   const [only, ...more] = valid;
   if (only === undefined) {
@@ -2884,7 +2907,7 @@ function grepScope(
     };
   }
   if (more.length === 0) {
-    const stats = statOf(only.inside);
+    const stats = copyStat(copy, only.inside);
     if (stats === undefined) {
       return {
         why: `its path ${only.entry} is not in the checkout, and the pin's error for it is not rebuilt`,
@@ -2900,7 +2923,7 @@ function grepScope(
   // holds the rest, searched as that one (resolveSearchPathItems, path-utils.ts lines 1050-1133).
   const items = valid.map((each) => ({
     ...each,
-    dir: statOf(each.inside)?.isDirectory() === true,
+    dir: copyStat(copy, each.inside)?.isDirectory() === true,
   }));
   const split = items.map((each) => each.full.split("/"));
   const first = split[0] ?? [];
@@ -2952,10 +2975,9 @@ function grepAnswer(
   if ("why" in scope) return scope;
   const cap = scope.multi ? GREP_MULTI_FILE_MATCHES : GREP_SINGLE_FILE_MATCHES;
   // Each root's matches (at most cap + 1 a file, GREP_TOTAL_MATCHES a root), a line two roots
-  // share kept once (grep.ts lines 826-918), and the text of each file that has one.
+  // share kept once (grep.ts lines 826-918).
   const matches: GrepMatch[] = [];
   const seen = new Set<string>();
-  const texts = new Map<string, string>();
   let totalCapReached = false;
   for (const root of scope.roots) {
     let files = [{ inside: root.inside, oversized: false }];
@@ -2968,7 +2990,9 @@ function grepAnswer(
     }
     let emitted = 0;
     for (const file of files) {
-      const bytes = readFileSync(path.join(copy.dir, file.inside));
+      // A file past GREP_FILE_BYTES is searched over its first GREP_FILE_BYTES alone.
+      const local = path.join(copy.dir, file.inside);
+      const bytes = file.oversized ? bytesAt(local, 0, GREP_FILE_BYTES) : readFileSync(local);
       if (!root.dir && bytes.length > GREP_FILE_BYTES) {
         return {
           why: `${file.inside} passes the ${GREP_FILE_BYTES} bytes grep reads into memory, past which it streams the file`,
@@ -2976,7 +3000,6 @@ function grepAnswer(
       }
       const found = grepScan(file.inside, bytes.subarray(0, GREP_FILE_BYTES), regex, cap + 1);
       if ("why" in found) return found;
-      if (found.length > 0) texts.set(file.inside, bytes.toString("utf8"));
       const taken = found.slice(0, GREP_TOTAL_MATCHES - emitted);
       emitted += taken.length;
       for (const match of taken) {
@@ -2992,8 +3015,7 @@ function grepAnswer(
     }
   }
   // Group by file in the order found, keeping the page's files (grep.ts lines 985-1045).
-  const display = (inside: string) =>
-    relativeToCwd(copy, inside === "" ? copy.root : `${copy.root}/${inside}`);
+  const display = (inside: string) => relativeToCwd(copy, sessionPath(copy, inside));
   const groups = new Map<string, { count: number; list?: GrepMatch[] }>();
   const page: { shown: string; file: string; list: GrepMatch[] }[] = [];
   const capped: string[] = [];
@@ -3051,7 +3073,9 @@ function grepAnswer(
       linesCut ||= match.cut;
       for (const line of match.after) push(line.n, line.text, false);
     }
-    return { shown, tag: fileTag(texts.get(file) ?? ""), lines };
+    // Only a session that shows hashline rows shows a file's tag.
+    const tag = hashline ? fileTag(readFileSync(path.join(copy.dir, file), "utf8")) : "";
+    return { shown, tag, lines };
   });
   const model: string[] = [];
   if (scope.multi) {
@@ -3251,25 +3275,23 @@ function globAnswer(
     }
     targets.push({ pattern, inside: where.inside, glob, hasGlob: first >= 0 });
   }
-  const statOf = (inside: string) =>
-    statSync(path.join(copy.dir, inside), { throwIfNoEntry: false });
   // In a list, a path whose base is not there is skipped and noted (glob.ts lines 236-248).
   const missing =
-    targets.length > 1 ? targets.filter((each) => statOf(each.inside) === undefined) : [];
+    targets.length > 1 ? targets.filter((each) => copyStat(copy, each.inside) === undefined) : [];
   const found = new Set<string>();
   const unique = new Set(
     targets.filter((each) => !missing.includes(each)).map((each) => each.pattern)
   );
   for (const target of targets) {
     if (missing.includes(target)) continue;
-    const stats = statOf(target.inside);
+    const stats = copyStat(copy, target.inside);
     if (unique.size <= 1 && !stats?.isDirectory() && (target.hasGlob || !stats?.isFile())) {
       // The pin's error, `Path not found` or `Path is not a directory`, is not rebuilt.
       return {
         why: `its path ${target.pattern} is not found as a directory or a file, and the pin's error for it is not rebuilt`,
       };
     }
-    const full = target.inside === "" ? copy.root : `${copy.root}/${target.inside}`;
+    const full = sessionPath(copy, target.inside);
     if (!target.hasGlob && stats?.isFile()) {
       found.add(relativeToCwd(copy, full));
       continue;
@@ -3283,7 +3305,7 @@ function globAnswer(
       if (input.hidden === false && below.split("/").some((part) => part.startsWith("."))) continue;
       if ((directoryOnly && !each.dir) || !glob.match(below)) continue;
       matched++;
-      found.add(`${relativeToCwd(copy, `${copy.root}/${each.path}`)}${each.dir ? "/" : ""}`);
+      found.add(`${relativeToCwd(copy, sessionPath(copy, each.path))}${each.dir ? "/" : ""}`);
     }
     if (matched > limit) return { why: `it finds more than its limit of ${limit} paths` };
   }
@@ -3402,11 +3424,7 @@ function cdLanding(
   const there = directory(local(logical));
   const landed = walked.there && directory(walked.at) ? insideRoot(real, walked.at) : undefined;
   const elsewhere =
-    landed === undefined || landed === logical
-      ? undefined
-      : landed === ""
-        ? copy.root
-        : `${copy.root}/${landed}`;
+    landed === undefined || landed === logical ? undefined : sessionPath(copy, landed);
   const linked =
     elsewhere !== undefined || (there && realpathSync(local(logical)) !== local(logical));
   return { enters: canonical && there, linked, ...(elsewhere === undefined ? {} : { elsewhere }) };
@@ -3486,18 +3504,6 @@ function nestedUnder(copy: CheckoutCopy, dir: string, name: string, withRoot = f
   }
 }
 
-/** jj's options that name the repository a command reads (`-R`, `--repository`), and its other
- *  global options that take a value, as `parseOptions` reads them. */
-const JJ_REPOSITORY: OptionSpec = {
-  values: "R",
-  long: {
-    repository: "required",
-    "at-op": "required",
-    "at-operation": "required",
-    color: "required",
-  },
-};
-
 /** Why the simple command `command` at `state` may reach a file outside the session's checkout or
  *  show a value of the runner's in place of the session's, or undefined (see `escapes`). */
 function escapeFault(
@@ -3507,11 +3513,7 @@ function escapeFault(
   walk: Walk
 ): string | undefined {
   const [first, ...args] = command.words;
-  const words = [
-    ...command.words,
-    ...command.assignments.map((each) => each.value),
-    ...command.redirects.map((each) => each.target),
-  ];
+  const words = commandWords(command);
   for (const word of words) {
     for (const part of word) {
       if (part.kind === "var" && !state.vars.has(part.name) && part.name !== "PWD") {
@@ -3566,6 +3568,8 @@ function escapeFault(
       }
     }
   }
+  // Each word's one value after the program, as the checks below read the words.
+  const given = args.map((word) => oneValue(word, state, walk));
   // The kernel walks a `..` from the directory the shell is in as it is real, the walk from its
   // path as written: where the shell may be in a directory whose real path is not that path (a
   // working directory, or a `cd`, through a symbolic link: `cdLanding`), no word may hold a `..`.
@@ -3584,10 +3588,6 @@ function escapeFault(
     // start from it), where the session's printed the path as written: `pwd`, `$PWD`, the
     // environment `env` and `export` print (`PWD` in it), git's `rev-parse --show-prefix`,
     // `--show-cdup` and `--show-toplevel`, and `jj root`.
-    const given = args.map((word) => {
-      const held = valuesOf(word, state, walk);
-      return held?.size === 1 ? [...held][0] : undefined;
-    });
     if (
       program === "pwd" ||
       program === "env" ||
@@ -3609,13 +3609,7 @@ function escapeFault(
     // where the runner's colocation did not make it (`bashAnswer` refuses every jj command of such a
     // copy), is not the copy's (in the sandbox jj stops at its configuration, which it cannot move
     // to the read-only home, and its store may name a git repository outside the copy).
-    const parsed = parseOptions(
-      args.map((word) => {
-        const held = valuesOf(word, state, walk);
-        return held?.size === 1 ? [...held][0] : undefined;
-      }),
-      JJ_REPOSITORY
-    );
+    const parsed = parseOptions(given, JJ_REPOSITORY);
     if (parsed === undefined) return "its jj command's repository is not known";
     const named = parsed.options.flatMap((option) =>
       option.names.includes("R") || option.names.includes("repository") ? [option.value ?? ""] : []
@@ -3630,43 +3624,19 @@ function escapeFault(
   return undefined;
 }
 
-/** Why `script`, run from the working directory `cwd`, may reach a file outside the session's
- *  checkout or show a value of the runner's, or undefined. Each word a program may open (every
- *  word after the program but `pwd`'s, `true`'s, `echo`'s, `printf`'s, `env`'s, `unset`'s and
- *  `export`'s, and every redirection's target) is read at each value it may take (`walkScript`:
- *  a variable the command assigned, `$PWD` as each directory a `cd` before it may have moved to,
- *  `$(pwd)`, `$(git rev-parse --show-toplevel)` where git meets no repository of the checkout's
- *  own below the root first, and, in a colocated copy, `$(jj root)`): one whose value the runner
- *  cannot know is not followed; nor is one naming `.git` (whose config names the checkout's
- *  source and whose files are the runner's), an absolute one not under the root, a relative one
- *  that leaves the root from any of those directories, or an option's value (after a long
- *  option's `=`, or any rest of a short one's word after one of its letters: `optionPaths`) that
- *  does so; nor, of a word whose unquoted text holds a glob character, a `cd` to it, one that may
- *  make a word starting with `-` (`globOptionFault`: one whose first part holds a glob character,
- *  where a directory the shell may be in holds any name starting with `-`, or is none the copy
- *  holds), or a path whose glob part starts with `.` or comes before a `..` (`globLeadsOut`). A
- *  word of any command with an unquoted `~` at its start, or after its
- *  `=` or a `:`, would show a home directory of the runner's; so would any other variable's
- *  expansion (`$HOME`, `$PATH`), and a `cd` that names no directory goes to $HOME, the runner's.
- *  A quoted word, as any quoted part, is a literal: it expands nothing (a single-quoted one, or a
- *  double-quoted one whose every `$` is escaped and that holds no backtick). A `cd` of one word, a
- *  literal and no option, to a directory the copy holds inside the root, each part before a `..`
- *  a directory too (`cdLanding`, as bash's cd walks it), succeeds: where it surely runs (no `&&`
- *  or `||` before it in its list), every later command runs from there alone, until another `cd`;
- *  any other `cd` may fail, and leave the shell where it was, or end, as the kernel walks the path
- *  as written (`cd -P`, and bash's own where its walk finds no directory), at another directory,
- *  which the shell may be in too. The copy holds no symbolic link that leaves it
- *  (`removeOutsideLinks`), and each path is walked as the kernel walks it in the copy
- *  (`walksInCopy`), so a link that stays inside, followed by `..`, cannot lead out; an absolute
- *  path must name the root as written. Where the working directory's real path in the copy is not
- *  its path, or a `cd` may have gone through a symbolic link (`cdLanding`), a later word that holds
- *  `..` is not answered: the kernel walks it from the real directory, the walk from the path; nor
- *  is a command that prints the working directory's own path (`pwd`, `$PWD`, `env`, `export`,
- *  git's `rev-parse --show-prefix`, `--show-cdup` and `--show-toplevel`, `jj root`). A jj
- *  command whose repository may be one the checkout tracks below its root (a `.jj` between the
- *  directory jj starts from and the root, or at the root where no colocation of the runner's made
- *  it) is not answered. */
-function escapes(copy: CheckoutCopy, cwd: string, script: Script): string | undefined {
+/** Why `script`, run from the session's working directory `cwd` (`local`, its path in the copy on
+ *  this machine), may reach a file outside the session's checkout or show a value of the runner's,
+ *  or undefined (see the file's header, **Confinement**). Each word a program may open (every word
+ *  after the program but those of NO_PATH_PROGRAMS, and every redirection's target) is read at
+ *  each value it may take (`walkScript`: a variable the command assigned, `$PWD` and `$(pwd)` as
+ *  each directory the shell may be in, `$(git rev-parse --show-toplevel)` where git meets no
+ *  repository of the checkout's own below the root first, and, in a colocated copy, `$(jj root)`). */
+function escapes(
+  copy: CheckoutCopy,
+  cwd: string,
+  local: string,
+  script: Script
+): string | undefined {
   const walk: Walk = {
     check: (command, state) => escapeFault(copy, command, state, walk),
     subValues: (sub, state) => {
@@ -3698,7 +3668,6 @@ function escapes(copy: CheckoutCopy, cwd: string, script: Script): string | unde
   };
   // The sandbox enters the working directory as it is real (`cd -P`): where that is not its path in
   // the copy (a symbolic link in it), the shell is elsewhere than the walk's path.
-  const local = path.join(realpathSync(copy.dir), insideRoot(copy.root, cwd) ?? "");
   let linked = true;
   try {
     linked = realpathSync(local) !== local;
@@ -3753,9 +3722,9 @@ async function bashAnswer(
     }
     cwd = resolved;
   }
-  const leads = escapes(copy, cwd, script);
-  if (leads !== undefined) return { why: leads };
   const localCwd = path.join(realpathSync(copy.dir), insideRoot(copy.root, cwd) ?? "");
+  const leads = escapes(copy, cwd, localCwd, script);
+  if (leads !== undefined) return { why: leads };
   if (
     !statSync(localCwd, { throwIfNoEntry: false })?.isDirectory() ||
     !walksInCopy(copy, cwd, "")
@@ -3802,7 +3771,7 @@ async function bashAnswer(
 
 /** The answer to the read-only call `name` with `input` from `copy` (see the file's header), its
  *  reads by path shown as `rows`, or why it is not answered. A `read`, `grep` or `glob` answer is
- *  kept in `copy.answers` and given again to the same call. */
+ *  kept in `copy.answers` from when the call is made, and given again to the same call. */
 export async function answerCall(
   copy: CheckoutCopy,
   name: string | undefined,
@@ -3819,9 +3788,10 @@ export async function answerCall(
     if (held !== undefined) return held;
     const answer =
       name === "read"
-        ? readAnswer(copy, fields, rows)
-        : await answerInWorker(name, copy, fields, rows);
+        ? Promise.resolve(readAnswer(copy, fields, rows))
+        : answerInWorker(name, copy, fields, rows);
     copy.answers?.set(key, answer);
+    answer.catch(() => copy.answers?.delete(key));
     return answer;
   }
   if (name === "bash") return bashAnswer(copy, fields);

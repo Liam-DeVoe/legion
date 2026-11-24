@@ -543,11 +543,7 @@ test("in the arm of ours, a recording whose arm lists another source's copy unde
     ["alpha", copy],
     ["beta", beta],
   ]);
-  // With no such copy the arm of ours sends what it sent before; every other arm, whose skill
-  // is the case's, gets armPromptBlocks'.
-  expect(armRecordedPrompt(SUBAGENT_PROMPT, "alpha", "alpha-ours", ours, undefined)).toEqual(
-    armRecordedPrompt(SUBAGENT_PROMPT, "alpha", "alpha-ours", ours)
-  );
+  // Every other arm, whose skill is the case's, gets armPromptBlocks'.
   expect(armRecordedPrompt(SUBAGENT_PROMPT, "alpha", "alpha", ours, copy)).toEqual(
     armPromptBlocks(SUBAGENT_PROMPT, "alpha", ours)
   );
@@ -638,6 +634,20 @@ function builtPlugins(names: readonly string[]): Profile["plugins"] {
 }
 
 describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
+  /** The capture options of the rows below: each capture under `outDir` of `dir`, against the
+   *  shared cache, with `extra` over them. */
+  const optionsWith = (outDir: string, extra: Partial<CaptureOptions> = {}): CaptureOptions => ({
+    omp: binary(),
+    outDir: path.join(dir, outDir),
+    scratchDir: path.join(dir, "scratch"),
+    cacheDir: path.join(dir, "cache"),
+    source: localSource(path.join(dir, "repos")),
+    models: path.join(dir, "models.yml"),
+    hints,
+    session: SESSION,
+    ...extra,
+  });
+
   test(
     "the recorded body lists each installed skill under the hint the profile's cache holds, never its description",
     async () => {
@@ -1281,16 +1291,7 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
       writeTree(ours.dir, { "SKILL.md": OURS_SKILL, "references/x.md": X });
       const dirs = { old: path.join(dir, "old"), ours };
       const arm = buildArm(c, "ours", dirs, path.join(dir, "arms-relisted-ours"));
-      const { body, record } = await captureBody(c, arm, {
-        omp: binary(),
-        outDir: path.join(dir, "out"),
-        scratchDir: path.join(dir, "scratch"),
-        cacheDir: path.join(dir, "cache"),
-        source: localSource(path.join(dir, "repos")),
-        models: path.join(dir, "models.yml"),
-        hints,
-        session: SESSION,
-      });
+      const { body, record } = await captureBody(c, arm, optionsWith("out"));
       // acme/tools' alpha is listed under their name, beside ours under our name.
       expect(arm.relisted).toEqual(["tools/alpha"]);
       expect(record.context.skills.map((skill) => skill.name)).toEqual([
@@ -2010,19 +2011,6 @@ export default function bootProbe(pi) {
   /** The lines a made-up session recorded for alpha and beta. */
   const ALPHA_LINE = "Use for the alpha checklist, as the session listed it.";
   const BETA_LINE = "Use for the beta greeting, as the session listed it.";
-  /** The capture options of the rows below: each capture under `outDir` of `dir`, against the
-   *  shared cache, with `extra` over them. */
-  const optionsWith = (outDir: string, extra: Partial<CaptureOptions> = {}): CaptureOptions => ({
-    omp: binary(),
-    outDir: path.join(dir, outDir),
-    scratchDir: path.join(dir, "scratch"),
-    cacheDir: path.join(dir, "cache"),
-    source: localSource(path.join(dir, "repos")),
-    models: path.join(dir, "models.yml"),
-    hints,
-    session: SESSION,
-    ...extra,
-  });
   /** The capture of case `id`'s arm `arm` with `extra` options, against the cache `cacheDir`
    *  (the shared one, which holds each text's hint of draw 1 once `captures` has run). */
   const recordedCapture = async (

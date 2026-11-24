@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { captureEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { snapshotTag } from "./arms";
@@ -8,11 +9,13 @@ import {
   answerCall,
   type CheckoutCopy,
   colocateJj,
+  grepScan,
   READ_ONLY_TOOLS,
   readOnlyCall,
   removeOutsideLinks,
   sandboxedBash,
 } from "./checkout";
+import { detachedCommit, gitIn, writeTree } from "./testdata/fixtures";
 
 const scratch = temporaryDirectory("skill-cuts-checkout", { real: true });
 
@@ -42,43 +45,13 @@ function linkedCopy(name: string): string {
 /** The guide of the made-up checkout. */
 const GUIDE = "# Guide\n\nRun the app.\n";
 
-/** Runs `git args` in `cwd` as a made-up user, with no configuration of this machine's: its output,
- *  trimmed; a failure fails the test. */
-function gitIn(cwd: string, ...args: string[]): string {
-  const ran = Bun.spawnSync(["git", ...args], {
-    cwd,
-    env: {
-      PATH: process.env.PATH ?? "/usr/bin:/bin",
-      HOME: cwd,
-      GIT_CONFIG_NOSYSTEM: "1",
-      GIT_AUTHOR_NAME: "Acme",
-      GIT_AUTHOR_EMAIL: "dev@acme.test",
-      GIT_COMMITTER_NAME: "Acme",
-      GIT_COMMITTER_EMAIL: "dev@acme.test",
-    },
-  });
-  expect({ args, code: ran.exitCode, err: ran.stderr.toString() }).toMatchObject({ code: 0 });
-  return ran.stdout.toString().trim();
-}
-
-/** Writes each file of `files` (its path to its text) under `dir`. */
-function writeFiles(dir: string, files: Record<string, string>): void {
-  for (const [file, text] of Object.entries(files)) {
-    mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
-    writeFileSync(path.join(dir, file), text);
-  }
-}
-
 /** A git checkout of a made-up repository under `name`, as cli.ts's shared checkout is: docs/
  *  guide.md, src/app.py and the files `more` (each path to its text) in one commit, checked out
  *  with a detached HEAD. */
 function gitCopy(name: string, more: Record<string, string> = {}): string {
   const dir = path.join(scratch, name);
-  writeFiles(dir, { "docs/guide.md": GUIDE, "src/app.py": "def main():\n    return 0\n", ...more });
-  gitIn(dir, "init", "--quiet");
-  gitIn(dir, "add", ".");
-  gitIn(dir, "commit", "--quiet", "-m", "Add the guide");
-  gitIn(dir, "checkout", "--quiet", "--detach", gitIn(dir, "rev-parse", "HEAD"));
+  writeTree(dir, { "docs/guide.md": GUIDE, "src/app.py": "def main():\n    return 0\n", ...more });
+  detachedCommit(dir, "Add the guide");
   return dir;
 }
 
@@ -548,17 +521,12 @@ test("a copy no session made a jj repository answers jj as jj does outside one; 
 // answered as no match where the pin says it is not found, or an answer that shows jj's own files
 // of a colocated copy, which the pin's walk leaves out.
 test("a glob of a directory with no glob character lists it, one of a file answers the file, and a ;-separated list answers each of its paths, a missing one noted; a missing path is not answered; jj's .jj directory is in no answer", async () => {
-  const dir = path.join(scratch, "globs");
-  for (const [file, text] of [
-    ["docs/guide.md", GUIDE],
-    ["docs/api/ref.md", "# Ref\n"],
-    ["src/app.py", "def main():\n    return 0\n"],
-    [".jj/repo/store.md", "# Store\n"],
-  ] as const) {
-    mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
-    writeFileSync(path.join(dir, file), text);
-  }
-  const copy = { dir, root: ROOT, cwd: ROOT, git: false };
+  const copy = filesCopy("globs", {
+    "docs/guide.md": GUIDE,
+    "docs/api/ref.md": "# Ref\n",
+    "src/app.py": "def main():\n    return 0\n",
+    ".jj/repo/store.md": "# Store\n",
+  });
   const glob = (target: string) => answerCall(copy, "glob", { path: target }, "hashline");
   for (const [target, text] of [
     ["docs", "# docs/\nguide.md\n## api/\nref.md"],
@@ -718,14 +686,12 @@ test("readOnlyCall refuses printf -vNAME, $[…], sed's w, W, e, r and R command
 // `l/../x` and `l/../../..`); or the same through a glob the link matches, which the runner reads
 // as written (the second review's `a/l*/../../x`).
 test("a bash path through a link that stays inside the copy, then .., is not answered where the kernel's walk of it leaves the copy, nor one whose glob comes before .. or may match . or .., nor a cd to a glob; a path through the same links that stays inside is answered", async () => {
-  const dir = path.join(scratch, "walk");
-  writeFiles(dir, { "docs/guide.md": GUIDE });
-  writeFiles(path.join(scratch, "walk-outside"), { "secret.txt": `${SECRET}\n` });
-  mkdirSync(path.join(dir, "docs", "a", "b"), { recursive: true });
-  symlinkSync(".", path.join(dir, "self"));
-  symlinkSync("../../..", path.join(dir, "docs", "a", "b", "up"));
-  expect(removeOutsideLinks(dir)).toEqual([]);
-  const copy = { dir, root: ROOT, cwd: ROOT, git: false };
+  const copy = filesCopy("walk", { "docs/guide.md": GUIDE });
+  writeTree(path.join(scratch, "walk-outside"), { "secret.txt": `${SECRET}\n` });
+  mkdirSync(path.join(copy.dir, "docs", "a", "b"), { recursive: true });
+  symlinkSync(".", path.join(copy.dir, "self"));
+  symlinkSync("../../..", path.join(copy.dir, "docs", "a", "b", "up"));
+  expect(removeOutsideLinks(copy.dir)).toEqual([]);
   for (const [command, cwd] of [
     ["cat self/../walk-outside/secret.txt", undefined],
     ["cat docs/a/b/up/../walk-outside/secret.txt", undefined],
@@ -763,11 +729,7 @@ test("a bash path through a link that stays inside the copy, then .., is not ans
 test("a jj command in a copy that is no jj repository, inside a directory that is one, answers as jj does outside any repository", async () => {
   const above = path.join(scratch, "jj-above");
   mkdirSync(above, { recursive: true });
-  const made = Bun.spawnSync([Bun.which("jj") ?? "jj", "git", "init"], {
-    cwd: above,
-    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: above },
-  });
-  expect({ code: made.exitCode, err: made.stderr.toString() }).toMatchObject({ code: 0 });
+  jjIn(above, "git", "init");
   const copy = { dir: gitCopy("jj-above/copy"), root: ROOT, cwd: ROOT, git: true };
   for (const command of ["jj root", "jj st"]) {
     const answer = await answerCall(copy, "bash", { command }, "hashline");
@@ -787,12 +749,12 @@ test("a jj command in a copy that is no jj repository, inside a directory that i
 // older commit), which reaches the network with the pod's credential.
 test("a git command in a copy that lacks an older commit's blob fetches nothing: the answer is git's error, and the copy still lacks the blob", async () => {
   const work = path.join(scratch, "lazy-work");
-  writeFiles(work, { "docs/guide.md": "# Guide\n\nRun the old app.\n" });
+  writeTree(work, { "docs/guide.md": "# Guide\n\nRun the old app.\n" });
   gitIn(work, "init", "--quiet");
   gitIn(work, "add", ".");
   gitIn(work, "commit", "--quiet", "-m", "Write the first guide");
   const older = gitIn(work, "rev-parse", "HEAD:docs/guide.md");
-  writeFiles(work, { "docs/guide.md": GUIDE });
+  writeTree(work, { "docs/guide.md": GUIDE });
   gitIn(work, "commit", "--quiet", "-am", "Add the guide");
   const commit = gitIn(work, "rev-parse", "HEAD");
   const server = path.join(scratch, "lazy-server.git");
@@ -829,7 +791,7 @@ test("a git command in a copy that lacks an older commit's blob fetches nothing:
 // copy's tracked configuration names; and a call the rule refuses runs nothing.
 test("the negative control: cat of a key file, ls of the runner's home and of /opt, env, and git in a copy whose tracked bare repository's config sets core.fsmonitor, each read-only by the rule, show no key, an empty home and /opt, no credential and run no fsmonitor; the copy is read-only and has no network; curl is refused and never run", async () => {
   const keyDir = path.join(scratch, "gateway-key");
-  writeFiles(keyDir, { key: `${fixtureSecret("gwkey")}\n` });
+  writeTree(keyDir, { key: `${fixtureSecret("gwkey")}\n` });
   const credentials = path.join(scratch, "control-credentials");
   // Made-up credentials of the runner's own environment, which no answer may show.
   const planted: Record<string, string> = {
@@ -840,7 +802,7 @@ test("the negative control: cat of a key file, ls of the runner's home and of /o
     AGENT_SECRETS_KEY_DIR: path.join(credentials, "keys"),
     ACME_GATEWAY_KEY_DIR: keyDir,
   };
-  const before = Object.fromEntries(Object.keys(planted).map((name) => [name, process.env[name]]));
+  const restore = captureEnvironment(Object.keys(planted));
   Object.assign(process.env, planted);
   try {
     const marker = path.join(scratch, "control-fsmonitor-ran");
@@ -933,10 +895,7 @@ test("the negative control: cat of a key file, ls of the runner's home and of /o
       why: "its command is not read-only",
     });
   } finally {
-    for (const [name, value] of Object.entries(before)) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-    }
+    restore();
   }
 }, 60_000);
 
@@ -949,7 +908,7 @@ test("the negative control: cat of a key file, ls of the runner's home and of /o
 /** A copy of a made-up checkout under `name` that holds `files` (each path to its text). */
 function filesCopy(name: string, files: Record<string, string>): CheckoutCopy {
   const dir = path.join(scratch, name);
-  writeFiles(dir, files);
+  writeTree(dir, files);
   return { dir, root: ROOT, cwd: ROOT, git: false };
 }
 
@@ -1306,7 +1265,7 @@ test("a cd to a literal directory the copy holds, that surely runs, moves every 
   ]) {
     expect({ command, answer: await bashText(copy, command) }).toEqual({
       command,
-      answer: { why: "../package.json is outside the session's checkout /work/acme/proj" },
+      answer: { why: `../package.json is outside the session's checkout ${ROOT}` },
     });
   }
 }, 60_000);
@@ -1447,30 +1406,35 @@ test("a command one of whose programs is on no directory of the sandbox's PATH i
   expect(await bashText(copy, "cat docs/guide.md | wc -l")).toBe("3\n");
 }, 60_000);
 
+/** Expects the `tool` call of `copy` with `input` not answered, past the 30 s limit, and its answer
+ *  to come within the limit while the runner's own thread runs on. Real time, deliberately: the
+ *  limit under test is the platform clock's 30 s, and a tick every 100 ms that keeps firing shows
+ *  that the runner's own thread is free while the worker matches. */
+async function expectPastLimit(
+  copy: CheckoutCopy,
+  tool: "grep" | "glob",
+  input: Record<string, unknown>
+): Promise<void> {
+  let ticks = 0;
+  const tick = setInterval(() => {
+    ticks++;
+  }, 100);
+  const started = performance.now();
+  const answer = await answerCall(copy, tool, input, "hashline");
+  const tookMs = performance.now() - started;
+  clearInterval(tick);
+  expect(answer).toEqual({ why: "it ran past the 30 s limit" });
+  expect(tookMs).toBeLessThan(32_000);
+  expect(ticks).toBeGreaterThan(200);
+}
+
 // Catches: a grep whose regular expression backtracks (`(a+)+b` over a long run of one character)
 // run in the runner's own thread with no time limit, which stops every run of the process.
 test("a grep whose regular expression backtracks past the 30 s limit is not answered, and its answer comes within the limit while the runner's own thread runs on", async () => {
   // 20,000 lines, over each of which JavaScript's engine backtracks for a few milliseconds (about
   // 6 ms a line of 20 a's on this pod, under the 100 ms one test may take), so far past the limit.
   const copy = filesCopy("grep-backtracks", { "line.txt": `${"a".repeat(20)}\n`.repeat(20_000) });
-  // Real time, deliberately: the limit under test is the platform clock's 30 s, and a tick every
-  // 100 ms that keeps firing shows that the runner's own thread is free while the worker matches.
-  let ticks = 0;
-  const tick = setInterval(() => {
-    ticks++;
-  }, 100);
-  const started = performance.now();
-  const answer = await answerCall(
-    copy,
-    "grep",
-    { pattern: "(a+)+b", path: "line.txt" },
-    "hashline"
-  );
-  const tookMs = performance.now() - started;
-  clearInterval(tick);
-  expect(answer).toEqual({ why: "it ran past the 30 s limit" });
-  expect(tookMs).toBeLessThan(32_000);
-  expect(ticks).toBeGreaterThan(200);
+  await expectPastLimit(copy, "grep", { pattern: "(a+)+b", path: "line.txt" });
 }, 60_000);
 
 // Catches: an option that reads a list of paths from a file (wc's `--files0-from`, find's
@@ -1626,7 +1590,7 @@ test("a cd that bash refuses, for an option word, a second operand or a part bef
   ]) {
     expect({ command, answer: await bashText(copy, command) }).toEqual({
       command,
-      answer: { why: "../../etc/hostname is outside the session's checkout /work/acme/proj" },
+      answer: { why: `../../etc/hostname is outside the session's checkout ${ROOT}` },
     });
   }
   for (const [command, text] of [
@@ -1792,6 +1756,60 @@ test("a grep one test of whose regular expression takes past 100 ms is not answe
   expect(await grepText(copy, { pattern: "a+b", path: "one.txt" })).toBe(`*1|${"a".repeat(40)}xab`);
 }, 60_000);
 
+// Catches: a grep match line past 512 bytes whose regular expression was tested again to place
+// grep's window around the match, so that a second test past 100 ms (one the first test of that
+// line did not take) turned the match the first test found into a call not answered.
+test("a grep match line past 512 bytes is placed from the test that found it: a regular expression slow on a second test of the line still answers it", () => {
+  const line = `${"x".repeat(600)}kind${"y".repeat(100)}`;
+  const tested: string[] = [];
+  class SlowAgain extends RegExp {
+    override exec(text: string): RegExpExecArray | null {
+      // Real time, deliberately: a second test of a line takes past the 100 ms one test may
+      // take, as the runner measures it on the platform clock (`timedExec`); a line tested once,
+      // as grep's should be, waits for nothing.
+      if (tested.includes(text)) Bun.sleepSync(150);
+      tested.push(text);
+      return super.exec(text);
+    }
+  }
+  expect(grepScan("long.txt", Buffer.from(`${line}\n`), new SlowAgain("kind", "u"), 20)).toEqual([
+    {
+      file: "long.txt",
+      n: 1,
+      text: `...${"x".repeat(405)}kind${"y".repeat(100)} [col 601]`,
+      cut: true,
+      before: [],
+      after: [],
+    },
+  ]);
+  expect(tested).toEqual([line]);
+});
+
+// Catches: two runs of one stage that make the same grep call at once each working its answer
+// out in a worker of its own (each walking and reading the checkout again, in the one process
+// whose memory the behaviour command stops at), as the copy kept only an answer that had come.
+test("two identical grep calls made at once share one answer, worked out once", async () => {
+  const answers = new Map();
+  const keep = answers.set.bind(answers);
+  const workedOut: string[] = [];
+  answers.set = (key, value) => {
+    workedOut.push(key);
+    return keep(key, value);
+  };
+  const copy = { ...filesCopy("grep-shared", { "docs/guide.md": GUIDE }), answers };
+  const input = { pattern: "Run", path: "docs" };
+  expect(
+    await Promise.all([
+      answerCall(copy, "grep", input, "numbered"),
+      answerCall(copy, "grep", input, "numbered"),
+    ])
+  ).toEqual([
+    { text: "# docs/\n## guide.md\n 2|\n*3|Run the app.", isError: false },
+    { text: "# docs/\n## guide.md\n 2|\n*3|Run the app.", isError: false },
+  ]);
+  expect(workedOut).toEqual([`grep\0numbered\0${JSON.stringify(input)}`]);
+}, 60_000);
+
 // Catches: a glob's matching (Bun.Glob's, of every path under its base) run in the runner's own
 // thread with no time limit: a long pattern against each path of a large checkout takes seconds to
 // minutes, which stops every run of the process meanwhile.
@@ -1804,24 +1822,7 @@ test("a glob whose matching runs past the 30 s limit is not answered, and its an
       Array.from({ length: 10_000 }, (_, n) => [`big/${"a".repeat(60)}${n}`, ""] as const)
     )
   );
-  // Real time, deliberately: the limit under test is the platform clock's 30 s, and a tick every
-  // 100 ms that keeps firing shows that the runner's own thread is free while the worker matches.
-  let ticks = 0;
-  const tick = setInterval(() => {
-    ticks++;
-  }, 100);
-  const started = performance.now();
-  const answer = await answerCall(
-    copy,
-    "glob",
-    { path: `**/${"{a*,*a,*}".repeat(6_400)}` },
-    "hashline"
-  );
-  const tookMs = performance.now() - started;
-  clearInterval(tick);
-  expect(answer).toEqual({ why: "it ran past the 30 s limit" });
-  expect(tookMs).toBeLessThan(32_000);
-  expect(ticks).toBeGreaterThan(200);
+  await expectPastLimit(copy, "glob", { path: `**/${"{a*,*a,*}".repeat(6_400)}` });
 }, 60_000);
 
 // Catches: `pwd` from a working directory reached through a link of the checkout answered with the

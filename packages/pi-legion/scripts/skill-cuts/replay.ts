@@ -237,14 +237,15 @@ export type AnsweredRead = Readonly<z.infer<typeof AnsweredRead>>;
  *  (checkout.ts's `answerCall`): its tool, its input as the reply gave it (a bash call's command
  *  among it), whether the answer is an error, and, for a read of a file the pin may show
  *  summarized, that it was answered with the file's whole text in place of the summary
- *  (`wholeText`). */
-export interface CheckoutRead {
-  readonly from: "checkout";
-  readonly tool: string;
-  readonly input: unknown;
-  readonly isError: boolean;
-  readonly wholeText?: true;
-}
+ *  (`wholeText`, absent otherwise). A run record keeps each as it is (cli.ts's runs). */
+export const CheckoutRead = z.strictObject({
+  from: z.literal("checkout"),
+  tool: z.string(),
+  input: z.unknown(),
+  isError: z.boolean(),
+  wholeText: z.literal(true).optional(),
+});
+export type CheckoutRead = Readonly<z.infer<typeof CheckoutRead>>;
 
 /** One answer an answered round recorded: a read of a skill file, or a call the checkout copy
  *  answered. */

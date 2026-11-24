@@ -161,7 +161,9 @@ const AbsoluteDir = z
  * checkout.ts's `messagesRunJj`), so its checkout was a jj workspace (absent on a case written
  * before it was recorded). A run of the case answers a reply's read-only calls from a copy of
  * `repo` at `commit` (replay.ts), its paths mapped between `root` and the copy, a colocated jj
- * repository where `jj` (cli.ts). A case with none gets no such answers.
+ * repository where `jj` (cli.ts). A case with none gets no such answers, and a written case's run
+ * with none gets no verdict on a reply whose calls all read, one of them other than a skill read
+ * (replay.ts's UnansweredRead, its why cli.ts's NO_CHECKOUT): the run is made again.
  * `secretsRemoved` counts what the secret scan took out of the case before it left the pod, and
  * `sessionDigest` is the session's last `system-prompt-digest` before the step, or null.
  * `evidence`, when the case builder wrote it, says where each part of the case came from that the

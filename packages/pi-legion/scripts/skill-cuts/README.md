@@ -597,13 +597,14 @@ floors. A read-only call is a call of the `read`, `grep`, `glob`, `find` or `ls`
 Oh My Pi's file finder is `glob`; `find` and `ls` are declared by no capture), or a `bash` call
 whose commands, joined by pipes, `&&`, `||`, `;` or line ends, in a subshell `( … )`, a group
 `{ …; }` or a command substitution (`$(…)`, or a backtick with no `\` in it; each counted by its
-inner commands), are each `cd` naming a directory, `cat`, `head`, `tail`, `ls`, `find` (without
+inner commands), are each `cd`, `cat`, `head`, `tail`, `ls`, `find` (without
 `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint`, `-fprint0`, `-fprintf`, `-fls` or
 `-files0-from`, which reads its starting points from a file),
 `grep`, `rg`, `wc`, `sed -n`, `nl`, `stat`, `file`, `tree`, `pwd`, `true`, `echo`, `printf`, `env`
 with no command (`-0`, `-i`, `-u NAME`, then assignments), `unset` (but of `PATH`, `HOME`, `PWD`,
 `GIT_OPTIONAL_LOCKS`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n`, `GIT_CONFIG_VALUE_n`,
-`GIT_CONFIG_SYSTEM` or `JJ_CONFIG`, the answers' own), `export`, an assignment `NAME=value` alone
+`GIT_CONFIG_SYSTEM`, `GIT_CONFIG_PARAMETERS` or `JJ_CONFIG`, the answers' own), `export`, an
+assignment `NAME=value` alone
 or before a command, `git` (with at most `-C <dir>`, `--no-pager` or `-P` before it) `log`, `show`,
 `diff`, `status`, `grep`, `ls-files`, `blame`, `rev-parse`, `worktree list`, `remote` (alone, `-v`,
 `show` or `get-url`) or `branch` with no name (alone, `-a`, `-r`, `-v`, `--list` or

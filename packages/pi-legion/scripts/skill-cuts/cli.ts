@@ -357,7 +357,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { messageFor } from "@legion/envoy-client/errors";
+import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import { MessagesApiError } from "../skill-scenarios/messages-api";
 import { outRefusal } from "../skill-scenarios/production-dispatch";
@@ -508,6 +508,7 @@ import {
 } from "./readers";
 import {
   AnsweredRead,
+  CheckoutRead,
   MAX_CHECKOUT_ROUNDS,
   MAX_SKILL_ROUNDS,
   READS_PAST_LAST_ROUND,
@@ -1983,18 +1984,6 @@ async function controlCraftCommand(argv: readonly string[], io: CliIo): Promise<
 
 // `behaviour`: the results of a case.
 
-/** One read-only call a checkout round of a written case's replay answered from its checkout
- *  copy (replay.ts's `CheckoutRead`): its tool, its input (a bash call's command among it),
- *  whether the answer is an error, and whether a read was answered with the file's whole text in
- *  place of the pin's summary (`wholeText`, absent otherwise). */
-const CheckoutReadRecord = z.strictObject({
-  from: z.literal("checkout"),
-  tool: z.string(),
-  input: z.unknown(),
-  isError: z.boolean(),
-  wholeText: z.literal(true).optional(),
-});
-
 /** One run of one arm of a case in one stage: score.ts's RunRecord, and what the run did. */
 const Run = z.strictObject({
   ...RunRecord.shape,
@@ -2016,10 +2005,10 @@ const Run = z.strictObject({
    *  before the step, or null when it failed; absent from a run made before this field. */
   checkoutRounds: z.int().nonnegative().nullable().optional(),
   /** Each answered round's answers, in order (a skill read's, replay.ts's AnsweredRead, or a
-   *  checkout read's), or null when the replay failed; absent from a run made before this
-   *  field. */
+   *  checkout read's, its CheckoutRead), or null when the replay failed; absent from a run made
+   *  before this field. */
   skillReads: z
-    .array(z.array(z.union([AnsweredRead, CheckoutReadRecord])))
+    .array(z.array(z.union([AnsweredRead, CheckoutRead])))
     .nullable()
     .optional(),
   /** Why the reply that ended the run, every call of it read-only, was not answered from the
@@ -3223,15 +3212,24 @@ async function makeSharedCheckout(
   const markerFile = `${dir}.ready.json`;
   const lock = `${dir}.lock`;
   mkdirSync(path.dirname(dir), { recursive: true });
-  const madeMarker = (): CheckoutMarker | undefined =>
-    existsSync(markerFile)
-      ? CheckoutMarker.parse(JSON.parse(readFileSync(markerFile, "utf8")))
-      : undefined;
+  // The marker, or undefined where none is there yet: read in one step, so that a marker the
+  // lock's holder removes as it makes the checkout again is none to a run that waits for it, never
+  // an error between a test of its path and its read.
+  const madeMarker = (): CheckoutMarker | undefined => {
+    let text: string;
+    try {
+      text = readFileSync(markerFile, "utf8");
+    } catch (error) {
+      if (hasErrnoCode(error, "ENOENT")) return undefined;
+      throw error;
+    }
+    return CheckoutMarker.parse(JSON.parse(text));
+  };
   // A made checkout serves the ask when it holds its commits' blobs (or is the tarball) and,
   // where the ask is for jj, is a colocated jj repository (or is no git checkout).
-  const whole = (marker: CheckoutMarker) => !marker.git || marker.blobs === true;
+  const holdsBlobs = (marker: CheckoutMarker) => !marker.git || marker.blobs === true;
   const serves = (marker: CheckoutMarker) =>
-    whole(marker) && (!jj || !marker.git || marker.jj !== undefined);
+    holdsBlobs(marker) && (!jj || !marker.git || marker.jj !== undefined);
   for (;;) {
     const found = madeMarker();
     if (found !== undefined && serves(found)) return { dir, marker: found };
@@ -3267,7 +3265,7 @@ async function makeSharedCheckout(
       const started = performance.now();
       const seconds = () => Math.round((performance.now() - started) / 100) / 10;
       const made = madeMarker();
-      if (made !== undefined && whole(made)) {
+      if (made !== undefined && holdsBlobs(made)) {
         if (serves(made)) continue;
         const marker = { ...made, jj: await colocateJj(dir) };
         writeWhole(markerFile, json(marker));

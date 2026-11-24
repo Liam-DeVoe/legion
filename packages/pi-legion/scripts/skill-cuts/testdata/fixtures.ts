@@ -2,8 +2,46 @@
  * Builders of made-up fixtures that more than one test file of the runner uses. Each repository,
  * commit and route they give is made up.
  */
-import { writeFileSync } from "node:fs";
+import { expect } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { type Manifest, type ManifestKind, parseManifest } from "../copies";
+
+/** Writes each file of `files` (its path inside `root` to its text) under `root`. */
+export function writeTree(root: string, files: Readonly<Record<string, string>>): void {
+  for (const [file, text] of Object.entries(files)) {
+    mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    writeFileSync(path.join(root, file), text);
+  }
+}
+
+/** Runs `git args` in `cwd` as a made-up user, with no configuration of this machine's: its output,
+ *  trimmed; a failure fails the test. */
+export function gitIn(cwd: string, ...args: string[]): string {
+  const ran = Bun.spawnSync(["git", ...args], {
+    cwd,
+    env: {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      HOME: cwd,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_AUTHOR_NAME: "Acme",
+      GIT_AUTHOR_EMAIL: "dev@acme.test",
+      GIT_COMMITTER_NAME: "Acme",
+      GIT_COMMITTER_EMAIL: "dev@acme.test",
+    },
+  });
+  expect({ args, code: ran.exitCode, err: ran.stderr.toString() }).toMatchObject({ code: 0 });
+  return ran.stdout.toString().trim();
+}
+
+/** Makes `dir` a git checkout of its files in one commit, `message`, checked out with a detached
+ *  HEAD, as cli.ts's shared checkout is. */
+export function detachedCommit(dir: string, message: string): void {
+  gitIn(dir, "init", "--quiet");
+  gitIn(dir, "add", ".");
+  gitIn(dir, "commit", "--quiet", "-m", message);
+  gitIn(dir, "checkout", "--quiet", "--detach", gitIn(dir, "rev-parse", "HEAD"));
+}
 
 /** A manifest of `repository` at `file` in its tree, parsed as `kind`. */
 export const madeManifest = (

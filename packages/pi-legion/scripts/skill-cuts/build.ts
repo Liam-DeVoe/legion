@@ -652,6 +652,7 @@ import {
 } from "./cases";
 import { bashFileReads, messagesRunJj } from "./checkout";
 import {
+  bytesAt,
   commandRetries,
   configFrom,
   firstLine,
@@ -1313,22 +1314,6 @@ function eachLine(
   } finally {
     closeSync(fd);
   }
-}
-
-/** The bytes `length` of the file `file` from `offset`. */
-function bytesAt(file: string, offset: number, length: number): Buffer {
-  const bytes = Buffer.alloc(length);
-  const fd = openSync(file, "r");
-  try {
-    for (let at = 0; at < length; ) {
-      const read = readSync(fd, bytes, at, length - at, offset + at);
-      if (read === 0) throw new Error(`${file} ends before byte ${offset + length}`);
-      at += read;
-    }
-  } finally {
-    closeSync(fd);
-  }
-  return bytes;
 }
 
 /** The entries of the session's current branch, root first: the parent chain of its last entry
@@ -7852,15 +7837,12 @@ async function writtenContext(
   }
   const checkout = writtenCheckout(profiled, dirs.cwd);
   if ("drop" in checkout) return checkout;
-  // Whether the session ran jj: the whole message of each of its bash calls, read again (a light
-  // message keeps no call's command).
-  const jj = messagesRunJj(
-    t.items.flatMap((item, index) =>
+  // Whether the session ran jj: the whole message of each of its bash calls, read again one at a
+  // time until one runs jj (a light message keeps no call's command).
+  const jj = t.items.some(
+    (item, index) =>
       item.slim.content?.some((block) => block.type === "toolCall" && block.name === "bash") ===
-      true
-        ? [t.message(index)]
-        : []
-    )
+        true && messagesRunJj([t.message(index)])
   );
   return {
     store,
@@ -7936,6 +7918,8 @@ function outsideMaterial(made: WrittenContext): string | undefined {
     if (header.endsWith("/SKILL.md")) skillDirs.push(path.posix.dirname(header));
   }
   for (const [index, message] of all.entries()) {
+    // The message whole, read once for its bash calls (a light message keeps no call's command).
+    let whole: SessionMessage | undefined;
     for (const block of message.content ?? []) {
       if (block.type !== "toolCall") continue;
       let files: string[] = [];
@@ -7947,9 +7931,10 @@ function outsideMaterial(made: WrittenContext): string | undefined {
         files = full === undefined ? [] : [path.posix.normalize(full)];
         how = `a read of ${target}`;
       } else if (block.name === "bash") {
-        const call = made.t
-          .message(index)
-          .content?.find((each) => each.type === "toolCall" && each.id === block.id);
+        whole ??= made.t.message(index);
+        const call = whole.content?.find(
+          (each) => each.type === "toolCall" && each.id === block.id
+        );
         const command = Reflect.get(Object(call?.arguments), "command");
         if (typeof command !== "string") continue;
         files = bashFileReads(command, checkout.cwd);
@@ -8097,6 +8082,12 @@ async function chooseContext(
     if (!first) rmSync(spool, { force: true });
   }
   for (const each of unserved) {
+    // Passes `each` over again, in its place among `passed`, for `why`, its spool removed.
+    const passAgain = (why: string) => {
+      passed[each.at] = { store: each.store.name, hash: each.hash, why };
+      sayPassed(each.place, each.store.name, each.hash, why);
+      rmSync(each.spool, { force: true });
+    };
     const made =
       each.context ?? (await writtenContext(run, each.store, each.hash, each.filePath, each.spool));
     if ("drop" in made) {
@@ -8109,10 +8100,7 @@ async function chooseContext(
     }
     const reads = outsideMaterial(made);
     if (reads !== undefined) {
-      const why = `${outside}: ${reads}`;
-      passed[each.at] = { store: each.store.name, hash: each.hash, why };
-      sayPassed(each.place, each.store.name, each.hash, why);
-      rmSync(each.spool, { force: true });
+      passAgain(`${outside}: ${reads}`);
       continue;
     }
     const answer = await ask(made);
@@ -8124,10 +8112,7 @@ async function chooseContext(
         passed: passed.slice(0, each.at),
       };
     }
-    const why = `${material}: ${answer.material.why}`;
-    passed[each.at] = { store: each.store.name, hash: each.hash, why };
-    sayPassed(each.place, each.store.name, each.hash, why);
-    rmSync(each.spool, { force: true });
+    passAgain(`${material}: ${answer.material.why}`);
   }
   throw new Error(
     `no session of --sessions gives written cases of ${run.skill}: ${passed.map((each) => `${each.store} ${each.hash}: ${each.why}`).join("; ") || "it holds none"}`

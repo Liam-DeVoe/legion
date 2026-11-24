@@ -4827,8 +4827,10 @@ describe("behaviour: a replay's reads of skill files", () => {
   const gitRepository = (
     dir: string,
     files: Record<string, string>,
-    links: Record<string, string> = {},
-    earlier?: Record<string, string>
+    {
+      links = {},
+      earlier,
+    }: { links?: Record<string, string>; earlier?: Record<string, string> } = {}
   ): { repos: string; commit: string } => {
     const repos = path.join(dir, "repos");
     const work = path.join(dir, "proj-work");
@@ -4881,8 +4883,7 @@ describe("behaviour: a replay's reads of skill files", () => {
     const { repos, commit } = gitRepository(
       base.dir,
       { "docs/guide.md": guide },
-      {},
-      { "docs/guide.md": first }
+      { earlier: { "docs/guide.md": first } }
     );
     const checkout = { repo: "acme/proj", commit, root: "/work/acme/proj", cwd: "/work/acme/proj" };
     const written = ["w00", "w01"].map((id): Case => ({ ...makeWrittenCase(id), checkout }));
@@ -5117,7 +5118,7 @@ describe("behaviour: a replay's reads of skill files", () => {
     const { repos, commit } = gitRepository(
       base.dir,
       { "docs/guide.md": "# Guide\n\nRun the app.\n" },
-      { "leak.txt": outside }
+      { links: { "leak.txt": outside } }
     );
     const written: Case = {
       ...makeWrittenCase("w00"),

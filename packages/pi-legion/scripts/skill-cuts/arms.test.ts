@@ -229,6 +229,23 @@ test("none removes each read call of the skill and its result, and leaves the sk
 const TOOLS_ALPHA_MD =
   "---\nname: alpha\ndescription: Use for the tools' own alpha list.\n---\n\n# Alpha of tools\n\nOne line.\n";
 
+/** acme/tools' alpha as a profile lists it, a copy of another source that shares the case skill's
+ *  name, under the namespace Oh My Pi gives it (`tools/alpha`); and bare, as the arm of ours lists
+ *  it once their copies are gone. */
+const TOOLS_ALPHA = {
+  repo: "acme/tools",
+  commit: "0123456789abcdef",
+  path: "skills/alpha",
+  name: "alpha",
+  namespace: "tools",
+};
+const TOOLS_ALPHA_BARE = {
+  repo: TOOLS_ALPHA.repo,
+  commit: TOOLS_ALPHA.commit,
+  path: TOOLS_ALPHA.path,
+  name: "alpha",
+};
+
 // Catches: none listing another source's copy of the name as `<namespace>/<name>`, which Oh My Pi
 // lists bare once the tested copy is gone, so a capture refused the body; and a `skill://` read of
 // the name in none answered as a skill Oh My Pi does not have, though it resolves to that copy.
@@ -541,15 +558,6 @@ test("old holds the profile's skills; ours holds them with ours in place of thei
 // stays readable at another path, or ours listed twice.
 test("the ours arm leaves out every copy of their skill's source, a namespaced one too, and lists ours once under its own name", () => {
   const [alpha, beta] = f1Case.profile.skills;
-  // Another repository's alpha, listed as tools/alpha: once their copies are gone, the arm lists
-  // it under the bare name, as none does.
-  const tools = {
-    repo: "acme/tools",
-    commit: "0123456789abcdef",
-    path: "skills/alpha",
-    name: "alpha",
-    namespace: "tools",
-  };
   const copies = structuredClone(f1Case);
   copies.profile.skills.push(
     // acme/skills' alpha again at another commit, which Oh My Pi lists as pack/alpha.
@@ -560,11 +568,12 @@ test("the ours arm leaves out every copy of their skill's source, a namespaced o
       name: "alpha",
       namespace: "pack",
     },
-    tools
+    // Another repository's alpha, listed as tools/alpha: once their copies are gone, the arm
+    // lists it under the bare name, as none does.
+    TOOLS_ALPHA
   );
   const ours = withOurs(copies, "ours", RENAMED);
-  const toolsBare = { repo: tools.repo, commit: tools.commit, path: tools.path, name: "alpha" };
-  expect(ours.profileSkills).toEqual([{ ...alpha, name: "alpha-ours" }, beta, toolsBare]);
+  expect(ours.profileSkills).toEqual([{ ...alpha, name: "alpha-ours" }, beta, TOOLS_ALPHA_BARE]);
   expect(ours.ours?.replacedOwn).toBe(false);
   // A read of a skill the arm lacks is answered with the names Oh My Pi lists, ours once under
   // its own name.
@@ -576,7 +585,7 @@ test("the ours arm leaves out every copy of their skill's source, a namespaced o
   // its place, and no copy of theirs.
   copies.profile.skills.push(INCUMBENT);
   const bundled = withOurs(copies, "ours", RENAMED);
-  expect(bundled.profileSkills).toEqual([beta, toolsBare, INCUMBENT]);
+  expect(bundled.profileSkills).toEqual([beta, TOOLS_ALPHA_BARE, INCUMBENT]);
   expect(bundled.ours?.replacedOwn).toBe(true);
   expect(f1Case).toEqual(original);
 });
@@ -585,7 +594,7 @@ test("the ours arm leaves out every copy of their skill's source, a namespaced o
 // `<namespace>/<name>`, which Oh My Pi lists bare once their copies are gone, so a capture refused
 // the body; a `skill://<theirs>` read in ours answered as a skill Oh My Pi does not have, though
 // it resolves to that copy; or a namespaced copy of our name listed bare beside ours.
-test("the ours arm lists a copy of another source that shares their skill's name under the bare name, as none does, records it, and answers a skill:// read of their name from it; a namespaced copy of our name keeps its namespace; a case with no such copy gives the arm it gave before", () => {
+test("the ours arm lists a copy of another source that shares their skill's name under the bare name, as none does, records it, and answers a skill:// read of their name from it; a namespaced copy of our name keeps its namespace; a case with no such copy records none and lists ours and the profile's other skills byte for byte", () => {
   const [alpha, beta] = f1Case.profile.skills;
   const pack = {
     repo: "acme/skills",
@@ -594,20 +603,12 @@ test("the ours arm lists a copy of another source that shares their skill's name
     name: "alpha",
     namespace: "pack",
   };
-  const tools = {
-    repo: "acme/tools",
-    commit: "0123456789abcdef",
-    path: "skills/alpha",
-    name: "alpha",
-    namespace: "tools",
-  };
-  const toolsBare = { repo: tools.repo, commit: tools.commit, path: tools.path, name: "alpha" };
   const relisting = structuredClone(f1Case);
-  relisting.profile.skills.push(pack, tools);
+  relisting.profile.skills.push(pack, TOOLS_ALPHA);
   const ours = withOurs(relisting, "ours", RENAMED);
-  expect(ours.profileSkills).toEqual([{ ...alpha, name: "alpha-ours" }, beta, toolsBare]);
+  expect(ours.profileSkills).toEqual([{ ...alpha, name: "alpha-ours" }, beta, TOOLS_ALPHA_BARE]);
   expect(ours.relisted).toEqual(["tools/alpha"]);
-  expect(caseNameCopy(ours)).toEqual(toolsBare);
+  expect(caseNameCopy(ours)).toEqual(TOOLS_ALPHA_BARE);
   // A skill://alpha read is answered from acme/tools' installed copy, at the directory beside
   // ours, as none answers it.
   const copies = [
@@ -645,14 +646,14 @@ test("the ours arm lists a copy of another source that shares their skill's name
   const holding = structuredClone(relisting);
   holding.profile.skills.push(INCUMBENT);
   const bundled = withOurs(holding, "ours", RENAMED);
-  expect(bundled.profileSkills).toEqual([beta, toolsBare, INCUMBENT]);
+  expect(bundled.profileSkills).toEqual([beta, TOOLS_ALPHA_BARE, INCUMBENT]);
   expect(bundled.relisted).toEqual(["tools/alpha"]);
   expect(otherSkillRead(bundled, copies, "skill://alpha")).toEqual(fromTools);
 
   // Ours under their skill's own name holds that name bare in skills/, which Oh My Pi reads
   // first, so tools/alpha keeps its namespace and a read of alpha is the arm's own.
   const same = withOurs(relisting, "ours", { dir: renamedDir, name: "alpha" });
-  expect(same.profileSkills).toEqual([alpha, beta, tools]);
+  expect(same.profileSkills).toEqual([alpha, beta, TOOLS_ALPHA]);
   expect(same.relisted).toBeUndefined();
   expect(caseNameCopy(same)).toBeUndefined();
   expect(otherSkillRead(same, copies, "skill://alpha")).toBeUndefined();
@@ -671,8 +672,8 @@ test("the ours arm lists a copy of another source that shares their skill's name
   expect(shared.relisted).toBeUndefined();
   expect(shared.ours?.replacedOwn).toBe(false);
 
-  // With no copy of another source under their name, the arm is the one it was: no record, the
-  // same profile, byte for byte, and a read of theirs is a skill the arm does not install.
+  // With no copy of another source under their name, the arm records none, lists ours and the
+  // profile's other skills byte for byte, and a read of theirs is a skill the arm does not install.
   for (const c of [f1Case, withoutTools]) {
     const plain = withOurs(c, "ours", RENAMED);
     expect(Object.hasOwn(plain, "relisted")).toBe(false);

@@ -34,6 +34,7 @@ import {
   UnansweredRead,
   withCacheBreakpoint,
 } from "./replay";
+import { detachedCommit, writeTree } from "./testdata/fixtures";
 
 // The replay of an arm, on F5 and F9 (testdata/): the model gateway's replies to request bodies
 // made from F2 and F8, captured as testdata/CAPTURE.md says ("F5", and "F8 and F9") with
@@ -1575,14 +1576,7 @@ function checkoutCopy(more: Record<string, string> = {}): {
   git: boolean;
 } {
   const dir = path.join(scratch, `checkout-${Math.random()}`);
-  for (const [file, text] of Object.entries({
-    "src/app.py": APP_PY,
-    "docs/guide.md": GUIDE_MD,
-    ...more,
-  })) {
-    mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
-    writeFileSync(path.join(dir, file), text);
-  }
+  writeTree(dir, { "src/app.py": APP_PY, "docs/guide.md": GUIDE_MD, ...more });
   return { dir, root: SESSION_ROOT, cwd: SESSION_ROOT, git: false };
 }
 
@@ -1652,26 +1646,7 @@ test("a written case's reply whose calls all read is answered from a copy of its
  *  checkout is. */
 function gitCheckoutCopy(): CheckoutCopy {
   const copy = checkoutCopy();
-  const git = (...args: string[]) => {
-    const ran = Bun.spawnSync(["git", ...args], {
-      cwd: copy.dir,
-      env: {
-        PATH: process.env.PATH ?? "/usr/bin:/bin",
-        HOME: copy.dir,
-        GIT_CONFIG_NOSYSTEM: "1",
-        GIT_AUTHOR_NAME: "Acme",
-        GIT_AUTHOR_EMAIL: "dev@acme.test",
-        GIT_COMMITTER_NAME: "Acme",
-        GIT_COMMITTER_EMAIL: "dev@acme.test",
-      },
-    });
-    expect({ args, code: ran.exitCode, err: ran.stderr.toString() }).toMatchObject({ code: 0 });
-    return ran.stdout.toString().trim();
-  };
-  git("init", "--quiet");
-  git("add", ".");
-  git("commit", "--quiet", "-m", "Add the app");
-  git("checkout", "--quiet", "--detach", git("rev-parse", "HEAD"));
+  detachedCommit(copy.dir, "Add the app");
   return { ...copy, git: true };
 }
 

@@ -1,13 +1,13 @@
 /**
- * What the skill-cuts commands share: a whole-file write, JSON text, a SHA-256 in hex, a zod error's
- * faults on one line, one line of text as a schema, strict option parsing, the configuration as a
- * refusal, the two errors a command's `main` turns into its exit status (`Refused` 2, `Stopped`
- * 3), the one rule by which a gh call that failed is sent again (`GhRetries`), and a read started
- * beside others (`started`). It imports no other command's file, so every one of them can import
- * it.
+ * What the skill-cuts commands share: a whole-file write, a read of a file's bytes at an offset,
+ * JSON text, a SHA-256 in hex, a zod error's faults on one line, one line of text as a schema,
+ * strict option parsing, the configuration as a refusal, the two errors a command's `main` turns
+ * into its exit status (`Refused` 2, `Stopped` 3), the one rule by which a gh call that failed is
+ * sent again (`GhRetries`), and a read started beside others (`started`). It imports no other
+ * command's file, so every one of them can import it.
  */
 import { createHash } from "node:crypto";
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { messageFor } from "@legion/envoy-client/errors";
@@ -28,6 +28,22 @@ export function writeWhole(file: string, text: string): void {
   const fresh = `${file}.${process.pid}.tmp`;
   writeFileSync(fresh, text);
   renameSync(fresh, file);
+}
+
+/** The bytes `length` of the file `file` from `offset`. */
+export function bytesAt(file: string, offset: number, length: number): Buffer {
+  const bytes = Buffer.alloc(length);
+  const fd = openSync(file, "r");
+  try {
+    for (let at = 0; at < length; ) {
+      const read = readSync(fd, bytes, at, length - at, offset + at);
+      if (read === 0) throw new Error(`${file} ends before byte ${offset + length}`);
+      at += read;
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return bytes;
 }
 
 /** `value` as JSON, two spaces deep, with a final newline. */

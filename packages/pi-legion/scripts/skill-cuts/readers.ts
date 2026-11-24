@@ -86,7 +86,7 @@
  * - `written-case`: a skill's base text, the navigation lines of its session build (none without
  *   `--drop-navigation`), its session cases (each one's real step and criterion; none, when it has
  *   none), the checkout of a recorded session that read it (its repository, root, working
- *   directory and paths; null when the build knows none), that session's first user message, and
+ *   directory and paths), that session's first user message, and
  *   how many tasks to write; at most that many tasks of that session's kind of work in which a
  *   line of the skill decides the agent's act once it has read the skill and looked at what the
  *   act needs, each with the task (the user's message), `existing` (the paths it treats as already
@@ -1687,8 +1687,8 @@ export const WrittenCaseInput = z.strictObject({
   /** The navigation lines of the session build of the skill (`--drop-navigation`), or none. */
   navigation: z.array(NavigationLine),
   sessionCases: z.array(SessionCaseText),
-  /** The context session's checkout, or null when the build knows none. */
-  checkout: CheckoutListing.nullable(),
+  /** The context session's checkout. */
+  checkout: CheckoutListing,
   /** On the reader's second ask (build.ts), the paths its first answer treated as there that the
    *  checkout does not hold at the commit; absent on a first ask. */
   absent: z.array(NonBlank).min(1).optional(),
@@ -1781,9 +1781,7 @@ const writtenCaseReader: Reader<WrittenCaseInput, WrittenCaseAnswer> = {
               )
               .join("\n")
       }\n</session-cases>`,
-      input.checkout === null
-        ? "<checkout>\nNone.\n</checkout>"
-        : `<checkout repo="${input.checkout.repo}" root="${input.checkout.root}" cwd="${input.checkout.cwd}" listing="${input.checkout.whole ? "every file" : `partial: ${input.checkout.holds ?? "part of the tree"}`}">\n${input.checkout.files.join("\n")}\n</checkout>`,
+      `<checkout repo="${input.checkout.repo}" root="${input.checkout.root}" cwd="${input.checkout.cwd}" listing="${input.checkout.whole ? "every file" : `partial: ${input.checkout.holds ?? "part of the tree"}`}">\n${input.checkout.files.join("\n")}\n</checkout>`,
       ...(input.absent === undefined ? [] : [`<absent>\n${input.absent.join("\n")}\n</absent>`]),
       `<first-message>\n${input.firstMessage}\n</first-message>`,
       `<count>${input.count}</count>`,
