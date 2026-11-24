@@ -123,7 +123,7 @@ func TestAKeysClaimFromBeforeTheUpgradeKeepsItsNameAfterVersionsLeaveTheKeyOut(t
 		}
 		if got := put("LEGION-208", 3, true, "planner", "implementer", "reviewer"); !slices.Equal(got, []claim.Agent{"planner", "implementer-2", "reviewer"}) {
 			t.Fatalf("the names of version 3 = %q, want planner, implementer-2 and reviewer: its implementer is a new agent, and "+
-				"the claim implementer holds key a's session, which that claim gives to the next start that reaches it", got)
+				"the claim implementer holds key a's session, which that claim keeps for key a's agent", got)
 		}
 		if got := rowsAsText(t, st, `select concat(token, '=', session_agent) from claims where issue = 'LEGION-208' order by token`); !slices.Equal(got,
 			[]string{"legion-legion-legion-208-implementer=key:a", "legion-legion-legion-208-reviewer="}) {
