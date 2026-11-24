@@ -128,16 +128,6 @@ func TestATaskThatNeedsItselfIsRefused(t *testing.T) {
 	}
 }
 
-// ringOf is size tasks t00000, t00001, … in which each task needs the next and the last needs the
-// first: one set of tasks that need each other, whose one cycle passes through every task.
-func ringOf(size int) []Task {
-	tasks := make([]Task, size)
-	for i := range tasks {
-		tasks[i] = Task{ID: fmt.Sprintf("t%05d", i), Needs: []string{fmt.Sprintf("t%05d", (i+1)%size)}}
-	}
-	return tasks
-}
-
 // Dispatch's document limit lets an owner write a plan of 10,000 tasks in a ring, or of 300 tasks
 // each needing all the others, and register_plan checks it before the fact lock. So the check of
 // cycles takes work linear in the plan: one pass finds the sets of tasks that need each other,
@@ -149,6 +139,12 @@ func ringOf(size int) []Task {
 // planted as cycleFrom called from every task of a set, the ring takes about 10⁸ steps and fails.
 // The count is the check's work and no time, so a loaded machine changes nothing.
 func TestTheCheckOfCyclesTakesStepsLinearInThePlan(t *testing.T) {
+	ring := make([]Task, 10_000)
+	ringCycle := make([]string, len(ring))
+	for i := range ring {
+		ring[i] = Task{ID: fmt.Sprintf("t%05d", i), Needs: []string{fmt.Sprintf("t%05d", (i+1)%len(ring))}}
+		ringCycle[i] = ring[i].ID
+	}
 	complete := make([]Task, 300)
 	for i := range complete {
 		complete[i].ID = fmt.Sprintf("t%03d", i)
@@ -159,32 +155,19 @@ func TestTheCheckOfCyclesTakesStepsLinearInThePlan(t *testing.T) {
 		}
 	}
 	itself := make([]Task, 10_000)
+	itselfCycles := make([][]string, len(itself))
 	for i := range itself {
 		itself[i] = Task{ID: fmt.Sprintf("t%05d", i), Needs: []string{fmt.Sprintf("t%05d", i)}}
-	}
-	ring := make([]string, 10_000)
-	for i := range ring {
-		ring[i] = fmt.Sprintf("t%05d", i)
+		itselfCycles[i] = []string{itself[i].ID}
 	}
 	for _, tc := range []struct {
 		name  string
 		tasks []Task
-		check func(found [][]string) bool
+		want  [][]string
 	}{
-		{"a ring of 10,000 tasks", ringOf(10_000), func(found [][]string) bool {
-			return reflect.DeepEqual(found, [][]string{ring})
-		}},
-		{"300 tasks each needing all the others", complete, func(found [][]string) bool {
-			return reflect.DeepEqual(found, [][]string{{"t000", "t001"}})
-		}},
-		{"10,000 tasks each needing itself", itself, func(found [][]string) bool {
-			for i, cycle := range found {
-				if !reflect.DeepEqual(cycle, []string{fmt.Sprintf("t%05d", i)}) {
-					return false
-				}
-			}
-			return len(found) == len(itself)
-		}},
+		{"a ring of 10,000 tasks", ring, [][]string{ringCycle}},
+		{"300 tasks each needing all the others", complete, [][]string{{"t000", "t001"}}},
+		{"10,000 tasks each needing itself", itself, itselfCycles},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			needs := 0
@@ -192,8 +175,8 @@ func TestTheCheckOfCyclesTakesStepsLinearInThePlan(t *testing.T) {
 				needs += len(task.Needs)
 			}
 			found, steps := cycles(tc.tasks)
-			if !tc.check(found) {
-				t.Fatalf("cycles(%s) found %d cycles, not the plan's own", tc.name, len(found))
+			if !reflect.DeepEqual(found, tc.want) {
+				t.Fatalf("cycles(%s) found %d cycles, want %d: %s", tc.name, len(found), len(tc.want), firstOther(found, tc.want))
 			}
 			bound := 2 * (len(tc.tasks) + needs)
 			if steps > bound {
@@ -202,6 +185,25 @@ func TestTheCheckOfCyclesTakesStepsLinearInThePlan(t *testing.T) {
 			t.Logf("cycles(%s) took %d steps of at most %d", tc.name, steps, bound)
 		})
 	}
+}
+
+// firstOther names the first cycle found that differs from the one wanted at its place, each by
+// its first five tasks and its length, so a failure of a 10,000-task ring stays readable.
+func firstOther(found, want [][]string) string {
+	short := func(cycle []string) string {
+		return fmt.Sprintf("%v (%d tasks)", cycle[:min(len(cycle), 5)], len(cycle))
+	}
+	for i := range max(len(found), len(want)) {
+		switch {
+		case i >= len(found):
+			return fmt.Sprintf("cycle %d is missing, want %s", i, short(want[i]))
+		case i >= len(want):
+			return fmt.Sprintf("cycle %d is %s, want none", i, short(found[i]))
+		case !reflect.DeepEqual(found[i], want[i]):
+			return fmt.Sprintf("cycle %d is %s, want %s", i, short(found[i]), short(want[i]))
+		}
+	}
+	return "every cycle as wanted"
 }
 
 // The work of an issue merges as one change, at the end of the one task that no task needs, so
