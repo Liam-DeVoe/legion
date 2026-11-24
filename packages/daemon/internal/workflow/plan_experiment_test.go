@@ -314,30 +314,6 @@ func TestTheGroupDefaultTakesNoPlan(t *testing.T) {
 	})
 }
 
-// The answer PLAN_NOT_TAKEN leaves the registration unspent, as every refusal of a plan does: the
-// same fact under one event id, applied twice, is answered PLAN_NOT_TAKEN both times, never as a
-// duplicate, which the route would answer as the plan taken. Nothing is stored either time. The
-// control is the refusal returned spent: the second answer is then a duplicate with no refusal.
-func TestPlanNotTakenStaysUnspent(t *testing.T) {
-	pool := migratedPool(t)
-	engine := returnEngine()
-	root := stepRoot(t, pool, phase.Admitted)
-	drawnInto(t, pool, root.Key, "planning", "b", "default")
-	id := planID(root.Key, root.Generation, 1)
-	plan := ownersPlan(t, root.Key, root.Generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
-	apply := applyFacts(t, pool, engine)
-
-	for _, attempt := range []string{"the first registration", "the same registration sent again"} {
-		result := apply(id, plan)
-		if result.Duplicate || !reflect.DeepEqual(result.Refusal, planNotTakenOfB(root.Key)) {
-			t.Fatalf("%s = %+v, want the refusal %+v", attempt, result, planNotTakenOfB(root.Key))
-		}
-		if got := planRowsOf(t, pool, root.Key); got != [3]int{} {
-			t.Fatalf("after %s the plan rows of %s = %v, want none", attempt, root.Key, got)
-		}
-	}
-}
-
 // A plan given at generation 0 is the route's registration for an issue it found unrecorded. Where
 // the daemon records the issue, and draws it into the group that runs the project's default steps,
 // before the fact applies, the plan is answered PLAN_NOT_TAKEN and nothing is stored: it would

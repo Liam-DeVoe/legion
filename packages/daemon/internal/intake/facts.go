@@ -1724,12 +1724,15 @@ type Handler interface {
 
 // Result carries a refusal that is durable: handlers finish and the transaction commits. Duplicate
 // reports that the fact's id was already marked, so no handler ran and nothing changed but the
-// fact's stream position; a PlanGiven is never one (factApplies), and a give of the version that
-// runs is answered by the workflow with no refusal and no write.
+// fact's stream position; a PlanGiven is never one (factApplies). A give of the version that runs
+// is answered by the workflow with no refusal, and its two writes, each where it has one, are a
+// giver the version does not name yet (record.Store.AddPlanGiver) and the mark of an id never seen.
 //
 // Unspent is a handler leaving the event unmarked, so the same id applies again when it is next
 // sent (ApplyFact), where this transaction marked it. A handler sets it only for a refusal whose
-// cause can clear while the fact's id stays the same, and writes nothing where it sets it.
+// cause can clear while the fact's id stays the same, and writes nothing where it sets it. A
+// PlanGiven applies whatever its mark (factApplies), so its Unspent changes only what a release
+// before reads, which decides by the mark alone.
 type Result struct {
 	Refusal   *Refusal
 	Duplicate bool
@@ -1793,8 +1796,10 @@ func GroupClause(issue string, group record.Assignment) string {
 // of the experiment that sets how it is done) names the arm's `plan` `default`: the experiment
 // decides how the issue is done, so Legion takes no plan from its owner, and a plan it stored and
 // did not carry out would be dropped in silence. It is no refusal of a plan's content, so it
-// carries no reasons and its code is not PLAN_REFUSED. The workflow leaves the fact unspent, as
-// each refusal of a plan, so the same registration sent again gets this same answer.
+// carries no reasons and its code is not PLAN_REFUSED. The same registration sent again gets this
+// same answer: the workflow judges every PlanGiven whatever its id's mark (factApplies), and the
+// group never changes. The refusal is left unspent (Result.Unspent), which only a release before
+// reads.
 func PlanNotTaken(issue string, group record.Assignment) *Refusal {
 	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: GroupClause(issue, group) +
 		" Legion takes no plan from its owner for this issue. This plan changed nothing."}
@@ -2181,9 +2186,10 @@ func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, f
 // (firstSeen) applies, and one whose id was marked already is a duplicate, but a PlanGiven, which
 // applies whatever its mark. Whether a give of a plan is one already taken is the workflow's to
 // say against the store as the fact's transaction reads it (workflow's planGiven): the version
-// that runs, or that the issue's first step will run, is answered taken and written nothing, and a
-// version a first step passed over since is judged again, under the mark of the give that was
-// passed over. The mark is still written, for a release before, which reads the id alone.
+// that runs, or that the issue's first step will run, is answered taken and written nothing but a
+// new giver, and a version a first step passed over since is judged again, under the mark of the
+// give that was passed over. The mark is still written, for a release before, which reads the id
+// alone.
 func factApplies(fact Fact, firstSeen bool) bool {
 	if _, plan := fact.(PlanGiven); plan {
 		return true
