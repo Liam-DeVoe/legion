@@ -301,9 +301,9 @@ func TestAReviewStepOfADeploymentRoleIsNamedItsAgentsCommitOrAnotherAgentsBeside
 }
 
 // A deployment role's review step is named its agent's newest commit on the task, at whichever of
-// its steps it was read, as a reviewer step is: in `implementer:a critic:c checker critic:c`, agent
-// c passes step 2 at X and fails step 4 at Y, the task returns to step 1, and step 2's next task
-// names Y, each row of agent c holding it. Before, step 2's row kept X, its own run's.
+// its steps it was read, as a reviewer step is: in `implementer:a critic:c checker critic:c`, key
+// c's agent passes step 2 at X and fails step 4 at Y, the task returns to step 1, and step 2's next
+// task names Y, each row of key c's agent holding it. Before, step 2's row kept X, its own run's.
 func TestADeploymentReviewStepIsNamedItsAgentsNewestCommitOfAnotherStep(t *testing.T) {
 	pool := migratedPool(t)
 	engine := deploymentEngine()
@@ -318,6 +318,6 @@ func TestADeploymentReviewStepIsNamedItsAgentsNewestCommitOfAnotherStep(t *testi
 	assertWalksAt(t, pool, engine, "LEGION-208", phase.Step, stepPlace(2))
 	two := rolesRows(t, pool, engine, "LEGION-208", "critic")[2]
 	if says := reviewedPartOf(stepCommitY); !strings.HasSuffix(two.EntryTask, says) {
-		t.Fatalf("step 2's next task = %q, want it to end %q, agent c's newest commit, step 4's", two.EntryTask, says)
+		t.Fatalf("step 2's next task = %q, want it to end %q, key c's agent's newest commit, step 4's", two.EntryTask, says)
 	}
 }
