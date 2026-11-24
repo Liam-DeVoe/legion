@@ -2,7 +2,7 @@
 // PATH), tests a place that writes one, and holds a module to writing each one under the fork
 // lock. WriteFile writes such a file with programfile.Write, whose doc says what a write by
 // package os meets while another goroutine of the process forks. RunsBeside runs the writes and
-// runs of a test of such a place beside forks, and fails the test on each run refused as busy.
+// runs of a test of such a place beside forks, and fails the test if any run is refused as busy.
 // Unguarded names each write a module makes by package os that can meet the fault, and
 // RequireGuarded, which each module's internal/textcheck runs, fails the test on one.
 // docs/testing.md, "A file a test runs", states the rule.
@@ -44,7 +44,7 @@ func RunsBeside(t testing.TB, runs int, run func(i int) error) {
 	countBusyRuns(t, runs, run)
 }
 
-// countBusyRuns is RunsBeside's trials, which the forks forkBeside started run beside.
+// countBusyRuns runs RunsBeside's trials and counts and reports their refusals, as its doc says.
 func countBusyRuns(t testing.TB, runs int, run func(i int) error) {
 	t.Helper()
 	busy := 0
