@@ -1304,7 +1304,7 @@ bun scripts/skill-cuts/cli.ts build-role-cases --config <skill-cuts.json> --key-
 
 `build-role-cases` (`rolecases.ts`) writes role-line cases of one line from sessions of one role,
 with build-cases' store, seed, copies and count options and its `case` reader; it reuses what
-`build.ts` exports and changes nothing there. `--skill` is the skill the role loads first
+`build.ts` exports (`resolvePaths` is exported for it). `--skill` is the skill the role loads first
 (`legion-worker` for a worker role, `legion-retro` for a retro session), `--old` its directory at
 the base, `--cut` the cut whose repository ships it. The candidates of `--sessions` are taken in
 the order `--seed` gives, until `--max` cases. Each session is pulled from its store and read; one

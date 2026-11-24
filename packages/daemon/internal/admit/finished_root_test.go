@@ -452,7 +452,7 @@ func TestTheOutboxsConsumptionOfAHandOverIsLogged(t *testing.T) {
 // merging and told no approved head (below). A carried root held from a phase starts no worker,
 // and the only held notice went to the old tree's architect, so its own architect is told of the
 // hold at promotion, to retry or escalate it.
-func TestACarriedRootResumesFromTheApprovedHeadAndTheHold(t *testing.T) {
+func TestACarriedRootResumesIntoItsPhaseAndTheHold(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		at   phase.Phase

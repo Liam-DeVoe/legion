@@ -1,9 +1,10 @@
 /**
- * The builder of role-line cases (R8's arm): `skill-cuts build-role-cases` turns sessions of one
- * Legion role into cases of one line of that role's prompt (cases.ts's `rolePromptLine`), which
- * `behaviour` runs with `--old-role-prompt-at` and `--new-role-prompt-at` (cli.ts, "Role prompts
- * at commits"). It takes build-cases' store, seed, copies and count options and its `case` reader,
- * and reuses what build.ts exports; build.ts is not changed for it.
+ * The builder of role-line cases (the role-prompt arm): `skill-cuts build-role-cases` turns
+ * sessions of one Legion role into cases of one line of that role's prompt (cases.ts's
+ * `rolePromptLine`), which `behaviour` runs with `--old-role-prompt-at` and
+ * `--new-role-prompt-at` (cli.ts, "Role prompts at commits"). It takes build-cases' store, seed,
+ * copies and count options and its `case` reader, and reuses what build.ts exports; build.ts
+ * exports one function for it, `resolvePaths`.
  *
  *   bun scripts/skill-cuts/cli.ts build-role-cases --config <skill-cuts.json> --key-file <file>
  *       --cut <id> --skill <name> --old <skill dir> --role <role> --line <text>
@@ -56,16 +57,17 @@
  * go on from another. Exit status: 0 written; 1 failed; 2 refused before any store read or model
  * call; 3 stopped at `--budget-usd`, with the cases built so far written.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
+import { z } from "zod";
 import { outRefusal } from "../skill-scenarios/production-dispatch";
 import { readTargets, type SessionEntry, type SessionMessage } from "../skill-scenarios/transcript";
 import { modelId, sessionModel } from "./attribute";
 import {
-  main as buildMain,
   type BuildIo,
+  main as buildMain,
   DROP_REASONS,
   type Evidence,
   fileHash,
@@ -77,14 +79,16 @@ import {
   READER_WINDOWS,
   readTranscript,
   removeSecrets,
+  resolvePaths,
   sessionInit,
   sessionRole,
 } from "./build";
 import {
   Case,
   loadCasesAt,
-  pathHash,
   type Profile,
+  pathHash,
+  type RolePromptAt,
   skillReadFile,
   Thinking,
   textLines,
@@ -99,10 +103,8 @@ import {
   type RepoSource,
   rolePromptParts,
 } from "./context";
-import { sessionsSql } from "./countsql";
 import { BudgetSpent, createGateway, type Gateway, usdOf } from "./gateway";
 import { blindOrder, cut, MESSAGE_CHARS, renderMessage } from "./judge";
-import { psqlRows } from "./psql-rows";
 import { CaseAnswer, type CaseInput, ReaderFailed, runReader } from "./readers";
 
 const USAGE =
@@ -116,7 +118,7 @@ const READER_TIMEOUT_MS = 600_000;
 
 /** Why a session gives no role-line case: build-cases' reasons where the check is its own
  *  (DROP_REASONS), and the role line's. */
-export const ROLE_DROP_REASONS = {
+const ROLE_DROP_REASONS = {
   "not-in-store": DROP_REASONS["not-in-store"],
   "pull-failed": DROP_REASONS["pull-failed"],
   unparseable: DROP_REASONS.unparseable,
@@ -145,7 +147,7 @@ export const ROLE_DROP_REASONS = {
   "history-restates-line":
     "the case reader finds a message before the step that states the line's instruction",
 } as const;
-export type RoleDropReason = keyof typeof ROLE_DROP_REASONS;
+type RoleDropReason = keyof typeof ROLE_DROP_REASONS;
 
 /** One candidate of the sessions file (build-cases' form). */
 interface Candidate {
@@ -197,10 +199,19 @@ async function reprofiled(
     ],
     { ...io, out: (text) => said.push(text), err: (line) => said.push(line) }
   );
-  if (code !== EXIT.ok || !existsSync(to)) {
-    return { failed: `build-cases --reprofile exited ${code}: ${said.join(" ").trim()}` };
+  // A run that exits 0 and writes no case fails as one that exits otherwise.
+  const failed = () => ({
+    failed: `build-cases --reprofile exited ${code}: ${said.join(" ").trim()}`,
+  });
+  if (code !== EXIT.ok) return failed();
+  let text: string;
+  try {
+    text = readFileSync(to, "utf8");
+  } catch (error) {
+    if (Reflect.get(Object(error), "code") === "ENOENT") return failed();
+    throw error;
   }
-  const built = Case.parse(JSON.parse(readFileSync(to, "utf8")));
+  const built = Case.parse(JSON.parse(text));
   return { profile: built.profile, evidence: built.evidence ?? [] };
 }
 
@@ -280,34 +291,6 @@ function readCandidates(file: string, config: SkillCutsConfig): Candidate[] {
   return candidates;
 }
 
-/** The path of each file of `hashes` in the store `db`, by hash, in one sessions.sql query through
- *  the store command `command`. */
-async function resolvePaths(
-  command: string,
-  db: string,
-  hashes: readonly string[]
-): Promise<Map<string, string>> {
-  const paths = new Map<string, string>();
-  if (hashes.length === 0) return paths;
-  const child = Bun.spawn([command, db], {
-    stdin: new Blob([sessionsSql(hashes)]),
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  if (code !== 0) throw new Error(`the store command exited ${code}: ${stderr.trim()}`);
-  for (const row of psqlRows(stdout)) {
-    const where = Reflect.get(Object(row), "path");
-    const hash = Reflect.get(Object(row), "hash");
-    if (typeof where === "string" && typeof hash === "string") paths.set(hash, where);
-  }
-  return paths;
-}
-
 /** The last value `pick` reads from an entry of `branch` before `at`. */
 function lastBefore<T>(
   branch: readonly SessionEntry[],
@@ -350,6 +333,9 @@ interface RoleRun {
   readonly role: string;
   readonly line: string;
   readonly base: string;
+  /** The prompt parts at `base` (context.ts's `rolePromptParts`), one for the whole build, so
+   *  each part is read once. */
+  readonly atBase: RolePromptAt;
   readonly skillLine: Case["line"];
   readonly gateway: Gateway;
   readonly source: RepoSource;
@@ -423,7 +409,7 @@ interface LineAt {
 
 /** Where `run.line` stands in the role prompt of `c`, composed as a capture composes it
  *  (context.ts's `composedRolePrompt`): the first part that holds it, read at the commit the
- *  prompt was composed at, and that part at the base (`run.base`). Throws Dropped: `line-absent`
+ *  prompt was composed at, and that part at the base (`run.atBase`). Throws Dropped: `line-absent`
  *  when the composed prompt holds no such line, `line-not-at-base` when the part at the base does
  *  not hold it, and `compose-failed` when a read or Compose fails. */
 async function locateLine(run: RoleRun, c: ContextCase): Promise<LineAt> {
@@ -452,7 +438,7 @@ async function locateLine(run: RoleRun, c: ContextCase): Promise<LineAt> {
     if (part === undefined) {
       throw new Dropped("line-absent", `no part of the prompt composed at ${composedAt} holds it`);
     }
-    const atBase = await rolePromptParts(run.base, run.source).part(c, part);
+    const atBase = await run.atBase.part(c, part);
     if (typeof atBase === "string" || atBase.text === undefined) {
       throw new Dropped(
         "line-not-at-base",
@@ -495,7 +481,10 @@ async function roleCaseOf(
   })();
   const header = t.entries.find((entry) => entry.type === "session");
   const sessionStart = header?.timestamp;
-  if (sessionStart === undefined || Number.isNaN(Date.parse(sessionStart))) {
+  if (
+    sessionStart === undefined ||
+    !z.iso.datetime({ offset: true }).safeParse(sessionStart).success
+  ) {
     throw new Dropped("no-header", "no session line with an ISO timestamp");
   }
   if (sessionInit(t.entries) !== undefined) {
@@ -794,9 +783,20 @@ async function build(argv: readonly string[], io: RoleCasesIo): Promise<number> 
     throw new Refused("--line is not one non-blank line");
   }
   const skillFile = path.join(given.old, "SKILL.md");
-  if (!existsSync(skillFile)) throw new Refused(`--old ${given.old} holds no SKILL.md`);
+  let skillText: string;
+  try {
+    skillText = readFileSync(skillFile, "utf8");
+  } catch (error) {
+    throw new Refused(
+      Reflect.get(Object(error), "code") === "ENOENT"
+        ? `--old ${given.old} holds no SKILL.md`
+        : `cannot read ${skillFile}: ${messageFor(error)}`
+    );
+  }
   for (const dir of [given.copies, given.count]) {
-    if (!existsSync(dir)) throw new Refused(`${dir} is not a directory`);
+    if (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) {
+      throw new Refused(`${dir} is not a directory`);
+    }
   }
   const max = values.max === undefined ? undefined : Number(values.max);
   if (max !== undefined && (!Number.isInteger(max) || max < 1)) {
@@ -820,7 +820,7 @@ async function build(argv: readonly string[], io: RoleCasesIo): Promise<number> 
   }
   const candidates = readCandidates(given.sessions, config);
   // A skill line the draft cases name, so build-cases --reprofile loads them (`draftCase`).
-  const skillLines = textLines(readFileSync(skillFile, "utf8"));
+  const skillLines = textLines(skillText);
   const skillAt = skillLines.findIndex((line) => line.trim() !== "");
   if (skillAt < 0) throw new Refused(`${skillFile} holds no line`);
   const gateway = createGateway({
@@ -837,20 +837,23 @@ async function build(argv: readonly string[], io: RoleCasesIo): Promise<number> 
     count: given.count,
     dir: path.join(spoolDir, "profiles"),
   };
+  const base = given["old-role-prompt-at"];
+  const source = values.repos === undefined ? ghSource() : localSource(values.repos);
   const run: RoleRun = {
     config,
     cut: cutOf,
     skill: given.skill,
     role: given.role,
     line: given.line,
-    base: given["old-role-prompt-at"],
+    base,
+    atBase: rolePromptParts(base, source),
     skillLine: {
       text: skillLines[skillAt] ?? "",
       lineNumber: skillAt + 1,
       lineCount: skillLines.length,
     },
     gateway,
-    source: values.repos === undefined ? ghSource() : localSource(values.repos),
+    source,
     cacheDir: values["cache-dir"] ?? path.join(tmpdir(), "skill-cuts-cache"),
     servedIds: new Set(config.servedModels.map(modelId)),
     profile: (draft) => (io.profile ?? ((d, i) => reprofiled(d, i, io)))(draft, inputs),
@@ -861,7 +864,7 @@ async function build(argv: readonly string[], io: RoleCasesIo): Promise<number> 
   let built = 0;
   let stopped: string | undefined;
   mkdirSync(path.dirname(path.resolve(given.out)), { recursive: true });
-  writeFileSync(given.out, "");
+  writeFileSync(given.out, "", { flag: "wx" });
   mkdirSync(spoolDir, { recursive: true });
   try {
     // Each store's paths of the candidates that name none, in one sessions.sql query a store.
@@ -872,9 +875,8 @@ async function build(argv: readonly string[], io: RoleCasesIo): Promise<number> 
       const hashes = order
         .filter((each) => each.store === store && each.path === undefined)
         .map((each) => each.hash);
-      for (const [hash, where] of await resolvePaths(config.psqlCommand, store, hashes)) {
-        paths.set(`${store}\0${hash}`, where);
-      }
+      const resolved = await resolvePaths(config.psqlCommand, store, hashes);
+      for (const [hash, where] of resolved.paths) paths.set(`${store}\0${hash}`, where);
     }
     for (const candidate of order) {
       const record: SessionRecord = {
@@ -960,7 +962,7 @@ async function build(argv: readonly string[], io: RoleCasesIo): Promise<number> 
     })
   );
   // The file must load as `behaviour` loads it, at the base commit.
-  if (built > 0) await loadCasesAt(given.out, given.old, rolePromptParts(run.base, run.source));
+  if (built > 0) await loadCasesAt(given.out, given.old, run.atBase);
   io.out(
     `build-role-cases: ${built} cases of ${records.length} sessions written to ${given.out}\n`
   );

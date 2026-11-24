@@ -1797,9 +1797,10 @@ export default function bootProbe(pi) {
     ROW_TIMEOUT_MS
   );
 
-  // R8's arm: with --old-role-prompt-at and --new-role-prompt-at, each arm's capture composes its
-  // role prompt at its own commit of the case's plugin repository (testdata/roleprompt.ts: two
-  // commits whose implementer part differs by one line) and records it.
+  // The role-prompt arm: with --old-role-prompt-at and --new-role-prompt-at, each arm's capture
+  // composes its role prompt at its own commit of the case's plugin repository
+  // (testdata/roleprompt.ts: two commits whose implementer part differs by one line) and
+  // records it.
   test(
     "with role-prompt commits, the old and the new arm of a Legion case get the two composed prompts and each capture records its commit; one commit in both arms gives equal system-prompt digests",
     async () => {

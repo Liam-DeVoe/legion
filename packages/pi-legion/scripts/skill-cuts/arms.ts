@@ -104,15 +104,16 @@
  * invoked with `/skill:`, or a message that opens with the plugin's marker away from where the
  * plugin puts its block) is refused: buildArm throws InjectionRefused naming it.
  *
- * **Role prompts at commits** (R8's arm). Given role-prompt commits (`ArmDirs.rolePromptAt`, from
- * cli.ts's `--old-role-prompt-at` and `--new-role-prompt-at`), each arm names the commit its
- * Legion role prompt is composed at (`Arm.rolePrompt`; context.ts composes it): `new` the new
- * commit, every other arm the old one. A role-line case (cases.ts's `rolePromptLine`) tests a
- * line of the role prompt, not of the skill, so its `none` and `minus` keep the skill as `old` has
- * it (the old directory, its reads and its profile) and leave out of the old arm's prompt each
- * line equal to the case's line (`minus`: to `--planted-line` where one is given), so "informative"
- * (old at least 2 above none) measures the role line; a skill case's arms are as above, each at
- * its commit. A role-line case's arms given no commits are refused: it has none to compose at.
+ * **Role prompts at commits** (the role-prompt arm). Given role-prompt commits
+ * (`ArmDirs.rolePromptAt`, from cli.ts's `--old-role-prompt-at` and `--new-role-prompt-at`), each
+ * arm names the commit its Legion role prompt is composed at (`Arm.rolePrompt`; context.ts composes
+ * it): `new` the new commit, every other arm the old one. A role-line case (cases.ts's
+ * `rolePromptLine`) tests a line of the role prompt, not of the skill, so its `none` and `minus`
+ * keep the skill as `old` has it (the old directory, its reads and its profile) and leave out of
+ * the old arm's prompt each line equal to the case's line (`minus`: to `--planted-line` where one
+ * is given), so "informative" (old at least 2 above none) measures the role line; a skill case's
+ * arms are as above, each at its commit. A role-line case's arms given no commits are refused: it
+ * has none to compose at.
  */
 import { isUtf8 } from "node:buffer";
 import {
@@ -269,6 +270,13 @@ export interface Arm {
   readonly rolePrompt?: ArmRolePrompt;
 }
 
+/** The commits the old and the new arm's role prompts are composed at (the file's header, "Role
+ *  prompts at commits"). */
+export interface RolePromptCommits {
+  readonly old: string;
+  readonly new: string;
+}
+
 /** The directories the arms are built from: each is the skill's own directory, SKILL.md at its
  * top. */
 export interface ArmDirs {
@@ -276,9 +284,8 @@ export interface ArmDirs {
   readonly new: string;
   /** The line `minus` leaves out in place of the case's line. */
   readonly plantedLine?: string;
-  /** The commits the old and the new arm's role prompts are composed at (the file's header, "Role
-   *  prompts at commits"). */
-  readonly rolePromptAt?: { readonly old: string; readonly new: string };
+  /** The commits the old and the new arm's role prompts are composed at. */
+  readonly rolePromptAt?: RolePromptCommits;
 }
 
 /** Oh My Pi's result for a `skill://` read of `skill` in a session whose skills are the arm's
@@ -1324,13 +1331,11 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
     throw new Error("the planted line is blank");
   }
   // The line a role-line case's none and minus leave out of the old arm's role prompt.
-  const less = !roleLine
-    ? undefined
-    : name === "none"
-      ? c.line.text
-      : name === "minus"
-        ? (dirs.plantedLine ?? c.line.text)
-        : undefined;
+  const lessBy: Partial<Record<ArmName, string>> = {
+    none: c.line.text,
+    minus: dirs.plantedLine ?? c.line.text,
+  };
+  const less = roleLine ? lessBy[name] : undefined;
   const rolePrompt: { rolePrompt?: ArmRolePrompt } =
     at === undefined
       ? {}

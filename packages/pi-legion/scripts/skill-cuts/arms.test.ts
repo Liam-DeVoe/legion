@@ -1485,10 +1485,10 @@ test("a whole read by path of another skill of the profile, by count.sql's rule,
   expect(otherSkillRead(both, copies, target)).toBeUndefined();
 });
 
-// R8's arm: with role-prompt commits (cli.ts's --old-role-prompt-at and --new-role-prompt-at),
-// each arm names the commit its role prompt is composed at, and the arm of no skill and minus of
-// a case of a role prompt's line (`rolePromptLine`) keep the skill and leave that line out of the
-// old arm's prompt, so "informative" measures the role line and not the skill.
+// The role-prompt arm: with role-prompt commits (cli.ts's --old-role-prompt-at and
+// --new-role-prompt-at), each arm names the commit its role prompt is composed at, and the arm of
+// no skill and minus of a case of a role prompt's line (`rolePromptLine`) keep the skill and leave
+// that line out of the old arm's prompt, so "informative" measures the role line and not the skill.
 test("with role-prompt commits, each arm names its commit; a role-line case's none and minus keep the skill and leave out its role line, and a skill case's minus leaves out its line of the skill", () => {
   const rolePromptAt = { old: BASE_COMMIT, new: HEAD_COMMIT };
   const dirs = { old: oldDir, new: oldDir, rolePromptAt };

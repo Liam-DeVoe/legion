@@ -1074,7 +1074,7 @@ const SessionRow = z.strictObject({ path: z.string().min(1), hash: z.string() })
  *  for no hash): sessions.sql (`sessionsSql`, file hashes) unless another is given, such as
  *  session-paths.sql (`sessionPathsSql`, path hashes). Either reads the store's whole file table
  *  once, whatever the hashes. */
-async function resolvePaths(
+export async function resolvePaths(
   command: string,
   db: string,
   hashes: readonly string[],

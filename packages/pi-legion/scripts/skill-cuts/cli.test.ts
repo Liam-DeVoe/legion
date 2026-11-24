@@ -2247,9 +2247,9 @@ describe("refusals before any model call", () => {
   }, 60_000);
 });
 
-// R8's arm: `--old-role-prompt-at` and `--new-role-prompt-at` compose each arm's role prompt at a
-// commit of the case's plugin repository (testdata/roleprompt.ts, read through --repos). Each
-// refusal of the option is exit 2, naming its reason, before any model call.
+// The role-prompt arm: `--old-role-prompt-at` and `--new-role-prompt-at` compose each arm's role
+// prompt at a commit of the case's plugin repository (testdata/roleprompt.ts, read through
+// --repos). Each refusal of the option is exit 2, naming its reason, before any model call.
 describe("behaviour with role-prompt commits: refusals before any model call", () => {
   const repos = path.join(scratch, "role-repos");
   /** A Legion implementer's case of alpha, its profile installing the made-up plugin. */

@@ -63,6 +63,16 @@ func ownersBacklog(t *testing.T, h *harness, handlers []intake.Handler, statuses
 	}
 }
 
+// rootStep is the refusal of child beneath statusRoot, the tree's root, once the daemon has
+// accepted it: it names the step that undoes the refusal while the root stands, then operation.
+func rootStep(child, operation string) string {
+	return child + " is beneath " + statusRoot + ", whose head the last step of its task passed and the daemon has already accepted, and work " +
+		"entering the workflow beneath " + statusRoot + " now would let it merge a head that does not carry that work; " +
+		statusRoot + " is the tree's root, whose close lingers the tree, so first have the role running its phase " +
+		"(the implementer in retro, the merger in merging) move it back with request_backward_move, which the daemon " +
+		"takes until the pull request of " + statusRoot + " has merged, then " + operation
+}
+
 // A6. Both doors refuse a child under a root held from an accepted phase, as they refuse one
 // under a root standing in that phase itself: a worker that dies leaves its issue at held with
 // the phase it left recorded, and the head the last step of its task passed is accepted still.
@@ -137,10 +147,7 @@ func TestTheRefusalUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t *testi
 
 	message := refused(t, h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil),
 		http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT")
-	want := statusChild + " is beneath " + statusRoot + ", whose head the last step of its task passed and the daemon has already accepted, and work entering the workflow beneath " +
-		statusRoot + " now would let it merge a head that does not carry that work; " + statusRoot + " is the tree's root, whose close lingers the tree, so first have the role running its phase " +
-		"(the implementer in retro, the merger in merging) move it back with request_backward_move, which the daemon takes until the pull request of " + statusRoot + " has merged, then run it again"
-	if message != want {
+	if want := rootStep(statusChild, "run it again"); message != want {
 		t.Fatalf("the refusal = %q, want %q", message, want)
 	}
 }
@@ -211,13 +218,6 @@ func TestTheAcceptedAncestorIsFoundByWalkingThePartlyDoneChain(t *testing.T) {
 // the root in merging, and the refused rerun is then taken. An ancestor below the root still
 // names its own close.
 func TestChildUnderAcceptedParentNamesAStepForARootAncestor(t *testing.T) {
-	rootStep := func(child, operation string) string {
-		return child + " is beneath " + statusRoot + ", whose head the last step of its task passed and the daemon has already accepted, and work " +
-			"entering the workflow beneath " + statusRoot + " now would let it merge a head that does not carry that work; " +
-			statusRoot + " is the tree's root, whose close lingers the tree, so first have the role running its phase " +
-			"(the implementer in retro, the merger in merging) move it back with request_backward_move, which the daemon " +
-			"takes until the pull request of " + statusRoot + " has merged, then " + operation
-	}
 	h, handlers, statuses := statusHarness(t)
 	architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
 	merger := newLiveClaim(t, h, statusRoot, claim.RoleMerger)

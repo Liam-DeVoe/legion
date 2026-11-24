@@ -153,7 +153,7 @@
  *   does, and the verdict line `case result only; no skill verdict stands (--confirm-flagged)`
  *   (CONFIRM_FLAGGED_VERDICT), never a skill verdict.
  *
- * **Role prompts at commits** (R8's arm). `--old-role-prompt-at <commit>` and
+ * **Role prompts at commits** (the role-prompt arm). `--old-role-prompt-at <commit>` and
  * `--new-role-prompt-at <commit>`, both or neither, have each arm's capture compose its Legion
  * role prompt at a commit of the case's plugin repository in place of its daemon image's (arms.ts,
  * "Role prompts at commits"; context.ts): `new` at the new commit, every other arm at the old one,
@@ -258,9 +258,10 @@ import {
   buildArm,
   InjectionRefused,
   injectionFaults,
+  type RolePromptCommits,
 } from "./arms";
 import { main as attributeMain, type ModelCount, ModelCountFile, modelId } from "./attribute";
-import { main as buildMain, fromRecordedIn, pathFormIn } from "./build";
+import { type BuildIo, main as buildMain, fromRecordedIn, pathFormIn } from "./build";
 import {
   type Capture,
   captureBody,
@@ -285,6 +286,7 @@ import {
 } from "./common";
 import { type SkillCutsConfig, storeNamed } from "./config";
 import {
+  COMMITS_OF,
   ghSource,
   installedCopies,
   legionRole,
@@ -2493,7 +2495,7 @@ const SavedComposition = z.looseObject({
   context: z.looseObject({
     rolePrompt: z.looseObject({
       commit: z.string(),
-      commitOf: z.enum(["arm", "daemon image", "plugin"]).default("plugin"),
+      commitOf: z.enum(COMMITS_OF).default("plugin"),
     }),
   }),
 });
@@ -2503,15 +2505,19 @@ const SavedComposition = z.looseObject({
  *  daemon image's or the plugin's commit), or undefined when they can: the first capture whose
  *  role prompt was composed at another commit than the run would compose its arm's at, naming it,
  *  its case and arm, and both commits. */
-function otherCommits(
-  out: string,
-  at: { readonly old: string; readonly new: string } | undefined
-): string | undefined {
+function otherCommits(out: string, at: RolePromptCommits | undefined): string | undefined {
   const captures = path.join(out, "captures");
-  if (!existsSync(captures)) return undefined;
-  for (const armDir of readdirSync(captures).sort()) {
+  let armDirs: string[];
+  try {
+    armDirs = readdirSync(captures, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  } catch (error) {
+    if (Reflect.get(Object(error), "code") === "ENOENT") return undefined;
+    throw error;
+  }
+  for (const armDir of armDirs.sort()) {
     const dir = path.join(captures, armDir);
-    if (!statSync(dir).isDirectory()) continue;
     for (const file of readdirSync(dir).sort()) {
       if (!file.endsWith(".capture.json")) continue;
       const record = path.join(dir, file);
@@ -2534,7 +2540,7 @@ function otherCommits(
  *  there), each checked once per set of plugin repositories. */
 async function refuseRolePromptCases(
   cases: readonly Case[],
-  at: { readonly old: string; readonly new: string },
+  at: RolePromptCommits,
   source: RepoSource
 ): Promise<void> {
   for (const c of cases) {
@@ -2919,6 +2925,11 @@ const USAGE = [
   "  build-role-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --role <role> --line <text> --old-role-prompt-at <commit> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--repos <dir>] [--cache-dir <dir>]",
 ].join("\n");
 
+/** The io `build-cases`, `build-tasks` and `build-role-cases` run with (build.ts's BuildIo). */
+function buildIoOf(io: CliIo): BuildIo {
+  return { out: io.out, err: io.err, gh: spawnGh, now: () => performance.now() };
+}
+
 /** The command line. Returns the exit status (EXIT). */
 export async function main(argv: readonly string[], io: CliIo): Promise<number> {
   const [command, ...rest] = argv;
@@ -2946,19 +2957,9 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         return attributeMain(rest, io);
       case "build-cases":
       case "build-tasks":
-        return await buildMain(argv, {
-          out: io.out,
-          err: io.err,
-          gh: spawnGh,
-          now: () => performance.now(),
-        });
+        return await buildMain(argv, buildIoOf(io));
       case "build-role-cases":
-        return await roleCasesMain(rest, {
-          out: io.out,
-          err: io.err,
-          gh: spawnGh,
-          now: () => performance.now(),
-        });
+        return await roleCasesMain(rest, buildIoOf(io));
       default:
         throw new Refused(`no command ${JSON.stringify(command ?? "")}. ${USAGE}`);
     }

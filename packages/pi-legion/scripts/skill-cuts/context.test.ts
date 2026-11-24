@@ -694,8 +694,8 @@ describe.skipIf(goMissing && !onActions)("a Legion context", () => {
     }
   }, 60_000);
 
-  // R8's arm: with --old-role-prompt-at and --new-role-prompt-at, each arm's role prompt is
-  // composed at its own commit of the case's plugin repository (testdata/roleprompt.ts: two
+  // The role-prompt arm: with --old-role-prompt-at and --new-role-prompt-at, each arm's role prompt
+  // is composed at its own commit of the case's plugin repository (testdata/roleprompt.ts: two
   // commits whose implementer part differs by one line), in place of the daemon image's commit.
   describe("with role-prompt commits", () => {
     const root = path.join(dir, "role-prompt-at");

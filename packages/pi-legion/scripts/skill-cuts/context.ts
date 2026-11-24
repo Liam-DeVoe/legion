@@ -225,6 +225,10 @@ export interface Build {
   readonly ms: number;
 }
 
+/** Whose commit a role prompt was composed at (ContextRecord's `rolePrompt.commitOf`). */
+export const COMMITS_OF = ["arm", "daemon image", "plugin"] as const;
+export type CommitOf = (typeof COMMITS_OF)[number];
+
 /** What a capture's context used. */
 export interface ContextRecord {
   readonly source: string;
@@ -268,7 +272,7 @@ export interface ContextRecord {
     | {
         readonly repo: string;
         readonly commit: string;
-        readonly commitOf: "arm" | "daemon image" | "plugin";
+        readonly commitOf: CommitOf;
         readonly role: string;
         readonly isRoot: boolean;
         readonly promptsBlob: string;
@@ -1346,7 +1350,7 @@ export async function rolePromptRepo(
 
 /** The prompt parts of each case's plugin repository at `commit`, read through `source`, as
  *  cases.ts's `loadCasesAt` checks a role-line case's line against them: the repository is
- *  `rolePromptRepo`'s, and each part is read once. */
+ *  `rolePromptRepo`'s, and each part is read once. A read that failed is not kept. */
 export function rolePromptParts(commit: string, source: RepoSource): RolePromptAt {
   const texts = new Map<string, Promise<string | undefined>>();
   return {
@@ -1363,6 +1367,7 @@ export function rolePromptParts(commit: string, source: RepoSource): RolePromptA
           (bytes) => new TextDecoder().decode(bytes),
           (error: unknown) => {
             if (error instanceof NoSuchFile) return undefined;
+            texts.delete(id);
             throw error;
           }
         );
@@ -1413,7 +1418,7 @@ async function rolePrompt(
     return { text: c.profile.appendSystemPrompt, record: "case" };
   }
   const { source } = options;
-  let repositories: { repo: string; commit: string; commitOf: "arm" | "daemon image" | "plugin" }[];
+  let repositories: { repo: string; commit: string; commitOf: CommitOf }[];
   if (at === undefined) {
     repositories = [
       ...new Map(

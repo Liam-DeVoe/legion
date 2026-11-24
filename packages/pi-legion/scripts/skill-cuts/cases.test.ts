@@ -509,8 +509,8 @@ test("refuses a whole read by path of the copy that skillReads leaves out, a pat
   }
 });
 
-// R8's arm: a case of a line of a role prompt (`rolePromptLine`) is checked against its prompt part
-// at the old arm's commit (--old-role-prompt-at), in the made-up repository of
+// The role-prompt arm: a case of a line of a role prompt (`rolePromptLine`) is checked against its
+// prompt part at the old arm's commit (--old-role-prompt-at), in the made-up repository of
 // testdata/roleprompt.ts, and a skill case still against the skill's directory.
 describe("a role-line case", () => {
   /** F1's `task` step in a Legion implementer's session, as a case of ROLE_LINE. */

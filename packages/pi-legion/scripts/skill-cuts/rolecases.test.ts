@@ -5,7 +5,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { fileHash } from "./build";
 import { type Case, loadCasesAt, pathHash } from "./cases";
-import { DAEMON_IMAGE_ITEM, composedAt, localSource, rolePromptParts } from "./context";
+import { composedAt, DAEMON_IMAGE_ITEM, localSource, rolePromptParts } from "./context";
 import { loadPrompt } from "./readers";
 import {
   messageSse,
@@ -25,21 +25,22 @@ import {
   writeRolePromptRepository,
 } from "./testdata/roleprompt";
 
-// R8's arm: build-role-cases (rolecases.ts) builds cases of a line of a role prompt from sessions
-// of that role. Its sessions here are two made-up sessions of a Legion implementer in the store's
-// form (testdata/R8-implementer.jsonl, and the same session with its task named otherwise), each
-// stored as the store keeps a file and read through a stand-in store command, as build.test.ts's
-// store is; the repository is testdata/roleprompt.ts's, read through --repos; the case reader is a
-// stand-in gateway on 127.0.0.1 built on recorder.ts. build.ts's profile step (`build-cases
-// --reprofile`, which build.test.ts tests) stands in here as `io.profile`: it gives each session
-// the made-up plugin, and the daemon image's commit by the session, BASE_COMMIT for one and
-// HEAD_COMMIT, whose prompt lacks the line, for the other. Composing runs `go test` in a copy of the
-// repository; a run without Go skips, except on GitHub Actions, where the pi-legion job sets Go up.
+// The role-prompt arm: build-role-cases (rolecases.ts) builds cases of a line of a role prompt from
+// sessions of that role. Its sessions here are two made-up sessions of a Legion implementer in the
+// store's form (testdata/R8-implementer.jsonl, and the same session with its task named otherwise),
+// each stored as the store keeps a file and read through a stand-in store command, as
+// build.test.ts's store is; the repository is testdata/roleprompt.ts's, read through --repos; the
+// case reader is a stand-in gateway on 127.0.0.1 built on recorder.ts. build.ts's profile step
+// (`build-cases --reprofile`, which build.test.ts tests) stands in here as `io.profile`: it gives
+// each session the made-up plugin, and the daemon image's commit by the session, BASE_COMMIT for
+// one and HEAD_COMMIT, whose prompt lacks the line, for the other. Composing runs `go test` in a
+// copy of the repository; a row that composes skips without Go, except on GitHub Actions, where the
+// pi-legion job sets Go up.
 
 const goMissing = Bun.which("go") === null;
 const onActions = process.env.GITHUB_ACTIONS === "true";
 if (goMissing && !onActions) {
-  console.log("rolecases.test.ts: no `go` on PATH, so its rows are skipped");
+  console.log("rolecases.test.ts: no `go` on PATH, so its rows that compose are skipped");
 }
 
 const scratch = temporaryDirectory("skill-cuts-rolecases", { real: true });
@@ -53,6 +54,10 @@ const KEPT =
   "/sessions/--legion-workspaces-acme-widgets-acme-1--/2026-11-20T02-00-00-000Z_kept.jsonl";
 const ABSENT =
   "/sessions/--legion-workspaces-acme-widgets-acme-1--/2026-11-20T02-00-00-000Z_absent.jsonl";
+/** Where the store keeps the kept session with its session line's timestamp not ISO 8601 (one
+ *  `Date.parse` reads all the same). */
+const NOT_ISO =
+  "/sessions/--legion-workspaces-acme-widgets-acme-1--/2026-11-20T02-00-00-000Z_not-iso.jsonl";
 /** The daemon image's commit of each session, as the stand-in profile step names it. */
 const DAEMON_AT: Readonly<Record<string, string>> = {
   [pathHash(KEPT)]: BASE_COMMIT,
@@ -131,7 +136,14 @@ function inputs(dir: string) {
     storeFile,
     JSON.stringify({
       store_acme: {
-        files: { [KEPT]: SESSION, [ABSENT]: SESSION.replace(KEPT_TASK, ABSENT_TASK) },
+        files: {
+          [KEPT]: SESSION,
+          [ABSENT]: SESSION.replace(KEPT_TASK, ABSENT_TASK),
+          [NOT_ISO]: SESSION.replace(
+            '"timestamp":"2026-11-20T02:00:00.000Z"',
+            '"timestamp":"2026-11-20 02:00:00"'
+          ),
+        },
       },
     })
   );
@@ -255,3 +267,54 @@ describe.skipIf(goMissing && !onActions)("build-role-cases", () => {
     expect(existsSync(`${out}.spool`)).toBe(false);
   }, 300_000);
 });
+
+// A session line whose timestamp is not ISO 8601 gives no session start, as build-cases reads one
+// (build.ts's `sessionHeader`), though `Date.parse` reads it: the session is dropped as no-header
+// before its profile, any compose or any reader call, so this row needs no Go.
+test("drops a session whose session line's timestamp is not ISO 8601 as no-header, before its profile or any reader call", async () => {
+  const dir = path.join(scratch, "not-iso");
+  const given = inputs(dir);
+  writeFileSync(
+    given.sessions,
+    `${JSON.stringify({ store: "store_acme", hash: fileHash(NOT_ISO), path: NOT_ISO })}\n`
+  );
+  const out = path.join(dir, "out", "cases.jsonl");
+  const lines: string[] = [];
+  let profiled = 0;
+  const io: RoleCasesIo = {
+    out: (text) => lines.push(text),
+    err: (line) => lines.push(line),
+    gh: async () => ({ code: 1, stdout: "", stderr: "gh: no GitHub read is made here\n" }),
+    now: () => performance.now(),
+    profile: (draft, profileInputs) => {
+      profiled += 1;
+      return profile(draft, profileInputs);
+    },
+  };
+  const from = recorder.requests.length;
+  const code = await main(
+    [
+      ...["--config", given.config, "--key-file", given.keyFile, "--cut", "acme-skills-1"],
+      ...["--skill", "alpha", "--old", given.old, "--role", "implementer", "--line", ROLE_LINE],
+      ...["--old-role-prompt-at", BASE_COMMIT, "--sessions", given.sessions, "--seed", "7"],
+      ...["--copies", path.join(dir, "copies"), "--count", path.join(dir, "count")],
+      ...["--out", out, "--repos", given.repos, "--cache-dir", path.join(dir, "cache")],
+    ],
+    io
+  );
+  expect({ code, said: code === 0 ? "" : lines.join("\n") }).toEqual({ code: 0, said: "" });
+  expect({ profiled, readerCalls: recorder.requests.length - from }).toEqual({
+    profiled: 0,
+    readerCalls: 0,
+  });
+  const summary = JSON.parse(readFileSync(`${out}.summary.json`, "utf8"));
+  expect(summary).toMatchObject({ cases: 0, drops: { "no-header": 1 } });
+  expect(summary.sessions).toEqual([
+    expect.objectContaining({
+      pathHash: pathHash(NOT_ISO),
+      outcome: "dropped",
+      reason: "no-header",
+      detail: "no session line with an ISO timestamp",
+    }),
+  ]);
+}, 60_000);

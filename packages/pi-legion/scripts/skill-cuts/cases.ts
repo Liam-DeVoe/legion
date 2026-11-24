@@ -125,16 +125,13 @@ const InsidePath = z
   );
 
 /** An absolute directory as a session reads files under it: `/`, then parts that are neither
- * empty, `.` nor `..`, with no `/` at its end. */
-const AbsoluteDir = z.string().refine(
-  (dir) =>
-    dir.startsWith("/") &&
-    dir
-      .slice(1)
-      .split("/")
-      .every((part) => part !== "" && part !== "." && part !== ".."),
-  "is not an absolute directory with no / at its end"
-);
+ * empty, `.` nor `..` (`insideCheckout`), with no `/` at its end. */
+const AbsoluteDir = z
+  .string()
+  .refine(
+    (dir) => dir.startsWith("/") && insideCheckout(dir.slice(1)),
+    "is not an absolute directory with no / at its end"
+  );
 
 /** One case. `line` is the line of the cut's base text that the step exercises: its text,
  * `lineNumber` (from 1) and `lineCount` (the lines of `baseFile`; a final newline ends the last
