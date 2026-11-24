@@ -36503,7 +36503,7 @@
     "domains": {}
   },
   {
-    "contract": 252,
+    "contract": 232,
     "answer": "compact",
     "noBody": false,
     "keyPaths": [
@@ -36513,14 +36513,14 @@
     "domains": {}
   },
   {
-    "contract": 252,
+    "contract": 232,
     "answer": "empty-object",
     "noBody": false,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 252,
+    "contract": 232,
     "answer": "fresh-session",
     "noBody": false,
     "keyPaths": [
@@ -36529,7 +36529,7 @@
     "domains": {}
   },
   {
-    "contract": 252,
+    "contract": 232,
     "answer": "grant",
     "noBody": false,
     "keyPaths": [
@@ -36539,14 +36539,14 @@
     "domains": {}
   },
   {
-    "contract": 252,
+    "contract": 232,
     "answer": "handoff-complete",
     "noBody": false,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 252,
+    "contract": 232,
     "answer": "health",
     "noBody": false,
     "keyPaths": [
@@ -36556,7 +36556,7 @@
     "domains": {}
   },
   {
-    "contract": 252,
+    "contract": 232,
     "answer": "intake-discard",
     "noBody": false,
     "keyPaths": [
@@ -36566,7 +36566,7 @@
     "domains": {}
   },
   {
-    "contract": 252,
+    "contract": 232,
     "answer": "intake-replay",
     "noBody": false,
     "keyPaths": [
@@ -36589,7 +36589,7 @@
     }
   },
   {
-    "contract": 252,
+    "contract": 232,
     "answer": "issue-record",
     "noBody": false,
     "keyPaths": [
@@ -36708,10 +36708,7 @@
       "slot",
       "slot.admittedAt",
       "slot.index",
-      "startWaitsForPod",
-      "startWaitsForPod.*",
       "status",
-      "stepRole",
       "tree",
       "treeMovedAt",
       "waitingLine",
@@ -36836,7 +36833,6 @@
         "planning",
         "retro",
         "reviewing",
-        "step",
         "testing"
       ],
       "architect.state": [
@@ -36886,7 +36882,6 @@
         "planning",
         "retro",
         "reviewing",
-        "step",
         "testing"
       ],
       "holdReason": [
@@ -36935,7 +36930,6 @@
         "planning",
         "retro",
         "reviewing",
-        "step",
         "testing",
         "unrecorded"
       ],
@@ -37012,7 +37006,6 @@
         "planning",
         "retro",
         "reviewing",
-        "step",
         "testing"
       ],
       "workers.*.claim.state": [
@@ -37037,14 +37030,14 @@
     }
   },
   {
-    "contract": 252,
+    "contract": 232,
     "answer": "no-content",
     "noBody": true,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 252,
+    "contract": 232,
     "answer": "plan-register",
     "noBody": false,
     "keyPaths": [
@@ -37059,7 +37052,7 @@
     "domains": {}
   },
   {
-    "contract": 252,
+    "contract": 232,
     "answer": "project-pause",
     "noBody": false,
     "keyPaths": [
@@ -37074,7 +37067,7 @@
     "domains": {}
   },
   {
-    "contract": 252,
+    "contract": 232,
     "answer": "project-resume",
     "noBody": false,
     "keyPaths": [
@@ -37094,7 +37087,7 @@
     "domains": {}
   },
   {
-    "contract": 252,
+    "contract": 232,
     "answer": "refusal",
     "noBody": false,
     "keyPaths": [
@@ -37127,7 +37120,7 @@
     "domains": {}
   },
   {
-    "contract": 252,
+    "contract": 232,
     "answer": "register",
     "noBody": false,
     "keyPaths": [
@@ -37140,10 +37133,19 @@
       "secret",
       "tree"
     ],
-    "domains": {}
+    "domains": {
+      "role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
   },
   {
-    "contract": 252,
+    "contract": 232,
     "answer": "register-controller",
     "noBody": false,
     "keyPaths": [
@@ -37155,7 +37157,7 @@
     "domains": {}
   },
   {
-    "contract": 252,
+    "contract": 232,
     "answer": "release-records",
     "noBody": false,
     "keyPaths": [
@@ -37193,7 +37195,7 @@
     "domains": {}
   },
   {
-    "contract": 252,
+    "contract": 232,
     "answer": "state",
     "noBody": false,
     "keyPaths": [
@@ -37393,10 +37395,7 @@
       "issues.*.slot",
       "issues.*.slot.admittedAt",
       "issues.*.slot.index",
-      "issues.*.startWaitsForPod",
-      "issues.*.startWaitsForPod.*",
       "issues.*.status",
-      "issues.*.stepRole",
       "issues.*.tree",
       "issues.*.treeMovedAt",
       "issues.*.waitingLine",
@@ -37644,7 +37643,6 @@
         "planning",
         "retro",
         "reviewing",
-        "step",
         "testing"
       ],
       "issues.*.architect.state": [
@@ -37694,7 +37692,6 @@
         "planning",
         "retro",
         "reviewing",
-        "step",
         "testing"
       ],
       "issues.*.holdReason": [
@@ -37743,7 +37740,6 @@
         "planning",
         "retro",
         "reviewing",
-        "step",
         "testing",
         "unrecorded"
       ],
@@ -37820,7 +37816,6 @@
         "planning",
         "retro",
         "reviewing",
-        "step",
         "testing"
       ],
       "issues.*.workers.*.claim.state": [
@@ -37841,6 +37836,14 @@
         "asked",
         "none",
         "open"
+      ],
+      "paused.waitsOn.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
       ],
       "repositories.caches.*.state": [
         "cloning",
@@ -37863,15 +37866,31 @@
         "refused",
         "starting"
       ],
+      "strandedClaims.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
       "strandedClaims.*.state": [
         "failed",
         "retired",
         "suspended"
+      ],
+      "wakesWaiting.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
       ]
     }
   },
   {
-    "contract": 252,
+    "contract": 232,
     "answer": "turn-outcome",
     "noBody": false,
     "keyPaths": [
@@ -37881,7 +37900,7 @@
     "domains": {}
   },
   {
-    "contract": 252,
+    "contract": 232,
     "answer": "wave-release",
     "noBody": false,
     "keyPaths": [
