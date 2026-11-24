@@ -942,7 +942,9 @@ func (r *Runner) logged(p requests.PendingRequest, row verdictRow) {
 	// applied is the grant verdict's alone: what the decision transaction did where it ran,
 	// false where the machine refused the attempt outright, and unknown where the attempt's
 	// answer was lost and so was the read of whether it applied. A refusal is decided denied,
-	// and carries what its agent was told. Every other row handed the request over.
+	// and carries what its agent was told. handed_over is the row's own word: a row LogJudged
+	// wrote saying handed to the person.
+	handedOver := row.written == requests.JudgedHandedOver
 	switch {
 	case row.refusal != "":
 		attrs = append(attrs, "applied", false, "decided", row.decided, "refusal", row.refusal)
@@ -950,9 +952,11 @@ func (r *Runner) logged(p requests.PendingRequest, row verdictRow) {
 		attrs = append(attrs, "applied", row.decided == "granted", "decided", row.decided)
 	case row.appliedUnknown:
 		attrs = append(attrs, "applied", requests.AppliedUnknown)
-	case row.notApplied != nil:
+	case row.notApplied != nil && handedOver:
 		attrs = append(attrs, "applied", false, "handed_over", true)
-	case row.notPending == "":
+	case row.notApplied != nil:
+		attrs = append(attrs, "applied", false)
+	case handedOver:
 		attrs = append(attrs, "handed_over", true)
 	}
 	slog.Info("broker judge: wrote a verdict", attrs...)

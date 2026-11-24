@@ -1976,7 +1976,8 @@ asked, the `verdict` — what became of the request: `granted`, `refused`, `hand
 answer was lost — the reason, the `calls` (one for each judge key the model was asked about, with
 the key and what its call did: `granted`, `denied`, or `failed` with its error, a failure being no
 deny, and the raw answer of a call whose answer did not parse), the token counts, that it priced
-nothing, and the first such raw answer) and
+nothing, and, for a request handed to its person because a call's answer did not parse, the first
+such call's raw answer) and
 `launcher_credential.revoked` (naming the machine login's `credential_id`, its `host`, its
 `service` for a service's login, and under `enrollments` the sessions the revoke ended) and
 `launcher_credential.token_login` (a service's token login: the `credential_id`, its `service`, the
