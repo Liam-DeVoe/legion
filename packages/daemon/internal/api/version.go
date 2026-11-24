@@ -3413,7 +3413,9 @@ package api
 // read before. The plugin reads `kind` and `role` as strings, so no enumerated field arrives. A
 // version that removes a running task or changes more of it than its text is still
 // `409 PLAN_REFUSED`, whose reason now says that the task runs and that a later version can change
-// only its text. No route, request field or other key moves.
+// only its text. An issue whose experiment's group runs the project's default steps takes such a
+// version of its task default too, and every other plan of it is still `409 PLAN_NOT_TAKEN`. No
+// route, request field or other key moves.
 // (This entry took 233 at first, the lowest number above this branch's 219 that no open pull
 // request declared at a reading of `const DaemonAPIVersion` at refs/pull/<n>/head made on
 // 2026-11-23 near 04:45Z. The reading before the push of 2026-11-23, of all 518 open pull requests
