@@ -44,7 +44,7 @@ The operator's order of 2026-09-13 (19:00Z) withdrew every pre-merge rig:
 no smoke rig, no scratch daemon, no throwaway NATS or tmux server, no throwaway OMP profile —
 [pre-merge-surface-withdrawn-by-standing-order](../legion/pre-merge-surface-withdrawn-by-standing-order-what-the-pr-carries-instead.md)
 records how a pull request carries its proof when the surface is withdrawn. On 2026-09-14 at
-19:41Z Sami corrected it (LEGION-25 spec v21): a worker **may** build a throwaway instance of
+19:41Z the order was corrected (LEGION-25 spec v21): a worker **may** build a throwaway instance of
 its own — its own cluster, containers, ports, state directory, tmux server, and OMP profile —
 and **must** tear it down; what stays forbidden is the shared dev-box daemon and its state, the
 operator's `~/.omp/profiles/legion` and `~/.config/legion/*`, another issue's rig, and any pane

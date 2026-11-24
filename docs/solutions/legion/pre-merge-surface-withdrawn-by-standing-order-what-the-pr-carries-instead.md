@@ -20,7 +20,7 @@ related_issues:
 
 # When the smoke rig is shut down, the E2E line names the surface it would have used, the unit red/green that stands in, the release, and the operator's post-deploy command
 
-> **Corrected 2026-09-14 19:41Z (Sami, LEGION-25 spec v21).** The 09-13 order below is superseded
+> **Corrected 2026-09-14 19:41Z (LEGION-25 spec v21).** The 09-13 order below is superseded
 > in one respect: a worker may build a throwaway instance of its own — its own cluster, containers,
 > ports, state directory, tmux server, and OMP profile — and must tear it down; the shared dev-box
 > daemon and its state, `~/.omp/profiles/legion`, `~/.config/legion/*`, another issue's rig, and
@@ -40,10 +40,8 @@ verbatim in https://github.com/cybermonklabs/legion/pull/1022#issuecomment-56584
 operator then barred every worker from any smoke rig, scratch or stand-in daemon, throwaway NATS
 container or tmux server, throwaway OMP profile or scratch plugin tree, and
 `scripts/smoke-delivery.sh`, and kept `~/.omp/profiles/legion` / `~/.omp/plugins` to itself. The
-deployment instructions say a Sami decision wins over a skill default, so the issue does **not**
-go back to the tester; the
-gap is real, it is accepted by order, and the record has to say so in a way the merge queue and
-the operator can act on.
+issue does **not** go back to the tester: the gap is real, it is accepted by that order, and the
+record has to say so in a way the merge queue and the operator can act on.
 
 ## What the PR carries when the surface is withdrawn
 

@@ -26,9 +26,10 @@ related_issues:
 `runtime.kubernetes.session_store: pvc | postgres` selects where a pod's Oh My Pi session lives.
 Under `postgres` every pod of a tree receives two variables that are Oh My Pi's own
 (`OMP_SESSION_STORAGE=sql`, `OMP_SESSION_SQL_DSN_FILE=/var/run/legion/providers/<key>`), and
-the init container skips its recorded-session stat. Sami's bar for the change (2026-09-13, on
-LEGION-80): "top-quality and DRY". Three shapes met it and are reusable for the next setting of
-this kind.
+the init container skips its recorded-session stat. For the Oh My Pi fork setting this store
+uses, Sami asked: "Please make sure it's top-quality and DRY" (quoted in
+https://github.com/cybermonklabs/legion/pull/1081#pullrequestreview-5195037174). Three shapes met
+that bar here and are reusable for the next setting of this kind.
 
 ## 1. The config seam is a discriminated union, so a consumer cannot see the mode without its key
 

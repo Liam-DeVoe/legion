@@ -74,7 +74,7 @@ Everything is a node, so verification, handoffs that live in Dispatch, and refer
 
 These need the owner's decision before an agent builds them:
 
-- New logic in the daemon beyond moving work through phases and keeping pods running, and any new control or constraint on agents. Expect a no.
+- New logic in the daemon beyond moving work through phases and keeping pods running, and any new control or constraint on agents.
 - Programmatic checks on an agent's output (patterns run over what an agent wrote, checks on what a reviewer added).
 - New requirements on the handoffs between roles.
 - Deployment- or company-specific logic in Legion itself.

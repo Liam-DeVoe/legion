@@ -30,7 +30,8 @@ relaunch the daemon from a terminal pane, rotate. The store choice (human tier n
 Kubernetes / second Unix user) needed Sami's risk appetite and his dotfiles, so it was an open
 "Decisions needed" item while the tree ran. PR #1017 merged with the runbook stating the human
 tier as this deployment's instructions. Sami then answered **Wait for Kubernetes** (2026-09-13
-13:46 UTC, after a "Why is this important?" round), and a second, docs-only PR (#1033) had to
+13:46 UTC, after a "Why is this important?" round; quoted in
+https://github.com/cybermonklabs/legion/pull/1033), and a second, docs-only PR (#1033) had to
 correct the runbook. Three things a future architect and implementer should take from it.
 
 ## 1. With `gates.design: off`, the design gate is not a human channel
