@@ -1,10 +1,8 @@
 package workflow
 
 import (
-	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -70,16 +68,7 @@ func TestEveryEndOfAnOwnersStepGivesItsSlotItsOwnApp(t *testing.T) {
 	t.Run("a child's step run by the architect above", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
-		stepRoot(t, pool, phase.Implementing)
-		child := stepChild(t, pool, "LEGION-209", phase.Implementing, nil)
-		seedStepsAt(t, pool, child.Key, child.Generation, 1, nil, "implementer:owner", "reviewer")
-		factTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			issue, err := engine.store.Issue(ctx, tx, child.Key)
-			if err != nil {
-				return err
-			}
-			return engine.StartStepRecord(ctx, tx, *issue)
-		})
+		child := childAtOwnersStep(t, pool, engine)
 		above := treeRoleToken(t, "LEGION-208", claim.RoleArchitect)
 		if starts := stepStartsAt(t, pool, child.Key, "step", 1); len(starts) != 1 || starts[0].Agent != above {
 			t.Fatalf("the start records of the child's step 1 = %+v, want one naming the architect above, %s", starts, above)
