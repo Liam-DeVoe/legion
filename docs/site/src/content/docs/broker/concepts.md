@@ -58,7 +58,7 @@ and the one Dispatch project it may write, or no project for an entry that names
 (`<service account>==<person>`), or neither a person nor a project for an entry that names
 neither (`<service account>==`): such a token acts as the account itself, names the account as its
 service, and Dispatch records its writes under that account. An entry that names a project names
-its person, so no token held to a project is personless. A read entry, of
+its person, so no token that names a project is personless. A read entry, of
 `BROKER_EXCHANGE_READ_ACCOUNTS`, gives it a service and a fixed session instead, and no person and
 no project: the token holds the OAuth scope `read` alone. Dispatch serves such a token on the
 routes its read list names and refuses it on every other route with `403 READ_ONLY_TOKEN`; the

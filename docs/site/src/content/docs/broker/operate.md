@@ -772,7 +772,7 @@ project's Legion daemon URL (`PUT` and `DELETE /api/v1/projects/{key}/legion/dae
 repository (`PUT /api/v1/projects/{key}/default-repository`), and the delivery session groups
 (`POST`, `PATCH` and `DELETE /api/v1/delivery/session-groups`). The broker refuses to start on an
 entry that names a project and no person: an entry that names a project names its person, so no
-token held to a project is personless. A broker of a build older than the entry naming no person
+token that names a project is personless. A broker of a build older than the entry naming no person
 refuses to start on one, and an Envoy listener or a Dispatch of a build older than it answers such
 a token `401`, so deploy the broker, Dispatch and every Envoy listener before you write one. For the
 same reason, before you roll the broker, Dispatch or an Envoy listener back to a build older than
