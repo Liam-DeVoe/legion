@@ -735,9 +735,9 @@ func CoverageDeltaBound() int64 {
 	return coverageDeltaBound
 }
 
-// coverageRead is the report's one statement (Coverage), so one snapshot and one now() answer
-// every count and every age. $1 is the identity, ” when none is configured, and then no item is
-// current. It reads:
+// coverageReadStatement is the report's one statement (coverageRead), so one snapshot and one
+// now() answer every count and every age. $1 is the identity, ” when none is configured, and then
+// no item is current. It reads:
 //
 //   - search_coverage_filled's one row, by its key: whether a fill has ended
 //     (ErrCoverageNotFilled);
@@ -763,7 +763,7 @@ func CoverageDeltaBound() int64 {
 // one index entry for each probe, and route_roster's row. Under planCoverage's settings no other
 // path reads a probe's rows: each orders by the key after its index's equality keys, and the paths
 // that would sort or scan the table are off.
-var coverageRead = func() string {
+var coverageReadStatement = func() string {
 	const current = "matched and $1::text <> '' and model = $1::text"
 	// otherModels is the earliest wait of probe over each model a live matched class of kind names
 	// that is not current: every model when there is no identity, which then holds nothing current.
@@ -813,10 +813,10 @@ var coverageRead = func() string {
 		from (` + strings.Join(arms, "\n\t\tunion all ") + `) counted`
 }()
 
-// CoverageReadStatement is the text of the report's one statement (coverageRead), for a
+// CoverageReadStatement is the text of the report's one statement (coverageReadStatement), for a
 // measurement that runs it under EXPLAIN where the report runs (T15, on production).
 func CoverageReadStatement() string {
-	return coverageRead
+	return coverageReadStatement
 }
 
 // coverageStatementTimeout is the statement_timeout Coverage holds its statement to: Postgres ends
@@ -977,6 +977,33 @@ func planCoverage(ctx context.Context, tx pgx.Tx) error {
 // caller's cancellation does not end, so a caller that leaves once the rows are read still hands
 // its connection back to the pool rather than pgx destroying it over a rollback it refused to send.
 func Coverage(ctx context.Context, database *store.Store, identity string) (model.SearchCoverage, error) {
+	tx, err := database.Pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return model.SearchCoverage{}, fmt.Errorf("search coverage: %w", err)
+	}
+	defer func() {
+		rollback, cancel := context.WithTimeout(context.WithoutCancel(ctx), coverageRollbackTimeout)
+		defer cancel()
+		_ = tx.Rollback(rollback)
+	}()
+	if _, err := tx.Exec(ctx, "set local statement_timeout = '"+coverageStatementTimeout+"'"); err != nil {
+		return model.SearchCoverage{}, fmt.Errorf("search coverage: bound the statement: %w", err)
+	}
+	if err := planCoverage(ctx, tx); err != nil {
+		return model.SearchCoverage{}, err
+	}
+	return coverageRead(ctx, tx, identity)
+}
+
+// coverageRead runs the report's one statement (coverageReadStatement) for identity in tx, a
+// transaction its caller holds and has set as the statement runs under: Coverage's read-only
+// transaction, once it has bounded the statement and planCoverage has set its settings, and the
+// repeatable-read transaction of a test that compares the answer with main's coverage statements
+// at one snapshot. It answers ErrCoverageNotFilled while no fill has ended, ErrCoverageFoldBehind
+// when the statement read more than coverageDeltaBound delta rows, and otherwise the report: each
+// covered kind's counts with lacking computed here, an oldest lacking age past the statement's
+// now() read as 0, each not-indexed kind's items, and the totals.
+func coverageRead(ctx context.Context, tx pgx.Tx, identity string) (model.SearchCoverage, error) {
 	var report model.SearchCoverage
 	if identity != "" {
 		place, name := embed.IdentityPlace(identity)
@@ -993,22 +1020,7 @@ func Coverage(ctx context.Context, database *store.Store, identity string) (mode
 	for position, kind := range notIndexedKinds {
 		report.NotIndexed[position].Kind = kind.kind
 	}
-	tx, err := database.Pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return model.SearchCoverage{}, fmt.Errorf("search coverage: %w", err)
-	}
-	defer func() {
-		rollback, cancel := context.WithTimeout(context.WithoutCancel(ctx), coverageRollbackTimeout)
-		defer cancel()
-		_ = tx.Rollback(rollback)
-	}()
-	if _, err := tx.Exec(ctx, "set local statement_timeout = '"+coverageStatementTimeout+"'"); err != nil {
-		return model.SearchCoverage{}, fmt.Errorf("search coverage: bound the statement: %w", err)
-	}
-	if err := planCoverage(ctx, tx); err != nil {
-		return model.SearchCoverage{}, err
-	}
-	rows, err := tx.Query(ctx, coverageRead, identity)
+	rows, err := tx.Query(ctx, coverageReadStatement, identity)
 	if err != nil {
 		return model.SearchCoverage{}, coverageFailed(ctx, err)
 	}

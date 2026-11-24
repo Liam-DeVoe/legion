@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
@@ -74,7 +75,9 @@ func (r coverageRow) String() string {
 }
 
 // coverageRowsOf reads every row statement answers for identity ($1) in tx: each whole row
-// rendered, in sorted order, so two answers compare as sets of rows, and the rows by kind.
+// rendered, in sorted order, so two answers compare as sets of rows, and the rows by kind. An
+// oldest lacking age below 0 - a row pending since a moment after the statement's now() - is read
+// as 0, as coverageRead reads it, so a statement's answer compares with the report's.
 func coverageRowsOf(t *testing.T, tx pgx.Tx, statement, identity string) ([]string, map[string]coverageRow) {
 	t.Helper()
 	rows, err := tx.Query(context.Background(), statement, identity)
@@ -89,6 +92,9 @@ func coverageRowsOf(t *testing.T, tx pgx.Tx, statement, identity string) ([]stri
 		if err := rows.Scan(&row.kind, &row.indexed, &row.items, &row.current, &row.failed, &row.oldest); err != nil {
 			t.Fatalf("scan a coverage row: %v", err)
 		}
+		if row.oldest != nil && *row.oldest < 0 {
+			*row.oldest = 0
+		}
 		rendered = append(rendered, row.String())
 		byKind[row.kind] = row
 	}
@@ -99,27 +105,139 @@ func coverageRowsOf(t *testing.T, tx pgx.Tx, statement, identity string) ([]stri
 	return rendered, byKind
 }
 
-// requireMainsAnswer reads mainCoverageQuery and the coverage statement (coverageQuery), the
-// latter under planCoverage's settings as Coverage runs it (headRowsOf), in one REPEATABLE READ,
-// read-only transaction, so both read one snapshot and one now(), for the configured identity, for
-// none ("") and for another identity, and fails the test wherever the two answers differ as sets
-// of whole rows, printing both. It answers the rows each gave for the configured identity, by
-// kind.
+// reportRowsOf renders report, as coverageRead answers it, in coverageRowsOf's form: a row for each
+// covered kind with its items, current, failed and oldest lacking age, and a row for each
+// not-indexed kind with its items alone, so the report compares with a statement's answer row for
+// row. A covered kind the report answers all zeros for, with no oldest lacking age, has no row, as
+// main's statements answer none for a kind holding no item. A covered kind whose lacking is not
+// its items less its current and failed carries it in its row, which then matches no statement's.
+func reportRowsOf(report model.SearchCoverage) ([]string, map[string]coverageRow) {
+	var rendered []string
+	byKind := map[string]coverageRow{}
+	for kind, counts := range map[string]model.SearchCoverageCounts{
+		"issue": report.Kinds.Issue, "document_block": report.Kinds.DocumentBlock, "comment_block": report.Kinds.CommentBlock,
+		"message_block": report.Kinds.MessageBlock, "ask_part": report.Kinds.AskPart,
+	} {
+		if counts == (model.SearchCoverageCounts{}) {
+			continue
+		}
+		row := coverageRow{kind: kind, indexed: true, items: counts.Items, current: counts.Current, failed: counts.Failed, oldest: counts.OldestLackingSeconds}
+		line := row.String()
+		if counts.Lacking != counts.Items-counts.Current-counts.Failed {
+			line += fmt.Sprintf(" lacking=%d", counts.Lacking)
+		}
+		rendered = append(rendered, line)
+		byKind[kind] = row
+	}
+	for _, kind := range report.NotIndexed {
+		row := coverageRow{kind: kind.Kind, items: kind.Items}
+		rendered = append(rendered, row.String())
+		byKind[kind.Kind] = row
+	}
+	slices.Sort(rendered)
+	return rendered, byKind
+}
+
+// inSavepoint runs read in a savepoint of tx that it then rolls back, which undoes every setting
+// read set local and leaves tx's snapshot as it was: a statement after it plans as though none had
+// been set.
+func inSavepoint(t *testing.T, tx pgx.Tx, read func(savepoint pgx.Tx)) {
+	t.Helper()
+	ctx := context.Background()
+	savepoint, err := tx.Begin(ctx)
+	if err != nil {
+		t.Fatalf("open a savepoint: %v", err)
+	}
+	defer func() { _ = savepoint.Rollback(ctx) }()
+	read(savepoint)
+}
+
+// headRowsOf reads Coverage's read (coverageRead) for identity in tx as Coverage runs it, under
+// the settings planCoverage sets, in a savepoint (inSavepoint), and answers the report as rows
+// (reportRowsOf). A read that answers an error fails the test: the comparison is of counts.
+func headRowsOf(t *testing.T, tx pgx.Tx, identity string) (rendered []string, byKind map[string]coverageRow) {
+	t.Helper()
+	inSavepoint(t, tx, func(savepoint pgx.Tx) {
+		ctx := context.Background()
+		if err := planCoverage(ctx, savepoint); err != nil {
+			t.Fatalf("plan Coverage's read as Coverage does: %v", err)
+		}
+		report, err := coverageRead(ctx, savepoint, identity)
+		if err != nil {
+			t.Fatalf("Coverage's read (coverageRead) for %q answers %v, want the counts", identity, err)
+		}
+		rendered, byKind = reportRowsOf(report)
+	})
+	return rendered, byKind
+}
+
+// mainRouteRowsOf reads main's route statement (mainRouteCoverageStatement) for identity in tx
+// under the settings main ran it under (mainRouteCoverageSettings), in a savepoint (inSavepoint).
+func mainRouteRowsOf(t *testing.T, tx pgx.Tx, identity string) (rendered []string, byKind map[string]coverageRow) {
+	t.Helper()
+	inSavepoint(t, tx, func(savepoint pgx.Tx) {
+		mustExec(t, savepoint, mainRouteCoverageSettings)
+		rendered, byKind = coverageRowsOf(t, savepoint, mainRouteCoverageStatement, identity)
+	})
+	return rendered, byKind
+}
+
+// The three sides every comparison of the report's answers reads, as its failures name them.
+const (
+	headSide      = "Coverage's read (coverageRead)"
+	mainRouteSide = "main's route statement (mainRouteCoverageStatement)"
+	mainSide      = "the statement before it (mainCoverageQuery)"
+)
+
+// requireCoverageSidesAgree reads in tx, a REPEATABLE READ transaction, so at one snapshot and one
+// now(), the three sides of the report's comparison for identity: Coverage's read (headRowsOf),
+// main's route statement (mainRouteRowsOf) and the statement before it (mainCoverageQuery). It
+// fails the test unless all three answer the same rows, whole - each kind and member with its
+// items, current, failed and oldest lacking age - naming the side that differs and printing all
+// three. It answers the rows mainCoverageQuery and Coverage's read gave, by kind.
+func requireCoverageSidesAgree(t *testing.T, tx pgx.Tx, stage, identity string) (mains, heads map[string]coverageRow) {
+	t.Helper()
+	mainRows, mains := coverageRowsOf(t, tx, mainCoverageQuery, identity)
+	routeRows, _ := mainRouteRowsOf(t, tx, identity)
+	headRows, heads := headRowsOf(t, tx, identity)
+	headRoute, headMain, routeMain := slices.Equal(headRows, routeRows), slices.Equal(headRows, mainRows), slices.Equal(routeRows, mainRows)
+	var differs string
+	switch {
+	case headRoute && headMain:
+		return mains, heads
+	case routeMain:
+		differs = headSide + " differs from the other two"
+	case headMain:
+		differs = mainRouteSide + " differs from the other two"
+	case headRoute:
+		differs = mainSide + " differs from the other two"
+	default:
+		differs = "all three sides differ"
+	}
+	t.Errorf("%s, identity %q, in one snapshot: %s:\n%s:\n  %s\n%s:\n  %s\n%s:\n  %s", stage, identity, differs,
+		headSide, strings.Join(headRows, "\n  "), mainRouteSide, strings.Join(routeRows, "\n  "), mainSide, strings.Join(mainRows, "\n  "))
+	return mains, heads
+}
+
+// requireMainsAnswer compares the report's three sides (requireCoverageSidesAgree) in one
+// REPEATABLE READ, read-only transaction, so all read one snapshot and one now(), for the
+// configured identity, for none ("") and for another identity. It answers the rows
+// mainCoverageQuery and Coverage's read gave for the configured identity, by kind.
 func requireMainsAnswer(t *testing.T, database *store.Store, stage string) (mains, heads map[string]coverageRow) {
 	t.Helper()
 	return requireMainsAnswerFor(t, database, stage, configuredIdentity)
 }
 
 // requireMainsAnswerFor is requireMainsAnswer with identity as the configured embedder's, as it is
-// once the embedder has changed: it compares the two answers for identity, for configuredIdentity
-// where identity is another, for none and for foreignIdentity, and answers the rows each gave for
-// identity, by kind.
+// once the embedder has changed: it compares the three sides for identity, for configuredIdentity
+// where identity is another, for none and for foreignIdentity, and answers the rows
+// mainCoverageQuery and Coverage's read gave for identity, by kind.
 func requireMainsAnswerFor(t *testing.T, database *store.Store, stage, identity string) (mains, heads map[string]coverageRow) {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := database.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
-		t.Fatalf("%s: begin the snapshot every statement reads: %v", stage, err)
+		t.Fatalf("%s: begin the snapshot every side reads: %v", stage, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	identities := []string{identity, "", foreignIdentity}
@@ -127,35 +245,12 @@ func requireMainsAnswerFor(t *testing.T, database *store.Store, stage, identity 
 		identities = append(identities, configuredIdentity)
 	}
 	for _, compared := range identities {
-		mainRows, mainKinds := coverageRowsOf(t, tx, mainCoverageQuery, compared)
-		headRows, headKinds := headRowsOf(t, tx, compared)
-		if !slices.Equal(mainRows, headRows) {
-			t.Errorf("%s, identity %q: the coverage statement answers other rows than main's statement in one snapshot:\nmain's statement:\n  %s\nthe coverage statement:\n  %s",
-				stage, compared, strings.Join(mainRows, "\n  "), strings.Join(headRows, "\n  "))
-		}
+		mainKinds, headKinds := requireCoverageSidesAgree(t, tx, stage, compared)
 		if compared == identity {
 			mains, heads = mainKinds, headKinds
 		}
 	}
 	return mains, heads
-}
-
-// headRowsOf reads the coverage statement for identity in tx as Coverage runs it, under the
-// settings planCoverage sets, inside a savepoint that it rolls back, which undoes those settings
-// and leaves tx's snapshot as it was: a statement after it plans as though they had never been
-// set.
-func headRowsOf(t *testing.T, tx pgx.Tx, identity string) ([]string, map[string]coverageRow) {
-	t.Helper()
-	ctx := context.Background()
-	savepoint, err := tx.Begin(ctx)
-	if err != nil {
-		t.Fatalf("open a savepoint for the coverage statement: %v", err)
-	}
-	defer func() { _ = savepoint.Rollback(ctx) }()
-	if err := planCoverage(ctx, savepoint); err != nil {
-		t.Fatalf("plan the coverage statement as Coverage does: %v", err)
-	}
-	return coverageRowsOf(t, savepoint, coverageQuery, identity)
 }
 
 // updateRow sets set (whose arguments are $3 on) on the embeddings row of kind and id ($1 and
@@ -336,14 +431,14 @@ func trustedIssues(t *testing.T, database *store.Store, identity string) (truste
 	return trusted, stale
 }
 
-// The coverage statement answers what main's statement (mainCoverageQuery) answered, row for row,
-// under planCoverage's settings (requireMainsAnswer), over every state an item can be in
-// (seedEveryCoverageState), for the configured identity, for none and for another, read in one
-// snapshot: before any record run, when every issue builds and hashes its text; once the record
-// step has recorded every issue's source, when the report reads most issues' hashes from their
-// rows; and once every input an issue's text is built from has changed after its source was
-// recorded (changeInputsAfterRecording). This is the report unchanged against the base on a
-// seeded corpus.
+// The report's read (coverageRead) answers what main's statements (mainRouteCoverageStatement and
+// mainCoverageQuery) answered, row for row, each under its settings (requireMainsAnswer), over
+// every state an item can be in (seedEveryCoverageState), filled once after the seed, for the
+// configured identity, for none and for another, read in one snapshot: before any record run,
+// when every issue builds and hashes its text; once the record step has recorded every issue's
+// source, when main's route statement reads most issues' hashes from their rows; and once every
+// input an issue's text is built from has changed after its source was recorded
+// (changeInputsAfterRecording).
 //
 // The last stage is not vacuous: the two issues whose inputs changed with their triggers off still
 // hold a vector of the configured identity at their rows' content_hash, so a report that trusted a
@@ -353,9 +448,10 @@ func TestCoverageAnswersWhatMainsStatementAnswers(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	states := seedEveryCoverageState(t, database)
+	fillCounts(t, database)
 	requireIssuesCurrent := func(stage string, mains, heads map[string]coverageRow, want int64) {
 		t.Helper()
-		for name, rows := range map[string]map[string]coverageRow{"main's statement": mains, "the coverage statement": heads} {
+		for name, rows := range map[string]map[string]coverageRow{"main's statement": mains, "Coverage's read": heads} {
 			if got := rows["issue"].current; got != want {
 				t.Errorf("%s: %s counts %d issues current, want %d: %v", stage, name, got, want, rows["issue"])
 			}

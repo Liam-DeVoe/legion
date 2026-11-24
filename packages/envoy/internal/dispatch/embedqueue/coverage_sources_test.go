@@ -128,6 +128,7 @@ func TestEachEditOfAnIssuesInputsMakesTheReportHashItUntilTheNextRun(t *testing.
 	seedIssue(t, database, "REDT", "REDT-1", "A title")
 	spec := seedSpec(t, database.Pool, "REDT", "REDT-1", "## Summary\n\nThe first version.\n")
 	embedRowAs(t, database.Pool, "issue", "REDT-1", configuredIdentity)
+	fillCounts(t, database)
 	if recorded := recordOnce(t, database); recorded != 1 {
 		t.Fatalf("the first run recorded %d sources, want REDT-1's", recorded)
 	}

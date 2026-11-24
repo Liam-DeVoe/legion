@@ -67,95 +67,6 @@ func topUpDeltas(t *testing.T, database *store.Store, total int) {
 		from generate_series(1, $1) g`, total-held)
 }
 
-// readSixColumns is the report's statement (coverageRead) narrowed to the six columns main's
-// coverage statement answers, for a comparison of the two row for row.
-var readSixColumns = `select kind, indexed, items, current, failed, oldest
-	from (` + coverageRead + `) read (delta_rows, filled, kind, indexed, items, current, failed, oldest)`
-
-// readRowsOf reads the report's statement for identity in tx as Coverage runs it, under the
-// settings planCoverage sets, inside a savepoint it rolls back, as headRowsOf reads main's.
-func readRowsOf(t *testing.T, tx pgx.Tx, identity string) []string {
-	t.Helper()
-	ctx := context.Background()
-	savepoint, err := tx.Begin(ctx)
-	if err != nil {
-		t.Fatalf("open a savepoint for the report's statement: %v", err)
-	}
-	defer func() { _ = savepoint.Rollback(ctx) }()
-	if err := planCoverage(ctx, savepoint); err != nil {
-		t.Fatalf("plan the report's statement as Coverage does: %v", err)
-	}
-	rows, _ := coverageRowsOf(t, savepoint, readSixColumns, identity)
-	return rows
-}
-
-// requireReadIsMains fails the test unless the report's statement answers what main's statement
-// (mainCoverageQuery) answers, every row whole, for the configured identity, for none and for
-// another, all in one REPEATABLE READ snapshot and so one now(): R7's "the same members, kinds and
-// counts as main's statement at the same snapshot", the oldest lacking ages included.
-func requireReadIsMains(t *testing.T, database *store.Store, stage string) {
-	t.Helper()
-	ctx := context.Background()
-	tx, err := database.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	if err != nil {
-		t.Fatalf("%s: begin the snapshot both statements read: %v", stage, err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	for _, identity := range []string{configuredIdentity, "", foreignIdentity} {
-		mains, _ := coverageRowsOf(t, tx, mainCoverageQuery, identity)
-		reads := readRowsOf(t, tx, identity)
-		if !slices.Equal(mains, reads) {
-			t.Errorf("%s, identity %q: the report's statement answers\n  %s\nwhere main's statement answers\n  %s",
-				stage, identity, strings.Join(reads, "\n  "), strings.Join(mains, "\n  "))
-		}
-	}
-}
-
-// requireCoverageIsMains fails the test unless Coverage, the route's read, answers for identity
-// the members, kinds and counts main's statement answers read just after it, with each oldest
-// lacking age within a second of main's (the two read two snapshots, a moment apart).
-func requireCoverageIsMains(t *testing.T, database *store.Store, identity, stage string) {
-	t.Helper()
-	ctx := context.Background()
-	report, err := Coverage(ctx, database, identity)
-	if err != nil {
-		t.Fatalf("%s: Coverage: %v", stage, err)
-	}
-	tx, err := database.Pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		t.Fatalf("%s: begin main's read: %v", stage, err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	_, mains := coverageRowsOf(t, tx, mainCoverageQuery, identity)
-	for kind, counts := range map[string]struct {
-		items, current, failed, lacking int64
-		oldest                          *int64
-	}{
-		"issue":          {report.Kinds.Issue.Items, report.Kinds.Issue.Current, report.Kinds.Issue.Failed, report.Kinds.Issue.Lacking, report.Kinds.Issue.OldestLackingSeconds},
-		"document_block": {report.Kinds.DocumentBlock.Items, report.Kinds.DocumentBlock.Current, report.Kinds.DocumentBlock.Failed, report.Kinds.DocumentBlock.Lacking, report.Kinds.DocumentBlock.OldestLackingSeconds},
-		"comment_block":  {report.Kinds.CommentBlock.Items, report.Kinds.CommentBlock.Current, report.Kinds.CommentBlock.Failed, report.Kinds.CommentBlock.Lacking, report.Kinds.CommentBlock.OldestLackingSeconds},
-		"message_block":  {report.Kinds.MessageBlock.Items, report.Kinds.MessageBlock.Current, report.Kinds.MessageBlock.Failed, report.Kinds.MessageBlock.Lacking, report.Kinds.MessageBlock.OldestLackingSeconds},
-		"ask_part":       {report.Kinds.AskPart.Items, report.Kinds.AskPart.Current, report.Kinds.AskPart.Failed, report.Kinds.AskPart.Lacking, report.Kinds.AskPart.OldestLackingSeconds},
-	} {
-		main := mains[kind]
-		if counts.items != main.items || counts.current != main.current || counts.failed != main.failed ||
-			counts.lacking != main.items-main.current-main.failed {
-			t.Errorf("%s, identity %q, %s: the route answers items %d, current %d, failed %d, lacking %d; main's statement %s",
-				stage, identity, kind, counts.items, counts.current, counts.failed, counts.lacking, main)
-		}
-		if (counts.oldest == nil) != (main.oldest == nil) ||
-			(counts.oldest != nil && (*counts.oldest-max(*main.oldest, 0) > 1 || max(*main.oldest, 0)-*counts.oldest > 1)) {
-			t.Errorf("%s, identity %q, %s: the route answers the oldest lacking age %v; main's statement %s",
-				stage, identity, kind, counts.oldest, main)
-		}
-	}
-	for _, kind := range report.NotIndexed {
-		if main := mains[kind.Kind]; main.indexed || kind.Items != main.items {
-			t.Errorf("%s, identity %q: the route counts %d of %s; main's statement %s", stage, identity, kind.Items, kind.Kind, main)
-		}
-	}
-}
-
 // seedRowsCorpus writes items numbered from to to of every kind the report counts under project,
 // each kind in every class main's statement tells apart: issues waiting for a vector, current,
 // embedded by another identity and dead; windows of each window kind the same, and white space
@@ -280,17 +191,26 @@ func explainRead(t *testing.T, database *store.Store, statement string, args []a
 	return explaintest.OnePlan(t, raw)
 }
 
-// rowsRead is the sum over every scan of a relation in plan, an analyzed plan, of the rows it
-// answered times the times it ran, and those of them that read search_coverage_deltas.
+// rowsRead is what plan, an analyzed plan, read: the sum over every scan node - every node that
+// reads a table or an index - of the rows it read, its actual rows plus the rows its Filter removed
+// (RowsRemovedByFilter) and the rows its index recheck removed (RowsRemovedByIndexRecheck), times
+// the times it ran; and those of them that read search_coverage_deltas. A probe that walked an
+// index's entries and threw them away by a Filter, or a bitmap heap scan whose recheck threw away
+// the rows of pages its bitmap held lossily, counts every row it read, not only the rows it
+// answered.
 func rowsRead(t *testing.T, plan []byte) (read, deltas float64, scans []string) {
 	t.Helper()
-	for _, scan := range explaintest.Scans(t, plan) {
-		rows := scan.Loops * scan.Rows
+	for _, node := range explaintest.Nodes(t, plan) {
+		if node.Relation == "" && node.Index == "" {
+			continue
+		}
+		rows := node.Loops * (node.Rows + node.RowsRemovedByFilter + node.RowsRemovedByIndexRecheck)
 		read += rows
-		if scan.Relation == "search_coverage_deltas" {
+		if node.Relation == "search_coverage_deltas" {
 			deltas += rows
 		}
-		scans = append(scans, fmt.Sprintf("%s using %s: %v x %v", scan.Relation, scan.Index, scan.Loops, scan.Rows))
+		scans = append(scans, fmt.Sprintf("%s: %v x (%v answered + %v removed by its Filter + %v by its recheck)",
+			node, node.Loops, node.Rows, node.RowsRemovedByFilter, node.RowsRemovedByIndexRecheck))
 	}
 	return read, deltas, scans
 }
@@ -308,9 +228,10 @@ func requireAnswers(t *testing.T, database *store.Store, identity string, want e
 // TestCoverageReadsTheSameRowsAtTwiceTheCorpus holds R7a: the route reads a number of rows that
 // does not grow with the corpus, in every state it reads in (coverageRouteStates). In each, at N
 // and at 2N items of every kind (seedRowsCorpus), the report's one statement is explained with
-// ANALYZE for the configured identity and for none, and the rows every scan of a relation answered,
-// times the times it ran, add up to the same at both sizes; no state reads more than
-// coverageDeltaBound + 1 delta rows, and each reads every delta row it holds up to that.
+// ANALYZE for the configured identity and for none, and the rows every scan node read - the rows
+// it answered, its Filter removed and its index recheck removed, times the times it ran (rowsRead)
+// - add up to the same at both sizes; no state reads more than coverageDeltaBound + 1 delta rows,
+// and each reads every delta row it holds up to that.
 func TestCoverageReadsTheSameRowsAtTwiceTheCorpus(t *testing.T) {
 	const n = 20
 	for _, state := range coverageRouteStates {
@@ -322,7 +243,7 @@ func TestCoverageReadsTheSameRowsAtTwiceTheCorpus(t *testing.T) {
 				for _, identity := range []string{configuredIdentity, ""} {
 					stage := fmt.Sprintf("%d items of every kind, identity %q", size, identity)
 					requireAnswers(t, database, identity, state.answers, stage)
-					rows, deltas, named := rowsRead(t, explainRead(t, database, coverageRead, []any{identity}, true))
+					rows, deltas, named := rowsRead(t, explainRead(t, database, coverageReadStatement, []any{identity}, true))
 					if deltas > coverageDeltaBound+1 || deltas != float64(min(state.deltas, coverageDeltaBound+1)) {
 						t.Errorf("%s: the report read %v delta rows of the %d it holds, want them all and at most %d",
 							stage, deltas, state.deltas, coverageDeltaBound+1)
@@ -400,7 +321,7 @@ func TestTheCoverageReadScansNoTableWithoutAnIndexCondition(t *testing.T) {
 			database := seedRouteState(t, state, 10)
 			tables := indexTables(t, database)
 			for _, identity := range []string{configuredIdentity, ""} {
-				plan := explainRead(t, database, coverageRead, []any{identity}, false)
+				plan := explainRead(t, database, coverageReadStatement, []any{identity}, false)
 				if growing := unkeyedScansOfGrowingTables(t, plan, tables); len(growing) > 0 {
 					t.Errorf("identity %q: the report's statement reads a table that grows with the corpus by a scan with no index condition: %s",
 						identity, strings.Join(growing, "; "))
@@ -484,18 +405,18 @@ func TestTheCoverageRouteSendsNoStatementOfMains(t *testing.T) {
 }
 
 // TestCoverageReadsAtMostTheDeltaBound holds R7j's read: with coverageDeltaBound delta rows
-// unfolded Coverage answers the counts, which equal main's statement's, row for row in one
-// snapshot and as Coverage answers them; with one more it answers ErrCoverageFoldBehind, the bound
-// the route names being 100,000.
+// unfolded Coverage answers the counts, and its read (coverageRead) answers what main's two
+// statements answer, row for row in one snapshot (requireMainsAnswer); with one more it answers
+// ErrCoverageFoldBehind, the bound the route names being 100,000.
 func TestCoverageReadsAtMostTheDeltaBound(t *testing.T) {
 	database := storetest.Open(t)
 	seedEveryCoverageState(t, database)
 	fillCounts(t, database)
 	topUpDeltas(t, database, coverageDeltaBound)
 
-	requireReadIsMains(t, database, "100,000 delta rows unfolded")
+	requireMainsAnswer(t, database, "100,000 delta rows unfolded")
 	for _, identity := range []string{configuredIdentity, "", foreignIdentity} {
-		requireCoverageIsMains(t, database, identity, "100,000 delta rows unfolded")
+		requireAnswers(t, database, identity, nil, fmt.Sprintf("100,000 delta rows unfolded, identity %q", identity))
 	}
 
 	topUpDeltas(t, database, coverageDeltaBound+1)

@@ -30,18 +30,41 @@ const (
 	coverageFillFailedLine = `level=ERROR msg="dispatch embedqueue: coverage counts fill failed; it runs again later"`
 )
 
-// coverageOracleSource is the file that holds mainCoverageQuery, the coverage statement before
-// the kept counts, which embedqueue's tests keep as the oracle of the report's answers.
-const coverageOracleSource = "../../internal/dispatch/embedqueue/coverage_oracle_test.go"
+// The files of embedqueue's tests that hold its frozen coverage statements: the statement before
+// the kept counts (mainCoverageQuery), and main's route statement (mainRouteCoverageStatement)
+// with the settings main ran it under (mainRouteCoverageSettings).
+const (
+	coverageOracleSource        = "../../internal/dispatch/embedqueue/coverage_oracle_test.go"
+	coverageMainStatementSource = "../../internal/dispatch/embedqueue/coverage_main_statement_test.go"
+)
 
-// mainCoverageQuery reads embedqueue's oracle (mainCoverageQuery in coverageOracleSource) from its
-// source, so the server's answers are held to the one frozen text the package's own tests hold
-// the report to, and not to a second copy: Go shares no test code across packages.
-func mainCoverageQuery(t *testing.T) string {
+// coverageOracles are embedqueue's two frozen coverage statements, which every answer of the
+// route is compared with: before, the statement before the kept counts (mainCoverageQuery); route,
+// main's route statement (mainRouteCoverageStatement); and routeSettings, the settings main ran it
+// under (mainRouteCoverageSettings).
+type coverageOracles struct {
+	before, route, routeSettings string
+}
+
+// readCoverageOracles reads the two frozen statements and the route's settings from embedqueue's
+// test source (frozenConstant).
+func readCoverageOracles(t *testing.T) coverageOracles {
 	t.Helper()
-	file, err := parser.ParseFile(token.NewFileSet(), coverageOracleSource, nil, 0)
+	return coverageOracles{
+		before:        frozenConstant(t, coverageOracleSource, "mainCoverageQuery"),
+		route:         frozenConstant(t, coverageMainStatementSource, "mainRouteCoverageStatement"),
+		routeSettings: frozenConstant(t, coverageMainStatementSource, "mainRouteCoverageSettings"),
+	}
+}
+
+// frozenConstant reads the string constant name from source, a file of embedqueue's tests, so the
+// server's answers are held to the one frozen text the package's own tests hold the report to, and
+// not to a second copy: Go shares no test code across packages.
+func frozenConstant(t *testing.T, source, name string) string {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), source, nil, 0)
 	if err != nil {
-		t.Fatalf("parse the coverage oracle's source: %v", err)
+		t.Fatalf("parse %s: %v", source, err)
 	}
 	for _, declaration := range file.Decls {
 		constants, ok := declaration.(*ast.GenDecl)
@@ -50,23 +73,23 @@ func mainCoverageQuery(t *testing.T) string {
 		}
 		for _, spec := range constants.Specs {
 			value := spec.(*ast.ValueSpec)
-			for position, name := range value.Names {
-				if name.Name != "mainCoverageQuery" {
+			for position, constant := range value.Names {
+				if constant.Name != name {
 					continue
 				}
 				literal, ok := value.Values[position].(*ast.BasicLit)
 				if !ok || literal.Kind != token.STRING {
-					t.Fatalf("mainCoverageQuery in %s is no string literal", coverageOracleSource)
+					t.Fatalf("%s in %s is no string literal", name, source)
 				}
 				text, err := strconv.Unquote(literal.Value)
 				if err != nil {
-					t.Fatalf("read mainCoverageQuery's text: %v", err)
+					t.Fatalf("read %s's text: %v", name, err)
 				}
 				return text
 			}
 		}
 	}
-	t.Fatalf("%s holds no mainCoverageQuery", coverageOracleSource)
+	t.Fatalf("%s holds no %s", source, name)
 	return ""
 }
 
@@ -163,13 +186,21 @@ func (s coverageServer) coverage(t *testing.T) httpAnswer {
 	return httpAnswer{status: response.StatusCode, header: response.Header, body: body}
 }
 
-// requireCoverageRefused fails the test unless the route answers 503 with code, its message holding
-// says.
-func requireCoverageRefused(t *testing.T, server coverageServer, code, says string) {
+// coverageNotFilledMessage is the error the route answers SEARCH_COVERAGE_NOT_FILLED with.
+const coverageNotFilledMessage = "the search coverage counts are not filled yet; try again later"
+
+// requireCoverageRefused fails the test unless the route answers 503 with code and, as its error,
+// exactly message.
+func requireCoverageRefused(t *testing.T, server coverageServer, code, message string) {
 	t.Helper()
 	answer := server.coverage(t)
-	if answer.status != http.StatusServiceUnavailable || answer.code() != code || !strings.Contains(string(answer.body), says) {
-		t.Fatalf("the coverage route answers %s, want 503 %s saying %q", answer, code, says)
+	var refusal struct {
+		Code  string `json:"code"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(answer.body, &refusal); err != nil || answer.status != http.StatusServiceUnavailable ||
+		refusal.Code != code || refusal.Error != message {
+		t.Fatalf("the coverage route answers %s, want 503 %s with the error %q", answer, code, message)
 	}
 }
 
@@ -181,19 +212,41 @@ func requireHealthy(t *testing.T, p *dispatchProcess) {
 	}
 }
 
-// coverageDifference compares report, the route's answer, with main's statement (mainCoverageQuery)
-// read now for the report's identity, and answers how they differ: "" when every kind's items,
-// current, failed and lacking and every not-indexed count are the same and each oldest lacking age is
-// within 2 s of main's (the two read a moment apart).
-func coverageDifference(t *testing.T, database *store.Store, oracle string, report model.SearchCoverage) string {
+// coverageDifference compares report, the route's answer, with embedqueue's two frozen statements
+// (coverageOracles) read now for the report's identity, both at one snapshot: a REPEATABLE READ
+// transaction reads the statement before the kept counts, then sets main's route settings and
+// reads main's route statement. It answers how report differs from each, one line per kind, ""
+// when it differs from neither (statementDifference).
+func coverageDifference(t *testing.T, database *store.Store, oracles coverageOracles, report model.SearchCoverage) string {
 	t.Helper()
 	identity := ""
 	if report.Identity != nil {
 		identity = *report.Identity
 	}
-	rows, err := database.Pool.Query(context.Background(), oracle, identity)
+	ctx := context.Background()
+	tx, err := database.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
-		t.Fatalf("run main's coverage statement: %v", err)
+		t.Fatalf("begin the snapshot main's statements read: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	differences := statementDifference(t, tx, "mainCoverageQuery", oracles.before, identity, report)
+	if _, err := tx.Exec(ctx, oracles.routeSettings); err != nil {
+		t.Fatalf("set the settings main ran its route statement under: %v", err)
+	}
+	differences = append(differences, statementDifference(t, tx, "mainRouteCoverageStatement", oracles.route, identity, report)...)
+	return strings.Join(differences, "\n")
+}
+
+// statementDifference compares report with what statement, the frozen statement named side,
+// answers for identity in tx, and answers one line for each kind they differ on: none when every
+// covered kind's items, current, failed and lacking and every not-indexed count are the same, each
+// oldest lacking age is within 2 s of the statement's (the route read a moment before), and every
+// covered kind the statement answers no row for, which holds no item, the route answers all zeros.
+func statementDifference(t *testing.T, tx pgx.Tx, side, statement, identity string, report model.SearchCoverage) []string {
+	t.Helper()
+	rows, err := tx.Query(context.Background(), statement, identity)
+	if err != nil {
+		t.Fatalf("run %s: %v", side, err)
 	}
 	defer rows.Close()
 	kinds := map[string]model.SearchCoverageCounts{
@@ -211,35 +264,45 @@ func coverageDifference(t *testing.T, database *store.Store, oracle string, repo
 		var items, current, failed int64
 		var oldest *int64
 		if err := rows.Scan(&kind, &indexed, &items, &current, &failed, &oldest); err != nil {
-			t.Fatalf("read main's coverage statement: %v", err)
+			t.Fatalf("read %s: %v", side, err)
 		}
 		if !indexed {
-			if notIndexed[kind] != items {
-				differences = append(differences, fmt.Sprintf("%s: the route counts %d, main's statement %d", kind, notIndexed[kind], items))
+			if counted, ok := notIndexed[kind]; !ok || counted != items {
+				differences = append(differences, fmt.Sprintf("%s: the route counts %d, %s %d", kind, counted, side, items))
 			}
+			delete(notIndexed, kind)
 			continue
 		}
-		got := kinds[kind]
+		got, ok := kinds[kind]
 		ages := got.OldestLackingSeconds == nil && oldest == nil ||
 			got.OldestLackingSeconds != nil && oldest != nil && max(*got.OldestLackingSeconds-max(*oldest, 0), max(*oldest, 0)-*got.OldestLackingSeconds) <= 2
-		if got.Items != items || got.Current != current || got.Failed != failed || got.Lacking != items-current-failed || !ages {
-			differences = append(differences, fmt.Sprintf("%s: the route answers %+v, main's statement items %d, current %d, failed %d, oldest %v",
-				kind, got, items, current, failed, oldest))
+		if !ok || got.Items != items || got.Current != current || got.Failed != failed || got.Lacking != items-current-failed || !ages {
+			differences = append(differences, fmt.Sprintf("%s: the route answers %+v, %s items %d, current %d, failed %d, oldest %v",
+				kind, got, side, items, current, failed, oldest))
 		}
+		delete(kinds, kind)
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("read main's coverage statement: %v", err)
+		t.Fatalf("read %s: %v", side, err)
 	}
-	return strings.Join(differences, "\n")
+	for kind, got := range kinds {
+		if got != (model.SearchCoverageCounts{}) {
+			differences = append(differences, fmt.Sprintf("%s: the route answers %+v, %s no row: no item", kind, got, side))
+		}
+	}
+	for kind, counted := range notIndexed {
+		differences = append(differences, fmt.Sprintf("%s: the route counts %d, %s no row", kind, counted, side))
+	}
+	return differences
 }
 
 // requireCoverageIsMains fails the test unless the route answers 200 with the kept counts, and
-// those equal main's statement's (coverageDifference) within 30 s: an embedder beside the counts
-// keeps writing until its queue is drained, and each read of the route and main's statement is a
-// moment of its own.
+// those equal both of main's statements' (coverageDifference) within 30 s: an embedder beside the
+// counts keeps writing until its queue is drained, and the route's read and main's statements'
+// are each a moment of its own, so a difference is read again every 200 ms until none is left.
 func requireCoverageIsMains(t *testing.T, server coverageServer, database *store.Store) {
 	t.Helper()
-	oracle := mainCoverageQuery(t)
+	oracles := readCoverageOracles(t)
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		answer := server.coverage(t)
@@ -250,12 +313,12 @@ func requireCoverageIsMains(t *testing.T, server coverageServer, database *store
 		if err := json.Unmarshal(answer.body, &report); err != nil {
 			t.Fatalf("read the coverage route's answer: %v\n%s", err, answer.body)
 		}
-		difference := coverageDifference(t, database, oracle, report)
+		difference := coverageDifference(t, database, oracles, report)
 		if difference == "" {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the route's kept counts differ from main's statement's:\n%s", difference)
+			t.Fatalf("the route's kept counts differ from main's statements':\n%s", difference)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -285,9 +348,9 @@ var devEmbedderOptions = dispatchOptions{Env: map[string]string{
 // TestTheServerFillsTheCoverageCountsAfterItListens holds R7k: a server started on counts no
 // fill has filled (done_at unset), its fill held where it runs, listens - its listening line
 // names since_start_ms - and serves: /healthz answers, and the coverage route answers 503
-// SEARCH_COVERAGE_NOT_FILLED. Once the hold ends the log holds `coverage counts filled` and the
-// route answers the kept counts, equal to main's statement's. With no embedder and with the dev
-// embedder.
+// SEARCH_COVERAGE_NOT_FILLED whose error is exactly coverageNotFilledMessage. Once the hold ends
+// the log holds `coverage counts filled` and the route answers the kept counts, equal to both of
+// main's statements' (requireCoverageIsMains). With no embedder and with the dev embedder.
 func TestTheServerFillsTheCoverageCountsAfterItListens(t *testing.T) {
 	for _, run := range []struct {
 		name, host string
@@ -304,7 +367,7 @@ func TestTheServerFillsTheCoverageCountsAfterItListens(t *testing.T) {
 			}
 			requireHeld(t, hold, "fill")
 			requireHealthy(t, process)
-			requireCoverageRefused(t, server, "SEARCH_COVERAGE_NOT_FILLED", "the search coverage counts are not filled yet; try again later")
+			requireCoverageRefused(t, server, "SEARCH_COVERAGE_NOT_FILLED", coverageNotFilledMessage)
 			if process.logged(coverageFilledLine) || filled(t, database) {
 				t.Fatal("the fill ended while it was held")
 			}
@@ -385,7 +448,7 @@ func TestAFailedFillKeepsServingAndRefusesUntilAFillEnds(t *testing.T) {
 	process.waitHealthy(t)
 	process.waitForLog(t, 30*time.Second, coverageFillFailedLine, "fill was made to fail")
 	requireHealthy(t, process)
-	requireCoverageRefused(t, coverageServer{dispatchProcess: process}, "SEARCH_COVERAGE_NOT_FILLED", "not filled yet")
+	requireCoverageRefused(t, coverageServer{dispatchProcess: process}, "SEARCH_COVERAGE_NOT_FILLED", coverageNotFilledMessage)
 
 	endHold(t, hold)
 	process.waitForLog(t, 30*time.Second, coverageFilledLine)
@@ -406,7 +469,7 @@ func TestAFillPastItsTimeoutIsAFailedFill(t *testing.T) {
 	held := time.Now()
 	process.waitForLog(t, 30*time.Second, coverageFillFailedLine, "timed_out=true")
 	requireHealthy(t, process)
-	requireCoverageRefused(t, coverageServer{dispatchProcess: process}, "SEARCH_COVERAGE_NOT_FILLED", "not filled yet")
+	requireCoverageRefused(t, coverageServer{dispatchProcess: process}, "SEARCH_COVERAGE_NOT_FILLED", coverageNotFilledMessage)
 	time.Sleep(time.Until(held.Add(3 * time.Second)))
 
 	endHold(t, hold)
@@ -439,7 +502,8 @@ func TestTheCoverageRouteAnswersFoldBehindPastTheBound(t *testing.T) {
 		from generate_series(1, 100001) g`); err != nil {
 		t.Fatalf("leave 100,001 delta rows unfolded: %v", err)
 	}
-	requireCoverageRefused(t, coverageServer{dispatchProcess: process}, "SEARCH_COVERAGE_FOLD_BEHIND", "more than 100,000 rows of writes")
+	requireCoverageRefused(t, coverageServer{dispatchProcess: process}, "SEARCH_COVERAGE_FOLD_BEHIND",
+		"more than 100,000 rows of writes are not folded into the search coverage counts yet; try again later")
 }
 
 // TestTheCoverageRouteAnswersItsTimeoutAt503 holds R7p's server row: a server whose route's
@@ -462,5 +526,6 @@ func TestTheCoverageRouteAnswersItsTimeoutAt503(t *testing.T) {
 	if _, err := hold.Exec(ctx, `lock table search_coverage_counts in access exclusive mode`); err != nil {
 		t.Fatalf("hold search_coverage_counts: %v", err)
 	}
-	requireCoverageRefused(t, coverageServer{dispatchProcess: process}, "SEARCH_COVERAGE_TIMEOUT", "200ms bound")
+	requireCoverageRefused(t, coverageServer{dispatchProcess: process}, "SEARCH_COVERAGE_TIMEOUT",
+		"the search coverage statement ran past its 200ms bound, so nothing was counted; try again later")
 }

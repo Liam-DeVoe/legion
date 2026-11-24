@@ -54,5 +54,5 @@ const mainRouteCoverageStatement = `
 const mainRouteCoverageSettings = `set local enable_seqscan = off; set local enable_sort = off; set local max_parallel_workers_per_gather = 0; set local jit = off; set local work_mem = '128MB'`
 
 // coverageQuery is mainRouteCoverageStatement under the name the tests written before the kept
-// counts read it by (headRowsOf, the plan and scale tests of main's statement).
+// counts read it by (the plan and scale tests of main's statement).
 var coverageQuery = mainRouteCoverageStatement

@@ -211,67 +211,6 @@ func TestEveryCountedTableCarriesItsCountingTrigger(t *testing.T) {
 	}
 }
 
-// keptReport is the report the kept counts give for the identity $1, by kind: items, current and
-// failed, summed over the base rows and the delta rows not yet folded (plan D7, "What the read
-// answers"), for each kind holding an item.
-const keptReport = `
-	select kind, sum(items)::bigint,
-	       coalesce(sum(items) filter (where matched and $1::text <> '' and model = $1::text), 0)::bigint,
-	       (coalesce(sum(items) filter (where dead), 0)
-	        - coalesce(sum(items) filter (where dead and matched and $1::text <> '' and model = $1::text), 0))::bigint
-	from (select kind, model, matched, dead, items from search_coverage_counts
-	      union all
-	      select kind, model, matched, dead, items from search_coverage_deltas) kept
-	group by kind
-	having sum(items) <> 0
-	order by kind`
-
-// mainsReport is what mainCoverageQuery answers for the identity $1, by kind, in keptReport's
-// shape: every kind but session, which route_roster's one row gives and no count keeps, holding an
-// item.
-const mainsReport = `
-	select kind, items, current, failed
-	from (` + mainCoverageQuery + `) main (kind, covered, items, current, failed, waited)
-	where kind <> 'session' and items <> 0
-	order by kind`
-
-// requireKeptCountsAreMains fails the test unless the kept counts (keptReport) answer what
-// mainCoverageQuery answers, for the configured identity, for none and for another, all in one
-// REPEATABLE READ snapshot, printing both answers where they differ.
-func requireKeptCountsAreMains(t *testing.T, database *store.Store, stage string) {
-	t.Helper()
-	ctx := context.Background()
-	tx, err := database.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	if err != nil {
-		t.Fatalf("%s: begin the snapshot both reports read: %v", stage, err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	report := func(statement, identity string) []string {
-		t.Helper()
-		rows, err := tx.Query(ctx, statement, identity)
-		if err != nil {
-			t.Fatalf("%s: read a report for %q: %v", stage, identity, err)
-		}
-		lines, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (string, error) {
-			var kind string
-			var items, current, failed int64
-			err := row.Scan(&kind, &items, &current, &failed)
-			return fmt.Sprintf("%s: items %d, current %d, failed %d", kind, items, current, failed), err
-		})
-		if err != nil {
-			t.Fatalf("%s: read a report for %q: %v", stage, identity, err)
-		}
-		return lines
-	}
-	for _, identity := range []string{configuredIdentity, "", foreignIdentity} {
-		kept, mains := report(keptReport, identity), report(mainsReport, identity)
-		if !slices.Equal(kept, mains) {
-			t.Errorf("%s, identity %q: the kept counts answer\n  %s\nwhere main's statement answers\n  %s",
-				stage, identity, strings.Join(kept, "\n  "), strings.Join(mains, "\n  "))
-		}
-	}
-}
-
 // TestTwoWritesToOneIssuesInputsLeaveItsStateRowCurrent holds R7's "after every write that fires
 // the triggers" where two transactions change two inputs of one issue at once: A edits its title
 // and B rewrites its spec's latest version in place, B's statement starting while A, which has
@@ -294,7 +233,8 @@ func TestTwoWritesToOneIssuesInputsLeaveItsStateRowCurrent(t *testing.T) {
 		`embedding = $3::vector, model = $4, embedded_at = now(),
 		 embedded_hash = encode(sha256(convert_to(issue_embedding_text($5, $6), 'UTF8')), 'hex')`,
 		embed.Literal(oneVector()), configuredIdentity, title, spec)
-	requireKeptCountsAreMains(t, database, "before the writes")
+	fillCounts(t, database)
+	requireMainsAnswer(t, database, "before the writes")
 
 	a, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -333,7 +273,7 @@ func TestTwoWritesToOneIssuesInputsLeaveItsStateRowCurrent(t *testing.T) {
 	if err := b.Commit(ctx); err != nil {
 		t.Fatalf("commit B: %v", err)
 	}
-	requireKeptCountsAreMains(t, database, "after A and B committed")
+	requireMainsAnswer(t, database, "after A and B committed")
 }
 
 // ───── the counts loop: the fold, the recount, the fill (R7e to R7i, R7o, R7x) ─────
@@ -626,7 +566,7 @@ func TestTheCountsLoopRecountsAtLeastEveryElevenMinutes(t *testing.T) {
 				}
 				return false
 			})
-			requireReadIsMains(t, database, "after the recount that followed the writes with their triggers off")
+			requireMainsAnswer(t, database, "after the recount that followed the writes with their triggers off")
 		})
 	}
 }
@@ -774,7 +714,7 @@ func requireCountsBesideLiveWritesHeld(t *testing.T, fill bool, run func(context
 		t.Fatal("the statement did not end within 60s of the hold's end")
 	}
 	foldCounts(t, database)
-	requireReadIsMains(t, database, "after the next fold")
+	requireMainsAnswer(t, database, "after the next fold")
 	if _, err := Coverage(ctx, database, configuredIdentity); err != nil {
 		t.Errorf("Coverage after the next fold: %v", err)
 	}
@@ -879,7 +819,7 @@ func TestAFoldAndARecountTakeTurnsOnOneTransactionLock(t *testing.T) {
 				t.Errorf("after both transactions ended the counts lock is held by %d sessions and waited for by %v (%v), want none",
 					holders, waiting, err)
 			}
-			requireReadIsMains(t, database, "after the fold and the recount")
+			requireMainsAnswer(t, database, "after the fold and the recount")
 		})
 	}
 }
@@ -956,7 +896,7 @@ func TestAFailedFoldLogsAndTheNextOneCatchesUp(t *testing.T) {
 	if err := database.Pool.QueryRow(context.Background(), `select count(*) from search_coverage_deltas`).Scan(&unfolded); err != nil || unfolded != 0 {
 		t.Errorf("after the next fold %d delta rows wait (%v), want the fold to have caught up", unfolded, err)
 	}
-	requireReadIsMains(t, database, "after the fold that caught up")
+	requireMainsAnswer(t, database, "after the fold that caught up")
 }
 
 // requireBackoffWaits fails the test unless each of waits is the injected fraction (drawn, in turn)
