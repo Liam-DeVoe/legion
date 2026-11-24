@@ -9,7 +9,7 @@ import {
   whoAmIQuery,
 } from "../../api/queries";
 import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
-import { type ListMarks, type ListMenu, MultiSelect } from "../../components/MultiSelect";
+import { MultiSelect } from "../../components/MultiSelect";
 import { approvalPillClassName } from "../../components/Pill";
 import {
   focusVisibleRing,
@@ -32,6 +32,7 @@ import { AssigneeControl } from "../issue/AssigneeControl";
 import { gatedStepEntries, isProjectRoot } from "../issue/gated-steps";
 import { PriorityEditor } from "../issue/PriorityControl";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
+import { STATUS_MARKS, STATUS_MENU } from "../issue/status-pick";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { issueStatuses, openIssueStatuses, statusText } from "../project/board-model";
 import { EVENT_FRESH } from "../refs/reference-target";
@@ -47,14 +48,6 @@ import { treeContext } from "./tree-drafts";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { issueCommentsQuery } from "./useIssueTree";
 import { type WaitingPress, waitingOnReader } from "./waiting";
-
-/** The status list's trigger mark, which the header's `s` finds it by (`useHeaderKeys.ts`). */
-const STATUS_MARKS: ListMarks = { trigger: { "data-status-menu": "" } };
-
-/** D5's rules for the status (`ListMenu`): the list opens on the status held and takes no digit,
- *  and every close gives the focus back where it was as the list opened - the page or the
- *  element `s` was pressed on, or the trigger a press opened it from. */
-const STATUS_MENU: ListMenu = { keys: {}, opensOn: "value" };
 
 /**
  * The header's one properties line (the prototype's `#hdr-props`): the status, the priority,

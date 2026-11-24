@@ -21,6 +21,7 @@ import {
   installFakeLiveSockets,
   snapshotFrame,
 } from "../__tests__/live-socket-harness";
+import { indicatorWrite, mountIndicator } from "../__tests__/pending-writes";
 import { ApiError, api } from "../api/client";
 import type {
   Agent,
@@ -34,8 +35,7 @@ import { DeliveryPage } from "../features/delivery/DeliveryPage";
 import { IssuesTable } from "../features/project/IssuesTable";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
-import { PendingWritesIndicator } from "../features/writes/PendingWritesIndicator";
-import { plainWrite, writesOf } from "../features/writes/write-store";
+import { writesOf } from "../features/writes/write-store";
 import { Chip } from "./Chip";
 import { ControlRow } from "./ControlRow";
 import { DataTable, DataTableCells, useDataTable } from "./DataTable";
@@ -396,32 +396,12 @@ test("SelectionBar: Escape from a control inside the bar arms the bar's hand-off
  *  Discard, and CORE-2, still out past its deadline, with Stop trying. Moves the fake clock the
  *  case installed. */
 async function drawPendingWrites(): Promise<void> {
-  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  draw(
-    <QueryClientProvider client={client}>
-      <PendingWritesIndicator />
-    </QueryClientProvider>
-  );
+  const { client, unmount } = mountIndicator();
+  restores.push(unmount);
   const writes = writesOf(client);
   const verdict = new ApiError(422, { code: "KEY_REUSED", error: "the key names another write" });
-  act(() => {
-    for (const [label, write] of [
-      ["CORE-1 set to done", () => Promise.reject(verdict)],
-      ["CORE-2 set to done", () => new Promise<never>(() => undefined)],
-    ] as const) {
-      void writes
-        .run({
-          detail: null,
-          kind: plainWrite,
-          label,
-          method: "PATCH",
-          presentation: "indicator",
-          write,
-        })
-        .catch(() => undefined);
-    }
-  });
+  indicatorWrite(writes, "CORE-1 set to done", "PATCH", () => Promise.reject(verdict));
+  indicatorWrite(writes, "CORE-2 set to done", "PATCH", () => new Promise<never>(() => undefined));
   await jump(SEND_DEADLINE_MS);
 }
 

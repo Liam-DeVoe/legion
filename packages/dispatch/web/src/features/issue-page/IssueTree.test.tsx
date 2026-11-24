@@ -6596,9 +6596,10 @@ test("on a phone a branch's counted line opens its nodes in place", async () => 
 });
 
 // The counted line goes as its press opens it. A press that put the focus on it would lose that
-// focus as it went, and the page's rescue would answer the loss with the first row drawn in its
-// place, which would then draw its body and change its length in the view (decision 261). So the
-// press takes no focus, and the focus stays where it was: here, on the head's own row.
+// focus to the body as it went, and a hand-off of that loss to the control now at its place would
+// put it on the first row drawn there, which would then draw its body and change its length in
+// the view (decision 261). So the press takes no focus, and the focus stays where it was: here, on
+// the head's own row.
 test("on a phone a press on a branch's counted line leaves the focus where it was", async () => {
   setViewport(390);
   const user = userEvent.setup();

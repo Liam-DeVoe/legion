@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 
-import { focusOnDocument, stepIndex } from "../features/shell/roving";
+import { focusBack, focusBackOverPress, stepIndex } from "../features/shell/roving";
 import { ControlKeyHint, digitKbdClass, keyshortcutsOf } from "../features/shell/ShortcutHelp";
 import { inputMethodKey } from "../lib/input-method";
 import {
@@ -112,19 +112,6 @@ function coarsePointer(): boolean {
   return window.matchMedia("(pointer: coarse)").matches;
 }
 
-/** Hands the focus back to `to` as a list closes, noting while it does that a focus arriving
- *  there is the list's hand-back (`handing`): to the page itself where `to` is the body, which
- *  only taking the focus off the element that holds it gives back. */
-function focusBack(to: HTMLElement | null, handing: { current: boolean }): void {
-  if (to === document.body) {
-    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-    return;
-  }
-  handing.current = true;
-  to?.focus();
-  handing.current = false;
-}
-
 /** What closed the list, which `onOpenChange` hands its host with the close: a single pick's
  *  pick, its trigger pressed again, or what dismisses the panel it stands in - Escape, Tab or
  *  Shift+Tab, a press outside it, its trigger gone (`PanelDismissal`). */
@@ -151,11 +138,14 @@ export interface ListMarks {
  *   choice has writes nothing, and no digit is typed into the box. A letter narrows the list,
  *   Enter writes the highlighted choice, and a click or a tap writes the choice it hits.
  * - Escape, Tab, Shift+Tab and a press outside close the list and write nothing, and every close,
- *   a pick's among them, gives the focus back to the element that had it as the list opened, or
- *   to the one the host names (`returnFocus`). A press outside gives it back in the panel's
- *   capture-phase `pointerdown` that closes the list, before the browser's own focus on the press,
- *   so a press on another control focuses that control; a press on nothing that takes the focus
- *   has it given back again once the press is over.
+ *   a pick's among them, gives the focus back to the element that had it as the list opened: a
+ *   key's press of the trigger (a click with no pointer, `detail` 0: the page's binding pressing it
+ *   from a row, or Enter or Space on it) leaves that where the key was pressed - the row, or the
+ *   page itself where nothing had the focus - and a pointer's press leaves it on the trigger. An
+ *   element gone from the page since gives it to the trigger. A press outside gives it back in the
+ *   panel's capture-phase `pointerdown` that closes the list, before the browser's own focus on
+ *   the press, so a press on another control focuses that control; a press on nothing that takes
+ *   the focus has it given back again once the press is over (`focusBackOverPress`).
  * - Each choice with a digit draws it, hidden from assistive technology so the option's name stays
  *   its words and named as the option's `aria-keyshortcuts`, and a foot line draws the list's keys.
  * - On a coarse pointer (a phone) opening focuses no text box, so no on-screen keyboard covers the
@@ -173,14 +163,6 @@ export interface ListMenu {
   /** Which row the list opens highlighted: its first choice (a snooze, whose choices are acts),
    *  or the value the pick holds (a priority, a status). */
   readonly opensOn: "first" | "value";
-  /** Where each close gives the focus back, read as the list closes: an element the host knows
-   *  better than the focus did as the list opened, while it is on the page. Where this answers
-   *  null or is not given, it goes back to the element that had the focus as the list opened: a
-   *  key's press of the trigger (a click with no pointer, `detail` 0: the page's binding pressing
-   *  it from a row, or Enter or Space on it) leaves that where the key was pressed - the row, or
-   *  the page itself where nothing had the focus - and a pointer's press leaves it on the trigger.
-   *  An element gone from the page since gives it to the trigger. */
-  readonly returnFocus?: () => HTMLElement | null;
 }
 
 /**
@@ -455,9 +437,8 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const keysOnTrigger = props.mode === "single" && props.keysOnTrigger === true;
   // D5's rules, which a single pick takes whole or not at all (`ListMenu`).
   const menu = props.mode === "single" ? props.menu : undefined;
-  // Where a menu's closes give the focus back unless its host names another element: the one
-  // that had it as the list opened, read by the press or the key that opened it (`ListMenu`),
-  // and forgotten as the list closes.
+  // Where a menu's closes give the focus back: the element that had it as the list opened, read
+  // by the press or the key that opened it (`ListMenu`), and forgotten as the list closes.
   const returnTo = useRef<HTMLElement | null>(null);
   // Whether the focus arriving on the trigger now is the list handing it back, which is no
   // arrival (`onTriggerFocus`).
@@ -510,15 +491,19 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
         : (options.find(isPicked) ?? props.value)
       : undefined;
   opensWith.current = options;
-  // Where a close gives the focus back: the trigger; for a menu, the element its host names, else
-  // the one that had the focus as the list opened, each while it is on the page.
+  // Where a close gives the focus back: the trigger; for a menu, the element that had the focus as
+  // the list opened, while it is on the page.
   const returnTarget = (): HTMLElement | null => {
-    const named = menu?.returnFocus?.();
-    if (named?.isConnected) return named;
     const recorded = menu === undefined ? null : returnTo.current;
     return recorded?.isConnected ? recorded : triggerRef.current;
   };
-  const handBack = (to: HTMLElement | null = returnTarget()) => focusBack(to, handingBack);
+  // A focus arriving on the trigger as it is handed back is no arrival (`handingBack`).
+  const handBack = (to: HTMLElement | null = returnTarget()) =>
+    focusBack(to, (element) => {
+      handingBack.current = true;
+      element.focus();
+      handingBack.current = false;
+    });
   // The hand-back of the latest render, for the close's effect below.
   const handBackNow = useRef(handBack);
   handBackNow.current = handBack;
@@ -559,27 +544,11 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     }
   };
   // A menu's press outside, in the panel's capture-phase `pointerdown` that closes the list
-  // (`AnchoredPanel`): the focus goes back at once, before the browser's own focus on the press,
-  // which is the default action of its `mousedown`, after. So a press on a text box, a button or
-  // a link focuses that control and acts on that one press, and a press on nothing that takes the
-  // focus, which leaves the focus on the document, has it given back again once the press is
-  // over, by its `mouseup`, a finger's too. A press the browser cancels (a scroll) moves no focus,
-  // and the next press is another press, so either ends the wait.
+  // (`AnchoredPanel`): the focus goes back at once, and again once the press is over where it
+  // left it on the document (`focusBackOverPress`).
   const handBackOverPress = () => {
     const to = returnTarget();
-    handBack(to);
-    const settle = () => {
-      stop();
-      if (focusOnDocument()) handBack(to);
-    };
-    const stop = () => {
-      document.removeEventListener("mouseup", settle, true);
-      document.removeEventListener("pointercancel", stop, true);
-      document.removeEventListener("pointerdown", stop, true);
-    };
-    document.addEventListener("mouseup", settle, true);
-    document.addEventListener("pointercancel", stop, true);
-    document.addEventListener("pointerdown", stop, true);
+    focusBackOverPress(() => handBack(to));
   };
 
   // Opening starts a fresh search on the value a single pick holds - or on what the key that

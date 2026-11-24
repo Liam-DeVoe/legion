@@ -4,7 +4,6 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
-import { keyHintOf } from "../__tests__/key-hints";
 import { pickNamed } from "../__tests__/list-picks";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { useKeymap, useKeymapScope } from "../features/shell/keymap";
@@ -13,15 +12,14 @@ import { armOnPress, causedByReader } from "./focus-place";
 import { useHeldThroughAnswer } from "./held-press";
 
 const CHOICES: readonly MenuChoice<string>[] = [
-  { label: "Later today", value: "later" },
-  { label: "Tomorrow", value: "tomorrow" },
-  { label: "Next week", value: "week" },
+  { label: "Move left", value: "left" },
+  { label: "Move right", value: "right" },
 ];
 
 /** A page with keys of its own on the keys a menu takes - the arrows and `j` - a row a key
  *  presses the trigger from, a control and some prose beside it, and the menu. Every key the page
  *  takes, and every value the menu writes, is noted. */
-function Page({ chosen, held, taken }: { chosen: string[]; held?: boolean; taken: string[] }) {
+function Page({ chosen, taken }: { chosen: string[]; taken: string[] }) {
   useKeymapScope("inbox");
   useKeymap("inbox", [
     { action: "inbox.next", run: (event) => taken.push(event.key) },
@@ -32,14 +30,13 @@ function Page({ chosen, held, taken }: { chosen: string[]; held?: boolean; taken
       <button type="button">Row</button>
       <ChoiceMenu
         choices={CHOICES}
-        face="Snooze"
-        held={held}
-        label="Snooze CORE-1"
-        marks={{ "data-snooze-menu": "" }}
+        face="Move"
+        label="Move Status"
+        marks={{ "data-column-move": "status" }}
         onChoose={(value) => chosen.push(value)}
         triggerClassName=""
       >
-        <span>Snooze</span>
+        <span>Move</span>
       </ChoiceMenu>
       <button type="button">Elsewhere</button>
       <p>Some prose beside the menu.</p>
@@ -47,21 +44,21 @@ function Page({ chosen, held, taken }: { chosen: string[]; held?: boolean; taken
   );
 }
 
-function renderPage(props: { held?: boolean } = {}) {
+function renderPage() {
   const chosen: string[] = [];
   const taken: string[] = [];
   const user = userEvent.setup();
   const view = render(
     <KeymapProvider>
-      <Page chosen={chosen} taken={taken} {...props} />
+      <Page chosen={chosen} taken={taken} />
     </KeymapProvider>
   );
-  const trigger = screen.getByRole("button", { name: pickNamed("Snooze CORE-1") });
+  const trigger = screen.getByRole("button", { name: pickNamed("Move Status") });
   const row = screen.getByRole("button", { name: "Row" });
   return { chosen, row, taken, trigger, unmount: view.unmount, user };
 }
 
-const menu = () => screen.queryByRole("menu", { name: "Snooze CORE-1" });
+const menu = () => screen.queryByRole("menu", { name: "Move Status" });
 const item = (name: string) => screen.getByRole("menuitem", { name });
 
 test("a press on the trigger opens a menu of its choices on the first, with the menu's keys below", async () => {
@@ -77,13 +74,9 @@ test("a press on the trigger opens a menu of its choices on the first, with the 
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     expect(trigger).toHaveAttribute("aria-controls", opened?.id ?? "");
     const items = within(opened as HTMLElement).getAllByRole("menuitem");
-    expect(items.map((choice) => choice.textContent)).toEqual([
-      "Later today",
-      "Tomorrow",
-      "Next week",
-    ]);
-    expect(item("Later today")).toHaveFocus();
-    expect(items.map((choice) => choice.tabIndex)).toEqual([0, -1, -1]);
+    expect(items.map((choice) => choice.textContent)).toEqual(["Move left", "Move right"]);
+    expect(item("Move left")).toHaveFocus();
+    expect(items.map((choice) => choice.tabIndex)).toEqual([0, -1]);
     expect(opened).toHaveTextContent("↑ ↓ Home End to move · Enter to choose · Esc to close");
     expect(chosen).toEqual([]);
   } finally {
@@ -96,20 +89,20 @@ test("ArrowDown, ArrowUp, Home and End move the highlight, write nothing and rea
   try {
     await user.click(trigger);
     await user.keyboard("{ArrowDown}");
-    expect(item("Tomorrow")).toHaveFocus();
-    expect(item("Tomorrow").tabIndex).toBe(0);
-    expect(item("Later today").tabIndex).toBe(-1);
+    expect(item("Move right")).toHaveFocus();
+    expect(item("Move right").tabIndex).toBe(0);
+    expect(item("Move left").tabIndex).toBe(-1);
     await user.keyboard("{ArrowUp}");
-    expect(item("Later today")).toHaveFocus();
+    expect(item("Move left")).toHaveFocus();
     // The arrows wrap at the ends.
     await user.keyboard("{ArrowUp}");
-    expect(item("Next week")).toHaveFocus();
+    expect(item("Move right")).toHaveFocus();
     await user.keyboard("{ArrowDown}");
-    expect(item("Later today")).toHaveFocus();
+    expect(item("Move left")).toHaveFocus();
     await user.keyboard("{End}");
-    expect(item("Next week")).toHaveFocus();
+    expect(item("Move right")).toHaveFocus();
     await user.keyboard("{Home}");
-    expect(item("Later today")).toHaveFocus();
+    expect(item("Move left")).toHaveFocus();
     await user.keyboard("j");
     expect(menu()).toBeInTheDocument();
     expect(chosen).toEqual([]);
@@ -124,7 +117,7 @@ test("Enter writes the highlighted choice once, closes the menu and hands the fo
   try {
     await user.click(trigger);
     await user.keyboard("{ArrowDown}{Enter}");
-    expect(chosen).toEqual(["tomorrow"]);
+    expect(chosen).toEqual(["right"]);
     expect(menu()).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
     expect(trigger).toHaveAttribute("aria-expanded", "false");
@@ -137,8 +130,8 @@ test("a click writes the choice it hits once", async () => {
   const { chosen, trigger, unmount, user } = renderPage();
   try {
     await user.click(trigger);
-    await user.click(item("Next week"));
-    expect(chosen).toEqual(["week"]);
+    await user.click(item("Move right"));
+    expect(chosen).toEqual(["right"]);
     expect(menu()).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
   } finally {
@@ -182,11 +175,11 @@ test("Escape, Tab, Shift+Tab and a press outside close the menu and write nothin
 test("the focus goes back to the row a key pressed the trigger from, and to the trigger after a press on it", async () => {
   const { chosen, row, trigger, unmount, user } = renderPage();
   try {
-    // A key's binding presses the trigger from the row, as the Inbox's `b` does: a click with no
-    // pointer, while the focus is still on the row.
+    // A key's binding presses the trigger from the row, as a page's key presses a control from
+    // the row it acts on: a click with no pointer, while the focus is still on the row.
     act(() => row.focus());
     act(() => trigger.click());
-    expect(item("Later today")).toHaveFocus();
+    expect(item("Move left")).toHaveFocus();
     await user.keyboard("{Escape}");
     expect(row).toHaveFocus();
 
@@ -197,7 +190,7 @@ test("the focus goes back to the row a key pressed the trigger from, and to the 
 
     act(() => trigger.click());
     await user.keyboard("{End}{Enter}");
-    expect(chosen).toEqual(["week"]);
+    expect(chosen).toEqual(["right"]);
     expect(row).toHaveFocus();
 
     // A press outside on nothing that takes the focus hands it back to the row once the press is
@@ -215,7 +208,7 @@ test("the focus goes back to the row a key pressed the trigger from, and to the 
     // Enter on the trigger is a press with no pointer too, from the trigger itself.
     act(() => trigger.focus());
     await user.keyboard("{Enter}");
-    expect(item("Later today")).toHaveFocus();
+    expect(item("Move left")).toHaveFocus();
     await user.keyboard("{Escape}");
     expect(trigger).toHaveFocus();
 
@@ -224,22 +217,7 @@ test("the focus goes back to the row a key pressed the trigger from, and to the 
     await user.click(trigger);
     await user.keyboard("{Escape}");
     expect(trigger).toHaveFocus();
-    expect(chosen).toEqual(["week"]);
-  } finally {
-    unmount();
-  }
-});
-
-test("a held trigger keeps its focus and opens nothing", async () => {
-  const { trigger, unmount, user } = renderPage({ held: true });
-  try {
-    expect(trigger).toHaveAttribute("aria-disabled", "true");
-    expect(trigger).not.toBeDisabled();
-    await user.click(trigger);
-    expect(menu()).not.toBeInTheDocument();
-    act(() => trigger.click());
-    expect(menu()).not.toBeInTheDocument();
-    expect(trigger).toHaveFocus();
+    expect(chosen).toEqual(["right"]);
   } finally {
     unmount();
   }
@@ -250,35 +228,35 @@ test("a press on the trigger or in its menu stays out of a draggable parent", as
   const user = userEvent.setup();
   const view = render(
     <article
-      aria-label="CORE-1 Review the spec"
+      aria-label="Status column"
       onMouseDown={() => reached.push("mousedown")}
       onPointerDown={() => reached.push("pointerdown")}
       onTouchStart={() => reached.push("touchstart")}
     >
       <ChoiceMenu
         choices={CHOICES}
-        face="Snooze"
-        label="Snooze CORE-1"
+        face="Move"
+        label="Move Status"
         marks={{}}
         onChoose={() => undefined}
         triggerClassName=""
       >
-        Snooze
+        Move
       </ChoiceMenu>
     </article>
   );
   try {
-    const trigger = screen.getByRole("button", { name: "Snooze CORE-1" });
+    const trigger = screen.getByRole("button", { name: "Move Status" });
     // Bare mouse, pointer and touch presses: user-event sends a whole press sequence and cannot
     // deliver one of these events on its own.
     fireEvent.mouseDown(trigger);
     fireEvent.pointerDown(trigger);
     fireEvent.touchStart(trigger);
     await user.keyboard("{Tab}{Enter}");
-    // The menu is portalled to the body, but it is a React child of the card.
-    fireEvent.mouseDown(item("Tomorrow"));
-    fireEvent.pointerDown(item("Tomorrow"));
-    fireEvent.touchStart(item("Tomorrow"));
+    // The menu is portalled to the body, but it is a React child of the header cell.
+    fireEvent.mouseDown(item("Move right"));
+    fireEvent.pointerDown(item("Move right"));
+    fireEvent.touchStart(item("Move right"));
     expect(menu()).toBeInTheDocument();
     expect(reached).toEqual([]);
   } finally {
@@ -287,39 +265,37 @@ test("a press on the trigger or in its menu stays out of a draggable parent", as
 });
 
 /** Two keyed rows of one list, the first with a menu whose pick moves its row below the other,
- *  as a snooze moves its row down into Later: React takes the row's node out and puts it back.
- *  Each row arms the page's hand-off at its own presses (`armOnPress`), as a component that hands
- *  its focus off arms it at its root. With `holds`, the pick's write is out from then on, and the
- *  menu's trigger is held from the pick on (`useHeldThroughAnswer`), as the Inbox holds a
- *  snooze's while its write is out. */
+ *  as a column's move draws its header cell at the column's new place: React takes the row's node
+ *  out and puts it back. Each row arms the page's hand-off at its own presses (`armOnPress`), as a
+ *  component that hands its focus off arms it at its root. With `holds`, the pick's write is out
+ *  from then on, and holds the press's hand-off while it is (`useHeldThroughAnswer`). */
 function MovingRows({ holds = false }: { holds?: boolean }) {
-  const [order, setOrder] = useState(["ask-a", "ask-b"]);
+  const [order, setOrder] = useState(["column-a", "column-b"]);
   const [writing, setWriting] = useState(false);
-  const held = useHeldThroughAnswer(writing);
+  useHeldThroughAnswer(writing);
   return (
     <ul>
       {order.map((id) => (
         <li
-          data-inbox-row={id}
+          data-row={id}
           key={id}
           onChangeCapture={armOnPress}
           onClickCapture={armOnPress}
           onKeyDownCapture={armOnPress}
         >
-          {id === "ask-a" ? (
+          {id === "column-a" ? (
             <ChoiceMenu
               choices={CHOICES}
-              face="Snooze"
-              held={held}
-              label="Snooze CORE-1"
+              face="Move"
+              label="Move Status"
               marks={{}}
               onChoose={() => {
-                setOrder(["ask-b", "ask-a"]);
+                setOrder(["column-b", "column-a"]);
                 if (holds) setWriting(true);
               }}
               triggerClassName=""
             >
-              Snooze
+              Move
             </ChoiceMenu>
           ) : (
             <button type="button">Other row</button>
@@ -333,15 +309,14 @@ function MovingRows({ holds = false }: { holds?: boolean }) {
 // INFRA-2160: a pick in a menu is the reader's press in the row its trigger stands in, though the
 // menu is portalled out of that row: React hands a press in the menu to the row's own handlers,
 // which arm the hand-off at the row (`armOnPress`). So the focus the pick's write takes away with
-// the row - a snooze that folds the card, a priority that moves the card into another lane - is a
-// loss the reader caused (`causedByReader`), rather than one to leave on the body. The press is
-// that cause while the write it made is out: its trigger is held from the pick on, and that hold
-// keeps the press armed (`useHeldThroughAnswer`, `holdHandOff`).
+// the row is a loss the reader caused (`causedByReader`), rather than one to leave on the body.
+// The press is that cause while the write it made is out, which holds it armed
+// (`useHeldThroughAnswer`, `holdHandOff`).
 test("a pick in the menu is the reader's own press on its trigger and the row it sits in", async () => {
   const user = userEvent.setup();
   const view = render(<MovingRows holds />);
   try {
-    const trigger = screen.getByRole("button", { name: "Snooze CORE-1" });
+    const trigger = screen.getByRole("button", { name: "Move Status" });
     const other = screen.getByRole("button", { name: "Other row" });
     act(() => trigger.focus());
     await user.keyboard("{Enter}");
@@ -355,14 +330,14 @@ test("a pick in the menu is the reader's own press on its trigger and the row it
 });
 
 // INFRA-2160, R2 at 390 px: the pick hands the focus back to the trigger, and its write then moves
-// the row down the page - a snooze takes it down into Later - out of the window. The trigger is
-// kept in sight as it moves, so its later going is not read as one the reader scrolled away from,
-// until the reader's own next act.
+// the row down the page - a column's move draws its header cell at the column's new place - out
+// of the window. The trigger is kept in sight as it moves, so its later going is not read as one
+// the reader scrolled away from, until the reader's own next act.
 test("the element a pick hands the focus back to is kept in view as the write moves it, until the reader acts", async () => {
   const user = userEvent.setup();
   const view = render(<MovingRows />);
   try {
-    const trigger = screen.getByRole("button", { name: "Snooze CORE-1" });
+    const trigger = screen.getByRole("button", { name: "Move Status" });
     const scrolled: unknown[] = [];
     trigger.scrollIntoView = (options) => scrolled.push(options);
     act(() => trigger.focus());
@@ -378,10 +353,8 @@ test("the element a pick hands the focus back to is kept in view as the write mo
       });
     await user.keyboard("{ArrowDown}{Enter}");
     expect(
-      [...document.querySelectorAll("[data-inbox-row]")].map((row) =>
-        row.getAttribute("data-inbox-row")
-      )
-    ).toEqual(["ask-b", "ask-a"]);
+      [...document.querySelectorAll("[data-row]")].map((row) => row.getAttribute("data-row"))
+    ).toEqual(["column-b", "column-a"]);
     expect(trigger).toHaveFocus();
     expect(scrolled).toEqual([{ block: "nearest" }]);
 
@@ -389,49 +362,6 @@ test("the element a pick hands the focus back to is kept in view as the write mo
     await user.keyboard("{Shift}");
     view.rerender(<MovingRows />);
     expect(scrolled).toHaveLength(1);
-  } finally {
-    view.unmount();
-  }
-});
-
-// Where its host draws its keys (the Inbox's reading pane), the trigger names each of them to
-// assistive tech and draws the first inside it for the eye, outside what it is called and as no
-// text of it: its name is its menu's and then what it shows, and its words are what it shows.
-test("a trigger given its keys names them all and draws the first, outside its name and its text", () => {
-  const view = render(
-    <ChoiceMenu
-      choices={[{ label: "P2", value: "P2" }]}
-      face="P2"
-      label="Priority of CORE-1"
-      marks={{}}
-      onChoose={() => {}}
-      shortcutKeys={["p", "Shift+P"]}
-      triggerClassName=""
-    >
-      <span>P2</span>
-    </ChoiceMenu>
-  );
-  try {
-    const trigger = screen.getByRole("button", { name: "Priority of CORE-1 P2" });
-    expect(trigger).toHaveAttribute("aria-keyshortcuts", "P Shift+P");
-    expect(keyHintOf(trigger)).toBe("p");
-    // The key is CSS's to draw, so the words on the trigger are the value it shows alone, and
-    // its name holds them (WCAG 2.5.3, Label in Name).
-    expect(trigger).toHaveTextContent(/^P2$/);
-    view.rerender(
-      <ChoiceMenu
-        choices={CHOICES}
-        face="P2"
-        label="Priority of CORE-1"
-        marks={{}}
-        onChoose={() => {}}
-        triggerClassName=""
-      >
-        <span>P2</span>
-      </ChoiceMenu>
-    );
-    expect(trigger).not.toHaveAttribute("aria-keyshortcuts");
-    expect(trigger.querySelector("kbd")).toBeNull();
   } finally {
     view.unmount();
   }

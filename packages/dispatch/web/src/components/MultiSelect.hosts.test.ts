@@ -4,8 +4,8 @@ import { join } from "node:path";
 import * as ts from "typescript";
 
 /**
- * The hosts of the shared pick, and the rules each opts into (dispatch://INFRA-2160, plan task
- * t21).
+ * The hosts of the shared pick, and the rules each opts into (dispatch://INFRA-2160's table "The
+ * hosts of the shared pick, each with the rules it opts into and its test rows").
  *
  * `MultiSelect` takes two rules a host opts into, each as one prop: D5's `menu`, the rules of a
  * list that stands in a menu's place (R4 and R5: the snooze, the priority and the status, which a
@@ -59,13 +59,15 @@ interface Host {
   readonly rows: string;
 }
 
-/** The R4 hosts' rows: the browser checks their lists are read by. */
-const MENU_ROWS = "k-menu-contrast, and the opener table of plan task t21";
+/** The R4 hosts' rows: the browser checks their lists are read by, and the unit rows of the table
+ *  "Where the focus goes back, by opener". */
+const MENU_ROWS =
+  'k-menu-contrast, and the rows of "Where the focus goes back, by opener" in `inbox/SnoozeControl.test.tsx`, `issue/PriorityControl.test.tsx` and `issue/IssuePage.test.tsx`';
 
 /** INFRA-3135's lists, which take neither rule. */
 const THEIRS = "INFRA-3135's own rows, `e2e/keyboard-agents-picker.e2e.ts`";
 
-/** Every host, as the plan's table of t21 names it. */
+/** Every host, as the table "The hosts of the shared pick" names it. */
 const HOSTS: readonly Host[] = [
   {
     digits: "`1`-`4`, and `0` on a snoozed item",

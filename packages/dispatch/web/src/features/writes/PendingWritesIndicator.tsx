@@ -66,6 +66,22 @@ function focusFirst(candidates: Iterable<HTMLElement | null>): boolean {
   return false;
 }
 
+/** The buttons of `row`, then the rest of the panel's (`box`, which holds `row`), each in sight
+ *  now (`inSightNow`) and each measured once, as the hand-off reaches it: it stops at the first
+ *  that takes the focus. */
+function* buttonsInSight(
+  row: Element | null | undefined,
+  box: Element | null,
+  clips: Map<Element, boolean>
+): Generator<HTMLElement> {
+  for (const control of row?.querySelectorAll<HTMLElement>("button") ?? []) {
+    if (inSightNow(control, clips)) yield control;
+  }
+  for (const control of box?.querySelectorAll<HTMLElement>("button") ?? []) {
+    if (row?.contains(control) !== true && inSightNow(control, clips)) yield control;
+  }
+}
+
 /**
  * Hands on the focus a press of the reader's in the panel takes away. A press here can take the
  * control it was made on off the page - Stop trying once its write is refused, Retry or Discard
@@ -178,11 +194,7 @@ function usePanelFocusReturn(): RefObject<HTMLElement | null> {
     if (!focusOnDocument() || outOfSight(left) || !causedByReader(left)) return;
     // One read of each box's style for the whole hand-off (`inSightNow`).
     const clips = new Map<Element, boolean>();
-    const controls = [
-      ...(row?.querySelectorAll<HTMLElement>("button") ?? []),
-      ...(box?.querySelectorAll<HTMLElement>("button") ?? []),
-    ].filter((control) => inSightNow(control, clips));
-    if (focusFirst(controls)) {
+    if (focusFirst(buttonsInSight(row, box, clips))) {
       // The focus listener took that move for the focus entering the panel afresh; it came in
       // from where it did before.
       from.current = back;

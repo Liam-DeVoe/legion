@@ -8,7 +8,14 @@ import {
   type UseMutationResult,
   useMutation,
 } from "@tanstack/react-query";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import {
   apiErrorMessage,
@@ -24,7 +31,7 @@ import {
   SendStoppedError,
   stoppedWriteNote,
 } from "./keyed-write";
-import { plainWrite, useWriteSelection, useWrites } from "./write-store";
+import { plainWrite, useWrites, type Write } from "./write-store";
 
 /** A write a surface makes for the reader: `useMutation`'s options, but for `mutationFn`, which
  *  the write path makes from `write` or `request` and `label`. Its data is Dispatch's answer, or
@@ -55,6 +62,9 @@ export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
   readonly holds?: (variables: TVariables) => ReadHold;
   /** `false` for a write that goes under no key whatever its method (`WriteSpec.keyed`). */
   readonly keyed?: false;
+  /** Whether the surface reads the result's `late`: only such a hook follows the store for it, so
+   *  a hook whose surface does not adds no listener to the store. */
+  readonly readsLate?: true;
 } & KeyedWriteMade<TData, TVariables>;
 
 /** How a write is made: by an attempt of its own (`write`, under the bounds the store gives it:
@@ -163,7 +173,8 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
    *  is still pending, tried under its key - or, waiting, to be - until Dispatch decides it or the
    *  reader stops it at the shell's indicator. A surface that holds its controls while its write
    *  is out lets them go here, so a write that never answers - offline, its tries waiting out the
-   *  network - locks none of them, and a press made then, waiting behind it, locks none again. */
+   *  network - locks none of them, and a press made then, waiting behind it, locks none again.
+   *  Read only where the write was made with `readsLate`; `false` for any other. */
   readonly late: boolean;
 };
 
@@ -173,6 +184,21 @@ export function endedStopped<
   W extends { readonly error: unknown; readonly method: WriteMethod | undefined },
 >(write: W): write is W & { readonly error: SendStoppedError; readonly method: WriteMethod } {
   return write.error instanceof SendStoppedError && write.method !== undefined;
+}
+
+/** Whether the write the store holds under `key` is late, or waits its turn on its target's line
+ *  behind a write that is (`KeyedWriteResult.late`). */
+function lateIn(rows: readonly Write[], key: string): boolean {
+  const own = rows.find((row) => row.key === key);
+  if (own === undefined) return false;
+  if (own.status === "late") return true;
+  return (
+    own.status === "queued" &&
+    own.target !== undefined &&
+    rows.some(
+      (row) => row.target === own.target && row.joined < own.joined && row.status === "late"
+    )
+  );
 }
 
 /** The sentence a surface shows for its write where the reader stopped it, under the plain Retry
@@ -311,6 +337,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   onMutate,
   onSettled,
   onSuccess,
+  readsLate,
   request,
   target,
   write,
@@ -462,19 +489,18 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   );
   const newest = mutation.variables;
   // The newest press's write as the store holds it, by the key the press made it under, and the
-  // writes ahead of it on its target's line.
-  const late = useWriteSelection(`late:${newest?.key ?? ""}`, (rows) => {
-    const own = rows.find((row) => row.key === newest?.key);
-    if (own === undefined) return false;
-    if (own.status === "late") return true;
-    return (
-      own.status === "queued" &&
-      own.target !== undefined &&
-      rows.some(
-        (row) => row.target === own.target && row.joined < own.joined && row.status === "late"
-      )
-    );
-  });
+  // writes ahead of it on its target's line, followed only where the surface reads it
+  // (`readsLate`).
+  const lateKey = readsLate === true ? newest?.key : undefined;
+  const followLate = useCallback(
+    (listener: () => void) =>
+      lateKey === undefined ? () => undefined : writes.subscribe(listener),
+    [lateKey, writes]
+  );
+  const late = useSyncExternalStore(
+    followLate,
+    () => lateKey !== undefined && lateIn(writes.rows(), lateKey)
+  );
   // Built only once the newest press ended stopped, when its request went out: a press whose
   // request could not be built ended with that error instead, which building it here would throw.
   const newestMethod =

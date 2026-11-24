@@ -187,8 +187,9 @@ export function SnoozePick({
  * hand-off. The hand-off begins at the press, off the list as the reader saw it, and a snooze the
  * server refuses or the reader stops drops it and leaves the reader on the row.
  * Un-snooze moves nobody, and neither does a snooze pressed on a short row beside the column that
- * is not the item in hand (`RowAsideContext`): R8 is the item in hand's, so that press only takes
- * a focus it left in the row to the item being read first.
+ * is not the item in hand (`RowAsideContext`): R8 is the item in hand's, so a snooze or an
+ * un-snooze pressed there - Un-snooze, the list's Un-snooze or a Retry - only takes a focus it
+ * left in the row to the item being read first.
  *
  * The selection bar's Snooze over the rows the reader marked holds the control the same way while
  * that write is out over this ask (`BulkSnoozingContext`): the optimistic moment would draw
@@ -238,14 +239,15 @@ export function SnoozeControl({
    *  refusal or a stop drops it. The hand-off is of the press's own ask, which a Retry keeps
    *  whichever ask the control is drawn for by then. The Inbox holds the write, so it hears the
    *  settling whether or not this control is still drawn. An un-snooze, and a control outside an
-   *  Inbox, hand nothing on; a snooze on a row that is not the item in hand hands nobody on and
-   *  moves a focus it left in the row first (`RowAsideContext`). */
+   *  Inbox, hand nothing on; a snooze or an un-snooze on a row that is not the item in hand hands
+   *  nobody on and moves a focus it left in the row first (`RowAsideContext`). */
   const handingOn = (press: AskSnoozePress | undefined): SnoozeSettled | undefined => {
-    if (press === undefined || press.until === null) return undefined;
+    if (press === undefined) return undefined;
     if (aside !== undefined) {
       aside();
       return undefined;
     }
+    if (press.until === null) return undefined;
     if (handOff === undefined) return undefined;
     const acted = press.askId;
     handOff.beginHandOff([acted]);
@@ -253,6 +255,12 @@ export function SnoozeControl({
       if (landed) handOff.landHandOff([acted]);
       else handOff.dropHandOff([acted]);
     };
+  };
+  /** An un-snooze press: it hands nobody on, and on a row that is not the item in hand it moves a
+   *  focus it left in the row first (`RowAsideContext`). */
+  const unsnooze = () => {
+    aside?.();
+    write.submit(null);
   };
   // `basis-full` inside the header's wrapping row: a refusal is wider than the badge it
   // replaces, so it takes a line of its own rather than drawing over the issue key. Its Retry is
@@ -303,7 +311,7 @@ export function SnoozeControl({
           aria-label={`Un-snooze ${label}`}
           className={secondaryButtonCompact}
           {...inboxActionMark("inbox.unsnooze")}
-          {...heldPress(held, () => write.submit(null))}
+          {...heldPress(held, unsnooze)}
           type="button"
         >
           {going === "Un-snoozing" ? "Un-snoozing…" : "Un-snooze"}
@@ -316,7 +324,7 @@ export function SnoozeControl({
         label={`Snooze ${label}`}
         marks={ROW_SNOOZE_MARKS}
         onPick={(until) => write.submit(until, handingOn({ askId, until }))}
-        onUnsnooze={snoozedUntil === null ? undefined : () => write.submit(null)}
+        onUnsnooze={snoozedUntil === null ? undefined : unsnooze}
         shortcutKeys={shortcutKeys}
       />
       {failure}

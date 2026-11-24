@@ -143,3 +143,24 @@ export function mockAskReads(rows: readonly InboxRow[]) {
     };
   });
 }
+
+/** The width the Inbox shows its reading column from (`READING_PANE_QUERY`, 1280 px). happy-dom
+ *  answers `matchMedia` from the window it is given, so the window is the whole fixture: this
+ *  widens it to 1440 px, and answers what narrows it back. */
+export function widenToReadingPane(): () => void {
+  const window_ = window as unknown as {
+    happyDOM: { setViewport(size: { width: number }): void };
+    innerWidth: number;
+  };
+  const was = window_.innerWidth;
+  window_.happyDOM.setViewport({ width: 1440 });
+  return () => window_.happyDOM.setViewport({ width: was });
+}
+
+/** One row of the list by its ask id, as the list draws it now: a short row holds no card, so
+ *  there is no `ask-<id>` to find it by. */
+export function shortRow(askId: string): HTMLElement {
+  const row = document.querySelector<HTMLElement>(`[data-inbox-row="${askId}"]`);
+  if (row === null) throw new Error(`${askId} row missing`);
+  return row;
+}

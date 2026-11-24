@@ -11,6 +11,43 @@ export function focusOnDocument(): boolean {
   return focused === null || focused === document.body;
 }
 
+/** Puts the focus on `to` as a panel or a list closes, by `focus` (the element's own `focus()`
+ *  unless given), or on the page itself where `to` is the body, where a key opened it with nothing
+ *  focused: only taking the focus off the element that holds it puts it back there. */
+export function focusBack(
+  to: HTMLElement | null,
+  focus: (element: HTMLElement) => void = (element) => element.focus()
+): void {
+  if (to === document.body) {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    return;
+  }
+  if (to !== null) focus(to);
+}
+
+/** Gives the focus back (`back`) on a press outside a menu, in the document's capture-phase
+ *  `pointerdown` that closes it: at once, before the browser's own focus on the press, which is
+ *  the default action of its `mousedown`, after. So a press on a text box, a button or a link
+ *  focuses that control and acts on that one press; the press's own focus has landed by its
+ *  `mouseup`, a finger's too, and a press on nothing that takes the focus, which leaves it on the
+ *  document, has it given back again then. A press the browser cancels (a scroll) moves no focus,
+ *  and the next press is another press, so either ends the wait. */
+export function focusBackOverPress(back: () => void): void {
+  back();
+  const settle = () => {
+    stop();
+    if (focusOnDocument()) back();
+  };
+  const stop = () => {
+    document.removeEventListener("mouseup", settle, true);
+    document.removeEventListener("pointercancel", stop, true);
+    document.removeEventListener("pointerdown", stop, true);
+  };
+  document.addEventListener("mouseup", settle, true);
+  document.addEventListener("pointercancel", stop, true);
+  document.addEventListener("pointerdown", stop, true);
+}
+
 /**
  * The element matching `selector` that holds keyboard focus *itself* - not one merely containing
  * a focused control. Every roving list asks this of its own rows: a key bound to the row acts

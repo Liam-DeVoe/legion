@@ -291,8 +291,8 @@ async function checkWithFocusedLink() {
 // INFRA-2160: a pointer's link in a typed block's header - a check's `serves`, a plan task's -
 // takes the keyboard focus, and the hover card names itself in the link's `aria-describedby`.
 // ProseMirror read that change in the block's drawing as an edit and drew the block anew, so the
-// link holding the focus left the page and the page's focus rescue sent the focus elsewhere: a
-// Tab into the Plan tab's document went back to the top of the page.
+// link holding the focus left the page and the focus went with it: a Tab into the Plan tab's
+// document went back to the top of the page.
 test("a change the page makes in a typed block's header leaves the block and its focused link in place", async () => {
   const { block, link, remove, view } = await checkWithFocusedLink();
   try {

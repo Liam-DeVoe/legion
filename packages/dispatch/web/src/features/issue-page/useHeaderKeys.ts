@@ -1,6 +1,7 @@
 import type { IssuePriority } from "../../api/types";
 import { outsideAskCard } from "../inbox/ask-card";
 import { PRIORITY_TRIGGER_SELECTOR } from "../issue/PriorityControl";
+import { STATUS_TRIGGER_SELECTOR } from "../issue/status-pick";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { useKeymap } from "../shell/keymap";
 import { ACTION_WORDS, CHIP_ACTIONS, chipBox } from "./approval-chip-box";
@@ -14,7 +15,6 @@ import { usableControl } from "./usable-control";
  */
 const HEADER = "[data-issue-header]";
 const PIN_TOGGLE = 'button[data-issue-action="pin"]';
-const STATUS_MENU = "[data-status-menu]";
 const TITLE_HEADING = 'h1[tabindex="0"]';
 
 /** The group around `node` that a control of the header opens and shuts (`aria-expanded`) and
@@ -142,8 +142,8 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
   useKeymap("issue", [
     {
       action: "issue.status",
-      run: () => headerControl(STATUS_MENU)?.click(),
-      when: () => headerControl(STATUS_MENU) !== null,
+      run: () => headerControl(STATUS_TRIGGER_SELECTOR)?.click(),
+      when: () => headerControl(STATUS_TRIGGER_SELECTOR) !== null,
     },
     {
       action: "issue.priority",

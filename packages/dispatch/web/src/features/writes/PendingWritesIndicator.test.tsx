@@ -8,9 +8,10 @@ import type { ReactNode } from "react";
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { keptTab, keyMinted } from "../../__tests__/kept-sends-harness";
 import { watchMoves } from "../../__tests__/laid-out-rows";
+import { indicatorWrite, mountIndicator } from "../../__tests__/pending-writes";
 import { answerSends } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, type WriteBounds, type WriteMethod } from "../../api/client";
+import { ApiError, api, type WriteMethod } from "../../api/client";
 import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import {
   expiredRetryNote,
@@ -22,35 +23,8 @@ import { PendingWritesIndicator } from "./PendingWritesIndicator";
 import { KEPT_SEND_RESUME_MS } from "./write-storage";
 import { plainWrite, type Writes, writesOf } from "./write-store";
 
-/** One write the indicator shows, labelled `label`, its attempt `write`, which makes a request of
- *  `method`. */
-function indicatorWrite(
-  writes: Writes,
-  label: string,
-  method: WriteMethod,
-  write: (bounds: WriteBounds) => Promise<unknown>
-): void {
-  act(() => {
-    void writes
-      .run({ detail: null, kind: plainWrite, label, method, presentation: "indicator", write })
-      .catch(() => undefined);
-  });
-}
-
 const refusal = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
 const verdict = new ApiError(422, { code: "KEY_REUSED", error: "the key names another write" });
-
-/** The shell's indicator over one app's write queue, which the test drives directly: the rows are
- *  the queue's, whichever surface made them. */
-function mountIndicator(): { client: QueryClient; unmount: () => void } {
-  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
-  );
-  const view = render(<PendingWritesIndicator />, { wrapper });
-  return { client, unmount: () => view.unmount() };
-}
 
 async function settle(): Promise<void> {
   await act(async () => {

@@ -37,6 +37,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { Inbox } from "./Inbox";
+import { widenToReadingPane } from "./inbox-fixture";
 import { ThreadRowCard } from "./ThreadRowCard";
 
 const AS_OF = "2026-10-12T02:00:00Z";
@@ -134,18 +135,6 @@ function newestTurn(id: string): Element {
   const watched = turn?.parentElement;
   if (watched === null || watched === undefined) throw new Error(`${id} is not drawn`);
   return watched;
-}
-
-/** The width the Inbox shows its reading column from (1280 px); happy-dom answers `matchMedia`
- *  from the window it is given. */
-function widenToReadingPane(): () => void {
-  const window_ = window as unknown as {
-    happyDOM: { setViewport(size: { width: number }): void };
-    innerWidth: number;
-  };
-  const was = window_.innerWidth;
-  window_.happyDOM.setViewport({ width: 1440 });
-  return () => window_.happyDOM.setViewport({ width: was });
 }
 
 function mockCommentReads(): void {

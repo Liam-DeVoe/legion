@@ -1321,10 +1321,10 @@ test("a compose while the document's composer is open puts the caret in the new 
 
 // A comment ends - Escape in its empty field, or its send landing - and the reader goes back to
 // the words they commented on, where the editor kept its selection. The caret goes back at once,
-// while the composer's box is still in the page, so the box's going leaves the page's focus rescue
-// no loss to answer: a frame can come later than the rescue waits for one, and the rescue would
-// put the focus on a control of the margin before it. Below 1280 px the sheet closes too, and its
-// dialog leaves the focus where the comment's end put it, not on the press that opened the sheet.
+// while the composer's box is still in the page, so the focus moves from the box to the editor
+// directly, and the box's going leaves no loss of focus. Below 1280 px the sheet closes too, and
+// its dialog leaves the focus where the comment's end put it, not on the press that opened the
+// sheet.
 // This bridge moves no focus, so the box's going leaves it on the body, and the next frame puts the
 // caret back again.
 for (const { frame, name, width } of [

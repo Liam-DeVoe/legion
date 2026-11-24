@@ -11,12 +11,19 @@ import type { InboxRow, IssueDetails } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { Inbox } from "./Inbox";
 import { InboxDrawer } from "./InboxDrawer";
-import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
+import {
+  installInboxApiMocks,
+  issueAsk,
+  mockAskReads,
+  shortRow,
+  widenToReadingPane,
+} from "./inbox-fixture";
 
-// dispatch://INFRA-2160, plan task t21, the table "Where the focus goes back, by opener": a key
-// that opens the Snooze list (`b`, `h`) or the priority list (`p`) from the Inbox hands the list
-// the element the key was pressed on, and every close gives the focus back there (D5); and the
-// state table's host row of a snooze that lands, whose hand-off wins over that target (R8).
+// dispatch://INFRA-2160, the table "Where the focus goes back, by opener": a key that opens the
+// Snooze list (`b`, `h`) or the priority list (`p`) from the Inbox hands the list the element the
+// key was pressed on, and every close gives the focus back there (D5); and the host row of "The
+// state table of a pick that opts into D5" of a snooze that lands, whose hand-off wins over that
+// target (R8).
 
 installInboxApiMocks();
 
@@ -63,24 +70,6 @@ function renderInApp(content: ReactNode) {
   );
 }
 
-/** Widens happy-dom's window to the reading column's width; answers what narrows it back. */
-function widenToReadingPane(): () => void {
-  const window_ = window as unknown as {
-    happyDOM: { setViewport(size: { width: number }): void };
-    innerWidth: number;
-  };
-  const was = window_.innerWidth;
-  window_.happyDOM.setViewport({ width: 1440 });
-  return () => window_.happyDOM.setViewport({ width: was });
-}
-
-/** The row of the list that `id` names. */
-function rowOf(id: string): HTMLElement {
-  const row = document.querySelector<HTMLElement>(`[data-inbox-row="${id}"]`);
-  if (row === null) throw new Error(`${id} row missing`);
-  return row;
-}
-
 /** The open list named `label`, or null while none is. */
 function openList(label: RegExp): HTMLElement | null {
   return screen.queryByRole("listbox", { name: label });
@@ -113,7 +102,7 @@ test("a key from a pane row returns to the row", async () => {
   const view = renderInApp(<Inbox />);
   try {
     await screen.findByTestId("inbox-pane");
-    const row = await waitFor(() => rowOf("ask-a"));
+    const row = await waitFor(() => shortRow("ask-a"));
     for (const key of ["b", "h"]) {
       await openAndEscape(user, row, key, SNOOZE_A);
       expect(row, `the list ${key} opened gives the focus back to its row`).toHaveFocus();
@@ -131,7 +120,7 @@ test("a key from a card returns to the card", async () => {
   const view = renderInApp(<Inbox />);
   try {
     await screen.findByTestId("ask-ask-a");
-    const card = rowOf("ask-a");
+    const card = shortRow("ask-a");
     for (const [key, label] of [
       ["b", SNOOZE_A],
       ["h", SNOOZE_A],
@@ -194,15 +183,15 @@ test("a key with items selected opens the bar's list and returns to where it was
   try {
     await screen.findByTestId("ask-ask-c");
     const mark = (id: string) =>
-      within(rowOf(id)).getByRole("checkbox", { name: /^Select / }) as HTMLElement;
+      within(shortRow(id)).getByRole("checkbox", { name: /^Select / }) as HTMLElement;
     await user.click(mark("ask-a"));
     await user.click(mark("ask-b"));
     await screen.findByText("2 selected");
     // From the checkbox the reader just ticked, and from a row.
     await openAndEscape(user, mark("ask-b"), "h", bar);
     expect(mark("ask-b"), "the bar's list gives the focus back to the checkbox").toHaveFocus();
-    await openAndEscape(user, rowOf("ask-c"), "b", bar);
-    expect(rowOf("ask-c"), "the bar's list gives the focus back to the row").toHaveFocus();
+    await openAndEscape(user, shortRow("ask-c"), "b", bar);
+    expect(shortRow("ask-c"), "the bar's list gives the focus back to the row").toHaveFocus();
   } finally {
     view.unmount();
     reads();
@@ -229,7 +218,7 @@ test("a snooze that lands hands the focus to the next row", async () => {
   const view = renderInApp(<Inbox />);
   try {
     await screen.findByTestId("ask-ask-b");
-    const row = rowOf("ask-b");
+    const row = shortRow("ask-b");
     act(() => row.focus());
     await user.keyboard("b");
     await user.keyboard("1");
@@ -247,7 +236,7 @@ test("a snooze that lands hands the focus to the next row", async () => {
         )
       ).toEqual(["ask-a", "ask-c"])
     );
-    await waitFor(() => expect(rowOf("ask-c")).toHaveFocus());
+    await waitFor(() => expect(shortRow("ask-c")).toHaveFocus());
   } finally {
     view.unmount();
     snoozeAsk.mockRestore();

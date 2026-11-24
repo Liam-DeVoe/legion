@@ -884,7 +884,7 @@ test("IssuePage's `e` opens the title's editor through the Edit title button", a
   }
 });
 
-// dispatch://INFRA-2160, plan task t21, "Where the focus goes back, by opener": the page's `s` and
+// dispatch://INFRA-2160, the table "Where the focus goes back, by opener": the page's `s` and
 // `p` press their list's trigger from where the reader is, so every close of the list - Escape,
 // or a pick - gives the focus back there: here the page itself, where nothing had it, so the next
 // key is the page's and not a letter typed on a trigger.

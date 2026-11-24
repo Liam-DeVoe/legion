@@ -4,10 +4,16 @@ import { expect, spyOn, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: the outside-press sites below are a pointerdown with no release, and the keys that end or move an IME composition are keys marked as the input method's; user-event has no form for either.
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { type KeyboardEvent as ReactKeyboardEvent, useState } from "react";
+import { useState } from "react";
 import { flushSync } from "react-dom";
 
-import { highlightedRow, panelOf, pickNamed } from "../__tests__/list-picks";
+import {
+  highlightedRow,
+  onCoarsePointer,
+  panelOf,
+  pickNamed,
+  pressesTriggerOn,
+} from "../__tests__/list-picks";
 import { type ListMarks, type ListMenu, MultiSelect } from "./MultiSelect";
 import { PanelTrigger } from "./PanelTrigger";
 
@@ -1624,10 +1630,10 @@ test("a single pick tells its host where a focus arriving on its trigger came fr
 });
 
 // ---------------------------------------------------------------------------------------------
-// D5: a single pick in a menu's place (`menu`), the state table of plan task t21 of
-// dispatch://INFRA-2160, one test to a row and named by it. "The target" is where each close
-// gives the focus back: the row a key opened the list from, else the trigger a press opened it
-// from. The rows that only a browser can read (the drawer's Escape) are the browser checks'.
+// D5: a single pick in a menu's place (`menu`), dispatch://INFRA-2160's table "The state table
+// of a pick that opts into D5", one test to a row and named by it. "The target" is where each
+// close gives the focus back: the row a key opened the list from, else the trigger a press opened
+// it from. The rows that only a browser can read (the drawer's Escape) are the browser checks'.
 // ---------------------------------------------------------------------------------------------
 
 const SNOOZE_LABELS: Readonly<Record<string, string>> = {
@@ -1666,13 +1672,8 @@ function optionsOf(kind: MenuKind, snoozed: boolean): string[] {
   return ["later", "tomorrow", "next-week", "clear", ...(snoozed ? ["unsnooze"] : [])];
 }
 
-/** A row's `b`, which presses the list's trigger as the page's binding does: a click with no
- *  pointer, with the focus still on the row. */
-function pressTriggerOnB(event: ReactKeyboardEvent<HTMLElement>): void {
-  if (event.key !== "b") return;
-  event.preventDefault();
-  document.querySelector<HTMLElement>("[data-menu-trigger]")?.click();
-}
+/** A row's `b`, which presses the list's trigger as the page's binding does. */
+const pressTriggerOnB = pressesTriggerOn("b", "[data-menu-trigger]");
 
 const MENU_MARKS: ListMarks = { trigger: { "data-menu-trigger": "" } };
 
@@ -1734,13 +1735,6 @@ function menuBox(): HTMLInputElement {
   return screen.getByRole("combobox") as HTMLInputElement;
 }
 
-/** Whether the list highlights the choice named `name`. */
-function highlights(name: string): boolean {
-  return (
-    menuBox().getAttribute("aria-activedescendant") === screen.getByRole("option", { name }).id
-  );
-}
-
 function handed(): string {
   return screen.getByTestId("handed").textContent ?? "";
 }
@@ -1755,26 +1749,6 @@ async function openFromRow(user: UserEvent, name = "Row"): Promise<HTMLElement> 
   act(() => row.focus());
   await user.keyboard("b");
   return row;
-}
-
-/** Makes the reader's primary pointer a coarse one, a finger on a phone's screen, until what it
- *  answers is called. */
-function onCoarsePointer(): () => void {
-  const original = window.matchMedia;
-  window.matchMedia = ((query: string) =>
-    ({
-      addEventListener: () => {},
-      addListener: () => {},
-      dispatchEvent: () => true,
-      matches: query === "(pointer: coarse)",
-      media: query,
-      onchange: null,
-      removeEventListener: () => {},
-      removeListener: () => {},
-    }) as MediaQueryList) as typeof window.matchMedia;
-  return () => {
-    window.matchMedia = original;
-  };
 }
 
 /** A finger's tap on `target`. */
@@ -1815,7 +1789,7 @@ test("an opener opens the list on its first or current choice", async () => {
       for (const [opener, press] of openers) {
         await press();
         expect(menuBox(), `${kind}: ${opener} puts the focus in the list's box`).toHaveFocus();
-        expect(highlights(first), `${kind}: ${opener} highlights ${first}`).toBe(true);
+        expect(highlightedRow(menuBox()), `${kind}: ${opener} highlights ${first}`).toBe(first);
         await user.keyboard("{Escape}");
         expect(screen.queryByRole("listbox"), `${kind}: ${opener}`).not.toBeInTheDocument();
       }
@@ -1835,10 +1809,10 @@ test("on a coarse pointer the list opens with no focused box", async () => {
     const list = screen.getByRole("listbox", { name: "Snooze options" });
     expect(menuBox(), "the tap opened the phone's keyboard over the choices").not.toHaveFocus();
     expect(list).toHaveFocus();
-    expect(highlights("Later today")).toBe(true);
+    expect(highlightedRow(menuBox())).toBe("Later today");
     // The list's own keys still work on it.
     await user.keyboard("{ArrowDown}");
-    expect(highlights("Tomorrow")).toBe(true);
+    expect(highlightedRow(menuBox())).toBe("Tomorrow");
     await user.keyboard("{Escape}");
     expect(menuTrigger()).toHaveFocus();
 
@@ -1949,7 +1923,7 @@ test("the arrows, Home and End move the highlight and write nothing", async () =
       ["ArrowUp", "Until I clear it"],
     ] as const) {
       await user.keyboard(`{${key}}`);
-      expect(highlights(to), `${key} highlights ${to}`).toBe(true);
+      expect(highlightedRow(menuBox()), `${key} highlights ${to}`).toBe(to);
       expect(menuBox(), key).toHaveFocus();
     }
     // The caret is the text box's: ArrowLeft and ArrowRight move it, and Home and End, which are
@@ -1963,7 +1937,7 @@ test("the arrows, Home and End move the highlight and write nothing", async () =
     expect(box.selectionStart).toBe(2);
     await user.keyboard("{Home}");
     expect(box.selectionStart).toBe(2);
-    expect(highlights("Next week")).toBe(true);
+    expect(highlightedRow(menuBox())).toBe("Next week");
     expect(screen.getByRole("listbox", { name: "Snooze options" })).toBeInTheDocument();
     expect(handed()).toBe("");
   } finally {

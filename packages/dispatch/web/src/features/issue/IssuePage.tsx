@@ -46,6 +46,7 @@ import { PRIORITY_TRIGGER_SELECTOR } from "./PriorityControl";
 import { stateForIssue } from "./pins";
 import { SpecRequirements } from "./SpecRequirements";
 import { SpecToolbar } from "./SpecToolbar";
+import { STATUS_TRIGGER_SELECTOR } from "./status-pick";
 import { useIssueDetail } from "./useIssueDetail";
 import { useIssuePriority } from "./useIssuePriority";
 import { type ItemLanding, type ItemRoute, isItemRoute, useItemLanding } from "./useItemLanding";
@@ -103,7 +104,6 @@ function ItemLandingFailure({
 /** The header controls the `issue` scope presses (`usableControl`, `header-control.ts`). */
 const LABELS_TRIGGER = 'button[aria-label="Edit labels"]';
 const PIN_TOGGLE = 'button[aria-label="Pin issue"], button[aria-label="Unpin issue"]';
-const STATUS_MENU = "[data-status-menu]";
 const TITLE_BUTTON = 'button[aria-label="Edit title"]';
 
 /**
@@ -264,8 +264,8 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       // `MultiSelect`'s `menu`) takes the element the key was pressed on - the page itself where
       // nothing had the focus - as where each close, a pick's too, gives the focus back.
       action: "issue.status",
-      run: () => usableControl(STATUS_MENU)?.click(),
-      when: () => usableControl(STATUS_MENU) !== null,
+      run: () => usableControl(STATUS_TRIGGER_SELECTOR)?.click(),
+      when: () => usableControl(STATUS_TRIGGER_SELECTOR) !== null,
     },
     {
       action: "issue.priority",

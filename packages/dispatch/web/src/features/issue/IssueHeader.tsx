@@ -26,7 +26,7 @@ import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { focusOnMount } from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
-import { type ListMarks, type ListMenu, MultiSelect } from "../../components/MultiSelect";
+import { MultiSelect } from "../../components/MultiSelect";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -99,6 +99,7 @@ import {
   UnresponsiveRouteMarker,
 } from "./RouteReach";
 import { SubscribedAgents } from "./SubscribedAgents";
+import { STATUS_MENU, statusMarksShowing } from "./status-pick";
 import { type IssueUpdateInput, useIssueDrafts } from "./useIssueDrafts";
 import type { IssuePriorityWrite } from "./useIssuePriority";
 
@@ -111,23 +112,6 @@ const titleRefusals = new Set(["CAP_EXCEEDED", "ISSUE_CLOSED"]);
  *  one the reader is on that turn, not on the header, so the header's Approve and Request
  *  changes keys stand down. */
 const CONVERSATION_TURN = `#issue-conversation-panel :is(${TURN_ROW})`;
-
-/** The Status list's trigger carries this attribute, valued with the status it shows (`Todo`
- *  shows `todo`): a reader outside the page (the docs' screenshots) reads the status off it as it
- *  read a select's value. */
-const STATUS_TRIGGER_ATTRIBUTE = "data-issue-status";
-
-/** D5's rules for the status (`ListMenu`): the list opens on the status held and takes no digit,
- *  and every close gives the focus back where it was as the list opened - the page or the
- *  element `s` was pressed on, or the trigger a press opened it from. */
-const STATUS_MENU: ListMenu = { keys: {}, opensOn: "value" };
-
-/** The Status list's marks on its trigger: the mark the page's `s` finds it by (`IssuePage.tsx`),
- *  since the shared list hands out no element of its own, and `STATUS_TRIGGER_ATTRIBUTE`, valued
- *  with the status it shows. */
-function statusMarks(shown: string): ListMarks {
-  return { trigger: { "data-status-menu": "", [STATUS_TRIGGER_ATTRIBUTE]: shown } };
-}
 
 /** Whether `input` is the Status pill's pick alone: that control shows its write in the shell's
  *  indicator and rolls back on a refusal, where every other header field holds its draft and
@@ -600,7 +584,7 @@ export function IssueHeader({
               chevron={false}
               emptyMessage="No status matches that."
               label="Status"
-              marks={statusMarks(statusValue)}
+              marks={statusMarksShowing(statusValue)}
               menu={STATUS_MENU}
               mode="single"
               onOpenChange={(next) => setStatusOpen(next && !statusHeld)}

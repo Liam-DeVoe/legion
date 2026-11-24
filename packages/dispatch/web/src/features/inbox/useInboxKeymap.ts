@@ -480,6 +480,9 @@ export function useInboxKeymap({
   /** The row the bar's Snooze was reached from, so Escape from it - the bar sits above the bands
    *  and has no row to fall back through - is one level out rather than a dead end. */
   const pickerOrigin = useRef<string | null>(null);
+  const notePickerOrigin = (from: Element | null) => {
+    pickerOrigin.current = rowAround(from)?.dataset.inboxRow ?? null;
+  };
   /** The approval request's Approve, or its Request changes, that `a` and Shift+R press (R7).
    *  Beside the column it is the chip's own button in the column's head, which the head draws
    *  from its first draw and holds until the document's read returns (`ReadingPaneHead`), and
@@ -798,7 +801,7 @@ export function useInboxKeymap({
         // The row the key was pressed on, for Escape from the bar's trigger to go back to
         // (`back-from-bulk`), as a focus arriving on the trigger notes it (`notePickerOrigin`):
         // the press leaves the focus where it is, for the list to give it back to.
-        pickerOrigin.current = rowAround(document.activeElement)?.dataset.inboxRow ?? null;
+        notePickerOrigin(document.activeElement);
         bulkPicker()?.click();
       },
       // The selection's key works from wherever marking leaves the reader - a row, the checkbox
@@ -879,9 +882,7 @@ export function useInboxKeymap({
   return {
     forgetPaneReturn,
     holdPane,
-    notePickerOrigin: (from) => {
-      pickerOrigin.current = rowAround(from)?.dataset.inboxRow ?? null;
-    },
+    notePickerOrigin,
     paneScroller,
   };
 }

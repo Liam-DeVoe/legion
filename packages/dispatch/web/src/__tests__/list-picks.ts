@@ -1,5 +1,6 @@
 import { screen, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 /** The text boxes in the page now: a list's own box is one that appears when the list opens. */
 export function textBoxes(): Element[] {
@@ -44,6 +45,40 @@ export function panelOf(trigger: Element): HTMLElement {
   return controlledBy(trigger, "the trigger names no open list");
 }
 
+/** The option of the open list `trigger` opened that `name` names: only that list's options
+ *  count, never a control of the page behind it or of another list. */
+export function optionOf(trigger: HTMLElement, name: string): HTMLElement {
+  return within(panelOf(trigger)).getByRole("option", { name });
+}
+
+/** The names of the options `trigger`'s list offers, in order - each option's words, without the
+ *  mark of the picked one or the digit drawn beside it - read with the list opened by a press on
+ *  the trigger and closed again by Escape. */
+export async function optionsOffered(user: UserEvent, trigger: HTMLElement): Promise<string[]> {
+  await user.click(trigger);
+  const names = [...panelOf(trigger).querySelectorAll('[role="option"]')].map(
+    (option) => option.querySelector(":scope > span:not([aria-hidden])")?.textContent ?? ""
+  );
+  await user.keyboard("{Escape}");
+  return names;
+}
+
+/** Picks `name` from the list `trigger` opens, as a reader's two presses do: one on the trigger,
+ *  one on the option. */
+export async function pickFromList(
+  user: UserEvent,
+  trigger: HTMLElement,
+  name: string
+): Promise<void> {
+  await user.click(trigger);
+  await user.click(optionOf(trigger, name));
+}
+
+/** Whether a list is open anywhere on the page. */
+export function listOpen(): boolean {
+  return screen.queryByRole("listbox") !== null;
+}
+
 /** The name of the single pick or the menu labelled `label`: the label alone where its trigger
  *  shows the label or the label's first words, else the label and then what the trigger shows
  *  (`MultiSelect`, `ChoiceMenu`). */
@@ -78,7 +113,38 @@ export async function pickFromLabelled(
   label: string,
   name: string
 ): Promise<void> {
-  const trigger = await screen.findByLabelText(label);
-  await user.click(trigger);
-  await user.click(within(panelOf(trigger)).getByRole("option", { name }));
+  await pickFromList(user, await screen.findByLabelText(label), name);
+}
+
+/** A row's `key`, which presses the list's trigger `selector` finds as the page's binding does: a
+ *  click with no pointer, with the focus still on the row. */
+export function pressesTriggerOn(
+  key: string,
+  selector: string
+): (event: ReactKeyboardEvent<HTMLElement>) => void {
+  return (event) => {
+    if (event.key !== key) return;
+    event.preventDefault();
+    document.querySelector<HTMLElement>(selector)?.click();
+  };
+}
+
+/** Makes the reader's primary pointer a coarse one, a finger on a phone's screen, where a list
+ *  opens with no text box focused, until what it answers is called. */
+export function onCoarsePointer(): () => void {
+  const original = window.matchMedia;
+  window.matchMedia = ((query: string) =>
+    ({
+      addEventListener: () => {},
+      addListener: () => {},
+      dispatchEvent: () => true,
+      matches: query === "(pointer: coarse)",
+      media: query,
+      onchange: null,
+      removeEventListener: () => {},
+      removeListener: () => {},
+    }) as MediaQueryList) as typeof window.matchMedia;
+  return () => {
+    window.matchMedia = original;
+  };
 }

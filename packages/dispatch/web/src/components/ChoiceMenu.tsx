@@ -9,8 +9,7 @@ import {
   useState,
 } from "react";
 
-import { focusOnDocument, stepIndex } from "../features/shell/roving";
-import { ControlKeyHint, keyshortcutsOf } from "../features/shell/ShortcutHelp";
+import { focusBackOverPress, focusOnDocument, stepIndex } from "../features/shell/roving";
 import {
   borderDefault,
   card,
@@ -33,18 +32,9 @@ interface ChoiceMenuProps<V extends string> {
   readonly label: string;
   readonly choices: readonly MenuChoice<V>[];
   readonly onChoose: (value: V) => void;
-  /** The trigger takes no press and no focus. */
-  readonly disabled?: boolean;
-  /** The trigger keeps its focus and its Tab stop but opens nothing (`aria-disabled`): a write of
-   *  its own is out, and a control disabled under the reader's focus drops it on the document. */
-  readonly held?: boolean;
   /** The trigger's marks, by which the page's code finds it (`data-column-move`). */
   readonly marks: Readonly<Record<`data-${string}`, string>>;
   readonly triggerClassName: string;
-  /** The keys that also press the trigger where its host binds them and draws them: named in the
-   *  trigger's `aria-keyshortcuts`, and the first drawn inside it after what it draws
-   *  (`ControlKeyHint`). */
-  readonly shortcutKeys?: readonly string[];
   /** The words the trigger shows, which `children` draws: the action of the menu ("Move"). */
   readonly face: string;
   /** What the trigger draws: the icon or the badge that shows `face`. */
@@ -89,13 +79,10 @@ const keepPress = (event: SyntheticEvent) => event.stopPropagation();
 export function ChoiceMenu<V extends string>({
   children,
   choices,
-  disabled = false,
   face,
-  held = false,
   label,
   marks,
   onChoose,
-  shortcutKeys,
   triggerClassName,
 }: ChoiceMenuProps<V>): ReactNode {
   const id = useId();
@@ -188,7 +175,9 @@ export function ChoiceMenu<V extends string>({
   useEffect(() => () => unfollow.current(), []);
 
   // The press outside, in the capture phase: a board card's priority and an ask's hand-on stop
-  // their own presses from bubbling, and a press on either must still close this menu.
+  // their own presses from bubbling, and a press on either must still close this menu. The focus
+  // goes back at once and again once the press is over where it left it on the document
+  // (`focusBackOverPress`).
   // biome-ignore lint/correctness/useExhaustiveDependencies: `wayBack` reads only refs, so the listener the menu's opening adds is current for as long as the menu stays open
   useEffect(() => {
     if (!open) return;
@@ -199,22 +188,7 @@ export function ChoiceMenu<V extends string>({
       if (document.getElementById(menuId)?.contains(target)) return;
       setOpen(false);
       const back = wayBack();
-      back?.focus();
-      // The press's own focus has landed by its `mouseup`, a finger's too: back from the
-      // document, and left alone anywhere else. A press the browser cancels (a scroll) moves no
-      // focus, and the next press is another press, so either ends the wait.
-      const settle = () => {
-        stop();
-        if (focusOnDocument()) back?.focus();
-      };
-      const stop = () => {
-        document.removeEventListener("mouseup", settle, true);
-        document.removeEventListener("pointercancel", stop, true);
-        document.removeEventListener("pointerdown", stop, true);
-      };
-      document.addEventListener("mouseup", settle, true);
-      document.addEventListener("pointercancel", stop, true);
-      document.addEventListener("pointerdown", stop, true);
+      focusBackOverPress(() => back?.focus());
     };
     document.addEventListener("pointerdown", press, true);
     return () => document.removeEventListener("pointerdown", press, true);
@@ -252,17 +226,13 @@ export function ChoiceMenu<V extends string>({
       )}
       <button
         aria-controls={open ? menuId : undefined}
-        aria-disabled={held || undefined}
         aria-expanded={open}
         aria-haspopup="menu"
-        aria-keyshortcuts={keyshortcutsOf(shortcutKeys)}
         aria-label={faceInLabel ? label : undefined}
         aria-labelledby={faceInLabel ? undefined : `${nameId} ${faceId}`}
         className={triggerClassName}
         {...marks}
-        disabled={disabled}
         onClick={(event) => {
-          if (held) return;
           if (open) close();
           else openFrom(event);
         }}
@@ -275,7 +245,6 @@ export function ChoiceMenu<V extends string>({
         <span className="contents" id={faceId}>
           {children}
         </span>
-        <ControlKeyHint keys={shortcutKeys} />
       </button>
       {open ? (
         <AnchoredPanel

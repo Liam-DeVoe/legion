@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the bare mouse, pointer and touch presses a draggable parent must not see, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
+import type { ReactNode } from "react";
 import {
   type Commits,
   drawnPick,
@@ -15,8 +15,18 @@ import { realClock } from "../../__tests__/fake-clock";
 import { heldNotDisabled } from "../../__tests__/held-press";
 import { bodies } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { listOf, openList, pick, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
-import { choiceOf, choicesOf } from "../../__tests__/menu-picks";
+import {
+  listOf,
+  onCoarsePointer,
+  openList,
+  optionOf,
+  optionsOffered,
+  pick,
+  pickNamed,
+  pressesTriggerOn,
+  rows,
+  textBoxes,
+} from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -24,7 +34,7 @@ import { ApiError, NetworkError } from "../../api/client";
 import type { InboxRow, Issue, IssueDetails, IssuePriority, IssueSummary } from "../../api/types";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { issuePriority } from "./issue-priority";
-import { PriorityControl, PriorityEditor } from "./PriorityControl";
+import { PRIORITY_TRIGGER_SELECTOR, PriorityControl, PriorityEditor } from "./PriorityControl";
 import { useIssuePriority } from "./useIssuePriority";
 
 const issue: Issue = {
@@ -179,12 +189,19 @@ function PageControl({ commits }: { commits: Commits<IssuePriority | null> }): R
   );
 }
 
+/** A row's `p`, which presses the priority's trigger as the page's binding does. */
+const pressPriorityOnP = pressesTriggerOn("p", PRIORITY_TRIGGER_SELECTOR);
+
+/** Renders the control; with `row`, beside a row the reader is on, drawn before it, whose `p`
+ *  opens its list, as the Inbox's, the Board's and the issue page's keys do. */
 function renderControl({
   page = false,
   priority = issuePriority(details.priority),
+  row = false,
 }: {
   page?: boolean;
   priority?: IssuePriority | null;
+  row?: boolean;
 } = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -196,6 +213,11 @@ function renderControl({
   const commits = recordCommits<IssuePriority | null>(() => drawnPick(trigger()));
   const view = render(
     <QueryClientProvider client={queryClient}>
+      {row ? (
+        <button onKeyDown={pressPriorityOnP} type="button">
+          CORE-1 row
+        </button>
+      ) : null}
       {page ? <PageControl commits={commits} /> : <CachedControl commits={commits} />}
     </QueryClientProvider>
   );
@@ -232,17 +254,17 @@ test("PriorityControl shows the issue's priority and offers Unset and P0-P3, the
   try {
     expect(trigger()).toHaveTextContent("P1");
     expect(trigger()).toHaveAttribute("data-priority-menu");
-    expect(await choicesOf(user, trigger())).toEqual(["Unset", "P0", "P1", "P2", "P3"]);
+    expect(await optionsOffered(user, trigger())).toEqual(["Unset", "P0", "P1", "P2", "P3"]);
     await user.click(trigger());
-    expect(choiceOf(trigger(), "P1")).toHaveAttribute("aria-selected", "true");
+    expect(optionOf(trigger(), "P1")).toHaveAttribute("aria-selected", "true");
     expect(
       screen.getByRole("combobox", { name: "Search priorities" }),
       "the list opens on the priority held"
-    ).toHaveAttribute("aria-activedescendant", choiceOf(trigger(), "P1").id);
-    expect(choiceOf(trigger(), "Unset")).toHaveAttribute("aria-selected", "false");
+    ).toHaveAttribute("aria-activedescendant", optionOf(trigger(), "P1").id);
+    expect(optionOf(trigger(), "Unset")).toHaveAttribute("aria-selected", "false");
     // Unset has no digit; P0 to P3 write on 0 to 3.
-    expect(choiceOf(trigger(), "Unset")).not.toHaveAttribute("aria-keyshortcuts");
-    expect(choiceOf(trigger(), "P3")).toHaveAttribute("aria-keyshortcuts", "3");
+    expect(optionOf(trigger(), "Unset")).not.toHaveAttribute("aria-keyshortcuts");
+    expect(optionOf(trigger(), "P3")).toHaveAttribute("aria-keyshortcuts", "3");
   } finally {
     unmount();
   }
@@ -670,65 +692,15 @@ test("a priority the reader stopped says Retry asks again under its key, not tha
   }
 });
 
-// dispatch://INFRA-2160, plan task t21: the priority takes D5's rules, so every close of its list
-// gives the focus back where it was as the list opened - the table "Where the focus goes back, by
-// opener", and the state table's host rows for a priority that lands and one that is refused.
+// dispatch://INFRA-2160, D5: the priority takes D5's rules, so every close of its list gives the
+// focus back where it was as the list opened - the table "Where the focus goes back, by opener",
+// and the host rows of "The state table of a pick that opts into D5" for a priority that lands
+// and one that is refused.
 
-/** Makes the reader's primary pointer a coarse one, a finger on a phone's screen, until what it
- *  answers is called. */
-function onCoarsePointer(): () => void {
-  const original = window.matchMedia;
-  window.matchMedia = ((query: string) =>
-    ({
-      addEventListener: () => {},
-      addListener: () => {},
-      dispatchEvent: () => true,
-      matches: query === "(pointer: coarse)",
-      media: query,
-      onchange: null,
-      removeEventListener: () => {},
-      removeListener: () => {},
-    }) as MediaQueryList) as typeof window.matchMedia;
-  return () => {
-    window.matchMedia = original;
-  };
-}
-
-/** A row's `p`, which presses the priority's trigger as the page's binding does: a click with no
- *  pointer, with the focus still on the row. */
-function pressPriorityOnP(event: ReactKeyboardEvent<HTMLElement>): void {
-  if (event.key !== "p") return;
-  event.preventDefault();
-  document.querySelector<HTMLElement>("[data-priority-menu]")?.click();
-}
-
-/** The priority as a row's surface draws it, from the issue it reads from the cache. */
-function CachedPriority(): ReactNode {
-  const cached = useCachedIssue();
-  return cached === undefined ? null : (
-    <PriorityControl issueKey={cached.key} priority={issuePriority(cached.priority)} />
-  );
-}
-
-/** The priority drawn beside a row the reader is on, whose `p` opens its list, as the Inbox's,
- *  the Board's and the issue page's keys do. */
+/** The priority drawn beside a row the reader is on (`renderControl`'s `row`), and that row. */
 function renderBesideRow() {
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  queryClient.setQueryData(detailKey, details);
-  queryClient.setQueryData(listKey, [summary, otherSummary]);
-  queryClient.setQueryData(inboxKey, [inboxRow]);
-  const user = userEvent.setup();
-  const view = render(
-    <QueryClientProvider client={queryClient}>
-      <button onKeyDown={pressPriorityOnP} type="button">
-        CORE-1 row
-      </button>
-      <CachedPriority />
-    </QueryClientProvider>
-  );
-  return { row: screen.getByRole("button", { name: "CORE-1 row" }), unmount: view.unmount, user };
+  const rendered = renderControl({ row: true });
+  return { ...rendered, row: screen.getByRole("button", { name: "CORE-1 row" }) };
 }
 
 test("Enter or Space on the trigger returns to the trigger", async () => {

@@ -7243,7 +7243,7 @@ test("clear brush window pressed with the Window control scrolled out of sight s
 // at the marked row's place, and where it stands partly out of the reader's sight there, the
 // hand-off brings it whole into sight at its nearest edge (`focusIntoView`), the one scroll a
 // landing may make (INFRA-3135's ruling of 2026-11-21 12:3xZ) beside the line that closes above
-// the list. Measured at 390x664 in the full lane's Jobs at the merge's head
+// the list. Measured at 390x664 in the full lane's Jobs at 3a7a98a9
 // (infra-2160-fullproof-shard-2 and -4), with the bar's own focus scrolling to that row while the
 // threads still stood: the row stood at the window's top, 266 px above the place, for one thread,
 // and 1045 px above the window for two, in Chromium, Firefox and WebKit.
@@ -8096,7 +8096,7 @@ test("Unpin on a pinned agent keeps the keyboard focus on a control in sight, on
 // the item after it and gives that item's row the keyboard focus, not a control in it. That row
 // moves up into the place, and where it stands partly out of the reader's sight there, the
 // hand-off brings it whole into sight at its nearest edge (`focusIntoView`), the one scroll the
-// 12:3xZ ruling allows a landing. Measured at 390x664 in the full lane's Jobs at the merge's head
+// 12:3xZ ruling allows a landing. Measured at 390x664 in the full lane's Jobs at 3a7a98a9
 // (infra-2160-fullproof-shard-2 and -4): the row stood 190 px above the window once the first
 // thread went, and the window scrolled up by those 190 px, in Chromium, Firefox and WebKit.
 test("a thread's Dismiss in the Inbox's list hands the focus to the next row, and scrolls only to show that row whole, at 1440 and 390 @firefox @webkit", async ({

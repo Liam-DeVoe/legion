@@ -567,21 +567,30 @@ export function usePaneSelection({
     );
   });
 
+  // `PaneSelection.focusHandOff`, which the effect below runs after every commit too.
+  const focusHandOff = (): boolean => {
+    const handOff = focusTo.current;
+    const target = handOff === undefined ? null : targetElement(handOff.target);
+    if (handOff === undefined || target === null) return false;
+    focusTo.current = undefined;
+    focusTarget(handOff.acted, target);
+    return true;
+  };
+
   // The hand-off's focus, after every commit: the row the reader's action sends them to, or the
-  // list's empty message, takes the keyboard focus once the page draws it (`focusTarget`), and is
-  // scrolled into view where the reader cannot see the whole of it - once no row acted on stands
-  // above it - since WebKit scrolls a focused element into view only a frame later; a row in
-  // sight moves nothing. After every commit, because the acted row and the
+  // list's empty message, takes the keyboard focus once the page draws it (`focusHandOff`), and
+  // is scrolled into view where the reader cannot see the whole of it - once no row acted on
+  // stands above it - since WebKit scrolls a focused element into view only a frame later; a row
+  // in sight moves nothing. After every commit, because the acted row and the
   // control that held the focus leave in their own commits - a closing dialog's own return of the
   // focus (`useDialog`), the column's card swapped for the next one, a row taken off the list -
-  // and a passive effect runs after their cleanups, so the target wins over each of them and over
-  // the page's rescue, which waits a frame and a task. The empty message is drawn only once the
-  // acted rows have gone, so the hand-off waits for it while they are still drawn, and is spent
-  // once they have gone without it.
+  // and a passive effect runs after their cleanups, so the target wins over each of them. The
+  // empty message is drawn only once the acted rows have gone, so the hand-off waits for it while
+  // they are still drawn, and is spent once they have gone without it.
   //
   // An action still in the air can lose its rows first - a bulk snooze folds them at once - and,
-  // with the focus in one of them, the focus with them: the target takes it then rather than the
-  // rescue, and the landing finds the reader there.
+  // with the focus in one of them, the focus with them: the target takes it then rather than
+  // leave it on the body, and the landing finds the reader there.
   //
   // A target given the focus while rows acted on still stood before it is scrolled into view in
   // the first commit that finds none of them there (`intoView`): after the list's anchor has held
@@ -597,13 +606,7 @@ export function usePaneSelection({
     }
     const handOff = focusTo.current;
     if (handOff !== undefined) {
-      const target = targetElement(handOff.target);
-      if (target !== null) {
-        focusTo.current = undefined;
-        focusTarget(handOff.acted, target);
-      } else if (!drawsAny(handOff.acted)) {
-        focusTo.current = undefined;
-      }
+      if (!focusHandOff() && !drawsAny(handOff.acted)) focusTo.current = undefined;
       return;
     }
     if (!focusOnDocument()) return;
@@ -626,14 +629,7 @@ export function usePaneSelection({
 
   return {
     ...stableHandOffs,
-    focusHandOff: () => {
-      const handOff = focusTo.current;
-      const target = handOff === undefined ? null : targetElement(handOff.target);
-      if (handOff === undefined || target === null) return false;
-      focusTo.current = undefined;
-      focusTarget(handOff.acted, target);
-      return true;
-    },
+    focusHandOff,
     id: selectedId,
     select,
     selectedRow,

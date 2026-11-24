@@ -12,6 +12,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
+import { focusBack } from "../features/shell/roving";
 import { inputMethodKey } from "../lib/input-method";
 import { focusableIn } from "./focus-place";
 import { PANEL_ATTRIBUTE } from "./key-targets";
@@ -334,13 +335,8 @@ export function AnchoredPanel({
       event.stopPropagation();
       const noted = anchor === null ? undefined : openedFrom.get(anchor);
       const to = back.current?.() ?? (noted?.isConnected ? noted : anchorRef.current);
-      // The page itself, where a key opened the panel with nothing focused: only taking the
-      // focus off the control that holds it puts it back there.
-      if (to === document.body) {
-        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-      } else {
-        to?.focus();
-      }
+      // The body where a key opened the panel with nothing focused: back to the page itself.
+      focusBack(to);
       dismiss.current("escape");
     };
     document.addEventListener("focusin", followFocus, true);

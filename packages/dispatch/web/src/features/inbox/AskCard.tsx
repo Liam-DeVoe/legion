@@ -237,7 +237,7 @@ const PAGE_URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
  *  focus stop. The Inbox's keys answer from either. Where the loss is the reader's own answer
  *  landing, the Inbox then hands them on to the item after it while they have not moved on (R8,
  *  `pane-selection.ts`'s `landHandOff`), whose focus effect runs after every commit, so its
- *  target wins over this hand-off and over the rescue. */
+ *  target wins over this hand-off. */
 function handOffFocus(form: HTMLElement): void {
   if (!form.contains(document.activeElement)) return;
   form.parentElement?.closest<HTMLElement>("[tabindex]")?.focus({ preventScroll: true });

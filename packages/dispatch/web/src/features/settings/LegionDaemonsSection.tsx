@@ -116,6 +116,8 @@ export function LegionDaemonsSection(): ReactNode {
   const [failedAction, setFailedAction] = useState<FailedAction>();
   const legion = useLegionDaemons();
   const daemonKey = (named: string) => legionDaemonQuery(named).queryKey;
+  // The line both writes of a daemon go on (`target`), in press order.
+  const daemonTarget = (named: string) => `legion-daemon:${named}`;
   // Both writes show their refusal under the form, with the row they changed put back. Neither
   // holds back the project's reads while it is out (`holds`): another browser names a project's
   // daemon as this one does, and no live event names it, so a hold would keep that change back
@@ -126,9 +128,10 @@ export function LegionDaemonsSection(): ReactNode {
   // Remove pressed while an earlier one of the same daemon is late waits its turn behind it, so
   // the daemon ends as the later press left it, however each one's tries wait out the network.
   const saveDaemon = useKeyedWrite<LegionSetting, DaemonInput, PreviousDaemon>({
-    target: ({ project: named }) => `legion-daemon:${named}`,
+    target: ({ project: named }) => daemonTarget(named),
     request: ({ project: named, state_url: url }) => legionDaemonRequest(named, url),
     inline: true,
+    readsLate: true,
     label: ({ project: named }) => `${named}'s Legion daemon`,
     onError: (error, variables, context) => {
       queryClient.setQueryData(daemonKey(variables.project), context?.previous);
@@ -175,9 +178,10 @@ export function LegionDaemonsSection(): ReactNode {
       queryClient.invalidateQueries({ queryKey: daemonKey(variables.project) }),
   });
   const removeDaemon = useKeyedWrite<void, string, PreviousDaemon>({
-    target: (named) => `legion-daemon:${named}`,
+    target: daemonTarget,
     request: (named) => legionDaemonRemovalRequest(named),
     inline: true,
+    readsLate: true,
     label: (named) => `${named}'s Legion daemon removed`,
     onError: (error, named, context) => {
       queryClient.setQueryData(daemonKey(named), context?.previous);

@@ -9,8 +9,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { pickNamed } from "../../__tests__/list-picks";
-import { choicesOf, menuOpen, pickFromMenu } from "../../__tests__/menu-picks";
+import { listOpen, optionsOffered, pickFromList, pickNamed } from "../../__tests__/list-picks";
 import { answerRequests } from "../../__tests__/network";
 import {
   artifactRecordHandler,
@@ -813,7 +812,7 @@ test("the header closes an issue and reopens it into Backlog", async () => {
 
   try {
     const openStatus = await screen.findByRole("button", { name: pickNamed("Status") });
-    expect(await choicesOf(user, openStatus)).not.toContain("Done");
+    expect(await optionsOffered(user, openStatus)).not.toContain("Done");
 
     await openIssueActions();
     await user.click(screen.getByRole("button", { name: "Close issue" }));
@@ -840,7 +839,7 @@ test("the header closes an issue and reopens it into Backlog", async () => {
     expect(closedStatus).not.toHaveAttribute("disabled");
     expect(closedStatus).toHaveTextContent("Done");
     await user.click(closedStatus);
-    expect(menuOpen(), "a press opened the closed issue's status list").toBe(false);
+    expect(listOpen(), "a press opened the closed issue's status list").toBe(false);
     expect(patchIssue).toHaveBeenCalledTimes(1);
 
     await openIssueActions();
@@ -885,7 +884,7 @@ test("the header lets a human move a Todo issue to In progress", async () => {
   try {
     const status = await screen.findByRole("button", { name: pickNamed("Status") });
     expect(status).toHaveTextContent("Todo");
-    expect(await choicesOf(user, status)).toEqual([
+    expect(await optionsOffered(user, status)).toEqual([
       "Triage",
       "Icebox",
       "Backlog",
@@ -1149,7 +1148,7 @@ test("s is off while the status menu's trigger is aria-disabled", async () => {
       "aria-expanded",
       "false"
     );
-    expect(menuOpen(), "s opened a menu while the status menu's trigger is busy").toBe(false);
+    expect(listOpen(), "s opened a menu while the status menu's trigger is busy").toBe(false);
   } finally {
     view.unmount();
     restore();
@@ -1467,7 +1466,7 @@ test.each([
     expect(chip).toBeInTheDocument();
     expect(chip).not.toHaveFocus();
     await user.keyboard("{Enter}");
-    expect(menuOpen(), "Enter opened the closed issue's status list").toBe(false);
+    expect(listOpen(), "Enter opened the closed issue's status list").toBe(false);
     expect(patchIssue).not.toHaveBeenCalled();
   } finally {
     patchIssue.mockRestore();
@@ -2467,7 +2466,7 @@ test("a title an edit ended with nothing typed while its write was out stays the
     await screen.findByText("Could not update this issue.");
     expect(heading).toHaveTextContent(/^Review the plan$/);
 
-    await pickFromMenu(
+    await pickFromList(
       user,
       screen.getByRole("button", { name: pickNamed("Status") }),
       "In progress"
@@ -2515,7 +2514,7 @@ test("a title draft the reader never touched takes the title a status pick's wri
 
   try {
     const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
-    await pickFromMenu(
+    await pickFromList(
       user,
       await screen.findByRole("button", { name: pickNamed("Status") }),
       "In progress"
@@ -2555,7 +2554,7 @@ test("a status pick that lands while a title saved after it waits behind it leav
   const view = renderHeader("/issues/CORE-1", queryClient);
 
   try {
-    await pickFromMenu(
+    await pickFromList(
       user,
       await screen.findByRole("button", { name: pickNamed("Status") }),
       "In progress"

@@ -1914,9 +1914,9 @@ const DRAFT_ONLY_LABEL = "label-draft-only";
 // so Enter on that label's focused row unpicks it and takes the row away with the focus in it.
 // The list gives its text box that focus as the commit lands (`MultiSelect`'s row press), rather
 // than leave it to fall to the body, where Escape no longer reaches the list. A label row stands
-// right after the one that goes, so the page's focus rescue, which would answer a focus left to
-// fall with the control now at the lost one's place (`handOn`), would put it on that row: the
-// text box holding the focus is the list's own hand-off.
+// right after the one that goes, so a hand-off to the control now at the lost one's place would
+// put the focus on that row, not on the text box: the text box holding the focus is the list's
+// own hand-off.
 // @webkit @firefox: each engine's handling of a focused element a commit takes off the page,
 // which the list reads through `focusLost` (the body, or an element no longer on the page).
 test("Details' labels list gives its text box the focus when Enter on the focused row of a label only the draft holds takes that row away @firefox @webkit", async ({

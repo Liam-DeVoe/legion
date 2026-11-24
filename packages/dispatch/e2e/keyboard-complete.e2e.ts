@@ -92,7 +92,6 @@ import {
   dismissThread,
   dismissWrites,
   expectKeyHint,
-  firstAttempts,
   type HeldWrites,
   handOnControl,
   handOnWrites,
@@ -119,10 +118,9 @@ import {
   snoozeWrites,
   unsnoozeWrites,
   versionReviewWrites,
-  writesSent,
 } from "./keyboard-complete";
 import { onBody, openIssue } from "./keyboard-issue";
-import { type KeyedWrite, watchWrites } from "./keyed-writes";
+import { firstAttempts, type KeyedWrite, watchWrites, writesSent } from "./keyed-writes";
 import { machineSession } from "./machines";
 import { commentWithBody } from "./margin-helpers";
 import { expectHighlight, openList, openTrigger, priorityTrigger, statusTrigger } from "./menus";
@@ -430,8 +428,9 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
     step("2 snoozes the ask until Tomorrow, which the narrowing hides")
   ).toBe(mornings.tomorrow);
 
-  // The third ask's menu from a click on its Snooze control: Tab, and a click outside, close it
-  // and give the focus back to that control.
+  // The third ask's menu from a click on its Snooze control: Tab closes it and gives the focus
+  // back to that control, and a click outside closes it and gives the focus back there only where
+  // the click lands on nothing that takes the focus; one on an element that does leaves it there.
   await goTo(inbox, third);
   const snooze = controlsOf(page, inbox, third).getByRole("button", { name: /^Snooze / });
   await snooze.click();
@@ -4118,12 +4117,12 @@ function focusAgainst(target: Locator): Promise<string> {
 }
 
 /** Reads that `target` holds the focus, and still holds it two frames later, by when the commit
- *  the last key asked for and the page's focus rescue, which hands a lost focus on a frame after
- *  it, have both run; else fails by `step`, with what holds the focus instead. */
+ *  the last key asked for and the hand-offs its effects make of a focus it took away have run;
+ *  else fails by `step`, with what holds the focus instead. */
 async function expectFocusOn(page: Page, target: Locator, step: string): Promise<void> {
   await expect.poll(() => focusAgainst(target), { message: step }).toBe("on it");
   await nextFrames(page);
-  // One read: the two frames are the last the key's commit and the rescue's hand-off take.
+  // One read: the two frames are the last the key's commit and its hand-offs take.
   expect(await focusAgainst(target), `${step}, two frames later`).toBe("on it");
 }
 
@@ -7635,8 +7634,8 @@ test("k-threads: in the Inbox drawer, each comment, reply and message of an issu
 // after the margin was hidden and shown again, and below 1280 px, where the margin is a modal
 // sheet the reader closes before the next comment. Escape in the empty box, and a sent comment,
 // put the caret back in the document inside the commented word; below 1280 px they close the
-// sheet too. A sent comment does so as well when the page's frames come later than its focus
-// rescue waits for one.
+// sheet too. A sent comment does so as well when the page's frames come later than an armed
+// press waits for one.
 // ---------------------------------------------------------------------------
 
 /** k-comment-focus' spec: three paragraphs, each with the word the rows comment on. */
@@ -7730,8 +7729,8 @@ async function expectCaretInDocument(page: Page, word: string, message: string):
     .toBe(`inside "${word}"`);
 }
 
-/** How late the late-frame rows make each animation frame: three times the 100 ms the page's focus
- *  rescue waits for one before it goes on without it (`FRAME_WAIT_MS` in
+/** How late the late-frame rows make each animation frame: three times the 100 ms an armed press
+ *  waits for one before it goes on without it (`FRAME_WAIT_MS` in
  *  `web/src/components/focus-place.ts`). */
 const LATE_FRAME_MS = 300;
 
