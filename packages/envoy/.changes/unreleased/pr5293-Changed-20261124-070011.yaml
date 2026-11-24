@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The meaning document arm of search, and of the related-item check, takes a document's date from
+  `document_search.created_at` and reads no row of `artifact_versions`, where it read the newest
+  version of each of up to 1,000 windows' documents. It answers the same rows and dates as before.
+time: 2026-11-24T07:00:11Z
+custom:
+    Issue: pr5293
