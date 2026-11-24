@@ -20,7 +20,7 @@ Delete the empty verb phrases agents keep using. Write what literally happens in
 
 ## The test
 
-Take the verb phrase out. Ask: what literally happens? Write that. If you cannot say, you did not know.
+Take the verb phrase out. Ask: what literally happens? Write that. If you cannot say, you did not know, and the phrase hid it from you as well as from the reader.
 
 | Never | What to write |
 |---|---|
