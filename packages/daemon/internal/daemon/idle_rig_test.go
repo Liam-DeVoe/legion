@@ -188,7 +188,7 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 	// when the test ends, so a passing run shows whether a process met the listener's restart.
 	t.Cleanup(func() {
 		for line := range strings.SplitSeq(rig.pods.log(), "\n") {
-			if strings.Contains(line, "idle rig role process:") {
+			if strings.Contains(line, "idle rig role process:") || strings.Contains(line, "idle rig relay") || strings.Contains(line, "credential") {
 				t.Logf("FORCED: the launchers' log: %s", line)
 			}
 		}
