@@ -121,12 +121,7 @@ func (e *Engine) taskJoined(ctx context.Context, tx pgx.Tx, fact intake.TaskJoin
 	if joined.Place.Kind != record.PlaceParts {
 		return intake.Result{}, nil
 	}
-	now, err := e.store.Issue(ctx, tx, issue.Key)
-	if err != nil || now == nil {
-		return intake.Result{}, err
-	}
-	_, err = e.startReady(ctx, tx, *now)
-	return intake.Result{}, err
+	return intake.Result{}, e.startReadyNow(ctx, tx, issue.Key)
 }
 
 // mergeBaseSet records base, the default branch the row of a merge's start set the base of fact's

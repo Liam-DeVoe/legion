@@ -119,10 +119,13 @@ func tasksWaitingOn(stored *record.StoredPlan, task string) []string {
 // parts that wait start in the same call. It answers the issue as written. A plan of one task, or
 // none, starts nothing here: its one task starts at the gate's opening as before (transition),
 // and so the issue is answered as given. It runs at the first step of the work (gateOpened), at
-// each move of a task to done (transition), at each version of the plan taken after the work
-// started (afterVersion), after a stopped task starts again or waits (startAtFirstStep, through
-// afterVersion), and at the end of the join of a task at its parts (taskJoined). No setting bounds
-// how many tasks run at one time: the plan bounds it with each task's needs and parts.
+// each move of a task to done (transition), and, through startReadyNow, once at each other door
+// whose fact may let a task start: a version of the plan taken after the work started, after each
+// stopped task it starts again (afterSeveral); a person's todo on a held root, after each task it
+// releases or starts again (releaseHeldRoot); the architect's and the operator's release of a hold
+// (retryOrEscalate, restartPhase); and the end of the join of a task at its parts (taskJoined). So a
+// task that comes to run at its parts with no wait, by any of them, lets its parts start. No setting
+// bounds how many tasks run at one time: the plan bounds it with each task's needs and parts.
 func (e *Engine) startReady(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.Issue, error) {
 	written := issue
 	for {

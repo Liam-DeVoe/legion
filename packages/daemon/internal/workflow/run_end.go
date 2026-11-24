@@ -171,7 +171,9 @@ func (e *Engine) handOnAgents(ctx context.Context, tx pgx.Tx, keys []string) err
 // queued at a generation the issue has left: admission's re-admission carries a running task, its
 // wait among it, to the next generation, and the row of the generation it left finishes without
 // acting (the outbox's taskBranch), so nothing else would end the wait. An issue of a tree that
-// lingers joins nothing, as no move starts anything there.
+// lingers joins nothing, as no move starts anything there. A join that ends at once, for a task
+// that holds the issue's own branch and needs none, leaves a task at its parts with no wait, so each
+// issue whose joins it started then starts each task that may start (startReadyNow), once.
 func (e *Engine) joinAgain(ctx context.Context, tx pgx.Tx, keys []string) error {
 	var order []string
 	for _, key := range keys {
@@ -227,6 +229,9 @@ func (e *Engine) joinAgain(ctx context.Context, tx pgx.Tx, keys []string) error 
 				"generation", now.Generation); err != nil {
 				return err
 			}
+		}
+		if err := e.startReadyNow(ctx, tx, key); err != nil {
+			return err
 		}
 	}
 	return nil
