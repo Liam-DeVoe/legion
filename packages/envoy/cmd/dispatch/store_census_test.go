@@ -22,6 +22,7 @@ package main
 // and everything else in this file is what it drives.
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -65,6 +66,18 @@ const censusSigningKey = "store-census-signing-key"
 // kind that checks zero rows fails this test with that kind reported. The list is the test's
 // own, so a kind the census stops checking is read by a person before this test agrees with it.
 var censusKinds = []string{"comment", "block", "block_ref", "person", "session", "role", "page"}
+
+// addedCensusKinds are the kinds `census --store` prints a line for that this change adds: the
+// interaction and frame projections of the command bar's runs (going_requests, going_events), and
+// the visibility and state of each kind whose nodes may be kept for their author or proposed. The
+// older build writes no run and no node of those kinds, and this build's migrations seed only the
+// lens kind nodes, so a store this run seeds may hold none of one: no row and no node is no
+// refusal, and a difference is.
+var addedCensusKinds = []string{
+	"interaction", "frame", "interaction_visibility_state", "lens_visibility_state",
+	"finding_visibility_state", "risk_visibility_state", "constraint_visibility_state",
+	"lens_kind_visibility_state",
+}
 
 // censusRole is the role this run addresses, and censusSession the session that writes one of
 // its comments. The role is addressed through this build alone: the older build records the
@@ -1408,10 +1421,11 @@ func requireEveryKindCarriesAPopulation(t *testing.T, report []kindCensus) {
 	for _, kind := range report {
 		switch {
 		case slices.Contains(censusKinds, kind.kind):
-		case slices.Contains(decisionCensusKinds, kind.kind), slices.Contains(decisionEdgeCensusKinds, kind.kind):
+		case slices.Contains(decisionCensusKinds, kind.kind), slices.Contains(decisionEdgeCensusKinds, kind.kind),
+			slices.Contains(addedCensusKinds, kind.kind):
 			// The decision tie kinds and graph_edges' answers of them, which this run writes no
-			// decision for and which a store may hold none of: no row and no node of one is no
-			// refusal, and a difference is.
+			// decision for, and the kinds this change adds (addedCensusKinds): a store may hold
+			// none of one, so no row and no node of one is no refusal, and a difference is.
 			if kind.rowsWithoutANode != 0 || kind.nodesWithoutARow != 0 {
 				t.Errorf("kind %s reads %d row(s) without a node and %d node(s) without a row",
 					kind.kind, kind.rowsWithoutANode, kind.nodesWithoutARow)
@@ -1546,9 +1560,21 @@ func readOnlySession(t *testing.T, ctx context.Context, databaseURL string) stri
 // ───── the old read beside the new read ───────────────────────────────────
 
 // compareTheOldReadWithTheNew runs the older build's answer beside this build's, over the same
-// database, for each read this child touched, and compares the two field for field. Store-to-
-// projection equality says nothing about this: both sides can agree and the answer a reader gets
-// still change.
+// database, for each read this child touched, and compares the two field for field
+// (reflect.DeepEqual of the two decoded answers). Store-to-projection equality says nothing about
+// this: both sides can agree and the answer a reader gets still change.
+//
+// Four fields are removed from this build's answer before the comparison, and no other: the state
+// and the visibility of each graph node (model.GraphNode), and the address and the kind of each
+// closure member (model.ReferenceMember). Approved requirements add them beside the fields the
+// older build answers, and the older build answers none of them, so each would be a difference of
+// every read that answers a node or a member. They are removed only where the answer's shape
+// places a node or a member (addedFields; of these reads GET /api/v1/issues/{key}/references alone
+// answers either), never a field of one of those names elsewhere, such as a document's kind, a
+// link's via kind or an ask's state. Each must stand where the shape places it and hold the value
+// this build's rule gives (withoutTheAddedFields): one absent, or holding another value, fails the
+// run naming the read, its path and what was found there. Each read logs how many of each field it
+// removed. Every other difference fails, printing both answers.
 //
 // A read counts as compared only where the older build's answer holds something
 // (answerElements): two empty lists agree field for field and prove nothing, so each read that
@@ -1569,14 +1595,17 @@ func compareTheOldReadWithTheNew(t *testing.T, older, databaseURL string, now *d
 	// blocks, the lists a project page reads, the asks and the inbox. A read of an artifact
 	// that belongs to an issue is refused by its own route (ARTIFACT_LINKED), so the issue's
 	// own comment read is the one here. lists names the fields of an object answer that hold
-	// what the read lists; a read that names none lists its own items, or is one object.
+	// what the read lists; a read that names none lists its own items, or is one object. added
+	// is where the answer places the fields approved requirements add (addedFields), the zero
+	// value for an answer that holds no graph node and no closure member.
 	reads := []struct {
 		path  string
 		lists []string
+		added addedFields
 	}{
 		{path: "/api/v1/issues/" + seeded.issue},
 		{path: "/api/v1/issues/" + seeded.issue + "/comments"},
-		{path: "/api/v1/issues/" + seeded.issue + "/references", lists: []string{"members"}},
+		{path: "/api/v1/issues/" + seeded.issue + "/references", lists: []string{"members"}, added: issueReferencesAdded},
 		{path: "/api/v1/issues/" + seeded.issue + "/asks"},
 		{path: "/api/v1/issues?project=" + seeded.project},
 		{path: "/api/v1/artifacts/" + seeded.artifact},
@@ -1598,6 +1627,11 @@ func compareTheOldReadWithTheNew(t *testing.T, older, databaseURL string, now *d
 		} else {
 			compared++
 		}
+		removed, problems := withoutTheAddedFields(is, read.added)
+		for _, problem := range problems {
+			t.Errorf("GET %s: this build's answer: %s", read.path, problem)
+		}
+		logTheAddedFieldsRemoved(t, read.path, read.added, removed)
 		if !reflect.DeepEqual(was, is) {
 			differing++
 			t.Errorf("GET %s answers differently on the two builds:\nthe older build %s\nthis build     %s",
@@ -1670,6 +1704,178 @@ func withoutTheMomentOfTheRead(answer any) any {
 	default:
 		return answer
 	}
+}
+
+// addedFields is where one read's answer places what approved requirements add beside the older
+// build's answer: nodes are the paths of its graph nodes (model.GraphNode), each of which this
+// build answers with state and visibility, and members the paths of its closure members
+// (model.ReferenceMember), each of which it answers with address and kind. A path names a field of
+// an object by its JSON name and every item of a list by `[]`, so `links[].node` is the node of
+// each item of links. The zero value places neither, and nothing is removed from its answer.
+type addedFields struct {
+	nodes, members []string
+}
+
+// issueReferencesAdded is addedFields of GET /api/v1/issues/{key}/references
+// (model.IssueReferences): its nodes are the node of each link out and of each link in
+// (model.ReferenceLink), and it has no node of its own; its members are the items of members. It
+// is the one read of compareTheOldReadWithTheNew that answers either: the shapes the other eleven
+// answer hold no model.GraphNode and no model.ReferenceMember.
+var issueReferencesAdded = addedFields{
+	nodes:   []string{"links[].node", "linked_from[].node"},
+	members: []string{"members[]"},
+}
+
+// withoutTheAddedFields removes from answer, this build's decoded answer to one read, the four
+// fields approved requirements add beside the older build's answer, at the positions shape places
+// them and nowhere else: the state and the visibility of each node, and the address and the kind
+// of each member. It answers how many of each it removed, by the field's name, and a problem for
+// each of them absent where shape places it, for each holding another value than this build's
+// rule gives, and for each step of a path the answer does not hold.
+//
+// The rule is the census rows': every node these reads answer over them is live and reaches the
+// project (graphstore.StateLive, graphstore.VisibilityProject), since the census moves the state of
+// none of those nodes and reserves none for its author. A member is what refs.Closure makes of the
+// document node a link out reaches, which Links lists too: its address is that node's ref and its
+// kind that node's kind, artifact (getIssueReferences). So a member is held to the artifact node
+// of the answer whose id is its artifact's id. The census moves no document's address to a lens,
+// so a member of kind lens, or of no such node, is another value.
+func withoutTheAddedFields(answer any, shape addedFields) (map[string]int, []string) {
+	removed := map[string]int{}
+	var problems []string
+	// remove deletes field from at's object, counted, and answers what it held; one the object
+	// does not hold is a problem.
+	remove := func(at placedObject, field string) (any, bool) {
+		value, held := at.object[field]
+		if !held {
+			problems = append(problems, fmt.Sprintf("%s holds no %q", at.path, field))
+			return nil, false
+		}
+		delete(at.object, field)
+		removed[field]++
+		return value, true
+	}
+	hold := func(at placedObject, field, want string) {
+		if value, held := remove(at, field); held && value != want {
+			problems = append(problems, fmt.Sprintf("%s.%s holds %s, where this build's rule gives %s",
+				at.path, field, foundText(value), foundText(want)))
+		}
+	}
+	documents := map[string]placedObject{}
+	for _, path := range shape.nodes {
+		nodes, missing := objectsAt(answer, path)
+		problems = append(problems, missing...)
+		for _, node := range nodes {
+			hold(node, "state", graphstore.StateLive)
+			hold(node, "visibility", graphstore.VisibilityProject)
+			if id, named := node.object["id"].(string); named && node.object["kind"] == graphstore.KindArtifact {
+				documents[id] = node
+			}
+		}
+	}
+	for _, path := range shape.members {
+		members, missing := objectsAt(answer, path)
+		problems = append(problems, missing...)
+		for _, member := range members {
+			artifact, _ := member.object["artifact"].(map[string]any)
+			id, _ := artifact["id"].(string)
+			document, found := documents[id]
+			if !found {
+				problems = append(problems, fmt.Sprintf("%s stands for the document %s, and the answer places no artifact node of that id, so its address and its kind have no node to be held to",
+					member.path, foundText(artifact["id"])))
+				remove(member, "address")
+				remove(member, "kind")
+				continue
+			}
+			address, _ := document.object["ref"].(string)
+			if !strings.HasPrefix(address, "dispatch://") {
+				problems = append(problems, fmt.Sprintf("%s, the node %s stands for, holds the ref %s, which is no dispatch:// address",
+					document.path, member.path, foundText(document.object["ref"])))
+			}
+			hold(member, "address", address)
+			hold(member, "kind", graphstore.KindArtifact)
+		}
+	}
+	return removed, problems
+}
+
+// placedObject is one object of an answer and its path there, a list's item at its index
+// (`links[0].node`).
+type placedObject struct {
+	path   string
+	object map[string]any
+}
+
+// objectsAt answers each object of answer at path (addedFields), each with its own path, and a
+// problem for each step of the path the answer does not hold: a value it steps into or ends at
+// that is not an object, a field absent, or a value at `[]` that is not a list.
+func objectsAt(answer any, path string) ([]placedObject, []string) {
+	type placedValue struct {
+		path  string
+		value any
+	}
+	var problems []string
+	objects := func(values []placedValue) []placedObject {
+		held := make([]placedObject, 0, len(values))
+		for _, at := range values {
+			object, ok := at.value.(map[string]any)
+			if !ok {
+				problems = append(problems, fmt.Sprintf("%s holds %s, not an object", cmp.Or(at.path, "the answer"), foundText(at.value)))
+				continue
+			}
+			held = append(held, placedObject{at.path, object})
+		}
+		return held
+	}
+	at := []placedValue{{value: answer}}
+	for _, step := range strings.Split(path, ".") {
+		name, list := strings.CutSuffix(step, "[]")
+		var next []placedValue
+		for _, parent := range objects(at) {
+			named := name
+			if parent.path != "" {
+				named = parent.path + "." + name
+			}
+			value, found := parent.object[name]
+			switch items, isList := value.([]any); {
+			case !found:
+				problems = append(problems, named+" is absent")
+			case !list:
+				next = append(next, placedValue{named, value})
+			case !isList:
+				problems = append(problems, fmt.Sprintf("%s holds %s, not a list", named, foundText(value)))
+			default:
+				for index, item := range items {
+					next = append(next, placedValue{fmt.Sprintf("%s[%d]", named, index), item})
+				}
+			}
+		}
+		at = next
+	}
+	return objects(at), problems
+}
+
+// logTheAddedFieldsRemoved logs how many of each of the four added fields withoutTheAddedFields
+// removed from this build's answer to the read at path (removed, by name), and where shape placed
+// them.
+func logTheAddedFieldsRemoved(t *testing.T, path string, shape addedFields, removed map[string]int) {
+	t.Helper()
+	if len(shape.nodes)+len(shape.members) == 0 {
+		t.Logf("GET %s: removed none of the four added fields from this build's answer, which places no graph node and no closure member", path)
+		return
+	}
+	t.Logf("GET %s: removed from this build's answer %d \"state\" and %d \"visibility\" field(s) of its nodes (%s), and %d \"address\" and %d \"kind\" field(s) of its members (%s)",
+		path, removed["state"], removed["visibility"], strings.Join(shape.nodes, ", "),
+		removed["address"], removed["kind"], strings.Join(shape.members, ", "))
+}
+
+// foundText is value as JSON, as a problem names what it found.
+func foundText(value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprintf("%v", value)
+	}
+	return string(encoded)
 }
 
 func mustEncode(t *testing.T, answer any) string {
