@@ -1125,7 +1125,7 @@ const intakeGiveUpsContract = 228
 const deploymentRolesContract = 255
 
 // strandedTokenContract is the daemon contract that added each stranded claim's token to the
-// state (version.go's 222, `strandedClaims.*.token`), and to the release records the tokens of the
+// state (version.go's 259, `strandedClaims.*.token`), and to the release records the tokens of the
 // claims a release suspended (`releases.*.claims`) and of the claim a wake brought back
 // (`resumes.*.claim`): two claims of one issue can hold one role, so the issue and the role no
 // longer name one claim.
@@ -1133,7 +1133,7 @@ const deploymentRolesContract = 255
 // It is a literal of its own and never DaemonAPIVersion, for the reason deploymentRolesContract
 // gives, and it is the last number of answers.go's SupportedContracts, which names the constant
 // rather than its number for that reason.
-const strandedTokenContract = 222
+const strandedTokenContract = 259
 
 // withoutDeploymentRoles is the issue as a caller below deploymentRolesContract reads it: an issue
 // at step is at work, so it is served as implementing — its Dispatch status is in_progress, as

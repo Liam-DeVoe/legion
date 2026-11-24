@@ -1940,7 +1940,7 @@ test("the controller reads the state without a grant and sets an issue's status 
     "freshSession",
     { grantId: "controller-grant-1", issue: "LEGION-209", role: "checker" },
   ]);
-  // A claim named by its token (contract 222), another claim of the role than the step's worker,
+  // A claim named by its token (contract 259), another claim of the role than the step's worker,
   // is sent as named, and only when named; compact takes it the same way.
   await run({
     op: "fresh_session",
@@ -2069,7 +2069,7 @@ test("read_state's summary lists the claim of a role of the deployment under its
   ]);
 });
 
-// Contract 222: two claims of one issue can hold one role, and `workers` shows one of them, so the
+// Contract 259: two claims of one issue can hold one role, and `workers` shows one of them, so the
 // summary lists each of the issue's `otherClaims` after the workers, with its role, its state,
 // both turn times and its token, marks it as another claim of that role, and names the token
 // because fresh_session and compact reach that claim only by it (their `claim`).

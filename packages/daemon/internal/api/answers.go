@@ -47,7 +47,7 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// 193, 202, 205, 213, 219, 220, 228, 255 and 222 are constants rather than their numbers, because
+// 193, 202, 205, 213, 219, 220, 228, 255 and 259 are constants rather than their numbers, because
 // the entries that added them name them (shapedAnswersContract, the shaped answers' entry;
 // repositoriesLiveContract, dispatch://INFRA-4401's; childRouteRemovedContract,
 // dispatch://INFRA-3178's; cachesSourceContract, dispatch://INFRA-4036's; OwnerPlanContract, the
@@ -348,8 +348,8 @@ var stateEnumeratedFields = []EnumeratedField{
 	// LEGION_CLAIM_STATES). The architect's view and each worker's carry the one field.
 	{Answer: AnswerState, KeyPath: "issues.*.architect.state", Values: claimViewStates},
 	{Answer: AnswerState, KeyPath: "issues.*.workers.*.claim.state", Values: claimViewStates},
-	// An issue's other claims (api.Issue.OtherClaims, contract 222) carry the same claim view, so
-	// each of its enumerated fields is declared again under `otherClaims`. The key arrived at 222
+	// An issue's other claims (api.Issue.OtherClaims, contract 259) carry the same claim view, so
+	// each of its enumerated fields is declared again under `otherClaims`. The key arrived at 259
 	// and a caller below it is served no `otherClaims` at all (shaping.go's withoutClaimTokens), so
 	// each list is recorded from that contract (arrivedWith).
 	{Answer: AnswerState, KeyPath: "issues.*.otherClaims.*.claim.state", Values: arrivedWith(strandedTokenContract, claimViewStates)},

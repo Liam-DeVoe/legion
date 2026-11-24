@@ -2740,9 +2740,9 @@ test("a reader at the previous contract parses the state body this daemon serves
   const golden = fixture("state.json") as {
     strandedClaims: { issue: string; role: string; state: string; token?: string }[];
   };
-  // Each entry names its claim's token since contract 222, a key the 45 reader does not know: a
+  // Each entry names its claim's token since contract 259, a key the 45 reader does not know: a
   // strict object refuses the entry, and so the whole state body, over it. That is why the state
-  // route serves a pod below 222 every entry without it (`api`'s `withoutStrandedTokens`, pinned
+  // route serves a pod below 259 every entry without it (`api`'s `withoutStrandedTokens`, pinned
   // on the Go side), and the entries below are read as such a pod is served them.
   const withToken = golden.strandedClaims[0];
   if (withToken?.token === undefined) {
@@ -2893,7 +2893,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // `plan` off each assignment, so the golden's rows are compared without it; the intake's
   // give-ups' at 228, so the narrowing leaves `intakeGiveUps` off; the roles of a deployment's
   // (contract 255), which serves the state golden's issues at step and its claims of a role of the
-  // deployment as a caller below 255 reads them (`belowDeploymentRoles`); and contract 222's,
+  // deployment as a caller below 255 reads them (`belowDeploymentRoles`); and contract 259's,
   // which serves each claim nothing will wake and each claim view without its `token`, and each
   // issue without its `otherClaims` (`withoutStrandedTokens`, `withoutClaimTokens`). So the
   // narrowing changes this one block and, beside it, only what the other four bands change. One

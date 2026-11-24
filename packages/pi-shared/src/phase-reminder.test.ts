@@ -639,11 +639,11 @@ test("a role of the deployment is reminded at step while the issue's stepRole is
   }
 });
 
-// Contract 222: two claims of one issue can hold one role — the agent implementer's claim on the
+// Contract 259: two claims of one issue can hold one role — the agent implementer's claim on the
 // tester's step, beside the tester's own claim of an earlier version of the plan — and only the
 // worker on the role's step, the claim `workers.<role>.claim.token` names, works the phase. The
 // other claim of the role is not reminded, so it neither nudges a phase it does not work nor
-// reaches the architect as that role's worker. A record that names no token (a daemon below 222)
+// reaches the architect as that role's worker. A record that names no token (a daemon below 259)
 // keeps the role's rule.
 test("only the worker on its role's step is reminded, not another claim of that role", async () => {
   const worker = "legion-legion-legion-208-implementer";
