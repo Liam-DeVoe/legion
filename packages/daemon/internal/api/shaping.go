@@ -302,15 +302,16 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
 		AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
 		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
-		AnswerPlanRegister:
+		AnswerPlanRegister, AnswerIntakeReplay, AnswerIntakeDiscard:
 		// The identity, one row each: every contract this daemon serves one of these answers
 		// reads the body it writes. No key has arrived on any of them since that answer arrived.
 		// One key has gone: AnswerHandoffComplete lost its `note` at stateMachineContract, and
 		// no reader from ServingFloor to 85 requires it, so no stand-in is written for it
 		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract,
-		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, and
-		// AnswerPlanRegister arrived whole at OwnerPlanContract, so no older contract records any
-		// of the four at all.
+		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract,
+		// AnswerPlanRegister arrived whole at OwnerPlanContract, and AnswerIntakeReplay and
+		// AnswerIntakeDiscard arrived whole at intakeGiveUpsContract, so no older contract records
+		// any of the six at all.
 		return body, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -580,6 +581,7 @@ var stateNarrowings = []stateNarrowing{
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
 	{contract: assignmentPlanContract, issue: withoutAssignmentPlans, dropped: "the issues' assignments' plan"},
+	{contract: intakeGiveUpsContract, state: withoutIntakeGiveUps, dropped: "intakeGiveUps"},
 	{contract: projectReleaseContract, state: withoutProjectRelease, dropped: "projectRelease"},
 }
 
@@ -1021,11 +1023,11 @@ const repositoriesLiveContract = 202
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the word arrived at stays where it is. It moves only with
-// dispatch://INFRA-4036's own number, which is why answers.go's SupportedContracts names it
-// rather than its number, as it names projectReleaseContract:
-// TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp holds that list to version.go's
-// entry headers, so a renumber that moves dispatch://INFRA-4036's entry and leaves this
-// constant behind names a contract no entry declares and fails there.
+// dispatch://INFRA-4036's own number, which is why answers.go's SupportedContracts names it rather
+// than its number, as it names intakeGiveUpsContract and projectReleaseContract:
+// TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp holds that list to version.go's entry
+// headers, so a renumber that moves dispatch://INFRA-4036's entry and leaves this constant behind
+// names a contract no entry declares and fails there.
 const cachesSourceContract = 213
 
 // assignmentPlanContract is the daemon contract that added each assignment's `plan`, the group an
@@ -1036,35 +1038,55 @@ const cachesSourceContract = 213
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the key arrived at stays where it is. It moves only with this
-// change's own number, and it is a number of answers.go's SupportedContracts, which names the
-// constant rather than its number for that reason.
+// change's own number, and answers.go's SupportedContracts names the constant rather than its
+// number for that reason.
 const assignmentPlanContract = 220
 
-// projectReleaseContract is the daemon contract that added the project release (version.go's
-// 221, dispatch://INFRA-3583). It added keys to two answers a plugin parses: `projectRelease`,
-// the project's newest project release and its result, to the state, and `heldPods`, each pod a
-// pause still holds, to a refusal (api.PauseFailure, which the release's own route answers while
-// a pause holds the project). A plugin before it is served the state without its key
+// intakeGiveUpsContract is the daemon contract that added the intake's give-ups (version.go's
+// 228, dispatch://INFRA-1575). It added one key to the state, `intakeGiveUps`: each durable
+// consumer's count of the messages its intake gave up on that no replay or discard has closed,
+// with the newest stream sequence among them, and the newest of those records. It added two
+// answers whole with their routes, the controller's replay and discard of those records
+// (answers.go's AnswerIntakeReplay and AnswerIntakeDiscard), which no contract below it records.
+// A plugin before it is served the state without the key (withoutIntakeGiveUps, its row of
+// stateNarrowings): one built before sjawhar/legion#2788 reads the state with a strict schema
+// and would refuse the whole body for a key it does not name, and one built after strips the key
+// instead, so the band keeps the body its own contract's record describes. The two enumerated
+// fields it added, a give-up's `reason` and a replayed record's `outcome` (answers.go's
+// intakeGiveUpReasons and replayOutcomes), arrived whole with the key and the answer that carry
+// them, so no value strip is needed. The operator's two give-up routes answer the `legion`
+// command, which no plugin parses.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
+// moves that constant, and the contract the key and the two answers arrived at stays where it is.
+const intakeGiveUpsContract = 228
+
+// projectReleaseContract is the daemon contract that added the project release (version.go's 240,
+// dispatch://INFRA-3583). It added keys to two answers a plugin parses: `projectRelease`, the
+// project's newest project release and its result, to the state, and `heldPods`, each pod a pause
+// still holds, to a refusal (api.PauseFailure, which the release's own route answers while a pause
+// holds the project). A plugin before it is served the state without its key
 // (withoutProjectRelease, its row of stateNarrowings) and a PauseFailure without its list
 // (withoutHeldPods, in the refusal's row of shapeAnswer): one built before sjawhar/legion#2788
-// reads the state with a strict schema and would refuse the whole body for a key it does not
-// name, and one built after strips the key instead, so the strip is what keeps the release from a
-// caller that did not ask for it. The roles a running release asks are such callers, and they are
-// asked to push and end their turn on that same body. repositoriesLiveContract stands below it,
-// and the one row of stateNarrowings between the two is assignmentPlanContract's, which takes
-// each assignment's `plan` off below 220, so a caller at or above repositoriesLiveContract and
-// below this contract, 202 to 220, is served the `live` block and not `projectRelease`.
-// The release's six enumerated fields (answers.go's releaseOutcomes and the rows beside it)
-// arrived with the key at this contract and ride its band, so no value strip is owed. The
-// release's own two routes answer the `legion` command, which is built from the daemon's own
-// commit, so their bodies are no row of answers.go's Answers.
+// reads the state with a strict schema and would refuse the whole body for a key it does not name,
+// and one built after strips the key instead, so the strip is what keeps the release from a caller
+// that did not ask for it. The roles a running release asks are such callers, and they are asked to
+// push and end their turn on that same body. repositoriesLiveContract stands below it, and the two
+// rows of stateNarrowings between the two are assignmentPlanContract's, which takes each
+// assignment's `plan` off below 220, and intakeGiveUpsContract's, which takes `intakeGiveUps` off
+// below 228, so a caller at or above repositoriesLiveContract and below this contract, 202 to 239,
+// is served the `live` block and not `projectRelease`. The release's six enumerated fields
+// (answers.go's releaseOutcomes and the rows beside it) arrived with the key at this contract and
+// ride its band, so no value strip is owed. The release's own two routes answer the `legion`
+// command, which is built from the daemon's own commit, so their bodies are no row of answers.go's
+// Answers.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys arrived at stays where it is. It moves only with
 // the number version.go's dispatch://INFRA-3583 entry declares, and it is the last number of
 // answers.go's SupportedContracts, which names the constant rather than its number for that
 // reason, as it names cachesSourceContract.
-const projectReleaseContract = 221
+const projectReleaseContract = 240
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
@@ -1773,6 +1795,19 @@ func withoutPause(state State) (State, bool) {
 	moved := state.Paused != nil || state.LastPause != nil
 	state.Paused, state.LastPause = nil, nil
 	return state, moved
+}
+
+// withoutIntakeGiveUps is state with no `intakeGiveUps`, the one key intakeGiveUpsContract added
+// to the state; the rest of that contract is two answers of their own routes, which no older
+// plugin calls. The key is left off rather than emptied, because the strict reader before the
+// contract refuses it as surely when its two lists are empty as when they name a give-up, which
+// is why State.MarshalJSON writes the key on every body but this one (State.intakeGiveUpsHidden),
+// as withoutWakesWaiting leaves off `wakesWaiting`. The flag is set on a value of the state's own,
+// so the state the source answered is left as it was. The band reports a move on every body it
+// serves, as withoutWakesWaiting does.
+func withoutIntakeGiveUps(state State) (State, bool) {
+	state.IntakeGiveUps, state.intakeGiveUpsHidden = IntakeGiveUpsView{}, true
+	return state, true
 }
 
 // withoutProjectRelease is state with no `projectRelease`, the one key projectReleaseContract

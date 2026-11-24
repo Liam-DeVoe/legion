@@ -1147,11 +1147,37 @@
   },
   {
     "answer": "state",
+    "keyPath": "intakeGiveUps.newest.*.reason",
+    "values": [
+      {
+        "value": "bound",
+        "since": 228
+      },
+      {
+        "value": "consumer moved past",
+        "since": 228
+      },
+      {
+        "value": "did not end",
+        "since": 228
+      },
+      {
+        "value": "retention",
+        "since": 228
+      },
+      {
+        "value": "undecodable",
+        "since": 228
+      }
+    ]
+  },
+  {
+    "answer": "state",
     "keyPath": "projectRelease.endedBy",
     "values": [
       {
         "value": "boot",
-        "since": 221
+        "since": 240
       }
     ]
   },
@@ -1161,23 +1187,23 @@
     "values": [
       {
         "value": "cache",
-        "since": 221
+        "since": 240
       },
       {
         "value": "controller",
-        "since": 221
+        "since": 240
       },
       {
         "value": "issue",
-        "since": 221
+        "since": 240
       },
       {
         "value": "probe",
-        "since": 221
+        "since": 240
       },
       {
         "value": "unknown",
-        "since": 221
+        "since": 240
       }
     ]
   },
@@ -1187,31 +1213,31 @@
     "values": [
       {
         "value": "deleted",
-        "since": 221
+        "since": 240
       },
       {
         "value": "deleted_clean",
-        "since": 221
+        "since": 240
       },
       {
         "value": "deleted_lost",
-        "since": 221
+        "since": 240
       },
       {
         "value": "deleted_read_refused",
-        "since": 221
+        "since": 240
       },
       {
         "value": "deleted_unread",
-        "since": 221
+        "since": 240
       },
       {
         "value": "left",
-        "since": 221
+        "since": 240
       },
       {
         "value": "waiting",
-        "since": 221
+        "since": 240
       }
     ]
   },
@@ -1221,27 +1247,27 @@
     "values": [
       {
         "value": "architect",
-        "since": 221
+        "since": 240
       },
       {
         "value": "implementer",
-        "since": 221
+        "since": 240
       },
       {
         "value": "merger",
-        "since": 221
+        "since": 240
       },
       {
         "value": "planner",
-        "since": 221
+        "since": 240
       },
       {
         "value": "reviewer",
-        "since": 221
+        "since": 240
       },
       {
         "value": "tester",
-        "since": 221
+        "since": 240
       }
     ]
   },
@@ -1251,31 +1277,31 @@
     "values": [
       {
         "value": "architect",
-        "since": 221
+        "since": 240
       },
       {
         "value": "controller",
-        "since": 221
+        "since": 240
       },
       {
         "value": "implementer",
-        "since": 221
+        "since": 240
       },
       {
         "value": "merger",
-        "since": 221
+        "since": 240
       },
       {
         "value": "planner",
-        "since": 221
+        "since": 240
       },
       {
         "value": "reviewer",
-        "since": 221
+        "since": 240
       },
       {
         "value": "tester",
-        "since": 221
+        "since": 240
       }
     ]
   },
@@ -1285,71 +1311,71 @@
     "values": [
       {
         "value": "daemon",
-        "since": 221
+        "since": 240
       },
       {
         "value": "exit",
-        "since": 221
+        "since": 240
       },
       {
         "value": "failed",
-        "since": 221
+        "since": 240
       },
       {
         "value": "idle",
-        "since": 221
+        "since": 240
       },
       {
         "value": "launch_uncertain",
-        "since": 221
+        "since": 240
       },
       {
         "value": "launching",
-        "since": 221
+        "since": 240
       },
       {
         "value": "operator",
-        "since": 221
+        "since": 240
       },
       {
         "value": "project_release",
-        "since": 221
+        "since": 240
       },
       {
         "value": "queued",
-        "since": 221
+        "since": 240
       },
       {
         "value": "ready",
-        "since": 221
+        "since": 240
       },
       {
         "value": "registered",
-        "since": 221
+        "since": 240
       },
       {
         "value": "released",
-        "since": 221
+        "since": 240
       },
       {
         "value": "retired",
-        "since": 221
+        "since": 240
       },
       {
         "value": "shim_connected",
-        "since": 221
+        "since": 240
       },
       {
         "value": "unknown",
-        "since": 221
+        "since": 240
       },
       {
         "value": "unrecorded",
-        "since": 221
+        "since": 240
       },
       {
         "value": "working",
-        "since": 221
+        "since": 240
       }
     ]
   },
@@ -2224,6 +2250,28 @@
       {
         "value": "tester",
         "since": 46
+      }
+    ]
+  },
+  {
+    "answer": "intake-replay",
+    "keyPath": "replayed.*.outcome",
+    "values": [
+      {
+        "value": "already applied",
+        "since": 228
+      },
+      {
+        "value": "applied",
+        "since": 228
+      },
+      {
+        "value": "failed",
+        "since": 228
+      },
+      {
+        "value": "no fact",
+        "since": 228
       }
     ]
   }

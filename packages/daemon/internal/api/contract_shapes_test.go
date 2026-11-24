@@ -352,21 +352,23 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // to no record at any contract (TestEveryDeclaredValueAndKeyPathIsCarriedByAFixtureBody).
 //
 // The values are written here, and not read from the table: a value the table gains with no body
-// that carries it is then red in that census, and an edit of the table alone cannot carry it
-// here too. Issue i of the body carries value i of each list, and a list shorter than the longest
-// starts again at its first value, so the twelve issues carry every value of every list. Each
-// issue's architect carries a failure, a pending cause and a held task, as a worker does. No
-// other body carries them on an architect, so without this body no record describes those keys
-// at their architect paths, and the value comparison reads no value there. Each issue also carries
-// a merge wait with every key of one, whose `mergeState` and `toldState` take value i of the
-// merge states, so the twelve issues carry all eight words at both key paths. The project's pause
-// waits on the stop of one claim of each role, so `paused.waitsOn.*.role` carries every role,
-// where populatedState's pause waits on an implementer alone. Its repositories block names five
-// live repositories, both role Apps installed on each, whose caches stand in the five states a
-// cache can be in, so `repositories.live.*.cache.state` carries every word of that field, which
-// arrived with the block at repositoriesLiveContract (answers.go's liveCacheStates). The project's
-// release carries every word of its six enumerated fields (releaseCarryingEveryDeclaredValue),
-// where populatedState's carries some of each.
+// that carries it is then red in that census, and an edit of the table alone cannot carry it here
+// too. Issue i of the body carries value i of each list, and a list shorter than the longest starts
+// again at its first value, so the twelve issues carry every value of every list. Each issue's
+// architect carries a failure, a pending cause and a held task, as a worker does. No other body
+// carries them on an architect, so without this body no record describes those keys at their
+// architect paths, and the value comparison reads no value there. Each issue also carries a merge
+// wait with every key of one, whose `mergeState` and `toldState` take value i of the merge states,
+// so the twelve issues carry all eight words at both key paths. The project's pause waits on the
+// stop of one claim of each role, so `paused.waitsOn.*.role` carries every role, where
+// populatedState's pause waits on an implementer alone. Its repositories block names five live
+// repositories, both role Apps installed on each, whose caches stand in the five states a cache can
+// be in, so `repositories.live.*.cache.state` carries every word of that field, which arrived with
+// the block at repositoriesLiveContract (answers.go's liveCacheStates). The intake's open give-ups
+// list one record of each reason, so `intakeGiveUps.newest.*.reason` carries every word, where
+// populatedState's three records carry three of the five. The project's release carries every word
+// of its six enumerated fields (releaseCarryingEveryDeclaredValue), where populatedState's carries
+// some of each.
 //
 // Its settings are the maximal kubernetes file with a sandbox block that sets every member but
 // `type` (sandboxSettingsBlock), which neither other body carries: populatedState's settings are
@@ -405,6 +407,8 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	stallWords := []record.ArchitectStallArm{record.ArchitectTookNothing, record.ArchitectClaimUnreachable,
 		record.ArchitectSlowBeforeGate}
 	cacheWords := []string{"cloning", "failing", "ready", "refused", "starting"}
+	reasonWords := []record.IntakeGiveUpReason{record.GiveUpBound, record.GiveUpDidNotEnd, record.GiveUpRetention,
+		record.GiveUpUndecodable, record.GiveUpConsumerMovedPast}
 
 	// claimView is a claim that failed with cause, whose pending cause is the next word of the
 	// list and whose held task was queued for taskPhase: every key of a failure and of a held
@@ -495,6 +499,16 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 			Repo: repo, Sandbox: "legion-values-cache-acme-" + state, State: state,
 		}})
 	}
+	// One record of each reason, newest first as the projection lists them, all of one consumer.
+	const valuesConsumer = "legion-go-VALUES-dispatch"
+	giveUps := IntakeGiveUpsView{Consumers: []IntakeGiveUpCountView{
+		{Name: valuesConsumer, Open: len(reasonWords), NewestSeq: uint64(900 + len(reasonWords))}}}
+	for i, reason := range reasonWords {
+		seq := uint64(900 + len(reasonWords) - i)
+		giveUps.Newest = append(giveUps.Newest, IntakeGiveUpView{ID: int64(seq), Consumer: valuesConsumer,
+			Subject: fmt.Sprintf("notifications.dispatch.issue.VALUES-%d.issue.updated", i+1), StreamSeq: seq, StoredAt: at,
+			Deliveries: 21, GaveUpAt: at, Reason: reason, LastError: "the handler failed"})
+	}
 	return State{
 		Daemon: DaemonInfo{
 			Project:       "values",
@@ -511,11 +525,12 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		// Built as the state's read builds it (PauseStateTx), holding no row: populatedState's
 		// pause carries the held rows.
 		Paused:         pausedViewOf(goldenPause(false), stops, nil),
+		IntakeGiveUps:  giveUps,
 		ProjectRelease: releaseCarryingEveryDeclaredValue(at, roleWords),
 	}
 }
 
-// releaseCarryingEveryDeclaredValue is the third state body's project release (contract 221): a
+// releaseCarryingEveryDeclaredValue is the third state body's project release (contract 240): a
 // release a boot ended, which carries every value of the six fields answers.go's EnumeratedFields
 // declares under `projectRelease`, and the three keys the populated state's finished release
 // (goldenProjectRelease) carries none of: `endedAt`, `endedBy` and the result's `failure`. One
@@ -706,7 +721,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// goldens hold (TestPauseRouteGoldens): the setting that turns the pause off, the
 		// pause that stands, and the last pause, ended, which between them carry every key of
 		// a PauseFailure but one, and the project release's refusal while a pause holds the
-		// project (contract 221), which carries that one, `heldPods`. Their pause is the
+		// project (contract 240), which carries that one, `heldPods`. Their pause is the
 		// controller's, richer than the goldens' operator's (controllerPause). The plan
 		// refusal names a cause of the whole plan and a cause of one task, the two kinds a
 		// reason takes.
@@ -759,6 +774,10 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			Version:    4,
 			Tasks:      []plan.Task{{ID: "a", Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}}}},
 		})}}},
+		// The replay golden's own value (goldenIntakeReplay, TestIntakeReplayAnswerGolden).
+		AnswerIntakeReplay: {roots: typesOf(IntakeReplayResponse{}), bodies: []any{goldenIntakeReplay}},
+		// The discard golden's own value (goldenIntakeDiscard, TestIntakeDiscardAnswerGolden).
+		AnswerIntakeDiscard: {roots: typesOf(IntakeDiscardResponse{}), bodies: []any{goldenIntakeDiscard}},
 	}
 }
 
@@ -2107,7 +2126,7 @@ type answerField struct {
 // of it carries `endedAt` or `endedBy`. Both are realised by the resume's answer, whose pause is
 // ended, and by the refusal's `lastPause`.
 //
-// The last is a dry run's mark on the project release the state carries (contract 221): the
+// The last is a dry run's mark on the project release the state carries (contract 240): the
 // state carries the project's newest recorded release, and a dry run is answered and never
 // recorded (ProjectReleaseResponse), so no state body carries `dryRun`. The release's own routes,
 // which answer a dry run, answer the `legion` command, and are no row of Answers.

@@ -275,7 +275,7 @@ func TestProjectReleaseHoldsThePeriodicWork(t *testing.T) {
 			s.wg.Wait()
 			sup.stop()
 		})
-		s.relaunchUnfinished([]claim.Token{mustClaimToken(t, "LEGION-208", claim.RoleTester)}, false)
+		s.relaunchUnfinished([]claim.Token{mustClaimToken(t, "LEGION-208", claim.RoleTester)}, nil, false)
 		time.Sleep(100 * time.Millisecond)
 		if calls := rt.CallsOf("ReconcileOrphans"); len(calls) != 0 {
 			t.Fatalf("the relaunch reconciled the boot's orphans %d times while the release holds, want never", len(calls))
