@@ -110,30 +110,35 @@ func TestALaunchOfAnotherAppIntoASlotWhoseLauncherDoesNotWaitIsRefused(t *testin
 // an error the launch retries. It is never a slot read as starting another App, which ends the
 // launch for the pod's update round (runtime.ErrAwaitsPodUpdate). The claim `…-implementer` runs
 // as the checker, a role the deployment defines as the implement App, and is launched again as the
-// checker. After the setup, one read answers its first ask and fails at each later one: the
-// runtime's ActsAs, or the plan reader of a role's App (appauth.RoleApps.Plan), which the launch
-// asks for each role the slot may hold that is none of Legion's. The launch answers the read's
-// error, sends no start, and is not runtime.ErrAwaitsPodUpdate. The control: with reads that never
-// fail, the same launch starts.
+// checker. After the setup, one read fails from one of its asks on, an ask of the launch's check of
+// the App its slot holds (slotAppChanges): the runtime's ActsAs at its first ask, the one that
+// check makes before anything else of the launch asks it; or the plan reader of a role's App
+// (appauth.RoleApps.Plan) at its second, the check's read for the role the slot's last launch
+// recorded, since the check asks it for each role of the slot that is none of Legion's. The launch
+// answers the read's error, has asked the read exactly that many times, so it stopped at the ask
+// that failed, sends no start, and is not runtime.ErrAwaitsPodUpdate. The control: with reads that
+// never fail, the same launch starts.
 func TestAFailedActsAsAskInALaunchIsRetriedNotHeldForThePodsRound(t *testing.T) {
 	keyed := claim.Token("legion-legion-legion-208-implementer")
 	failed := errors.New("the record could not be read")
 	for _, tc := range []struct {
 		name string
-		// fails is the read that fails after its first ask: "actsAs", "plan", or "" for none.
+		// fails is the read that fails, "actsAs", "plan", or "" for none, at its ask from, counted
+		// from the arming, and at each ask after it.
 		fails string
+		from  int32
 	}{
-		{name: "an ActsAs that fails after its first ask", fails: "actsAs"},
-		{name: "a plan read that fails after its first ask", fails: "plan"},
+		{name: "an ActsAs that fails at its first ask", fails: "actsAs", from: 1},
+		{name: "a plan read that fails at its second ask", fails: "plan", from: 2},
 		{name: "control: reads that never fail"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var armed atomic.Bool
 			asked := map[string]*atomic.Int32{"actsAs": new(atomic.Int32), "plan": new(atomic.Int32)}
-			// answer is read's answer once armed: nil at its first ask, and failed at each later
-			// ask where read is the one the case fails.
+			// answer is read's answer once armed: failed from its ask from on where read is the one
+			// the case fails, and nil otherwise.
 			answer := func(read string) error {
-				if armed.Load() && asked[read].Add(1) > 1 && tc.fails == read {
+				if armed.Load() && asked[read].Add(1) >= tc.from && tc.fails == read {
 					return failed
 				}
 				return nil
@@ -171,8 +176,8 @@ func TestAFailedActsAsAskInALaunchIsRetriedNotHeldForThePodsRound(t *testing.T) 
 				}
 				return
 			}
-			if n := asked[tc.fails].Load(); n < 2 {
-				t.Fatalf("the launch asked the %s read %d times, want two or more: this case proves nothing", tc.fails, n)
+			if n := asked[tc.fails].Load(); n != tc.from {
+				t.Fatalf("the launch asked the %s read %d times, want %d: it must stop at the ask that failed, in slotAppChanges", tc.fails, n, tc.from)
 			}
 			if errors.Is(err, runtime.ErrAwaitsPodUpdate) || !errors.Is(err, failed) || starts {
 				t.Fatalf("the launch with a %s read that failed = %v, sending a start: %t; want the read's error, which the launch retries, "+
