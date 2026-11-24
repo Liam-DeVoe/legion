@@ -2279,20 +2279,26 @@ Its cap also counts the child slots this migration wrote, so it admits nothing u
 No column has to be undone by hand: the earlier release ignores the two new columns and reads the `slots` and `tree_lifecycles` rows it knows.
 The outbox is the one thing that does, and it is undone the same way whether or not a dump is restored, since a dump taken before the upgrade carries no row of this release's shape while one taken after it carries them all ("The outbox rows the earlier release refuses" below).
 
-With no dump, put the slots back in the shape the earlier release reads, with the daemon stopped and before the earlier image is pinned:
+With no dump, put the slots back in the shape the earlier release reads, with the daemon of the project that rolls back stopped and before its earlier image is pinned, and with `<PROJECT>` replaced by the project's key: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`:
 
 ```sql
--- Every slot a child holds, which the earlier release never writes and counts against its cap.
-delete from slots where issue <> (select tree from issues where issues.key = slots.issue);
--- One slot for every root the earlier release expects to hold one: in the workflow, not
--- lingering, and not waiting in the line, which under this release is a root in todo.
+-- Every slot a child of the project holds, which the earlier release never writes and counts
+-- against its cap.
+delete from slots where issue <> (select tree from issues where issues.key = slots.issue)
+  and split_part(issue, '-', 1) = '<PROJECT>';
+-- One slot for every root of the project the earlier release expects to hold one: in the
+-- workflow, not lingering, and not waiting in the line, which under this release is a root in
+-- todo. The index is the next one free in the whole table, which is unique across projects.
 insert into slots (issue, index, admitted_at)
 select i.key, row_number() over (order by i.key) + coalesce((select max(index) from slots), -1), now()
   from issues i
  where i.key = i.tree and i.linger_until is null and i.phase <> 'done' and i.status <> 'todo'
    and i.status not in ('triage', 'icebox', 'backlog', 'done')
+   and split_part(i.key, '-', 1) = '<PROJECT>'
    and not exists (select 1 from slots held where held.issue = i.key);
 ```
+
+`slots` and `issues` are shared by every project's daemon on the database, so both statements take the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project, since a project key holds no hyphen), and a project that stays on this release keeps its slots.
 
 Read the count the second statement wrote against the deployment's `admissionCap` before starting the earlier image: it writes a row per running root whatever the cap, as this release's own migration does, and the earlier release's cap loop drains the surplus as trees finish rather than refusing to boot.
 Set `admissionCap` back to the value it had before the upgrade in the same change that pins the earlier image, since this release's value counts issues and the earlier one's counts trees.
@@ -2308,17 +2314,20 @@ A start a daemon that ran before INFRA-1573 wrote carries a second mark, `relaun
 this release writes that mark nowhere and acts on it nowhere, but such a row can still be queued when the rollback runs, so the statement below strips it too.
 The earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`), its `validNoticeKind` knows neither kind, and its `execute` returns the decode error, which is a permanent refusal for neither kind of row: every such row still queued fails and is retried on its backoff for ever, so the worker it was written for is never started again and the notice reaches nobody.
 A notice row left there costs that daemon more than its own notice: while it waits on its backoff it is one of the rows `WaitingNotices` returns, the state source reads every one of them through `pacedCatchUps`, and the decode fails there too, so `GET /legion/v1/state` fails for the whole project — `legion state`, every role's `read_record` and the controller's state reads with it — and the release of an architect's waiting notices (`releaseWaiting`) fails the same way.
-Run this with the daemon stopped, before the earlier image is pinned:
+Run this with the daemon of the project that rolls back stopped, before its earlier image is pinned, with `<PROJECT>` replaced as above:
 
 ```sql
 -- The marks a phase worker's start carries: needsSlot, which this release writes, and relaunch,
 -- which an earlier build of it wrote onto the task-less row of a pair.
 update outbox set payload = payload - 'needsSlot' - 'relaunch'
- where kind = 'supervise' and (payload ? 'needsSlot' or payload ? 'relaunch');
+ where kind = 'supervise' and (payload ? 'needsSlot' or payload ? 'relaunch')
+   and split_part(issue, '-', 1) = '<PROJECT>';
 -- The notice kinds the earlier release does not know.
-delete from outbox where kind = 'notice' and payload->>'kind' = 'children-first';
-delete from outbox where kind = 'notice' and payload->>'kind' = 'waiting-for-slot';
+delete from outbox where kind = 'notice' and payload->>'kind' = 'children-first' and split_part(issue, '-', 1) = '<PROJECT>';
+delete from outbox where kind = 'notice' and payload->>'kind' = 'waiting-for-slot' and split_part(issue, '-', 1) = '<PROJECT>';
 ```
+
+Each statement takes the outbox rows of the project that rolls back alone, and a project that stays on this release keeps its starts and its notices.
 
 A start that was waiting for its issue's slot loses the mark that held it unclaimable, so the earlier release claims it as soon as it is due and delivers its task: that worker starts under the earlier release's own cap, which counts the trees holding a slot and not the issues at work, and the slot statements above are what keep that cap honest.
 A phase worker's start is one row, so nothing stands beside it to bring the session back on its own: the row the earlier release claims starts the worker and delivers that worker's task.
@@ -2358,10 +2367,10 @@ It reads the `slots` rows as it finds them, and this release leaves a row standi
 
 **A queued `waiting-for-slot` notice must go before this release is pinned, not after.**
 This release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and knows neither the kind nor the `waiting_for_slot` field the earlier release wrote, so a row still queued at the upgrade fails for ever on its backoff and fails every state read that passes it (`WaitingNotices`, `pacedCatchUps`).
-Run this with the daemon stopped, before this release's image is pinned:
+Run this with the daemon of the project that upgrades stopped, before this release's image is pinned for it, with `<PROJECT>` replaced by the project's key (`project` in its `legion.yaml`); the outbox is shared by every project's daemon on the database, and the statement takes that project's rows alone (`split_part(issue, '-', 1)` is a row's project):
 
 ```sql
-delete from outbox where kind = 'notice' and payload->>'kind' = 'waiting-for-slot';
+delete from outbox where kind = 'notice' and payload->>'kind' = 'waiting-for-slot' and split_part(issue, '-', 1) = '<PROJECT>';
 ```
 
 This release's own migration runs that statement too (`store/migrations/20261109060737_drop_awaiting_slot_notice.up.sql`, whose boot applies it before the API serves and before any outbox lane claims a row), so the upgrade needs nothing of an operator here and the step above stays as a precaution with no window behind it.
@@ -2401,11 +2410,11 @@ The migration changes no column.
 **The rows of the two new kinds must go before the earlier image is pinned.**
 An earlier release puts neither kind in an outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs a row of either kind, and such a row holds back no other row.
 Left in place, the row waits through the rollback and runs at the roll forward, when the removal it tells of may be long over.
-Run this with the daemon stopped, before the earlier image is pinned:
+Run this with the daemon of the project that rolls back stopped, before its earlier image is pinned, with `<PROJECT>` replaced by the project's key (`project` in its `legion.yaml`); the outbox is shared by every project's daemon on the database, and the statement takes that project's rows alone (`split_part(issue, '-', 1)` is a row's project):
 
 ```sql
--- The read of a pull request that left the merge queue, and the message to its merger.
-delete from outbox where kind in ('merge_queue_read', 'merge_queue_removal');
+-- The read of a pull request that left the merge queue, and the message to its merger, of one project.
+delete from outbox where kind in ('merge_queue_read', 'merge_queue_removal') and split_part(issue, '-', 1) = '<PROJECT>';
 ```
 
 Each deleted row costs one thing: a merger is not told of one removal from the merge queue.
@@ -2511,11 +2520,11 @@ An earlier release puts the kind in no outbox lane, so it never runs such a row.
 Observed on the release before this one: its daemon booted with such a row in the outbox and worked as before, and 60 s later the row was still there with 0 attempts, and no log line named it.
 At the roll forward, this release runs the row, and it sends the live set that it reads then, so the row does no harm.
 The boot of this release queues each issue with a live claim or a claim that changed in the last seven days, so a claim that the earlier release ended more than seven days before the roll forward stays listed until the next change of a claim on its issue.
-To leave no row behind, you can run this with the daemon stopped, before the earlier image is pinned:
+To leave no row behind, you can run this with the daemon of the project that rolls back stopped, before its earlier image is pinned, with `<PROJECT>` replaced by the project's key (`project` in its `legion.yaml`); the outbox is shared by every project's daemon on the database, and the statement takes that project's rows alone (`split_part(issue, '-', 1)` is a row's project):
 
 ```sql
--- The publication of an issue's role sessions to Dispatch.
-delete from outbox where kind = 'role_holders_publish';
+-- The publication of an issue's role sessions to Dispatch, of one project.
+delete from outbox where kind = 'role_holders_publish' and split_part(issue, '-', 1) = '<PROJECT>';
 ```
 
 While no Dispatch release reads `issue_role_holders` to record a result, the rollback costs nothing.
@@ -2927,10 +2936,10 @@ Deploy, roll back and roll forward every daemon of one database in the same chan
 
 This release writes a new field, `held`, on the controller tick notice: every issue the daemon's record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`, each with one word for why nothing of it runs and the issues that hold it.
 An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and knows no such field, so a controller notice still queued at the rollback fails on its backoff for ever and the tick reaches nobody.
-Run this with the daemon stopped, before the earlier image is pinned:
+Run this with the daemon of the project that rolls back stopped, before its earlier image is pinned, with `<PROJECT>` replaced by the project's key (`project` in its `legion.yaml`); the outbox is shared by every project's daemon on the database, and the statement takes that project's rows alone (`split_part(issue, '-', 1)` is a row's project, and the project key of a controller notice that names no issue):
 
 ```sql
-update outbox set payload = payload - 'held' where kind = 'controller_notice' and payload ? 'held';
+update outbox set payload = payload - 'held' where kind = 'controller_notice' and payload ? 'held' and split_part(issue, '-', 1) = '<PROJECT>';
 ```
 
 What the strip costs is one line of one wake: the tick that row carries then names the blocked issues alone, which is what the earlier release's controller reads anyway, and the next tick of the daemon that runs is whole again.
@@ -2951,10 +2960,10 @@ A third migration, `20261110233602_past_review_starts_unmarked`, takes the admis
 The payload carries only fields an earlier release's `record.ControllerNotice` already names, so the strict decode (`DisallowUnknownFields` in `record/outbox.go`) passes it.
 What refuses it is the kind check that `DecodeOutboxPayload` runs after that decode: `validateOutboxPayload` asks a controller notice's kind of `controllerOnlyNoticeKind` and `validNoticeKind`, and neither of them knows `tree-stalled` on the earlier release.
 Its `execute` returns that error, which is a permanent refusal for no row, so a row still queued fails and is retried on its backoff for ever and fails every state read that passes it (`WaitingNotices`, `pacedCatchUps`), which is `GET /legion/v1/state` for the whole project.
-Run this with the daemon stopped, before the earlier image is pinned:
+Run this with the daemon of the project that rolls back stopped, before its earlier image is pinned, with `<PROJECT>` replaced by the project's key (`project` in its `legion.yaml`); the statement takes that project's rows alone (`split_part(issue, '-', 1)` is a row's project):
 
 ```sql
-delete from outbox where kind = 'controller_notice' and payload->>'kind' = 'tree-stalled';
+delete from outbox where kind = 'controller_notice' and payload->>'kind' = 'tree-stalled' and split_part(issue, '-', 1) = '<PROJECT>';
 ```
 
 The row's `kind` is `controller_notice`, not `notice`: a controller notice is an outbox kind of its own (`record.ControllerNotice.OutboxKind` answers `controller_notice`), where the statements of the two sections above name `notice` for rows that were architect notices.
@@ -3244,11 +3253,12 @@ The same row breaks one more reader of that set: `releaseWaiting` (`daemon/notic
 Delivery itself is not held, since `earlierNoticeFor` passes over a row it cannot decode, and the delete below ends both effects.
 
 No migration of that earlier release deletes these rows, so unlike the `waiting-for-slot` row above this one is the operator's.
-Run this with the daemon stopped, before the earlier image is pinned:
+Run this with the daemon of the project that rolls back stopped, before its earlier image is pinned, with `<PROJECT>` replaced by the project's key (`project` in its `legion.yaml`); the outbox is shared by every project's daemon on the database, and the statement takes that project's notices alone (`split_part(issue, '-', 1)` is a row's project), and with them only the counts of those notices' pods:
 
 ```sql
 with dropped as (
   delete from outbox where kind = 'notice' and payload->>'kind' = 'volume-near-full'
+    and split_part(issue, '-', 1) = '<PROJECT>'
   returning issue, payload->'volume'->>'podUid' as pod_uid
 )
 delete from pod_volume_notices where (issue, pod_uid) in (select issue, pod_uid from dropped);
@@ -3538,11 +3548,12 @@ What the rollback costs is the draws it does not make:
 a tree the earlier release opens carries no group, and this release draws for no tree whose lifecycle row already exists, so every such tree runs without memory for its whole life.
 A child handed over out of such a tree is settled at the hand-over, with the answer that tree has, which is no group.
 A hand-over the earlier release makes while the rollback holds is settled by nothing: that release writes `handed_over_from` and knows no `memory_carried`, and 20261104153554's backfill ran before the rollback, so such a child is drawn at its first open after the upgrade back.
-To settle those hand-overs as this release would have, run the backfill once more against the daemon's database with no daemon of the project running, after the earlier release stops and before this release starts again; the column is still there from the first upgrade, and the statement touches only rows with no draw:
+To settle those hand-overs as this release would have, run the backfill once more against the daemon's database with no daemon of the project running, after the earlier release stops and before this release starts again, with `<PROJECT>` replaced by the project's key (`project` in its `legion.yaml`); the column is still there from the first upgrade, the statement touches only rows with no draw, and `issues` is shared by every project's daemon on the database, so it takes that project's issues alone:
 
 ```sql
 update issues set memory_carried = true
 where handed_over_from <> '' and memory_drawn_at is null
+  and split_part(issues.key, '-', 1) = '<PROJECT>'
   and exists (select 1 from tree_lifecycles l
               where l.project = regexp_replace(lower(issues.project), '[^a-z0-9]', '', 'g')
                 and l.tree = issues.handed_over_from);
@@ -8633,18 +8644,18 @@ Resume a few claims a minute, because an operator's resume launches outside the 
 A pod with a live role is the idle release's to decide on the earlier release too, and that release saves the pod's unpushed work before it deletes the pod.
 
 **Take the rows that an earlier release cannot run out of the outbox.**
-Stop this release's daemon, and run these three statements before the earlier image is pinned:
+Stop this release's daemon of the project, and run these three statements before its earlier image is pinned, with the project's Dispatch key in place of `<KEY>`:
 
 ```sql
 -- The controller's notices of a pause and of a resume.
 delete from outbox where kind = 'controller_notice'
-  and payload->>'kind' in ('project-paused', 'project-resumed');
+  and payload->>'kind' in ('project-paused', 'project-resumed') and split_part(issue, '-', 1) = '<KEY>';
 -- A pause's stop of one role.
-delete from outbox where kind = 'supervise' and payload->>'op' = 'pause_stop';
+delete from outbox where kind = 'supervise' and payload->>'op' = 'pause_stop' and split_part(issue, '-', 1) = '<KEY>';
 -- A start keeps its work and loses the two keys this release added.
 update outbox set payload = payload - 'pause' - 'wakeKind'
   where kind = 'supervise' and payload->>'op' = 'start'
-  and (payload ? 'pause' or payload ? 'wakeKind');
+  and (payload ? 'pause' or payload ? 'wakeKind') and split_part(issue, '-', 1) = '<KEY>';
 ```
 
 An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and then checks its kind and its op, so a row that it cannot read fails and is retried on its backoff for ever.
@@ -8657,9 +8668,8 @@ The third statement strips `pause` and `wakeKind` from each queued start (`recor
 This release writes `wakeKind` on every wake's start, and `pause` on a wake that a pause held and on the start that a pause owes a role.
 The start keeps its role, its generation and its task, and the earlier release runs it as any other start.
 
-Each statement acts on the rows of every project of a shared database ([Daemon-launched controller](#daemon-launched-controller), step 3).
-Where one project's daemon goes back alone, add `and split_part(issue, '-', 1) = '<KEY>'` to each statement, which is how the outbox reads a row's project (`outboxPauseFree`, `internal/record/store.go`).
-A project that stays on this release needs its own rows as they are.
+The outbox is shared by every project's daemon on the database ([Daemon-launched controller](#daemon-launched-controller), step 3), and each statement takes the rows of the project that rolls back alone: `split_part(issue, '-', 1)` is a row's project, which is how the outbox reads it (`ControllerNoticePending` and the outbox reads of `internal/record/store.go`), and a project-level row such as a `pause_stop` carries the bare project key.
+A project that stays on this release keeps its own rows as they are.
 
 ### Liveness rules
 
