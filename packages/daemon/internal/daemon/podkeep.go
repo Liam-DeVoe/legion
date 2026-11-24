@@ -18,7 +18,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -270,13 +269,13 @@ func podKeptMessage(issue, pod, reasons string, work runtime.WorkspaceWork) stri
 // names the pod, what the read found or why it failed, the state of each claim of the issue, what
 // the round was opened for, that the daemon pushes and saves nothing, what ends the keep, and how
 // the work is pushed. The architect reads it in its session and people read it in its history, so
-// it follows ASD-STE100. The read's error is the far side's text as the daemon stores it
-// (storetext.FarSideError).
+// it follows ASD-STE100. The read's error is the far side's text as the daemon keeps it
+// (readError).
 func roundKeptMessage(issue, pod, reasons string, claims store.ClaimStates, work runtime.WorkspaceWork, failed error) string {
 	found := []string{fmt.Sprintf("The daemon did not replace the pod of %s (pod %s) for an update round. The round read the workspace before the replacement.", issue, pod)}
 	if failed != nil {
 		found = append(found, "The read failed, so the daemon cannot show that the workspace holds nothing that no branch or tag on origin holds. The read failed: "+
-			storetext.FarSideError(failed.Error())+".")
+			readError(failed)+".")
 	} else {
 		found = append(found, "The workspace holds work that no branch or tag on origin holds.")
 		found = append(found, workFound(work)...)
@@ -351,8 +350,7 @@ func (s *supervision) tellArchitectTaken(ctx context.Context, issue, reason stri
 // origin holds (work, failed nil), or failed (failed): why the round replaced the pod, the roles of
 // named with their states, what the read found, and whether the work is gone or on a kept volume
 // (kept). The architect reads it in its session and people read it in its history, so it follows
-// ASD-STE100. The read's error is the far side's text as the daemon stores it
-// (storetext.FarSideError).
+// ASD-STE100. The read's error is the far side's text as the daemon keeps it (readError).
 func workspaceTakenMessage(issue, round, pod, reasons string, named []supervise.Claim, work runtime.WorkspaceWork, failed error, kept bool) string {
 	why := "The round was over a drift that breaks the pod, so no role could keep working in the pod."
 	if !roundBreaksPod(reasons) {
@@ -401,10 +399,10 @@ func launchTakenMessage(taken runtime.TakenPod) string {
 func readFound(work runtime.WorkspaceWork, failed error) string {
 	if failed != nil {
 		// The notice is stored and read by the issue's architect, so the read's error, which the
-		// shim's or the launcher's jj wrote, is kept in it as any far side's error text is
-		// (storetext.FarSideError).
+		// shim's or the launcher's jj wrote, is kept in it as the daemon keeps a read's error
+		// (readError).
 		return fmt.Sprintf("No read of the workspace could be made before the replacement: %s. The daemon does not know if the workspace held work that no branch or tag at origin holds.",
-			storetext.FarSideError(failed.Error()))
+			readError(failed))
 	}
 	found := []string{"Before the replacement, the daemon read the issue workspace. The read found work that no branch or tag at origin holds."}
 	if work.Changed {

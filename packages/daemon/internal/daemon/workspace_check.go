@@ -305,10 +305,17 @@ func declineHold(unowned bool, work runtime.WorkspaceWork, failed error) (workfl
 	return workflow.IdleHoldUnpushedWork, declineReason(work)
 }
 
-// unreadReason is what the hold record and the log line say of a read that failed: the far side's
-// error text as the daemon stores it (storetext.FarSideError).
+// unreadReason is what the hold record and the log line say of a read that failed (readError).
 func unreadReason(failed error) string {
-	return "the workspace could not be read: " + storetext.FarSideError(failed.Error())
+	return "the workspace could not be read: " + readError(failed)
+}
+
+// readError is a failed workspace read's error as the daemon keeps it, in a notice, a hold record
+// and a log line: the far side's text, bounded keeping both its ends (storetext.FarSideErrorEnds),
+// since the process that made the read cut its middle out and kept its end for its note on a git
+// lock (shimwire.CutAnswerError, INFRA-341's reviewer's point 6 on R6's review fixes).
+func readError(failed error) string {
+	return storetext.FarSideErrorEnds(failed.Error())
 }
 
 // roleDecline is the decline of a check read through a live role's shim. Its pod is the one the
@@ -459,8 +466,7 @@ func workFound(work runtime.WorkspaceWork) []string {
 // (failed). It names the pod, the state of each claim of the issue, what the read found or why it
 // failed, that the daemon pushes and saves nothing, what ends the hold, and how the work is pushed.
 // The architect reads it in its session and people read it in its history, so it follows
-// ASD-STE100. The read's error is the far side's text as the daemon stores it
-// (storetext.FarSideError).
+// ASD-STE100. The read's error is the far side's text as the daemon keeps it (readError).
 func keptMessage(issue, pod string, claims store.ClaimStates, work runtime.WorkspaceWork, failed error) string {
 	where := "The daemon did not delete the pod of " + issue
 	if pod != "" {
@@ -469,7 +475,7 @@ func keptMessage(issue, pod string, claims store.ClaimStates, work runtime.Works
 	found := []string{where + ". No role process runs in this pod, so the pod's launcher read its workspace before the delete."}
 	if failed != nil {
 		found = append(found, "The launcher could not read the workspace, so the daemon cannot show that the workspace holds nothing that no branch or tag on origin holds. The read failed: "+
-			storetext.FarSideError(failed.Error())+".")
+			readError(failed)+".")
 	} else {
 		found = append(found, "The workspace holds work that no branch or tag on origin holds.")
 		found = append(found, workFound(work)...)
