@@ -324,20 +324,13 @@ func (a *ask) wait(ctx context.Context) (*Grant, error) {
 // write. An agent-tier secret is granted at once, so most asks take one round trip.
 const askBound = 50 * time.Second
 
+// run makes ask a, logs how it ended, and only then publishes the outcome (the current grant, the
+// last error, a.done), so every line about a grant is in the log before any caller can use that
+// grant or read that failure.
 func (k *keeper) run(a *ask, why string) {
 	ctx, cancel := context.WithTimeout(context.Background(), askBound)
 	defer cancel()
 	grant, err := k.ask(ctx)
-	k.mu.Lock()
-	if err == nil {
-		k.held[grant.ID] = grant.ExpiresAt
-		k.current = grant
-	}
-	a.grant, a.err = grant, err
-	k.asking, k.lastErr, k.lastEnded = nil, err, time.Now()
-	close(k.changed)
-	k.changed = make(chan struct{})
-	k.mu.Unlock()
 	switch {
 	case errors.Is(err, cipher.ErrNotEnrolled):
 		// The daemon enrolls the role's key once its agent has registered, so a forwarder started
@@ -359,6 +352,16 @@ func (k *keeper) run(a *ask, why string) {
 				"grant", grant.ID, "lacks", lacking, "configured", k.githubHosts)
 		}
 	}
+	k.mu.Lock()
+	if err == nil {
+		k.held[grant.ID] = grant.ExpiresAt
+		k.current = grant
+	}
+	a.grant, a.err = grant, err
+	k.asking, k.lastErr, k.lastEnded = nil, err, time.Now()
+	close(k.changed)
+	k.changed = make(chan struct{})
+	k.mu.Unlock()
 	close(a.done)
 }
 
