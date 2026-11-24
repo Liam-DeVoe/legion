@@ -2058,6 +2058,50 @@ test("a row held after a server edit took it out of the typed search goes once t
   }
 });
 
+// The header line holds the page's title, the search box and the link to the answers page, in
+// that order, and the control bar holds no search box. The box shows `f`, the key that puts the
+// reader in it, inside its own wrapper and as its shortcut, and keeps its `data-control` on the
+// field itself.
+test("the header line's search box shows its f hint, and f focuses it", async () => {
+  const user = userEvent.setup();
+  const rows = [inboxIssue("ask-a", "CORE-1", "Ship it?")];
+  const listOpenAsks = mockInboxReads(rows);
+  const getAsk = mockAskReads(rows);
+  const { unmount } = renderInbox();
+  try {
+    await screen.findByTestId("ask-ask-a");
+    const box = screen.getByRole("searchbox", { name: "Search asks" });
+    expect(box).toHaveAttribute("data-control", "search-box");
+    expect(box).toHaveAttribute("placeholder", "Search");
+    expect(box).toHaveAttribute("aria-keyshortcuts", "f");
+    const wrapper = box.parentElement;
+    if (wrapper === null) throw new Error("the search box is drawn in no wrapper");
+    const hint = wrapper.querySelector("kbd");
+    expect(hint).toHaveTextContent("f");
+    expect(hint?.closest('[aria-hidden="true"]')).not.toBeNull();
+
+    const line = box.closest<HTMLElement>("[data-inbox-header-line]");
+    if (line === null) throw new Error("the search box is in no header line");
+    expect([...line.children]).toEqual([
+      screen.getByRole("heading", { level: 1, name: "Inbox" }),
+      wrapper,
+      screen.getByRole("link", { name: "Answered by you" }),
+    ]);
+    expect(box.closest('[data-control="control-row"]')).toBeNull();
+    expect(document.querySelectorAll('[data-control="search-box"]')).toHaveLength(1);
+
+    // `f` from the page itself, with the focus on nothing.
+    box.blur();
+    expect(document.body).toHaveFocus();
+    await user.keyboard("f");
+    expect(box).toHaveFocus();
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    listOpenAsks.mockRestore();
+  }
+});
+
 test("after the reader's own answer fails, an answer from elsewhere still holds the row they are in", async () => {
   const user = userEvent.setup();
   const askA = issueAsk({ id: "ask-a" });

@@ -50,7 +50,7 @@ test.describe("inbox search", () => {
     const box = inboxSearchBox(page);
     await expect(box).toHaveCount(1);
     await expect(box).toHaveValue("");
-    await expect(box).toHaveAttribute("placeholder", "Issue, title, question or author");
+    await expect(box).toHaveAttribute("placeholder", "Search");
     // The cap is the shared box's own (`SearchBox`'s `maxLength`), so no reader types a query
     // the server would refuse; the change handler cuts a paste the field takes whole as well
     // (proved by the address row below).

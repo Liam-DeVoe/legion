@@ -1,8 +1,9 @@
 /** The shared search, sort and filter controls as the eight stubbable pages of INFRA-4948's R8
  *  (six of them INFRA-3135's R2) draw them: one row of controls per page, nothing else between a
- *  page's title and its first row, nothing a reader presses moving that first row, exactly the
- *  controls the design gives each page, one look across two pages of a size family, and the
- *  Inbox still a list of rows with a reading pane beside it.
+ *  page's title and its first row but the Inbox's header line, nothing a reader presses moving
+ *  that first row, exactly the controls the design gives each page, one look across two pages of
+ *  a size family, the Inbox's header line one line, and the Inbox still a list of rows with a
+ *  reading pane beside it.
  *
  *  Every row reads what the page draws over one fixed answer - a box's height, a computed
  *  colour, the `data-control` values in the document - so each runs against a recording rather
@@ -12,7 +13,7 @@
  *  measure to ten minutes after a re-recording. Everything that needs seeded counts, a write or
  *  a reload is in that file too.
  */
-import { expect } from "@playwright/test";
+import { expect, type Locator } from "@playwright/test";
 
 import { CONTROL, type ControlName } from "../web/src/components/control-names";
 import { control, controlRow } from "./filters";
@@ -23,6 +24,7 @@ import {
   heightOf,
   isPhoneProject,
   openSurface,
+  pickInboxField,
   resetScroll,
   STUBBABLE_SURFACES,
   SURFACE_CONTROLS,
@@ -49,6 +51,149 @@ const CHIP_LINE = 52;
  *  not touch, so it is the share the pane has at the commit before it. */
 const PANE_SHARE = 0.6;
 
+/** The Inbox's header line, on the page and in the drawer: the title, the search box and the link
+ *  or the close button (`web/src/features/inbox/Inbox.tsx`). */
+const HEADER_LINE = "[data-inbox-header-line]";
+
+/** Six narrowings, as the Inbox's address writes them, under which the seed keeps every row: each
+ *  of its asks is a question on CORE, so the list keeps them all under every kind and CORE. */
+const SIX_INBOX_NARROWINGS = "/?type=question,decision,approval,agent,reply&project=CORE";
+
+/** The same six, as the drawer's Filter panel picks them: a field, and its option. */
+const SIX_INBOX_PICKS: readonly (readonly [string, RegExp])[] = [
+  ["type", /^Question,/],
+  ["type", /^Decision,/],
+  ["type", /^Approval,/],
+  ["type", /^Agent message,/],
+  ["type", /^Threads,/],
+  ["project", /^CORE,/],
+];
+
+/** One part of a header line as the row reads it: what it is, and its box. */
+interface HeaderLinePart {
+  readonly what: string;
+  readonly height: number;
+  readonly left: number;
+  readonly right: number;
+  readonly top: number;
+}
+
+/** The header line `root` draws, read in one pass: its parts in their order, its own height, and
+ *  its search box's content width beside the width of the box's placeholder in the box's own
+ *  font. A heading is named by its tag, so the page's `h1` reads as one. */
+async function headerLineOf(root: Locator): Promise<{
+  readonly height: number;
+  readonly parts: readonly HeaderLinePart[];
+  readonly placeholder: string;
+  readonly placeholderWidth: number;
+  readonly room: number;
+}> {
+  const line = root.locator(HEADER_LINE);
+  await expect(line, "the surface draws no one header line").toHaveCount(1);
+  return line.evaluate((node) => {
+    const words = (element: Element) => (element.textContent ?? "").trim();
+    const parts = [...node.children].map((child) => {
+      const box = child.getBoundingClientRect();
+      const field = child.matches('[data-control="search-box"]')
+        ? child
+        : child.querySelector('[data-control="search-box"]');
+      const tag = child.tagName.toLowerCase();
+      const what =
+        field !== null
+          ? "search box"
+          : /^h[1-6]$/.test(tag)
+            ? `${tag} "${words(child)}"`
+            : `${tag === "a" ? "link" : tag} "${words(child)}"`;
+      return { height: box.height, left: box.left, right: box.right, top: box.top, what };
+    });
+    const field = node.querySelector<HTMLInputElement>('[data-control="search-box"]');
+    if (field === null) {
+      return {
+        height: node.getBoundingClientRect().height,
+        parts,
+        placeholder: "",
+        placeholderWidth: 0,
+        room: 0,
+      };
+    }
+    const style = getComputedStyle(field);
+    const probe = document.createElement("span");
+    probe.textContent = field.placeholder;
+    probe.style.cssText = "position: absolute; visibility: hidden; white-space: pre";
+    for (const property of [
+      "fontFamily",
+      "fontSize",
+      "fontStyle",
+      "fontWeight",
+      "letterSpacing",
+    ] as const) {
+      probe.style[property] = style[property];
+    }
+    document.body.append(probe);
+    const placeholderWidth = probe.getBoundingClientRect().width;
+    probe.remove();
+    return {
+      height: node.getBoundingClientRect().height,
+      parts,
+      placeholder: field.placeholder,
+      placeholderWidth,
+      room:
+        field.clientWidth -
+        Number.parseFloat(style.paddingLeft) -
+        Number.parseFloat(style.paddingRight),
+    };
+  });
+}
+
+/** `k-one-row`'s reading of a header line at `where`: the parts `expected` in that order from its
+ *  start, each after the one before it, every part's top within 1 px of the others', the line as
+ *  tall as its tallest part within 1 px, so it is one line, and room in its search box for the
+ *  whole placeholder. */
+async function expectOneHeaderLine(
+  root: Locator,
+  where: string,
+  expected: readonly string[]
+): Promise<void> {
+  const line = await headerLineOf(root);
+  const said = `${where}: the header line, ${Math.round(line.height)}px tall, holds ${line.parts
+    .map(
+      (part) =>
+        `${part.what} at ${Math.round(part.left)}-${Math.round(part.right)}px, its top at ${Math.round(part.top)}px, ${Math.round(part.height)}px tall`
+    )
+    .join("; ")}`;
+  expect(
+    line.parts.map((part) => part.what),
+    `${said}, not ${expected.join(", ")}`
+  ).toEqual(expected);
+  for (const [index, part] of line.parts.entries()) {
+    const before = line.parts[index - 1];
+    if (before === undefined) continue;
+    expect(part.left, `${said}: ${part.what} is not after ${before.what}`).toBeGreaterThanOrEqual(
+      before.right - 0.5
+    );
+  }
+  const tops = line.parts.map((part) => part.top);
+  expect(
+    Math.max(...tops) - Math.min(...tops),
+    `${said}: its parts do not stand in one line`
+  ).toBeLessThanOrEqual(1);
+  const tallest = Math.max(...line.parts.map((part) => part.height));
+  expect(
+    Math.abs(line.height - tallest),
+    `${said}: the line is not the height of its tallest part, ${Math.round(tallest)}px`
+  ).toBeLessThanOrEqual(1);
+  expect(
+    line.placeholderWidth,
+    `${where}: the search box has ${Math.round(line.room)}px for its placeholder "${line.placeholder}", which takes ${Math.round(line.placeholderWidth)}px in the box's font`
+  ).toBeLessThanOrEqual(line.room);
+}
+
+/** The page's header line: its `h1`, the search box, and the link to the answers page. */
+const PAGE_HEADER_LINE = ['h1 "Inbox"', "search box", 'link "Answered by you"'] as const;
+
+/** The drawer's header line: its title, the search box, and its close button. */
+const DRAWER_HEADER_LINE = ['h2 "Inbox"', "search box", 'button "Close"'] as const;
+
 // SLOW(>=2s): eight pages opened at each of this project's widths, which is sixteen page loads.
 test("each page draws one row of controls, and nothing else between its title and its first row @phone @pr", async ({
   page,
@@ -72,14 +217,29 @@ test("each page draws one row of controls, and nothing else between its title an
       const height = Math.round(await heightOf(surface.row));
       measured.push(`${where}: control row ${height}px`);
       expect(height, `${where}: the control row has no height`).toBeGreaterThan(0);
+      // The Inbox and its drawer draw their search box in the header line, beside the title (R8),
+      // and the header line and the control row are the two places between the title and the
+      // first row that may draw a search box, a panel trigger or a chip. So there the line's box
+      // is the page's search box, and the strays are read from under the line.
+      const headed = name === "Inbox" || name === "Inbox drawer";
+      const line = surface.root.locator(HEADER_LINE);
+      if (headed) {
+        await expect(line, `${where}: not exactly one header line`).toHaveCount(1);
+        await expect(
+          control(line, CONTROL.searchBox),
+          `${where}: the header line holds no search box`
+        ).toHaveCount(1);
+      }
       const strays = await straysBetween(
         surface.root,
-        await topOf(surface.head),
+        headed
+          ? await line.evaluate((node) => node.getBoundingClientRect().bottom)
+          : await topOf(surface.head),
         await topOf(surface.firstRow)
       );
       expect(
         strays,
-        `${where} (control row ${height}px): ${strays.join("; ")} is drawn between the title and the first row and is outside the control row`
+        `${where} (control row ${height}px): ${strays.join("; ")} is drawn between the title and the first row and is outside the control row${headed ? " and the header line" : ""}`
       ).toEqual([]);
       // At the phone's own width the row wraps inside itself rather than widening the page.
       if (phone) await assertPageFits(page);
@@ -208,8 +368,9 @@ test("one search box, panel trigger and chip across the Inbox and the Board, and
   const look = async (name: "Inbox" | "project Board") => {
     const surface = await openSurface(page, name, scene);
     await surface.narrow();
-    const drawnStyle = async (which: ControlName) =>
-      control(controlRow(surface.root), which)
+    const row = controlRow(surface.root);
+    const drawnStyle = async (scope: Locator, which: ControlName) =>
+      control(scope, which)
         .first()
         .evaluate((node) => {
           const style = getComputedStyle(node);
@@ -222,9 +383,13 @@ test("one search box, panel trigger and chip across the Inbox and the Board, and
           };
         });
     return {
-      chip: await drawnStyle(CONTROL.chip),
-      search: await drawnStyle(CONTROL.searchBox),
-      trigger: await drawnStyle(CONTROL.panelTrigger),
+      chip: await drawnStyle(row, CONTROL.chip),
+      // The Inbox's search box stands in its header line, the Board's in its control row (R8).
+      search: await drawnStyle(
+        name === "Inbox" ? surface.root.locator(HEADER_LINE) : row,
+        CONTROL.searchBox
+      ),
+      trigger: await drawnStyle(row, CONTROL.panelTrigger),
     };
   };
   await page.setViewportSize({ height: 900, width: 1440 });
@@ -295,4 +460,43 @@ test("the Inbox is rows with their marks and no table, and opening one opens the
     `the reading pane takes ${share.paneWidth}px beside a ${share.listWidth}px list, a share of ${share.share.toFixed(3)} rather than the ${PANE_SHARE} it has at the commit before this change`
   ).toBeCloseTo(PANE_SHARE, 2);
   await expect(surface.row, "the control row went with the reading pane").toHaveCount(1);
+});
+
+// SLOW(>=2s): the Inbox opened twice at each of this project's widths.
+test("k-one-row: the Inbox's header line is one line, its search box after the h1 and before Answered by you @phone @pr", async ({
+  page,
+  scene,
+}, testInfo) => {
+  const phone = isPhoneProject(testInfo);
+  for (const size of widthsOf(page, testInfo)) {
+    if (!phone) await page.setViewportSize(size);
+    const surface = await openSurface(page, "Inbox", scene, { phone });
+    const where = `the Inbox at ${size.width}x${size.height}`;
+    await expectOneHeaderLine(surface.root, `${where}, no narrowing on`, PAGE_HEADER_LINE);
+    await page.goto(SIX_INBOX_NARROWINGS);
+    await expect(surface.firstRow).toBeVisible();
+    await expectOneHeaderLine(surface.root, `${where}, six narrowings on`, PAGE_HEADER_LINE);
+  }
+});
+
+// SLOW(>=2s): the drawer opened, and six narrowings picked in it, at each of this project's widths.
+test("k-one-row: the drawer's header line is one line, its search box after its title and before its close button @phone @pr", async ({
+  page,
+  scene,
+}, testInfo) => {
+  // Six picks of the Filter panel at each width, each opening the panel and a field's popover
+  // and shutting both, so the row states a budget of its own as its siblings above do.
+  test.setTimeout(120_000);
+  const phone = isPhoneProject(testInfo);
+  for (const size of widthsOf(page, testInfo)) {
+    if (!phone) await page.setViewportSize(size);
+    const surface = await openSurface(page, "Inbox drawer", scene, { phone });
+    const where = `the Inbox drawer at ${size.width}x${size.height}`;
+    await expectOneHeaderLine(surface.root, `${where}, no narrowing on`, DRAWER_HEADER_LINE);
+    for (const [field, option] of SIX_INBOX_PICKS) {
+      await pickInboxField(page, field, option, surface.root);
+    }
+    await expect(surface.firstRow).toBeVisible();
+    await expectOneHeaderLine(surface.root, `${where}, six narrowings on`, DRAWER_HEADER_LINE);
+  }
 });

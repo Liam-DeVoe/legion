@@ -4,8 +4,6 @@
 
 import type { Locator, Route } from "@playwright/test";
 
-import { CONTROL } from "../web/src/components/control-names";
-
 import { setInterests, setLiveSessions } from "./agents";
 import {
   createAsk,
@@ -17,7 +15,7 @@ import {
   patchIssue,
   requestApproval,
 } from "./api";
-import { control, controlRow, listTrigger, pickFromList } from "./filters";
+import { controlRow, listTrigger, pickFromList } from "./filters";
 import {
   type Arrange,
   type CaseContext,
@@ -26,6 +24,7 @@ import {
   type SceneRow,
   scrollTo,
 } from "./focus-landing-cases";
+import { inboxSearchBox } from "./inbox-filter";
 import { askCard, inboxPane, inboxRow, selectRow } from "./inbox-pane";
 import { seedCommentThread } from "./inbox-threads";
 import { openSurface, SURFACE_SESSION, seedSurfaces } from "./table-controls";
@@ -403,8 +402,8 @@ const emptiedView: Arrange = async ({ n, page }) => {
     await seedCommentThread(issue.key, `${word} thread ${which}?`, "Done.");
   }
   await page.goto("/");
-  const root = page.getByTestId("main-content");
-  await control(controlRow(root), CONTROL.searchBox).fill(word);
+  // The Inbox's search box, which stands in its header line beside the title.
+  await inboxSearchBox(page).fill(word);
   const rows = page.locator("[data-inbox-row]");
   await expect(rows).toHaveCount(2);
   // One read of the two rows: the wait above found exactly the case's own threads drawn.

@@ -298,18 +298,13 @@ function ShellMessagePage({ children, title }: { children?: ReactNode; title: st
 function InboxPage(): ReactNode {
   useDocumentTitle("Inbox · Dispatch");
   // From the reading pane's width the page fills the viewport (`fillsViewport` below), and the
-  // two columns divide the height left under the heading; below it the page scrolls as ever.
+  // two columns divide the height left under the header; below it the page scrolls as ever. The
+  // Inbox draws the page's header line itself, its title as the page's `h1` (`InboxHeader`): the
+  // search box in it is the Inbox's.
   const readingPaneShown = useMediaQuery(READING_PANE_QUERY);
   return (
     <section className={readingPaneShown ? "flex min-h-0 flex-1 flex-col" : undefined}>
-      {/* Only the page links to the answers page; the drawer's Inbox stays a peek. */}
-      <div className="mb-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h1 className="text-[22px] font-semibold tracking-tight">Inbox</h1>
-        <Link className={`text-sm ${linkText} ${linkHoverText}`} to={ANSWERS_PATH}>
-          Answered by you
-        </Link>
-      </div>
-      <Inbox />
+      <Inbox header={{ kind: "page" }} />
     </section>
   );
 }

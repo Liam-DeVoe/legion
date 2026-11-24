@@ -14,6 +14,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { Link } from "react-router-dom";
 
 import { usersQuery, whoAmIQuery } from "../../api/queries";
 import type { MyReplyRow, OpenAskRow } from "../../api/types";
@@ -47,7 +48,9 @@ import {
   secondaryButtonText,
   surfaceMutedBg,
   textMutedOnCanvas,
+  textMutedOnSurface,
   textMutedOnSurfaceMuted,
+  textPrimaryOnSurface,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { searchWords } from "../agents/agent-search";
@@ -60,6 +63,7 @@ import { COPY_REF_SELECTOR, CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { PlainText } from "../refs/plain-text";
 import {
+  ANSWERS_PATH,
   INBOX_FILTER_FIELDS,
   INBOX_FILTER_VOCABULARY,
   INBOX_GROUP_BYS,
@@ -980,17 +984,40 @@ function emptyStateMessage({
 }
 
 /**
+ * What the Inbox's header line holds around its search box, by where the Inbox stands. On the
+ * page, the title is the page's `h1` and the line ends in the **Answered by you** link: only the
+ * page links to the answers page, and the drawer's Inbox stays a peek. In the drawer, the title
+ * heads the dialog and the line ends in its close button, which the drawer hands `useDialog` as
+ * the dialog's first focus (`initialFocusRef`), so the ref is the drawer's and the button is
+ * drawn here.
+ */
+export type InboxHeader =
+  | { readonly kind: "page" }
+  | {
+      readonly closeRef: RefObject<HTMLButtonElement | null>;
+      readonly kind: "drawer";
+      readonly onClose: () => void;
+    };
+
+/** The Inbox page's header line, which an Inbox given none draws. */
+const PAGE_HEADER: InboxHeader = { kind: "page" };
+
+/**
  * `filter`/`onFilterChange`/`keymapScope` exist for `InboxDrawer` (LEGION-547): a peek
  * embedded on another route must not read or write the real URL for its filters or the text
  * typed in its search box (either would navigate the page it sits over), and its
  * Escape/j/k/etc. must resolve under the drawer's own `dialog` scope - the modal scope a dialog
  * anywhere on the stack exclusively consults - rather than the standalone page's `inbox` scope,
  * which a dialog's keydown handling never reaches. `pane` is the third: the drawer is a peek at
- * any width, never a two-column reader. `InboxPage`'s unmodified `<Inbox/>` call keeps today's
- * URL-backed behaviour untouched.
+ * any width, never a two-column reader, and `header` the fourth: the drawer's title line ends in
+ * its close button. Each defaults to the Inbox page's, so a host that passes none of them draws
+ * the page's URL-backed Inbox.
  */
 export interface InboxProps {
   filter?: InboxRoute;
+  /** The header line's title and what ends it (`InboxHeader`); the page's where absent. The
+   *  Inbox draws the line itself because the search box in it is the Inbox's own state. */
+  header?: InboxHeader;
   keymapScope?: KeymapScope;
   /** A host that owns the filter itself: every change this list makes - a filter, the sort, the
    *  grouping, the view, the text typed in the search box - is reported here instead of being
@@ -1014,6 +1041,7 @@ export interface InboxProps {
  *  so neither the list's loading line nor its error takes the message the person is writing. */
 export function Inbox({
   filter,
+  header,
   keymapScope,
   onFilterChange,
   pane,
@@ -1025,6 +1053,7 @@ export function Inbox({
       <InboxBody
         composing={composing}
         filter={filter}
+        header={header}
         keymapScope={keymapScope}
         onCompose={() => setComposing(true)}
         onFilterChange={onFilterChange}
@@ -1281,6 +1310,7 @@ function DismissedRows({
 function InboxBody({
   composing,
   filter: filterOverride,
+  header = PAGE_HEADER,
   keymapScope = "inbox",
   onCompose,
   onFilterChange,
@@ -1394,6 +1424,55 @@ function InboxBody({
     // every letter of it.
     changeFilter({ ...filter, q: next === "" ? undefined : next });
   };
+  // The header line: the title, the search box and what ends the line - the page's link to the
+  // answers page, or the drawer's close button - in one line that never wraps, the box filling
+  // the room between and the others keeping their width. Each part takes the line's height, so
+  // every part's box starts at the line's top. It stands 8 px over the control bar, and every
+  // return below draws it first in one fragment, while the list loads and where it failed too.
+  const headerLine = (
+    <div className="mb-2 flex flex-nowrap gap-3" data-inbox-header-line="">
+      {header.kind === "page" ? (
+        <h1 className="flex shrink-0 items-center text-[22px] font-semibold tracking-tight">
+          Inbox
+        </h1>
+      ) : (
+        <h2
+          className={`flex shrink-0 items-center text-base font-semibold ${textPrimaryOnSurface}`}
+        >
+          Inbox
+        </h2>
+      )}
+      <SearchBox
+        className="flex-1"
+        // `f`, the key that puts the reader in the box (`inboxKeys` below).
+        hint="f"
+        label="Search asks"
+        // `capSearchQuery` again here, over the box's own `maxLength`: a paste the box takes
+        // whole is still cut to what the address and the list agree on (`typeQuery`).
+        onChange={typeQuery}
+        placeholder="Search"
+        ref={searchRef}
+        value={filter.q ?? ""}
+      />
+      {header.kind === "page" ? (
+        <Link
+          className={`flex shrink-0 items-center text-sm whitespace-nowrap ${linkText} ${linkHoverText}`}
+          to={ANSWERS_PATH}
+        >
+          Answered by you
+        </Link>
+      ) : (
+        <button
+          className={`min-h-11 shrink-0 rounded-lg px-3 text-sm font-medium ${textMutedOnSurface}`}
+          onClick={header.onClose}
+          ref={header.closeRef}
+          type="button"
+        >
+          Close
+        </button>
+      )}
+    </div>
+  );
   const agentText = useAgentText();
   // Every row's snooze write, held by ask around this list (`Inbox`) rather than by the control
   // that pressed, which can go while the write is out: the column's head goes when the reader
@@ -2249,12 +2328,25 @@ function InboxBody({
   });
 
   // The list waits for every read its asks come from, and says it could not load where one
-  // failed, rather than drawing a list without the rows that read answers for.
+  // failed, rather than drawing a list without the rows that read answers for. The header line
+  // stands over it in every state, first in one fragment, so the line is the same element from
+  // the first draw on: the drawer's close button keeps the focus the dialog gave it as the list
+  // lands, and a reader who pressed `f` while the list loaded keeps typing in the same box.
   if (whoAmI.isPending || inboxAsks.pending) {
-    return <LoadingSkeleton label="Loading your inbox" />;
+    return (
+      <>
+        {headerLine}
+        <LoadingSkeleton label="Loading your inbox" />
+      </>
+    );
   }
   if (inboxAsks.failed || viewer === undefined || place === undefined) {
-    return <p className={dangerText}>Could not load your inbox.</p>;
+    return (
+      <>
+        {headerLine}
+        <p className={dangerText}>Could not load your inbox.</p>
+      </>
+    );
   }
 
   // Which row the list holds in place while the server moves the list under it: the row the
@@ -2796,36 +2888,25 @@ function InboxBody({
     </SelectionBar>
   );
 
-  // Everything above the list, the same whether or not any band has a row, and a sibling of the
-  // scrolling list rather than an item in it: the controls stay put while the rows move.
+  // Everything above the list under the header line, the same whether or not any band has a row,
+  // and a sibling of the scrolling list rather than an item in it: the controls stay put while
+  // the rows move.
   //
-  // One row holds the page's search, sorting and filtering, and nothing else between the title
-  // and the first row draws a search box, a panel trigger or a chip. Nothing the reader can press
-  // here makes the header taller: the filter panel and the display menu are portalled over the
-  // page (`AnchoredPanel`), the selection bar is drawn over the list, and the chips are the one
-  // part of the row that may take a second line.
-  const header = (
+  // The header line holds the search box and one bar holds the sorting and filtering; nothing
+  // else between the title and the first row draws a search box, a panel trigger or a chip. The
+  // credential requests stand under the bar, above the list they wait beside. Nothing the reader
+  // can press here makes the header taller: the filter panel and the display menu are portalled
+  // over the page (`AnchoredPanel`), the selection bar is drawn over the list, and the chips are
+  // the one part of the row that may take a second line.
+  const aboveList = (
     <div className="space-y-4">
-      <CredentialRequestsSection credentials={credentials} />
       <ControlRow
         chips={chips}
         display={displayMenu}
-        // The drawer is at most 28rem wide at every window size, which a line of the search box,
-        // Filter, New message, the needs-you control and View does not fit.
+        // The drawer is at most 28rem wide at every window size, which a line of Filter, New
+        // message, the needs-you control and View does not fit.
         narrow={!pane}
         onClear={clearFilters}
-        search={
-          <SearchBox
-            className="w-full"
-            label="Search asks"
-            // `capSearchQuery` again here, over the box's own `maxLength`: a paste the box
-            // takes whole is still cut to what the address and the list agree on (`typeQuery`).
-            onChange={typeQuery}
-            placeholder="Issue, title, question or author"
-            ref={searchRef}
-            value={filter.q ?? ""}
-          />
-        }
         trigger={
           <PanelTrigger label="Filter" onOpenChange={setFilterOpen} open={filterOpen} stacked>
             {renderFilterControls}
@@ -2834,6 +2915,7 @@ function InboxBody({
       >
         {pageControls}
       </ControlRow>
+      <CredentialRequestsSection credentials={credentials} />
       {/* A dismiss the server refused: the rows are back where they were, and the page says so
           here, above the list, because the control that sent it was on a row this write had
           already taken off the page. */}
@@ -2872,7 +2954,7 @@ function InboxBody({
               rather than in it, so the first mark moves no row. */}
         {selectionBar}
         <div className={paneShown ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-4"}>
-          {header}
+          {aboveList}
           {paneShown ? (
             // The two columns are a grid of two fractions, so the share the reader dragged the
             // divider to is exactly the share the pane takes, at any width; the divider is the
@@ -2948,7 +3030,12 @@ function InboxBody({
         )}
       </section>
     );
-    return page(empty, paneSelection.showing([]));
+    return (
+      <>
+        {headerLine}
+        {page(empty, paneSelection.showing([]))}
+      </>
+    );
   }
 
   // Each held row is drawn in the band the reader saw it in, after the row it then followed; a
@@ -3128,5 +3215,10 @@ function InboxBody({
   // below the reading column's width. The one question that outlives every row is the one the
   // column is keeping for an unsent answer, and `showing` hands that one back from an empty
   // list too, so it keeps its column there: the reader's text is in it.
-  return page(list, selectedRow);
+  return (
+    <>
+      {headerLine}
+      {page(list, selectedRow)}
+    </>
+  );
 }

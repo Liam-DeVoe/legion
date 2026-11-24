@@ -628,11 +628,12 @@ test("a chip of the Inbox's row that has the keyboard focus is shown whole, with
     const chips = await chipsInLineAndPanel(row, 9, where);
     const moreName = `${chips.panel.length} more ${chips.panel.length === 1 ? "filter" : "filters"}`;
     // The Tab key walks the chips line's chips in their order, then `+N more`, which stands for
-    // the chips the line has no room for.
-    await control(row, CONTROL.searchBox).focus();
+    // the chips the line has no room for. The walk starts on the row's first control, its filter
+    // trigger: the Inbox's search box stands in its header line, above the row (R8).
+    await control(row, CONTROL.panelTrigger).first().focus();
     const walked: string[] = [];
-    // The search box, the filter trigger, the page's own controls and the display menu, then the
-    // line's chips, `+N more` and Clear filters: twenty presses walk past the end of the row.
+    // The page's own controls and the display menu, then the line's chips, `+N more` and Clear
+    // filters: twenty presses walk past the end of the row.
     for (let press = 0; press < 20; press++) {
       await page.keyboard.press("Tab");
       // The Tab moves the focus while the browser handles the press, and nothing in the row
@@ -3323,7 +3324,8 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
 
   // The keys over the rows: `f` and the Escape out of the box, `j`, `k` and the arrows.
   const order = sortedIds(rows, "newest", at);
-  const search = control(controlRow(peek), CONTROL.searchBox);
+  // The drawer's search box, which stands in its header line beside its title.
+  const search = peek.getByRole("searchbox", { name: "Search asks" });
   await page.keyboard.press("f");
   await expect(search, "the f key").toBeFocused();
   await page.keyboard.press("Escape");
