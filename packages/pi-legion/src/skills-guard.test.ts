@@ -19,7 +19,6 @@ import {
   skillLinks,
   stageSkills,
 } from "@legion/pi-shared/test/skills-guard";
-import { collapsed, skillPins } from "./skill-pins";
 
 // The Claude Code plugin is generated from this repository's skills/ and this package's agents/,
 // and nothing commits packages/claude-envoy/legion/, so a check of what a Claude Code role loads
@@ -369,8 +368,28 @@ test("no skill, agent or plugin file keeps work in the foreground, and each that
 
 // dispatch://INFRA-332's eight guidance rules, each pinned where it was written. A pin fails when
 // a later edit deletes the rule's key sentence; it does not show that an agent follows the rule,
-// which the issue's session runs measure (`./skill-pins`).
-const { countedOncePerFile, lacks } = skillPins(() => staged);
+// which the issue's session runs measure. Whitespace is collapsed before the match, as
+// shipped-agents.test.ts collapses it, so a pin survives a rewrap of the file it reads.
+const collapsed = (file: string) => readFileSync(file, "utf8").replace(/\s+/g, " ");
+
+// A sentence copied into several files is counted once per file, never over a composed prompt,
+// where a sentence in both roles/<role>.md and go/worker-common.md would appear twice. A file
+// that lost the sentence and a file that gained a second copy both fail, and the files are listed
+// rather than counted, so one that stopped carrying it fails as loudly as one that started.
+// A `skills/…` path is read from the staged partition, as every other skill pin here is, so what
+// is counted is the copy the plugin ships.
+function countedOncePerFile(rule: string, relativePaths: string[]) {
+  const counts = relativePaths.map((relative) => ({
+    file: relative,
+    found:
+      collapsed(
+        relative.startsWith("skills/")
+          ? path.join(staged, relative.slice("skills/".length))
+          : path.join(REPO_ROOT, relative)
+      ).split(rule).length - 1,
+  }));
+  expect(counts).toEqual(relativePaths.map((file) => ({ file, found: 1 })));
+}
 
 // R3: a forward merge brings instances from the base that the branch's own diff never shows, so a
 // merge can bring a new instance of a class the branch already answered. The implementer's merge
@@ -645,9 +664,15 @@ test("the retro skill names the rating's fields, its refusals, its scale and its
 });
 
 // A task's `Steps:` line can leave out the tester, the reviewer or `acceptance:owner`, and each
-// text below says what the steps it keeps do in their place (`lacks`). This shows the text ships,
-// never that a role follows it. The pins of a plan, and of where a decision for an agent goes, are
-// plan-decisions-guard.test.ts's.
+// text below says what the steps it keeps do in their place. A pin binds a condition to its duty
+// within one clause (`[^.;]*`), or within one field of the body template (`[^*]*`, which stops at
+// the next `**Field:**`): `collapsed` makes a file one line, so a bare `.*` would match from a word
+// at its top to one at its end. Each file's missing duties are listed together. This shows the text
+// ships, never that a role follows it.
+function lacks(relative: string, duties: RegExp[]) {
+  const text = collapsed(path.join(staged, relative));
+  return duties.filter((duty) => !duty.test(text)).map((duty) => `${relative} lacks ${duty}`);
+}
 
 test("an implementer and owner task is accepted on the evidence its steps give", () => {
   const missing = [
@@ -802,6 +827,21 @@ test("an implementer and tester task gives the reviewer's body lines and bot thr
   );
   expect(merger).toMatch(/do not merge, do not approve[^.]*do not return the task/);
   expect(merger).toMatch(/Wait, and tell the owner of the task[^.]*which review is missing/);
+});
+
+test("an issue runs the default steps unless its architect registers a plan before its first step", () => {
+  expect([
+    ...lacks("legion-architect/SKILL.md", [
+      /references\/plan\.md`[^.;]*before `register_gate`[^.;]*before `release_children`/,
+      /issue with none runs the default steps/,
+      /stop a task[^.;]*references\/plan-changes\.md`/,
+    ]),
+    ...lacks("legion-architect/references/plan.md", [
+      /\*\*A root:\*\* before `register_gate`/,
+      /\*\*A child:\*\* before `release_children`/,
+    ]),
+    ...lacks("legion-worker/SKILL.md", [/default task[^.;]*tester[^.;]*reviewer[^.;]*acceptance/]),
+  ]).toEqual([]);
 });
 
 // The admission table is read raw, since each of its rows is a line, and it lists the contract's
