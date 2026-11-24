@@ -1151,7 +1151,7 @@ export function NodeEdges({
   return (
     <>
       {node.alsoUnder.map((chip) => (
-        <Chip
+        <NodeReference
           chip={chip}
           issue={issue}
           key={`also:${chip.ref}`}
@@ -1160,7 +1160,7 @@ export function NodeEdges({
         />
       ))}
       {node.chips.map((chip) => (
-        <Chip chip={chip} issue={issue} key={chip.ref} label={chip.label} tabStops={tabStops} />
+        <NodeReference chip={chip} key={chip.ref} label={chip.label} tabStops={tabStops} />
       ))}
       {node.gaps.map((gap) => (
         <span data-gap="" data-gap-kind={gap} key={gap} {...pageChrome}>
@@ -1198,7 +1198,7 @@ export function NodeEdges({
  * all at once" (`useIssueTree.ts`) - which the projection's own answer says
  * (`MarkdownHeadline.named`): a chip draws no address.
  */
-function Chip({
+function NodeReference({
   chip,
   issue,
   label,

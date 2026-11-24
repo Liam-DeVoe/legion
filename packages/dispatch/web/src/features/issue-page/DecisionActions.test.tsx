@@ -1,7 +1,7 @@
 import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
 import { dispatchWritingBox } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
@@ -30,7 +30,7 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { ReferenceNamesProvider } from "../refs/reference-names";
+import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
@@ -218,45 +218,67 @@ test("the change form opens with the caret in its field", async () => {
   }
 });
 
-// A Keep the server took is the reader's at once: the decisions read the tree, its count and the
-// Decisions tab draw from holds the decision's entry kept and no longer waiting for review, so
-// nothing draws it as waiting until that read is asked again.
-test("a Keep marks the decision's entry in the decisions read kept and no longer waiting", async () => {
-  const user = userEvent.setup();
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
-  client.setQueryData(["decisions", KEY], read);
-  const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(read);
-  const kept: DecisionKeep = {
-    artifact_id: document_.id,
-    block_id: "d1",
-    changed_version: 1,
-    kept_at: "2026-11-06T00:00:00Z",
-    kept_by: "alice",
-  };
-  const keep = spyOn(api, "keepDecision").mockResolvedValue(kept);
-  const view = render(
-    <QueryClientProvider client={client}>
-      <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
-    </QueryClientProvider>
+// A keyboard reader who presses Keep stays on it while the Keep is out: Keep is held
+// (`heldPress`, `aria-disabled`), never disabled, which would drop the focus to the page's body in
+// a browser and does here under `emulateChromiumFocusFixup`, and a second press keeps nothing more. The
+// controls are drawn with no row around them, so the focus stays the control's own: in the tree
+// the press hands it to the decision's row (`keepFocusOnRow`).
+test("Keep keeps the focus while its Keep is out, held rather than disabled, and a second press keeps nothing", async () => {
+  // Dispatch never answers the Keep.
+  const keepDecision = spyOn(api, "keepDecision").mockImplementation(
+    () => new Promise<never>(() => {})
   );
+  const user = userEvent.setup();
+  const { unmount } = renderActions();
+  const stopFocusFixup = emulateChromiumFocusFixup();
   try {
-    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.keep_decision }));
-    await waitFor(() => expect(keep).toHaveBeenCalledTimes(1));
-    expect(keep.mock.calls[0]?.slice(0, 3)).toEqual([document_.id, "d1", "sum"]);
-    await waitFor(() =>
-      expect(client.getQueryData<IssueDecisions>(["decisions", KEY])?.entries?.[0]).toMatchObject({
-        kept,
-        kept_by: "alice",
-        waiting_review: false,
-      })
-    );
-    expect(screen.queryByRole("button", { name: CONTROL_LABELS.keep_decision })).toBeNull();
+    const keep = await screen.findByRole("button", { name: CONTROL_LABELS.keep_decision });
+    act(() => keep.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(keepDecision).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(keep).toHaveAttribute("aria-disabled", "true"));
+    expect(keep).toBeEnabled();
+    expect(keep, "Keep dropped the focus while its Keep was out").toHaveFocus();
+    await user.keyboard("{Enter}");
+    await user.click(keep);
+    expect(keepDecision, "a second press of Keep kept the decision again").toHaveBeenCalledTimes(1);
   } finally {
-    view.unmount();
-    decisions.mockRestore();
-    keep.mockRestore();
+    stopFocusFixup();
+    unmount();
+    keepDecision.mockRestore();
+  }
+});
+
+// The same for Send change, the form's submit button: while the send reads the decisions document
+// and while the comment is out it is held, never disabled, so the focus the press gave it is still
+// on it once the comment is out, and a second press - Enter on it, or a click - submits nothing:
+// no second read of the document and no second comment.
+test("Send change keeps the focus while its change is out, held rather than disabled, and a second press sends nothing", async () => {
+  // Dispatch never answers the send.
+  const createComment = spyOn(api, "createComment").mockImplementation(
+    () => new Promise<never>(() => {})
+  );
+  const user = userEvent.setup();
+  const { text, unmount } = renderActions();
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Keep one preset.");
+    const send = screen.getByRole("button", { name: CONTROL_LABELS.send_change });
+    act(() => send.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(send).toHaveAttribute("aria-disabled", "true"));
+    expect(send).toBeEnabled();
+    expect(send, "Send change dropped the focus while its change was out").toHaveFocus();
+    await user.keyboard("{Enter}");
+    await user.click(send);
+    expect(text, "a second press read the decisions document again").toHaveBeenCalledTimes(1);
+    expect(createComment, "a second press sent the change again").toHaveBeenCalledTimes(1);
+  } finally {
+    stopFocusFixup();
+    unmount();
+    createComment.mockRestore();
   }
 });
 

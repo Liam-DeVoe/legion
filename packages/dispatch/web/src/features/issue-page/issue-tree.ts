@@ -90,8 +90,10 @@ export interface NodeChip {
    *  (`targetNaming`). Absent for every other reference. */
   readonly ambiguous?: true;
   /** Whether the batched reference read has answered for this reference. A target it answered
-   *  with no words of its own (no `reading`, or `gone`) is told apart from one whose answer is
-   *  still out by this and by nothing else. */
+   *  with no text of its own (`name` empty, or `gone`) is told apart from one whose answer is
+   *  still out by this and by nothing else, and the two are drawn differently: the first is
+   *  named by its address's short form, the second by the address itself (`NodeRow.tsx`'s
+   *  `NodeReference`). */
   readonly answered: boolean;
   /** Whether nothing answers to this reference now. */
   readonly gone: boolean;

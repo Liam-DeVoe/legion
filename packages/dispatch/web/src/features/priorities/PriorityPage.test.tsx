@@ -3,16 +3,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { answerRoute } from "../../__tests__/send-answers";
-import { api, type WriteBounds } from "../../api/client";
-import type {
-  IssueSummary,
-  PatchPriorityInput,
-  Priorities,
-  Priority,
-  PriorityRow,
-} from "../../api/types";
-import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { api } from "../../api/client";
+import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import { KeymapProvider } from "../shell/KeymapProvider";
 import { PriorityPage } from "./PriorityPage";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -152,9 +145,11 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
   const view = render(
     <MemoryRouter initialEntries={[`/priorities/${id}`]}>
       <QueryClientProvider client={client}>
-        <Routes>
-          <Route element={<PriorityPage />} path="/priorities/:id" />
-        </Routes>
+        <KeymapProvider>
+          <Routes>
+            <Route element={<PriorityPage />} path="/priorities/:id" />
+          </Routes>
+        </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -342,6 +337,24 @@ test("the work under the priority is the issues table, scoped and under its own 
   ).toBeDefined();
   expect(within(work).queryByRole("row", { name: "OPS-2 Work OPS-2" })).toBeNull();
   expect(listing).toHaveBeenCalledWith({ advances: ["rocq-lean"], open: true });
+});
+
+// INFRA-3135's review round 1, R10: the work table registers `j` and `k` in the `project` scope,
+// which this page never pushed, so the shortcut help listed Next issue and Previous issue and
+// neither key did anything here. The page pushes that scope, and its one table walks its rows
+// from anywhere on the page.
+test("j and k walk the work under the priority", async () => {
+  const user = userEvent.setup();
+  page("rocq-lean", [issue("CORE-1", ["rocq-lean"]), issue("CORE-4", ["rocq-lean"])]);
+  const work = await screen.findByRole("region", { name: "Work advancing this priority" });
+  await within(work).findByRole("row", { name: "CORE-4 Work CORE-4" }, { timeout: 3000 });
+  const rows = [...work.querySelectorAll<HTMLElement>("[data-issue-row]")];
+  await user.keyboard("j");
+  expect(rows[0]).toHaveFocus();
+  await user.keyboard("j");
+  expect(rows[1]).toHaveFocus();
+  await user.keyboard("k");
+  expect(rows[0]).toHaveFocus();
 });
 
 test("the margin stands beside the page, with no tabs of its own", async () => {

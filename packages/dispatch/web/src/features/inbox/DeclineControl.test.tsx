@@ -9,6 +9,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { realClock, settle } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, type DeclineAskInput, NetworkError } from "../../api/client";
@@ -306,59 +307,8 @@ test("the decline dialog counts what is left to write, and sends no note when em
   }
 });
 
-// A pick writes into the box without typing, so a note can pass the bound the field's own
-// `maxLength` holds typing to. Both ways out of the box answer to one test of that: the button
-// and Ctrl+Enter, which has no form to submit and so reaches `onFormlessSubmit`.
-test("a note past the bound sends by neither the button nor Ctrl+Enter", async () => {
-  const user = userEvent.setup();
-  const open = openAsk();
-  const sent: DeclineAskInput[] = [];
-  const { view } = renderCard(
-    <AskCard
-      ask={open}
-      declineAsk={async (_id, input) => {
-        sent.push(input);
-        return declinedAsk("");
-      }}
-      getAskThread={async () => thread(declinedAsk(""))}
-      initialThread={thread(open)}
-    />
-  );
-  const card = within(view.container);
-  try {
-    await user.click(await card.findByRole("button", { name: "Decline to answer" }));
-    const dialog = card.getByRole("dialog", { name: "Decline to answer" });
-    const field = within(dialog).getByLabelText("Note (optional)") as HTMLTextAreaElement;
-    // What a pick does and typing cannot: a write that passes the box's own `maxLength`, which
-    // user-event honours as a browser does, so there is no user-event form for this one.
-    fireEvent.change(field, { target: { value: "x".repeat(DISPATCH_EVENT_BODY_MAX + 5) } });
-    expect(within(dialog).getByText("-5 characters left")).toBeTruthy();
-
-    const decline = within(dialog).getByRole("button", { name: "Decline to answer" });
-    expect(decline).toBeDisabled();
-    await user.click(decline);
-    await user.click(field);
-    await user.keyboard("{Control>}{Enter}{/Control}");
-    await user.keyboard("{Meta>}{Enter}{/Meta}");
-
-    // The refused presses are not waited on: a send the box let through would reach
-    // `declineAsk` through the write's own queue, and the in-bound send below goes through that
-    // same queue. So the row brings the note back inside the bound, presses the keys again, and
-    // waits on that one send to land: anything the refused presses let through would stand in
-    // `sent` before it.
-    fireEvent.change(field, { target: { value: "short" } });
-    expect(within(dialog).getByText(`${DISPATCH_EVENT_BODY_MAX - 5} characters left`)).toBeTruthy();
-    await user.click(field);
-    await user.keyboard("{Control>}{Enter}{/Control}");
-
-    await waitFor(() => expect(sent).toEqual([{ note: "short" }]));
-  } finally {
-    view.unmount();
-  }
-});
-
-// Escape and the backdrop close the dialog as Cancel does, and Cancel is disabled while the
-// decline is out. The two must refuse with it: a close lets the write's hold go, and the dialog
+// Escape and the backdrop close the dialog as Cancel does, and Cancel is held while the decline
+// is out. The two must refuse with it: a close lets the write's hold go, and the dialog
 // is the one surface the refusal is shown on, so a decline the server refuses after a press on
 // Escape would leave the person with no word of it.
 test("a decline out keeps its dialog through Escape and the backdrop, and shows the refusal", async () => {
@@ -395,6 +345,64 @@ test("a decline out keeps its dialog through Escape and the backdrop, and shows 
     );
     // The question is still the person's to answer: the refusal left the card where it was.
     expect(card.getByRole("dialog", { name: "Decline to answer" })).toBeTruthy();
+  } finally {
+    view.unmount();
+  }
+});
+
+// While the decline is out, the dialog's note, Cancel and Decline to answer are held, never
+// disabled: the browser takes the focus off a control that turns disabled, which would drop the
+// keyboard reader who pressed Decline to answer onto the page behind the open dialog, where a Tab
+// reaches the card. Held, the pressed control keeps the focus, a second press sends nothing, and
+// the dialog's Tab cycle still holds all three, so a Tab and a Shift+Tab stay inside it.
+test("Decline to answer keeps the focus inside its dialog while the decline is out, and a press then sends nothing", async () => {
+  const user = userEvent.setup();
+  const open = openAsk();
+  // The decline the server has not answered yet.
+  const out = Promise.withResolvers<Ask>();
+  const sent: DeclineAskInput[] = [];
+  const { view } = renderCard(
+    <AskCard
+      ask={open}
+      declineAsk={(_id, input) => {
+        sent.push(input);
+        return out.promise;
+      }}
+      getAskThread={async () => thread(open)}
+      initialThread={thread(open)}
+    />
+  );
+  const card = within(view.container);
+  try {
+    await user.click(await card.findByRole("button", { name: "Decline to answer" }));
+    const dialog = card.getByRole("dialog", { name: "Decline to answer" });
+    const note = within(dialog).getByLabelText("Note (optional)") as HTMLTextAreaElement;
+    await user.click(note);
+    await user.paste("Not ours to decide.");
+    const decline = within(dialog).getByRole("button", {
+      name: "Decline to answer",
+    }) as HTMLButtonElement;
+    await pressHeld(user, decline, { name: "Decline to answer", sent: () => sent.length });
+    expect(sent).toEqual([{ note: "Not ours to decide." }]);
+    const cancel = within(dialog).getByRole("button", { name: "Cancel" }) as HTMLButtonElement;
+    expect(heldNotDisabled(note, "the note")).toBe(true);
+    expect(heldNotDisabled(cancel, "Cancel")).toBe(true);
+
+    // Where the focus is, named, as a failed check prints it.
+    const where = () => {
+      const active = document.activeElement;
+      if (active === note) return "the note";
+      if (active === decline) return "Decline to answer";
+      if (active === cancel) return "Cancel";
+      return `${active?.tagName ?? "nothing"}, outside the dialog`;
+    };
+    await user.tab();
+    expect(where()).toBe("the note");
+    await user.tab({ shift: true });
+    expect(where()).toBe("Decline to answer");
+    await user.tab({ shift: true });
+    expect(where()).toBe("Cancel");
+    expect(card.getByRole("dialog", { name: "Decline to answer" })).toBe(dialog);
   } finally {
     view.unmount();
   }

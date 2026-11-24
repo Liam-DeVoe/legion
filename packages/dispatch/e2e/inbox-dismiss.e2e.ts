@@ -10,6 +10,7 @@ import {
   listMyReplies,
   patchIssue,
 } from "./api";
+import { openDisplayMenu } from "./filters";
 import { typeFilterCount } from "./inbox-filter";
 import { inboxList, inboxPane, READING_PANE_WIDTH, selectedRow, selectRow } from "./inbox-pane";
 import {
@@ -24,7 +25,7 @@ import {
   THREAD_SESSION,
   unreadThreadRows,
 } from "./inbox-threads";
-import { openView } from "./inbox-view";
+import { distinctKeys, watchWrites } from "./keyed-writes";
 import { refusePosts, WRITE_REFUSED } from "./sends";
 import { expandedState } from "./settled";
 import { type BrowserContext, expect, type Page, type Request, test } from "./test";
@@ -106,16 +107,11 @@ async function bandHeadings(page: Page): Promise<string[]> {
     .evaluateAll((nodes) => nodes.map((node) => (node.textContent ?? "").trim()));
 }
 
-/** Every `POST` to the dismiss route this page has made, in order, so a press that must be one
- *  request can be held to it. */
-function watchDismisses(page: Page): Request[] {
-  const posted: Request[] = [];
-  page.on("request", (request) => {
-    if (request.method() === "POST" && new URL(request.url()).pathname === DISMISS_PATH) {
-      posted.push(request);
-    }
-  });
-  return posted;
+/** Every `POST` to the dismiss route this page makes from here on, in order, as body and key. A
+ *  press is one write, under one key, however many requests it takes: the store sends it again
+ *  under the same key when an answer is dropped, so a row counts the keys (`distinctKeys`). */
+function watchDismisses(page: Page) {
+  return watchWrites(page, "POST", DISMISS_PATH);
 }
 
 /** The next `POST` to the dismiss route, as a promise to await before pressing. */
@@ -167,8 +163,8 @@ async function seenReplies(): Promise<Record<string, InboxDismissSeen>> {
 
 /** Picks one choice of the **View** menu's **Show** section and shuts the menu again. */
 async function chooseShow(page: Page, label: string): Promise<void> {
-  const menu = await openView(page);
-  const trigger = page.locator("[data-inbox-view]");
+  const menu = await openDisplayMenu(page);
+  const trigger = page.getByRole("button", { exact: true, name: "View" });
   await menu.getByRole("group", { name: "Show" }).getByRole("radio", { name: label }).click();
   if ((await expandedState("the View menu", trigger)) === "open") await trigger.click();
   await expect(menu).toHaveCount(0);
@@ -235,14 +231,13 @@ test("the row's Dismiss takes a thread out of the list, the counts and the Inbox
   try {
     const page = await inboxPage(alice);
     const posted = watchDismisses(page);
-    const bar = page.locator("[data-inbox-bar]");
     const rows = page.locator("[data-inbox-row]");
     const replyRow = page.locator(`[data-inbox-row="${replyRowId(seeded.reply)}"]`);
     await expect(rows).toHaveCount(3);
     await expectSidebarInboxCount(page, 3);
     expect(await bandHeadings(page)).toEqual(["P2 (2)", "No priority (1)"]);
-    expect(await typeFilterCount(page, bar, "Reply")).toBe(1);
-    expect(await typeFilterCount(page, bar, "Agent message")).toBe(1);
+    expect(await typeFilterCount(page, "Reply")).toBe(1);
+    expect(await typeFilterCount(page, "Agent message")).toBe(1);
 
     // The selected row draws its Dismiss twice - on the short row and in the column's head -
     // and both name the thread.
@@ -269,13 +264,13 @@ test("the row's Dismiss takes a thread out of the list, the counts and the Inbox
 
     // And out of the Filter control's count and the band's.
     expect(await bandHeadings(page)).toEqual(["P2 (1)", "No priority (1)"]);
-    expect(await typeFilterCount(page, bar, "Reply")).toBe(0);
-    expect(await typeFilterCount(page, bar, "Agent message")).toBe(1);
+    expect(await typeFilterCount(page, "Reply")).toBe(0);
+    expect(await typeFilterCount(page, "Agent message")).toBe(1);
 
     // The server holds the same: one thread dismissed, one left in the Inbox.
     await expect.poll(async () => dismissedThreads()).toBe(1);
     expect(await inboxThreads()).toBe(1);
-    expect(posted).toHaveLength(1);
+    expect(distinctKeys(posted)).toEqual([expect.any(String)]);
   } finally {
     await alice.close();
   }
@@ -379,7 +374,7 @@ test("three thread rows picked with x go out together in one bulk Dismiss", asyn
       await page.keyboard.press("x");
     }
 
-    const bar = page.getByRole("group", { name: "Selected rows" });
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
     await expect(bar).toContainText("3 selected");
     const dismiss = bar.getByRole("button", { name: "Dismiss selected threads" });
     await expect(dismiss).toBeVisible();
@@ -402,7 +397,7 @@ test("three thread rows picked with x go out together in one bulk Dismiss", asyn
     await expect(rows.first()).toHaveAttribute("data-inbox-row", drawn[3] ?? "");
     await expect.poll(async () => dismissedThreads()).toBe(3);
     expect(await inboxThreads()).toBe(1);
-    expect(posted).toHaveLength(1);
+    expect(distinctKeys(posted)).toEqual([expect.any(String)]);
   } finally {
     await alice.close();
   }
@@ -437,7 +432,7 @@ test("Select all dismisses every row of the group in one request that names each
     const checkbox = rows.first().getByRole("checkbox");
     await expect(checkbox).toHaveAttribute("aria-label", /^Select Mirror root \d+$/);
     await checkbox.check();
-    const bar = page.getByRole("group", { name: "Selected rows" });
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
     await expect(bar).toContainText("1 selected");
     await bar.getByRole("button", { name: "Select all" }).click();
     await expect(bar).toContainText("Every row selected");
@@ -466,7 +461,7 @@ test("Select all dismisses every row of the group in one request that names each
     await expect(rows).toHaveCount(0);
     await expect.poll(async () => dismissedThreads()).toBe(THREADS);
     expect(await inboxThreads()).toBe(0);
-    expect(posted).toHaveLength(1);
+    expect(distinctKeys(posted)).toEqual([expect.any(String)]);
 
     // The Dismissed view reads them a page at a time, and **Show more** reads the next page.
     await chooseShow(page, "Dismissed");
@@ -517,7 +512,7 @@ test("Select all under a search dismisses every matching row of a band wider tha
 
     const checkbox = rows.first().getByRole("checkbox");
     await checkbox.check();
-    const bar = page.getByRole("group", { name: "Selected rows" });
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
     await expect(bar).toContainText("1 selected");
     await bar.getByRole("button", { name: "Select all" }).click();
     await expect(bar).toContainText("Every row selected");
@@ -544,7 +539,7 @@ test("Select all under a search dismisses every matching row of a band wider tha
     await expect(rows).toHaveCount(0);
     await expect.poll(async () => dismissedThreads()).toBe(MATCHING);
     expect(await inboxThreads()).toBe(OTHERS);
-    expect(posted).toHaveLength(1);
+    expect(distinctKeys(posted)).toEqual([expect.any(String)]);
 
     // What the word hid is untouched, and the Inbox draws it again once the box is empty.
     await page.getByRole("searchbox", { name: "Search asks" }).fill("");

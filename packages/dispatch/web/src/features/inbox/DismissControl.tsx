@@ -1,6 +1,7 @@
 import { createContext, type ReactNode, useContext } from "react";
 
 import type { MyReplyRow } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { linkHoverText, linkText } from "../../theme/classes";
 import { PlainText } from "../refs/plain-text";
 import type { InboxShow } from "../refs/routes";
@@ -36,7 +37,8 @@ export const RowDismissContext = createContext<RowDismiss | undefined>(undefined
  *
  * On the short row it shows while the pointer is on the row or something in it holds the focus,
  * and always on the row the reading column is showing (`shown`); the column's own head and the
- * card draw it beside their other controls, where there is room for it.
+ * card draw it beside their other controls, where there is room for it. It is held while its
+ * write is out (`heldPress`).
  */
 export function DismissControl({
   shown = false,
@@ -58,11 +60,14 @@ export function DismissControl({
   // record that line names (`ThreadTitle`), so what a reader hears and what they see are the
   // same words - a reference named, not its address.
   return (
-    <PlainText
-      markdown={thread.subject}
-      source={textSourceOf(textSourceKind(thread.kind), thread.thread_id, thread.issue?.key)}
-      surface="inbox-thread-title"
-      tree={thread.subject_tree}
+    <button
+      aria-label={`${label}: ${questionLine(thread.subject)}`}
+      className={`min-h-11 shrink-0 text-sm font-medium md:min-h-8 ${linkText} ${linkHoverText} ${
+        shown ? "" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+      }`}
+      data-inbox-dismiss={named.id}
+      {...heldPress(live, () => dismiss.dismiss(named))}
+      type="button"
     >
       {(subject) => (
         <button
