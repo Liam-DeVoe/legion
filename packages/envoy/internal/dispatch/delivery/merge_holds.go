@@ -36,7 +36,7 @@ type MergedPullRequest struct {
 	AttributionRule int
 }
 
-// mergedColumns are the columns every read of merged rows here takes, in scanMerged's order.
+// mergedColumns are the columns every read of merged rows here takes, in readMerged's order.
 const mergedColumns = `repo, number, base_ref, head_sha, merge_commit_sha, merged_at, attribution_rule`
 
 // newestMergeFirst is the order of every list of merged rows here: the latest merge first, a row
@@ -46,8 +46,13 @@ const mergedColumns = `repo, number, base_ref, head_sha, merge_commit_sha, merge
 // merged earlier moves past a later merge.
 const newestMergeFirst = `merged_at desc nulls last, number desc`
 
-// scanMerged reads the rows of a query of mergedColumns.
-func scanMerged(rows pgx.Rows, what string) ([]MergedPullRequest, error) {
+// readMerged runs query, which selects mergedColumns, and reads its rows; what names them in an
+// error.
+func readMerged(ctx context.Context, pool *store.Pool, what, query string, args ...any) ([]MergedPullRequest, error) {
+	rows, err := pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", what, err)
+	}
 	defer rows.Close()
 	var merged []MergedPullRequest
 	for rows.Next() {
@@ -69,15 +74,10 @@ func scanMerged(rows pgx.Rows, what string) ([]MergedPullRequest, error) {
 // the branch it merged into. The rows are read through pull_request_heads_issue_head's leading
 // column, as BaseBranchMergedFor's are.
 func (a *Attributor) MergeOfIssue(ctx context.Context, pool *store.Pool, issueKey string) ([]MergedPullRequest, error) {
-	what := "the merged pull requests of " + issueKey
-	rows, err := pool.Query(ctx, `
+	return readMerged(ctx, pool, "the merged pull requests of "+issueKey, `
 		select `+mergedColumns+` from pull_request_heads
 		where issue_key = $1 and state = 'merged'
 		order by `+newestMergeFirst, issueKey)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", what, err)
-	}
-	return scanMerged(rows, what)
 }
 
 // MergeIn is MergeOfIssue for repoFull, a repository issueKey does not resolve to: every merged
@@ -85,12 +85,8 @@ func (a *Attributor) MergeOfIssue(ctx context.Context, pool *store.Pool, issueKe
 // first. It reads the rows BaseBranchMergedIn reads, and a repository the issue resolves to
 // answers none, as it does there. A pull request two links name is listed once.
 func (a *Attributor) MergeIn(ctx context.Context, pool *store.Pool, issueKey, repoFull string) ([]MergedPullRequest, error) {
-	what := fmt.Sprintf("the merged pull requests %s links in %s", issueKey, repoFull)
-	rows, err := pool.Query(ctx, a.mergeInQuery, issueKey, repoFull)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", what, err)
-	}
-	return scanMerged(rows, what)
+	return readMerged(ctx, pool, fmt.Sprintf("the merged pull requests %s links in %s", issueKey, repoFull),
+		a.mergeInQuery, issueKey, repoFull)
 }
 
 // LandingOf is every merged pull request of repo whose head was branch, newest merge first: the
@@ -101,15 +97,10 @@ func (a *Attributor) MergeIn(ctx context.Context, pool *store.Pool, issueKey, re
 // GitHub's spelling; the branch is compared as it is, since a git branch name is case-sensitive.
 // The read is one lookup on pull_request_heads_merged_head_ref (migration 20261124124112).
 func LandingOf(ctx context.Context, pool *store.Pool, repo, branch string) ([]MergedPullRequest, error) {
-	what := fmt.Sprintf("the merged pull requests of %s from %s", repo, branch)
-	rows, err := pool.Query(ctx, `
+	return readMerged(ctx, pool, fmt.Sprintf("the merged pull requests of %s from %s", repo, branch), `
 		select `+mergedColumns+` from pull_request_heads
 		where lower(repo) = lower($1) and head_ref = $2 and state = 'merged'
 		order by `+newestMergeFirst, repo, branch)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", what, err)
-	}
-	return scanMerged(rows, what)
 }
 
 // HoldAnswer is what Dispatch can say about one commit's history holding one merge commit.
