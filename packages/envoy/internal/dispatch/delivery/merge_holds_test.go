@@ -476,3 +476,41 @@ func TestTheLinkedMergeIsTheNewestLinkedPullRequestsMerge(t *testing.T) {
 		t.Fatalf("MergeIn(%s, acme/widgets) = %v, %v; want none: it is the issue's own repository", issue, numbersOf(own), err)
 	}
 }
+
+// One merged pull request is read by its repository, compared without case, and its number, with
+// what MergeOfIssue reads of each: the read a results read makes of a row it has just refreshed,
+// to learn the merge commit and the time the refresh stored. An open pull request, a number with
+// no row and a pull request of another repository are none.
+func TestAMergedPullRequestIsReadByItsRepositoryAndNumber(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	mergedAt := mergeTestTime(t, "2026-03-01T10:00:00Z")
+	for _, row := range []PullRequestHead{
+		{Repo: "acme/widgets", Number: 5, HeadSHA: headOfFive, HeadRef: "legion/HEAD-5", BaseRef: "release", State: "merged",
+			EventAt: &mergedAt, MergeCommitSHA: mergeOfFive, MergedAt: &mergedAt},
+		{Repo: "acme/widgets", Number: 6, HeadSHA: headOfSix, HeadRef: "legion/HEAD-6", BaseRef: "main", State: "open",
+			EventAt: &mergedAt},
+		{Repo: "acme/tools", Number: 7, HeadSHA: headOfSeven, HeadRef: "legion/HEAD-7", BaseRef: "main", State: "merged",
+			EventAt: &mergedAt, MergeCommitSHA: mergeOfSeven, MergedAt: &mergedAt},
+	} {
+		if err := UpsertPullRequestHead(ctx, pool, nil, row); err != nil {
+			t.Fatalf("store %s#%d: %v", row.Repo, row.Number, err)
+		}
+	}
+	pull, found, err := MergedPullRequestOf(ctx, pool, "Acme/Widgets", 5)
+	if err != nil || !found {
+		t.Fatalf("MergedPullRequestOf(Acme/Widgets, 5) = %+v, %v, %v; want acme/widgets#5", pull, found, err)
+	}
+	if pull.Repo != "acme/widgets" || pull.Number != 5 || pull.BaseRef != "release" || pull.HeadSHA != headOfFive ||
+		pull.MergeCommitSHA != mergeOfFive || !sameTime(pull.MergedAt, mergedAt) || pull.AttributionRule != AttributionRuleVersion {
+		t.Fatalf("MergedPullRequestOf(Acme/Widgets, 5) = %+v, want #5's base, final head, merge commit, time and rule", pull)
+	}
+	for _, none := range []struct {
+		repo   string
+		number int
+	}{{"acme/widgets", 6}, {"acme/widgets", 7}, {"acme/tools", 5}} {
+		if pull, found, err := MergedPullRequestOf(ctx, pool, none.repo, none.number); err != nil || found {
+			t.Fatalf("MergedPullRequestOf(%s, %d) = %+v, %v, %v; want no merged pull request", none.repo, none.number, pull, found, err)
+		}
+	}
+}

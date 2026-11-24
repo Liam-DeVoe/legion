@@ -940,11 +940,13 @@ func TestResultOfAnIssueUnderARepositorysOldNameIsRefusedAtTheCanonicalName(t *t
 // linkedGitHub is the GitHub the tests of a repository the issue links a pull request in read
 // (TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn,
 // TestAResultAtTheHeadOfALinkedPullRequestFollowsThatHead,
-// TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepository and the
-// tests of results_linked_test.go). It is resultsGitHubHolding's fixture with five differences:
-// each repository holds commits of its own, each pull request an issue links answers its state,
-// the read-through of a commit names the pull request heads says that commit is the head of,
-// each repository's compare read answers from the commits each of its branches carries, and
+// TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepository,
+// TestAResultBeforeTheLinkedMergeDoesNotCount and the tests of results_linked_test.go). It is
+// resultsGitHubHolding's fixture with five differences: each repository holds commits of its own,
+// each pull request an issue links answers its state, and a merged one the whole pull request
+// where the test names it (merged), the read-through of a commit names the pull request heads
+// says that commit is the head of, each repository's compare read answers from the commits each
+// of its branches carries, and
 // each read of a pull request's state, each ask of the read-through and each compare read is
 // counted by repository. Eight lists take a repository out of the App's reach: one the App is not
 // installed on, one whose installation token GitHub will not mint, one whose commit reads GitHub
@@ -960,6 +962,12 @@ type linkedGitHub struct {
 	// keyed `owner/repo#n`: open, merged, or closed, which is closed without a merge. A pull
 	// request it does not name is GitHub's 404.
 	pulls map[string]string
+	// merged is, for a pull request pulls names merged, keyed `owner/repo#n`, the whole pull request
+	// GET /repos/{owner}/{repo}/pulls/{number} answers in place of the short merged body below: the
+	// read that refreshes a merged row gives Dispatch its merge commit and its time from it. A
+	// merged pull request it does not name answers the short body. A test that adds to it after
+	// the server starts holds mu.
+	merged map[string]linkedMerge
 	// heads is the open pull request whose head each commit is, keyed `owner/repo@sha`, which
 	// GET /repos/{owner}/{repo}/commits/{sha}/pulls names. A commit it does not name heads no
 	// pull request.
@@ -1004,6 +1012,32 @@ type linkedGitHub struct {
 	// pull requests of a commit (GET /repos/{owner}/{repo}/commits/{sha}/pulls), and compares
 	// the compare reads, by repository.
 	stateReads, readThroughs, compares map[string]int
+}
+
+// linkedMerge is a merged pull request as GitHub answers its read in full (linkedGitHub.merged): its
+// title, the branch and final head it merged from, the base it merged into, its merge commit and
+// when it merged.
+type linkedMerge struct {
+	title, headRef, headSHA, base, mergeCommit, mergedAt string
+}
+
+// serve answers the read of pull request number of repo with merge. Its updated_at is the time of
+// the read, so a refresh of a row whose last event is older applies.
+func (merge linkedMerge) serve(w http.ResponseWriter, repo, number string) {
+	body, err := json.Marshal(map[string]any{
+		"number": json.Number(number), "title": merge.title, "body": "",
+		"html_url": fmt.Sprintf("https://github.com/%s/pull/%s", repo, number),
+		"user":     map[string]any{"login": "alice"}, "labels": []any{},
+		"state": "closed", "merged": true, "merged_at": merge.mergedAt, "merge_commit_sha": merge.mergeCommit,
+		"created_at": "2026-11-13T00:00:00Z", "updated_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"head": map[string]any{"ref": merge.headRef, "sha": merge.headSHA, "repo": map[string]any{"full_name": repo}},
+		"base": map[string]any{"ref": merge.base},
+	})
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	_, _ = w.Write(body)
 }
 
 // counts is how often each repository's pull request state was read and the read-through asked
@@ -1109,10 +1143,18 @@ func linkedRepositoriesGitHub(t *testing.T, linked *linkedGitHub) (http.Handler,
 			fmt.Fprint(w, `{"message":"Server Error"}`)
 			return
 		}
-		switch linked.pulls[repo+"#"+number] {
+		key := repo + "#" + number
+		linked.mu.Lock()
+		merge, full := linked.merged[key]
+		linked.mu.Unlock()
+		switch linked.pulls[key] {
 		case "open":
 			fmt.Fprintf(w, `{"number":%s,"state":"open","merged":false,"merged_at":null}`, number)
 		case "merged":
+			if full {
+				merge.serve(w, repo, number)
+				return
+			}
 			fmt.Fprintf(w, `{"number":%s,"state":"closed","merged":true,"merged_at":"2026-11-14T00:00:00Z"}`, number)
 		case "closed":
 			fmt.Fprintf(w, `{"number":%s,"state":"closed","merged":false,"merged_at":null}`, number)
