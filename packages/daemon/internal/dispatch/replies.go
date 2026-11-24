@@ -11,7 +11,7 @@ import (
 // delivery went to (packages/envoy/internal/dispatch/api message_delivery.go replyMessage,
 // comment_delivery.go replyComment), and an answer reads as the agent's.
 
-// Comment is a comment as an ask read lists it: its id, its author and its body.
+// Comment is a comment as an ask's or a thread's read lists it: its id, its author and its body.
 type Comment struct {
 	ID     string `json:"id"`
 	Author Actor  `json:"author"`
@@ -25,6 +25,13 @@ type Ask struct {
 	IssueKey *string
 	Author   Actor
 	Replies  []Comment
+}
+
+// Thread is a comment's thread as GET /api/v1/comments/{id} reads it: the comment, its root, and
+// every reply under it, oldest first.
+type Thread struct {
+	Root    Comment
+	Replies []Comment
 }
 
 // ReplyToMessage answers a targeted message's delivery attempt as session, the attempt's own
@@ -62,6 +69,18 @@ func (c *HTTPClient) ReplyOnAsk(ctx context.Context, issue, askID, session, body
 	}{Actor: sessionActor(session), Body: body, AskID: askID}, nil)
 }
 
+// ReplyInThread comments in the thread of commentID on issue as session (POST
+// /api/v1/issues/{key}/comments with reply_to): Dispatch climbs reply_to to the thread's root and
+// records commentID as the comment the reply answers. Dispatch keeps no key for it, so a caller
+// reads the thread first (Thread) to post it once.
+func (c *HTTPClient) ReplyInThread(ctx context.Context, issue, commentID, session, body string) error {
+	return c.request(ctx, http.MethodPost, "/api/v1/issues/"+url.PathEscape(issue)+"/comments", struct {
+		Actor   actor  `json:"actor"`
+		Body    string `json:"body"`
+		ReplyTo string `json:"reply_to"`
+	}{Actor: sessionActor(session), Body: body, ReplyTo: commentID}, nil)
+}
+
 // Ask reads an ask with its replies (GET /api/v1/asks/{id}).
 func (c *HTTPClient) Ask(ctx context.Context, askID string) (Ask, error) {
 	var response struct {
@@ -76,4 +95,16 @@ func (c *HTTPClient) Ask(ctx context.Context, askID string) (Ask, error) {
 		return Ask{}, err
 	}
 	return Ask{ID: response.Ask.ID, IssueKey: response.Ask.IssueKey, Author: response.Ask.Author, Replies: response.Replies}, nil
+}
+
+// Thread reads a comment with every reply in its thread (GET /api/v1/comments/{id}).
+func (c *HTTPClient) Thread(ctx context.Context, commentID string) (Thread, error) {
+	var response struct {
+		Comment Comment   `json:"comment"`
+		Replies []Comment `json:"replies"`
+	}
+	if err := c.request(ctx, http.MethodGet, "/api/v1/comments/"+url.PathEscape(commentID), nil, &response); err != nil {
+		return Thread{}, err
+	}
+	return Thread{Root: response.Comment, Replies: response.Replies}, nil
 }

@@ -57,8 +57,8 @@ const (
 	// NeedsWork is a reply that the message asks for work the agent's tools cannot do, such as work
 	// needing its working copy or a run of its phase; nothing starts.
 	NeedsWork Kind = "needs_work"
-	// None is a reply that the message asks nothing of the agent. Only a decision message and an
-	// agent's Envoy message may get it (Request.MayAskNothing).
+	// None is a reply that the message asks nothing of the agent. Only a decision message, a reply
+	// in a comment thread and an agent's Envoy message may get it (Request.MayAskNothing).
 	None Kind = "none"
 )
 
@@ -164,8 +164,8 @@ type Request struct {
 	// its phase, its pull request's state and head), as the daemon writes it.
 	ChangeNote string
 	Question   Question
-	// MayAskNothing is a decision message or an agent's Envoy message, which may carry a question
-	// or not: only then may the agent reply None.
+	// MayAskNothing is a decision message, a reply in a comment thread or an agent's Envoy message,
+	// which may carry a question or not: only then may the agent reply None.
 	MayAskNothing bool
 	// Earlier are the gh calls an earlier run of this question already made, in seq order, each
 	// with its result; a call with no Result is of unknown outcome. New calls are numbered after

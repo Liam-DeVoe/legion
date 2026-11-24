@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -28,6 +29,10 @@ const (
 	// KindAskReply is a comment on the thread of an ask the agent opened, or a person's answer to
 	// that ask, answered on that thread.
 	KindAskReply Kind = "ask_reply"
+	// KindThreadReply is a reply in a comment thread that mentions nobody and follows the agent's
+	// comment: the newest comment before it is the agent's, or a person's in a thread whose root is
+	// the agent's (threadReplySkip). It is answered in that thread, and may ask nothing.
+	KindThreadReply Kind = "thread_reply"
 	// KindEnvoy is another agent's Envoy message, answered by a direct message back to its sender.
 	KindEnvoy Kind = "envoy"
 )
@@ -60,9 +65,11 @@ type Origin struct {
 	CommentID string
 	Target    string
 	Attempt   int
-	// Issue and AskID are an ask reply's thread.
-	Issue string
-	AskID string
+	// Issue and AskID are an ask reply's thread; Issue, CommentID and Thread a thread reply's: the
+	// issue, the reply, and the root of its thread.
+	Issue  string
+	AskID  string
+	Thread string
 	// Sender and EventID are an Envoy message's: who to answer and the envelope answered.
 	Sender  string
 	EventID string
@@ -85,9 +92,11 @@ type Verdict struct {
 	Because  string
 }
 
-// AskReader reads an ask's author (Dispatch.Ask).
-type AskReader interface {
+// Reader reads what Classify decides a hand-off by: an ask's author (Dispatch.Ask), and the
+// thread of a comment a reply is in (Dispatch.Thread).
+type Reader interface {
 	Ask(ctx context.Context, askID string) (dispatch.Ask, error)
+	Thread(ctx context.Context, commentID string) (dispatch.Thread, error)
 }
 
 // QuestionID is a question's own id: 32 hex digits of a hash of the project, its identity and the
@@ -100,18 +109,21 @@ func QuestionID(project, identity, token string) string {
 
 // Classify decides, before any model call, what a hand-off for conv is. Answered: a Dispatch
 // message sent to the agent; a comment that mentions it (its mention's delivery); a comment on the
-// thread of an ask it opened (a follower that did not open the ask answers nothing); another
-// agent's Envoy message, which may ask nothing. A decision (Decision), whose question part, if any,
-// is answered too and may ask nothing: a person's answer to a question the agent asked, and a
-// person's reply on the thread of an ask it opened that hands the ask back to it
-// (intake.DispatchEvent.HandsTurnBack). Never: an edit, a resolution, a delivery receipt, a claim,
-// an issue event, the agent's own hand-back of an approval request to the person, an answer to an
-// approval request (its document's review reaches the architect), a reply the agent already got
-// (*.answered), the daemon's own notices and posts, the broker's (source envoy), and anything
-// carrying the loop's own marker (its dedupe key, the `<!-- legion-answer:` marker, a Legion footer
-// with an `answer` key), which an agent's message carrying it is delivered into that agent's
-// conversation for instead (Delivery). The ask's author is read from Dispatch.
-func Classify(ctx context.Context, h intake.Handoff, conv store.AgentConversation, asks AskReader) (Verdict, error) {
+// thread of an ask it opened (a follower that did not open the ask answers nothing); a reply in a
+// comment thread that mentions nobody, which the one agent the thread names answers
+// (threadReplySkip) and which may ask nothing; another agent's Envoy message, which may ask
+// nothing. A decision (Decision), whose question part, if any, is answered too and may ask
+// nothing: a person's answer to a question the agent asked, and a person's reply on the thread of
+// an ask it opened that hands the ask back to it (intake.DispatchEvent.HandsTurnBack). Never: a
+// root comment that does not mention the agent, an edit, a resolution, a delivery receipt, a
+// claim, an issue event, the agent's own hand-back of an approval request to the person, an
+// answer to an approval request (its document's review reaches the architect), a reply the agent
+// already got (*.answered), the daemon's own notices and posts, the broker's (source envoy), and
+// anything carrying the loop's own marker (its dedupe key, the `<!-- legion-answer:` marker, a
+// Legion footer with an `answer` key), which an agent's message carrying it is delivered into
+// that agent's conversation for instead (Delivery). The ask's author and the reply's thread are
+// read from Dispatch.
+func Classify(ctx context.Context, h intake.Handoff, conv store.AgentConversation, reader Reader) (Verdict, error) {
 	env := h.Envelope
 	switch {
 	case strings.Contains(env.DedupeKey, answerDedupePrefix) || carriesLoopMark(env.PayloadSummary) || carriesLoopMark(env.Payload):
@@ -134,7 +146,7 @@ func Classify(ctx context.Context, h intake.Handoff, conv store.AgentConversatio
 	case env.Source == "envoy":
 		return Verdict{Because: "the broker's own message"}, nil
 	case env.Source == "dispatch":
-		return classifyDispatch(ctx, h, conv, asks)
+		return classifyDispatch(ctx, h, conv, reader)
 	case env.Source == "agent" && env.SourceSession != "":
 		origin, err := ReadOrigin(h)
 		if err != nil {
@@ -146,7 +158,7 @@ func Classify(ctx context.Context, h intake.Handoff, conv store.AgentConversatio
 	}
 }
 
-func classifyDispatch(ctx context.Context, h intake.Handoff, conv store.AgentConversation, asks AskReader) (Verdict, error) {
+func classifyDispatch(ctx context.Context, h intake.Handoff, conv store.AgentConversation, reader Reader) (Verdict, error) {
 	event, err := intake.DispatchOf(h.Envelope)
 	if err != nil {
 		return Verdict{Because: err.Error()}, nil
@@ -158,7 +170,7 @@ func classifyDispatch(ctx context.Context, h intake.Handoff, conv store.AgentCon
 		return Verdict{Because: "the daemon's own post"}, nil
 	}
 	ownAsk := func(askID string) (bool, error) {
-		ask, err := asks.Ask(ctx, askID)
+		ask, err := reader.Ask(ctx, askID)
 		if err != nil {
 			return false, fmt.Errorf("read the author of ask %s: %w", askID, err)
 		}
@@ -172,8 +184,16 @@ func classifyDispatch(ctx context.Context, h intake.Handoff, conv store.AgentCon
 		}
 	case "comment.created":
 		if event.Payload.AskID == nil {
-			if event.Delivery == nil {
-				return Verdict{Because: "a comment that neither mentions the agent nor replies on its ask"}, nil
+			switch {
+			case event.Delivery != nil:
+				// A comment that mentions the agent, answered through its mention's delivery.
+			case event.Payload.ReplyTo == nil:
+				return Verdict{Because: "a root comment that does not mention the agent"}, nil
+			default:
+				because, err := threadReplySkip(ctx, h, event, reader)
+				if err != nil || because != "" {
+					return Verdict{Because: because}, err
+				}
 			}
 			break
 		}
@@ -220,6 +240,49 @@ func classifyDispatch(ctx context.Context, h intake.Handoff, conv store.AgentCon
 		origin.MayAskNothing = true
 	}
 	return Verdict{Question: &origin, Decision: decision}, nil
+}
+
+// threadReplySkip is why the agent h is for does not answer event, a reply in the comment thread
+// of event.Payload.ReplyTo that delivers it no mention, or "" when it answers it. The agent never
+// answers its own reply, nor one that mentions anyone, which is answered only as a mention by
+// each agent it mentions, nor one in a document's thread, which has no issue to answer on. Else
+// the thread is read, and its answerer is the author of the newest comment before the reply when
+// an agent wrote it, else the author of the thread's root when an agent wrote that, else nobody:
+// the loop's own answer, posted in the agent's session, is the agent's comment. Dispatch sends a
+// person's reply to every agent that wrote in the thread, each hand-off a question of its own, so
+// the answerer is the same on every agent's hand-off, and the agent answers only when it is that
+// answerer, compared as ownAsk compares an ask's author. A failed read is an error, so the
+// hand-off is tried again.
+func threadReplySkip(ctx context.Context, h intake.Handoff, event intake.DispatchEvent, reader Reader) (string, error) {
+	p := event.Payload
+	switch {
+	case event.Actor.Kind == "session" && event.Actor.ID == h.TargetSession:
+		return "the agent's own reply in a comment thread", nil
+	case len(p.Mentions) > 0:
+		return "a reply in a comment thread that mentions someone, answered only as a mention by each agent it mentions", nil
+	case eventIssue(event) == "":
+		return "a reply in a document's comment thread, which has no issue thread to answer on", nil
+	}
+	root := *p.ReplyTo
+	thread, err := reader.Thread(ctx, root)
+	if err != nil {
+		return "", fmt.Errorf("read the comment thread of %s: %w", root, err)
+	}
+	at := slices.IndexFunc(thread.Replies, func(c dispatch.Comment) bool { return c.ID == p.ID })
+	if at < 0 {
+		return fmt.Sprintf("a reply the comment thread of %s does not hold", root), nil
+	}
+	answerer, wrote := thread.Root.Author, "root"
+	if at > 0 && thread.Replies[at-1].Author.Kind == "session" {
+		answerer, wrote = thread.Replies[at-1].Author, "newest comment before the reply"
+	}
+	switch {
+	case answerer.Kind != "session":
+		return "a reply in a comment thread whose root and newest comment before the reply no agent wrote", nil
+	case answerer.ID != h.TargetSession:
+		return fmt.Sprintf("a reply in a comment thread that session %s answers, as the author of its %s", answerer.ID, wrote), nil
+	}
+	return "", nil
 }
 
 // readDecision is the decision a person's answer to the agent's ask, or their reply handing it
@@ -343,6 +406,13 @@ func ReadOrigin(h intake.Handoff) (Origin, error) {
 		o.Where, o.Ref = "a reply on the agent's ask "+*p.AskID+" on "+issue, "dispatch://"+issue+"/comment/"+p.ID
 		// A person's reply that hands the ask back to the agent is a decision, which may ask nothing.
 		o.MayAskNothing = event.HandsTurnBack()
+	case event.Type == "comment.created" && event.Delivery == nil && p.AskID == nil && p.ReplyTo != nil:
+		if issue == "" {
+			return Origin{}, fmt.Errorf("the reply %s is in a document's comment thread, which has no issue thread to answer on", p.ID)
+		}
+		// A reply in a thread may answer what came before it rather than ask: it may ask nothing.
+		o.Kind, o.CommentID, o.Thread, o.MayAskNothing = KindThreadReply, p.ID, *p.ReplyTo, true
+		o.Where, o.Ref = "a reply in the comment thread of "+*p.ReplyTo+" on "+issue, "dispatch://"+issue+"/comment/"+p.ID
 	case event.Type == "ask.answered":
 		if issue == "" {
 			return Origin{}, fmt.Errorf("the answer to %s is on a document's ask, which has no issue thread to answer on", p.ID)

@@ -2,6 +2,8 @@ package answerloop
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -9,23 +11,63 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
-// askAuthors answers each ask's author.
-type askAuthors map[string]string
+// reads is what Classify reads of Dispatch: each ask's author, and each comment's thread by its
+// root. A comment it holds no thread of is a read that fails.
+type reads struct {
+	asks    map[string]string
+	threads map[string]dispatch.Thread
+}
 
-func (a askAuthors) Ask(_ context.Context, id string) (dispatch.Ask, error) {
-	return dispatch.Ask{ID: id, IssueKey: new("LEGION-9"), Author: dispatch.Actor{Kind: "session", ID: a[id]}}, nil
+func (r reads) Ask(_ context.Context, id string) (dispatch.Ask, error) {
+	return dispatch.Ask{ID: id, IssueKey: new("LEGION-9"), Author: dispatch.Actor{Kind: "session", ID: r.asks[id]}}, nil
+}
+
+func (r reads) Thread(_ context.Context, id string) (dispatch.Thread, error) {
+	thread, ok := r.threads[id]
+	if !ok {
+		return dispatch.Thread{}, fmt.Errorf("Dispatch answered 503 for the comment %s", id)
+	}
+	return thread, nil
+}
+
+// thread is the thread of the comment root, which author wrote, with each reply in order:
+// alternately its id and its author.
+func thread(root string, author intake.DispatchActor, replies ...any) dispatch.Thread {
+	t := dispatch.Thread{Root: dispatch.Comment{ID: root, Author: dispatch.Actor{Kind: author.Kind, ID: author.ID}, Body: "root"}}
+	for i := 0; i < len(replies); i += 2 {
+		by := replies[i+1].(intake.DispatchActor)
+		t.Replies = append(t.Replies, dispatch.Comment{ID: replies[i].(string), Author: dispatch.Actor{Kind: by.Kind, ID: by.ID}, Body: "reply"})
+	}
+	return t
 }
 
 // Every kind of hand-off is classified before any model call: what the agent answers (a message
-// sent to it, a comment mentioning it, a reply on an ask it opened, another agent's Envoy message),
-// the decisions (a person's answer to its ask, a person's reply that hands its ask back to it), each
-// answered too when it asks something and allowed to ask nothing, and everything it never answers.
+// sent to it, a comment mentioning it, a reply on an ask it opened, a reply in a comment thread
+// whose newest earlier comment it wrote or, after a person's, whose root it wrote, another
+// agent's Envoy message), the decisions (a person's answer to its ask, a person's reply that
+// hands its ask back to it), each answered too when it asks something and allowed to ask
+// nothing, and everything it never answers.
 func TestEveryHandoffIsClassifiedBeforeAnyModelCall(t *testing.T) {
 	const ownAsk, othersAsk = "a-own", "a-other"
-	asks := askAuthors{ownAsk: "ses_tester", othersAsk: "ses_reviewer"}
 	agent := intake.DispatchActor{Kind: "session", ID: "ses_asker"}
 	self := intake.DispatchActor{Kind: "session", ID: "ses_tester"}
+	reviewer := intake.DispatchActor{Kind: "session", ID: "ses_reviewer"}
 	daemon := intake.DispatchActor{Kind: "session", ID: "legion-daemon:LEGION"}
+	reader := reads{asks: map[string]string{ownAsk: "ses_tester", othersAsk: "ses_reviewer"}, threads: map[string]dispatch.Thread{
+		// The agent's root, under it people's replies and one of the agent's own.
+		"r-own": thread("r-own", self, "c-5", person, "c-16", person, "c-17", self, "c-18", person),
+		// A person's root, the agent's reply, and a person's reply after it.
+		"r-person": thread("r-person", person, "c-19", self, "c-20", person),
+		// The agent's root, the reviewer's reply, and a person's reply after it.
+		"r-reviewed": thread("r-reviewed", self, "c-21", reviewer, "c-22", person),
+		// A person's root, the loop's answer in the agent's session, and a person's reply after it.
+		"r-answered": thread("r-answered", person, "c-23", self, "c-24", person),
+		// The agent's root, and two people's replies under it.
+		"r-people": thread("r-people", self, "c-25", person, "c-26", person),
+		// A thread only people wrote in.
+		"r-nobody": thread("r-nobody", person, "c-27", person),
+	}}
+	reader.threads["r-answered"].Replies[0].Body = "Because B.\n\n<!-- legion-answer:0123456789abcdef0123456789abcdef -->"
 	comment := func(id string, ask *string, body string) map[string]any {
 		return map[string]any{"id": id, "issue_key": "LEGION-9", "body": body, "ask_id": ask}
 	}
@@ -33,12 +75,17 @@ func TestEveryHandoffIsClassifiedBeforeAnyModelCall(t *testing.T) {
 	reply := func(id, waitingOn, body string) map[string]any {
 		return map[string]any{"id": id, "issue_key": "LEGION-9", "body": body, "ask_id": ownAsk, "reply_to": nil, "ask_waiting_on": waitingOn}
 	}
+	threadReply := func(id, root, body string) map[string]any {
+		return map[string]any{"id": id, "issue_key": "LEGION-9", "body": body, "ask_id": nil, "reply_to": root}
+	}
 	for _, tc := range []struct {
 		name     string
 		handoff  intake.Handoff
 		kind     Kind // "" when it is no question
 		decision bool
 		maySkip  bool
+		fails    bool   // the read fails, so the hand-off is tried again
+		because  string // part of why it is no question, where the row holds the reason too
 	}{
 		{name: "a message sent to the agent", handoff: messageHandoff("ses_tester", "m-1", 1, "Why plum?"), kind: KindMessage},
 		{name: "a message on the conversation page", kind: KindMessage, handoff: dispatchHandoff("ses_tester", frame("message.created", person, nil,
@@ -63,8 +110,36 @@ func TestEveryHandoffIsClassifiedBeforeAnyModelCall(t *testing.T) {
 			reply("c-13", "human", "Because B.\n\n<!-- legion-answer:0123456789abcdef0123456789abcdef -->")))},
 		{name: "a reply on an ask the agent follows", handoff: dispatchHandoff("ses_tester",
 			bare("comment.created", person, new("LEGION-9"), comment("c-4", new(othersAsk), "Why?")))},
-		{name: "a reply on the agent's comment thread", handoff: dispatchHandoff("ses_tester",
-			bare("comment.created", person, new("LEGION-9"), comment("c-5", nil, "ok")))},
+		{name: "a reply on the agent's comment thread", kind: KindThreadReply, maySkip: true, handoff: dispatchHandoff("ses_tester",
+			bare("comment.created", person, new("LEGION-9"), threadReply("c-5", "r-own", "ok")))},
+		{name: "a root comment that mentions nobody", because: "a root comment", handoff: dispatchHandoff("ses_tester",
+			bare("comment.created", person, new("LEGION-9"), comment("c-15", nil, "ok")))},
+		{name: "a reply after the agent's own in a thread", kind: KindThreadReply, maySkip: true, handoff: dispatchHandoff("ses_tester",
+			bare("comment.created", person, new("LEGION-9"), threadReply("c-20", "r-person", "Why B?")))},
+		{name: "a reply after another agent's on the agent's thread", because: "session ses_reviewer answers", handoff: dispatchHandoff("ses_tester",
+			bare("comment.created", person, new("LEGION-9"), threadReply("c-22", "r-reviewed", "Why B?")))},
+		{name: "the same reply to the agent that wrote the comment before it", kind: KindThreadReply, maySkip: true, handoff: dispatchHandoff("ses_reviewer",
+			bare("comment.created", person, new("LEGION-9"), threadReply("c-22", "r-reviewed", "Why B?")))},
+		{name: "a reply after the loop's own answer", kind: KindThreadReply, maySkip: true, handoff: dispatchHandoff("ses_tester",
+			bare("comment.created", person, new("LEGION-9"), threadReply("c-24", "r-answered", "And C?")))},
+		{name: "a reply after a person's on the agent's thread", kind: KindThreadReply, maySkip: true, handoff: dispatchHandoff("ses_tester",
+			bare("comment.created", person, new("LEGION-9"), threadReply("c-26", "r-people", "Agreed?")))},
+		{name: "a reply in a thread only people wrote in", because: "no agent wrote", handoff: dispatchHandoff("ses_tester",
+			bare("comment.created", person, new("LEGION-9"), threadReply("c-27", "r-nobody", "Agreed?")))},
+		{name: "the agent's own reply on its comment thread", because: "the agent's own reply", handoff: dispatchHandoff("ses_tester",
+			bare("comment.created", self, new("LEGION-9"), threadReply("c-17", "r-own", "Still plum.")))},
+		{name: "a reply on the agent's thread that mentions someone else", because: "mentions someone", handoff: dispatchHandoff("ses_tester",
+			bare("comment.created", person, new("LEGION-9"), func() map[string]any {
+				p := threadReply("c-16", "r-own", "@reviewer why?")
+				p["mentions"] = []any{map[string]any{"target": "role:legion-legion-legion-9-reviewer", "session_id": "ses_reviewer"}}
+				return p
+			}()))},
+		{name: "a reply the thread's read does not hold", because: "does not hold", handoff: dispatchHandoff("ses_tester",
+			bare("comment.created", person, new("LEGION-9"), threadReply("c-28", "r-own", "Why?")))},
+		{name: "a reply in a document's comment thread", because: "document's comment thread", handoff: dispatchHandoff("ses_tester",
+			bare("comment.created", person, nil, map[string]any{"id": "c-29", "issue_key": nil, "artifact_id": "doc-1", "body": "Why?", "ask_id": nil, "reply_to": "r-own"}))},
+		{name: "a reply in a thread whose read fails", fails: true, handoff: dispatchHandoff("ses_tester",
+			bare("comment.created", person, new("LEGION-9"), threadReply("c-30", "r-unread", "Why?")))},
 		{name: "a person's answer to the agent's ask that asks", kind: KindAskReply, decision: true, maySkip: true,
 			handoff: dispatchHandoff("ses_tester", answeredEvent(34, person, ownAsk, "question", []string{"B"}, new("Use B. Why A?")))},
 		{name: "a person's answer to the agent's ask with options alone", decision: true,
@@ -107,7 +182,13 @@ func TestEveryHandoffIsClassifiedBeforeAnyModelCall(t *testing.T) {
 		}()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			verdict, err := Classify(context.Background(), tc.handoff, store.AgentConversation{Session: "ses_tester"}, asks)
+			verdict, err := Classify(context.Background(), tc.handoff, store.AgentConversation{Session: "ses_tester"}, reader)
+			if tc.fails {
+				if err == nil {
+					t.Fatalf("classified as %+v; want the read's error, so the hand-off is tried again", verdict)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -120,6 +201,8 @@ func TestEveryHandoffIsClassifiedBeforeAnyModelCall(t *testing.T) {
 				t.Fatalf("question = %+v; want kind %s, may ask nothing %t", *verdict.Question, tc.kind, tc.maySkip)
 			case tc.decision != (verdict.Decision != nil):
 				t.Fatalf("decision = %t; want %t", verdict.Decision != nil, tc.decision)
+			case !strings.Contains(verdict.Because, tc.because):
+				t.Fatalf("not answered because %q; want %q among the reasons", verdict.Because, tc.because)
 			}
 		})
 	}
@@ -132,7 +215,7 @@ func TestEveryHandoffIsClassifiedBeforeAnyModelCall(t *testing.T) {
 // alone, since that is what says whether the parked-decision relay sends it; a reply names none.
 // Both name the issue the ask stands on, which is the issue that relay reads (Decision.AskIssue).
 func TestADecisionNamesItsIDThePersonWhereAndWhat(t *testing.T) {
-	asks := askAuthors{askID: "ses_tester"}
+	asks := reads{asks: map[string]string{askID: "ses_tester"}}
 	conv := store.AgentConversation{Session: "ses_tester", Issue: "LEGION-9"}
 	classify := func(h intake.Handoff) Verdict {
 		t.Helper()
@@ -219,5 +302,26 @@ func TestAQuestionsAskerIsTheLoginOrTheSessionWithItsTitle(t *testing.T) {
 	}
 	if agent.Asker != "session:ses_asker (LEGION-9 implementer)" {
 		t.Fatalf("Envoy origin with a stamped sender asker %q; want the session and its title", agent.Asker)
+	}
+}
+
+// A reply in a comment thread is answered in that thread: its identity is the reply's, the model
+// may hear it asks nothing, and its answer is a reply to it on its issue, in the thread of its
+// root. A reply in a document's thread, which has no issue, is no question the loop answers.
+func TestAReplyInACommentThreadIsAnsweredInThatThread(t *testing.T) {
+	origin, err := ReadOrigin(dispatchHandoff("ses_tester", bare("comment.created", person, new("LEGION-9"),
+		map[string]any{"id": "c-2", "issue_key": "LEGION-9", "body": "Why plum?", "ask_id": nil, "reply_to": "c-1"})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Origin{Kind: KindThreadReply, Identity: "dispatch:c-2", Text: "Why plum?", Asker: "user:person@example.com",
+		Where: "a reply in the comment thread of c-1 on LEGION-9", Ref: "dispatch://LEGION-9/comment/c-2", MayAskNothing: true,
+		CommentID: "c-2", Issue: "LEGION-9", Thread: "c-1"}
+	if origin != want {
+		t.Fatalf("origin = %+v\nwant %+v", origin, want)
+	}
+	if origin, err := ReadOrigin(dispatchHandoff("ses_tester", bare("comment.created", person, nil,
+		map[string]any{"id": "c-3", "issue_key": nil, "artifact_id": "doc-1", "body": "Why?", "ask_id": nil, "reply_to": "c-1"}))); err == nil {
+		t.Fatalf("origin = %+v; want a reply in a document's thread refused", origin)
 	}
 }

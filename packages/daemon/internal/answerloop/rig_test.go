@@ -34,6 +34,7 @@ const (
 	project     = "legion"
 	testerToken = claim.Token("legion-legion-legion-9-tester")
 	askID       = "a0000000-0000-4000-8000-000000000001"
+	threadRoot  = "c0000000-0000-4000-8000-000000000001"
 )
 
 var testNow = time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
@@ -215,9 +216,11 @@ type rig struct {
 	mu       sync.Mutex
 	answer   func(req answer.Request) (answer.Reply, error)
 	requests []answer.Request
-	// ask is what GET /api/v1/asks/{id} answers; held makes a role publish 404 unclaimed.
-	ask  map[string]any
-	held bool
+	// ask is what GET /api/v1/asks/{id} answers, thread what GET /api/v1/comments/{id} does; held
+	// makes a role publish 404 unclaimed.
+	ask    map[string]any
+	thread map[string]any
+	held   bool
 	// tick moves the clock a millisecond each time it is read, so questions are received in order.
 	tick atomic.Int64
 }
@@ -246,11 +249,20 @@ func newRig(t *testing.T) *rig {
 		return answered(req, "Plum, from "+req.Question.Text), nil
 	}
 	r.ask = map[string]any{"ask": map[string]any{"id": askID, "issue_key": "LEGION-9", "author": map[string]any{"kind": "session", "id": "ses_tester"}}, "replies": []any{}}
+	r.thread = map[string]any{"comment": map[string]any{"id": threadRoot, "author": map[string]any{"kind": "session", "id": "ses_tester"}, "body": "Tested: plum."},
+		"replies": []any{map[string]any{"id": "c-3", "author": map[string]any{"kind": "user", "id": person.ID}, "body": "Why B?"}}}
 	r.dispatch = newStandIn(t, func(w http.ResponseWriter, req request) {
-		if req.Method == http.MethodGet && strings.HasPrefix(req.Path, "/api/v1/asks/") {
-			r.mu.Lock()
-			body, _ := json.Marshal(r.ask)
-			r.mu.Unlock()
+		var read map[string]any
+		r.mu.Lock()
+		switch {
+		case req.Method == http.MethodGet && strings.HasPrefix(req.Path, "/api/v1/asks/"):
+			read = r.ask
+		case req.Method == http.MethodGet && strings.HasPrefix(req.Path, "/api/v1/comments/"):
+			read = r.thread
+		}
+		body, _ := json.Marshal(read)
+		r.mu.Unlock()
+		if read != nil {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(body)
 			return
@@ -441,6 +453,13 @@ func envoyHandoff(topic, target, eventID, dedupeKey, text string) intake.Handoff
 		Envelope: intake.HandoffEnvelope{EventID: eventID, Source: "agent", SourceEventID: "s", SourceSession: "ses_asker", Topic: topic,
 			DedupeKey: dedupeKey, PayloadSummary: text, TraceID: "t"},
 	}
+}
+
+// threadReplyHandoff is a person's reply id with body in the comment thread of threadRoot, which
+// mentions nobody, as Dispatch's author route carries it to the agent that wrote in the thread.
+func threadReplyHandoff(session, id, body string) intake.Handoff {
+	return dispatchHandoff(session, bare("comment.created", person, new("LEGION-9"),
+		map[string]any{"id": id, "issue_key": "LEGION-9", "body": body, "ask_id": nil, "reply_to": threadRoot}))
 }
 
 // fileLines is the session file's content.

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -19,11 +20,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// askBy is an AskReader answering that askID was opened by session.
+// askBy is a Reader answering that askID was opened by session. It holds no comment's thread.
 type askBy struct{ session string }
 
 func (a askBy) Ask(_ context.Context, askID string) (dispatch.Ask, error) {
 	return dispatch.Ask{ID: askID, Author: dispatch.Actor{Kind: "session", ID: a.session}}, nil
+}
+
+func (a askBy) Thread(_ context.Context, commentID string) (dispatch.Thread, error) {
+	return dispatch.Thread{}, fmt.Errorf("no thread of comment %s", commentID)
 }
 
 // A phase worker is told to open its findings as an ask on the controller's report issue

@@ -341,11 +341,11 @@ func noAnswerNote(reason Reason, reply string) string {
 }
 
 // post posts q's reply where it was asked, in the agent's name, once: every route is safe to call
-// again (a delivery's reply route keeps one reply per attempt, the ask thread is read for the
-// question's marker first, an Envoy message carries the question's id as its idempotency key).
-// Then the question is passed on when it must be, and marked done. A post refused for good drops
-// the question and passes it on. While the project is paused nothing is posted or passed on
-// (answer.ErrPaused): q stays appended, and is posted after the resume.
+// again (a delivery's reply route keeps one reply per attempt, an ask's thread and a comment's
+// thread are read for the question's marker first, an Envoy message carries the question's id as
+// its idempotency key). Then the question is passed on when it must be, and marked done. A post
+// refused for good drops the question and passes it on. While the project is paused nothing is
+// posted or passed on (answer.ErrPaused): q stays appended, and is posted after the resume.
 //
 // The row holds the reason a question is passed on for before PassOn marks it passed: `legion
 // state` lists a passed question with its row's pass_reason (questionsForController), so a read
@@ -365,6 +365,8 @@ func (l *Loop) post(ctx context.Context, q store.AnswerQuestion, origin Origin) 
 		err = l.cfg.Dispatch.ReplyToComment(ctx, origin.CommentID, origin.Target, origin.Attempt, q.Session, body)
 	case KindAskReply:
 		err = l.postOnAsk(ctx, q, origin, body)
+	case KindThreadReply:
+		err = l.postInThread(ctx, q, origin, body)
 	case KindEnvoy:
 		err = l.cfg.Envoy.Send(ctx, notify.Message{Target: origin.Sender, SourceSession: q.Session, Text: body, InReplyTo: origin.EventID, IdempotencyKey: q.ID})
 	default:
@@ -402,14 +404,36 @@ func (l *Loop) postOnAsk(ctx context.Context, q store.AnswerQuestion, origin Ori
 	if err != nil {
 		return err
 	}
-	marker := AnswerMarker + q.ID + " -->"
-	for _, reply := range ask.Replies {
-		if reply.Author.Kind == "session" && reply.Author.ID == q.Session && strings.Contains(reply.Body, marker) {
-			l.cfg.Log.Info("answers: the ask's thread already holds the reply; not posted again", "question", q.ID, "comment", reply.ID)
-			return nil
-		}
+	if l.holdsAnswer(q, ask.Replies, "the ask's thread") {
+		return nil
 	}
 	return l.cfg.Dispatch.ReplyOnAsk(ctx, origin.Issue, origin.AskID, q.Session, body)
+}
+
+// postInThread replies to the question in its comment thread, unless the thread already holds
+// the agent's reply carrying the question's marker: a post the daemon stopped after is not made
+// twice.
+func (l *Loop) postInThread(ctx context.Context, q store.AnswerQuestion, origin Origin, body string) error {
+	thread, err := l.cfg.Dispatch.Thread(ctx, origin.Thread)
+	if err != nil {
+		return err
+	}
+	if l.holdsAnswer(q, thread.Replies, "the comment thread") {
+		return nil
+	}
+	return l.cfg.Dispatch.ReplyInThread(ctx, origin.Issue, origin.CommentID, q.Session, body)
+}
+
+// holdsAnswer is whether replies, those of where, hold the agent's reply carrying q's marker.
+func (l *Loop) holdsAnswer(q store.AnswerQuestion, replies []dispatch.Comment, where string) bool {
+	marker := AnswerMarker + q.ID + " -->"
+	for _, reply := range replies {
+		if reply.Author.Kind == "session" && reply.Author.ID == q.Session && strings.Contains(reply.Body, marker) {
+			l.cfg.Log.Info("answers: "+where+" already holds the reply; not posted again", "question", q.ID, "comment", reply.ID)
+			return true
+		}
+	}
+	return false
 }
 
 // refusedForGood is whether err is a refusal a retry would meet again: Dispatch's 4xx but a

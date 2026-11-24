@@ -66,9 +66,11 @@ type Store interface {
 // (*dispatch.HTTPClient).
 type Dispatch interface {
 	Ask(ctx context.Context, askID string) (dispatch.Ask, error)
+	Thread(ctx context.Context, commentID string) (dispatch.Thread, error)
 	ReplyToMessage(ctx context.Context, messageID string, attempt int, session, body string) error
 	ReplyToComment(ctx context.Context, commentID, target string, attempt int, session, body string) error
 	ReplyOnAsk(ctx context.Context, issue, askID, session, body string) error
+	ReplyInThread(ctx context.Context, issue, commentID, session, body string) error
 }
 
 // Envoy sends the loop's messages through the listener (*notify.HTTPPublisher): an answer to an

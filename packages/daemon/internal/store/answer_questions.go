@@ -39,10 +39,10 @@ const (
 // project token; its identity (dispatch:<message or comment id>, or an Envoy dedupe key), which
 // with the project and the agent's role token is what makes a later hand-off the same question;
 // the conversation that answers it (its session, role token, issue and role); where it came from
-// (Kind: message, mention, ask_reply, envoy); whether the agent may reply that it asks nothing;
-// the hand-off as received; its state; the reply decided for it (its kind, its text, why it is
-// passed on); whether a forward reached the running agent; how many hand-offs carried it; and when
-// it was first and last handed off and last changed.
+// (Kind: message, mention, ask_reply, thread_reply, envoy); whether the agent may reply that it
+// asks nothing; the hand-off as received; its state; the reply decided for it (its kind, its text,
+// why it is passed on); whether a forward reached the running agent; how many hand-offs carried
+// it; and when it was first and last handed off and last changed.
 type AnswerQuestion struct {
 	ID               string
 	Project          string

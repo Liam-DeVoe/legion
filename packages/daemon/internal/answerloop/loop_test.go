@@ -179,7 +179,8 @@ func answersAtTheBound(t *testing.T, bound int) {
 
 // Each kind of question is answered where it was asked, in the agent's name: a message and a
 // conversation-page message through their delivery attempt, a mention through its own, an ask
-// reply on the ask's thread with the question's marker, an Envoy message back to its sender in
+// reply on the ask's thread with the question's marker, a reply in a comment thread in that
+// thread, in reply to it, with the question's marker, an Envoy message back to its sender in
 // reply to its envelope, carrying no `handoff` field, so an answer to a sender that is stopped
 // too is handed to its daemon rather than refused; the loop's own marker, which the body ends
 // with, is what keeps that hand-off from being answered.
@@ -194,7 +195,7 @@ func TestEachAnswerIsPostedWhereItWasAskedAsTheAgent(t *testing.T) {
 	askReply := dispatchHandoff("ses_tester", bare("comment.created", person, new("LEGION-9"),
 		map[string]any{"id": "c-2", "issue_key": "LEGION-9", "body": "Why A?", "ask_id": askID}))
 	for _, h := range []intake.Handoff{messageHandoff("ses_tester", "m-1", 1, "Why?"), pageMessage, mention, askReply,
-		envoyHandoff("notifications.agent.ses_tester", "ses_tester", "evt-9", "agent.ses_tester.k9", "Which?")} {
+		threadReplyHandoff("ses_tester", "c-3", "Why B?"), envoyHandoff("notifications.agent.ses_tester", "ses_tester", "evt-9", "agent.ses_tester.k9", "Which?")} {
 		r.receive(h)
 	}
 	r.drain()
@@ -213,6 +214,7 @@ func TestEachAnswerIsPostedWhereItWasAskedAsTheAgent(t *testing.T) {
 		{"POST", "/api/v1/comments/c-1/reply", map[string]any{"actor": agent, "attempt": float64(2), "target": "role:" + string(testerToken),
 			"body": "Plum, from @tester why?" + marker("dispatch:c-1")}},
 		{"POST", "/api/v1/issues/LEGION-9/comments", map[string]any{"actor": agent, "ask_id": askID, "body": "Plum, from Why A?" + marker("dispatch:c-2")}},
+		{"POST", "/api/v1/issues/LEGION-9/comments", map[string]any{"actor": agent, "reply_to": "c-3", "body": "Plum, from Why B?" + marker("dispatch:c-3")}},
 	}
 	if got := r.dispatch.posts(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Dispatch posts:\n%s\nwant:\n%s", describe(got), describe(want))
@@ -227,7 +229,7 @@ func TestEachAnswerIsPostedWhereItWasAskedAsTheAgent(t *testing.T) {
 		t.Fatalf("decisions = %+v; want the person's reply on the agent's ask", r.rec.decisions)
 	}
 	for _, req := range r.requests {
-		if req.MayAskNothing != (req.Question.Text == "Why A?" || req.Question.Text == "Which?") {
+		if req.MayAskNothing != (req.Question.Text == "Why A?" || req.Question.Text == "Why B?" || req.Question.Text == "Which?") {
 			t.Errorf("question %q may ask nothing = %t", req.Question.Text, req.MayAskNothing)
 		}
 		if !strings.Contains(req.ChangeNote, "pull request #7 is merged") {
@@ -257,6 +259,58 @@ func TestAnAskThreadHoldingTheAnswerIsNotPostedAgain(t *testing.T) {
 	}
 	if got := r.only(); got.State != store.QuestionPosted || r.answerCount() != 0 {
 		t.Fatalf("question = %s after %d answers; want posted, never answered again", got.State, r.answerCount())
+	}
+}
+
+// A comment thread is read before the loop posts a reply there: a reply of the agent's carrying
+// the question's marker, one a post the daemon stopped after left, is not posted again.
+func TestACommentThreadHoldingTheAnswerIsNotPostedAgain(t *testing.T) {
+	r := newRig(t)
+	r.conversation("ses_tester", testerToken, 0)
+	r.receive(threadReplyHandoff("ses_tester", "c-3", "Why B?"))
+	q := r.only()
+	q.State, q.ReplyText, q.UpdatedAt = store.QuestionAppended, "Because B.", testNow
+	if err := r.st.UpdateQuestion(r.ctx, q, store.QuestionReceived); err != nil {
+		t.Fatal(err)
+	}
+	r.mu.Lock()
+	r.thread["replies"] = append(r.thread["replies"].([]any), map[string]any{"id": "c-4", "author": map[string]any{"kind": "session", "id": "ses_tester"},
+		"body": "Because B.\n\n" + AnswerMarker + q.ID + " -->"})
+	r.mu.Unlock()
+	r.restart()
+	r.drain()
+	if posts := r.dispatch.posts(); len(posts) != 0 {
+		t.Fatalf("Dispatch posts = %s; want none, the thread holds the answer", describe(posts))
+	}
+	if got := r.only(); got.State != store.QuestionPosted || r.answerCount() != 0 {
+		t.Fatalf("question = %s after %d answers; want posted, never answered again", got.State, r.answerCount())
+	}
+}
+
+// A reply in a comment thread may ask the agent nothing: the model is told it may say so, and a
+// reply of kind none is appended to the conversation and posts nothing in the thread.
+func TestAThreadReplyThatAsksNothingPostsNothing(t *testing.T) {
+	r := newRig(t)
+	path := r.conversation("ses_tester", testerToken, 0)
+	r.answer = func(req answer.Request) (answer.Reply, error) {
+		reply := answered(req, "Noted.")
+		reply.Kind = answer.None
+		return reply, nil
+	}
+	r.receive(threadReplyHandoff("ses_tester", "c-3", "Thanks, that settles it."))
+	r.drain()
+	q := r.only()
+	switch {
+	case q.State != store.QuestionDropped:
+		t.Fatalf("question = %s; want dropped", q.State)
+	case r.answerCount() != 1 || !r.requests[0].MayAskNothing:
+		t.Fatalf("the model was asked %d times, may ask nothing %t; want once, allowed to ask nothing", r.answerCount(), r.answerCount() == 1 && r.requests[0].MayAskNothing)
+	case len(r.dispatch.posts()) != 0 || len(r.listener.posts()) != 0:
+		t.Fatalf("posts = %s %s; want none", describe(r.dispatch.posts()), describe(r.listener.posts()))
+	case !strings.Contains(fileContent(t, path), "Thanks, that settles it."):
+		t.Fatalf("the conversation holds no exchange of the reply")
+	case len(r.rec.passed) != 0:
+		t.Fatalf("passed on = %+v; want nothing", r.rec.passed)
 	}
 }
 

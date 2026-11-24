@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 )
 
@@ -25,7 +26,7 @@ func strictBody(t *testing.T, r *http.Request, into any) {
 
 // Each answer is written as the agent's own session, on the route and with exactly the fields that
 // route's handler takes (packages/envoy/internal/dispatch/api: replyMessage, replyComment,
-// createComment).
+// createComment, the last for a reply on an ask's thread and for one in a comment's thread).
 func TestAnAnswerIsPostedAsTheAgentsSession(t *testing.T) {
 	type sessionActor struct {
 		Kind string `json:"kind"`
@@ -71,6 +72,18 @@ func TestAnAnswerIsPostedAsTheAgentsSession(t *testing.T) {
 				body.ReplyTo != nil || body.Body != "Fig." {
 				t.Fatalf("ask comment = %+v", body)
 			}
+		case "/api/v1/issues/LEGION-10/comments":
+			var body struct {
+				Body    string        `json:"body"`
+				ReplyTo *string       `json:"reply_to"`
+				AskID   *string       `json:"ask_id"`
+				Actor   *sessionActor `json:"actor"`
+			}
+			strictBody(t, r, &body)
+			if body.Actor == nil || *body.Actor != (sessionActor{"session", "ses_tester"}) || body.ReplyTo == nil || *body.ReplyTo != "c-6" ||
+				body.AskID != nil || body.Body != "Kiwi." {
+				t.Fatalf("thread comment = %+v", body)
+			}
 		default:
 			t.Fatalf("request %s %s", r.Method, r.URL.Path)
 		}
@@ -92,8 +105,11 @@ func TestAnAnswerIsPostedAsTheAgentsSession(t *testing.T) {
 	if err := client.ReplyOnAsk(ctx, "LEGION-9", "a-1", "ses_architect", "Fig."); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 3 {
-		t.Fatalf("routes called = %v, want all three", got)
+	if err := client.ReplyInThread(ctx, "LEGION-10", "c-6", "ses_tester", "Kiwi."); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("routes called = %v, want all four", got)
 	}
 }
 
@@ -118,5 +134,38 @@ func TestAnAskReadsWithItsAuthorAndReplies(t *testing.T) {
 	if ask.ID != "a-1" || ask.IssueKey == nil || *ask.IssueKey != "LEGION-9" || ask.Author != (Actor{"session", "ses_architect"}) ||
 		len(ask.Replies) != 1 || ask.Replies[0].Body != "Why?" || ask.Replies[0].Author.Kind != "user" {
 		t.Fatalf("ask = %+v", ask)
+	}
+}
+
+// A comment reads with every reply in its thread, oldest first, each with its id, its author and
+// its body: what the answer loop decides a reply in that thread by, and reads back before it
+// posts there.
+func TestACommentReadsWithItsThread(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBearer(t, r)
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/comments/c-1" {
+			t.Fatalf("request = %s %s, want GET /api/v1/comments/c-1", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"comment":{"id":"c-1","issue_key":"LEGION-9","artifact_id":null,"author":{"kind":"session","id":"ses_tester"},` +
+			`"body":"Tested: plum.","reply_to":null,"answers":null,"ask_id":null,"created_at":"2026-10-26T12:00:00.123456Z","mentions":[],"body_tree":{}},` +
+			`"replies":[{"id":"c-2","author":{"kind":"user","id":"p@example.com"},"body":"Why plum?","reply_to":"c-1","answers":"c-1",` +
+			`"created_at":"2026-10-26T12:01:00Z"},{"id":"c-3","author":{"kind":"session","id":"ses_reviewer"},"body":"Because.",` +
+			`"reply_to":"c-1","answers":"c-2","created_at":"2026-10-26T12:02:00Z"}]}`))
+	}))
+	defer server.Close()
+	thread, err := New(server.URL, dispatchToken).Thread(context.Background(), "c-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Thread{
+		Root: Comment{ID: "c-1", Author: Actor{"session", "ses_tester"}, Body: "Tested: plum."},
+		Replies: []Comment{
+			{ID: "c-2", Author: Actor{"user", "p@example.com"}, Body: "Why plum?"},
+			{ID: "c-3", Author: Actor{"session", "ses_reviewer"}, Body: "Because."},
+		},
+	}
+	if !reflect.DeepEqual(thread, want) {
+		t.Fatalf("thread = %+v\nwant %+v", thread, want)
 	}
 }

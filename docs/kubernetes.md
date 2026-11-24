@@ -1707,7 +1707,7 @@ The daemon never probes a host Oh My Pi for this: pods run the image's build, no
 ## The answer loop
 
 With the answer loop on, which `answers` in `legion.yaml` configures, the daemon answers a question to one of its agents that is not running
-— a Dispatch message sent to it, a Dispatch comment that mentions it, a reply on the thread of an ask it opened, another agent's Envoy message
+— a Dispatch message sent to it, a Dispatch comment that mentions it, a reply on the thread of an ask it opened, a reply in a Dispatch comment thread that follows its comment, another agent's Envoy message
 — in that agent's name, from the agent's own conversation, on the model that conversation last ran on.
 It adds the exchange to the conversation in the harness's own format, so the agent finds it there when it next resumes, and posts the reply where the question was asked.
 Without `answers` the daemon answers nothing and keeps none of the records below beyond its history of conversations, and a message to a stopped agent is refused as before.
@@ -1831,8 +1831,18 @@ when the agent it answers is stopped too, the listener hands that answer to its 
 
 - **Asked.**
   A Dispatch message sent to the agent; a Dispatch comment that mentions it;
-  a comment on the thread of an ask the agent opened (a session that only follows the ask is not asked); and another agent's Envoy message.
-  An Envoy message and a person's reply on the agent's ask may ask nothing, and then nothing is posted.
+  a comment on the thread of an ask the agent opened (a session that only follows the ask is not asked);
+  a reply in a Dispatch comment thread that mentions nobody (below); and another agent's Envoy message.
+  An Envoy message, a reply in a comment thread and a person's reply on the agent's ask may ask nothing, and then nothing is posted.
+
+- **A reply in a comment thread.**
+  A reply under a Dispatch comment, outside an ask's thread, that mentions nobody is a question for one agent alone, the one whose comment it follows:
+  the author of the newest comment before the reply when an agent wrote it, else the author of the thread's root when an agent wrote that, else nobody.
+  The loop's own answer is posted in the agent's session, so a reply under it follows the agent's comment.
+  Dispatch sends a person's reply to every agent that wrote in the thread, the copy of each stopped one reaches its daemon, and each daemon reads the thread (`GET /api/v1/comments/<root>`) and finds the same answerer, so that agent answers and every other skips the reply.
+  An agent never answers its own reply; a reply that mentions anyone is answered only as a mention, by each agent it mentions; and a reply in the thread of a document that no issue holds is not answered.
+  The answer is a reply in that thread, to the reply it answers (`POST /api/v1/issues/<key>/comments` with `reply_to`), and the loop reads the thread first, as it reads an ask's, so an answer it already posted is not posted again.
+  A failed read of the thread leaves the hand-off to be delivered again.
 
 - **Never asked**, decided before any model call:
   an edit, a resolution, a delivery receipt, a claim, an issue event, an ask's answer, the daemon's own notices and posts, the Envoy broker's own messages, and anything carrying the loop's own marker (its `legion-answer:` dedupe key, the `<!-- legion-answer:<id> -->` marker every reply it posts carries, or a Legion footer with an `answer` key), so the loop never answers itself.
@@ -1883,7 +1893,7 @@ when the agent it answers is stopped too, the listener hands that answer to its 
 
 - **The reply** is one JSON object the daemon checks, of four kinds:
   `answered`, posted as the answer; `not_answered` (the agent cannot answer from its conversation and what `gh` reads) and `needs_work` (the question asks for work only a running agent can do, which the agent says it cannot do now, never promising it), both posted and passed on;
-  and `none`, offered only for an Envoy message or a person's reply on the agent's ask, which posts nothing.
+  and `none`, offered only for an Envoy message, a reply in a comment thread or a person's reply on the agent's ask, which posts nothing.
   The form's own field descriptions tell the model the two rules its schema cannot hold a reply to: a `not_answered` or `needs_work` reply names what it needs, and every kind but `none` carries text.
   The daemon holds a reply to one more rule: the text of every kind but `none` is no placeholder, meaning one word of letters alone that is neither yes nor no and is no word of the agent's conversation, the question or the answer's `gh` results, raw JSON among them read with each escape such as `\n` as a space.
   The rule is that narrow so that a terse right answer passes: `No.`, a commit sha, or a marker such as `SBOM-ZINC-512`.
@@ -3447,9 +3457,9 @@ The loop marked each question and each decision passed in the transaction that q
 a deleted question is still listed in `questionsForController`, among the newest 100, for seven days from its pass, in the state this release serves a caller at contract 229 or later, and a deleted decision is not told again.
 
 **The four tables need no statement.**
-This release creates `answer_tool_calls` (`20261106214000_answer_tool_calls`), `agent_conversations` (`20261106214001_agent_conversations`), and `answer_questions` and `answer_spend` (`20261106214002_answer_questions`).
+This release creates `answer_tool_calls` (`20261106214000_answer_tool_calls`), `agent_conversations` (`20261106214001_agent_conversations`), and `answer_questions` and `answer_spend` (`20261106214002_answer_questions`), and adds `thread_reply` to the kinds `answer_questions` takes (`20261124021727_answer_questions_thread_reply`).
 An earlier daemon does not refuse a database that records migrations it does not know: its migrator applies each migration it embeds that the database has not recorded and compares nothing else (`Store.Migrate` in `store/store.go`), so it boots on that database and names none of the four tables.
-Leave them and their three `schema_version` rows as they are: a roll forward finds the three versions recorded, runs none of them again, and finds the conversations, the questions and the day's spend as this release left them.
+Leave them and their four `schema_version` rows as they are: a roll forward finds the four versions recorded, runs none of them again, and finds the conversations, the questions and the day's spend as this release left them.
 
 **A tmux daemon on `runtime.tmux.session_store: postgres` waits until it holds no session to resume.**
 Under that store this release tells every pane `OMP_SESSION_STORAGE=sql` and `OMP_SESSION_SQL_DSN_FILE`, so each pane's Oh My Pi session is a row of the session table, keyed by the path its file would have had.
@@ -3911,7 +3921,7 @@ The counts are those of the 147 migrations the tree of that run carried.
 A migration added after it that neither block touches adds one to every count from the step that applies it, and the store reports it after the two blocks only where its version is above 20261114031356.
 cybermonklabs/legion#4228's 20261116165926_role_holders_publish, cybermonklabs/legion#4337's 20261117200337_update_ask_marks_at_delivery (dispatch://INFRA-4109), cybermonklabs/legion#4220's 20261116144907_claim_sessions, cybermonklabs/legion#4488's 20261117023932_outbox_kinds_with_the_plan_record, cybermonklabs/legion#4464's 20261119003157_conflict_reads_and_merge_forward, cybermonklabs/legion#4115's 20261115194357_project_pause (dispatch://INFRA-3759), cybermonklabs/legion#3995's 20261119203047_design_news, cybermonklabs/legion#4573's 20261120012547_set_back_observed_seq (dispatch://INFRA-3178), cybermonklabs/legion#4581's 20261120042902_claim_agent_resume_generation (dispatch://INFRA-4108), cybermonklabs/legion#4598's 20261120055717_dispatch_issue_value_sequences (dispatch://INFRA-4729) and cybermonklabs/legion#4903's 20261121170714_dispatch_issue_applied_seq are such migrations: the two blocks leave each standing, every count from the step that applies each is one higher, and the store reports the highest of them that it records after the two blocks.
 That is 20261116165926 on a store #4228's release migrated, 20261117200337 on one that #4337's release or a later one before #4464 migrated, 20261119003157 on one that #4464's release or a later one before #4598 migrated, and 20261120055717 on one that #4598's release or a later one migrated, #4581's, #4573's and #3995's among them: #4220 and #4488 merged onto a main that already carried #4337, so every release that carries 20261116144907 or 20261117023932 carries 20261117200337 too, which stands above both, #4115 merged onto a main that already carried #4464, so every release that carries 20261115194357 carries 20261119003157 too, which stands above it, #4581 and #4573 merged onto a main that already carried #4598, so every release that carries 20261120042902 or 20261120012547 carries 20261120055717 too, which stands above both, and #3995 is built on a main that carries #4464, #4598, #4581 and #4573, so every release that carries 20261119203047 carries 20261119003157 too, which it stands above, and 20261120012547, 20261120042902 and 20261120055717, which stand above it.
-`internal/admit`'s `TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward` holds the store to it: after the two blocks the store records every migration this tree embeds but the five the blocks delete (`leftStanding`, against the five versions the test writes in `wayBackVersions`), and reports the highest of them, which on this tree is 20261121170714.
+`internal/admit`'s `TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward` holds the store to it: after the two blocks the store records every migration this tree embeds but the five the blocks delete (`leftStanding`, against the five versions the test writes in `wayBackVersions`), and reports the highest of them, which is the newest migration this tree embeds.
 The test runs no way back but the two blocks.
 A rollback of a store that #4903's release migrated runs the way back in the header of `20261121170714_dispatch_issue_applied_seq.up.sql` first, which deletes that version's row, so that store reports 20261120055717 after the two blocks, as one that #4598's release migrated does.
 
@@ -3998,6 +4008,7 @@ The migrations recorded above this one are these.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
 20261121170714_dispatch_issue_applied_seq adds `dispatch_issues.applied_seq` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `dispatch_issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every issue event after the drop.
 20261123165139_experiment_assignment_plan adds `experiment_assignments.plan` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it takes `plan` out of `legion.yaml` first ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
+20261124021727_answer_questions_thread_reply writes the check of `answer_questions.kind` again with `thread_reply` added and touches none of the six, so the block holds over it, and a rollback to a release before it needs no statement for it ([Rolling back below the release that answers for a stopped agent](#rolling-back-below-the-release-that-answers-for-a-stopped-agent)).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
