@@ -9,8 +9,9 @@
 # directories, and on a -run or -skip list each test one side names and the other lacks, a step
 # an exact entry pins under an env, shell, container or job that could move it is refused naming
 # what does, a why that cites a step must name a workflow file that still holds it, a why that
-# cites through calls() the line a call is on must name a line of a file of the repository that
-# makes the call, however the why is worded,
+# starts with calls()'s citation of the line a call is on must name, from the repository's root,
+# a file and a line of it that makes the call, whatever words follow, and calls() takes no text
+# of its own,
 # CI_OK_SELECTED_BY must map every job changes gates, it and CI_OK_PULL_REQUEST_ONLY must say what
 # each job's if: tests, every job of ci.yaml must be in exactly one of ci-ok's three classes
 # (CI_OK_SELECTED_BY, CI_OK_ALWAYS_RUN, CI_OK_EXEMPT) and a CI_OK_ALWAYS_RUN job must be gated by
@@ -695,33 +696,40 @@ check "names the stale Run" "$(contains "$out" 'job app step "Test the app" no l
 check "and the command nothing claims" "$(contains "$out" 'runs `go test ./...`, which no Run in ci_job_reads.py lists')"
 
 # A why cites the line a call is on through calls(), which records the file, the line and the
-# name and writes the citation from them, so the check reads that record and never the why's
-# words: a why worded another way is held to the same line. The fixture's call is lib_test.go's
-# os.ReadFile, on line 9.
+# name and renders the citation the why starts with, f"{calls(file, line, name)} ...". The check
+# reads that record and never the why's words, so the words after the citation can change and the
+# citation is still held to its line. calls() takes no text of its own: text it carried into the
+# why would be text its record does not hold. The fixture's call is lib_test.go's os.ReadFile, on
+# line 9.
 echo "case: a why that cites through calls() a line the call is not on"
 root=$(fixture call-line)
 replace "$root/.github/scripts/ci_job_reads.py" 'from ci_filter_coverage import Read, at, gate, run' \
   'from ci_filter_coverage import Read, at, calls, gate, run'
 replace "$root/.github/scripts/ci_job_reads.py" '"lib_test.go reads ../../fixtures/data.json"' \
-  'calls("mod/lib/lib_test.go", 8, "os.ReadFile", " on ../../fixtures/data.json")'
+  $'f"{calls(\'mod/lib/lib_test.go\', 8, \'os.ReadFile\')} on ../../fixtures/data.json"'
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the file, the cited line and the line the call is on" \
   "$(contains "$out" "a why cites mod/lib/lib_test.go:8 as calling os.ReadFile, which that line does not; the call is at :9, so cite the line the call is on")"
-replace "$root/.github/scripts/ci_job_reads.py" '" on ../../fixtures/data.json"' \
-  '", which the test invokes to load the fixture it decodes"'
+replace "$root/.github/scripts/ci_job_reads.py" ' on ../../fixtures/data.json"' \
+  ', which the test invokes to load the fixture it decodes"'
 run_check "$root"
-check "fails the same with the why reworded" "$(is "$status" 1)"
+check "fails the same once the words after the citation change" "$(is "$status" 1)"
 check "and still names the line the call is on" \
   "$(contains "$out" "a why cites mod/lib/lib_test.go:8 as calling os.ReadFile, which that line does not; the call is at :9, so cite the line the call is on")"
-replace "$root/.github/scripts/ci_job_reads.py" 'calls("mod/lib/lib_test.go", 8,' 'calls("mod/lib/lib_test.go", 9,'
+replace "$root/.github/scripts/ci_job_reads.py" $'calls(\'mod/lib/lib_test.go\', 8,' $'calls(\'lib/lib_test.go\', 9,'
 run_check "$root"
-check "passes once the why cites the line the call is on" "$(is "$status" 0)"
-replace "$root/.github/scripts/ci_job_reads.py" 'calls("mod/lib/lib_test.go", 9,' 'calls("lib/lib_test.go", 9,'
-run_check "$root"
-check "fails on a file named by a path that does not start at the repository's root" "$(is "$status" 1)"
+check "fails on the right line of a file named by a path that does not start at the repository's root" \
+  "$(is "$status" 1)"
 check "and names the path" \
   "$(contains "$out" "a why cites lib/lib_test.go:9 as calling os.ReadFile, but lib/lib_test.go is not in the repository")"
+replace "$root/.github/scripts/ci_job_reads.py" $'calls(\'lib/lib_test.go\', 9,' $'calls(\'mod/lib/lib_test.go\', 9,'
+run_check "$root"
+check "passes once the why cites the file and the line the call is on" "$(is "$status" 0)"
+replace "$root/.github/scripts/ci_job_reads.py" $'\'os.ReadFile\')}' $'\'os.ReadFile\', \' to load the fixture\')}'
+run_check "$root"
+check "refuses text handed to calls() itself, which its record would not hold" \
+  "$(is "$status:$(contains "$out" 'calls() takes 3 positional arguments but 4 were given')" 1:true)"
 
 echo "case: a gate whose filter the changes job does not define"
 root=$(fixture no-filter)
