@@ -1017,7 +1017,7 @@ func TestEventsAfterNamesTheEventOfAPageItCannotRead(t *testing.T) {
 			}))
 			defer server.Close()
 
-			events, err := New(server.URL, dispatchToken).EventsAfter(context.Background(), "LEGION-1", 7)
+			events, err := New(server.URL, dispatchToken, "").EventsAfter(context.Background(), "LEGION-1", 7)
 			var unread *EventLogError
 			if !errors.As(err, &unread) || unread.Event != 203 || unread.Seq != tc.seq || err.Error() != tc.text || events != nil {
 				t.Fatalf("EventsAfter = %d events, %#v; want an *EventLogError naming event 203, seq %d, with the text %q", len(events), err, tc.seq, tc.text)
