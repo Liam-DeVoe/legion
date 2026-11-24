@@ -135,6 +135,7 @@ func TestAStartOfAnotherStepsRoleFinishesWithoutActing(t *testing.T) {
 // before wrote, which names no claim, starts the claim of the row now: key b's at step 3, and on
 // the row of no step the role's own token, key a's.
 func TestAStartActsOnTheClaimItWasQueuedFor(t *testing.T) {
+	t.Parallel()
 	const key = stepStartKey
 	keyA, keyB := mustClaimToken(t, key, claim.RoleImplementer), mustClaimToken(t, key, claim.RoleReviewer)
 	earlier, later := time.Now().Add(-time.Minute), time.Now()
@@ -169,7 +170,7 @@ func TestAStartActsOnTheClaimItWasQueuedFor(t *testing.T) {
 			putOutboxIssue(t, pool, records, issue)
 			openTree(t, pool, "LEGION", issue.Tree)
 			holdSlot(t, pool, issue.Key)
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				v := record.PlanVersion{Issue: key, Generation: 2, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 					GivenBy: mustClaimToken(t, key, claim.RoleArchitect), GivenAt: time.Now().UTC()}
 				task := record.PlanTask{Issue: key, Generation: 2, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}

@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // A role that stands at two steps of a task completes each, and the two completions are two facts
@@ -48,8 +49,8 @@ func TestTwoCompletionsOfOneRoleInOnePassAreTwoFacts(t *testing.T) {
 // runTaskAt runs task a of key's plan at step place.
 func runTaskAt(t *testing.T, h *harness, key string, place int) {
 	t.Helper()
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		return record.NewStore().MoveTask(context.Background(), tx, key, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: place}, record.TaskRunning)
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return record.NewStore().MoveTask(ctx, tx, key, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: place}, record.TaskRunning)
 	}); err != nil {
 		t.Fatalf("run task a of %s at step %d: %v", key, place, err)
 	}
@@ -63,7 +64,7 @@ func seedStepsAt(t *testing.T, h *harness, key string, words []string, place int
 	t.Helper()
 	ctx, records := context.Background(), record.NewStore()
 	builtin := plan.BuiltinRoles()
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		v := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-" + key, Source: record.PlanSourceOwner,
 			GivenBy: "owner", GivenAt: time.Date(2026, 11, 22, 7, 0, 0, 0, time.UTC)}
 		task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Task a.", State: record.TaskWaiting}
