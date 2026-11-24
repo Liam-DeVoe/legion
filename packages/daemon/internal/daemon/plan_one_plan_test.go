@@ -216,7 +216,7 @@ func (r *ownerStepsRig) readPlan(artifact, owner string) plannersPlan {
 }
 
 // holdsPlan fails the test unless the planner's part of plan.md, the document artifact, reads as
-// want after the owner's version after. owner is the owner's task block.
+// want at the moment after names. owner is the owner's task block.
 func (r *ownerStepsRig) holdsPlan(after, artifact, owner string, want plannersPlan) {
 	r.t.Helper()
 	if len(want.tasks) == 0 {
