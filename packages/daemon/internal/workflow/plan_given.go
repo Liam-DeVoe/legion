@@ -71,6 +71,13 @@ type givenVersion struct {
 	textOnly []string
 }
 
+// retextsAlone says whether the version changes nothing of the plan in force but the text of its
+// running tasks: a plan is in force, the version changes, adds and removes no other task, and it
+// changes the text of at least one running task.
+func (g givenVersion) retextsAlone() bool {
+	return g.stored != nil && len(g.changed) == 0 && len(g.textOnly) > 0
+}
+
 // versionRefusal judges fact's version, and answers what it read for the write, or the refusal.
 // A generation's first plan is taken where its task has not started: an issue the daemon has not
 // recorded, and one standing before its first step (beforeItsWork); each task waits at no act, and
@@ -89,13 +96,17 @@ type givenVersion struct {
 // one reason for each, and so is any change of a task that is done or left the workflow. A plan
 // given in a lingering tree is refused too.
 //
-// A recorded issue whose group takes no plan from its owner (groupOf, takesNoPlan) is answered
-// PLAN_NOT_TAKEN, right after the generation is judged, so no plan of it is stored, also one given
-// at generation 0 for an issue the daemon recorded meanwhile. The fact is left unspent as well:
-// the group never changes, so the same registration sent again gets the same answer, never the
-// answer of a registration applied, which the route gives as the plan taken. An issue the daemon
-// has not recorded has no draw yet; its plan waits at generation 0, and its first step passes it
-// over where the issue's group takes none (planFirstStep).
+// A recorded issue whose group runs the project's default steps (groupOf, takesNoPlan) takes one
+// kind of version from its owner: a later version that changes nothing but the text of a running
+// task of the plan in force (retextsAlone), its task default. Every other version of it is answered
+// PLAN_NOT_TAKEN once the comparison is made, in place of what the comparison answered: a version
+// whose block default names steps is PLAN_NOT_TAKEN, not PLAN_REFUSED. So is a first plan, one
+// given at generation 0 for an issue the daemon recorded meanwhile among them, and no plan of it is
+// stored. The fact is left unspent as well: the group never changes, so the same registration sent
+// again gets the same answer, never the answer of a registration applied, which the route gives as
+// the plan taken. An issue the daemon has not recorded has no draw yet; its plan waits at
+// generation 0, and its first step passes it over where the issue's group takes none
+// (planFirstStep).
 func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven) (givenVersion, *intake.Refusal, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil {
@@ -110,50 +121,21 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 			return givenVersion{}, refusalUnless(err, intake.PlanStaleGeneration(fact.Issue, fact.Generation, issue.Generation)), err
 		}
 	}
+	refusal, err := e.compareVersion(ctx, tx, fact, &given)
+	if err != nil {
+		return givenVersion{}, nil, err
+	}
 	if issue != nil {
 		group, err := e.groupOf(ctx, tx, issue.Key)
 		if err != nil {
 			return givenVersion{}, nil, err
 		}
-		if takesNoPlan(group) {
+		if takesNoPlan(group) && (refusal != nil || !given.retextsAlone()) {
 			return givenVersion{}, intake.PlanNotTaken(issue.Key, group), nil
 		}
 	}
-	if given.stored, err = e.store.Plan(ctx, tx, fact.Issue, fact.Generation); err != nil {
-		return givenVersion{}, nil, err
-	}
-	if given.stored == nil && given.recorded && !beforeItsWork(*issue) {
-		return givenVersion{}, intake.PlanRefused([]plan.Refusal{intake.StartedBeforePlans(issue.Key)}), nil
-	}
-	if given.stored != nil {
-		if refusal := laterVersionRefusal(fact.Issue, given.stored.Version, fact.Plan); refusal != nil {
-			return givenVersion{}, refusal, nil
-		}
-		held := heldPlan(given.stored)
-		var running []plan.Refusal
-		for _, id := range plan.ChangedTasks(held, fact.Plan) {
-			at := slices.IndexFunc(given.stored.Tasks, func(task record.PlanTask) bool { return task.Task == id })
-			if at < 0 {
-				given.changed = append(given.changed, id)
-				continue
-			}
-			state := given.stored.Tasks[at].State
-			if refusal := intake.FinishedTask(fact.Issue, id, state, intake.ChangeOfTask); refusal != nil {
-				return givenVersion{}, refusal, nil
-			}
-			if state != record.TaskRunning {
-				given.changed = append(given.changed, id)
-				continue
-			}
-			if refusal := plan.RunningChange(held, fact.Plan, id); refusal != nil {
-				running = append(running, *refusal)
-				continue
-			}
-			given.textOnly = append(given.textOnly, id)
-		}
-		if len(running) > 0 {
-			return givenVersion{}, intake.PlanRefused(running), nil
-		}
+	if refusal != nil {
+		return givenVersion{}, refusal, nil
 	}
 	if issue != nil {
 		lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
@@ -162,6 +144,51 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 		}
 	}
 	return given, nil, nil
+}
+
+// compareVersion reads into given the plan in force at fact's generation and what fact's version
+// changes over it (versionRefusal's second paragraph), and answers the refusal that comparison
+// makes, nil for none.
+func (e *Engine) compareVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, given *givenVersion) (*intake.Refusal, error) {
+	var err error
+	if given.stored, err = e.store.Plan(ctx, tx, fact.Issue, fact.Generation); err != nil {
+		return nil, err
+	}
+	if given.stored == nil {
+		if given.recorded && !beforeItsWork(*given.issue) {
+			return intake.PlanRefused([]plan.Refusal{intake.StartedBeforePlans(given.issue.Key)}), nil
+		}
+		return nil, nil
+	}
+	if refusal := laterVersionRefusal(fact.Issue, given.stored.Version, fact.Plan); refusal != nil {
+		return refusal, nil
+	}
+	held := heldPlan(given.stored)
+	var running []plan.Refusal
+	for _, id := range plan.ChangedTasks(held, fact.Plan) {
+		at := slices.IndexFunc(given.stored.Tasks, func(task record.PlanTask) bool { return task.Task == id })
+		if at < 0 {
+			given.changed = append(given.changed, id)
+			continue
+		}
+		state := given.stored.Tasks[at].State
+		if refusal := intake.FinishedTask(fact.Issue, id, state, intake.ChangeOfTask); refusal != nil {
+			return refusal, nil
+		}
+		if state != record.TaskRunning {
+			given.changed = append(given.changed, id)
+			continue
+		}
+		if refusal := plan.RunningChange(held, fact.Plan, id); refusal != nil {
+			running = append(running, *refusal)
+			continue
+		}
+		given.textOnly = append(given.textOnly, id)
+	}
+	if len(running) > 0 {
+		return intake.PlanRefused(running), nil
+	}
+	return nil, nil
 }
 
 // refusalUnless is refusal where err is nil, and nil where a read failed, which answers the error
