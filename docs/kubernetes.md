@@ -2303,7 +2303,8 @@ Re-pinning an image asks for part of that back, and which part follows the relea
 Pull request cybermonklabs/legion#2989 added `awaiting_slot_notice_at`, and the commit it merged as, `6c72aaee111c`, is release `legion-v19.45.0`: every release from `legion-v19.45.0` on carries the column.
 The newest, `legion-v19.47.0`, names it three times in `packages/daemon/internal/record/store.go` — in the `issueColumns` select list, in the `PutIssue` insert and its values, and in that insert's `on conflict ... do update set` — and scans it in `scanIssue`.
 So once this migration has dropped the column, pinning any release from `legion-v19.45.0` on fails every issue read and every `PutIssue` with `column "awaiting_slot_notice_at" does not exist`, which is every fact, tick and boot pass that daemon makes, until the column is back.
-Run this with the daemon stopped, before that image is pinned:
+Run this with the daemon stopped, before that image is pinned.
+`issues` is one table for every project that shares the database, so the column comes back on every project's rows; a daemon of another project that stays on this release names no such column and runs on as before, so only the projects that pin such a release need their daemons stopped:
 
 ```sql
 alter table issues add column if not exists awaiting_slot_notice_at timestamptz;
@@ -2434,6 +2435,8 @@ So run this once more with the earlier release of that project stopped, before t
 -- A phase-ended message the earlier release queued about a move this release no longer makes, of one project.
 delete from outbox where kind = 'phase_ended' and split_part(issue, '-', 1) = '<PROJECT>';
 ```
+
+The header of `20261119003157_conflict_reads_and_merge_forward.up.sql` gives this statement over every project's rows, for a database whose every daemon rolls forward at once; the statement here takes one project's.
 
 The outbox and `pull_requests` are shared by every project's daemon on the database, so each statement of this section takes the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project), and a project that stays on this release keeps its second reads and its merge-forward messages.
 
@@ -3415,7 +3418,9 @@ In this order:
    The pushed branch is the only copy of an issue's workspace the rollback keeps;
    for an issue whose push you cannot confirm, carry its work out of the pod before step 4 ([Carrying unpushed work out of an issue's pod](#carrying-unpushed-work-out-of-an-issues-pod)).
 
-2. **Stop this release's daemon** (scale its Deployment to zero, or `legion stop`), so nothing launches into a Sandbox or writes a locator while both are rewritten.
+2. **Stop every daemon of the database** (scale each Deployment to zero, or `legion stop`), so nothing launches into a Sandbox or writes a locator while both are rewritten.
+   `claims` and `claim_capabilities` hold the rows of every project that shares the database, and step 3 gives every project's issue pod locators their role's container: a daemon of another project left on this release would then look for each role's own container in a pod that has only `roles`.
+   Every daemon sharing the database moves together in this rollback, with steps 1 and 4 taken for each project's issues.
 
 3. **Give every issue pod's locator back its role's container.**
    Before 0054 an issue pod's role ran in a container named for the claim's role, so the `role` column says what each locator named;
@@ -3512,7 +3517,9 @@ its workers' plugins report the record, so the daemon and the plugins move toget
 Store migration 20261101144900_handoff_records adds two columns to `phases`, `handoff_record` and `handoff_version`:
 the record a role's completion of its current phase named, and its version.
 
-To roll this release back to contract 44, stop the daemon and drop both columns, with the row `schema_version` records for 20261101144900_handoff_records, which leaves the store at the earlier release's schema, 67:
+To roll this release back to contract 44, stop every daemon of the database and drop both columns, with the row `schema_version` records for 20261101144900_handoff_records, which leaves the store at the earlier release's schema, 67.
+`phases` is one table for every project that shares the database, so the drop takes the columns from every project's rows, and a daemon left on this release fails each read of them: every daemon sharing the database moves together.
+The statements:
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
@@ -3552,7 +3559,8 @@ What the rollback costs is the draws it does not make:
 a tree the earlier release opens carries no group, and this release draws for no tree whose lifecycle row already exists, so every such tree runs without memory for its whole life.
 A child handed over out of such a tree is settled at the hand-over, with the answer that tree has, which is no group.
 A hand-over the earlier release makes while the rollback holds is settled by nothing: that release writes `handed_over_from` and knows no `memory_carried`, and 20261104153554's backfill ran before the rollback, so such a child is drawn at its first open after the upgrade back.
-To settle those hand-overs as this release would have, run the backfill once more against the daemon's database with no daemon of the project running, after the earlier release stops and before this release starts again, with `<PROJECT>` replaced by the project's key (`project` in its `legion.yaml`); the column is still there from the first upgrade, the statement touches only rows with no draw, and `issues` is shared by every project's daemon on the database, so it takes that project's issues alone:
+To settle those hand-overs as this release would have, run the backfill once more against the daemon's database with no daemon of the project running, after the earlier release stops and before this release starts again, with `<PROJECT>` replaced by the project's key (`project` in its `legion.yaml`); the column is still there from the first upgrade, the statement touches only rows with no draw, and `issues` is shared by every project's daemon on the database, so it takes that project's issues alone.
+Where several projects of the database roll back past contract 49, run it once for each of them, with that project's key:
 
 ```sql
 update issues set memory_carried = true
@@ -3639,7 +3647,8 @@ Several projects' daemons can share one database ([Daemon-launched controller](#
 The two blocks below drop columns of `phases`, `claims` and `pending_task_deliveries` and the table `architect_stalled_notices`, which every project's daemon of this release reads, delete version rows that every daemon's `Migrate` reads, and their row statements act on the rows of every project.
 So a daemon left on this release while another rolls back fails each read of a dropped column or table, and one that boots on the database again runs the deleted migrations under the daemons that rolled back (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
 Stop every daemon of one database, run each block once, and pin the earlier image for all of them in the same change.
-Each step or statement of another section that this section sends you to and that takes `<PROJECT>` or `<KEY>` (#4115's first two steps and its three statements, #4464's block, #4573's statement, and the two of [Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan); the block of the owner's plan says so itself) runs once for each project of the database, with that project's key, since a step or a statement taken for one project alone leaves the other projects' rows and held pods, which the earlier release then fails to decode on every attempt or deletes with their disks.
+Each step or statement of another section that this section sends you to and that takes `<PROJECT>` or `<KEY>` runs once for each project of the database, with that project's key, since a step or a statement taken for one project alone leaves the other projects' rows and held pods, which the earlier release then fails to decode on every attempt or deletes with their disks.
+Those are #4115's first two steps and its three statements, #4464's block and its `phase_ended` statement before a roll forward, #4573's statement, the two of [Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan), the `memory-guard-kill` delete of [Rolling back below the release that guards the controller's pod's memory](#rolling-back-below-the-release-that-guards-the-controllers-pods-memory), the block of [Rolling back the release that tells the merger of a merge-queue removal](#rolling-back-the-release-that-tells-the-merger-of-a-merge-queue-removal) and the block of [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages); the block of the owner's plan says so itself.
 
 To roll a release at contract 146 back to contract 87, stop every daemon of the database and run two blocks in this order: the block below, then the phase entry's block after it.
 A rollback from a release above contract 146 takes first the steps of each release it crosses above 146: "Rolling back below the release that guards the controller's pod's memory" above gives those of the release whose `version.go` carries the entry for `dispatch://INFRA-3531`, which are to take `controller_pod` out of `legion.yaml` and to delete the unsent `memory-guard-kill` notices.
