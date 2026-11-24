@@ -5,6 +5,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useRef, useState } from "react";
 
+import { layOutPanel, stacked } from "../__tests__/scroll-box";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { useKeymap, useKeymapScope } from "../features/shell/keymap";
 import { AnchoredPanel, type PanelDismissal } from "./AnchoredPanel";
@@ -319,42 +320,6 @@ function buttons(names: string[]): ReactNode {
       {name}
     </button>
   ));
-}
-
-/** An element of an open panel, and where it stands in what the panel holds: its top, in px down
- *  from the top of what the panel holds, and its height. */
-type Placed = [element: Element, top: number, height: number];
-
-/**
- * Lays an open panel out as a browser would, which happy-dom does not: its box is 200 px tall at
- * `at` px down the window inside a 1 px border, so it shows 198 px of the `holds` px it holds.
- * Each element of `placed` stands where it says, moved up by the panel's `scrollTop`, which stops
- * at both ends of the scroll, as a browser's does.
- */
-function layOutPanel(panel: HTMLElement, holds: number, placed: Placed[], at = 100): void {
-  const shown = 198;
-  let scrolled = 0;
-  Object.defineProperties(panel, {
-    clientHeight: { configurable: true, get: () => shown },
-    clientTop: { configurable: true, get: () => 1 },
-    scrollTop: {
-      configurable: true,
-      get: () => scrolled,
-      set: (value: number) => {
-        scrolled = Math.min(Math.max(value, 0), holds - shown);
-      },
-    },
-  });
-  panel.getBoundingClientRect = () => new DOMRect(0, at, 256, 200);
-  for (const [element, top, height] of placed) {
-    element.getBoundingClientRect = () => new DOMRect(9, at + 1 + top - scrolled, 238, height);
-  }
-}
-
-/** `controls` one under another from 8 px into their panel (its padding), 44 px tall and 8 px
- *  apart. */
-function stacked(controls: Element[]): Placed[] {
-  return controls.map((control, index) => [control, 8 + 52 * index, 44]);
 }
 
 // INFRA-3135, round 26: Firefox left a control the Tab key reached partly outside a scrolled

@@ -1,8 +1,9 @@
 /**
- * A sideways scroll box a test sizes, and the `ResizeObserver` that tells it the box changed.
- * happy-dom lays nothing out, so `scrollWidth` and `clientWidth` read 0 and `scrollLeft` takes any
- * number, and its `ResizeObserver` never calls back; a strip whose rule reads them only runs where
- * a test says how wide it is and when that changed.
+ * A sideways scroll box a test sizes, an open panel that scrolls down laid out as a browser lays
+ * it out, and the `ResizeObserver` that tells a box it changed. happy-dom lays nothing out, so
+ * `scrollWidth`, `clientWidth` and `clientHeight` read 0 and `scrollLeft` and `scrollTop` take any
+ * number, and its `ResizeObserver` never calls back; a rule that reads them only runs where a test
+ * says how big the box is and when that changed.
  */
 
 import { act } from "@testing-library/react";
@@ -28,6 +29,42 @@ export function layOutScrollBox(element: HTMLElement, box: ScrollBox): void {
     },
     scrollWidth: { configurable: true, get: () => box.scroll },
   });
+}
+
+/** An element of an open panel, and where it stands in what the panel holds: its top, in px down
+ *  from the top of what the panel holds, and its height. */
+type Placed = [element: Element, top: number, height: number];
+
+/**
+ * Lays an open panel out as a browser would, which happy-dom does not: its box is 200 px tall at
+ * `at` px down the window inside a 1 px border, so it shows 198 px of the `holds` px it holds.
+ * Each element of `placed` stands where it says, moved up by the panel's `scrollTop`, which stops
+ * at both ends of the scroll, as a browser's does.
+ */
+export function layOutPanel(panel: HTMLElement, holds: number, placed: Placed[], at = 100): void {
+  const shown = 198;
+  let scrolled = 0;
+  Object.defineProperties(panel, {
+    clientHeight: { configurable: true, get: () => shown },
+    clientTop: { configurable: true, get: () => 1 },
+    scrollTop: {
+      configurable: true,
+      get: () => scrolled,
+      set: (value: number) => {
+        scrolled = Math.min(Math.max(value, 0), holds - shown);
+      },
+    },
+  });
+  panel.getBoundingClientRect = () => new DOMRect(0, at, 256, 200);
+  for (const [element, top, height] of placed) {
+    element.getBoundingClientRect = () => new DOMRect(9, at + 1 + top - scrolled, 238, height);
+  }
+}
+
+/** `controls` one under another from 8 px into their panel (its padding), 44 px tall and 8 px
+ *  apart. */
+export function stacked(controls: Element[]): Placed[] {
+  return controls.map((control, index) => [control, 8 + 52 * index, 44]);
 }
 
 export interface ResizeControl {

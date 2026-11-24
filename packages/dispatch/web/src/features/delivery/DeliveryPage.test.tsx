@@ -7,7 +7,13 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { drawnSize } from "../../__tests__/control-size";
 import { pickIn } from "../../__tests__/issue-picks";
-import { panelOf, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
+import {
+  optionNames as listOptionNames,
+  panelOf,
+  pickNamed,
+  rows,
+  textBoxes,
+} from "../../__tests__/list-picks";
 import {
   errorFrame,
   type FakeLiveSocket,
@@ -1473,15 +1479,11 @@ test("after a first read that failed the row still draws the link's chips", asyn
   expect(rowControls()).toEqual(["Filter · 1", "Remove Author: octocat filter"]);
 });
 
-/** Each option of the panel's `facet`, by the name it is read out as: its `aria-label` where it
- *  has one, else its text, as a row with no count beside it is named by its label alone (a picked
- *  value's tick is in that text too). Escape closes the list again, so the next read opens its
- *  own. */
+/** Each option of the panel's `facet`, by the name it is read out as (`listOptionNames`). Escape
+ *  closes the list again, so the next read opens its own. */
 async function facetOptionNames(user: UserEvent, facet: string): Promise<string[]> {
   await user.click(await panelFacet(user, facet));
-  const names = within(screen.getByRole("listbox", { name: `${facet} options` }))
-    .getAllByRole("option")
-    .map((option) => option.getAttribute("aria-label") ?? option.textContent ?? "");
+  const names = listOptionNames(screen.getByRole("listbox", { name: `${facet} options` }));
   await user.keyboard("{Escape}");
   return names;
 }

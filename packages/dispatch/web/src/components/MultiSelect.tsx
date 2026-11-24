@@ -26,7 +26,7 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../theme/classes";
-import { AnchoredPanel, type PanelDismissal } from "./AnchoredPanel";
+import { AnchoredPanel, type PanelDismissal, scrollToShow, shownSpan } from "./AnchoredPanel";
 import { type ControlName, type ControlSize, controlPadding } from "./control-names";
 import { ChevronIcon } from "./DisclosureToggle";
 import { focusLost } from "./focus-place";
@@ -424,21 +424,17 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const footRef = useRef<HTMLDivElement>(null);
   // ArrowDown and ArrowUp scroll the list the least that shows the option they mark active whole,
   // between the text box and the Clear foot, so an option already whole scrolls nothing. Only the
-  // list's own box scrolls: this sets its `scrollTop` rather than call `scrollIntoView`, which
-  // scrolls the window too.
+  // list's own box scrolls (`scrollToShow`), and its own bottom is measured only where no foot is
+  // drawn.
   const markActive = (value: string) => {
     setActiveValue(value);
     const head = headRef.current;
     const box = head?.parentElement ?? null;
     const option = document.getElementById(optionId(value));
     if (head === null || box === null || option === null) return;
-    const shownTop = head.getBoundingClientRect().bottom;
-    const shownBottom =
-      footRef.current?.getBoundingClientRect().top ??
-      box.getBoundingClientRect().top + box.clientTop + box.clientHeight;
-    const { bottom, top } = option.getBoundingClientRect();
-    if (top < shownTop) box.scrollTop -= shownTop - top;
-    else if (bottom > shownBottom) box.scrollTop += bottom - shownBottom;
+    const top = head.getBoundingClientRect().bottom;
+    const bottom = footRef.current?.getBoundingClientRect().top ?? shownSpan(box).bottom;
+    scrollToShow(box, option.getBoundingClientRect(), { bottom, top });
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {

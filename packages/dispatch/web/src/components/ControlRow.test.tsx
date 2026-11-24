@@ -6,7 +6,7 @@ import { useState } from "react";
 import { layOutLine, withCss } from "../__tests__/chips-line";
 import { MOUSE_CSS, SIZE_CSS, sizeUnder } from "../__tests__/control-size";
 import { afterFrameAndTasks } from "../__tests__/frames";
-import { installResizeObserver } from "../__tests__/scroll-box";
+import { installResizeObserver, layOutPanel, stacked } from "../__tests__/scroll-box";
 import { Chip } from "./Chip";
 import { ControlRow, type ControlRowProps } from "./ControlRow";
 
@@ -539,35 +539,6 @@ test("Escape in the panel, and Tab past its last chip, close it and hand the foc
   }
 });
 
-/**
- * Lays the open panel of `+N more` out as a browser would, which happy-dom does not: its box is
- * 200 px tall at 100 px down the window inside a 1 px border, so it shows 198 px of what it
- * holds, and its chips stand one under another from 8 px into it (its padding), 44 px tall and
- * 8 px apart, moved up by its `scrollTop`, which stops at both ends of the scroll, as a browser's
- * does.
- */
-function layOutPanel(panel: HTMLElement): void {
-  const chips = within(panel).getAllByRole("button");
-  const shown = 198;
-  const end = 8 + chips.length * 52 - 8 + 8 - shown;
-  let scrolled = 0;
-  Object.defineProperties(panel, {
-    clientHeight: { configurable: true, get: () => shown },
-    clientTop: { configurable: true, get: () => 1 },
-    scrollTop: {
-      configurable: true,
-      get: () => scrolled,
-      set: (value: number) => {
-        scrolled = Math.min(Math.max(value, 0), Math.max(end, 0));
-      },
-    },
-  });
-  panel.getBoundingClientRect = () => new DOMRect(0, 100, 256, 200);
-  for (const [index, chip] of chips.entries()) {
-    chip.getBoundingClientRect = () => new DOMRect(9, 109 + 52 * index - scrolled, 100, 44);
-  }
-}
-
 // Here no engine scrolls the panel itself, as Firefox scrolls no chip already partly in sight.
 test("a chip the focus reaches in the panel of +N more stands whole in the panel's box, which scrolls the least that shows it, and nothing else scrolls", async () => {
   const user = userEvent.setup();
@@ -578,7 +549,9 @@ test("a chip the focus reaches in the panel of +N more stands whole in the panel
   try {
     await user.click(screen.getByRole("button", { name: "5 more filters" }));
     const panel = screen.getByRole("dialog", { name: "5 more filters" });
-    layOutPanel(panel);
+    // Five chips hold 8 + 5 × 52 px.
+    const chips = within(panel).getAllByRole("button");
+    layOutPanel(panel, 8 + 52 * chips.length, stacked(chips));
     expect(screen.getByRole("button", { name: "Gamma" })).toHaveFocus();
     // The chip each key puts the focus on, and how far the panel has scrolled then: the panel
     // shows 0-198 px of what it holds, and the fourth chip, Zeta, stands at 164-208.
