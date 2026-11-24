@@ -3612,7 +3612,7 @@ package api
 // main's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 253: the `decisions` design-gate step is gone, since a person's
+// 271: the `decisions` design-gate step is gone, since a person's
 // decisions are nodes of the spec, which the `spec` step's approval covers. `gates.design` refuses
 // that step by name (config's readDesignSteps), so the step of `POST /legion/v1/gates/register` is
 // `criteria` or `spec`, and a call naming `decisions` is refused as a step the deployment does not
@@ -3622,7 +3622,7 @@ package api
 // names of `DESIGN_GATE_STEPS`, and `register_gate` offers no other step. The `design_gates` rows
 // and the kept approvals an earlier release wrote of the step stay in the store, which no reader
 // of this release is handed (record.Postgres.GatesOf), so no state of this daemon names the step.
-// A plugin of the release before (250, the number main declares at 5df00e2f13) reads that state
+// A plugin of the release before (250, the number main declares at fd2f03fb07) reads that state
 // as before, since it parses the three names, and the boot
 // gate and `legion probe-image` pair a daemon with a plugin of its own number. A loader of this release
 // refuses a file whose `gates.design` names `decisions`, so a deployment takes the step out of the
@@ -3719,4 +3719,6 @@ package api
 // reading of `const DaemonAPIVersion` at the head of each of the 488 open pull requests, made
 // between 2026-11-24T17:55:31Z and 17:58:10Z: 251 #5307, 252 #4540, 254 #4432, 255 #5164, 256
 // #5349, 257 #4580, 261 #5332, 262 #5204 and 265 #5285.)
-const DaemonAPIVersion = 253
+// (After that merge #4049 and #4065 declared 253 as well. This change takes the allocated number
+// 271 at the forward merge of main at fd2f03fb07, where main still declares 250.)
+const DaemonAPIVersion = 271

@@ -3728,6 +3728,7 @@ export interface components {
       sha256?: string;
       size?: number;
       summary: null | string;
+      token?: string;
     };
     ArtifactWithTrees: {
       approval?: components["schemas"]["ArtifactApprovalWithTrees"];
@@ -7182,6 +7183,7 @@ export interface components {
       sha256?: string;
       size?: number;
       summary: null | string;
+      token?: string;
     };
     WhoamiAgent: {
       /** @enum {string} */
