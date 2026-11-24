@@ -711,8 +711,9 @@ func TestTheGiveUpRoutesRefuseAnotherProjectsRecord(t *testing.T) {
 // key, and the rest of the two bodies is the same. Every build from shapedAnswersContract on
 // states its contract in the header, and a pod's claims place no caller at 193 or above
 // (podContracts), so the header is what places a caller below this band. Both callers stand below
-// gateBasisContract too, whose band serves each the state without the basis keys, so the older
-// caller's log holds that band's line after the give-ups' line, as the table orders them.
+// podHoldContract and gateBasisContract too, whose bands serve each the state without their keys,
+// so the older caller's log holds one line for each band above its contract (narrowingsExpected),
+// the give-ups' first; a later band's own line is that band's test's to name.
 func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
 	if intakeGiveUpsContract > DaemonAPIVersion {
 		t.Fatalf("intakeGiveUpsContract = %d, above DaemonAPIVersion %d: no caller could be served the key", intakeGiveUpsContract, DaemonAPIVersion)
@@ -736,18 +737,10 @@ func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
 	if served := currentBody["intakeGiveUps"]; !bytes.Equal(served, want) {
 		t.Errorf("a caller at %d is served `intakeGiveUps` %s, want the state's %s", intakeGiveUpsContract, served, want)
 	}
-	lines := narrowingsExpected(populatedState(t), intakeGiveUpsContract-1)
-	if len(lines) != 2 || lines[0] != "intakeGiveUps" {
-		t.Fatalf("a caller at %d expects the lines %v, want the give-ups' row's and gateBasisContract's alone", intakeGiveUpsContract-1, lines)
+	if len(narrowings) == 0 || narrowings[0].Dropped != "intakeGiveUps" || narrowings[0].PluginContract != intakeGiveUpsContract-1 {
+		t.Errorf("the daemon logged %+v for a caller at %d, want its first line saying it dropped intakeGiveUps", narrowings, intakeGiveUpsContract-1)
 	}
-	if len(narrowings) != len(lines) {
-		t.Fatalf("the daemon logged %+v for a caller at %d, want one line saying it dropped intakeGiveUps and one for gateBasisContract's band", narrowings, intakeGiveUpsContract-1)
-	}
-	for i, line := range narrowings {
-		if line.Dropped != lines[i] || line.PluginContract != intakeGiveUpsContract-1 {
-			t.Errorf("line %d of a caller at %d is %+v, want it to say it dropped %q", i, intakeGiveUpsContract-1, line, lines[i])
-		}
-	}
+	wantNarrowings(t, narrowings, intakeGiveUpsContract-1, narrowingsExpected(populatedState(t), intakeGiveUpsContract-1))
 	for _, body := range []map[string]json.RawMessage{olderBody, currentBody} {
 		delete(body, "intakeGiveUps")
 		delete(body, "contract")

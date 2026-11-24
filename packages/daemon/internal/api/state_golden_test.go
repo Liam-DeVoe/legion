@@ -903,6 +903,16 @@ func populatedState(t *testing.T) State {
 					ApprovedVersion: &stuckApproval,
 					Status:          GatedStepApproved,
 				}},
+				// Its pod is quiet and kept: its reviewer's last report named an async job still
+				// running, so every pass of the idle rule since the evening before has held the pod
+				// for background work, the last of them a minute before this state. That streak is
+				// the pod's standing hold (contract 246), with the kind the report named.
+				PodHold: &PodHoldView{
+					Reason:  "background_work",
+					FirstAt: time.Date(2026, 9, 21, 22, 4, 0, 0, time.UTC),
+					At:      time.Date(2026, 9, 22, 9, 17, 0, 0, time.UTC),
+					Detail:  "async-job",
+				},
 			},
 		},
 		// LEGION-208's lifecycle lane is running row 801; the supervise row queued after it came due
@@ -1210,13 +1220,14 @@ func TestStateGolden(t *testing.T) {
 // block in the shape contract 152 gave it, written from the same entries
 // (withoutRepositoriesLive), each assignment without its `plan` (withoutAssignmentPlans,
 // assignmentPlanContract's row), no `intakeGiveUps` (withoutIntakeGiveUps,
-// intakeGiveUpsContract's row), no root's `treeRuns` and no gated steps of a root a step of which
-// stands on an ancestor's basis (withoutGateBasis, gateBasisContract's row), the three other rows
-// of stateNarrowings above that contract, and every other key as a caller at
-// shapedAnswersContract is served it, since no other row of stateNarrowings stands between
-// shapedAnswersContract and repositoriesLiveContract. shapedAnswersContract's row and
-// pauseContract's stand at or below the contract it is served at, which is why the golden carries
-// `lowestPluginContract`, each claim view's `updateState` and `paused`.
+// intakeGiveUpsContract's row), no issue's `podHold` (withoutPodHold, podHoldContract's row), no
+// root's `treeRuns` and no gated steps of a root a step of which stands on an ancestor's basis
+// (withoutGateBasis, gateBasisContract's row), the four other rows of stateNarrowings above that
+// contract, and every other key as a caller at shapedAnswersContract is served it, since no other
+// row of stateNarrowings stands between shapedAnswersContract and repositoriesLiveContract.
+// shapedAnswersContract's row and pauseContract's stand at or below the contract it is served at,
+// which is why the golden carries `lowestPluginContract`, each claim view's `updateState` and
+// `paused`.
 // `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's schema of
 // the block, so the narrowing is held to the reader it is written for, and its drift gate holds
 // every key of the file to that copy.

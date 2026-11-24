@@ -581,6 +581,7 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
 	{contract: assignmentPlanContract, issue: withoutAssignmentPlans, dropped: "the issues' assignments' plan"},
 	{contract: intakeGiveUpsContract, state: withoutIntakeGiveUps, dropped: "intakeGiveUps"},
+	{contract: podHoldContract, issue: withoutPodHold, dropped: "the issues' podHold"},
 	{contract: gateBasisContract, issue: withoutGateBasis,
 		dropped: "the issues' treeRuns and the gatedSteps of every issue a step of which stands on an ancestor's basis"},
 }
@@ -1066,8 +1067,29 @@ const assignmentPlanContract = 220
 // moves that constant, and the contract the key and the two answers arrived at stays where it is.
 const intakeGiveUpsContract = 228
 
+// podHoldContract is the daemon contract that added each issue's `podHold` to the state
+// (version.go's 246): the standing hold of the issue's pod, which the idle rule wrote only to its
+// own table before. A plugin before it reads each issue with a
+// strict schema that names no `podHold` and refuses the whole body for it, so every caller below
+// it is served the issues without the key (withoutPodHold). intakeGiveUpsContract stands below
+// it with no row of stateNarrowings between the two (232, between them, moves a request body and
+// no key of the state), so a caller from that contract to 245 is served 228's keys.
+//
+// It is a literal of its own and never DaemonAPIVersion, for the reason repositoriesLiveContract
+// is, and answers.go's SupportedContracts names the constant.
+const podHoldContract = 246
+
+// withoutPodHold is the issue with no `podHold`, the one key podHoldContract added to the state;
+// nothing else of that contract is on the route. The key is written only for an issue whose pod
+// a hold stands on, so the band reports a move only for an issue that carries one.
+func withoutPodHold(issue Issue) (Issue, bool) {
+	moved := issue.PodHold != nil
+	issue.PodHold = nil
+	return issue, moved
+}
+
 // gateBasisContract is the daemon contract that let a root's gated step stand open on an
-// ancestor's approval or wait on an ancestor's approval request (version.go's 239,
+// ancestor's approval or wait on an ancestor's approval request (version.go's 249,
 // dispatch://INFRA-3320, R1 and R2), served each root whether its tree runs, and added the phase
 // awaiting_children and the held word of that name (R11 to R13). It added two keys to an issue:
 // the gated step's `basis`, which rides only on a step of the two status words it added, and each
@@ -1091,39 +1113,41 @@ const intakeGiveUpsContract = 228
 // (heldReasons), served as `children_first`, the word a started parent's wait took over
 // (withoutUnadmittedHeldWords, heldReasonStandIn).
 //
-// Of the bands of stateNarrowings, intakeGiveUpsContract's stands right below this one,
-// assignmentPlanContract's below that, repositoriesLiveContract's below that and
-// shapedAnswersContract's below that, and this band touches no key of any of theirs:
-// shapedAnswersContract's takes `lowestPluginContract` and the claim views' `updateState` and
-// `wake`, repositoriesLiveContract's writes the `repositories` block in contract 152's shape,
-// assignmentPlanContract's takes each assignment's `plan`, intakeGiveUpsContract's takes the
-// state's `intakeGiveUps`, and this one takes `treeRuns` and some `gatedSteps`. So a caller from
-// 202 up to the number below this contract is served the keys 193 added and the block 202 writes
-// and none of this contract's keys and words. One that states a number between 202 and this
-// contract is served the nearest recorded contract at or below it (recordedContractAtOrBelow):
-// one at 203 or 204 is served 202's, one at 205 to 212 is served 205's, whose records are 202's
-// under its own number, as version.go's 205 entry says, one at 213 to 216 is served 213's, which
-// are 205's with `caches` among the words of a capability row's `source` (cachesSourceContract),
-// one at 217 or 218 is served 217's, which are 213's under its own number, as version.go's 217
-// entry says, one at 219 is served OwnerPlanContract's, which are 217's with the owner's plan's
-// routes, fields and words, one at 220 to 227 is served assignmentPlanContract's, which are
-// OwnerPlanContract's with each assignment's `plan`, one at 228 to 231 is served
-// intakeGiveUpsContract's, which are assignmentPlanContract's with `intakeGiveUps` and the two
-// give-up answers, and one at 232 up to the number below this contract is served 232's, whose
-// answer records are intakeGiveUpsContract's under its own number, as version.go's 232 entry adds
-// two fields to a request and moves no answer's shape. So a caller below intakeGiveUpsContract is
-// served no `intakeGiveUps`, one below assignmentPlanContract no assignment's `plan` either, and
-// one below OwnerPlanContract neither the owner's plan's additions nor this contract's. A caller from
-// 193 to 201 is served the keys 193 added, the block in contract 152's shape and none of this
-// contract's: one that states a number from 194 to 198 is served 193's shape, and one that states
-// 199, 200 or 201 is served 199's, which is 193's, since 199 moves no shape of an answer a plugin
-// parses.
+// Of the bands of stateNarrowings, podHoldContract's stands right below this one,
+// intakeGiveUpsContract's below that, assignmentPlanContract's below that,
+// repositoriesLiveContract's below that and shapedAnswersContract's below that, and this band
+// touches no key of any of theirs: shapedAnswersContract's takes `lowestPluginContract` and the
+// claim views' `updateState` and `wake`, repositoriesLiveContract's writes the `repositories`
+// block in contract 152's shape, assignmentPlanContract's takes each assignment's `plan`,
+// intakeGiveUpsContract's takes the state's `intakeGiveUps`, podHoldContract's takes the issues'
+// `podHold`, and this one takes `treeRuns` and some `gatedSteps`. So a caller from 202 up to the
+// number below this contract is served the keys 193 added and the block 202 writes and none of
+// this contract's keys and words. One that states a number between 202 and this contract is
+// served the nearest recorded contract at or below it (recordedContractAtOrBelow): one at 203 or
+// 204 is served 202's, one at 205 to 212 is served 205's, whose records are 202's under its own
+// number, as version.go's 205 entry says, one at 213 to 216 is served 213's, which are 205's with
+// `caches` among the words of a capability row's `source` (cachesSourceContract), one at 217 or
+// 218 is served 217's, which are 213's under its own number, as version.go's 217 entry says, one
+// at 219 is served OwnerPlanContract's, which are 217's with the owner's plan's routes, fields and
+// words, one at 220 to 227 is served assignmentPlanContract's, which are OwnerPlanContract's with
+// each assignment's `plan`, one at 228 to 231 is served intakeGiveUpsContract's, which are
+// assignmentPlanContract's with `intakeGiveUps` and the two give-up answers, one at 232 to 245 is
+// served 232's, whose answer records are intakeGiveUpsContract's under its own number, as
+// version.go's 232 entry adds two fields to a request and moves no answer's shape, and one at 246
+// up to the number below this contract is served podHoldContract's, which are 232's with each
+// issue's `podHold`. So a caller below podHoldContract is served no `podHold`, one below
+// intakeGiveUpsContract no `intakeGiveUps` either, one below assignmentPlanContract no
+// assignment's `plan` either, and one below OwnerPlanContract neither the owner's plan's additions
+// nor this contract's. A caller from 193 to 201 is served the keys 193 added, the block in
+// contract 152's shape and none of this contract's: one that states a number from 194 to 198 is
+// served 193's shape, and one that states 199, 200 or 201 is served 199's, which is 193's, since
+// 199 moves no shape of an answer a plugin parses.
 // Every such caller states its contract: podContracts leaves out a claim at shapedAnswersContract
 // or above, so a pod reading places no caller there.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is.
-const gateBasisContract = 239
+const gateBasisContract = 249
 
 // withoutGateBasis is the issue with no `treeRuns`, and with no `gatedSteps` where a step of them
 // carries `basis`: the two keys gateBasisContract added to an issue. `basis` rides only on a step
