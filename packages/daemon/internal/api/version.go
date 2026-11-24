@@ -3514,17 +3514,17 @@ package api
 // lowest number above main's 220 that no other open pull request declares. Read main's own number
 // and every open pull request again at the next merge rather than from this line.)
 //
-// 232: the held word of a member of a tree whose root stands in backlog or icebox is
+// 251: the held word of a member of a tree whose root stands in backlog or icebox is
 // `tree_in_backlog_or_icebox` (record.HeldTreeInBacklogOrIcebox), and the route table names no
 // child route of a removed operation by its path. The word is a value of
 // `admission.held[].reason` on `GET /legion/v1/state` and of `held[].reason` on the controller's
 // tick notice. It takes the place of the word the field carried for that hold since 98, which
 // this daemon no longer writes, and it arrives at this contract (answers.go's heldReasons, at
 // treeInBacklogOrIceboxContract). A caller whose contract (the one it states, else its pod's
-// lowest) is below 232 is served each such row as `unclassified` with no `heldBy` (shaping.go's
+// lowest) is below 251 is served each such row as `unclassified` with no `heldBy` (shaping.go's
 // withoutUnadmittedHeldWords), a word every reader of the field admits. So the records of
-// `contract-shapes.json` below 232 hold the domain of `admission.held.*.reason` without the word
-// that was renamed, as the daemon serves them, and the records of 232 hold the new word.
+// `contract-shapes.json` below 251 hold the domain of `admission.held.*.reason` without the word
+// that was renamed, as the daemon serves them, and the records of 251 hold the new word.
 // `packages/contracts/src/legion-api.ts`'s `LEGION_HELD_REASONS` and the controller's
 // `references/admission.md` name the new word, `legion state`'s `admission.held:` line counts
 // under it, and the issue's `why` says "Its tree's root <root> stands in backlog or icebox, …".
@@ -3538,7 +3538,7 @@ package api
 // rather than 404 `no route`. requests.go's RemovedRoutes names the pattern, removed at 205, and
 // the request gate resolves each recorded route through the server's mux to the pattern that
 // serves it, so the request records of 193, 199 and 202 still pass. No request of a plugin moves,
-// and the request records of 232 are 228's under its own number.
+// and the request records of 251 are 228's under its own number.
 // (This entry took 241 when main declared 220: a reading of every open pull request of
 // cybermonklabs/legion on 2026-11-24 found each number from 221 to 240 declared by at least one.
 // The forward merge of 2026-11-24 that brought in e14345bfc8 brought main's 228 (INFRA-1575's
@@ -3547,8 +3547,12 @@ package api
 // between 2026-11-24T09:50:35Z and 09:53:15Z, found 229 (#2230), 230 (#4580) and 231 (#4540)
 // declared above 228, 232 declared by none, and 241 declared by #4771 as well as by this change's
 // own pull request, so this entry moved to 232, the lowest number above main's 228 that no open
-// pull request declares, the number check-daemon-api-contract.sh names. From this entry the last
-// number of answers.go's SupportedContracts is `api.treeInBacklogOrIceboxContract`, after
-// `api.intakeGiveUpsContract`. Read the base's own number and every open pull request again at
-// the next merge rather than from this line.)
-const DaemonAPIVersion = 232
+// pull request declared then. The forward merge of 2026-11-24 that brought in 1b636f3193 found
+// main still at 228 and #5271, which declares 232, in the merge queue ahead of this change: a
+// reading of `const DaemonAPIVersion` at refs/pull/<n>/head for all 483 open pull requests,
+// 2026-11-24T11:34Z-11:36Z, found the highest at 245 (#4960, #5158), and INFRA-3118's tree holds
+// 246 to 250, so this entry moved to 251. From this entry the last number of answers.go's
+// SupportedContracts is `api.treeInBacklogOrIceboxContract`, after `api.intakeGiveUpsContract`.
+// Read the base's own number and every open pull request again at the next merge rather than
+// from this line.)
+const DaemonAPIVersion = 251

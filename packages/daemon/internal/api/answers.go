@@ -47,7 +47,7 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// 193, 202, 205, 213, 219, 220, 228 and 232 are constants rather than their numbers, because the
+// 193, 202, 205, 213, 219, 220, 228 and 251 are constants rather than their numbers, because the
 // entries that added them name them (shapedAnswersContract, the shaped answers' entry;
 // repositoriesLiveContract, dispatch://INFRA-4401's; childRouteRemovedContract,
 // dispatch://INFRA-3178's; cachesSourceContract, dispatch://INFRA-4036's; OwnerPlanContract, the
@@ -565,7 +565,7 @@ var lineKinds = []EnumeratedValue{
 // step is not the owner's acceptance, held before its retro for the issues beneath it, and
 // `task_stopped`, a task its owner stopped, arrived at OwnerPlanContract (version.go's 219). And
 // `tree_in_backlog_or_icebox`, a member of a tree whose root stands in backlog or icebox, arrived
-// at treeInBacklogOrIceboxContract (version.go's 232) in place of the word the field carried for
+// at treeInBacklogOrIceboxContract (version.go's 251) in place of the word the field carried for
 // that hold from heldContract, so ten of the eleven words stay at heldContract. So it is written
 // out value by value, sorted by value, as waitAnswers is. It names each constant rather than
 // reading record.HeldReasons, because a word added to the ladder later arrives at its own
