@@ -67,10 +67,32 @@ func withListenerState(t *testing.T, want set, machineID string) set {
 	return want
 }
 
+// knownSessionPurge is the other entry every set built on listenerGrant has gained since the merge
+// base the fixture records, beside the listener state bucket's subjects (withListenerState): the
+// known-session store's purge of its replaced chunks' markers (internal/kvchunk,
+// session.KnownSessions.purgeChunkMarkers), right after the interest bucket's purge.
+const (
+	interestPurge     = "$JS.API.STREAM.PURGE.KV_envoy_interests"
+	knownSessionPurge = "$JS.API.STREAM.PURGE.KV_envoy_known_sessions"
+)
+
+// sinceMergeBase is a set the fixture records with knownSessionPurge added after its one
+// interestPurge, which it must hold, so a fixture set the addition does not reach fails here rather
+// than compare unchanged.
+func sinceMergeBase(t *testing.T, base set, name string) set {
+	t.Helper()
+	at := slices.Index(base.Publish, interestPurge)
+	require.NotEqual(t, -1, at, "the fixture's %s holds no %s to add %s after", name, interestPurge, knownSessionPurge)
+	require.NotContains(t, base.Publish, knownSessionPurge, "the fixture's %s already holds %s", name, knownSessionPurge)
+	base.Publish = slices.Insert(slices.Clone(base.Publish), at+1, knownSessionPurge)
+	return base
+}
+
 // Every set this package builds is, element for element and in order, the set infra/core built at
-// the merge base, so moving them here rewrites no hub's rendered authorization; the one change
-// since is the listener state bucket's subjects, added to each set built on listenerGrant
-// (withListenerState).
+// the merge base, so moving them here rewrites no hub's rendered authorization; the changes since
+// are the listener state bucket's subjects (withListenerState) and the known-session bucket's purge
+// (sinceMergeBase), each added to every set built on listenerGrant, so every row compares the full
+// list.
 func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 	var base mergeBase
 	readJSON(t, "testdata/merge-base-grants.json", &base)
@@ -85,7 +107,8 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 			"Dispatch":     {withListenerState(t, base.Dispatch[id], id), natsgrant.Dispatch(id)},
 			"Host":         {withListenerState(t, base.Host[id], id), natsgrant.Host(id)},
 		} {
-			requireSet(t, pair.want, pair.got, name+"("+strconv.Quote(id)+")")
+			name := name + "(" + strconv.Quote(id) + ")"
+			requireSet(t, sinceMergeBase(t, pair.want, name), pair.got, name)
 		}
 	}
 	requireSet(t, base.SessionPattern, natsgrant.SessionPattern(), "SessionPattern()")

@@ -15,6 +15,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -282,8 +283,8 @@ func TestALateWritePlannedBeforeADeleteStaysRefusedWhileTheMarkerIsYoungerThanTh
 		t.Fatalf("pass: %v", err)
 	}
 	late := []byte(`{"session_id":"` + key + `","machine_id":"late"}`)
-	if _, _, stored, err := registry.putInterestAt(ctx, key, late, 0); err != nil || stored {
-		t.Fatalf("the late write of %s planned before its delete answered stored=%v (%v), want it refused: the pass purged %d messages, the delete's marker among them, though it was younger than the purge age (%s), so the row the delete removed is back", key, stored, err, purged, interestMarkerPurgeAge)
+	if written, _, err := registry.putInterestAt(ctx, key, Interest{SessionID: key, MachineID: "late"}, late, 0, kvchunk.Layout{}); err != nil || written.Stored {
+		t.Fatalf("the late write of %s planned before its delete answered stored=%v (%v), want it refused: the pass purged %d messages, the delete's marker among them, though it was younger than the purge age (%s), so the row the delete removed is back", key, written.Stored, err, purged, interestMarkerPurgeAge)
 	}
 	if purged != 0 {
 		t.Fatalf("a pass purged %d messages with every marker younger than the purge age, want none", purged)
@@ -669,6 +670,7 @@ func TestAPassWhoseScanTimedOutPurgesNothingAndLeavesTheRegistryHealthy(t *testi
 	}
 	registry := &Registry{roleKV: roles, now: time.Now, index: newSubjectIndex()}
 	registry.cache = newInterestCopy(registry)
+	registry.chunks = kvchunk.NewChunks(registry.now)
 	registry.roleHolders = newRoleHolderCopy(registry)
 	handle := bus.NewKeyValue(kv, earlyEndKV{KeyValue: interests.WatchHandle(), after: 2}, interests.Streams())
 	registry.watcher = kvwatch.New("interest registry", handle, interestCache{registry}, kvwatch.WithScanIdleTimeout(idle))

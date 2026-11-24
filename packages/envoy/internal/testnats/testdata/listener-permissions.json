@@ -85,6 +85,7 @@
       "$KV.envoy_listener.delivery.listener-@MACHINE_ID@.*.*",
       "$KV.envoy_listener.seen.*",
       "$JS.API.STREAM.PURGE.KV_envoy_interests",
+      "$JS.API.STREAM.PURGE.KV_envoy_known_sessions",
       "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.*",
       "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.*.>",
       "$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.*",

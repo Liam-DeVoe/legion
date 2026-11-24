@@ -73,7 +73,11 @@ const inboxes = nats.InboxPrefix + ">"
 //     listener whose grant lacks this bucket does not exit: it logs an ERROR naming the bucket
 //     and delivers without a lease, receiving from its durable only while no other subscriber
 //     holds it;
-//   - the purge of the interest bucket, which its delete-marker collection sends.
+//   - the purge of the interest bucket, which its delete-marker collection sends, and of the
+//     known-session bucket, which the purge of its replaced chunks' markers sends. NATS grants a
+//     purge by stream alone (the subject a purge filters to is in its request), so each reaches
+//     the whole bucket; a user that holds the bucket's writes can already delete or roll up every
+//     key of it, so neither removes a record that user could not.
 //
 // Subscribe: reply inboxes, then the role lanes in the machine's queue group (bus.ListenerQueue),
 // which a listener of an earlier release subscribes in, and in the queue group every listener
@@ -101,7 +105,7 @@ func listenerGrant(machineID string) Permissions {
 		publish = append(publish, KVWrite(bucket)...)
 	}
 	publish = append(publish, ListenerState(machineID)...)
-	publish = append(publish, jsAPI+"STREAM.PURGE."+kvStream+bus.InterestBucket)
+	publish = append(publish, jsAPI+"STREAM.PURGE."+kvStream+bus.InterestBucket, jsAPI+"STREAM.PURGE."+kvStream+bus.KnownSessionBucket)
 	return Permissions{
 		Publish: publish,
 		Subscribe: []string{
@@ -262,8 +266,9 @@ func EdgeRelayReplyPrefix(machineID string) string {
 // lacks that bucket does (cmd/listener, edge mode): one edge pod runs per machine id. The rest of
 // Listener's publish list stays as it is: the stream's info and stored-message get, its durable's
 // calls, JetStream's account info, the KV calls of every bucket of bus.ListenerBuckets but its
-// stream's create, its update and its direct get, the interest bucket's purge and the session
-// consumers' calls.
+// stream's create, its update and its direct get, the purges of the interest bucket and of the
+// known-session bucket (the edge's known-session store runs the chunk-marker pass too), and the
+// session consumers' calls.
 //
 // Subscribe: its own machine's inbox prefix (EdgeInboxPrefix) in place of every reply inbox, so
 // the server delivers it no other client's replies; every session's relay subject

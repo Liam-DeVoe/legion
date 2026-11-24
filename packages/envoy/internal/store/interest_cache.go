@@ -6,26 +6,27 @@ import (
 	"log/slog"
 	"reflect"
 
+	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
 // newInterestCopy is the copy of the interest bucket r keeps, which holds every interest it can
-// decode (decodeInterest) and keeps r's subject index in step with its rows (kvwatch.Rows).
-func newInterestCopy(r *Registry) kvwatch.Copy[Interest] {
-	return kvwatch.NewCopy(kvwatch.Rows[Interest]{Decode: decodeInterest, Stored: r.indexInterestLocked, Removed: r.unindexInterestLocked})
+// decode (decodeStoredLocked) and keeps r's subject index in step with its rows (kvwatch.Rows).
+func newInterestCopy(r *Registry) kvwatch.Copy[storedRow] {
+	return kvwatch.NewCopy(kvwatch.Rows[storedRow]{Decode: r.decodeStoredLocked, Stored: r.indexInterestLocked, Removed: r.unindexInterestLocked})
 }
 
 // indexInterestLocked and unindexInterestLocked keep the subject index in step with the copy: the
 // index is what Match walks, so every interest the copy stores is set in it and every
 // one it removes is taken out. The copy calls each under r.mu, held for writing.
-func (r *Registry) indexInterestLocked(sessionID string, item Interest) {
+func (r *Registry) indexInterestLocked(sessionID string, item storedRow) {
 	if r.index == nil {
 		r.index = newSubjectIndex()
 	}
-	r.index.set(sessionID, item)
+	r.index.set(sessionID, item.Interest)
 }
 
-func (r *Registry) unindexInterestLocked(sessionID string, _ Interest) {
+func (r *Registry) unindexInterestLocked(sessionID string, _ storedRow) {
 	if r.index != nil {
 		r.index.remove(sessionID)
 	}
@@ -35,19 +36,6 @@ func (r *Registry) unindexInterestLocked(sessionID string, _ Interest) {
 // unknown map, and written back by every rewrite of the record, so pods of two builds taking
 // turns at one record during a roll do not drop each other's fields.
 var interestKeys = JSONKeys(reflect.TypeFor[Interest]())
-
-// decodeInterest is the interest a put record of the bucket, delivered or read, leaves in the
-// cache: the fields Interest names, and every other key into its unknown map. A record naming
-// another session than its key is an error wrapping ErrInterestUnbound (boundInterest), as one
-// that does not decode is: the copy keeps no row for it and evicts the row it held, so neither the
-// subject index nor any read of the cache takes its topics.
-func decodeInterest(entry kvwatch.Entry) (Interest, bool, error) {
-	item, err := boundInterest(entry.Key, entry.Value)
-	if err != nil {
-		return Interest{}, false, err
-	}
-	return item, true, nil
-}
 
 // decodeInterestValue reads a stored interest record, keeping the keys this build does not name.
 func decodeInterestValue(data []byte) (Interest, error) {
@@ -70,21 +58,30 @@ func encodeInterest(item Interest) ([]byte, error) {
 // own type's, not the registry's methods, so nothing but the watcher calls them.
 type interestCache struct{ r *Registry }
 
-// BeginRead starts a read of the interest bucket (kvwatch.Copy.BeginRead). Every interest stays.
+// BeginRead starts a read of the interest bucket (kvwatch.Copy.BeginRead), in the copy of its
+// interests and the copy of its chunks alike. Every interest and chunk stays.
 func (c interestCache) BeginRead(read kvwatch.Read) {
 	r := c.r
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cache.BeginRead(read)
+	r.chunks.BeginRead(read)
 }
 
-// Apply takes one record the read delivered (kvwatch.Copy.Delivered), and logs a value it could not
-// decode, which evicted the interest. The revision fence keeps a delayed local write-through and a
-// watcher update from undoing each other.
+// Apply takes one record the read delivered (kvwatch.Copy.Delivered): a chunk into the copy of the
+// chunks, and anything else into the copy of the interests, which joins a manifest from the
+// chunks delivered before it (decodeStoredLocked). It logs a value it could not decode, which
+// evicted the interest. The revision fence keeps a delayed local write-through and a watcher
+// update from undoing each other.
 func (c interestCache) Apply(entry kvwatch.Entry, _ kvwatch.Read) {
 	r := c.r
 	r.mu.Lock()
-	malformed := r.cache.Delivered(entry)
+	var malformed error
+	if kvchunk.IsChunkKey(entry.Key) {
+		malformed = r.chunks.Delivered(entry)
+	} else {
+		malformed = r.cache.Delivered(entry)
+	}
 	r.mu.Unlock()
 	if malformed != nil {
 		r.logger().Warn("registry watcher evicted malformed value",
@@ -95,13 +92,14 @@ func (c interestCache) Apply(entry kvwatch.Entry, _ kvwatch.Read) {
 	}
 }
 
-// CompleteRead removes every interest and fence entry the read found no evidence of: the bucket
-// no longer holds that session's interest.
+// CompleteRead removes every interest, chunk and fence entry the read found no evidence of: the
+// bucket no longer holds that key.
 func (c interestCache) CompleteRead(kvwatch.Read) {
 	r := c.r
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cache.CompleteRead()
+	r.chunks.CompleteRead()
 }
 
 // WaitForCacheReady blocks until both views answer, or until ctx is done. The interest watcher is
