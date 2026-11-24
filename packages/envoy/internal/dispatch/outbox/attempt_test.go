@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // countingPublisher records every topic it is asked to publish, answering each with its entry in
@@ -87,14 +88,24 @@ func TestAnUnreachableNATSReleasesTheBatchAndSendsNothingAfterIt(t *testing.T) {
 	})
 	unreachable := fmt.Errorf("bus: %w: waiting for NATS to reconnect: context deadline exceeded", bus.ErrUnavailable)
 	publisher := &countingPublisher{fail: unreachable}
-	stop := run(t, database, publisher, broker)
-	defer stop()
+	outbox := New(withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}))
+	atRest := restReading(t, outbox)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { outbox.Run(ctx); close(done) }()
+	defer func() {
+		cancel()
+		testwait.Receive(t, "the outbox's Run to return once its context ended", done)
+	}()
 
 	waitFor(t, "the first event's three destinations tried", func() bool { return len(publisher.attempted()) >= 3 })
 	// The hold's first scan and the LISTEN connection's catch-up each wake one scan; after them
-	// nothing does.
-	time.Sleep(500 * time.Millisecond)
+	// nothing does. The window below starts once both are over, as the outbox reports it
+	// (restReading), not after a span of time a slow LISTEN dial can outlast.
+	atRest("the outbox resting after the hold's first scan and the LISTEN connection's catch-up")
 	settled := len(publisher.attempted())
+	// A lower bound on quiet, not an upper bound on work: nothing is due and no wake comes, so a
+	// send in this second is one made with no wake, and load can only make the window see less.
 	time.Sleep(time.Second)
 	topics := publisher.attempted()
 	if len(topics) != settled {

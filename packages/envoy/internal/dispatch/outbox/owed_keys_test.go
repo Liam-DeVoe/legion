@@ -209,8 +209,7 @@ func TestARoleHolderChangeKeepsAMentionCopyBehindAnEarlierForward(t *testing.T) 
 				t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))
 				return
 			}
-			time.Sleep(time.Second)
-			if got := recv.received(); len(got) != 0 {
+			if got := recv.receivedNow(t, rig.client); len(got) != 0 {
 				t.Fatalf("control: %s took %d copies while the earlier event was not due, want none", next, len(got))
 			}
 			dueNow(t, rig.database, earlier.ID)

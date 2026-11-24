@@ -194,27 +194,21 @@ func (r *roleRig) sessionBucket(t *testing.T) (natsgo.KeyValue, error) {
 }
 
 // waitForExpiredSessionKey waits until the session bucket holds no record for sessionID: its
-// maximum age passed and the server dropped the record it stored.
+// maximum age passed and the server dropped the record it stored. Its one bound is the test
+// binary's deadline.
 func (r *roleRig) waitForExpiredSessionKey(t *testing.T, sessionID string) {
 	t.Helper()
 	kv, err := r.sessionBucket(t)
 	if err != nil {
 		t.Fatalf("open the session bucket: %v", err)
 	}
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	waitFor(t, fmt.Sprintf("%s's record to leave the session bucket past its maximum age", sessionID), func() bool {
 		_, err := kv.Get(sessionID)
-		if errors.Is(err, natsgo.ErrKeyNotFound) {
-			return
-		}
-		if err != nil {
+		if err != nil && !errors.Is(err, natsgo.ErrKeyNotFound) {
 			t.Fatalf("read %s's record: %v", sessionID, err)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s's record is still in the session bucket well past its maximum age", sessionID)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return errors.Is(err, natsgo.ErrKeyNotFound)
+	})
 }
 
 // roleClaim is role's claim as the role bucket holds it now.
@@ -379,13 +373,11 @@ func (m *markers) await(t *testing.T, client *bus.Client, subject string) {
 	if err := client.Connection().PublishMsg(msg); err != nil {
 		t.Fatalf("publish a marker to %s: %v", subject, err)
 	}
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
+	waitFor(t, fmt.Sprintf("the subscription to %s to take the marker published behind the outbox's sends", subject), func() bool {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		return m.taken[id]
-	}) {
-		t.Fatalf("the subscription to %s never took the marker published behind the outbox's sends", subject)
-	}
+	})
 }
 
 // narrowAgentCapture has the stream capture the agent subjects of holders alone, in place of every
@@ -851,7 +843,7 @@ func TestOneRefusedSubjectFailsOnlyItsOwnEvent(t *testing.T) {
 	config := fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ { nkey: %q, permissions: { publish: { allow: [\">\"], deny: [%q] } } } ]\n}\n",
 		public, contracts.LegacyAgentSubject(holderOf(denied)))
 	_, url := testnats.StartConfig(t, config, []string{"-js"}, false)
-	client, err := bus.ConnectOwningStream([]string{url}, bus.WithEnvironment(bustest.SeedOnly(seed)))
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithEnvironment(testnats.SeedOnly(seed)))
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
@@ -876,10 +868,15 @@ func TestOneRefusedSubjectFailsOnlyItsOwnEvent(t *testing.T) {
 	for index, event := range seeded {
 		attempts, failure, _ := eventState(t, rig.database, event.ID)
 		if index == denied {
-			if publishedAt(t, rig.database, event.ID) != nil || attempts != 1 || failure == nil ||
+			// One scan claims due rows until none is left, and the denied event's first back-off
+			// (retry.Delay(1)) is a second: a scan of 50 forwards slower than that, as one beside
+			// the package's other tests can be, reads it again once it falls due and is denied
+			// again. So the row holds the denial and no publication, not how many denials fit in
+			// the scan.
+			if publishedAt(t, rig.database, event.ID) != nil || attempts < 1 || failure == nil ||
 				!strings.Contains(*failure, bus.ErrPublishDenied.Error()) {
-				t.Fatalf("the denied holder's event: published %v, attempt_count %d, publish_error %v; want it backed off with the denial",
-					publishedAt(t, rig.database, event.ID) != nil, attempts, failure)
+				t.Fatalf("the denied holder's event: published %v, attempt_count %d, publish_error %q; want it backed off with the denial",
+					publishedAt(t, rig.database, event.ID) != nil, attempts, publishFailure(failure))
 			}
 			continue
 		}

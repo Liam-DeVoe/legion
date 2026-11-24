@@ -61,9 +61,8 @@ func TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend(t *testing.T) {
 	// The fallback pass, with the attempt still unpinned and owed a resend, and the role still
 	// unnamed by the outbox.
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
-	time.Sleep(time.Second)
 	row = readHeldCopy(t, rig.database, commentID, contracts.LegacyAgentSubject(holder))
-	got := claimant.received()
+	got := claimant.receivedNow(t, rig.client)
 	t.Logf("after fallback pass: row settled=%v published=%v; claimant got %+v", row.settled, row.published, got)
 	if row.published || len(got) != 0 {
 		t.Errorf("the fallback pass published the claimant's copy (keys %v) while the unnamed mention it waited on is still owed a resend, which may pin the claimant and land under %s beside it",

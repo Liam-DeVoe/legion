@@ -6,6 +6,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A role forward the stream never acknowledges holds back only its own chain: another issue's
@@ -56,11 +57,7 @@ func TestAForwardTheStreamDoesNotAcknowledgeDoesNotDelayAnotherIssuesEvents(t *t
 	defer stop()
 
 	held := rig.routedEvent(t, "T-1", stalledRole, model.Actor{Kind: "user", ID: "alice"})
-	select {
-	case <-stalled.arrived:
-	case <-time.After(hangGuard):
-		t.Fatalf("the stalled holder never received its forward within %s", hangGuard)
-	}
+	testwait.Receive(t, "the stalled holder's forward", stalled.arrived)
 
 	// That forward's wait for an acknowledgement is now running. Another issue's event is
 	// committed in it.

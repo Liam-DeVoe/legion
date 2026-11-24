@@ -113,9 +113,7 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 	})
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
-
-	if got := recv.received(); len(got) != 0 {
+	if got := recv.receivedNow(t, rig.client); len(got) != 0 {
 		t.Fatalf("%s was sent %v within the bound, want nothing: the forward waits while a send of an unnamed mention no key stands for is owed on an attempt younger than %s, and the owner's later event waits behind it",
 			holder, keysOf(got), unnamedForwardBound)
 	}
@@ -181,8 +179,7 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
 
 	waitFor(t, "the comment's copy the row owes the holder", func() bool { return len(recv.received()) > 1 })
-	time.Sleep(time.Second)
-	copies := recv.received()
+	copies := recv.receivedNow(t, rig.client)
 	if len(copies) != 2 || copies[1].SourceEventID != fmt.Sprint(comment.ID) {
 		t.Fatalf("%s was sent %+v once the mentions settled, want the later event (%d) and then the comment (%d), each once: the row delivers the comment the forward gave up, and delivers it once",
 			holder, copies, later.ID, comment.ID)

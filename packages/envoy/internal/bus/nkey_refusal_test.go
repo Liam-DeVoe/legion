@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -33,7 +32,7 @@ func TestANkeyConnectionRefusedTwiceClosesAsAtTheMergeBase(t *testing.T) {
 	seed, public := testnats.User(t)
 	_, other := testnats.User(t)
 	server, url := testnats.StartNkeyAuthorizedServer(t, public)
-	nc, err := bus.Dial("nkey-refusal-test", []string{url}, bustest.SeedOnly(seed))
+	nc, err := bus.Dial("nkey-refusal-test", []string{url}, testnats.SeedOnly(seed))
 	require.NoError(t, err)
 	defer nc.Close()
 	require.True(t, nc.IsConnected())

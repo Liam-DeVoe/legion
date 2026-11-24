@@ -76,9 +76,7 @@ func TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease(t *testing.T) {
 	before := time.Now()
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 	after := time.Now()
-	time.Sleep(time.Second)
-
-	if got := recv.received(); len(got) != 0 {
+	if got := recv.receivedNow(t, rig.client); len(got) != 0 {
 		t.Fatalf("the route holder was forwarded %v past the lease while both unnamed mentions are owed a resend, want nothing: one key serves one mention, so neither copy can carry the key the mention a resend pins here would repeat",
 			keysOf(got))
 	}
@@ -188,9 +186,7 @@ func TestAForwardCarriesTheKeyOfAnUnnamedMentionPastItsLease(t *testing.T) {
 	dueNow(t, rig.database, comment.ID)
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
-
-	if copies := recv.received(); len(copies) != 1 {
+	if copies := recv.receivedNow(t, rig.client); len(copies) != 1 {
 		t.Fatalf("%s was sent %+v once the resend was pinned and sent, want the one copy it already has: the copy carries that mention's own key, so the session is shown the comment once",
 			holder, copies)
 	}

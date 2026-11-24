@@ -66,10 +66,9 @@ func TestR17UnrelatedAuthorCopyFirstPass(t *testing.T) {
 	}
 	dueNow(t, rig.database, comment.ID)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
 	_, _, reached = eventState(t, rig.database, comment.ID)
 	t.Logf("R17 SECOND PASS: reached=%v published=%v ses-u copies=%d ses-r copies=%d",
-		reached, publishedAt(t, rig.database, comment.ID) != nil, len(u.received()), len(r.received()))
+		reached, publishedAt(t, rig.database, comment.ID) != nil, len(u.receivedNow(t, rig.client)), len(r.receivedNow(t, rig.client)))
 	if !sentFirst {
 		t.Errorf("ses-u's author copy was not sent in the first pass: it waited for the re-read (%v)", reread.Round(10*time.Millisecond))
 	}

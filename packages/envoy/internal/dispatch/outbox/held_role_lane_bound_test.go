@@ -74,8 +74,7 @@ func TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound(t *test
 	// Within the bound: the attempts are ten seconds short of it, their claims this moment's.
 	agedUnnamedAttempts(t, rig.database, commentID, heldRoleLaneBound-10*time.Second)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
-	if got := recv.received(); len(got) != 1 {
+	if got := recv.receivedNow(t, rig.client); len(got) != 1 {
 		t.Fatalf("%s was sent %v with the attempts %s short of the bound, want the earlier comment alone: the forward waits for the unnamed mentions, and the later event waits behind it",
 			holder, keysOf(got), 10*time.Second)
 	}
@@ -116,8 +115,7 @@ func TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound(t *test
 	}
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
 	waitFor(t, "the comment's copy at the holder", func() bool { return len(recv.received()) == 3 })
-	time.Sleep(time.Second)
-	got := recv.received()
+	got := recv.receivedNow(t, rig.client)
 	var ids []string
 	for _, item := range got {
 		ids = append(ids, item.SourceEventID)

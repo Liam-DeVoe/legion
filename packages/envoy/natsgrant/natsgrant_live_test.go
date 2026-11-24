@@ -19,7 +19,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natsgrant"
@@ -89,7 +88,7 @@ func TestTheEdgeGrantsConsumerCallsReachPastItsPublishList(t *testing.T) {
 		testnats.StaticUser{NKey: sharedKey, Publish: shared.Publish, Subscribe: shared.Subscribe},
 		testnats.StaticUser{NKey: readerKey, Publish: []string{"example.unused"}, Subscribe: []string{">"}},
 	), []string{"-js"}, false)
-	owner, err := bus.ConnectOwningStream([]string{uri}, bus.WithName("shared"), bus.WithEnvironment(bustest.SeedOnly(sharedSeed)))
+	owner, err := bus.ConnectOwningStream([]string{uri}, bus.WithName("shared"), bus.WithEnvironment(testnats.SeedOnly(sharedSeed)))
 	require.NoError(t, err, "the shared listener's user creates the stream")
 	t.Cleanup(owner.Close)
 	const durable = "listener-shared"
@@ -482,7 +481,7 @@ func TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI(t *testing.T) {
 		},
 		[]testnats.StaticUser{{NKey: otherKey, Publish: everything, Subscribe: everything}},
 	), []string{"-js"}, false)
-	owner, err := bus.ConnectOwningStream([]string{uri}, bus.WithName("shared"), bus.WithEnvironment(bustest.SeedOnly(sharedSeed)))
+	owner, err := bus.ConnectOwningStream([]string{uri}, bus.WithName("shared"), bus.WithEnvironment(testnats.SeedOnly(sharedSeed)))
 	require.NoError(t, err, "the shared listener's user creates the stream")
 	t.Cleanup(owner.Close)
 	adminConn, _ := grantedConnection(t, uri, adminSeed)
@@ -650,7 +649,7 @@ func TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt(t
 		testnats.StaticUser{NKey: sharedKey, Publish: shared.Publish, Subscribe: shared.Subscribe},
 		testnats.StaticUser{NKey: adminKey, Publish: []string{">"}, Subscribe: []string{">"}},
 	), []string{"-js"}, false)
-	owner, err := bus.ConnectOwningStream([]string{uri}, bus.WithName("shared"), bus.WithEnvironment(bustest.SeedOnly(sharedSeed)))
+	owner, err := bus.ConnectOwningStream([]string{uri}, bus.WithName("shared"), bus.WithEnvironment(testnats.SeedOnly(sharedSeed)))
 	require.NoError(t, err, "the shared listener's user creates the stream")
 	t.Cleanup(owner.Close)
 	adminConn, _ := grantedConnection(t, uri, adminSeed)
@@ -705,7 +704,7 @@ func TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream(t *testing.T) {
 		testnats.StaticUser{NKey: sharedKey, Publish: shared.Publish, Subscribe: shared.Subscribe},
 		testnats.StaticUser{NKey: adminKey, Publish: []string{">"}, Subscribe: []string{">"}},
 	), []string{"-js"}, false)
-	owner, err := bus.ConnectOwningStream([]string{uri}, bus.WithName("shared"), bus.WithEnvironment(bustest.SeedOnly(sharedSeed)))
+	owner, err := bus.ConnectOwningStream([]string{uri}, bus.WithName("shared"), bus.WithEnvironment(testnats.SeedOnly(sharedSeed)))
 	require.NoError(t, err, "the shared listener's user creates the stream")
 	t.Cleanup(owner.Close)
 	adminConn, _ := grantedConnection(t, uri, adminSeed)

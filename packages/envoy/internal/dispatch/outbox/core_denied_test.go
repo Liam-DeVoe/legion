@@ -16,7 +16,6 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -33,19 +32,19 @@ const roleTopic = "notifications.role.reviewer"
 // grantedNATS starts a NATS server whose one nkey user may publish only to allow, and returns the
 // deployed Dispatch server's bus client connected as that user, a plain connection of the same
 // user that tests subscribe through, as the listener's lanes would, and the server's grant. Both
-// read the user's seed through a lookup of their own (bustest.SeedOnly) rather than the process's
+// read the user's seed through a lookup of their own (testnats.SeedOnly) rather than the process's
 // environment, so a test that calls this runs beside tests that connect as other users.
 func grantedNATS(t *testing.T, allow ...string) (*bus.Client, *natsgo.Conn, *testnats.NkeyGrant) {
 	t.Helper()
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, allow...)
-	client, err := bus.ConnectOwningStream([]string{grant.URL}, bus.WithEnvironment(bustest.SeedOnly(seed)))
+	client, err := bus.ConnectOwningStream([]string{grant.URL}, bus.WithEnvironment(testnats.SeedOnly(seed)))
 	if err != nil {
 		t.Fatalf("connect as the granted user: %v", err)
 	}
 	t.Cleanup(client.Close)
 
-	subscriber, err := bus.Dial("test-subscriber", []string{grant.URL}, bustest.SeedOnly(seed))
+	subscriber, err := bus.Dial("test-subscriber", []string{grant.URL}, testnats.SeedOnly(seed))
 	if err != nil {
 		t.Fatalf("connect the subscriber: %v", err)
 	}

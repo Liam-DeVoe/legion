@@ -80,16 +80,8 @@ func TestAnOwnerOfTheStalledHoldersBatchIsReleasedBeforeTheBatchEnds(t *testing.
 	stop := runDeps(t, deps)
 	defer stop()
 
-	select {
-	case <-stalled.arrived:
-	case <-time.After(hangGuard):
-		t.Fatalf("the stalled holder never received its forward within %s", hangGuard)
-	}
-	select {
-	case <-live.arrived:
-	case <-time.After(hangGuard):
-		t.Fatalf("the live holder never received its issue's first forward within %s", hangGuard)
-	}
+	testwait.Receive(t, "the stalled holder's forward", stalled.arrived)
+	testwait.Receive(t, "the live holder's first forward of its issue", live.arrived)
 
 	// The stalled holder's forward is still waiting for an acknowledgement, and every send of the
 	// other owner of its batch has been answered. That owner's next event is committed in it.

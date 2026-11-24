@@ -1826,12 +1826,12 @@ func TestAFullBatchOfFailingEventsHoldsBackOnlyItsOwnIssue(t *testing.T) {
 	publisher := &recordingPublisher{failSummary: "T-1 message created: poison"}
 
 	// A scan that left failed rows due would read the same full batch again and never return; the
-	// deadline turns that into a named failure instead of a package timeout.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// test binary's deadline less testwait's margin turns that into a named failure instead of a
+	// package timeout.
+	ctx := testwait.Context(t)
 	holding(t, Deps{Store: database, Publisher: publisher, Broker: broker}).scan(ctx, unfenced{})
 	if ctx.Err() != nil {
-		t.Fatal("scan did not return within 30s: the failed rows keep refilling every batch")
+		t.Fatal("scan did not return before the test binary's deadline: the failed rows keep refilling every batch")
 	}
 
 	if publishedAt(t, database, valid.ID) == nil {
@@ -2171,8 +2171,20 @@ func publishedAt(t *testing.T, database *store.Store, eventID int64) *time.Time 
 //     with its bound (waitWithin): measured on a machine eight other tests load, such a bound fails
 //     a correct product.
 //
-// Every other wait in the package is bounded by the test binary's deadline alone (waitFor,
-// testwait.Receive), so the load of the tests beside it only makes the same reading come later.
+// A parallel test's wait is bounded by the test binary's deadline alone (waitFor, testwait.Until,
+// testwait.Receive, testwait.Context), so the load of the tests beside it only makes the same
+// reading come later, but for these bounds, each kept on purpose because it tells a correct
+// outbox from a broken one, and each set from the product's own value it tells apart, with the
+// slack that leaves for load:
+//   - TestAnEventCommittedWhileItsOwnerIsInFlightIsReadWhenThatOwnerIsBack: half the 64 s
+//     back-off a scan that read past the owner would wait for (32 s);
+//   - TestAnOwnerOfTheStalledHoldersBatchIsReleasedBeforeTheBatchEnds and
+//     TestAForwardTheStreamDoesNotAcknowledgeDoesNotDelayAnotherIssuesEvents: 60 s
+//     (hangGuard), against the 10 min acknowledgement wait a held batch would add;
+//   - TestTheOutboxDoesNotScanWhileIdle: backOffDue, 10 s, inside which the insert's
+//     notification and the scan it wakes must arm the back-off's timer, millisecond work;
+//   - TestAnUnreachableNATSReleasesTheBatchAndSendsNothingAfterIt: a 1 s window that must stay
+//     quiet once the outbox rests, a lower bound on quiet that load can only make see less.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const outboxTestParallelism = 8

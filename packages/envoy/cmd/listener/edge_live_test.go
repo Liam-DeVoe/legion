@@ -25,7 +25,6 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
@@ -91,7 +90,7 @@ func startEdgeLiveHub(t *testing.T, grants map[string]natsgrant.Permissions, dis
 	}
 	hub.server, hub.uri = testnats.StartImageConfig(t, testnats.HubImage, testnats.GrantedUsersConfig(static...), []string{"-js"}, false)
 	dispatchSeed := hub.seeds[dispatch]
-	client, err := bus.ConnectOwningStream([]string{hub.uri}, bus.WithName(dispatch), bus.WithEnvironment(bustest.SeedOnly(dispatchSeed)))
+	client, err := bus.ConnectOwningStream([]string{hub.uri}, bus.WithName(dispatch), bus.WithEnvironment(testnats.SeedOnly(dispatchSeed)))
 	if err != nil {
 		t.Fatalf("Dispatch's user creates the stream: %v", err)
 	}

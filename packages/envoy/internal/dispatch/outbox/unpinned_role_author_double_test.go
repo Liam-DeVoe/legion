@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -153,11 +152,10 @@ func TestAnUnnamedRoleMentionPinnedToTheThreadAuthorShowsItTheCommentTwice(t *te
 		t.Fatalf("the comment was not published once the mention of %s settled: attempt_count %d, publish_error %v, reached %v",
 			target, attempts, failure, reached)
 	}
-	time.Sleep(time.Second)
 	// The outbox sends that session nothing further - its copy went, and the settled mention
 	// leaves it nothing to publish - so the comment stands at its host under two keys: this copy
 	// under the event's own, and the mention's steer under the mention's. That is the double.
-	copies = wrote.received()
+	copies = wrote.receivedNow(t, rig.client)
 	if len(copies) != 1 || copies[0].DedupeKey != eventKey {
 		t.Fatalf("%s was sent %+v once its mention settled, want the one author copy under %q: the mention's own send carries %q, which this copy does not claim, so that host is shown the comment twice",
 			author, copies, eventKey, mentionKey)
@@ -255,10 +253,9 @@ func TestAnUnnamedRoleMentionPinnedToAFollowerShowsItTheCommentTwice(t *testing.
 		t.Fatalf("the comment was not published once the mention of %s settled: attempt_count %d, publish_error %v, reached %v",
 			target, attempts, failure, reached)
 	}
-	time.Sleep(time.Second)
 	// The outbox sends that session nothing further, so the comment stands at its host under two
 	// keys: this copy under the event's own, and the mention's steer under the mention's.
-	copies = follows.received()
+	copies = follows.receivedNow(t, rig.client)
 	if len(copies) != 1 || copies[0].DedupeKey != eventKey {
 		t.Fatalf("%s was sent %+v once its mention settled, want the one follower copy under %q: the mention's own send carries %q, which this copy does not claim, so that host is shown the comment twice",
 			follower, copies, eventKey, mentionKey)
@@ -344,10 +341,9 @@ func TestAnUnnamedRoleMentionPinnedToAPrimaryDocumentAuthorShowsItTheCommentTwic
 		t.Fatalf("the comment was not published once the mention of %s settled: attempt_count %d, publish_error %v, reached %v",
 			target, attempts, failure, reached)
 	}
-	time.Sleep(time.Second)
 	// The outbox sends that session nothing further, so the comment stands at its host under two
 	// keys: this copy under the event's own, and the mention's steer under the mention's.
-	copies = wrote.received()
+	copies = wrote.receivedNow(t, rig.client)
 	if len(copies) != 1 || copies[0].DedupeKey != eventKey {
 		t.Fatalf("%s was sent %+v once its mention settled, want the one document author copy under %q: the mention's own send carries %q, which this copy does not claim, so that host is shown the comment twice",
 			writer, copies, eventKey, mentionKey)

@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/session"
@@ -149,6 +150,7 @@ func TestABackedOffEventHoldsBackOnlyItsDestination(t *testing.T) {
 }
 
 func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
+	t.Parallel()
 	_, url := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{url})
 	if err != nil {
@@ -238,6 +240,7 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 }
 
 func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role, holder = "reviewer", "S"
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
@@ -526,6 +529,7 @@ func takesTheOwnersEventsInOrderThroughATopicFailure(t *testing.T, oneBatch bool
 // keepsTheOrderOnTheSessionsOwnSubject is the control: both events go to S's own subject, which
 // refuses the first, and the second waits behind it on that key.
 func keepsTheOrderOnTheSessionsOwnSubject(t *testing.T) {
+	t.Parallel()
 	rig := newSessionOrderRig(t)
 	rig.refuse(t, contracts.AgentTopicPrefix)
 	person := model.Actor{Kind: "user", ID: "alice"}
@@ -773,9 +777,11 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 		shifted := shiftedClock(t, database)
 		counter := &sendCounter{}
 		outbox := holding(t, Deps{Store: shifted, Publisher: countingClient{Client: client, counter: counter}})
-		// The database's clock as the scan starts, and again once the back-off is recorded: the
-		// back-off is set on that clock, so it falls after the first reading and within the first
-		// back-off's second of the second, however long a loaded machine takes between them.
+		// The database's clock as the scan starts, and again once the back-off is recorded. The
+		// record sets next_attempt_at to its own transaction's now() plus the first attempt's
+		// back-off (backOffAttempt: retry.Delay(1), which is retry.BaseDelay), and that now() falls
+		// between the two readings, so next_attempt_at does too, shifted by that back-off, however
+		// long a loaded machine takes between them.
 		var before time.Time
 		if err := shifted.Pool.QueryRow(context.Background(), `select now()`).Scan(&before); err != nil {
 			t.Fatalf("read the database's clock: %v", err)
@@ -788,9 +794,10 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 			`select now(), next_attempt_at from events where id = $1`, event.ID).Scan(&after, &nextAttempt); err != nil {
 			t.Fatalf("read the event's next attempt: %v", err)
 		}
-		if !nextAttempt.After(before) || nextAttempt.After(after.Add(time.Second)) {
-			t.Fatalf("the next attempt is at %s, want it after the database's now() as the scan began (%s) and within the first back-off's second of its now() once the back-off was recorded (%s)",
-				nextAttempt, before, after)
+		firstBackOff := retry.Delay(1)
+		if nextAttempt.Before(before.Add(firstBackOff)) || nextAttempt.After(after.Add(firstBackOff)) {
+			t.Fatalf("the next attempt is at %s, want it the first back-off (%s) after the database's now() of the record, which fell between %s and %s",
+				nextAttempt, firstBackOff, before, after)
 		}
 		if until := time.Until(nextAttempt); until < 50*time.Minute {
 			t.Fatalf("the next attempt is %v past the pod's clock, want it on the database's, an hour ahead", until)

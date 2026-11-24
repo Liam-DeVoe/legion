@@ -531,7 +531,6 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 		// among the 60 non-burst readings of the loaded campaign at head 844b43ec05b2 on
 		// 2026-11-09; every other reading of it was 50, 55 or 60.
 		minOutstanding = 20
-		waitTime       = 3 * time.Minute
 	)
 	for _, load := range []struct {
 		name string
@@ -599,10 +598,9 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 					sends := &outstandingSends{Publisher: rig.client}
 					stop := runOutboxThrough(t, outboxStore, rig.client, sends, rig.broker)
 					defer stop()
-					deadline := started.Add(waitTime)
-					for unpublishedCount(t, rig.database) > 0 && time.Now().Before(deadline) {
-						time.Sleep(10 * time.Millisecond)
-					}
+					// The drain's one bound is the test binary's deadline: how long it takes is
+					// logged, never asserted, so a loaded machine only reads a lower rate.
+					waitFor(t, name+": every event published", func() bool { return unpublishedCount(t, rig.database) == 0 })
 					elapsed := time.Since(started)
 					left := unpublishedCount(t, rig.database)
 					rate := float64(count-left) / elapsed.Seconds()
@@ -612,9 +610,7 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 					} else {
 						t.Logf("%s: published %d of %d events in %s: %.1f events/s, %d sends outstanding at the peak", name, count-left, count, elapsed.Round(time.Millisecond), rate, peak)
 					}
-					if left > 0 {
-						t.Fatalf("%s: %d of %d events left unpublished after %s", name, left, count, waitTime)
-					}
+
 					// One issue is one chain, so a burst holds a send or three at once whatever
 					// the drain does, and reads nothing here.
 					if !tc.burst && peak < minOutstanding {

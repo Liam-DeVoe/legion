@@ -177,11 +177,56 @@ func waitForPublished(t *testing.T, database *store.Store, counter *sendCounter,
 	}
 }
 
-// outboxHangGuard bounds the polling loop of the row below, whose waits are bounded by the test
-// binary's deadline instead (waitFor). It is a hang guard, not a budget: the row asserts what the
-// outbox did and in what order, never how fast it did it, so load only makes the same reading take
-// longer to reach, and a loop that reaches this bound means the thing it waited for never happened.
-const outboxHangGuard = 60 * time.Second
+// restReading installs the hooks that let a test read when outbox rests, and returns atRest, which
+// waits for the holder to be waiting with nothing pending and nothing scanned since, a wait it
+// entered with the LISTEN connection already up: every catch-up scan - the hold's take and that
+// connection's - has run, and only a new event or a timer can wake the outbox again. Call it before
+// Run starts, so nothing races the hooks. A wait is a rest only while the outbox's NATS connection
+// is up (afterServeWait), so a test whose publisher reads disconnected cannot use it.
+//
+// restingAt is the claims the outbox had made when the holder last entered its wait with nothing
+// pending and the LISTEN connection already up, and -1 until it enters one. A wait entered with a
+// wake pending records nothing, because the scan that wake causes is still to come; a wait entered
+// before that connection is up records nothing either, because the connection's own catch-up scan
+// is still to come. The holder stores this before it waits and scans only after, so while
+// restingAt equals the claims made the holder is waiting and nothing has scanned since - a state
+// that holds for as long as the outbox has nothing to do, rather than an edge a reader can arrive
+// too late to see.
+//
+// Both hooks take restMu, and the wait's own queue is read under it rather than handed in, because
+// the two facts have to be read together: the holder could otherwise record a rest in the gap
+// between the flag going up and the wake that follows it, and the scan that wake causes would then
+// land after the reading. Under one lock a wait that runs before the connection is reported is
+// refused by the flag, and one that runs while that wake is still queued is refused by the queue.
+// A wait after the wake's own scan finds the queue empty and records a rest.
+func restReading(t *testing.T, outbox *Outbox) func(what string) {
+	var restMu sync.Mutex
+	listening := false
+	var restingAt atomic.Int64
+	restingAt.Store(-1)
+	outbox.afterListening = func() {
+		restMu.Lock()
+		defer restMu.Unlock()
+		listening = true
+		// One wake more, so the holder is certain to enter a wait after the flag is set.
+		// OnConnected signals before it reports, so the holder may have taken that connection's
+		// own wake, scanned and parked again while the flag was still false.
+		outbox.signal()
+	}
+	outbox.afterServeWait = func() {
+		restMu.Lock()
+		defer restMu.Unlock()
+		if listening && len(outbox.wake) == 0 {
+			restingAt.Store(outbox.claims.Load())
+		}
+	}
+	return func(what string) {
+		t.Helper()
+		// restingAt is read first, so the claims it is compared with are never older than it: an
+		// equal pair is a wait no scan has followed, never a scan this read straddled.
+		waitFor(t, what, func() bool { return restingAt.Load() == outbox.claims.Load() })
+	}
+}
 
 // backOffDue is how long the back-off of the row below is due in, and the one bound the row puts
 // on the outbox's own work: the insert's notification must reach the holder, and the scan it
@@ -228,58 +273,9 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 		defer armedMu.Unlock()
 		return slices.Clone(armed)
 	}
-	// restingAt is the claims the outbox had made when the holder last entered its wait with
-	// nothing pending and the LISTEN connection already up, and -1 until it enters one. A wait
-	// entered with a wake pending records nothing, because the scan that wake causes is still to
-	// come; a wait entered before that connection is up records nothing either, because the
-	// connection's own catch-up scan is still to come and would land inside the idle window
-	// below. The holder stores this before it waits and scans only after, so while restingAt
-	// equals the claims made the holder is waiting and nothing has scanned since - a state that
-	// holds for as long as the outbox has nothing to do, rather than an edge a reader can arrive
-	// too late to see.
-	//
-	// Both hooks take restMu, and the wait's own queue is read under it rather than handed in,
-	// because the two facts have to be read together: the holder could otherwise record a rest
-	// in the gap between the flag going up and the wake that follows it, and the scan that wake
-	// causes would then land inside the window. Under one lock a wait that runs before the
-	// connection is reported is refused by the flag, and one that runs while that wake is still
-	// queued is refused by the queue. A wait after the wake's own scan finds the queue empty and
-	// records a rest, which is the rest this row is for: by then that scan is one of the claims
-	// restingAt is compared with.
-	var restMu sync.Mutex
-	listening := false
-	var restingAt atomic.Int64
-	restingAt.Store(-1)
-	outbox.afterListening = func() {
-		restMu.Lock()
-		defer restMu.Unlock()
-		listening = true
-		// One wake more, so the holder is certain to enter a wait after the flag is set.
-		// OnConnected signals before it reports, so the holder may have taken that connection's
-		// own wake, scanned and parked again while the flag was still false.
-		outbox.signal()
-	}
-	outbox.afterServeWait = func() {
-		restMu.Lock()
-		defer restMu.Unlock()
-		if listening && len(outbox.wake) == 0 {
-			restingAt.Store(outbox.claims.Load())
-		}
-	}
+	atRest := restReading(t, outbox)
 	go func() { outbox.Run(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
-	// atRest waits for the holder to be waiting with nothing pending and nothing scanned since,
-	// a wait it entered with the LISTEN connection already up. That is this row's "the outbox has
-	// nothing left to do": every catch-up scan - the hold's take, and that connection's - has
-	// already run, and only a new event can wake the outbox again. This row's publisher never
-	// disconnects, so such a wait is always one the holder reached with nothing to scan, never
-	// one it reached with NATS down.
-	atRest := func(what string) {
-		t.Helper()
-		// restingAt is read first, so the claims it is compared with are never older than it: an
-		// equal pair is a wait no scan has followed, never a scan this read straddled.
-		waitFor(t, what, func() bool { return restingAt.Load() == outbox.claims.Load() })
-	}
 
 	waitFor(t, "the outbox taking the publisher hold", outbox.Publishing)
 	// The first scan and the LISTEN connection's catch-up run as the hold is taken; the row reads
@@ -298,17 +294,16 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 		IssueKey: new("T-1"), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
 		Payload: model.Message{ID: "fresh", IssueKey: new("T-1"), Body: "fresh"},
 	})
-	// A local clock for the hang guards and the readings below alone: no assertion reads it.
+	// A local clock for the readings below alone: no assertion reads it.
 	committed := time.Now()
 	// The 12 s window above showed this outbox scans on nothing periodic, so a claim at all after
-	// this commit is the notification's; the bound only stops the row hanging when no claim ever
-	// comes.
+	// this commit is the notification's.
 	waitFor(t, "the event another process committed claimed", func() bool {
 		return outbox.claims.Load() != idleFrom
 	})
 	t.Logf("the event another process committed was claimed %s after its commit", time.Since(committed).Round(time.Millisecond))
-	// The same hang guard: the claim above is this event's own scan, so the only way to this bound
-	// is a publication that never happens at all.
+	// The claim above is this event's own scan, so a wait that never ends here is a publication
+	// that never happens at all.
 	waitFor(t, "the other process's event published", func() bool { return publishedAt(t, database, fresh.ID) != nil })
 	// The sequence below starts from an outbox at rest: the wait above returns as soon as the
 	// other process's event is marked published, while the batch that published it has still to
@@ -325,8 +320,10 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	// due is the moment the database computed for this back-off; every assertion about it below is
 	// made against that value, on the database's own clock.
 	backedOff, due := appendBackedOffEvent(t, other, backOffDue)
-	// A local clock for this loop's hang guard and the readings below alone: no assertion reads it.
+	// A local clock for the readings below alone: no assertion reads it.
 	inserted := time.Now()
+	// The loop's one bound is the test binary's deadline less testwait's margin, as every wait's.
+	giveUp := testwait.Context(t)
 	var published time.Time
 	for {
 		// Read oldest first, so nothing is judged against a reading younger than itself: the waits,
@@ -339,10 +336,7 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 			published = *at
 			break
 		}
-		// The one clock left in this loop is a hang guard, 60 s against the backOffDue the work
-		// waits out, so no load reaches it: it fires only when nothing was published at all. A
-		// hang guard needs no agreement between clocks, so the local one serves.
-		if time.Since(inserted) > outboxHangGuard {
+		if giveUp.Err() != nil {
 			t.Fatalf("the back-off due in %s was never published: %s after its insert the outbox had armed %v",
 				backOffDue, time.Since(inserted).Round(time.Millisecond), waitsSince())
 		}
@@ -527,7 +521,8 @@ func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 // a batch's sends go unanswered and a probe of their connection fails, and releases the publisher
 // hold. It does not take the hold back while its connection stays silent, although the connection
 // still reports itself connected: the other process, whose NATS works, takes it and publishes the
-// event, within 10 s of the silence.
+// event. How soon it does is TestAPublisherCutFromNATSHandsOverWithin10Seconds's subject
+// (cmd/dispatch/multiprocess_test.go), which bounds it at 10 s across two processes.
 func TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther(t *testing.T) {
 	t.Parallel()
 	_, url := testnats.Start(t)
@@ -587,12 +582,12 @@ func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 	done := make(chan struct{})
 	go func() { standby.Run(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
+	// Counted from the standby's first try: its LISTEN connection's catch-up wake, which comes as it
+	// starts, lands inside the count and is allowed for below.
 	waitFor(t, "the standby trying the publisher hold once", func() bool {
 		return len(tracer.matching("insert into duty_holds")) > 0
 	})
-	// The standby's LISTEN connection's catch-up wake comes as it starts.
-	time.Sleep(time.Second)
-
+	started := time.Now()
 	takes, reads := len(tracer.matching("insert into duty_holds")), len(tracer.matching("from duty_holds where name"))
 	var last model.Event
 	for index := range 100 {
@@ -604,10 +599,18 @@ func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 	}
 	takes = len(tracer.matching("insert into duty_holds")) - takes
 	reads = len(tracer.matching("from duty_holds where name")) - reads
-	t.Logf("while 100 events were written and published, the standby sent %d takes of the hold and %d reads of its lapse", takes, reads)
-	if takes > 3 || reads > 3 {
-		t.Fatalf("the standby sent %d takes of the publisher hold and %d reads of its lapse while the holder wrote 100 events, want at most 3 of each: its timer to the lapse alone",
-			takes, reads)
+	// The standby's own timer to the holder's lapse fires about once each TTL - Renew, as each
+	// renewal moves the lapse on, and tries the hold each time; with the catch-up wake and one try
+	// in flight that is the span over TTL - Renew, plus two. On a loaded machine the 100 writes take
+	// longer and the timer fires more often, so the allowance is read from the span this run took,
+	// not fixed: a standby that tried the hold for every event would send about 100.
+	span := time.Since(started)
+	allowed := int(span/(publisherHoldOptions.TTL-publisherHoldOptions.Renew)) + 2
+	t.Logf("while 100 events were written and published over %s, the standby sent %d takes of the hold and %d reads of its lapse (at most %d each)",
+		span.Round(time.Millisecond), takes, reads, allowed)
+	if takes > allowed || reads > allowed {
+		t.Fatalf("the standby sent %d takes of the publisher hold and %d reads of its lapse while the holder wrote 100 events over %s, want at most %d of each: its timer to the lapse alone",
+			takes, reads, span.Round(time.Millisecond), allowed)
 	}
 }
 

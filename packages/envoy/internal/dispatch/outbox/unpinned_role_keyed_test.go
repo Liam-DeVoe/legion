@@ -63,13 +63,10 @@ func TestACopyAnUnnamedRoleMentionMayBePinnedToCarriesThatMentionsKey(t *testing
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 
 	want := contracts.AgentSendDedupeKey(holder, model.CommentMentionIdempotencyKey(commentID, target, "steer"))
-	// The copy is the one send this pass makes to that session, so a pass that made none is read
-	// for what it is rather than timed out: the wait it took instead is the finding.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && len(recv.received()) == 0 {
-		time.Sleep(20 * time.Millisecond)
-	}
-	forwards := recv.received()
+	// The copy is the one send this pass makes to that session, and the pass returned once the
+	// stream acknowledged it, so every copy it sent is read here (receivedNow): a pass that made
+	// none reads none, for what it is.
+	forwards := recv.receivedNow(t, rig.client)
 	if len(forwards) != 1 || forwards[0].DedupeKey != want {
 		t.Fatalf("%s was sent %+v in the pass that read the comment, want one copy under %q, the key the mention of %s carries wherever its sender pins it: a copy under the event's own key %s waits for the attempt or shows that host the comment twice",
 			holder, forwards, want, target, fmt.Sprintf("dispatch-%d", comment.ID))
@@ -91,9 +88,7 @@ func TestACopyAnUnnamedRoleMentionMayBePinnedToCarriesThatMentionsKey(t *testing
 	dueNow(t, rig.database, comment.ID)
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
-
-	if copies := recv.received(); len(copies) != 1 {
+	if copies := recv.receivedNow(t, rig.client); len(copies) != 1 {
 		t.Fatalf("%s was sent %+v once its mention was pinned and sent, want the one copy it already has: the copy carries that mention's own key, so the session is shown the comment once",
 			holder, copies)
 	}
