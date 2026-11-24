@@ -56,7 +56,7 @@ type ConsumerHold struct {
 // and the bucket must be idle: no write lands on it while the hold runs.
 func HoldConsumerLost(t testing.TB, conn *natsgo.Conn, stream, consumer string) *ConsumerHold {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
@@ -85,7 +85,7 @@ func HoldConsumerLost(t testing.TB, conn *natsgo.Conn, stream, consumer string) 
 	if err != nil {
 		t.Fatalf("follow the consumer creates on %s: %v", stream, err)
 	}
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("follow the consumer creates on %s: %v", stream, err)
 	}
 	heartbeat := &natsgo.Msg{

@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"testing"
@@ -19,10 +20,12 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // openBindingRegistry opens a registry on the test's own session bucket and waits until its copy
-// follows the bucket.
+// follows the bucket (kvwatch.Watcher.Following). A give-up prints the watcher's state as the last
+// try read it.
 func openBindingRegistry(t *testing.T, client *bus.Client, options ...SessionRegistryOption) *SessionRegistry {
 	t.Helper()
 	r, err := OpenSessionRegistry(t.Context(), client.Conn, append([]SessionRegistryOption{WithSessionReplicas(1), WithSessionTTL(time.Minute)}, options...)...)
@@ -30,19 +33,24 @@ func openBindingRegistry(t *testing.T, client *bus.Client, options ...SessionReg
 		t.Fatalf("open session registry: %v", err)
 	}
 	t.Cleanup(r.StopWatch)
-	waitFor(t, 5*time.Second, r.watcher.Following)
+	testwait.Until(t, "the session registry's copy to follow its bucket", func() (string, bool) {
+		following := r.watcher.Following()
+		return fmt.Sprintf("Following %t, NeedsRead %t, Err %v", following, r.watcher.NeedsRead(), r.watcher.Err()), following
+	})
 	return r
 }
 
 // awaitApplied waits until the registry's copy has taken the record stored for key at revision,
 // whether it kept it or evicted it: the copy's fence holds the revision of every record it applied.
+// A give-up prints the revision the fence held for key at the last try.
 func awaitApplied(t *testing.T, r *SessionRegistry, key string, revision uint64) {
 	t.Helper()
-	waitFor(t, 5*time.Second, func() bool {
+	testwait.Until(t, fmt.Sprintf("the registry's copy to apply %s's record at revision %d", key, revision), func() (string, bool) {
 		r.mu.RLock()
 		defer r.mu.RUnlock()
 		_, epoch := r.watcher.Handle()
-		return r.cache.FenceFor(epoch, key) >= revision
+		fenced := r.cache.FenceFor(epoch, key)
+		return fmt.Sprintf("the fence holds revision %d for %s in epoch %d", fenced, key, epoch), fenced >= revision
 	})
 }
 
@@ -50,7 +58,7 @@ func awaitApplied(t *testing.T, r *SessionRegistry, key string, revision uint64)
 // from the stream's leader.
 func storedValue(t *testing.T, conn *natsgo.Conn, key string) []byte {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}

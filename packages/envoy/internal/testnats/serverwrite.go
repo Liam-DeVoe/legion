@@ -60,7 +60,7 @@ func ServerCopyRefused(t testing.TB, conn *natsgo.Conn, dstBucket, dstKey, srcBu
 	if err := conn.PublishRequest(request, KVSubject(dstBucket, dstKey), data); err != nil {
 		t.Fatalf("send %s answering to %s: %v", request, KVSubject(dstBucket, dstKey), err)
 	}
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("flush %s: %v", request, err)
 	}
 	testwait.Span(t, span, refusedCopyUnread)
@@ -84,7 +84,7 @@ func StreamInfo(stream string) string { return "$JS.API.STREAM.INFO." + stream }
 // 404 status that carries no data.
 func NoWaitPull(t testing.TB, conn *natsgo.Conn, bucket string) (string, []byte) {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
@@ -111,7 +111,7 @@ func ServerWritesKey(t testing.TB, conn *natsgo.Conn, bucket, key, request strin
 	if err := conn.PublishRequest(request, KVSubject(bucket, key), data); err != nil {
 		t.Fatalf("send %s answering to %s: %v", request, KVSubject(bucket, key), err)
 	}
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("flush %s: %v", request, err)
 	}
 	return awaitStored(t, fmt.Sprintf("the server's answer to %s to be stored under %s past sequence %d", request, KVSubject(bucket, key), before),
@@ -128,7 +128,7 @@ func ServerWritesKey(t testing.TB, conn *natsgo.Conn, bucket, key, request strin
 // message's stream sequence.
 func RepublishesKey(t testing.TB, conn *natsgo.Conn, bucket, key string, body []byte) uint64 {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
@@ -167,7 +167,7 @@ func (s newestSequence) String() string { return fmt.Sprintf("newest sequence %d
 // from the stream's leader, and 0 when it holds none.
 func LastSequence(t testing.TB, conn *natsgo.Conn, bucket, key string) uint64 {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}

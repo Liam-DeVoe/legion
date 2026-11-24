@@ -422,22 +422,21 @@ func (s *Server) FreezeReplies(t testing.TB) func() {
 	return s.relay.freezeReplies()
 }
 
-// StoredOn is how many messages stream holds on subject, read by a client of the server's own in
-// this process (natsgo.InProcessServer) rather than through the relay, so it answers while the
-// relay holds the server's replies (FreezeReplies) or is frozen (Freeze). It reads a server that
-// admits a client with no credential, as Start's does, and fails t when the read fails. ctx bounds
-// the read (Context): a wait that asks it again on each attempt makes ctx once, before the wait,
-// and not one context with its timer and cleanup on every attempt.
+// StoredOn is how many messages stream holds on subject, read by a client connected to the
+// server's own client port (its ClientURL) rather than through the relay, so it answers while the
+// relay holds the server's replies (FreezeReplies) or is frozen (Freeze). The client connects as
+// every fixture's does (Connect: each dial is made again through the shared wait, and JetStream
+// has answered before it returns). It reads a server that admits a client with no credential, as
+// Start's does, and fails t when the read fails. ctx bounds the read (Context): a wait that asks it
+// again on each attempt makes ctx once, before the wait, and not one context with its timer and
+// cleanup on every attempt.
 func (s *Server) StoredOn(t testing.TB, ctx context.Context, stream, subject string) uint64 {
 	t.Helper()
 	srv := s.natsServer()
 	if srv == nil {
 		t.Fatalf("read stream %s of a NATS server that is not running", stream)
 	}
-	conn, err := natsgo.Connect(srv.ClientURL(), natsgo.InProcessServer(srv), natsgo.Name("testnats stored-on"))
-	if err != nil {
-		t.Fatalf("connect to the NATS server in this process: %v", err)
-	}
+	conn := Connect(t, srv.ClientURL())
 	defer conn.Close()
 	js, err := conn.JetStream()
 	if err != nil {
@@ -1186,7 +1185,9 @@ func RequestTimeout(t testing.TB) jetstream.JetStreamOpt {
 // a pull subscription's Fetch and the time a KV watcher waits for its initial values, so neither
 // ends early either. A wait that sends a request again when it draws no answer bounds each send by
 // readWait instead (Connect, awaitInfo, awaitBucketOn): with this option a send the server never
-// answers would hold that wait until the deadline.
+// answers would hold that wait until the deadline. openKeyValue's open of a KV handle runs on the
+// JetStream context the handle keeps, one with this option, so it bounds by readWait its wait for
+// each open's answer instead.
 func MaxWait(t testing.TB) natsgo.JSOpt {
 	return natsgo.MaxWait(left(t))
 }

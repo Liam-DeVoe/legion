@@ -322,7 +322,17 @@ func TestTheRunningSweepSweepsAtStartThenWaitsMoreThanNineTenthsAndAtMostOneInte
 				}
 				time.Sleep(fourthEnds + interval/2)
 				cancel()
-				<-done
+				// done is read once, after every goroutine of the bubble is durably blocked
+				// (synctest.Wait), and is not waited for: a loop that ignored its cancel keeps its
+				// next sweep's timer armed, so a receive that waited for done would run the
+				// bubble's clock through that loop's sweeps until go test's alarm. The read fails
+				// such a loop by name.
+				synctest.Wait()
+				select {
+				case <-done:
+				default:
+					t.Fatal("RunUnderLease had not returned once its context ended")
+				}
 
 				took, gave := lease.times()
 				if len(took) < sweeps || len(gave) < sweeps {

@@ -537,6 +537,16 @@ func waitForMatches(t *testing.T, r *Registry, what, machineID, topic string, wa
 	return got
 }
 
+// awaitFollowing waits for what, until w's copy follows its bucket (kvwatch.Watcher.Following), a
+// read of it having completed. A give-up prints the watcher's state as the last try read it.
+func awaitFollowing(t *testing.T, what string, w *kvwatch.Watcher) {
+	t.Helper()
+	testwait.Until(t, what, func() (string, bool) {
+		following := w.Following()
+		return fmt.Sprintf("Following %t, NeedsRead %t, Err %v", following, w.NeedsRead(), w.Err()), following
+	})
+}
+
 func TestOpen_WatchPopulatesExistingKeys(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
@@ -3153,9 +3163,22 @@ func TestTheRegistryClockStampsWhatItRecords(t *testing.T) {
 func TestRewatchOntoARecreatedBucketRefillsTheCache(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	reg, held, _ := rebuiltRegistry(t, conn)
+	// The registry is rebuilt as rebuiltRegistry rebuilds one, less its delayingKV, which this row
+	// never delays, and with the shared wait's bounds in place of its own: the first watcher
+	// completes a read of the empty buckets and is ended, so nothing more reaches the cache through
+	// it, and the watcher that replaces it has a holdingCache in front of the cache, so the row can
+	// hold the new bucket's read before its sweep.
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	awaitFollowing(t, "the registry's first read of the interest bucket to complete", reg.watcher)
+	reg.watcher.End(testwait.Context(t))
+	held := &holdingCache{Cache: interestCache{reg}}
+	reg.watcher = kvwatch.New("interest registry", reg.watcher.KV(), held)
+	t.Cleanup(reg.StopWatch)
 	reg.watcher.Start()
-	testwait.Eventually(t, "the started watcher to complete its read of the interest bucket", reg.watcher.Following)
+	awaitFollowing(t, "the started watcher to complete its read of the interest bucket", reg.watcher)
 	for i := range 20 {
 		if _, err := reg.Upsert(Interest{SessionID: "ses_a", MachineID: "m1"}, []string{fmt.Sprintf("notifications.old.%d", i)}); err != nil {
 			t.Fatalf("upsert ses_a: %v", err)
@@ -3205,7 +3228,7 @@ func TestRewatchOntoARecreatedBucketRefillsTheCache(t *testing.T) {
 	if want := []string{"ses_a", "ses_b"}; !slices.Equal(swept, want) {
 		t.Fatalf("cached right after the sweep = %v, want the new bucket's %v", swept, want)
 	}
-	testwait.Eventually(t, "the rebuilt watcher to follow the recreated bucket", reg.watcher.Following)
+	awaitFollowing(t, "the rebuilt watcher to follow the recreated bucket", reg.watcher)
 	if got := reg.Match("m1", "notifications.ghost"); len(got) != 0 {
 		t.Fatalf("the cache kept a session the recreated bucket does not hold: %v", got)
 	}

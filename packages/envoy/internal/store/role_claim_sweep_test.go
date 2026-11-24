@@ -36,6 +36,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -387,9 +388,7 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 		t.Fatalf("open the registry over the seeded role bucket: %v", err)
 	}
 	t.Cleanup(reg.StopWatch)
-	ready, cancelReady := context.WithTimeout(context.Background(), time.Minute)
-	defer cancelReady()
-	if err := reg.WaitForCacheReady(ready); err != nil {
+	if err := reg.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("wait for the caches over %d stored claims: %v", otherRoleClaims, err)
 	}
 
@@ -405,7 +404,10 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 		if _, err := reg.Upsert(Interest{SessionID: session, MachineID: "m1"}, topics); err != nil {
 			t.Fatalf("store %s's interest record: %v", session, err)
 		}
-		waitForHeld(t, reg, session, roles...)
+		testwait.Until(t, fmt.Sprintf("the role claim view to name %s the holder of %v", session, roles), func() (string, bool) {
+			held, err := reg.RolesHeldBy(session)
+			return fmt.Sprintf("RolesHeldBy(%s) = %v, %v", session, held, err), err == nil && slices.Equal(held, roles)
+		})
 
 		counting := countRoleBucketCalls(t, reg, &sweepRoleKeyValue{delay: claimCallDelay})
 		ctx, cancel := context.WithTimeout(context.Background(), sweepDeadline)

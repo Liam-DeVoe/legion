@@ -31,15 +31,16 @@ import (
 // the JetStream context that code holds.
 
 // readWait bounds one read that a wait of this package sends again until it holds: Connect's
-// account info, a member's lookup of a bucket's stream (awaitBucketOn), and a read of a stream's or
-// a consumer's info (awaitInfo). It is nats.go's own request timer, a hang guard and no budget:
-// nats-server v2.15.1 leaves such a read unanswered rather than late in two states a cluster
-// passes through. Only the meta group's leader answers an account info, and a member that is not
-// it answers nothing (jsAccountInfoRequest); and a member that is not a stream's or a consumer's
-// leader answers nothing for it while it still counts a leader that is gone (jsStreamInfoRequest,
-// jsConsumerInfoRequest, isGroupLeaderless). So a read sent across a leader change or a member's
-// restart can draw no answer at all, and one that runs out is sent again by the shared wait,
-// whose one bound is the test binary's deadline.
+// account info, a member's lookup of a bucket's stream (awaitBucketOn) and a read of a stream's or
+// a consumer's info (awaitInfo), as nats.go's own request timer, and an open of a bucket's handle
+// (openKeyValue), as the wait for the open's answer, since the open's request runs on its handle's
+// own wait. It is a hang guard and no budget: nats-server v2.15.1 leaves such a read unanswered
+// rather than late in two states a cluster passes through. Only the meta group's leader answers an
+// account info, and a member that is not it answers nothing (jsAccountInfoRequest); and a member
+// that is not a stream's or a consumer's leader answers nothing for it while it still counts a
+// leader that is gone (jsStreamInfoRequest, jsConsumerInfoRequest, isGroupLeaderless). So a read
+// sent across a leader change or a member's restart can draw no answer at all, and one that runs
+// out is sent again by the shared wait, whose one bound is the test binary's deadline.
 const readWait = 10 * time.Second
 
 // createSendWait bounds each request of a test fixture's own create of a stream or a bucket
@@ -121,21 +122,22 @@ func refusalOf(conn *natsgo.Conn, before error, subjects []string) error {
 // bucket's stream (AwaitBucket). conn is the connection whose grant the create is made under, so a
 // test of a client's permissions creates the bucket as that client. A bucket whose stream the
 // cluster already holds with another configuration fails the test with both: the stream the
-// cluster holds, and the bucket the create asked for.
+// cluster holds, and the bucket the create asked for. The handle it returns is opened afresh on
+// conn under MaxWait (openKeyValue), not taken from the create, whose JetStream context
+// createSendWait bounds: so each request a caller makes on it is bounded by what is left of the
+// shared wait, and not by createSendWait, which bounds only the create's own sends.
 func (c *Cluster) CreateKeyValue(t testing.TB, conn *natsgo.Conn, config *natsgo.KeyValueConfig) natsgo.KeyValue {
 	t.Helper()
 	js, err := conn.JetStream(natsgo.MaxWait(createSendWait))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
-	var kv natsgo.KeyValue
 	stream := "KV_" + config.Bucket
 	// The subjects CreateKeyValue publishes to: the account read, the create, and on "already in
 	// use" the update (its read of the stream held ignores a refusal).
 	subjects := []string{"$JS.API.INFO", "$JS.API.STREAM.CREATE." + stream, "$JS.API.STREAM.UPDATE." + stream}
 	err = sendCreate(t, conn, "create KV bucket "+config.Bucket, subjects, func() error {
-		var err error
-		kv, err = js.CreateKeyValue(config)
+		_, err := js.CreateKeyValue(config)
 		return err
 	})
 	if errors.Is(err, natsgo.ErrStreamNameAlreadyInUse) {
@@ -147,7 +149,51 @@ func (c *Cluster) CreateKeyValue(t testing.TB, conn *natsgo.Conn, config *natsgo
 		t.Fatalf("create KV bucket %s: %v", config.Bucket, err)
 	}
 	c.AwaitBucket(t, config.Bucket)
-	return kv
+	caller, err := conn.JetStream(MaxWait(t))
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	return openKeyValue(t, caller, config.Bucket)
+}
+
+// openKeyValue opens bucket's handle on js, and returns it. The open reads the bucket's stream
+// once (nats.go v1.55.0 js.KeyValue, kv.go:405) on js's own wait, which the open takes no option
+// to shorten, so it waits for each open readWait at most, as awaitInfo waits for each read, and
+// the shared wait opens again when no answer came by then or the answer was an error: a member
+// that still counts the stream's gone leader answers nothing for it (awaitInfo). An open it no
+// longer waits for goes on until its answer comes, js's wait ends or the connection closes, and its
+// handle is dropped.
+func openKeyValue(t testing.TB, js natsgo.JetStreamContext, bucket string) natsgo.KeyValue {
+	t.Helper()
+	return testwait.Until(t, fmt.Sprintf("an open of KV bucket %s to be answered with its handle", bucket), func() (bucketOpen, bool) {
+		answer := make(chan bucketOpen, 1)
+		go func() {
+			kv, err := js.KeyValue(bucket)
+			answer <- bucketOpen{kv: kv, err: err}
+		}()
+		unanswered := time.NewTimer(readWait)
+		defer unanswered.Stop()
+		select {
+		case open := <-answer:
+			return open, open.err == nil
+		case <-unanswered.C:
+			return bucketOpen{err: fmt.Errorf("no answer within %s", readWait)}, false
+		}
+	}).kv
+}
+
+// bucketOpen is one open of openKeyValue's wait, so the failure of a wait that ran out prints the
+// answer to its last open rather than a nil handle.
+type bucketOpen struct {
+	kv  natsgo.KeyValue
+	err error
+}
+
+func (o bucketOpen) String() string {
+	if o.err == nil {
+		return "opened"
+	}
+	return o.err.Error()
 }
 
 // AwaitBucket waits until every running member of the cluster both answers for the stream of

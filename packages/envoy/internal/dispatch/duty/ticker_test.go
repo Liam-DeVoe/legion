@@ -75,7 +75,17 @@ func TestRunJitteredWaitsMoreThanNineTenthsAndAtMostOneIntervalAfterEveryPass(t 
 				}()
 				time.Sleep(6 * interval)
 				cancel()
-				<-done
+				// done is read once, after every goroutine of the bubble is durably blocked
+				// (synctest.Wait), and is not waited for: a loop that ignored its cancel keeps its
+				// next tick's timer armed, so a receive that waited for done would run the
+				// bubble's clock through that loop's ticks until go test's alarm. The read fails
+				// such a loop by name.
+				synctest.Wait()
+				select {
+				case <-done:
+				default:
+					t.Fatal("RunJittered had not returned once its context ended")
+				}
 
 				at := passes.times()
 				if len(at) < 6 {
