@@ -180,7 +180,7 @@ func readHookRoles(value *yaml.Node, field string) ([]claim.Role, error) {
 			return nil, fmt.Errorf("%s names %q, which is not a Legion role (%s)", key, name, runtime.JoinRoles(claim.Roles))
 		}
 		if role == claim.RoleArchitect {
-			return nil, fmt.Errorf("%s names the architect, which no hook writes to: the daemon's own wake to an architect is a notice", key)
+			return nil, fmt.Errorf("%s names the architect, which is no hook's own role: the daemon's own wake to an architect is a notice it writes itself", key)
 		}
 		roles = append(roles, role)
 	}
