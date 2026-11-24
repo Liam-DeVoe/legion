@@ -1160,7 +1160,12 @@ func (g *rig) launcher(token claim.Token) {
 func (g *rig) connect(token claim.Token) { g.connectRunning(token, 0) }
 
 // connectRunning is a fake launcher connection for token whose launcher already runs generation
-// running (0 for none), as one that survived a daemon restart reports its child at once.
+// running (0 for none), as one that survived a daemon restart reports its child at once. It returns
+// once the runtime has read the launcher's first state, so the session is ready: a read of the
+// pod's workspace takes only a ready launcher and waits for none (launchers.workspaceReader), and a
+// launch that read before the server goroutine had read that state found no launcher connected.
+// The rig calls it from the fake controller's goroutine too (createPod), so a launcher that never
+// gets ready is an error of the test, not a stop of the goroutine.
 func (g *rig) connectRunning(token claim.Token, running uint64) {
 	server, client := net.Pipe()
 	pod := g.pod(SandboxName(token))
@@ -1244,6 +1249,23 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 			}
 		}
 	}()
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		select {
+		case <-session.ready:
+			return
+		case <-time.After(5 * time.Millisecond):
+		}
+		session.mu.Lock()
+		closed := session.closed
+		session.mu.Unlock()
+		if closed {
+			return
+		}
+		if time.Now().After(deadline) {
+			g.t.Errorf("the fake launcher of %s sent its first state, and the runtime had not read it 10s later", token)
+			return
+		}
+	}
 }
 
 // issueLaunchers connects a fake launcher for every role of token's issue.
