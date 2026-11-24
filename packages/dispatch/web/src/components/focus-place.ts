@@ -15,10 +15,12 @@ import { ROW_SELECTOR } from "./row-marker";
  * is still live there (`causedByReader`, `pressOnRowMark`): on the lost control, inside any row
  * around it, or inside the dialog, panel or selection bar it was lost from. A hold on what
  * answers the press keeps it live (`holdHandOff`), and so does its control's own hold, up to the
- * write deadline. A Tab that moves the focus inside the region a press was made in, while that
- * press's own write is out, leaves the press live, since the region's later going is that press's
- * own doing. Nothing armed, a loss is answered as the page answered it before it had any
- * hand-off: the focus stays on the body, and nothing scrolls.
+ * write deadline and only until a hold on what answers the press has begun: a control still held
+ * once its action is answered says only that there is nothing left to do. A Tab that moves the
+ * focus inside the region a press was made in, while that press's own write is out, leaves the
+ * press live, since the region's later going is that press's own doing. Nothing armed, a loss is
+ * answered as the page answered it before it had any hand-off: the focus stays on the body, and
+ * nothing scrolls.
  *
  * A loss the reader caused lands on the control now at the lost control's place in the
  * component's container - one that moved there from the lost control's own row, card or toolbar,
@@ -755,11 +757,14 @@ let armed: ArmedPress | null = null;
  * still its own. A press that holds nothing ends a frame and a task after the arm. A hold on what
  * answers it, begun while it is live (`holdHandOff`), keeps it live until the hold ends. Its
  * control held by a hold that began after the arm keeps it live too, up to the app's write
- * deadline (`SEND_DEADLINE_MS`) from the arm: watched rather than polled, with a watch on the
- * page's `aria-disabled`, `disabled` and children, so the control going, its fieldset enabled
- * again or its write refused ends that hold. Nothing pulls the focus back to a control a refused
- * write lets go. At `ACTION_BOUND_MS` from the arm the press stops counting whatever is still on
- * and ends a frame and a task later.
+ * deadline (`SEND_DEADLINE_MS`) from the arm, and only until a hold on what answers it has begun:
+ * once every such hold has ended its action is answered, and a control still held after that -
+ * the project List's Move, which its own press leaves with no epic to move to - says only that
+ * there is nothing to do, which keeps no press live. The control's hold is watched rather than
+ * polled, with a watch on the page's `aria-disabled`, `disabled` and children, so the control
+ * going, its fieldset enabled again or its write refused ends that hold. Nothing pulls the focus
+ * back to a control a refused write lets go. At `ACTION_BOUND_MS` from the arm the press stops
+ * counting whatever is still on and ends a frame and a task later.
  *
  * The reader's next act disarms it, read by listeners on the document installed only while a
  * press is armed: a pointer press anywhere outside the armed control, and any key that is a press
@@ -821,13 +826,14 @@ export function armOnPress(event: SyntheticEvent): void {
 
 /** Begins a hold on what answers the armed press (`armHandOff`): begun while that press is live,
  *  it keeps the press live until the function it answers runs, up to `ACTION_BOUND_MS` from the
- *  arm. Begun while nothing is armed, it does nothing. Every hold on what answers a write begins
- *  one: the control held while the write is out and through the commit after its answer
- *  (`useHeldThroughAnswer`), through the re-read that draws what the write changed
- *  (`useReadBound`), until the update that carries the write is drawn (`useHoldUntilDrawn`), and
- *  through the whole run of a project List action (`issues-table-actions.ts`'s `perform`). So the
- *  row or the form that what answers the write takes away is still the press's doing
- *  (`causedByReader`). Answers what ends the hold; ending it again does nothing. */
+ *  arm, and from its start the press's control's own hold counts no longer. Begun while nothing is
+ *  armed, it does nothing. Every hold on what answers a write begins one: the control held while
+ *  the write is out and through the commit after its answer (`useHeldThroughAnswer`), through the
+ *  re-read that draws what the write changed (`useReadBound`), until the update that carries the
+ *  write is drawn (`useHoldUntilDrawn`), and through the whole run of a project List action
+ *  (`issues-table-actions.ts`'s `perform`). So the row or the form that what answers the write
+ *  takes away is still the press's doing (`causedByReader`). Answers what ends the hold; ending it
+ *  again does nothing. */
 export function holdHandOff(): () => void {
   const press = armed;
   if (press === null) return () => undefined;
@@ -855,6 +861,10 @@ function armPress(control: Element, root: Element | undefined): ArmedPress {
   let ending: (() => void) | null = null;
   /** Whether the write deadline has passed: from then on the control's hold counts no longer. */
   let late = false;
+  /** Whether a hold on what answers the press has begun (`holdHandOff`): from then on the
+   *  control's hold counts no longer either, so once every such hold has ended the press ends as
+   *  one that holds nothing does. */
+  let answerBegun = false;
   /** Whether a Tab of the reader's is still to land while the press's write is out. */
   let tabbing = false;
   /** The animation frame the next read of what the reader can see waits for, else 0. */
@@ -864,11 +874,14 @@ function armPress(control: Element, root: Element | undefined): ArmedPress {
   let watching = false;
   const watcher = new MutationObserver(() => press.changed());
   /** Whether the press's write is out: a hold on what answers it is on, or, up to the write
-   *  deadline, its control is held by a hold that began after the arm. */
-  const writeOut = () => press.answers.size > 0 || (!late && !heldBefore && isHeld(control));
+   *  deadline and until such a hold has begun, its control is held by a hold that began after the
+   *  arm. */
+  const writeOut = () =>
+    press.answers.size > 0 || (!late && !answerBegun && !heldBefore && isHeld(control));
   const read = () => {
+    if (press.answers.size > 0) answerBegun = true;
     // The watch on the control's hold runs only while that hold alone can keep the press live.
-    if (press.answers.size > 0 || late) {
+    if (answerBegun || late) {
       watcher.disconnect();
       watching = false;
     } else if (!watching) {

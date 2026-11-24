@@ -1213,3 +1213,31 @@ test("Enter, and Space on a control that takes no typed text, arm a component's 
     "x on a button": false,
   });
 });
+
+// (dr) Armed by a press whose action holds what answers it (`holdHandOff`), and whose control
+// stays held once that action is answered only because there is nothing left to do: the project
+// List's Move, whose own press leaves it no epic to move to (`issues-table-page.tsx`). A hold that
+// says only that keeps no press live: once the action's hold ends and a frame and a task pass,
+// the press is disarmed, and a re-render that then takes the focused control away - a live update
+// or a refetch - is no doing of the reader's. The focus stays on the page, and nothing scrolls.
+test("an armed press whose action is answered while its control stays held with nothing to do is disarmed, and a later loss leaves the focus on the page", async () => {
+  await scrollingNothing(async () => {
+    await inMain([], async (main) => {
+      const line = armedLineIn(main, { labels: LINE });
+      try {
+        clickPress(line.button("Two"));
+        // The action's run holds what answers it, and the press holds its control.
+        const answered = holdHandOff();
+        line.redraw({ held: ["Two"], labels: LINE });
+        await settled();
+        // The action is answered; the control stays held, with nothing left to do.
+        answered();
+        await settled();
+        line.redraw({ held: ["Two"], labels: ["One", "Three"] });
+        expect(landing()).toBe("the page");
+      } finally {
+        line.remove();
+      }
+    });
+  });
+});
