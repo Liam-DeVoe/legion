@@ -15,7 +15,6 @@ import {
   type ClaimCapability,
   executePhaseOp,
   legionToolDescription,
-  PHASE_OP_SENTENCES,
   PHASE_OPS,
   PhaseOpArguments,
   type PhaseOpRuntime,
@@ -168,45 +167,56 @@ test("the phase ops' fields, as a host declares them, are every field of every o
   expect(Object.keys(phaseOpParameters(z)).sort()).toEqual([...fields].sort());
 });
 
-test("the description sets the host's sentences before and after handoff_complete's contract, and ends on the host's Envoy publish tool", () => {
-  const bare = legionToolDescription({ envoyPublish: "envoy_publish" });
-  const placed = legionToolDescription({
-    envoyPublish: "mcp__legion__envoy_publish",
-    before: PHASE_OP_SENTENCES.readRecord,
-    after: `${PHASE_OP_SENTENCES.requestBackwardMove}The controller's read_state returns the daemon's whole state. `,
-  });
-  expect(bare).not.toContain("read_record");
-  expect(bare).not.toContain("request_backward_move");
-  expect(bare.endsWith("role topic with envoy_publish.")).toBe(true);
-  expect(placed).toContain(
-    `this tool cannot spawn workers. ${PHASE_OP_SENTENCES.readRecord}handoff_complete (phase workers`
-  );
-  // Every host states `ready_for_update`, so its sentences are the template's own, between
-  // handoff_complete's contract and the host's `after`.
-  expect(placed).toContain(
-    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. The reviewer creates no commit and pushes nothing, so each commit and push this description names is not its own, and the merger pushes the merge of the base it made. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. That move counts no review round: only a review that requests changes counts one. The controller's read_state returns the daemon's whole state. What a later phase needs"
-  );
-  expect(placed.endsWith("role topic with mcp__legion__envoy_publish.")).toBe(true);
+// A host's own texts stand where the template puts them, and nothing else of the description
+// moves: `before` right before handoff_complete's contract, `after` after that contract and after
+// ready_for_update's part, which every host states, and the host's Envoy publish tool last. The
+// texts and the tool's name are planted, so the case holds no word of the description.
+test("the description sets the host's texts before and after handoff_complete's contract, and ends on the host's Envoy publish tool", () => {
+  const before = "planted-before-7d31. ";
+  const after = "planted-after-7d31. ";
+  const publish = "planted_publish_7d31";
+  const bare = legionToolDescription({ envoyPublish: publish });
+  const placed = legionToolDescription({ envoyPublish: publish, before, after });
+  expect(bare).not.toContain(before);
+  expect(bare).not.toContain(after);
+  const at = placed.indexOf(before);
+  const later = placed.indexOf(after);
+  expect(at, "the description holds no `before`").toBeGreaterThan(-1);
+  expect(later, "the description holds no `after` after `before`").toBeGreaterThan(at);
+  const without = placed.replace(before, "").replace(after, "");
+  expect(without, "without the host's two texts it is not the bare description").toBe(bare);
+  const contract = at + before.length;
+  const op = placed.indexOf("handoff_complete", at);
+  expect(op, "handoff_complete's contract does not follow `before`").toBe(contract);
+  const update = placed.indexOf("ready_for_update", contract);
+  expect(update, "ready_for_update's part is not after the contract").toBeGreaterThan(contract);
+  expect(update, "ready_for_update's part is not before `after`").toBeLessThan(later);
+  const tool = placed.lastIndexOf(publish);
+  expect(tool, "the Envoy publish tool is not named after `after`").toBeGreaterThan(later);
+  expect(placed.slice(tool + publish.length)).toMatch(/^\W*$/);
 });
 
-// The daemon ends its HANDOFF_STALE_ENTRY refusal with the words that tell the worker what to do,
-// and the description must give the code those same words, so a worker reads one instruction in
-// its tool and in the refusal. The daemon's golden test
-// (`packages/daemon/internal/api`, TestStaleEntryInstructionGolden) writes its code and its
-// constant to `stale-entry.json`; this case holds the description's sentence for that code to the
-// file, so a word changed on either side alone fails one test or the other.
-test("the description gives HANDOFF_STALE_ENTRY the instruction the daemon's refusal ends with, word for word", () => {
+// The daemon refuses a completion behind its phase entry HANDOFF_STALE_ENTRY and ends that refusal
+// with an instruction of its own (`staleEntryInstruction` in
+// packages/daemon/internal/api/handoff.go), and the tool composes the same instruction into its
+// description, so a worker reads one instruction in its tool and in the refusal. The daemon's
+// golden test (`packages/daemon/internal/api`, TestStaleEntryInstructionGolden) writes its code and
+// its constant to `stale-entry.json`: this case holds the tool's constant to the daemon's, and the
+// description to naming that code with the constant after it. It holds no word of the description.
+test("the description names HANDOFF_STALE_ENTRY with the instruction the daemon's refusal ends with", () => {
   const { code, instruction } = daemonFixture("stale-entry.json") as {
     readonly code: string;
     readonly instruction: string;
   };
   expect(code).toBe("HANDOFF_STALE_ENTRY");
-  const description = legionToolDescription({ envoyPublish: "envoy_publish" });
-  const opens = description.indexOf(`${code} (`);
-  expect(opens, `the description names no ${code} (`).toBeGreaterThan(-1);
-  const sentence = description.slice(opens, description.indexOf("), ", opens));
-  expect(sentence).toEndWith(`nothing was recorded. ${instruction}`);
   expect(STALE_ENTRY_INSTRUCTION).toBe(instruction);
+  const description = legionToolDescription({ envoyPublish: "envoy_publish" });
+  const named = description.indexOf(code);
+  expect(named, `the description names no ${code}`).toBeGreaterThan(-1);
+  expect(
+    description.indexOf(STALE_ENTRY_INSTRUCTION, named),
+    `the description gives ${code} no instruction after it`
+  ).toBeGreaterThan(named);
 });
 
 test("each op refuses its arguments whole before any daemon request, naming every problem", async () => {
@@ -519,21 +529,33 @@ test("the tool takes exactly the ratings the daemon takes, and sends a refused o
   expect(parted).toEqual([]);
 });
 
-// The description is where every host's agent reads what the completion that ends the retro
-// carries: the two fields, the scale, the skill that states the rule, and the daemon's refusals of
-// a rating.
-test("the description names the retro's rating fields, its scale, its skill and the daemon's refusals of a rating", () => {
-  const description = legionToolDescription({ envoyPublish: "envoy_publish" });
-  for (const words of [
-    "`plan_rating`",
-    `(${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST})`,
-    "`plan_reason`",
-    "skill://legion-retro",
-    "PLAN_RATING_UNEXPECTED",
-    "PLAN_RATING_INPUT",
-    "PLAN_RATING_REQUIRED",
-  ]) {
-    expect(description).toContain(words);
+// The completion that ends the retro carries the rating of the plan: handoff_complete itself takes
+// `plan_rating`, a whole number on the contract's scale, with `plan_reason`, a string, and the
+// daemon's refusals of a rating reach the agent by their codes. The case holds the operation's
+// fields, their types and the daemon's codes, and no word of the description.
+test("handoff_complete takes the retro's rating fields on the contract's scale, and the daemon's refusals of a rating reach the agent by code", async () => {
+  const completion = { op: "handoff_complete", summary: "Retro done.", plan_reason: "fit" } as const;
+  for (const rating of [LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST]) {
+    const parsed = PhaseOpArguments.safeParse({ ...completion, plan_rating: rating });
+    expect(parsed.success, `handoff_complete refuses plan_rating ${rating}`).toBe(true);
+  }
+  for (const rating of [LEGION_PLAN_RATING_LEAST - 1, LEGION_PLAN_RATING_MOST + 1, 2.5]) {
+    const parsed = PhaseOpArguments.safeParse({ ...completion, plan_rating: rating });
+    expect(parsed.success, `handoff_complete takes plan_rating ${rating}`).toBe(false);
+  }
+  const unworded = { ...completion, plan_rating: LEGION_PLAN_RATING_MOST, plan_reason: 5 };
+  expect(PhaseOpArguments.safeParse(unworded).success, "plan_reason takes a number").toBe(false);
+  for (const code of ["PLAN_RATING_REQUIRED", "PLAN_RATING_UNEXPECTED", "PLAN_RATING_INPUT"]) {
+    const refusal = { status: 400, code, error: "a refusal the stub daemon answers" };
+    const { ops } = runtime(implementer, stateAtPhase("retro"), refusal, RETRO_REPORT);
+    await expect(
+      executePhaseOp(ops, {
+        op: "handoff_complete",
+        summary: "Retro done.",
+        plan_rating: LEGION_PLAN_RATING_MOST,
+        plan_reason: "fit",
+      })
+    ).rejects.toThrow(`400 ${code}`);
   }
 });
 
