@@ -14,7 +14,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -185,9 +184,10 @@ func TestARepeatedKeyAnswersTheMessageItMadeAndDeliversOnce(t *testing.T) {
 // signal therefore finishes inside the drain: its attempt settles sent, and the page's retry under
 // its key is answered with that message and hands the session nothing more.
 //
-// The server runs on a held clock (clocktest.Held), which the listener client's window runs on
-// (envoy.CallWindow), so the window does not end the held send however long the machine takes
-// before the listener answers it.
+// The server is on the real clock, so its listener client's window is the test's
+// (testServerOptions.clock: it ends where the shared wait gives up), and nothing but a defect ends
+// the held send. The row holds for exactly envoy.CallWindow, the longest a deployment's send is
+// held: a deploy's signal that cut the send anywhere inside that window cuts it within the span.
 func TestASendInFlightAtShutdownStillSettles(t *testing.T) {
 	t.Parallel()
 	held := make(chan struct{})
@@ -210,7 +210,7 @@ func TestASendInFlightAtShutdownStillSettles(t *testing.T) {
 	})
 	lifetime, shutDown := context.WithCancel(t.Context())
 	defer shutDown()
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, lifetime: lifetime, clock: clocktest.Held()})
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, lifetime: lifetime})
 	const body = "Ship it once the checks are green."
 	send := func() *httptest.ResponseRecorder {
 		return postAgentMessageKeyed(t, handler, "s1", map[string]any{"body": body, "delivery": "steer"}, "alice", "press-1")
@@ -226,9 +226,9 @@ func TestASendInFlightAtShutdownStillSettles(t *testing.T) {
 	testwait.Quiet(t, "the listener's request cut off by the deploy's signal", cut, envoy.CallWindow,
 		"no state records that Dispatch gave the send up, the send is real HTTP to a listener (no synctest), "+
 			"and no later action of the test is ordered after a cancellation that reaches the listener on "+
-			"the HTTP client's own goroutine; the absence means something only before the listener client's "+
-			"CallWindow ends the send, which in a deployment ends it before any later cut, so the span is that "+
-			"window, and the held clock leaves it none of its own to end the send by here")
+			"the HTTP client's own goroutine; the send runs on the test's window, and the span is the production "+
+			"CallWindow, past which a deployment's send would have ended by itself, so a cut inside it is one the "+
+			"span sees")
 	close(release)
 	created := testwait.Receive(t, "the send in flight at shutdown to answer", answered)
 
@@ -268,10 +268,14 @@ func TestASendInFlightAtShutdownStillSettles(t *testing.T) {
 // A retry racing its original, sixteen times over, all held at the key's insert until the last of
 // them has arrived there: one makes the message and every other is told the first is in flight or,
 // once it has answered, given its answer. The session is handed the message once.
+//
+// The server stages the key's lease (stagedKeyLease), so the first request's lease is live at
+// every other request's read however long the machine takes, and only the key's own state decides
+// each answer.
 func TestConcurrentSendsUnderOneKeyMakeOneMessage(t *testing.T) {
 	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, idempotencyLease: stagedKeyLease})
 	ctx := context.Background()
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -398,10 +402,11 @@ func TestARetryOfAMessageCommittedWithoutAnAnswerDeliversIt(t *testing.T) {
 	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
-	// The key's lease is put an hour ahead of the database's clock, so the first retry finds it in
-	// flight (contracts.IdempotencyLease) however long the machine takes before it, until the row
-	// lapses it below.
-	id := commitKeyedMessage(t, database, "undelivered", "Still there?", "aside", -time.Hour, nil)
+	// The key's lease is put a day ahead of the database's clock, staged state for the product's
+	// clock and longer than any -timeout CI gives the package (70 minutes in api's race lane), so
+	// the first retry finds it in flight (contracts.IdempotencyLease) however long the machine
+	// takes before it, until the row lapses it below.
+	id := commitKeyedMessage(t, database, "undelivered", "Still there?", "aside", -24*time.Hour, nil)
 	retry := func() *httptest.ResponseRecorder {
 		t.Helper()
 		return postAgentMessageKeyed(t, handler, "s1", map[string]any{"body": "Still there?", "delivery": "aside"}, "alice", "undelivered")
@@ -456,10 +461,11 @@ func TestARetryOfAStrandedSendResumesItsAttempt(t *testing.T) {
 			listener, sends := newBroadcastListener(t, agentSessions)
 			handler, database := newTargetedMessageHandler(t, listener.URL)
 			id := commitKeyedMessage(t, database, "stranded", "Status?", "steer", 0, &created)
-			// The claim is put an hour ahead of the database's clock, so the first retry finds it
-			// live (model.DeliveryClaimLapse) however long the machine takes before it, until the
-			// row lapses it below.
-			strandAttempt(t, database, id, "steer", pinned, -time.Hour)
+			// The claim is put a day ahead of the database's clock, staged state for the product's
+			// clock and longer than any -timeout CI gives the package (70 minutes in api's race
+			// lane), so the first retry finds it live (model.DeliveryClaimLapse) however long the
+			// machine takes before it, until the row lapses it below.
+			strandAttempt(t, database, id, "steer", pinned, -24*time.Hour)
 			retry := func() model.Message {
 				t.Helper()
 				response := postAgentMessageKeyed(t, handler, "s1", map[string]any{"body": "Status?", "delivery": "steer"}, "alice", "stranded")

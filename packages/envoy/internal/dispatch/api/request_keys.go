@@ -41,13 +41,13 @@ import (
 //   - The row is inserted in flight, in a statement of its own, before the handler runs, and on a
 //     context the client's cancellation does not reach. A repeat that finds it answers from it
 //     instead: a different request under the key is 422 KEY_REUSED, naming the request that used
-//     it; a first request still running (its lease, IdempotencyLease, renewed every
-//     keyedLeaseRenewal while it runs) is 409 KEY_IN_FLIGHT with Retry-After: 1; a finished one is
-//     replayed, its stored status and body with Idempotency-Replayed: ?1, and the handler does not
-//     run again. A repeat that arrives while its first request still runs is never spooled
-//     (requestKeyInFlight): its body is read off the connection and discarded, and the repeat is
-//     judged by its digest once that body has arrived, by what the key holds then
-//     (answerDrainedRepeat).
+//     it; a first request still running (its lease, IdempotencyLease or one a test staged
+//     (keyLease), renewed every third of it while it runs) is 409 KEY_IN_FLIGHT with
+//     Retry-After: 1; a finished one is replayed, its stored status and body with
+//     Idempotency-Replayed: ?1, and the handler does not run again. A repeat that arrives while
+//     its first request still runs is never spooled (requestKeyInFlight): its body is read off
+//     the connection and discarded, and the repeat is judged by its digest once that body has
+//     arrived, by what the key holds then (answerDrainedRepeat).
 //   - The handler finishes whatever its client does: it runs on the request's context with the
 //     client's cancellation taken off, bounded by keyedHandlerLimit and counted in the server's
 //     background wait, so a client that gives up and asks again waits on the first run rather than
@@ -118,6 +118,25 @@ const (
 	// IdempotencyLease, so two renewals can fail in a row before a repeat presumes the run dead.
 	keyedLeaseRenewal = 20 * time.Second
 )
+
+// keyLease is how long a keyed request's first run holds its key before a repeat may run it
+// again, which every reader of the lease judges by: contracts.IdempotencyLease, or the lease a
+// test staged (Deps.IdempotencyLease).
+func (s *server) keyLease() time.Duration {
+	if s.deps.IdempotencyLease > 0 {
+		return s.deps.IdempotencyLease
+	}
+	return contracts.IdempotencyLease
+}
+
+// keyLeaseRenewal is how often a running keyed handler renews its key's lease: keyedLeaseRenewal,
+// or a third of the lease a test staged, as keyedLeaseRenewal is of contracts.IdempotencyLease.
+func (s *server) keyLeaseRenewal() time.Duration {
+	if s.deps.IdempotencyLease > 0 {
+		return s.deps.IdempotencyLease / 3
+	}
+	return keyedLeaseRenewal
+}
 
 // requestKeyAgentToken is whom a key sent with the shared agent token belongs to: that token names
 // no person.
@@ -237,7 +256,7 @@ type resolvedCaller struct {
 // finish as it lets a delivery finish. A client that gives up - the page's attempt cut off by its
 // own silence bound, a closed tab, a proxy's timeout - asks again under its key and is answered
 // 409 KEY_IN_FLIGHT for as long as the first run lives, then that run's stored answer. While the
-// handler runs its key's lease is renewed every keyedLeaseRenewal, so only a run whose process
+// handler runs its key's lease is renewed every keyLeaseRenewal, so only a run whose process
 // died is taken over, once its lease lapses. A handler cut off with its client would roll its
 // transactions back and leave the next attempt to start again from nothing, so a write that takes
 // the server longer than the client waits could never land.
@@ -387,12 +406,12 @@ var keyedUploads = map[string]bool{
 	http.MethodPost + " /api/v1/agents/{session_id}/artifacts": true,
 }
 
-// renewRequestKeyLease renews claim's lease every keyedLeaseRenewal on the server's clock until
+// renewRequestKeyLease renews claim's lease every keyLeaseRenewal on the server's clock until
 // the returned stop is called or run - the handler's own context, which keyedHandlerLimit bounds -
 // ends, and stops by itself once a renewal finds the key no longer its own. The renewals tick on a
-// clock.Ticker, at a fixed rate: each is due a whole number of keyedLeaseRenewal after the
+// clock.Ticker, at a fixed rate: each is due a whole number of keyLeaseRenewal after the
 // handler began, whatever the renewal before it took, and one that took longer than
-// keyedLeaseRenewal is followed at once, so two renewals that each run out of keyedBookkeeping
+// keyLeaseRenewal is followed at once, so two renewals that each run out of keyedBookkeeping
 // still leave the third due inside the lease. A handler that runs on past its limit, ignoring its
 // context, so holds its key for a lease past the limit and no longer: a repeat then takes the key
 // over, or is answered KEY_COMMITTED for a write the run made. stop waits for a renewal under way
@@ -402,7 +421,7 @@ func (s *server) renewRequestKeyLease(run context.Context, claim requestKeyClaim
 	stopped, finished := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(finished)
-		renewals := clock.NewTicker(s.clock, keyedLeaseRenewal, false)
+		renewals := clock.NewTicker(s.clock, s.keyLeaseRenewal(), false)
 		defer renewals.Stop()
 		for {
 			select {
@@ -747,7 +766,7 @@ func (s *server) requestKeyInFlight(ctx context.Context, login, key string) (boo
 		select status is null and coalesce(leased_at >= now() - make_interval(secs => $3), false)
 		from request_keys
 		where login = $1 and idempotency_key = $2 and created_at >= now() - make_interval(secs => $4)
-	`, login, key, contracts.IdempotencyLease.Seconds(), contracts.IdempotencyKeyTTL.Seconds()).Scan(&inFlight)
+	`, login, key, s.keyLease().Seconds(), contracts.IdempotencyKeyTTL.Seconds()).Scan(&inFlight)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -771,7 +790,7 @@ func (s *server) requestKeyAnswersItself(ctx context.Context, login, key string)
 		       or committed_at is not null or recovery is not null
 		from request_keys
 		where login = $1 and idempotency_key = $2 and created_at >= now() - make_interval(secs => $4)
-	`, login, key, contracts.IdempotencyLease.Seconds(), contracts.IdempotencyKeyTTL.Seconds()).Scan(&answers)
+	`, login, key, s.keyLease().Seconds(), contracts.IdempotencyKeyTTL.Seconds()).Scan(&answers)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -859,7 +878,7 @@ func (s *server) readHeldRequestKey(ctx context.Context, login, key string) (hel
 		       leased_at is null or leased_at < now() - make_interval(secs => $3),
 		       created_at < now() - make_interval(secs => $4)
 		from request_keys where login = $1 and idempotency_key = $2
-	`, login, key, contracts.IdempotencyLease.Seconds(), contracts.IdempotencyKeyTTL.Seconds()).Scan(
+	`, login, key, s.keyLease().Seconds(), contracts.IdempotencyKeyTTL.Seconds()).Scan(
 		&held.digest, &held.method, &held.path, &held.attempt, &held.status, &held.headers,
 		&held.response, &held.kept, &held.recovery, &held.committed, &held.lapsed, &held.expired,
 	)

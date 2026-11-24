@@ -184,10 +184,11 @@ func holdCIReconcileLease(t *testing.T, database *store.Store) {
 func TestCIReconcilePassesShowsARunningPass(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
-	// The process's heartbeat is an hour ahead of the database's clock, so it reads live
-	// (processes.LiveWindow) however long the machine takes before the read, which is not what
-	// this row is about.
-	instance := seedServerProcess(t, database, -time.Hour)
+	// The process's heartbeat is a day ahead of the database's clock, staged state for the
+	// product's clock and longer than any -timeout CI gives the package (70 minutes in api's race
+	// lane), so it reads live (processes.LiveWindow) however long the machine takes before the
+	// read, which is not what this row is about.
+	instance := seedServerProcess(t, database, -24*time.Hour)
 	running := openCIPass(t, database, instance, time.Minute)
 	holdCIReconcileLease(t, database)
 

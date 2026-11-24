@@ -49,15 +49,17 @@ func TestCreateMessageAlwaysReturnsDeliveriesArray(t *testing.T) {
 }
 
 // newTargetedMessageHandler is the mux a targeted-delivery test drives, with the store behind
-// it: an ordinary test server pointed at that test's fake Envoy listener.
+// it: an ordinary test server pointed at that test's fake Envoy listener, on the real clock, where
+// every listener call's window ends at the shared wait's give-up (testServerOptions.clock).
 func newTargetedMessageHandler(t *testing.T, envoyURL string) (http.Handler, *store.Store) {
 	t.Helper()
 	return newTargetedMessageHandlerOn(t, envoyURL, nil)
 }
 
 // newTargetedMessageHandlerOn is newTargetedMessageHandler on a server whose clock, which every
-// listener call's window runs on, is clock: a test of a receipt timeout passes a fake and moves
-// it to the end of each window its stand-in holds (answerWhileCallsAreHeld).
+// listener call's window runs on, is clock: a test of a receipt timeout passes a fake, which keeps
+// envoy.CallWindow, and moves it to the end of each window its stand-in holds
+// (answerWhileCallsAreHeld).
 func newTargetedMessageHandlerOn(t *testing.T, envoyURL string, clock *clocktest.Fake) (http.Handler, *store.Store) {
 	t.Helper()
 	options := testServerOptions{envoyURL: envoyURL}

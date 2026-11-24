@@ -101,10 +101,11 @@ func ageHeartbeat(t *testing.T, db execer, id string, age time.Duration) {
 }
 
 // heldLiveFor is how far ahead of the database's now() a test puts the heartbeat of a row whose
-// liveness a verdict needs but is not what that verdict is about: an hour, longer than any run, so
-// the row counts as live at every read of the registry however long the machine takes, until the
-// test ages it again or a heartbeat stamps it with now().
-const heldLiveFor = time.Hour
+// liveness a verdict needs but is not what that verdict is about: staged state for the product's
+// clock, not a wait. It is a day, longer than the longest go test -timeout CI gives a package of
+// the module (80 minutes), so the row counts as live at every read of the registry however long
+// the machine takes, until the test ages it again or a heartbeat stamps it with now().
+const heldLiveFor = 24 * time.Hour
 
 // holdLive puts id's heartbeat heldLiveFor ahead of the database's now() (ageHeartbeat).
 func holdLive(t *testing.T, database *store.Store, id string) {

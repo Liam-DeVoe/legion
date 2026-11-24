@@ -8409,15 +8409,11 @@ func TestADeliveryAKilledProcessLeftPendingIsSentByTheOther(t *testing.T) {
 
 // cancelGrace is how long cancelOnceHeld gives Dispatch to act on a cancelled request before the
 // listener answers the send that request made, when Dispatch does not abandon that send itself:
-// the listener client's window (dispatchenvoy.CallWindow) less cancelGraceMargin, so the answer is
-// still awaited. The child process's client gives the send that one window on the real clock,
-// which no setting moves, and a send that misses it is not settled sent.
-const cancelGrace = dispatchenvoy.CallWindow - cancelGraceMargin
-
-// cancelGraceMargin is what of the send's window cancelOnceHeld leaves outside cancelGrace: the
-// send's way to the listener and the request's cancellation and return before the grace, and the
-// release and the listener's answer after it.
-const cancelGraceMargin = 3 * time.Second
+// exactly dispatchenvoy.CallWindow, the longest a deployment's send is held, so a send cut anywhere
+// inside that window by its request's end is cut within the grace. The send itself runs on the
+// test's window (listenerCallsEndAtTheGiveUp, which the row's processes are started with), so the
+// client's own window does not end it during the grace.
+const cancelGrace = dispatchenvoy.CallWindow
 
 // cancelOnceHeld sends body to path on p with a request the test cancels as soon as the listener
 // holds the send it made, which is after its commit, and waits for the client to return. The send
@@ -8447,9 +8443,9 @@ func cancelOnceHeld(t *testing.T, p *dispatchProcess, listener *fakeListener, pa
 	testwait.Quiet(t, "the held send's caller", held.gone, cancelGrace,
 		"the row is about a send the listener keeps unanswered while its caller goes: the hold records nothing "+
 			"a test can read, the request is this process's own but its cancellation travels a real socket so "+
-			"synctest does not reach it, and releasing the hold is the later action the row takes next; the absence "+
-			"means something only before the listener client's CallWindow ends the send, so the span is that window "+
-			"less what the row needs around it (cancelGraceMargin)")
+			"synctest does not reach it, and releasing the hold is the later action the row takes next; the send "+
+			"runs on the test's window, and the span is the production CallWindow, past which a deployment's send "+
+			"would have ended by itself, so a cut inside it is one the span sees")
 	sends.Release()
 	return held.subject
 }
@@ -8460,7 +8456,9 @@ func cancelOnceHeld(t *testing.T, p *dispatchProcess, listener *fakeListener, pa
 // the delivery sweep owes none of them: only the request's own send can deliver them.
 func TestASendWhoseRequestIsCancelledAfterItsCommitReachesItsRecipient(t *testing.T) {
 	listener := startFakeListener(t, resumeSession)
-	pair := startPair(t, listener.processEnv())
+	env := listener.processEnv()
+	env["DISPATCH_TEST_LISTENER_CALL_DEADLINE"] = listenerCallsEndAtTheGiveUp(t)
+	pair := startPair(t, env)
 	project := uniqueProjectKey(t, "CNL")
 	pair.a.createProject(t, project, "Cancelled requests")
 	issue, _ := pair.a.createIssueIn(t, project, "Mentioned, then cut off", "spec")
@@ -9234,13 +9232,14 @@ func TestTwoProcessesSyncingOneProjectNeverWriteTheOlderCommit(t *testing.T) {
 // ───── route status from one stored listener answer ────────────────────────
 
 // rosterEnv is what both processes of a route-status row are started with: the fake listener as
-// ENVOY_URL, and a listener answer that serves issue reads for an hour
-// (DISPATCH_TEST_ROUTE_ROSTER_TTL, under the test hooks every process here runs with), longer than
-// any run, so the row reads both processes inside one answer's life however slow the machine,
-// with no timing window.
+// ENVOY_URL, and a listener answer that serves issue reads for a day
+// (DISPATCH_TEST_ROUTE_ROSTER_TTL, under the test hooks every process here runs with): staged
+// state for the product's clock, not a wait, and longer than the longest go test -timeout CI
+// gives the package (80 minutes), so the row reads both processes inside one answer's life
+// however slow the machine, with no timing window.
 func rosterEnv(listener *fakeListener) map[string]string {
 	env := listener.processEnv()
-	env["DISPATCH_TEST_ROUTE_ROSTER_TTL"] = time.Hour.String()
+	env["DISPATCH_TEST_ROUTE_ROSTER_TTL"] = (24 * time.Hour).String()
 	return env
 }
 

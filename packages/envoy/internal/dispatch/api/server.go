@@ -170,6 +170,12 @@ type Deps struct {
 	// DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW, under the test hooks), so a send to a session that
 	// is gone settles without sleeping the production window.
 	ListenerTakeoverWindow time.Duration
+	// IdempotencyLease replaces how long a keyed request's first run holds its key before a
+	// repeat may run it again (contracts.IdempotencyLease), which the run renews every third of
+	// it and the delivery sweep reads as the keyed handler does (keyLease, keyLeaseRenewal). Zero
+	// keeps the contract's minute; a deployment leaves it zero, and only a test sets another,
+	// staging a lease on the product's clock that no run of the package outlives.
+	IdempotencyLease time.Duration
 	// HorizonStallAfter and HorizonWarnEvery replace how long a pending event-horizon
 	// observation waits before the process logs its stall warning, and how often each of that
 	// Horizon's three warnings repeats - the stall warning while the stall stands, the
@@ -316,6 +322,11 @@ type DepsInput struct {
 	// ListenerTakeoverWindow replaces the twelve-second listener take-over window; see
 	// Deps.ListenerTakeoverWindow.
 	ListenerTakeoverWindow time.Duration
+	// ListenerCallDeadline is the end a test gives every listener call's window in
+	// envoy.CallWindow's place (envoy.WithCallDeadline); the zero value, a deployment's, keeps
+	// CallWindow. Only a test process sets another (cmd/dispatch:
+	// DISPATCH_TEST_LISTENER_CALL_DEADLINE, under the test hooks).
+	ListenerCallDeadline envoy.CallDeadline
 	// HorizonStallAfter and HorizonWarnEvery replace the five-second stall threshold and the
 	// thirty-second repeat of every event-horizon warning; see Deps.HorizonStallAfter.
 	HorizonStallAfter time.Duration
@@ -375,6 +386,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		if input.CollaboratorHTTPClient != nil {
 			options = append(options, envoy.WithHTTPClient(input.CollaboratorHTTPClient))
 		}
+		options = append(options, envoy.WithCallDeadline(input.ListenerCallDeadline))
 		envoyClient = envoy.New(envoyURL, options...)
 	}
 	// The GitHub client obeys and records the rate limits every process shares (github_rate_limits):

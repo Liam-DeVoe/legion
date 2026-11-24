@@ -196,6 +196,8 @@ var settings = []setting{
 		Description: "How long a test process's stored listener answer serves issue reads' `route_status` and `GET /api/v1/agents`; a positive Go duration. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW", Default: "`12s`", Required: "no",
 		Description: "How long a test process's sender keeps trying a listener that is being replaced before a send to a session that is gone settles failed; a positive Go duration. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_LISTENER_CALL_DEADLINE", Default: "`5s` after each call began", Required: "no",
+		Description: "The moment every listener call of a test process gives up waiting for the listener's answer, in place of the five seconds after each call began that a deployment gives it: an RFC 3339 time, or `none` for no end, for an end-to-end test whose stand-in listener holds a call for as long as the test's own waits last (the moment they give up). Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_HORIZON_STALL_AFTER", Default: "`5s`", Required: "no",
 		Description: "How long a test process's pending event-horizon observation waits before the process logs its stall warning, in place of the five seconds a deployment waits; a positive Go duration, for an end-to-end test whose own wait keys on that warning. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_HORIZON_WARN_EVERY", Default: "`30s`", Required: "no",

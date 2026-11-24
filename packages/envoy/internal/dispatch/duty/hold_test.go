@@ -27,6 +27,12 @@ import (
 // holdName is the name every hold test takes; each test runs on a database of its own.
 const holdName = "dispatch-outbox"
 
+// stagedTTL is the TTL a row takes where the hold must stay live on the database's clock but how
+// a hold renews or lapses is not its subject: staged state for the product's clock, not a wait. It
+// is a day, longer than the longest go test -timeout CI gives a package of the module (80
+// minutes), so no run of the row outlasts it.
+const stagedTTL = 24 * time.Hour
+
 // mustTakeHold takes holdName for holder on db and fails the test when it is refused. The hold is
 // released when the test ends.
 func mustTakeHold(t *testing.T, db duty.Holds, holder uuid.UUID, opts duty.HoldOptions) *duty.Hold {
@@ -63,9 +69,10 @@ func waitLost(t *testing.T, hold *duty.Hold) {
 func TestHoldRefusesASecondHolderWhileTheFirstHoldsItLive(t *testing.T) {
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
-	// The TTL is an hour, so the first hold is live on the database's clock at the second's try
-	// however long the machine holds the renewals back: how a hold renews is not this row's subject.
-	opts := duty.HoldOptions{TTL: time.Hour, Renew: 500 * time.Millisecond, Margin: time.Second}
+	// The TTL is staged (stagedTTL), so the first hold is live on the database's clock at the
+	// second's try however long the machine holds the renewals back: how a hold renews is not this
+	// row's subject.
+	opts := duty.HoldOptions{TTL: stagedTTL, Renew: 500 * time.Millisecond, Margin: time.Second}
 	first := uuid.New()
 	mustTakeHold(t, database.Pool, first, opts)
 
@@ -257,8 +264,8 @@ func (l *lapsingHold) takenBy(t *testing.T, taken *duty.Hold) time.Duration {
 // the take was sent and so Margin before the expiry that take wrote on the database's clock. The
 // hold runs on a fake clock here, so the deadline arrives only where the test moves it, and no
 // renewal can confirm anything meanwhile: the row the loss is read against still names this
-// holder and is still live, since its TTL is an hour and the row lapses only that long after the
-// take on the database's clock, however long the machine takes before the read.
+// holder and is still live, since its TTL is staged (stagedTTL) and the row lapses only that long
+// after the take on the database's clock, however long the machine takes before the read.
 func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
@@ -268,7 +275,7 @@ func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 	// fake reads one moment through the take, so the take's loss deadline and the timer it arms are
 	// each one exact moment.
 	fake := clocktest.New(time.Now())
-	opts := duty.HoldOptions{TTL: time.Hour, Renew: 500 * time.Millisecond, Margin: time.Second, Clock: fake}
+	opts := duty.HoldOptions{TTL: stagedTTL, Renew: 500 * time.Millisecond, Margin: time.Second, Clock: fake}
 	ctx := context.Background()
 	holder := uuid.New()
 	sent := fake.Now()
@@ -658,9 +665,9 @@ func TestHoldTokenReadsTheRowsTokenAndWhetherItIsLive(t *testing.T) {
 		t.Fatalf("HoldToken with no row = %q, held %v, error %v; want \"\", not held", token, held, err)
 	}
 
-	// The TTL is an hour, so the live hold reads held on the database's clock however long the
-	// machine holds the renewals back: how a hold renews is not this row's subject.
-	opts := duty.HoldOptions{TTL: time.Hour, Renew: 500 * time.Millisecond, Margin: time.Second, Token: "deliver.live"}
+	// The TTL is staged (stagedTTL), so the live hold reads held on the database's clock however
+	// long the machine holds the renewals back: how a hold renews is not this row's subject.
+	opts := duty.HoldOptions{TTL: stagedTTL, Renew: 500 * time.Millisecond, Margin: time.Second, Token: "deliver.live"}
 	mustTakeHold(t, database.Pool, uuid.New(), opts)
 	if token, held, err := duty.HoldToken(ctx, database.Pool, holdName); err != nil || !held || token != "deliver.live" {
 		t.Fatalf("HoldToken of a live hold = %q, held %v, error %v; want %q, held", token, held, err, "deliver.live")

@@ -53,11 +53,12 @@ func fleetProcess(t *testing.T, service *Service, version, creatable, ownerLockP
 	}
 }
 
-// liveHeartbeat is the age fleetProcess gives a live process's heartbeat: an hour ahead of the
-// database's now(), so the process counts as live (processes.Live) at every read the row makes,
-// however long the machine takes before it, and no verdict leans on processes.LiveWindow not
-// passing.
-const liveHeartbeat = -time.Hour
+// liveHeartbeat is the age fleetProcess gives a live process's heartbeat: a day ahead of the
+// database's now(), staged state for the product's clock, not a wait, and longer than the longest
+// go test -timeout CI gives a package of the module (80 minutes), so the process counts as live
+// (processes.Live) at every read the row makes, however long the machine takes before it, and no
+// verdict leans on processes.LiveWindow not passing.
+const liveHeartbeat = -24 * time.Hour
 
 // The row of the build after this one goes in while a transaction of this build holds an owner
 // lock, and with it the owner lock gate, as a settlement of the document a test seeded does while

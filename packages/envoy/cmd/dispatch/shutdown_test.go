@@ -220,18 +220,25 @@ func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.
 	}
 }
 
-// atListenerMargin is what of the listener client's window (dispatchenvoy.CallWindow) a row whose
-// send the listener holds across SIGTERM leaves outside its quiet span: the send's way to the
-// listener and the signal before the span, and the release and the listener's answer after it.
-// The child process's client gives each send that one window on the real clock, which no setting
-// moves, and a send that misses it is not settled sent; so the span is the window less this.
-const atListenerMargin = 4 * time.Second
+// listenerCallsEndAtTheGiveUp is the DISPATCH_TEST_LISTENER_CALL_DEADLINE a child process gets
+// where a row holds its send at a stand-in listener: the moment this test's own waits give up
+// (testwait.GiveUpAt), so the child's listener client ends the call no sooner than the test would
+// give up on it, and never under -timeout 0. It is the test's one bound, not a number of its own;
+// the row's quiet span still reads dispatchenvoy.CallWindow, the window a deployment's send has.
+func listenerCallsEndAtTheGiveUp(t *testing.T) string {
+	return dispatchenvoy.CallsEndAt(testwait.GiveUpAt(t)).String()
+}
 
 // A deploy can stop Dispatch while a person's send to one session is with the listener. The send's
 // request is in flight, so HTTP shutdown waits for it, and its delivery runs on past any cut-off:
 // the listener answers after the signal, the attempt settles sent, and only then does Dispatch
 // exit. A process that exited first would leave the attempt pending under a claim no process
 // holds, which the page's retry under the key reads as a send still on its way.
+//
+// The send runs on the test's window (listenerCallsEndAtTheGiveUp), so nothing but a defect ends
+// it while the listener holds it, and the row holds Dispatch's exit off for exactly CallWindow,
+// the longest a deployment's send is held: a shutdown that cut the send anywhere inside that
+// window exits within the span.
 func TestSIGTERMWithAKeyedSendAtTheListenerSettlesItSentBeforeExit(t *testing.T) {
 	const sessionID = "s1"
 	held, release := make(chan struct{}), make(chan struct{})
@@ -268,7 +275,7 @@ func TestSIGTERMWithAKeyedSendAtTheListenerSettlesItSentBeforeExit(t *testing.T)
 
 	database := storetest.Open(t)
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
-		Env: map[string]string{"ENVOY_URL": listener.URL},
+		Env: map[string]string{"ENVOY_URL": listener.URL, "DISPATCH_TEST_LISTENER_CALL_DEADLINE": listenerCallsEndAtTheGiveUp(t)},
 	})
 	process.waitHealthy(t)
 	type answer struct {
@@ -284,11 +291,11 @@ func TestSIGTERMWithAKeyedSendAtTheListenerSettlesItSentBeforeExit(t *testing.T)
 	testwait.Receive(t, "the send to reach the listener", held)
 
 	signalled := process.Terminate(t)
-	testwait.Quiet(t, "Dispatch's exit with the send still at the listener", process.exitedWithOutput(), dispatchenvoy.CallWindow-atListenerMargin,
+	testwait.Quiet(t, "Dispatch's exit with the send still at the listener", process.exitedWithOutput(), dispatchenvoy.CallWindow,
 		"a process that has not exited records nothing that says so, it is a child process so synctest does not "+
 			"reach it, and the later action this row takes - releasing the listener's answer - is what lets it exit; "+
-			"the absence means something only before the listener client's CallWindow ends the send, so the span is "+
-			"that window less what the row needs around it (atListenerMargin)")
+			"the send runs on the test's window, and the span is the production CallWindow, past which a deployment's "+
+			"send would have ended by itself, so a shutdown cut inside it is one the span sees")
 	releaseOnce()
 	t.Logf("the listener answered the send %v after SIGTERM", time.Since(signalled))
 	process.WaitExit(t, "the listener's answer")
@@ -349,6 +356,10 @@ func TestSIGTERMWithAKeyedSendAtTheListenerSettlesItSentBeforeExit(t *testing.T)
 // held recipient after the signal, every recipient's attempt settles sent, and only then does
 // Dispatch exit. Bound to the process lifetime instead, the signal cut the held recipient off
 // and left every recipient the workers had not reached with a pending attempt no process holds.
+//
+// The held recipient's send runs on the test's window (listenerCallsEndAtTheGiveUp), and the row
+// holds Dispatch's exit off for exactly CallWindow, the longest a deployment's send is held: a
+// shutdown that cut the send anywhere inside that window exits within the span.
 func TestSIGTERMWithABroadcastAtTheListenerSettlesEveryRecipientBeforeExit(t *testing.T) {
 	const heldSession = "s2"
 	// Each selected session is resolved by id against its own record (`/v1/registry/{id}`).
@@ -399,7 +410,7 @@ func TestSIGTERMWithABroadcastAtTheListenerSettlesEveryRecipientBeforeExit(t *te
 
 	database := storetest.Open(t)
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
-		Env: map[string]string{"ENVOY_URL": listener.URL},
+		Env: map[string]string{"ENVOY_URL": listener.URL, "DISPATCH_TEST_LISTENER_CALL_DEADLINE": listenerCallsEndAtTheGiveUp(t)},
 	})
 	process.waitHealthy(t)
 	if answer := process.send(t, http.MethodPost, "/api/v1/broadcasts",
@@ -410,11 +421,11 @@ func TestSIGTERMWithABroadcastAtTheListenerSettlesEveryRecipientBeforeExit(t *te
 	testwait.Receive(t, "the broadcast to reach the listener", held)
 
 	signalled := process.Terminate(t)
-	testwait.Quiet(t, "Dispatch's exit with a recipient still at the listener", process.exitedWithOutput(), dispatchenvoy.CallWindow-atListenerMargin,
+	testwait.Quiet(t, "Dispatch's exit with a recipient still at the listener", process.exitedWithOutput(), dispatchenvoy.CallWindow,
 		"a process that has not exited records nothing that says so, it is a child process so synctest does not "+
 			"reach it, and the later action this row takes - releasing the listener's answer - is what lets it exit; "+
-			"the absence means something only before the listener client's CallWindow ends the held recipient's send, "+
-			"so the span is that window less what the row needs around it (atListenerMargin)")
+			"the held recipient's send runs on the test's window, and the span is the production CallWindow, past which "+
+			"a deployment's send would have ended by itself, so a shutdown cut inside it is one the span sees")
 	releaseOnce()
 	t.Logf("the listener answered the held recipient %v after SIGTERM", time.Since(signalled))
 	process.WaitExit(t, "the listener's answer")

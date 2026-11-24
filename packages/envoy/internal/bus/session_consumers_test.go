@@ -14,6 +14,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -794,6 +795,11 @@ func TestRestartsAtOnceReportEachGap(t *testing.T) {
 // A pull sends its next pull request once the server has delivered the last one's whole batch or
 // it expired, and an idle heartbeat keeps a pull that waits longer than two heartbeats alive, so it
 // delivers every message in stream order however many requests that takes.
+//
+// A pull's stall runs on its clock (pullClock), not the machine's: the first pull's is a fake
+// nothing moves, so no stall can end it however long the machine takes over 1,100 messages, and
+// the second's is a fake the row moves one heartbeat at a time, each move only once the pull has
+// heard the server at that clock's present.
 func TestAPullRequestsAgainAfterABatchAndAnExpiry(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
@@ -803,6 +809,7 @@ func TestAPullRequestsAgainAfterABatchAndAnExpiry(t *testing.T) {
 		t.Fatalf("ensure: %v", err)
 	}
 	consumers.pullExpires, consumers.pullHeartbeat = time.Second, 400*time.Millisecond
+	consumers.pullClock = clocktest.New(time.Now())
 	var want []uint64
 	for i := range sessionPullBatch + 76 {
 		want = append(want, publishStored(t, owner, agent, strconv.Itoa(i)))
@@ -838,10 +845,49 @@ func TestAPullRequestsAgainAfterABatchAndAnExpiry(t *testing.T) {
 	}
 	pull.Stop()
 
-	// A request that outlives two heartbeats is kept alive by them.
+	// A request that outlives two heartbeats is kept alive by them: four heartbeats' worth, twice
+	// the stall, passes on the pull's clock, one heartbeat per move, and each move comes only once
+	// the pull has heard the server at the clock's present, which only a heartbeat marks after the
+	// first move. A pull that marked no heartbeat heard would leave the wait before the second move
+	// to give up naming when it last heard the server. After the last move, one more heartbeat heard
+	// leaves a stall time to answer before the Next is ended, and the Next must have answered
+	// nothing: neither a message, since none is stored, nor the stall.
 	consumers.pullExpires, consumers.pullHeartbeat = 5*time.Second, 500*time.Millisecond
+	beats := clocktest.New(time.Now())
+	consumers.pullClock = beats
 	quiet := pullSession(t, consumers, session)
-	requireQuiet(t, quiet, 2*time.Second, "no state the server reports shows a pull request's idle heartbeats, which run on nats-server's own clock, so the row holds an idle Next across four of them (500 ms each) and requires it to answer neither a message nor the stall that missed heartbeats would end it with")
+	heardAtPresent := func(what string) {
+		t.Helper()
+		testwait.Until(t, what, func() (string, bool) {
+			quiet.mu.Lock()
+			heard := quiet.heard
+			quiet.mu.Unlock()
+			now := beats.Now()
+			return fmt.Sprintf("the pull heard the server at %s, its clock stands at %s",
+				heard.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)), !heard.Before(now)
+		})
+	}
+	idle, stop := context.WithCancel(context.Background())
+	defer stop()
+	answered := make(chan nextAnswer, 1)
+	go func() {
+		msg, err := quiet.Next(idle)
+		answered <- nextAnswer{msg, err}
+	}()
+	for beat := range 4 {
+		heardAtPresent(fmt.Sprintf("the pull to hear the server at its clock's present before move %d", beat+1))
+		beats.Advance(consumers.pullHeartbeat)
+	}
+	heardAtPresent("the pull to hear the server at its clock's present after the last move")
+	select {
+	case got := <-answered:
+		t.Fatalf("the Next of consumer %s answered %+v across four heartbeats on its clock, want nothing", quiet.name, got)
+	default:
+	}
+	stop()
+	if got := testwait.Receive(t, "the idle Next of consumer "+quiet.name+" to end once its context was cancelled", answered); !errors.Is(got.err, context.Canceled) {
+		t.Fatalf("the Next of consumer %s answered %+v as it was cancelled, want nothing until then", quiet.name, got)
+	}
 	last := publishStored(t, owner, agent, "after the heartbeats")
 	if msg := next(t, quiet); msg.StreamSeq != last {
 		t.Fatalf("after the heartbeats got %d, want %d", msg.StreamSeq, last)

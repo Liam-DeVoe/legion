@@ -195,8 +195,14 @@ type testServerOptions struct {
 	// can cancel itself. It must end by the test's end, so derive it from t.Context().
 	lifetime context.Context
 	// clock is the server's Deps.Clock, which its timers and the listener client's window run
-	// on: nil is clock.Real(), and a test that drives a timer passes a clocktest.Fake.
+	// on: nil is clock.Real(), on which every listener call's window ends where the shared wait
+	// gives up (DepsInput.ListenerCallDeadline), and a test that drives a timer passes a
+	// clocktest.Fake, which keeps envoy.CallWindow for the test to move to its end.
 	clock clock.Clock
+	// idempotencyLease is the server's Deps.IdempotencyLease: zero keeps
+	// contracts.IdempotencyLease, and a row whose repeats must find the first run in flight however
+	// long the machine takes stages stagedKeyLease.
+	idempotencyLease time.Duration
 	// documentClock is the document service's Deps.Clock, which its settle timers run on (and its
 	// other timers: the compaction queue's checks, a mark's wait, a room query's wait, its
 	// shutdown's drain budget): nil is clock.Real(), and a test that waits for a settlement passes
@@ -252,6 +258,11 @@ type testServerOptions struct {
 // starts inside it whenever the first try took under half a second, and the second, 500 ms later,
 // never does, so a window run out costs about a quarter second.
 const testTakeoverWindow = 750 * time.Millisecond
+
+// stagedKeyLease is the key lease a row stages (testServerOptions.idempotencyLease): staged state
+// for the product's clock, not a wait. It is a day, longer than any -timeout CI gives the package
+// (70 minutes in api's race lane), so no run of a row outlasts the lease it staged.
+const stagedKeyLease = 24 * time.Hour
 
 // testServerURL is the public origin every test server serves under: what a link a handler
 // writes names, and what a DPoP proof's 'htu' is checked against (broker_token_test.go).
@@ -367,8 +378,15 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	// there, and the test moves the clock through it itself, so the window a verdict reads is
 	// the one the deployment runs. A server on the real clock takes the short one.
 	takeoverWindow := listenerTakeoverWindow
+	// A server on the real clock ends every listener call's window where the shared wait gives
+	// up (testwait.GiveUpAt), not envoy.CallWindow after the call began, so a call a stand-in
+	// listener holds ends when the test's own waits would give up on it, and under -timeout 0 not
+	// at all: the test's one bound, not a number of its own. A server on a fake clock keeps
+	// CallWindow, which its test moves to the window's end itself.
+	var callDeadline envoy.CallDeadline
 	if options.clock == nil {
 		takeoverWindow = testTakeoverWindow
+		callDeadline = envoy.CallsEndAt(testwait.GiveUpAt(t))
 	}
 	agentPublisher := options.agentPublisher
 	switch {
@@ -417,6 +435,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		// check no bearer.
 		EnvoyAccountTokenFile:  testEnvoyAccountTokenFile(t, options.envoyURL),
 		ListenerTakeoverWindow: takeoverWindow,
+		ListenerCallDeadline:   callDeadline,
 		// A wait on the event horizon (internal/dispatch/horizontest) reads its stall warnings for
 		// the own-hold rule and for the account a wait that gave up prints, so the horizon warns
 		// within a fraction of a second of a hold rather than at the production five and thirty
@@ -444,6 +463,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}
+	deps.IdempotencyLease = options.idempotencyLease
 	deps.LiveSocketAge = options.liveSocketAge
 	deps.LiveSocketClock = options.liveSocketClock
 	deps.LiveSocketPingClock = options.liveSocketPingClock

@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -1912,6 +1913,31 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					fmt.Sprintf("DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW=%q (expected a positive Go duration)", invalid))
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_LISTENER_CALL_DEADLINE": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.ListenerCallDeadline.String() != "" {
+				t.Errorf("DISPATCH_TEST_LISTENER_CALL_DEADLINE unset: ListenerCallDeadline = %q, want the zero value (each call's own CallWindow)", boot.ListenerCallDeadline)
+			}
+			for _, deadline := range []dispatchenvoy.CallDeadline{
+				dispatchenvoy.CallsEndAt(time.Date(2026, time.November, 24, 12, 0, 0, 123456789, time.UTC), true),
+				dispatchenvoy.CallsEndAt(time.Time{}, false),
+			} {
+				boot := resolveWith(t, map[string]string{
+					"DISPATCH_TEST_HOOKS":                  "1",
+					"DISPATCH_TEST_LISTENER_CALL_DEADLINE": deadline.String(),
+				})
+				if boot.ListenerCallDeadline.String() != deadline.String() {
+					t.Errorf("DISPATCH_TEST_LISTENER_CALL_DEADLINE=%q: ListenerCallDeadline = %q, want %q", deadline, boot.ListenerCallDeadline, deadline)
+				}
+				if options := appContextOptions(boot, routes.AppContextOptions{}); options.ListenerCallDeadline.String() != deadline.String() {
+					t.Errorf("DISPATCH_TEST_LISTENER_CALL_DEADLINE=%q: the router is handed ListenerCallDeadline = %q, want %q", deadline, options.ListenerCallDeadline, deadline)
+				}
+			}
+			for _, invalid := range []string{"not-a-moment", "5s", "2026-11-24"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_LISTENER_CALL_DEADLINE": invalid},
+					fmt.Sprintf("DISPATCH_TEST_LISTENER_CALL_DEADLINE=%q (expected an RFC 3339 moment or none)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_LISTENER_CALL_DEADLINE": "none"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_HORIZON_STALL_AFTER": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.HorizonStallAfter != 0 {

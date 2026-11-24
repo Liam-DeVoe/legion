@@ -141,6 +141,11 @@ type bootConfig struct {
 	// zero for the server's own twelve seconds; only DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW, under
 	// the test hooks, sets it.
 	ListenerTakeoverWindow time.Duration
+	// ListenerCallDeadline is the end every listener call's window has in place of
+	// dispatchenvoy.CallWindow after the call began; its zero value, production's, keeps
+	// CallWindow. Only DISPATCH_TEST_LISTENER_CALL_DEADLINE, under the test hooks, sets it: to the
+	// moment the test that runs this process gives up, or no end under -timeout 0.
+	ListenerCallDeadline dispatchenvoy.CallDeadline
 	// HorizonStallAfter is how long a pending event-horizon observation waits before the process
 	// logs its stall warning, and HorizonWarnEvery how often every event-horizon warning repeats
 	// - that stall warning, the failed-observation warning and the failed-persist warning - both
@@ -1558,6 +1563,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, err
 		}
 	}
+	if err := testHookCallDeadline(env, "DISPATCH_TEST_LISTENER_CALL_DEADLINE", boot.TestHooksEnabled, &boot.ListenerCallDeadline); err != nil {
+		return bootConfig{}, err
+	}
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
 		return bootConfig{}, err
 	}
@@ -2037,6 +2045,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.TestHooksEnabled = boot.TestHooksEnabled
 	built.RouteRosterTTL = boot.RouteRosterTTL
 	built.ListenerTakeoverWindow = boot.ListenerTakeoverWindow
+	built.ListenerCallDeadline = boot.ListenerCallDeadline
 	built.HorizonStallAfter = boot.HorizonStallAfter
 	built.HorizonWarnEvery = boot.HorizonWarnEvery
 	built.ListenerRosterUncached = boot.ListenerRosterUncached
@@ -2539,6 +2548,25 @@ func testHookDuration(env settingValues, name string, testHooksEnabled bool, tar
 		return fmt.Errorf("%s=%q (expected a positive Go duration)", name, raw)
 	}
 	*target = value
+	return nil
+}
+
+// testHookCallDeadline reads the test-only listener call deadline name into target, leaving target
+// as it is when the setting is unset. It is refused without DISPATCH_TEST_HOOKS=1, and so is any
+// value that is not an RFC 3339 moment or none (dispatchenvoy.ParseCallDeadline).
+func testHookCallDeadline(env settingValues, name string, testHooksEnabled bool, target *dispatchenvoy.CallDeadline) error {
+	raw := strings.TrimSpace(env.get(name))
+	if raw == "" {
+		return nil
+	}
+	if !testHooksEnabled {
+		return fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
+	}
+	deadline, err := dispatchenvoy.ParseCallDeadline(raw)
+	if err != nil {
+		return fmt.Errorf("%s=%q (expected an RFC 3339 moment or none)", name, raw)
+	}
+	*target = deadline
 	return nil
 }
 
