@@ -9355,3 +9355,47 @@ test("k-snooze-menu: beside the reading pane a b held down opens the Snooze menu
   await page.waitForTimeout(1_500);
   expect(requestsSent(writes), step("nothing is written")).toBe(0);
 });
+
+// The tester's red rows of round 16 (R8): a snooze of the only item the list shows, with the
+// Later band folded, leaves the focus in the Inbox. At 9d3e0777 the focus goes to the page's body.
+/** k-next-item's snooze of the only item the list shows while the Later band is folded: no row is
+ *  left in sight and no empty message is drawn, so the hand-off has neither a row nor the message
+ *  to give the focus to. R8: "If no item is left, the list's empty message has the focus, and the
+ *  Inbox's keys still work. This is true with the Later band folded or open". The focus stays in
+ *  the Inbox, never on the page's body. */
+async function nextItemOnlyShownSteps(page: Page, place: InboxPlace): Promise<void> {
+  const step = (text: string) => `k-next-item: ${place}: ${text}`;
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Clock audit" });
+  const ask = (await createAsk(issue.key, { question: "Ship the clock audit?" }, asker)).id;
+  const inbox = await openInboxAt(page, place, 1);
+  await putOn(inbox, ask);
+  await page.keyboard.press("b");
+  await expect(openList(page), step("b opens the only ask's Snooze menu")).toBeVisible();
+  await page.keyboard.press("1");
+  await expect(laterBand(inbox, 1), step("the snooze folds the only ask into Later")).toBeVisible();
+  await expect(rowOf(inbox, ask), step("no row is left in sight")).toHaveCount(0);
+  await expect
+    .poll(
+      () =>
+        inbox.scope.evaluate(
+          (scope) =>
+            document.activeElement !== document.body && scope.contains(document.activeElement)
+        ),
+      {
+        message: step(
+          "a snooze of the only item shown, the Later band folded, leaves the focus in the Inbox and not on the page's body"
+        ),
+      }
+    )
+    .toBe(true);
+}
+
+for (const place of ["the reading pane", "card mode", "the drawer"] as const) {
+  // SLOW(>=2s): an ask snoozed into the folded Later band, and the focus read after it.
+  test(`k-next-item: ${place === "the reading pane" ? "beside the reading pane" : place === "card mode" ? "in card mode" : "in the drawer"} a snooze of the only item shown, with the Later band folded, leaves the focus in the Inbox and not on the page's body`, async ({
+    page,
+  }) => {
+    await nextItemOnlyShownSteps(page, place);
+  });
+}
