@@ -1,7 +1,7 @@
 // What the five live proofs that drive real Oh My Pi panes share below the daemon: the constants
 // each reads off the daemon, the run each one is (liveAgentProof) with its reads of a claim, of a
-// pane and of the daemon's own log, the database, the `legion` binary, the plugins and the pane
-// listener a run builds before the daemon boots, the model stand-in each pane talks to, the
+// pane and of the daemon's own log, the `legion` binary, the plugins and the pane listener a run
+// builds before the daemon boots, the model stand-in each pane talks to, the
 // provider answers those stand-ins write, the overlay writers that point a pane at one, and the
 // log handler those reads of the daemon's own decisions go through. The five are
 // provider_error_retry_live_test.go, claim_compaction_live_test.go, role_prompt_rule_live_test.go,
@@ -216,12 +216,16 @@ func indentOutput(text string) string {
 // paneOMP is the Oh My Pi every pane of every such proof runs: the binary LEGION_TEST_OMP names
 // (testbin.OMP), which .github/actions/install-omp installs at the pin .omp-pin names. Without one
 // the proof skips, and on GitHub Actions it fails naming agentHarnessJob, the job that installs it.
-// Each proof prints the version it ran.
+// Each proof prints the version it ran. It then reads the PostgreSQL the daemon runs on, before
+// newLiveProof reads it naming liveJob, so that on GitHub Actions a missing LEGION_TEST_PG_DSN
+// fails such a proof naming agentHarnessJob too, the job that gives it to them (testdb.DSNFor).
 func paneOMP(t *testing.T) string {
 	t.Helper()
 	testprereq.Require(t, os.Getenv("LEGION_TEST_OMP") != "", agentHarnessJob,
 		"LEGION_TEST_OMP names no pinned Oh My Pi binary, and every pane of this proof runs one")
-	return testbin.OMP(t)
+	omp := testbin.OMP(t)
+	testdb.DSNFor(t, agentHarnessJob)
+	return omp
 }
 
 // takeOwnDatabase points LEGION_TEST_PG_DSN at a database this run makes for itself on the server

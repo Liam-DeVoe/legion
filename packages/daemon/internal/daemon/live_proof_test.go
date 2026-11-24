@@ -1,12 +1,11 @@
 // The harness this package's whole-daemon live proofs share: every *_live_test.go of this package
 // that embeds liveProof, directly or through live_issue_proof_test.go's liveIssueProof, those that
 // drive real Oh My Pi panes through liveAgentProof among them. None carries a build tag. CI's
-// daemon-live job (.github/actions/daemon-live) runs ten of the proofs that drive
-// no agent by name, the ones that job's -run names, and
-// admission_issues_live_test.go runs in the daemon-go job's `go test ./internal/daemon/` with the
-// package's other tests. CI's agent-harness job (.github/actions/agent-harness) runs
-// the five that drive real Oh My Pi panes by name, the ones that job's -run names in the same
-// file.
+// daemon-live job (.github/actions/daemon-live) runs the proofs that drive no agent by name, the
+// ones that job's -run names, and admission_issues_live_test.go runs in the daemon-go job's
+// `go test ./internal/daemon/` with the package's other tests. CI's agent-harness job
+// (.github/actions/agent-harness) runs the five that drive real Oh My Pi panes by name, the ones
+// that job's -run names in the same file.
 //
 // A driver embeds liveProof, which holds what every such proof needs before and around the daemon
 // it boots: the configuration it boots with (newLiveProof takes the broker the package's other

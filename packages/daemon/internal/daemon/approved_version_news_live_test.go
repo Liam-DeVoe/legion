@@ -214,9 +214,12 @@ func TestAnApprovedVersionReachesItsHolderLive(t *testing.T) {
 }
 
 // newVersionNewsLive takes the package's broker with the stream the daemon's intake consumes
-// (workflowNATS), and starts the run's Dispatch with its events on that broker.
+// (workflowNATS), and starts the run's Dispatch with its events on that broker. It reads the
+// PostgreSQL both run on first, so that on GitHub Actions a missing LEGION_TEST_PG_DSN fails the
+// test naming liveJob, the job that gives it (testdb.DSNFor).
 func newVersionNewsLive(t *testing.T) *versionNewsLive {
 	t.Helper()
+	testdb.DSNFor(t, liveJob)
 	natsURL := workflowNATS(t)
 	// The checkout Dispatch is built from: the one testbuild.RootEnv names, else the checkout
 	// four directories above the package's, where go test runs it.

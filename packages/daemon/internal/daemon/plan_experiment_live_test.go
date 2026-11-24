@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // experimentLive is one run of the proof: the person's handover rig with the daemon it boots, the
@@ -65,9 +66,12 @@ type experimentIssue struct {
 // TestExperimentLive drives the proof's steps against one Dispatch and the daemon booted twice on
 // one database: first with the experiment at mode on and the arm a, for two issues, then with the
 // arm b, for a third. Each issue keeps the arm of its draw whatever the settings say later, which
-// the operator's line after the second boot shows.
+// the operator's line after the second boot shows. It reads the PostgreSQL both run on first, so
+// that on GitHub Actions a missing LEGION_TEST_PG_DSN fails the test naming liveJob, the job that
+// gives it (testdb.DSNFor).
 func TestExperimentLive(t *testing.T) {
 	fixtureenv.Live(t)
+	testdb.DSNFor(t, liveJob)
 	natsURL := workflowNATS(t)
 	root := liveCLICheckout(t)
 	options := scratchDispatchOptions{natsURL: natsURL, root: root}
