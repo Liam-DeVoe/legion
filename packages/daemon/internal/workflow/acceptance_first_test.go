@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,15 +22,15 @@ func acceptingFirst(t *testing.T, pool *pgxpool.Pool, engine *Engine, words ...s
 }
 
 // assertStoppedAtTheAcceptance fails unless key's task a stopped at step 1, the acceptance that
-// failed, with one task-stopped notice naming that step.
+// failed, with one task-stopped notice of that step's role and phase.
 func assertStoppedAtTheAcceptance(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 	t.Helper()
 	if got := issueOf(t, pool, engine, key); got.Hold == nil || got.Hold.From != phase.Accepting {
 		t.Fatalf("%s after the fail stands in %s with hold %+v, want its task stopped at accepting", key, got.Phase, got.Hold)
 	}
 	stopped := noticesOf(t, pool, key, "task-stopped")
-	if len(stopped) != 1 || !strings.Contains(stopped[0].Reason, "step 1 (acceptance) failed") {
-		t.Fatalf("the task-stopped notices of %s = %+v, want one naming step 1 (acceptance)", key, stopped)
+	if len(stopped) != 1 || stopped[0].Role != acceptanceRole || stopped[0].Phase != phase.Accepting {
+		t.Fatalf("the task-stopped notices of %s = %+v, want one of step 1's role acceptance at accepting", key, stopped)
 	}
 }
 

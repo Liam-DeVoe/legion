@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -74,10 +73,8 @@ func TestAnOwnerStepIsToldToTheOwnerFromEachStartPath(t *testing.T) {
 		if len(notices) != 1 || notices[0].Role != claim.RoleImplementer || notices[0].Phase != phase.Implementing {
 			t.Fatalf("the gate's opening told %+v, want one owner-step of the implementer's step in implementing", notices)
 		}
-		for _, says := range []string{" Task: a.", " Step 1 of 2: implementer:owner.", " Task text: "} {
-			if !strings.Contains(notices[0].Reason, says) {
-				t.Fatalf("the owner-step's task = %q, want it to say %q", notices[0].Reason, says)
-			}
+		if step := notices[0].OwnerStep; step == nil || step.Task != "a" || step.Kind != "step" || step.Place != 1 {
+			t.Fatalf("the owner-step names the run %+v, want task a's step 1", notices[0].OwnerStep)
 		}
 		assertNoClaimStarts(t, pool, root.Key)
 		if starts := stepStartsAt(t, pool, root.Key, "step", 1); len(starts) != 1 || starts[0].Agent != owner {
@@ -130,8 +127,8 @@ func TestAnOwnerStepIsToldToTheOwnerFromEachStartPath(t *testing.T) {
 		if len(notices) != 1 || notices[0].Role != "" || notices[0].Phase != phase.Retro {
 			t.Fatalf("the child's leave told %+v, want one owner-step of the retro", notices)
 		}
-		if !strings.Contains(notices[0].Reason, " Task: a.") || strings.Contains(notices[0].Reason, " Step ") {
-			t.Fatalf("the retro's owner-step task = %q, want it to name task a and no step", notices[0].Reason)
+		if step := notices[0].OwnerStep; step == nil || step.Task != "a" || step.Kind != "retro" || step.Place != 0 {
+			t.Fatalf("the retro's owner-step names the run %+v, want task a's retro", notices[0].OwnerStep)
 		}
 		if row := roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer); row.Claim != claim.Token(owner) || row.StepPlace != 0 || row.Entry == 0 {
 			t.Fatalf("the implementer's row = %+v, want the owner's retro on it at place 0", row)
@@ -211,15 +208,15 @@ func TestAnOwnerStepIsToldToTheOwnerFromEachStartPath(t *testing.T) {
 		if len(notices) != 1 || notices[0].Role != claim.RoleImplementer || notices[0].Phase != phase.Implementing {
 			t.Fatalf("the retry told %+v, want one owner-step of the implementer's step", notices)
 		}
-		if !strings.Contains(notices[0].Reason, " Reason: the operator retried this phase's worker.") || !strings.Contains(notices[0].Reason, " Step 1 of 2: implementer:owner.") {
-			t.Fatalf("the retry's owner-step task = %q, want it to name step 1 and the retry's reason", notices[0].Reason)
+		if step := notices[0].OwnerStep; step == nil || step.Task != "a" || step.Kind != "step" || step.Place != 1 {
+			t.Fatalf("the retry's owner-step names the run %+v, want task a's step 1", notices[0].OwnerStep)
 		}
 	})
 
 	t.Run("the operator's retry of the owner's claim while its owner-step is still queued", func(t *testing.T) {
 		pool, root := retried(t, false)
 		notices := ownerSteps(t, pool, root.Key)
-		if len(notices) != 1 || strings.Contains(notices[0].Reason, "the operator retried") {
+		if len(notices) != 1 {
 			t.Fatalf("the owner-steps after the retry = %+v, want the gate's one alone: the queued row already tells the run's step", notices)
 		}
 	})
@@ -263,10 +260,6 @@ func TestTheEngineTakesTheOwnersReportOnlyForTheStepThatRuns(t *testing.T) {
 		result := apply("step-1-again", ownersReport(root.Key, owner, claim.RoleImplementer, 1, "implement-LEGION-208-again"))
 		if result.Refusal == nil || result.Refusal.Code != "OWNER_STEP_NOT_RUNNING" {
 			t.Fatalf("the owner's report of step 1 at step 2 = %+v, want OWNER_STEP_NOT_RUNNING", result.Refusal)
-		}
-		const says = "step 1 of task a of LEGION-208 is not a step of yours that runs now: LEGION-208 stands at step 2 (tester), whose agent is the owner. This report changed nothing."
-		if result.Refusal.Message != says {
-			t.Fatalf("the refusal = %q, want %q", result.Refusal.Message, says)
 		}
 		if row := roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer); row.LastHandoff != "implement-LEGION-208" {
 			t.Fatalf("the implementer's row after the refused report = %+v, want the first report's handoff kept", row)

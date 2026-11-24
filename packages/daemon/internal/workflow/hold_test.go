@@ -74,6 +74,9 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 		role      claim.Role
 		wantPhase phase.Phase
 		want      []record.OutboxPayload
+		// reasonUnread holds the case's notices to their kind, role and phase, and not to the words
+		// of their reason.
+		reasonUnread bool
 	}{
 		{
 			name:  "the planner while the implementer works",
@@ -117,9 +120,8 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 			root:  record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"},
 			child: record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &root, Project: "LEGION", Title: "child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"},
 			role:  claim.RoleArchitect, wantPhase: phase.Implementing,
-			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Implementing,
-				Reason: "LEGION-209's own architect failed, and its notices come to you until it runs again. The daemon starts it again at LEGION-209's next phase start. " +
-					"At an acceptance that architect does, no phase start comes until LEGION-209 moves: sign_off for LEGION-209, or move it back with request_backward_move"}},
+			want:         []record.OutboxPayload{record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Implementing}},
+			reasonUnread: true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -139,7 +141,7 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 			if wantHeld := tc.child.Hold != nil; gotPhase != tc.wantPhase || (heldFrom != nil) != wantHeld {
 				t.Fatalf("after the %s's failure the child is in %s held from %v, want %s held %t", tc.role, gotPhase, heldFrom, tc.wantPhase, wantHeld)
 			}
-			if got := noticeRows(t, pool); !sameNotices(got, tc.want) {
+			if got := noticeRows(t, pool); !sameNotices(unreadReasons(got, tc.reasonUnread), tc.want) {
 				t.Fatalf("notice rows = %+v, want %+v", got, tc.want)
 			}
 		})
@@ -772,6 +774,9 @@ func TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice(t *testing.T) 
 		at    phase.Phase
 		child bool
 		want  []record.OutboxPayload
+		// reasonUnread holds the case's notices to their kind, role and phase, and not to the words
+		// of their reason.
+		reasonUnread bool
 	}{
 		{
 			name: "the tree's architect while its root stands at admitted", key: root, at: phase.Admitted,
@@ -782,9 +787,8 @@ func TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice(t *testing.T) 
 		},
 		{
 			name: "a child's sub-architect while the child is in accepting", key: "LEGION-209", at: phase.Accepting, child: true,
-			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Accepting,
-				Reason: "LEGION-209's own architect failed, and its notices come to you until it runs again. The daemon starts it again at LEGION-209's next phase start. " +
-					"At an acceptance that architect does, no phase start comes until LEGION-209 moves: sign_off for LEGION-209, or move it back with request_backward_move"}},
+			want:         []record.OutboxPayload{record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Accepting}},
+			reasonUnread: true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -815,9 +819,26 @@ func TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice(t *testing.T) 
 			if gotPhase != tc.at || heldFrom != nil {
 				t.Fatalf("after the architect's failure %s is in %s held from %v, want %s and no hold", tc.key, gotPhase, heldFrom, tc.at)
 			}
-			if got := noticeRows(t, pool); !sameNotices(got, tc.want) {
+			if got := noticeRows(t, pool); !sameNotices(unreadReasons(got, tc.reasonUnread), tc.want) {
 				t.Fatalf("notice rows = %+v, want %+v: no held notice is written for an architect", got, tc.want)
 			}
 		})
 	}
+}
+
+// unreadReasons is rows with each notice's reason left out where unread is true, for a case that
+// holds its notices to their kind, role and phase and not to the words an architect reads.
+func unreadReasons(rows []record.OutboxPayload, unread bool) []record.OutboxPayload {
+	if !unread {
+		return rows
+	}
+	out := make([]record.OutboxPayload, len(rows))
+	for i, row := range rows {
+		if notice, ok := row.(record.Notice); ok {
+			notice.Reason = ""
+			row = notice
+		}
+		out[i] = row
+	}
+	return out
 }

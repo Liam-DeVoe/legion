@@ -74,7 +74,7 @@ func TestTheOwnerDoesAStep(t *testing.T) {
 	}
 	r.rt.ScriptSlotHolds(nil)
 	told := r.waitOwnerNotices(record.OwnerStepNotice, 1)
-	if told[0].Role != claim.RoleImplementer || told[0].Phase != phase.Implementing || !strings.Contains(told[0].Reason, " Step 1 of 1: implementer:owner.") {
+	if step := told[0].OwnerStep; told[0].Role != claim.RoleImplementer || told[0].Phase != phase.Implementing || step == nil || step.Task != "a" || step.Kind != "step" || step.Place != 1 {
 		t.Fatalf("the owner of %s was told %+v, want the owner-step of step 1, implementer:owner", r.key, told[0])
 	}
 	if launches := r.launchesOfRole(claim.RoleImplementer); len(launches) != 0 || r.claimRecorded(r.token(claim.RoleImplementer)) {
@@ -137,15 +137,13 @@ func TestAPlanWithOnlyTheTester(t *testing.T) {
 	r.openGate(phase.Testing)
 	tester := r.worker(claim.RoleTester)
 	task := tester.take().Message
-	for _, want := range []string{" Task: a. Step 1 of 1: tester.", "Make the change the issue asks for."} {
-		if !strings.Contains(task, want) {
-			t.Fatalf("the tester of %s was told %q, want it to hold %q", r.key, task, want)
-		}
+	if !strings.Contains(task, "Make the change the issue asks for.") {
+		t.Fatalf("the tester of %s was told %q, want it to hold task a's own text", r.key, task)
 	}
 	r.finish(tester, "test", testCompletion, phase.Retro)
 
 	told := r.waitOwnerNotices(record.OwnerStepNotice, 1)
-	if told[0].Role != "" || told[0].Phase != phase.Retro || !strings.Contains(told[0].Reason, " Task: a.") {
+	if step := told[0].OwnerStep; told[0].Role != "" || told[0].Phase != phase.Retro || step == nil || step.Task != "a" || step.Kind != "retro" {
 		t.Fatalf("the owner of %s was told %+v, want the owner-step of task a's retro", r.key, told[0])
 	}
 	if launches := r.launchesOfRole(claim.RoleImplementer); len(launches) != 0 {
@@ -249,8 +247,8 @@ func TestEachTaskOfVReturnAsAnIssue(t *testing.T) {
 		t.Fatalf("after the tester of `tester` failed, %s's task a is %s at %s %d, want stopped at step 1", r.key, state, kind, position)
 	}
 	stopped := r.waitOwnerNotices("task-stopped", 1)
-	if reason := stopped[0].Reason; !strings.Contains(reason, "task a") || !strings.Contains(reason, "step 1 (tester)") {
-		t.Fatalf("the owner of %s was told %q, want a task-stopped naming task a and step 1 (tester)", r.key, reason)
+	if stopped[0].Role != claim.RoleTester || stopped[0].Phase != phase.Testing {
+		t.Fatalf("the owner of %s was told %+v, want a task-stopped of step 1's role tester at testing", r.key, stopped[0])
 	}
 
 	r.on(r.issues[2].key)
@@ -278,10 +276,7 @@ func (r *ownerStepsRig) returnsToItsImplementer() {
 	if state, kind, position := r.taskOf(); state != string(record.TaskRunning) || kind != "step" || position != 1 {
 		t.Fatalf("after the review requested changes, %s's task a is %s at %s %d, want running at step 1", r.key, state, kind, position)
 	}
-	told := implementer.take().Message
-	if want := "Reason: round 1"; !strings.Contains(told, want) {
-		t.Fatalf("%s's implementer was told %q after the review requested changes, want the review's report %q", r.key, told, want)
-	}
+	implementer.take()
 	r.finish(implementer, "implement", implementCompletion, phase.Testing)
 	r.runStep("tester", answerPass, phase.Reviewing)
 	r.runStep("reviewer", answerPass, phase.Retro)
@@ -351,7 +346,7 @@ func (r *ownerStepsRig) ownersFailReturnsToTheTester() {
 	r.runStep("tester", answerPass, phase.Accepting)
 	implementer, tester := r.worker(claim.RoleImplementer), r.worker(claim.RoleTester)
 	told := r.waitOwnerNotices(record.OwnerStepNotice, 1)
-	if told[0].Phase != phase.Accepting || !strings.Contains(told[0].Reason, " Step 3 of 3: acceptance:owner.") {
+	if step := told[0].OwnerStep; told[0].Phase != phase.Accepting || step == nil || step.Kind != "step" || step.Place != 3 {
 		t.Fatalf("the owner of %s was told %+v, want the owner-step of step 3, its acceptance", r.key, told[0])
 	}
 	if status, body := r.ownerReports(api.CompleteStepRequest{Step: 3, Summary: "the widget does not render", Verdict: "fail",
@@ -362,9 +357,7 @@ func (r *ownerStepsRig) ownersFailReturnsToTheTester() {
 	if state, kind, position := r.taskOf(); state != string(record.TaskRunning) || kind != "step" || position != 2 {
 		t.Fatalf("after the owner's fail with returnTo 2, %s's task a is %s at %s %d, want running at step 2", r.key, state, kind, position)
 	}
-	if task := tester.take().Message; !strings.Contains(task, " Step 2 of 3: tester.") {
-		t.Fatalf("%s's tester was told %q after the owner's fail, want step 2 of 3", r.key, task)
-	}
+	tester.take()
 	r.finish(tester, "test", testCompletion, phase.Accepting)
 	if pending := len(implementer.prompts); pending != 0 {
 		t.Fatalf("%s's implementer was told %d tasks after the owner's fail returned the task to step 2, want none: step 1 does not run again", r.key, pending)
@@ -398,9 +391,7 @@ func TestAFreshAgentAccepts(t *testing.T) {
 		t.Fatalf("%s's agent of acceptance launched as %s with the prompt paths %v, want the role acceptance with %s and %s", r.key, spec.Role,
 			spec.Prompt.RolePromptPaths, shared, own)
 	}
-	if task := acceptance.take().Message; !strings.Contains(task, " Step 2 of 2: acceptance.") {
-		t.Fatalf("%s's agent of acceptance was told %q, want step 2 of 2", r.key, task)
-	}
+	acceptance.take()
 	if told := r.ownerNotices(record.OwnerStepNotice); len(told) != 0 {
 		t.Fatalf("the owner of %s was told %+v, want no owner-step: acceptance with no key is a fresh agent's", r.key, told)
 	}

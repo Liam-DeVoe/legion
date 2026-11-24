@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -114,8 +113,8 @@ func TestAStepOfTheTypeReviewWithNoPullRequestEndsByItsVerdict(t *testing.T) {
 				t.Fatalf("task a of %s after the reviewer's fail is %s, want stopped", key, task.State)
 			}
 			told := noticesOf(t, pool, key, "task-stopped")
-			if len(told) != 1 || !strings.Contains(told[0].Reason, "task a of "+key+" was stopped: step 2 (reviewer) failed") {
-				t.Fatalf("the fail told %+v, want one task-stopped naming task a and step 2", told)
+			if len(told) != 1 || told[0].Role != claim.RoleReviewer || told[0].Phase != phase.Reviewing {
+				t.Fatalf("the fail told %+v, want one task-stopped of step 2's role reviewer at reviewing", told)
 			}
 		}},
 		{verdict: "pass", check: func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {

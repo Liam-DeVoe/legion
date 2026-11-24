@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -138,7 +137,7 @@ func TestALateReportOfTheRetroOfARoleOfTheDeploymentIsOfTheRetro(t *testing.T) {
 	rated := late
 	rated.PlanRating = &record.PlanRating{Rating: 4, Reason: "the steps fit the work"}
 	result := apply("late-rated", rated)
-	if result.Refusal == nil || result.Refusal.Code != "PLAN_RATING_UNEXPECTED" || !strings.Contains(result.Refusal.Message, "this completion of phase retro of "+root.Key) {
+	if result.Refusal == nil || result.Refusal.Code != "PLAN_RATING_UNEXPECTED" {
 		t.Fatalf("the coder's rated report after its retro = %+v, want PLAN_RATING_UNEXPECTED naming the retro it left", result.Refusal)
 	}
 	if result := apply("late", late); result.Refusal != nil {

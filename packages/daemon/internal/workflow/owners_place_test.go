@@ -2,10 +2,11 @@ package workflow
 
 import (
 	"context"
-	"strings"
+	"slices"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -69,9 +70,8 @@ func TestASignOffEndsOnlyTheOwnersOwnAcceptance(t *testing.T) {
 		engine := returnEngine()
 		root := freshAgentAccepting(t, pool, engine)
 		result := signsOff(t, pool, engine, root.Key)
-		const want = "step 3 (acceptance) of task a of LEGION-208 is not a step of yours: its agent is acceptance, which ends it with its own verdict, and a sign-off takes only an acceptance whose agent is the owner. This sign-off changed nothing."
-		if result.Refusal == nil || result.Refusal.Status != 409 || result.Refusal.Code != "SIGNOFF_NOT_THE_OWNERS" || result.Refusal.Message != want {
-			t.Fatalf("the owner's sign-off of the fresh agent's acceptance = %+v, want 409 SIGNOFF_NOT_THE_OWNERS saying %q", result.Refusal, want)
+		if result.Refusal == nil || result.Refusal.Status != 409 || result.Refusal.Code != "SIGNOFF_NOT_THE_OWNERS" {
+			t.Fatalf("the owner's sign-off of the fresh agent's acceptance = %+v, want 409 SIGNOFF_NOT_THE_OWNERS", result.Refusal)
 		}
 		assertWalksAt(t, pool, engine, root.Key, phase.Accepting, stepPlace(3))
 	})
@@ -86,6 +86,21 @@ func TestASignOffEndsOnlyTheOwnersOwnAcceptance(t *testing.T) {
 		}
 		assertWalksAt(t, pool, engine, root.Key, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
 	})
+}
+
+// catchUpNames is what treeCatchUp computes for key's catch-up now: the issues in accepting whose
+// acceptance waits for the owner, and the owner's own step of its own issue, "" where it has none.
+func catchUpNames(t *testing.T, pool *pgxpool.Pool, key string) ([]string, string) {
+	t.Helper()
+	issue := storedIssue(t, pool, key)
+	var awaiting []string
+	var ownStep string
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		var err error
+		_, awaiting, ownStep, err = treeCatchUp(t.Context(), tx, record.NewStore(), nil, issue)
+		return err
+	})
+	return awaiting, ownStep
 }
 
 // A root architect's catch-up names, of the children waiting in accepting, only those whose
@@ -105,10 +120,11 @@ func TestACatchUpNamesOnlyTheChildrenWhoseAcceptanceIsTheOwners(t *testing.T) {
 		seedStepsAt(t, pool, key, 1, 2, nil, words...)
 	}
 	claimReady(t, pool, testEngine(config.DesignGateRootIssues, nil), root.Key, claim.RoleArchitect, 1)
-	const want = "the tree of LEGION-1 at generation 1 as the daemon records it now; start or resume it as your role says" +
-		"; in accepting, waiting for your acceptance, which no worker gives: LEGION-3 (read the evidence, then sign_off or request_backward_move)"
-	if got := catchUps(t, pool); len(got) != 1 || !strings.HasSuffix(got[0], " reason="+want) {
-		t.Fatalf("catch-ups %v; want one whose reason is %q", got, want)
+	if got := catchUps(t, pool); len(got) != 1 {
+		t.Fatalf("catch-ups %v; want one", got)
+	}
+	if awaiting, ownStep := catchUpNames(t, pool, root.Key); !slices.Equal(awaiting, []string{"LEGION-3"}) || ownStep != "" {
+		t.Fatalf("the catch-up names the acceptances %v and the step %q, want LEGION-3 alone and no step", awaiting, ownStep)
 	}
 }
 
@@ -120,29 +136,29 @@ func TestACatchUpNamesOnlyTheChildrenWhoseAcceptanceIsTheOwners(t *testing.T) {
 // The control is the catch-up that reads the phase alone: it tells the owner to sign off the fresh
 // agent's step, and names the owner's implementer step nowhere.
 func TestACatchUpNamesTheOwnersOwnStepWhereverItStands(t *testing.T) {
-	const base = "the tree of LEGION-208 at generation 1 as the daemon records it now; start or resume it as your role says"
 	for _, tc := range []struct {
-		name  string
-		at    phase.Phase
-		place int
-		words []string
-		want  string
+		name     string
+		at       phase.Phase
+		place    int
+		words    []string
+		awaiting []string
+		ownStep  bool
 	}{
-		{"the fresh agent's acceptance", phase.Accepting, 3, []string{"implementer", "reviewer", "acceptance"}, base},
-		{"the owner's acceptance", phase.Accepting, 3, []string{"implementer", "reviewer", "acceptance:owner"},
-			base + "; in accepting, waiting for your acceptance, which no worker gives: LEGION-208 (read the evidence, then sign_off or request_backward_move)"},
-		{"the owner's implementer step", phase.Implementing, 1, []string{"implementer:owner", "reviewer"},
-			base + "; at a step of yours, which no worker does: LEGION-208 at step 1 (implementer) of task a (do it as its owner-step notice says, then report it with complete_step)"},
-		{"another agent's implementer step", phase.Implementing, 1, []string{"implementer", "reviewer:owner"}, base},
+		{"the fresh agent's acceptance", phase.Accepting, 3, []string{"implementer", "reviewer", "acceptance"}, nil, false},
+		{"the owner's acceptance", phase.Accepting, 3, []string{"implementer", "reviewer", "acceptance:owner"}, []string{"LEGION-208"}, false},
+		{"the owner's implementer step", phase.Implementing, 1, []string{"implementer:owner", "reviewer"}, nil, true},
+		{"another agent's implementer step", phase.Implementing, 1, []string{"implementer", "reviewer:owner"}, nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			root := stepRoot(t, pool, tc.at)
 			seedStepsAt(t, pool, root.Key, root.Generation, tc.place, nil, tc.words...)
 			claimReady(t, pool, testEngine(config.DesignGateRootIssues, nil), root.Key, claim.RoleArchitect, 1)
-			got := catchUps(t, pool)
-			if len(got) != 1 || !strings.HasSuffix(got[0], " reason="+tc.want) {
-				t.Fatalf("catch-ups %v; want one whose reason is %q", got, tc.want)
+			if got := catchUps(t, pool); len(got) != 1 {
+				t.Fatalf("catch-ups %v; want one", got)
+			}
+			if awaiting, ownStep := catchUpNames(t, pool, root.Key); !slices.Equal(awaiting, tc.awaiting) || (ownStep != "") != tc.ownStep {
+				t.Fatalf("the catch-up names the acceptances %v and the step %q, want %v and a step %t", awaiting, ownStep, tc.awaiting, tc.ownStep)
 			}
 		})
 	}

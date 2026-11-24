@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -153,8 +152,11 @@ func TestAnOwnersCatchUpAndAChildsSilenceTellTheOwnersStepAgain(t *testing.T) {
 		dropNotices(t, pool, root.Key)
 
 		claimReady(t, pool, returnEngine(), root.Key, claim.RoleArchitect, 2)
-		if catchUp := noticesOf(t, pool, root.Key, "catch-up"); len(catchUp) != 1 || !strings.Contains(catchUp[0].Reason, "at a step of yours") {
-			t.Fatalf("the launch queued the catch-ups %+v, want one naming the owner's step", catchUp)
+		if catchUp := noticesOf(t, pool, root.Key, "catch-up"); len(catchUp) != 1 {
+			t.Fatalf("the launch queued the catch-ups %+v, want one", catchUp)
+		}
+		if _, ownStep := catchUpNames(t, pool, root.Key); ownStep == "" {
+			t.Fatalf("the catch-up of %s names no step of the owner's, want its step 1", root.Key)
 		}
 		told := ownerSteps(t, pool, root.Key)
 		if len(told) != 1 || told[0].Reason != first.Reason {
