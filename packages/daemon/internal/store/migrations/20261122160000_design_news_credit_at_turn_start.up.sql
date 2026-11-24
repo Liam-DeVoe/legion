@@ -40,14 +40,17 @@
 -- 20261121170714_dispatch_issue_applied_seq runs between the two as well, before that one): it
 -- writes design_news_told_in back as 20261119203047 wrote it, drops the comment this file set
 -- (that migration set none), and deletes this migration's version row, so the roll forward runs
--- this file again. The release before this one, contract 220 (the one whose
--- internal/api/version.go carries the entry for cybermonklabs/legion#4930's assignment plans) as
--- main releases it with #4930 on contract 219 and #5278 after it, whose newest migration is
--- #5278's 20261123212127_claim_start_failure_after_ready, carries 20261119203047 and not the task
--- numbers, and then reads the function it wrote; a rollback to a release before #5278 also
--- crosses 20261123212127, which needs nothing: it carries no way back, since an earlier release
--- reads the start failures it emptied as none recorded; a rollback to contract 219 or before
--- crosses 220 and first
+-- this file again. The release before this one, contract 228 (the one whose
+-- internal/api/version.go carries the entry for INFRA-1575, cybermonklabs/legion#4590's intake
+-- give-ups) as main releases it after #4930's contract 220 and #5278, whose newest migration is
+-- still #5278's 20261123212127_claim_start_failure_after_ready, carries 20261119203047 and not
+-- the task numbers, and then reads the function it wrote; a rollback to contract 220 or before
+-- crosses 228 and takes that release's steps, which delete the project's unsent intake-gave-up
+-- controller notices and its open failures and touch nothing this block reads
+-- (docs/kubernetes.md, "Rolling back the release that gives up on intake messages"); a rollback
+-- to a release before #5278 also crosses 20261123212127, which needs nothing: it carries no way
+-- back, since an earlier release reads the start failures it emptied as none recorded; a
+-- rollback to contract 219 or before crosses 220 and first
 -- takes that release's one step, before this block, which takes `plan` out of legion.yaml and runs
 -- no statement (docs/kubernetes.md, "Rolling back the release whose experiment sets how each issue
 -- is done"), a rollback to contract 217 or before also crosses 219 and takes that release's own

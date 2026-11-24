@@ -29,6 +29,10 @@ import {
   LegionHandoffCompleteResponse,
   LegionHealthResponse,
   LegionInstant,
+  LegionIntakeDiscardRequest,
+  LegionIntakeDiscardResponse,
+  LegionIntakeReplayRequest,
+  LegionIntakeReplayResponse,
   LegionIssueRecordResponse,
   LegionIssueStatusRequest,
   LegionOperatorClaimResponse,
@@ -155,7 +159,7 @@ const schemas: Record<string, z.ZodType> = {
   // refused turns the claim now ends with and whether this report failed it.
   "turn-outcome.json": LegionTurnOutcomeResponse,
   // `claim.TaskResponse`: what `claims/task` answers a claim whose bucket holds no value (`task`
-  // null), and `claim.TakeResponse`, one fixture for each outcome of a take (contract 223).
+  // null), and `claim.TakeResponse`, one fixture for each outcome of a take (contract 240).
   "task.json": LegionTaskResponse,
   "take-accepted.json": LegionTakeResponse,
   "take-refused.json": LegionTakeResponse,
@@ -199,6 +203,11 @@ const schemas: Record<string, z.ZodType> = {
   "project-pause-refused.json": LegionPauseFailureResponse,
   "project-paused.json": LegionPauseFailureResponse,
   "project-resume-refused.json": LegionPauseFailureResponse,
+  // The replay and the discard of the intake's give-ups (contract 228), written by internal/api's
+  // TestIntakeReplayAnswerGolden and TestIntakeDiscardAnswerGolden from what each route answers:
+  // a replay with one record of each outcome and one left, and the ids a discard closed.
+  "intake-replay.json": LegionIntakeReplayResponse,
+  "intake-discard.json": LegionIntakeDiscardResponse,
   // No route answers this one: it is the contract number the daemon's boot gate requires of the
   // installed plugin (`internal/api/version.go`), and the plugin's own test pins its manifest's
   // `legion.daemonApiVersion` to it.
@@ -449,11 +458,12 @@ interface EnumeratedFieldRow {
 
 /** The answer schema this module parses each answer of the daemon's table with, by the id the
  * table writes it under (`internal/api/answers.go`). An answer whose id no entry here names
- * fails the case below, so an enumerated field of a fourth answer is read rather than skipped. */
+ * fails the case below, so an enumerated field of that answer is read rather than skipped. */
 const ANSWER_SCHEMAS: Record<string, z.ZodType> = {
   state: LegionStateResponse,
   "issue-record": LegionIssueRecordResponse,
   register: LegionRegisterResponse,
+  "intake-replay": LegionIntakeReplayResponse,
 };
 
 /** One step of a path from a schema's root to a node below it: the field `key` of an object,
@@ -1904,6 +1914,36 @@ test("every request the plugin sends parses and names its required fields", () =
       { grantId: "controller-grant-1", reason: "the model provider is refusing every turn" },
     ],
     ["project resume", LegionProjectResumeRequest, { grantId: "controller-grant-1" }],
+    // Each give-up route takes one record by its id, or a consumer through a stream sequence.
+    [
+      "replay one give-up",
+      LegionIntakeReplayRequest,
+      { grantId: "controller-grant-1", giveUp: 41 },
+    ],
+    [
+      "replay a consumer's give-ups",
+      LegionIntakeReplayRequest,
+      { grantId: "controller-grant-1", consumer: "legion-go-LEGION-dispatch", throughSeq: 6044896 },
+    ],
+    [
+      "discard one give-up",
+      LegionIntakeDiscardRequest,
+      {
+        grantId: "controller-grant-1",
+        giveUp: 41,
+        reason: "the listener published a non-JSON body",
+      },
+    ],
+    [
+      "discard a consumer's give-ups",
+      LegionIntakeDiscardRequest,
+      {
+        grantId: "controller-grant-1",
+        consumer: "legion-go-LEGION-dispatch",
+        throughSeq: 6044896,
+        reason: "the listener published a non-JSON body",
+      },
+    ],
     // The operator's pause is the CLI's body, not the plugin's; it is held here as the mirror of
     // the Go shape, as the escalation below is.
     [
@@ -1977,7 +2017,7 @@ test("every request the plugin sends parses and names its required fields", () =
         since: "2026-11-01T12:00:00Z",
       },
     ],
-    // The task routes (contract 223), each under the agent's secret form and the bridge's boot
+    // The task routes (contract 240), each under the agent's secret form and the bridge's boot
     // token form, and the turn outcome that names the task and the provider error it ended in.
     [
       "task read",
@@ -2513,7 +2553,7 @@ test("the register golden names the task agents the role's prompts dispatch", ()
   expect(LegionRegisterResponse.safeParse(mutated).success).toBeFalse();
 });
 
-// A worker holds its claim's value from its registration and from `claims/task` (contract 223):
+// A worker holds its claim's value from its registration and from `claims/task` (contract 240):
 // the value, or null where the bucket holds none, beside the number of the last task the claim
 // finished. Both keys are always written, so neither may be left out, and a value always names a
 // task and a revision.
@@ -2547,7 +2587,7 @@ test("the register golden and the task read carry the claim's value and its fini
   expect(LegionTaskResponse.safeParse(noTask).success).toBeFalse();
 });
 
-// A take is answered one of three ways (contract 223), each written by the Go side: accepted with
+// A take is answered one of three ways (contract 240), each written by the Go side: accepted with
 // the text the worker runs, refused naming the hold, or dropped. An accepted answer without its
 // text and a refused one without its hold are refused; a hold a later daemon names is read.
 test("the take goldens are its three answers", () => {
@@ -2878,18 +2918,20 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   ]);
   expect(block.data?.caches).toEqual(live.caches);
 
-  // Every other key is the state golden's own, the `contract` mark and `lowestPluginContract`
-  // aside: the mark names the contract the caller is served at, 199, the recorded contract below
-  // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
-  // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
-  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Three bands stand
-  // above 199: the repositories block's, at 202, contract 220's, which takes `plan` off each
-  // assignment, so the golden's rows are compared without it, and the unseen task values', at 223
-  // (contract 223, `withoutUnseenTaskValues`), which a caller below 223 is never served. So the
-  // narrowing changes this one block, takes `plan` off each assignment, drops `unseenTaskValues`,
-  // and changes no other key. One value strip stands above 199 as well: `caches`, the source of
-  // the repository-cache-room row, arrived at contract 213, so that row is served here without its
-  // `source`, every other field of it and every other row as the state golden holds them.
+  // Every other key is the state golden's own, the `contract` mark, `lowestPluginContract` and
+  // `intakeGiveUps` aside: the mark names the contract the caller is served at, 199, the recorded
+  // contract below the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which
+  // moved no answer's shape, and the lowest plugin contract reports the claims of the snapshot the
+  // route projected the body from, a pod at 201, which `state.json`'s own fixture does not hold.
+  // Four bands stand above 199: the repositories block's at 202, contract 220's, which takes
+  // `plan` off each assignment, so the golden's rows are compared without it, the intake's
+  // give-ups' at 228, so the narrowing leaves `intakeGiveUps` off, and the unseen task values', at
+  // 240 (contract 240, `withoutUnseenTaskValues`), which a caller below 240 is never served. So the
+  // narrowing changes this one block, takes `plan` off each assignment, drops `intakeGiveUps` and
+  // `unseenTaskValues`, and changes no other key. One value strip stands above 199 as well:
+  // `caches`, the source of the repository-cache-room row, arrived at contract 213, so that row is
+  // served here without its `source`, every other field of it and every other row as the state
+  // golden holds them.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2900,6 +2942,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     .filter((contract) => contract < repositoriesLiveContract);
   expect(served.contract).toEqual({ daemon: daemonApiVersion, caller: Math.max(...recordedBelow) });
   expect(served).not.toHaveProperty("unseenTaskValues");
+  expect("intakeGiveUps" in served).toBeFalse();
   const {
     repositories: _narrowedBlock,
     contract: _narrowedMark,
@@ -2911,6 +2954,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     contract: _mark,
     lowestPluginContract: _lowest,
     unseenTaskValues: _unseen,
+    intakeGiveUps: _giveUps,
     ...rest
   } = fixtureBody("state.json");
   const issues = Object.fromEntries(
@@ -3383,6 +3427,82 @@ test("a pause rejects an empty reason", () => {
     LegionProjectPauseRequest.safeParse({ grantId: "controller-grant-1", reason: "" }).success
   ).toBeFalse();
   expect(LegionOperatorProjectPauseRequest.safeParse({ reason: "" }).success).toBeFalse();
+});
+
+// The intake's open give-ups (contract 228). The golden counts two consumers' and lists three
+// records, one that did not decode, whose event id is null. Every other state golden is of an
+// intake with none open and carries two empty lists rather than no key, but for
+// state-narrowed-repositories.json, a body served below 228, which carries no key and still
+// parses. A count with no newest sequence is refused, since the controller's summary prints it
+// (`LEGION_ANSWER_READS`); a listed record with no id is read, since no plugin code reads one; and
+// a record whose reason the enumeration does not name is refused.
+test("the state golden counts and lists the intake's open give-ups, and a state without them parses", () => {
+  const state = LegionStateResponse.parse(fixture("state.json"));
+  expect(state.intakeGiveUps?.consumers).toEqual([
+    { name: "legion-go-LEGION-dispatch", open: 2, newestSeq: 6044896 },
+    { name: "legion-go-LEGION-github", open: 1, newestSeq: 812004 },
+  ]);
+  expect(state.intakeGiveUps?.newest?.map((giveUp) => [giveUp.id, giveUp.eventId])).toEqual([
+    [43, null],
+    [42, "github-9b2c71e0"],
+    [41, "dispatch-6044801"],
+  ]);
+  expect(LegionStateResponse.parse(fixture("state-stage3.json")).intakeGiveUps).toEqual({
+    consumers: [],
+    newest: [],
+  });
+
+  expect(
+    stateWithRepositoriesAt152.parse(fixture("state-narrowed-repositories.json")).intakeGiveUps
+  ).toBeUndefined();
+
+  const countless = fixture("state.json") as {
+    intakeGiveUps: { consumers: Record<string, unknown>[] };
+  };
+  delete countless.intakeGiveUps.consumers[0]?.newestSeq;
+  expect(LegionStateResponse.safeParse(countless).success).toBeFalse();
+  const idless = fixture("state.json") as { intakeGiveUps: { newest: Record<string, unknown>[] } };
+  delete idless.intakeGiveUps.newest[0]?.id;
+  expect(LegionStateResponse.safeParse(idless).success).toBeTrue();
+  const unnamed = fixture("state.json") as {
+    intakeGiveUps: { newest: Record<string, unknown>[] };
+  };
+  const first = unnamed.intakeGiveUps.newest[0];
+  if (first === undefined) {
+    throw new Error("state fixture lists no give-up");
+  }
+  first.reason = "a reason no build names";
+  expect(LegionStateResponse.safeParse(unnamed).success).toBeFalse();
+});
+
+// A replay or a discard names one record by its id, or a consumer through a stream sequence, and
+// never both or neither, as the daemon takes it (`GIVE_UP_REQUEST_INVALID`); a discard says why.
+test("a replay or a discard names one form of selection, and a discard names its reason", () => {
+  const grantId = "controller-grant-1";
+  const reason = "the listener published a non-JSON body";
+  const refused = [
+    { grantId },
+    { grantId, giveUp: 41, consumer: "legion-go-LEGION-dispatch", throughSeq: 6044896 },
+    { grantId, consumer: "legion-go-LEGION-dispatch" },
+    { grantId, throughSeq: 6044896 },
+    { grantId, consumer: "legion-go-LEGION-dispatch", throughSeq: 0 },
+    { grantId, giveUp: 0 },
+  ];
+  for (const selection of refused) {
+    expect(
+      LegionIntakeReplayRequest.safeParse(selection).success,
+      JSON.stringify(selection)
+    ).toBeFalse();
+    expect(
+      LegionIntakeDiscardRequest.safeParse({ ...selection, reason }).success,
+      JSON.stringify(selection)
+    ).toBeFalse();
+  }
+  expect(LegionIntakeDiscardRequest.safeParse({ grantId, giveUp: 41 }).success).toBeFalse();
+  expect(
+    LegionIntakeDiscardRequest.safeParse({ grantId, giveUp: 41, reason: "" }).success
+  ).toBeFalse();
+  expect(LegionIntakeReplayRequest.safeParse({ grantId, giveUp: 41, reason }).success).toBeFalse();
 });
 
 // The daemon's resolved legion.yaml (contract 35): the golden carries the file's

@@ -215,7 +215,7 @@
 --
 -- The re-arm asks nothing of the other rows. What it does need is that no migration recorded
 -- after this one builds on the fourteen columns it drops whose way back has not already run, and
--- at this release twenty-four of the twenty-five recorded after it touch none of them:
+-- at this release twenty-five of the twenty-six recorded after it touch none of them:
 -- 20261113181500_architect_stalled_notices adds the table
 -- architect_stalled_notices, 20261113182000_architect_entry_upgrade writes the root architects'
 -- phases rows, their claims' given_entry and served_entry and that table's marks,
@@ -251,6 +251,8 @@
 -- 0, and rewrites no kind list,
 -- 20261120055717_dispatch_issue_value_sequences adds seven columns of dispatch_issues, an
 -- index on dispatch_issues.parent and the table dispatch_issue_refills, and rewrites no kind list,
+-- 20261120144241_intake_failures (cybermonklabs/legion#4590) adds the tables intake_failures,
+-- cleared_pull_requests and pull_request_settled_heads, and rewrites no kind list,
 -- 20261121170714_dispatch_issue_applied_seq (cybermonklabs/legion#4903) adds
 -- dispatch_issues.applied_seq at its default, 0, and rewrites no kind list,
 -- 20261123165139_experiment_assignment_plan (cybermonklabs/legion#4930) adds
@@ -261,21 +263,26 @@
 -- 20261119203047_design_news reads no column this block drops or puts back: its functions read
 -- pending_task_deliveries.confirmed_at, which both releases keep, and its four columns stand
 -- through the block, so this block reverses nothing of it, and the two hold in either order.
--- The twenty-third, 20261122160000_design_news_credit_at_turn_start, is this release's own: it
+-- The twenty-fourth, 20261122160000_design_news_credit_at_turn_start, is this release's own: it
 -- writes #3995's function design_news_told_in again, reading pending_task_deliveries.turn_started,
 -- which this block drops, so its way back, the last paragraph of its header, runs before this
 -- block and writes #3995's text of the function back; every rollback of this release starts with
 -- it, after the step of 20261123165139 where the rollback crosses that one too.
 -- 20261123212127_claim_start_failure_after_ready, above both, needs nothing: it carries no way
 -- back, since an earlier release reads the start failures it emptied as none recorded. The
--- release before this one carries the other twenty-four: it is contract 220, the one whose
--- internal/api/version.go carries the entry for cybermonklabs/legion#4930's assignment plans, as
--- main releases it with #4930 on contract 219 and #5278 after it, its newest migration #5278's
--- 20261123212127_claim_start_failure_after_ready, so the rollback to it runs that way back and
--- this block and leaves the twenty-four standing. A rollback to contract 219, or to any release
--- before it, crosses contract 220, and so first takes that release's one step, before
--- 20261122160000's way back: `plan` comes out of every variant of legion.yaml that names it
--- before the earlier
+-- release before this one carries the other twenty-five: it is contract 228, the one whose
+-- internal/api/version.go carries the entry for INFRA-1575, cybermonklabs/legion#4590's intake
+-- give-ups, as main releases it after #4930's contract 220 and #5278, its newest migration still
+-- #5278's 20261123212127_claim_start_failure_after_ready, so the rollback to it runs that way
+-- back and this block and leaves the twenty-five standing. A rollback to contract 220, or to any
+-- release before it, crosses contract 228, and so also takes that release's steps
+-- (docs/kubernetes.md, "Rolling back the release that gives up on intake messages"), which, with
+-- the daemon stopped, delete the project's unsent intake-gave-up controller notices and its open
+-- failures, rows neither this block nor 20261122160000's way back reads, and keep the version row
+-- of 20261120144241_intake_failures and its three tables, which no earlier release reads. A
+-- rollback to contract 219, or to any release before it, also crosses contract 220, and so first
+-- takes that release's one step, before 20261122160000's way back: `plan` comes out of every
+-- variant of legion.yaml that names it before the earlier
 -- image is pinned (docs/kubernetes.md, "Rolling back the release whose experiment sets how each
 -- issue is done"), and the store needs no statement for it, since the earlier release names the
 -- columns of experiment_assignments in every statement it runs and leaves the column standing.
@@ -318,7 +325,10 @@
 -- two and runs their ways back newest first, with the daemon stopped, as docs/kubernetes.md lists
 -- them: #5278's 20261123212127_claim_start_failure_after_ready first, which needs nothing, since
 -- it carries no way back and an earlier release reads the start failures it emptied as none
--- recorded; contract 220's step, which takes `plan` out of every variant of legion.yaml that names
+-- recorded; contract 228's steps (docs/kubernetes.md, "Rolling back the release that gives up on
+-- intake messages"), which delete the project's unsent intake-gave-up controller notices and its
+-- open failures and keep the version row of 20261120144241_intake_failures and its three tables;
+-- contract 220's step, which takes `plan` out of every variant of legion.yaml that names
 -- it (docs/kubernetes.md, "Rolling back the release whose experiment sets how each issue is done");
 -- 20261122160000_design_news_credit_at_turn_start's way back, which writes back #3995's
 -- design_news_told_in; the way back in the header of 20261121170714_dispatch_issue_applied_seq,
@@ -365,12 +375,13 @@
 -- pull_requests.statuses, and which clears for the roll-forward a list no earlier release keeps
 -- current; the reviewed commit's block, which takes the key roundNamed off each start row
 -- contract 87 decodes strictly; the role-holders publication's outbox delete, which leaves no row
--- of its kind behind; contract 146's block, which reverses the four of those twenty-four that are
+-- of its kind behind; contract 146's block, which reverses the four of those twenty-five that are
 -- the root architect's entry (all but the six kind lists, the five other migrations of contract
 -- 152, contract 160's 20261116144907_claim_sessions, contract 178's 20261115194357_project_pause,
 -- contract 188's 20261120055717_dispatch_issue_value_sequences, contract 189's
 -- 20261120042902_claim_agent_resume_generation, contract 205's
--- 20261120012547_set_back_observed_seq, #4903's 20261121170714_dispatch_issue_applied_seq,
+-- 20261120012547_set_back_observed_seq, contract 228's 20261120144241_intake_failures, whose
+-- tables stand, #4903's 20261121170714_dispatch_issue_applied_seq,
 -- contract 220's 20261123165139_experiment_assignment_plan, contract 219's
 -- 20261117034837_issue_plans, whose own way back has run, #5278's
 -- 20261123212127_claim_start_failure_after_ready, which carries none, and #3995's
@@ -395,8 +406,9 @@
 -- 20261123212127_claim_start_failure_after_ready, whose emptied start failures an earlier release
 -- reads as none recorded, nor
 -- contract 160's 20261111091500_claim_pod_end, whose claims.pod_end an earlier release leaves
--- unread and unwritten; the tables pod_volume_notices its 20261111090000_volume_trim_notices adds
--- and claim_sessions its 20261116144907_claim_sessions adds stand too, read by no earlier release.
+-- unread and unwritten; the tables pod_volume_notices its 20261111090000_volume_trim_notices adds,
+-- claim_sessions its 20261116144907_claim_sessions adds and the three contract 228's
+-- 20261120144241_intake_failures adds stand too, read by no earlier release.
 -- The release before the phase entry reads the three
 -- marks as the release before this one does, and neither
 -- contract 146's block, the step records', the commit statuses', the reviewed commit's nor the

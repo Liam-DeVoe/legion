@@ -198,7 +198,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "operator_token_file", Default: "none: the boot refuses a daemon that names no operator token", RequiredBy: "yes",
-			Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims` and `legion issue status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
+			Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims`, `legion project`, `legion intake` and `legion issue status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.OperatorTokenFile = v }),
 		},
 		{
@@ -394,7 +394,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "worker_rpc_timeout_seconds", RequiredBy: "no",
-			Description: "How long each request on the worker stream waits for its answer, the one reconnect that judges a dead worker among them; it also bounds how long the end of a task's turn waits for the worker's report of it before the end frame finishes the task, for a worker whose plugin is below daemon API contract 223 and names no task in its reports (a current worker's task is finished by its report alone), how long a finish the store refused waits before it is made again, and how long an issue pod's start reads which role works the issue's phase (a read that fails puts the start in the roles' order); and it sizes how long the intake gives one fact's handling.",
+			Description: "How long each request on the worker stream waits for its answer, the one reconnect that judges a dead worker among them; it also bounds how long the end of a task's turn waits for the worker's report of it before the end frame finishes the task, for a worker whose plugin is below daemon API contract 240 and names no task in its reports (a current worker's task is finished by its report alone), how long a finish the store refused waits before it is made again, and how long an issue pod's start reads which role works the issue's phase (a read that fails puts the start in the roles' order); and it sizes how long the intake gives one fact's handling.",
 			Positive:    &positiveKey{Value: 5, Duration: func(c *Config) *time.Duration { return &c.WorkerRPCTimeout }},
 		},
 		{

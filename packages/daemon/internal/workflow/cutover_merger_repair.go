@@ -199,7 +199,7 @@ func (e *Engine) cutoverLeftMerger(ctx context.Context, tx pgx.Tx, owner phaseOw
 	if issue.Phase != phase.Merging {
 		return false, nil
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil || pr == nil || pr.State != record.PullRequestOpen {
 		return false, err
 	}
