@@ -19,7 +19,8 @@
 # list off in, so a request reaches Dispatch's own approve-only check.
 #
 # It reads dev-stack.sh's WORK_DIR, LOG_DIR, DISPATCH_PORT, BROKER_PID, BROKER_LOG, APPROVE and
-# APPROVE_ALLOW_ALL, and await with the awaited it sets. It sets, for the caller:
+# APPROVE_ALLOW_ALL, await with the awaited it sets, and project-access-stack.sh's airlock_addr_in,
+# which dev-stack.sh sources first. It sets, for the caller:
 #   APPROVE_ENV          the broker's settings for the approve capability, empty without --approve
 #   APPROVE_PROXY_URL    http://127.0.0.1:<the proxy port this run picked>
 #   APPROVE_CA_FILE      the proxy's certificate authority, which a session trusts it by
@@ -102,16 +103,13 @@ s.close()")"
   )
 }
 
-# approve_proxy_addr_in prints the address the broker's proxy reports it listens on.
-approve_proxy_addr_in() { jq -Rnr '[inputs | fromjson? | select(.message == "airlock proxy listening") | .addr][0] // empty' "$1"; }
-
 # approve_proxy_check, with --approve, waits for the broker's proxy and its approve capability
 # lines and stops the run when the proxy is not on the port this run picked or the capability is
 # off.
 # shellcheck disable=SC2154 # awaited is set by dev-stack.sh's await
 approve_proxy_check() {
   [ "$APPROVE" = true ] || return 0
-  await "the broker's proxy" "$BROKER_PID" "$BROKER_LOG" "$BROKER_LOG" 'its proxy address' approve_proxy_addr_in
+  await "the broker's proxy" "$BROKER_PID" "$BROKER_LOG" "$BROKER_LOG" 'its proxy address' airlock_addr_in
   if [ "$awaited" != "127.0.0.1:${APPROVE_PROXY_PORT}" ]; then
     echo "dev-stack: the broker's proxy is on $awaited, not the 127.0.0.1:${APPROVE_PROXY_PORT} this run picked: another process took that port first. Start the run again." >&2
     return 1
