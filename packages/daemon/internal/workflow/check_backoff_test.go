@@ -27,7 +27,7 @@ func lastWake(t *testing.T, rig checkRig, issue string) (time.Time, record.Check
 func startLookAt(t *testing.T, rig checkRig, issue string, at time.Time, wake record.CheckWakeDue) {
 	t.Helper()
 	rig.clock.now = at
-	rig.apply(fmt.Sprintf("wake-%d", wake.Look), intake.CheckWakeDue{Issue: issue, Look: wake.Look, OpenedAt: wake.OpenedAt, Reason: wake.Reason})
+	rig.apply(fmt.Sprintf("wake-%d", wake.Look), intake.CheckWakeOf(issue, wake))
 	if check := productionCheck(t, rig.pool, issue); check.Looks != wake.Look+1 || !check.LookOpen {
 		t.Fatalf("the check at the wake of look %d = %+v, want look %d open", wake.Look, check, wake.Look+1)
 	}
@@ -118,55 +118,84 @@ func TestAReportedLookResetsTheCheckRoleBackoffToTwoHours(t *testing.T) {
 
 // A claim of the checking role that fails after its look ended — the look's bound ended it while
 // the claim was still failing its way through its budget, so no look is open — counts as a failed
-// look too. The wake that look's end named stands, and its look's start retries the claim as any
-// look after a failed one does, with one attempt left (the daemon's outbox); the architect is told
-// at once in a worker-died that names the look, the failure's cause and that retry. The failure of
-// the look that wake starts is the second failed look in a row, so it names the next look 4 h out.
-// At main a failure between looks reached nothing at all: no notice, and the next failure named
-// its next look 2 h out like the first.
+// look too, and names the next look the backoff out from the failure, as a failure inside a look
+// does: a look bound for the first failed look in a row, and double that after a failed look
+// before it. The look that ended at its bound named its next a look bound out, and that wake no
+// longer stands: its row comes due and starts nothing, and the new wake's row starts the next
+// look, whose start retries the claim as any look after a failed one does, with one attempt left
+// (the daemon's outbox). The architect is told at once in a worker-died that names the look, the
+// failure's cause and that retry, and the failure of the look the new wake starts doubles the wait
+// again. At main a failure between looks reached nothing at all. A failure that only counts the
+// failed look leaves the look bound's wake standing, so the look after a streak of failures comes
+// a look bound after that bound rather than the doubled wait after the failure.
 func TestACheckRoleFailureBetweenLooksIsRetriedAtTheNextLook(t *testing.T) {
-	rig := childCheckRig(t)
-	bound := checkOpened.Add(CheckLookBound)
-	rig.clock.now = bound
-	rig.apply("look-bound-1", intake.CheckLookEnded{Issue: "LEGION-209", Look: 1, Cause: "look bound", OpenedAt: checkOpened})
-	due, wake := lastWake(t, rig, "LEGION-209")
-	if wake.Look != 1 || !due.Equal(bound.Add(CheckLookBound)) {
-		t.Fatalf("the wake look 1's bound named = %+v due %s, want look 1's a look bound out, at %s", wake, due, bound.Add(CheckLookBound))
-	}
-	wakes := len(checkWakeRows(t, rig.pool, "LEGION-209"))
-	before := len(noticesOfKind(t, rig.pool, "LEGION-209", "worker-died"))
-
-	rig.clock.now = bound.Add(10 * time.Minute)
-	rig.apply("tester-failed-between", failedClaim("LEGION-209", claim.RoleTester))
-	check := productionCheck(t, rig.pool, "LEGION-209")
-	if !check.Open() || check.LookOpen || check.Looks != 1 || check.WakeAt == nil || !check.WakeAt.Equal(due) {
-		t.Fatalf("the check after its tester failed between looks = %+v, want it open after look 1 with the wake at %s standing", check, due)
-	}
-	if got := len(checkWakeRows(t, rig.pool, "LEGION-209")); got != wakes {
-		t.Fatalf("check_wake rows = %d after the failure between looks, want the %d before it: the standing wake starts the next look", got, wakes)
-	}
-	died := noticesOfKind(t, rig.pool, "LEGION-209", "worker-died")
-	if len(died) != before+1 {
-		t.Fatalf("worker-died notices = %d after the failure between looks, want %d: the architect is told", len(died), before+1)
-	}
-	reason := died[len(died)-1].Reason
-	for _, want := range []string{
-		"production check of LEGION-209 lost its tester after look 1 ended: ",
-		"its cause is never_registered",
-		"look 2 retries the claim at " + due.Format(time.RFC3339) + " with one attempt left of the budget its failure spent",
+	for _, tc := range []struct {
+		name   string
+		streak int           // failed looks in a row before the look that ends at its bound
+		wait   time.Duration // from the failure between looks to the look it names
+	}{
+		{name: "the first failed look in a row", streak: 0, wait: CheckLookBound},
+		{name: "after a failed look", streak: 1, wait: 2 * CheckLookBound},
 	} {
-		if !strings.Contains(reason, want) {
-			t.Errorf("the worker-died of the failure between looks reads %q, want it to say %q", reason, want)
-		}
-	}
+		t.Run(tc.name, func(t *testing.T) {
+			rig := childCheckRig(t)
+			at := checkOpened
+			for range tc.streak {
+				due, wake := failLook(t, rig, "LEGION-209", at)
+				startLookAt(t, rig, "LEGION-209", due, wake)
+				at = due
+			}
+			look := tc.streak + 1
+			bound := at.Add(CheckLookBound)
+			rig.clock.now = bound
+			rig.apply(fmt.Sprintf("look-bound-%d", look), intake.CheckLookEnded{Issue: "LEGION-209", Look: look, Cause: "look bound", OpenedAt: checkOpened})
+			stood, old := lastWake(t, rig, "LEGION-209")
+			if old.Look != look || !stood.Equal(bound.Add(CheckLookBound)) {
+				t.Fatalf("the wake look %d's bound named = %+v due %s, want a look bound out, at %s", look, old, stood, bound.Add(CheckLookBound))
+			}
+			before := len(noticesOfKind(t, rig.pool, "LEGION-209", "worker-died"))
 
-	startLookAt(t, rig, "LEGION-209", due, wake)
-	starts := superviseRowsOf(t, rig.pool, "LEGION-209", "start")
-	if last := starts[len(starts)-1]; last.CheckLook != 2 || last.Role != claim.RoleTester || last.FreshSession {
-		t.Fatalf("the newest start at the standing wake = %+v, want look 2 handed to the tester, asking no new session", last)
-	}
-	failed, _ := failLook(t, rig, "LEGION-209", due)
-	if got := failed.Sub(due); got != 2*CheckLookBound {
-		t.Fatalf("look 2's failure after the failure between looks named its next look %s out, want %s: the second failed look in a row", got, 2*CheckLookBound)
+			failedAt := bound.Add(10 * time.Minute)
+			rig.clock.now = failedAt
+			rig.apply("tester-failed-between", failedClaim("LEGION-209", claim.RoleTester))
+			due := failedAt.Add(tc.wait)
+			check := productionCheck(t, rig.pool, "LEGION-209")
+			if !check.Open() || check.LookOpen || check.Looks != look || check.FailedLooks != tc.streak+1 || check.WakeAt == nil || !check.WakeAt.Equal(due) {
+				t.Fatalf("the check after its tester failed between looks = %+v, want it open after look %d, %d failed looks in a row and its next look at %s, %s after the failure", check, look, tc.streak+1, due, tc.wait)
+			}
+			named, wake := lastWake(t, rig, "LEGION-209")
+			if wake.Look != look || !named.Equal(due) {
+				t.Fatalf("the newest wake after the failure between looks = %+v due %s, want look %d's at %s", wake, named, look, due)
+			}
+			died := noticesOfKind(t, rig.pool, "LEGION-209", "worker-died")
+			if len(died) != before+1 {
+				t.Fatalf("worker-died notices = %d after the failure between looks, want %d: the architect is told", len(died), before+1)
+			}
+			reason := died[len(died)-1].Reason
+			for _, want := range []string{
+				fmt.Sprintf("production check of LEGION-209 lost its tester after look %d ended: ", look),
+				"its cause is never_registered",
+				fmt.Sprintf("look %d retries the claim at %s with one attempt left of the budget its failure spent", look+1, due.Format(time.RFC3339)),
+			} {
+				if !strings.Contains(reason, want) {
+					t.Errorf("the worker-died of the failure between looks reads %q, want it to say %q", reason, want)
+				}
+			}
+
+			rig.clock.now = stood
+			rig.apply(fmt.Sprintf("wake-%d-of-the-look-bound", look), intake.CheckWakeOf("LEGION-209", old))
+			if check := productionCheck(t, rig.pool, "LEGION-209"); check.LookOpen || check.Looks != look {
+				t.Fatalf("the check at the wake look %d's bound named = %+v, want no look started: the failure between looks named the next look later", look, check)
+			}
+			startLookAt(t, rig, "LEGION-209", due, wake)
+			starts := superviseRowsOf(t, rig.pool, "LEGION-209", "start")
+			if last := starts[len(starts)-1]; last.CheckLook != look+1 || last.Role != claim.RoleTester || last.FreshSession {
+				t.Fatalf("the newest start at the new wake = %+v, want look %d handed to the tester, asking no new session", last, look+1)
+			}
+			failed, _ := failLook(t, rig, "LEGION-209", due)
+			if got := failed.Sub(due); got != 2*tc.wait {
+				t.Fatalf("look %d's failure after the failure between looks named its next look %s out, want %s: one more failed look in a row", look+1, got, 2*tc.wait)
+			}
+		})
 	}
 }
