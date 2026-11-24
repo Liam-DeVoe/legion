@@ -578,7 +578,7 @@ func (s specs) controllerSpawnSpec(ctx context.Context, c supervise.Claim) (runt
 // keeps an explicit operator prompt as a narrow test override, which replaces the prompt alone.
 // Every ordinary claim uses the role prompts daemon boot snapshotted below its state directory
 // (prompts.New): Legion's roles their composed parts (prompts.Composer.Compose), a role the plan of
-// c's issue defines the daemon's own copy of the plan's prompt (planRolePromptFile) between the
+// c's issue defines the claim's own copy of the plan's prompt (writePlanRolePrompt) between the
 // headless mechanics and Legion's worker part (prompts.Composer.ComposeStep), and a role the
 // deployment defines its own prompt file in that same place. Whose definition the name takes is
 // the resolution's: a deployment that took the name of a role a plan in force defines leaves that
@@ -593,7 +593,7 @@ func (s specs) rolePromptPaths(c supervise.Claim, resolved claimRole) ([]string,
 		})
 	case stepplan.SourcePlan:
 		return s.overridden(c, func() ([]string, error) {
-			file, err := planRolePromptFile(s.stateDir, resolved.prompt)
+			file, err := writePlanRolePrompt(s.stateDir, c.Token, resolved.prompt)
 			if err != nil {
 				return nil, err
 			}

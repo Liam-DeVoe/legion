@@ -91,10 +91,10 @@ func TestADeploymentRoleLaunchesWithItsPromptAndModel(t *testing.T) {
 	}
 }
 
-// A role an owner's plan defines launches with the plan's prompt, kept as the daemon's own copy
-// under its state directory and named by the prompt's text, between the headless mechanics and
-// Legion's worker part, so it is told the SEPARATE-POD line every phase worker is told, and with
-// the model the plan gives it. Two launches of one prompt read one file, written 0600. The plan is
+// A role an owner's plan defines launches with the plan's prompt, kept as the claim's own copy in
+// the secrets directory (planRolePromptName), between the headless mechanics and Legion's worker
+// part, so it is told the SEPARATE-POD line every phase worker is told, and with the model the plan
+// gives it. Two launches of the claim read one file, written 0600. The plan is
 // read for the claim's own issue: a role nobody defines for that issue is refused, naming the
 // issue and the role, with no prompt.
 func TestARoleOfAPlanLaunchesWithThePlansPromptAndModel(t *testing.T) {
@@ -126,8 +126,11 @@ func TestARoleOfAPlanLaunchesWithThePlansPromptAndModel(t *testing.T) {
 	if spec.Model != "m-one" {
 		t.Errorf("the prober's model = %q, want m-one", spec.Model)
 	}
-	sum := sha256.Sum256([]byte(ownersPromptText(prompt)))
-	copied := filepath.Join(stateDir, "plan-roles", hex.EncodeToString(sum[:])+".md")
+	token, err := claim.NewToken("s1", "LEGION-43", "prober")
+	if err != nil {
+		t.Fatal(err)
+	}
+	copied := runtime.SecretFilePath(stateDir, planRolePromptName(token))
 	merger, err := composer.Compose(claim.RoleMerger, false)
 	if err != nil {
 		t.Fatal(err)
@@ -185,8 +188,8 @@ func TestARoleOfAPlanLaunchesWithThePlansPromptAndModel(t *testing.T) {
 }
 
 // A copy of a plan role's prompt that a crash cut short, empty or holding the first half of the
-// prompt, is written again before a launch uses it: the copy is named by the prompt's hash, and a
-// launch that finds a file whose text does not hash to its name writes the whole prompt over it.
+// prompt, is written again before a launch uses it: every launch writes the claim's copy whole
+// from the role's text in the stored plan, whatever file it finds there.
 func TestACutShortCopyOfAPlanRolesPromptIsWrittenAgainBeforeALaunch(t *testing.T) {
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
@@ -202,8 +205,7 @@ func TestACutShortCopyOfAPlanRolesPromptIsWrittenAgainBeforeALaunch(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	sum := sha256.Sum256([]byte(ownersPromptText(prompt)))
-	copied := filepath.Join(stateDir, "plan-roles", hex.EncodeToString(sum[:])+".md")
+	copied := runtime.SecretFilePath(stateDir, planRolePromptName(token))
 	for _, short := range []string{"", prompt[:len(prompt)/2]} {
 		if err := os.MkdirAll(filepath.Dir(copied), 0o700); err != nil {
 			t.Fatal(err)

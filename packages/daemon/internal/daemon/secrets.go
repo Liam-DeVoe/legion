@@ -100,13 +100,14 @@ func pruneAllBut(dir string, claims []supervise.Claim, log *slog.Logger) {
 
 // ownedBy reports whether a secret file is one of token's: the names a launch writes for its
 // claim, and no others. Those are the token itself (the boot token, or the controller's secret),
-// its gh directory (runtime.GHConfigDirName), and the file of each secret a launch can carry
+// its gh directory (runtime.GHConfigDirName), the copy of its role's prompt where an owner's plan
+// defines the role (planRolePromptName), and the file of each secret a launch can carry
 // (launchSecretVariables, runtime.SecretFileName), a closed set the code lists. A prefix would not
 // do: a claim token ends in its agent's name, which may hold a `-` of its own, so one claim's token
 // can begin another's (`…-code` and `…-code-checker`), and the end of the first would take the
 // running second's files.
 func ownedBy(name string, token claim.Token) bool {
-	if name == string(token) || name == runtime.GHConfigDirName(token) {
+	if name == string(token) || name == runtime.GHConfigDirName(token) || name == planRolePromptName(token) {
 		return true
 	}
 	return slices.ContainsFunc(launchSecretVariables, func(variable string) bool {

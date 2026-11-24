@@ -3,11 +3,9 @@ package daemon
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
-	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // ownersPromptText is what the daemon's copy of the prompt of a role of a plan holds: the prompt,
@@ -24,49 +22,23 @@ func ownersPromptText(prompt string) string {
 		"wrote it in its plan. Where it and Legion's own instructions differ, Legion's instructions hold.\n\n" + prompt + "\n\n" + closing + "\n"
 }
 
-// planRolePromptFile is the daemon's own copy of the prompt of a role an owner's plan defines:
-// <stateDir>/plan-roles/<sha256 of the copy's text, in hex>.md, with mode 0600, holding the prompt
-// between the lines that name it as the owner's (ownersPromptText). A launch reads a role's
-// prompt from a file (runtime.PromptParts.RolePromptPaths), and a copy named by its text is the
-// one file every version that gives the role that text shares: two versions of one prompt read
-// one file, and a changed prompt is another file. A copy in place is used again only while it
-// holds the very text its name is the hash of. A copy a crash cut short, empty or holding part of
-// the text, holds another text, so it is written again before the launch uses it. The write goes
-// through a file of its own beside it, synced, and a rename, so a reader finds the whole text or
-// the copy it replaces, and a crash after the rename leaves the whole text.
-func planRolePromptFile(stateDir, prompt string) (string, error) {
-	text := ownersPromptText(prompt)
-	sum := sha256.Sum256([]byte(text))
-	dir := filepath.Join(stateDir, "plan-roles")
-	path := filepath.Join(dir, hex.EncodeToString(sum[:])+".md")
-	held, err := os.ReadFile(path)
-	if err == nil && string(held) == text {
-		return path, nil
-	}
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return "", fmt.Errorf("the copy of a plan role's prompt: %w", err)
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("the copy of a plan role's prompt: %w", err)
-	}
-	staged, err := os.CreateTemp(dir, ".prompt-*")
-	if err != nil {
-		return "", fmt.Errorf("the copy of a plan role's prompt: %w", err)
-	}
-	defer os.Remove(staged.Name())
-	if _, err := staged.WriteString(text); err != nil {
-		staged.Close()
-		return "", fmt.Errorf("the copy of a plan role's prompt: %w", err)
-	}
-	if err := staged.Sync(); err != nil {
-		staged.Close()
-		return "", fmt.Errorf("the copy of a plan role's prompt: %w", err)
-	}
-	if err := staged.Close(); err != nil {
-		return "", fmt.Errorf("the copy of a plan role's prompt: %w", err)
-	}
-	if err := os.Rename(staged.Name(), path); err != nil {
-		return "", fmt.Errorf("the copy of a plan role's prompt: %w", err)
-	}
-	return path, nil
+// planRolePromptFile is the name, after the claim's token and a "-", of the daemon's copy of the
+// prompt of a role an owner's plan defines (planRolePromptName).
+const planRolePromptFile = "role-prompt.md"
+
+// planRolePromptName is token's copy of the prompt of its role, a role an owner's plan defines:
+// `<token>-role-prompt.md` in the secrets directory, one of the files a launch writes for its claim
+// (ownedBy), so it goes with the claim's other files once the claim's process ends (pruning,
+// pruneAllBut).
+func planRolePromptName(token claim.Token) string { return string(token) + "-" + planRolePromptFile }
+
+// writePlanRolePrompt writes prompt, the role's text in the plan in force of the claim's issue, as
+// token's copy (planRolePromptName), between the lines that name it as the owner's
+// (ownersPromptText), as the claim's system-prompt file is written (runtime.WriteSecretFile: 0600
+// in the 0700 secrets directory, replaced whole), and answers its path. A launch reads a role's
+// prompt from a file (runtime.PromptParts.RolePromptPaths). Every launch of the claim writes its
+// copy afresh from the stored plan before it composes its prompt, so no launch reads a copy an
+// earlier launch left.
+func writePlanRolePrompt(stateDir string, token claim.Token, prompt string) (string, error) {
+	return runtime.WriteSecretFile(stateDir, planRolePromptName(token), "role prompt", ownersPromptText(prompt))
 }
