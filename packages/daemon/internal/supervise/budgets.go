@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -151,7 +152,7 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, e
 	if m.chargeLaunch(o) {
 		return m.fail(ctx, cause, "launch failures ran out")
 	}
-	return m.launchAfter(ctx, true, false, false, ending)
+	return m.launchAfter(ctx, true, false, false, time.Time{}, ending)
 }
 
 // chargeLaunch counts one launch failure where the policy charges o (Charges), and reports whether
