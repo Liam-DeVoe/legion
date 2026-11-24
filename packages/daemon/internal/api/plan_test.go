@@ -388,8 +388,9 @@ func TestRegisterPlanRefusesACycleOfNeedsNamingIt(t *testing.T) {
 // `parent` that is not one reference, and task blocks under each other, are a plan Legion cannot
 // read, answered with one reason. A refused version records nothing. The fault is a route that
 // reads a `parent` against no document, or against the wrong one. The control is planAt given the
-// artifact form of the primary document: version 3 is refused as an element with steps, where it
-// is taken.
+// artifact form of the primary document: version 2 is taken, with e1 a task of the top level, where
+// e1 is refused as an element with steps, and version 3 is refused as an element with steps, where
+// it is taken.
 func TestRegisterPlanReadsEachParentInTheRegisteredDocument(t *testing.T) {
 	h, facts, statuses := planHarness(t)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
