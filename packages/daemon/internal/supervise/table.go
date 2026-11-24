@@ -1186,7 +1186,7 @@ func fillTable(t *builder) {
 	t.ignore(onResume, failedClaim, StateFailed)
 	t.ignore(onResume, retiredClaim, StateRetired)
 
-	t.row(onRuleResume, "resume the same session by rule, unless the operator suspended it", resumeByRule,
+	t.row(onRuleResume, "resume by rule, unless the operator suspended it: the same session, or a new one for a step's agent whose session the claim does not hold", resumeByRule,
 		[]ClaimState{StateLaunching, StateFailed}, StateSuspended)
 	t.row(onRuleResume, "the claim runs: nothing to resume", nothingToDo, nil, live...)
 	t.row(onRuleResume, "a queued claim is spawned by its start, not resumed", nothingToDo, nil, StateQueued)
@@ -1213,7 +1213,7 @@ func fillTable(t *builder) {
 	// backs: retiring is not a way past either.
 	t.row(onOperatorClose, "the tree is already closed", operatorCloseRetired, nil, StateRetired)
 
-	t.row(onRetry, "retry: fresh budgets, and the same session relaunched unless the retry asked for a new one, the provider refused it out of the launch budget, or no store holds it", retry, []ClaimState{StateLaunching, StateFailed}, StateFailed, StateRetired)
+	t.row(onRetry, "retry: fresh budgets, and the same session relaunched unless the retry asked for a new one, is for a step's agent whose session the claim does not hold, the provider refused it out of the launch budget, or no store holds it", retry, []ClaimState{StateLaunching, StateFailed}, StateFailed, StateRetired)
 	t.ignore(onRetry, "a queued claim is spawned, not retried", StateQueued)
 	t.ignore(onRetry, "the previous launch's pane is still uncertain", StateLaunchUncertain)
 	t.ignore(onRetry, "the claim has not failed", live...)
@@ -2794,13 +2794,14 @@ func stop(m *Machine, ctx context.Context, _ Event) error {
 func treeClose(m *Machine, ctx context.Context, _ Event) error { return m.end(ctx, noEnd) }
 
 // issueClose is the workflow's close of a child issue as done: it releases the claim through the
-// runtime, which ends at most this role's process and forgets the claim. It deletes no issue
+// runtime, which ends at most this claim's process and forgets the claim. It deletes no issue
 // Sandbox — under Agent Sandbox a release deletes only the controller's, whose Sandbox is that
 // claim's and nothing else (Runtime.Release, releaseControllerSandbox) — so an issue's pod and the
 // disk it owns go with the separately fenced IssueSuspend, or with the tree cleanup once every
 // claim of the tree has retired. That is why a merged close leaves the implementer's pod standing:
-// its five siblings take this close and no IssueSuspend is queued (workflow/linger.go). A release
-// that fails changes nothing, so the close can be asked again.
+// every other claim of the issue takes this close, of each other role and of each agent of its
+// plan in a slot of its own (`implementer-2`), and no IssueSuspend is queued (workflow/linger.go).
+// A release that fails changes nothing, so the close can be asked again.
 //
 // The claim keeps the session it recorded, both halves of it. A done issue is reopened — a person
 // moves it back, a production check fails — and its roles are started again on the same issue,

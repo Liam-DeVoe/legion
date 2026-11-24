@@ -22,9 +22,10 @@ var ErrSuspendHeld = wait.New("the suspension is held for the agent's turn to en
 var ErrPauseEnded = errors.New("the pause this stop names has ended, so nothing was stopped")
 
 // suspend stops the process and keeps the session. The daemon's own suspension ends the claim's
-// phase (the workflow suspends a worker only when its issue closes or its run is over), so a task
-// queued for a phase and still pending unconfirmed (acknowledged and then refused, or lost to the
-// transport) is retired with it (settle): the next resume is started with its new phase's task,
+// phase (the workflow suspends a worker only when its issue closes, its run is over, or the claim's
+// next step is another agent's, whose start suspends it: the daemon's prepareClaimForStep), so a
+// task queued for a phase and still pending unconfirmed (acknowledged and then refused, or lost to
+// the transport) is retired with it (settle): the next resume is started with its new phase's task,
 // never handed the finished one's. A task of no phase — an operator's own, an architect's — is
 // not the workflow's to end, and neither is the phase task of a claim whose idle pod was released:
 // that suspension ends no phase, and the wake that brings the pod back resumes the claim with the
