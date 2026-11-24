@@ -105,6 +105,22 @@ describe("confined", () => {
     });
   });
 
+  test("names the kept name a rewrite changed, though the rewrite holds no trace of the word", () => {
+    const one = "The parked-decision notice says the tree is parked.";
+    const [kept, judged] = occurrenceSpans(one);
+    if (kept === undefined || judged === undefined) throw new Error("two occurrences");
+    const asked = question(one, { judged: [judged], kept: [kept] });
+    for (const changed of [
+      "The kept-decision notice says the tree is moved to backlog.",
+      "The notice says the tree is moved to backlog.",
+    ]) {
+      expect(checkAnswer(asked, { kind: "rewrite", paragraph: changed })).toEqual({
+        kind: "judge-refused",
+        reason: 'the rewrite changed "parked-decision", which had to stay',
+      });
+    }
+  });
+
   test("sentences end at a stop before white space, or at a line end, and cover the text", () => {
     const text = "One. Two!\nThree? four";
     const spans = sentenceSpans(text);
