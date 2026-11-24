@@ -1259,8 +1259,7 @@ func refuseLegionGhAsRealGh(gh string) error {
 // hung, and the person running `legion gh` gets a refusal that names the wait rather than a call
 // that never returns. A test shortens it to read that the stop comes. It is a variable so that
 // this package's tests can give it their own deadline otherwise (programbound); readGhHelp reads
-// it through programbound.Of. Each other bound of this package is registered beside its own
-// declaration.
+// it through programbound.Of.
 var ghHelpTimeout = 30 * time.Second
 
 func init() {

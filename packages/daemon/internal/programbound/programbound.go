@@ -1,11 +1,7 @@
-// Package programbound is where a wait of legion's on something outside it takes its bound: a
-// program it starts (a git read of `legion gh`, its read of gh's help, the leak guard's gh, curl and
-// ls-remote reads, the shared clone's steps and workspace-init's commands, a process group's stop
-// grace and WaitDelay, the worker shim's grace for its agent and its wait for a CodeGraph warm-up)
-// or a service it calls (a CLI read of the daemon's API, the controller's Dispatch trade, the
-// model-token sign-in, a claims call's --wait default). Each bound is a variable its package
-// registers beside its declaration with the value the product means (Register), and each wait asks
-// for it when it starts (Of).
+// Package programbound is where a wait of legion's on something outside it, a program it starts or
+// a service it calls, takes its bound. Each bound is a variable its package registers beside its
+// declaration with the value the product means (Register), and each wait asks for it when it
+// starts (Of).
 //
 // In a legion binary that is all: Of answers the variable. A test binary of this module that runs
 // these waits on stand-ins gives them its own deadline instead (SetDeadline), because each product
