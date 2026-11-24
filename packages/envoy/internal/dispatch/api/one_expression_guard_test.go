@@ -70,8 +70,8 @@ func namesTheExpression(node ast.Node) bool {
 
 // sqlCode is a SQL text with its comments blanked, read by PostgreSQL's lexical rules, so that no
 // text a statement runs is blanked with them:
-//   - a quoted string ('…', with '' a quote in it) and a quoted identifier ("…", with "" a quote in
-//     it) are kept whole, so a `--` or a `/*` in one starts no comment; in an escape string (E'…')
+//   - a quoted string ('…') and a quoted identifier ("…"), in each of which a doubled quote stands
+//     for one, are kept whole, so a `--` or a `/*` in one starts no comment; in an escape string (E'…')
 //     a backslash escapes the character after it, a quote among them;
 //   - a block comment nests, and ends at the `*/` that closes its outermost `/*`;
 //   - a dollar-quoted string ($$…$$ or $tag$…$tag$) has no escapes and ends at its first closing
