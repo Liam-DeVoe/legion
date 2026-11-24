@@ -1482,21 +1482,24 @@ These arrive as messages on the Dispatch issue:
 - **`Legion hook work-back fired at 5 moves back: testing to implementing. Prompted: implementer, tester, reviewer.`**
   A hook of your `legion.yaml` ([hooks](/legion/legion/running-legion/#legionyaml)) counted that
   move back and fired: the daemon wrote the hook's words once for each role the line names, on the
-  topic of the claim of the agent that works that role's step that started last (the architect's,
-  for a step it does itself). For `planner`, `implementer`, `tester` and `reviewer` that is the
-  agent of the task's step of the role's type, whether that step's role is the role itself or a
-  role your deployment or the issue's plan defines (a `checker` of the type testing, for
-  `tester`), never the acceptance for `reviewer`, and nobody where the task has no such step. The
+  topic of the claim of the agent of that role's step (the architect's, for a step it does
+  itself). For `planner`, `implementer`, `tester` and `reviewer` that step is the task's last step
+  of the role's type at or before the place the move left the task at, else the task's last such
+  step, whether or not it has run. Its role is the role itself or a role your deployment or the
+  issue's plan defines (a `checker` of the type testing, for `tester`), never the acceptance for
+  `reviewer`, and nobody is prompted for a role where the task has no such step. A role your
+  deployment defines that the hook names is prompted on the claim of the agent working its step. The
   daemon then posted this record of it. Nothing is held: the move started the agent of the step it
   opened, or told the architect that step in an `owner-step` where the step is its own, and each
   agent answers in its own turn. A hook names no architect role: the daemon's own wake to an
   architect is a notice.
 - **A red check.** Nothing moves for it. The daemon names every check GitHub reported, with the
   conclusion GitHub gave it, in one message to each agent among the architect that owns the issue,
-  the worker of the issue's current phase and the implementer, and judges none of them: an agent
-  that works two of those roles gets one message. Re-run a check that failed on itself, have the
-  implementer fix code that is at fault, or leave it to GitHub, which holds the merge under the base
-  branch's own required checks.
+  the worker of the issue's current phase and the agent of the task's implementation step, whose
+  code the checks ran on, and judges none of them: an agent that works two of those roles gets
+  one message. Re-run a check that failed on itself, have the implementer fix code that is at
+  fault, or leave it to GitHub, which holds the merge under the base branch's own required
+  checks.
 - **A review round that no review decides.** On an issue with a pull request, Legion's reviewer
   must approve the head or request changes (a review step on an issue with no pull request, and the
   architect's own review step, end by the verdict they report, which no review on GitHub decides);
