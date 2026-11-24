@@ -419,7 +419,9 @@ digest before it is unzipped. Each attempt prints its bytes, its speed and the T
 the leg retransmitted during it, so the next stall says whether the connection was silent or
 slow. Its first read stays actions/download-artifact, which reads in seconds on all but about
 one leg in a thousand. The script runs in the step's 2 minutes, with the same directory of
-its own as the action's attempt.
+its own as the action's attempt, and reads the artifact the action reads, `<job>-binaries`,
+given the calling job's id (`${{ inputs.job }}`): a pull request labelled full-ci runs both
+callers in one run, and each reads only its own build's binaries.
 
 ## What the shard job places, and what its budget leaves for it
 

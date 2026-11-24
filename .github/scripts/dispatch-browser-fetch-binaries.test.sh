@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Tests for `dispatch-browser-fetch-binaries.sh`, the second read of the browser suite's binaries
-# artifact. Each case starts a stand-in GitHub on 127.0.0.1: the run's artifact list, the
-# artifact's API address, which redirects to a blob address on another host name (localhost),
+# artifact. Each case starts a stand-in GitHub on 127.0.0.1: the run's artifact list, which holds
+# the other caller's binaries beside this caller's, as a run of a pull request labelled full-ci
+# does, and answers a `name=` query with the artifacts of that name, as the REST API does; the
+# artifact's API address, which redirects to a blob address on another host name (localhost);
 # and the blob, which serves a fixture zip and honours a byte range. A case's mode makes the blob
 # stall partway through its first answer, serve bytes whose digest is not the artifact's, or the
-# list hold no artifact. The script runs against it as the step runs it, with the low-speed
-# bound shortened to the stand-in's scale.
+# list hold only the other caller's artifact. The script runs against it as the step runs it,
+# for the caller dispatch-browser-pr, with the low-speed bound shortened to the stand-in's scale.
 #
 # The stall case has a control: the same stall with a low-speed bound longer than the case's
 # limit never completes, which shows the stand-in really stalls and the bound is what ends it.
@@ -38,7 +40,7 @@ PY
 
 cat > "$work/server.py" <<'PY'
 # The stand-in GitHub: python3 server.py <mode> <zip> <port-file> <log>.
-import hashlib, http.server, json, sys, time
+import hashlib, http.server, json, sys, time, urllib.parse
 mode, zip_path, port_file, log_path = sys.argv[1:5]
 blob = open(zip_path, "rb").read()
 digest = "sha256:" + hashlib.sha256(blob).hexdigest()
@@ -59,13 +61,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         global blob_reads
         port = self.server.server_address[1]
-        if self.path.startswith("/repos/o/r/actions/runs/7/artifacts?name=dispatch-e2e-binaries"):
+        url = urllib.parse.urlsplit(self.path)
+        if url.path == "/repos/o/r/actions/runs/7/artifacts":
             self.note("list")
             if self.headers.get("Authorization") != "Bearer test-token":
                 return self.send_error(401)
-            artifacts = [] if mode == "missing" else [{
-                "name": "dispatch-e2e-binaries", "expired": False, "size_in_bytes": len(blob),
-                "digest": digest, "archive_download_url": f"http://127.0.0.1:{port}/zip"}]
+            # The other caller's binaries, whose address serves nothing: a read of them fails.
+            held = [{"name": "dispatch-browser-binaries", "expired": False, "size_in_bytes": 4,
+                     "digest": "sha256:" + hashlib.sha256(b"none").hexdigest(),
+                     "archive_download_url": f"http://127.0.0.1:{port}/other-zip"}]
+            if mode != "missing":
+                held.append({"name": "dispatch-browser-pr-binaries", "expired": False, "size_in_bytes": len(blob),
+                             "digest": digest, "archive_download_url": f"http://127.0.0.1:{port}/zip"})
+            asked = urllib.parse.parse_qs(url.query).get("name")
+            artifacts = [a for a in held if asked is None or a["name"] in asked]
             body = json.dumps({"total_count": len(artifacts), "artifacts": artifacts}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -133,15 +142,15 @@ stop() {
   server=""
 }
 
-# fetch_as_step [timeout] [env...]: runs the script as the step does, against this case's
-# stand-in; prints its output and sets $status.
+# fetch_as_step [timeout] [env...]: runs the script as the step of the caller dispatch-browser-pr
+# does, against this case's stand-in; prints its output and sets $status.
 fetch_as_step() {
   local limit=$1
   shift
   status=0
   output=$(env GITHUB_API_URL="http://127.0.0.1:$port" GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=7 \
     GH_TOKEN=test-token DISPATCH_BROWSER_FETCH_SPEED_LIMIT=1000 DISPATCH_BROWSER_FETCH_SPEED_TIME=1 \
-    "$@" timeout "$limit" "$fetch" "$out" 2>&1) || status=$?
+    "$@" timeout "$limit" "$fetch" "$out" dispatch-browser-pr 2>&1) || status=$?
 }
 
 same_files() {
@@ -152,11 +161,11 @@ same_files() {
   echo true
 }
 
-echo "A read that completes: one attempt, the token kept to the API's host"
+echo "A read that completes: one attempt, this caller's artifact, the token kept to the API's host"
 start clean
 fetch_as_step 30
 check "exits 0 ($status)" "$(is "$status" 0)"
-check "unzips the artifact's four files, byte for byte" "$(same_files)"
+check "unzips its own caller's artifact's four files, byte for byte" "$(same_files)"
 check "reads in one attempt" "$(is "$(grep -c '^attempt ' <<<"$output")" 1)"
 check "sends the token to the artifact list and to the artifact's API address" \
   "$(is "$(grep -c '^\(list\|zip\) auth=yes' "$log")" 2)"
@@ -193,17 +202,17 @@ check "starts the second attempt from byte 0" "$(is "$(grep '^blob' "$log" | sed
 check "unzips nothing" "$(is "$(find "$out" -type f | wc -l)" 0)"
 stop
 
-echo "A run with no such artifact: refused by name"
+echo "A run that holds only the other caller's binaries: refused, naming this caller's"
 start missing
 fetch_as_step 30
 check "exits 1 ($status)" "$(is "$status" 1)"
-check "names the artifact it found none of" "$(contains "$output" 'holds 0 unexpired artifacts named dispatch-e2e-binaries')"
+check "names the artifact it found none of" "$(contains "$output" 'holds 0 unexpired artifacts named dispatch-browser-pr-binaries')"
 stop
 
-echo "Called without its directory: refused"
+echo "Called without the calling job's id: refused"
 status=0
-output=$("$fetch" 2>&1) || status=$?
+output=$("$fetch" "$work/unused" 2>&1) || status=$?
 check "exits 1 ($status)" "$(is "$status" 1)"
-check "says what it takes" "$(contains "$output" 'takes the directory to unzip into')"
+check "says what it takes" "$(contains "$output" "takes the directory to unzip into and the calling job's id")"
 
 summary "dispatch-browser-fetch-binaries.sh"

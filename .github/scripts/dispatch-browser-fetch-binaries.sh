@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# The second read of the dispatch-e2e-binaries artifact in the shard and alone jobs of
+# The second read of the binaries artifact in the shard and alone jobs of
 # .github/workflows/dispatch-browser.yaml, run when actions/download-artifact's first read did
 # not complete within its step's limit.
 #
 # Who runs it, and what it takes:
 #
-#   GH_TOKEN=<token> .github/scripts/dispatch-browser-fetch-binaries.sh <out-dir>
+#   GH_TOKEN=<token> .github/scripts/dispatch-browser-fetch-binaries.sh <out-dir> <job>
 #
 # <out-dir> is the directory the artifact's files are unzipped into, which the step after it
-# copies from. GH_TOKEN is the run's own `${{ github.token }}`, a key of the step's `env:` and
+# copies from. <job> is the id of the job that calls the workflow, its `${{ inputs.job }}`: the
+# artifact is `<job>-binaries`, as the build job names it, so a run of ci.yaml that runs both of
+# its callers (a pull request labelled full-ci) reads each caller's own artifact and never the
+# other's. GH_TOKEN is the run's own `${{ github.token }}`, a key of the step's `env:` and
 # never an argument: an argument is on the process's command line, which every process of the
 # runner can read in /proc, so the token reaches curl through a header file this script writes
 # with mode 0600. The runner sets the other three names it reads for every step:
@@ -35,17 +38,18 @@
 # three names are read for .github/scripts/dispatch-browser-fetch-binaries.test.sh, which runs
 # them at a stand-in server's scale; the workflow sets none of them.
 #
-# Run from anywhere: .github/scripts/dispatch-browser-fetch-binaries.sh <out-dir>
+# Run from anywhere: .github/scripts/dispatch-browser-fetch-binaries.sh <out-dir> <job>
 # CI runs it in dispatch-browser.yaml's shard and alone jobs, at the step "Download the binaries
 # again, after a first attempt that did not complete", and its tests in ci.yaml's test job.
 set -euo pipefail
 
-if [ "$#" -ne 1 ]; then
-  echo "::error::dispatch-browser-fetch-binaries.sh takes the directory to unzip into, and was" \
-    "given $# argument(s): .github/scripts/dispatch-browser-fetch-binaries.sh <out-dir>"
+if [ "$#" -ne 2 ]; then
+  echo "::error::dispatch-browser-fetch-binaries.sh takes the directory to unzip into and the calling job's" \
+    "id, and was given $# argument(s): .github/scripts/dispatch-browser-fetch-binaries.sh <out-dir> <job>"
   exit 1
 fi
 out=$1
+name=$2-binaries
 api=${GITHUB_API_URL:?GITHUB_API_URL must name the REST API}
 repository=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must name the repository as owner/repo}
 run=${GITHUB_RUN_ID:?GITHUB_RUN_ID must name this run}
@@ -53,7 +57,6 @@ run=${GITHUB_RUN_ID:?GITHUB_RUN_ID must name this run}
 speed_limit=${DISPATCH_BROWSER_FETCH_SPEED_LIMIT:-1048576}
 speed_time=${DISPATCH_BROWSER_FETCH_SPEED_TIME:-10}
 attempts=${DISPATCH_BROWSER_FETCH_ATTEMPTS:-8}
-name=dispatch-e2e-binaries
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
