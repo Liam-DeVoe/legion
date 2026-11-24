@@ -22,7 +22,7 @@ import {
 import { expectRailAgents } from "./rail";
 import { setEventCreatedAt } from "./seed";
 import { expect, type Locator, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
-import { asUser } from "./users";
+import { asUser, type SignInLogin } from "./users";
 
 /**
  * How the Agents page groups and narrows its sessions (INFRA-812, R7; the browser cases of the
@@ -106,7 +106,7 @@ async function seedActivity(sessionID: string, issue: string, agoMs: number): Pr
 
 /** One unread reply of this session's to `reader`, the person who asked it, which is what keeps
  *  a row for a session that has since left the registry. */
-async function seedUnreadReply(sessionID: string, reader: string): Promise<void> {
+async function seedUnreadReply(sessionID: string, reader: SignInLogin): Promise<void> {
   const asked = await createAgentMessage(
     sessionID,
     { body: "How far along?", delivery: "aside" },

@@ -2,7 +2,7 @@ import { shownAgentRows } from "./agents";
 import { expectTimeout } from "./expect-timeout";
 import { askCard, inboxRow } from "./inbox-pane";
 import { navigateInApp } from "./sends";
-import { expect, rowKey, rowPerson, test } from "./test";
+import { expect, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 import { seedWorkspace } from "./workspace";
 
@@ -23,6 +23,7 @@ test("the seeded workspace fills every surface the person scope opens @pr", asyn
     boundMs: expectTimeout,
     person: me,
     projects: { core: rowKey("CORE"), ops: rowKey("OPS") },
+    sessionId: rowSessionId,
   });
 
   const alice = await asUser(browser, me);

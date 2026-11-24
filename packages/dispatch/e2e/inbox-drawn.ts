@@ -30,6 +30,7 @@ import {
 import { type InboxListRow, rowId } from "../web/src/features/inbox/list-row";
 import { sectionTitles } from "../web/src/features/inbox/sections";
 import { getInbox, listMyReplies } from "./api";
+import type { SignInLogin } from "./users";
 
 /** The cleared Inbox as `viewer`'s page draws it. */
 export interface DrawnInbox {
@@ -47,7 +48,7 @@ export interface DrawnInbox {
  * (`priority`) put them, each band drawing its first `GROUP_PAGE` rows and **Later**, folded by
  * default (`DEFAULT_FOLDED_GROUPS`), drawing none.
  */
-export async function clearedInbox(viewer: string): Promise<DrawnInbox> {
+export async function clearedInbox(viewer: SignInLogin): Promise<DrawnInbox> {
   const [asks, threads] = await Promise.all([
     getInbox({ login: viewer }),
     listMyReplies({ kind: INBOX_THREAD_KINDS, state: "inbox" }, { login: viewer }),

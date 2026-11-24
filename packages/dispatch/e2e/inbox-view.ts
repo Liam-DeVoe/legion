@@ -35,6 +35,7 @@ import {
   THREAD_SESSION,
 } from "./inbox-threads";
 import { expandedState } from "./settled";
+import { fixedLogin } from "./users";
 
 /** The list this file reads: every row, whoever holds it, so the fields have something to say. */
 export const INBOX = "/?assignee=everyone";
@@ -91,8 +92,13 @@ export async function seedEveryField(): Promise<{
   const recorded = "inbox-view.stub.e2e.ts replays a recording made under it";
   await createProject({ key: fixedKey("CORE", recorded), name: "Core" });
   // MIRROR names carol, which is how she is a person who has signed in and so a person an
-  // issue below may be handed to; the issue this file makes in MIRROR is alice's own.
-  await createProject({ key: fixedKey("MIRROR", recorded), name: "Mirror" }, { login: "carol" });
+  // issue below may be handed to; the issue this file makes in MIRROR is alice's own. The seed
+  // runs in record mode alone, after the stubbed row's `resetDatabase` (e2e/stub/stub-test.ts),
+  // whose next run deletes her again.
+  await createProject(
+    { key: fixedKey("MIRROR", recorded), name: "Mirror" },
+    { login: fixedLogin("carol", recorded) }
+  );
   const rows: ViewRow[] = [];
 
   const question = async (

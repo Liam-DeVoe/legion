@@ -14,12 +14,17 @@ import {
   seedBulkAgentThreads,
   seedBulkReplyThreads,
   seedCommentThread,
-  THREAD_SESSION,
+  threadSessions,
   unreadThreadRows,
 } from "./inbox-threads";
 import { holdPosts, refusePosts } from "./sends";
-import { expect, rowKey, rowPerson, test } from "./test";
+import { expect, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
+
+/** The session that answers this file's threads, under the running row's own id
+ *  (`threadSessions`, e2e/inbox-threads.ts): Dispatch keeps what is sent to it, its replies and a
+ *  person's read marks of them by its id, for every person at once. */
+const threadSession = threadSessions(rowSessionId).thread;
 
 /**
  * The Inbox's **Mark all read** (INFRA-450): one click over a list of six hundred and twenty
@@ -52,11 +57,11 @@ interface Seeded {
 async function seedMany(): Promise<Seeded> {
   const core = rowKey("CORE");
   const me = rowPerson("alice");
-  await setLiveSessions([THREAD_SESSION]);
+  await setLiveSessions([threadSession]);
   await createProject({ key: core, name: "Core" }, { login: me });
   for (const title of ["Ledger rollout", "Mirror retries"]) {
     const issue = await createIssue({ project: core, title }, { login: me });
-    await createAsk(issue.key, { question: `${title}: ship tonight?` }, asSession());
+    await createAsk(issue.key, { question: `${title}: ship tonight?` }, asSession(threadSession));
   }
   const threads = await createIssue({ project: core, title: "Replay budget" }, { login: me });
   await seedBulkReplyThreads({
@@ -64,14 +69,21 @@ async function seedMany(): Promise<Seeded> {
     issueKey: threads.key,
     login: me,
     prefix: "Replay",
+    session: threadSession,
   });
-  await seedBulkAgentThreads({ count: AGENT_THREADS, login: me, prefix: "Rollout" });
+  await seedBulkAgentThreads({
+    count: AGENT_THREADS,
+    login: me,
+    prefix: "Rollout",
+    session: threadSession,
+  });
   // A Send the session took as a turn of its live conversation: no Inbox row, so one press
   // never marks its reply, which the Agents page goes on counting.
   await seedAcceptedSend({
     body: "Steer: take this as your own turn.",
     login: me,
     reply: "Took it, and here is the answer.",
+    session: threadSession,
   });
   expect(await unreadThreadRows(me)).toBe(REPLY_THREADS);
   expect((await listMyReplies({ kind: ["reply", "agent"], limit: 1 }, { login: me })).total).toBe(
@@ -146,10 +158,15 @@ test("one click marks six hundred and twenty threads read, leaves every row in t
       seeded.issueKey,
       "One more question about the replay.",
       "One more answer about the replay.",
-      THREAD_SESSION,
+      threadSession,
       me
     );
-    await seedAgentThread({ body: "And the rollout?", login: me, replies: ["Still green."] });
+    await seedAgentThread({
+      body: "And the rollout?",
+      login: me,
+      replies: ["Still green."],
+      session: threadSession,
+    });
     await expect(page.locator(`[data-inbox-row="${replyRowId(late)}"]`)).toBeVisible();
     await expect(unreadMarks).toHaveCount(2);
     await page.locator("[data-inbox-mark-all]").click();

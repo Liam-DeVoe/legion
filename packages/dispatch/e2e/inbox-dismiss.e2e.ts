@@ -21,7 +21,7 @@ import {
   seedAgentThread,
   seedBulkReplyThreads,
   seedCommentThread,
-  THREAD_SESSION,
+  threadSessions,
   unreadThreadRows,
 } from "./inbox-threads";
 import { openView } from "./inbox-view";
@@ -34,9 +34,15 @@ import {
   type Request,
   rowKey,
   rowPerson,
+  rowSessionId,
   test,
 } from "./test";
 import { asUser } from "./users";
+
+/** The session that answers this file's threads, under the running row's own id
+ *  (`threadSessions`, e2e/inbox-threads.ts): Dispatch keeps what is sent to it and its replies
+ *  by its id, for every person at once. */
+const threadSession = threadSessions(rowSessionId).thread;
 
 /**
  * The Inbox's **Dismiss** (INFRA-450, A12): a thread stays in the Inbox, read or not, until the
@@ -82,24 +88,29 @@ interface Seeded {
 async function seedInbox(): Promise<Seeded> {
   const core = rowKey("CORE");
   const me = rowPerson("alice");
-  await setLiveSessions([THREAD_SESSION]);
+  await setLiveSessions([threadSession]);
   await createProject({ key: core, name: "Core" }, { login: me });
   const asked = await createIssue({ project: core, title: "Lease handover" }, { login: me });
   await patchIssue(asked.key, { priority: 2 });
-  const ask = await createAsk(asked.key, { question: "Ship the lease handover?" }, asSession());
+  const ask = await createAsk(
+    asked.key,
+    { question: "Ship the lease handover?" },
+    asSession(threadSession)
+  );
   const issue = await createIssue({ project: core, title: "Replay budget" }, { login: me });
   await patchIssue(issue.key, { priority: 2 });
   const reply = await seedCommentThread(
     issue.key,
     REPLY_SUBJECT,
     "One hour, then it gives up.",
-    THREAD_SESSION,
+    threadSession,
     me
   );
   const agent = await seedAgentThread({
     body: "What is the rollout status?",
     login: me,
     replies: ["Green."],
+    session: threadSession,
   });
   expect(await unreadThreadRows(me)).toBe(1);
   return { agent, ask: ask.id, issueKey: issue.key, reply };
@@ -315,7 +326,7 @@ test("e dismisses the selected thread row, and does nothing on an Ask row, which
 }) => {
   const core = rowKey("CORE");
   const me = rowPerson("alice");
-  await setLiveSessions([THREAD_SESSION]);
+  await setLiveSessions([threadSession]);
   await createProject({ key: core, name: "Core" }, { login: me });
   // An open ask on somebody else's issue that the reader has written in, with the session's
   // answer after her: the question waits on its holder rather than on her, so her own write in
@@ -325,7 +336,7 @@ test("e dismisses the selected thread row, and does nothing on an Ask row, which
   const theirAsk = await createAsk(
     theirs.key,
     { question: "Which lease is still open?" },
-    asSession()
+    asSession(threadSession)
   );
   await createComment(
     theirs.key,
@@ -335,13 +346,17 @@ test("e dismisses the selected thread row, and does nothing on an Ask row, which
   await createComment(
     theirs.key,
     { ask_id: theirAsk.id, body: "The mirror's, until tonight." },
-    asSession()
+    asSession(threadSession)
   );
   // And an open ask of her own, which the Inbox draws as an Ask row: the one row of the two
   // with no Dismiss at all.
   const mine = await createIssue({ project: core, title: "Replay budget" }, { login: me });
   await patchIssue(mine.key, { priority: 2 });
-  const ask = await createAsk(mine.key, { question: "Ship the replay budget?" }, asSession());
+  const ask = await createAsk(
+    mine.key,
+    { question: "Ship the replay budget?" },
+    asSession(threadSession)
+  );
 
   const alice = await asUser(browser, me);
   try {
@@ -381,7 +396,7 @@ test("e dismisses the selected thread row, and does nothing on an Ask row, which
 test("three thread rows picked with x go out together in one bulk Dismiss", async ({ browser }) => {
   const core = rowKey("CORE");
   const me = rowPerson("alice");
-  await setLiveSessions([THREAD_SESSION]);
+  await setLiveSessions([threadSession]);
   await createProject({ key: core, name: "Core" }, { login: me });
   const issue = await createIssue({ project: core, title: "Replay budget" }, { login: me });
   await patchIssue(issue.key, { priority: 2 });
@@ -393,7 +408,7 @@ test("three thread rows picked with x go out together in one bulk Dismiss", asyn
     "Where is the replay log kept?",
   ]) {
     threads.push(
-      await seedCommentThread(issue.key, question, `About: ${question}`, THREAD_SESSION, me)
+      await seedCommentThread(issue.key, question, `About: ${question}`, threadSession, me)
     );
   }
   expect(await unreadThreadRows(me)).toBe(4);
@@ -455,11 +470,17 @@ test("Select all dismisses every row of the group in one request that names each
   // More rows than one band draws at once and more than one dismissed page holds, so the press
   // covers rows no page has drawn and the Dismissed view has a second page to read.
   const THREADS = INBOX_DISMISSED_PAGE + 50;
-  await setLiveSessions([THREAD_SESSION]);
+  await setLiveSessions([threadSession]);
   await createProject({ key: core, name: "Core" }, { login: me });
   const issue = await createIssue({ project: core, title: "Mirror retries" }, { login: me });
   await patchIssue(issue.key, { priority: 2 });
-  await seedBulkReplyThreads({ count: THREADS, issueKey: issue.key, login: me, prefix: "Mirror" });
+  await seedBulkReplyThreads({
+    count: THREADS,
+    issueKey: issue.key,
+    login: me,
+    prefix: "Mirror",
+    session: threadSession,
+  });
   expect(await unreadThreadRows(me)).toBe(THREADS);
 
   const alice = await asUser(browser, me);
@@ -532,17 +553,24 @@ test("Select all under a search dismisses every matching row of a band wider tha
   // the press has to cover the rows below the page as well as the ones on it.
   const MATCHING = GROUP_PAGE + 70;
   const OTHERS = 3;
-  await setLiveSessions([THREAD_SESSION]);
+  await setLiveSessions([threadSession]);
   await createProject({ key: core, name: "Core" }, { login: me });
   const issue = await createIssue({ project: core, title: "Rollout" }, { login: me });
   await patchIssue(issue.key, { priority: 2 });
-  await seedBulkReplyThreads({ count: MATCHING, issueKey: issue.key, login: me, prefix: "Mirror" });
+  await seedBulkReplyThreads({
+    count: MATCHING,
+    issueKey: issue.key,
+    login: me,
+    prefix: "Mirror",
+    session: threadSession,
+  });
   await seedBulkReplyThreads({
     count: OTHERS,
     issueKey: issue.key,
     login: me,
     olderThan: 2 * MATCHING + 10,
     prefix: "Backup",
+    session: threadSession,
   });
   expect(await unreadThreadRows(me)).toBe(MATCHING + OTHERS);
 
@@ -687,7 +715,7 @@ test("a reply somebody else writes brings a dismissed thread back into the Inbox
     await createComment(
       seeded.issueKey,
       { body: "Make that two hours, from tonight.", reply_to: seeded.reply },
-      asSession()
+      asSession(threadSession)
     );
     await expect(replyRow).toBeVisible();
     await expect(replyRow.locator("[aria-label='Unread']")).toHaveCount(1);

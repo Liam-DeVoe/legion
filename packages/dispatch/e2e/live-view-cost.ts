@@ -14,6 +14,7 @@ import { type FakeSession, setLiveSessions } from "./agents";
 import { putAgentState, seedAgentStreamConversations } from "./api";
 import { frontLiveView } from "./live-views";
 import { rowSessionId } from "./test";
+import type { SignInLogin } from "./users";
 
 /** How many sessions k11 pins. */
 const COST_RIGS = 8;
@@ -49,7 +50,7 @@ function costRig(index: number): FakeSession {
  * person (`rowPerson`) for the same reason on the person's side: the rail lists every pin they
  * hold.
  */
-export async function seedPinnedRigsAtLimit(login: string): Promise<string[]> {
+export async function seedPinnedRigsAtLimit(login: SignInLogin): Promise<string[]> {
   const sessions = Array.from({ length: COST_RIGS }, (_, index) => costRig(index));
   const ids = sessions.map((session) => session.session_id);
   await setLiveSessions(sessions);

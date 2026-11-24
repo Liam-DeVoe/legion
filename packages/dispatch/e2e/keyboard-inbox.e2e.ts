@@ -20,7 +20,7 @@ import {
   replyRowId,
   seedAgentThread,
   seedCommentThread,
-  THREAD_SESSION,
+  threadSessions,
 } from "./inbox-threads";
 import {
   askIdOf,
@@ -33,8 +33,13 @@ import {
   seedPaneAhead,
   session,
 } from "./keyboard-inbox";
-import { expect, type Page, rowKey, rowPerson, test } from "./test";
+import { expect, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
+
+/** The session that answers the thread rows below, under the running row's own id
+ *  (`threadSessions`, e2e/inbox-threads.ts): Dispatch keeps what is sent to it and its replies
+ *  by its id, for every person at once. */
+const threadSession = threadSessions(rowSessionId).thread;
 
 /**
  * The Inbox's keyboard, in the rows whose claim reaches the server: a bulk snooze written and
@@ -648,7 +653,7 @@ test("j, k and the arrows step through thread rows, o opens them, y copies only 
   // The reader is a person of the row's own (`rowPerson`): her Inbox holds this row's question
   // and her two threads, and no other row's.
   const me = rowPerson("alice");
-  await setLiveSessions([THREAD_SESSION]);
+  await setLiveSessions([threadSession]);
   await createProject({ key: core, name: "Core" }, { login: me });
   const asked = await createIssue({ project: core, title: "Lease handover" }, { login: me });
   const ask = await createAsk(asked.key, { question: "Ship the lease handover?" }, session);
@@ -657,13 +662,14 @@ test("j, k and the arrows step through thread rows, o opens them, y copies only 
     threadIssue.key,
     "How far back does a replay go?",
     "One hour, then it gives up.",
-    THREAD_SESSION,
+    threadSession,
     me
   );
   const agent = await seedAgentThread({
     body: "What is the rollout status?",
     login: me,
     replies: ["Green."],
+    session: threadSession,
   });
 
   const context = await asUser(browser, me);

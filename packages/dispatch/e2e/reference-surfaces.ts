@@ -16,6 +16,7 @@ import { blockId, openedThreadCard, setSheet } from "./editor";
 import { READING_PANE_WIDTH } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
 import { rowKey, rowKeyBehind } from "./test";
+import type { SignInLogin } from "./users";
 
 /**
  * The one world every reference spec is walked across, and the surfaces it is read on.
@@ -172,7 +173,7 @@ const FILLER_PARAGRAPHS = 40;
 export async function seedReferenceWorld({
   login,
 }: {
-  readonly login?: string;
+  readonly login?: SignInLogin;
 } = {}): Promise<ReferenceWorld> {
   const core = rowKey("CORE");
   const projects: ReferenceProjects = {

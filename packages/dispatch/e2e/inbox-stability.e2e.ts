@@ -18,7 +18,7 @@ import {
   selectedRow,
 } from "./inbox-pane";
 import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
-import { asUser } from "./users";
+import { asUser, type SignInLogin } from "./users";
 
 const session = {
   actor: {
@@ -32,7 +32,7 @@ const session = {
 /** What a write the reader makes goes out as: the reader of every row here is a person of the
  *  row's own (`rowPerson`, e2e/test.ts), whose Inbox holds this row's questions and no other
  *  row's, so the counts and places read below are this row's alone. */
-function asReader(): { login: string } {
+function asReader(): { login: SignInLogin } {
   return { login: rowPerson("alice") };
 }
 

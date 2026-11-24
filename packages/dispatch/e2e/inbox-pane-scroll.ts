@@ -28,6 +28,7 @@ import {
 } from "./api";
 import { replyRowId } from "./inbox-threads";
 import { rowKey, rowPerson } from "./test";
+import type { SignInLogin } from "./users";
 
 /** The session that writes as somebody else: the author of every reply these rows read and of
  *  every edit a drive makes. */
@@ -45,7 +46,7 @@ function scrollProject(): { key: RowKey; name: string } {
 /** What a write of the reader's goes out as. The reader of every row of this file is a person of
  *  the row's own (`rowPerson`, e2e/test.ts), who creates the project, so every question here -
  *  a project document's included - reaches them and the list they open holds no other row's. */
-function asReader(): { login: string } {
+function asReader(): { login: SignInLogin } {
   return { login: rowPerson("alice") };
 }
 

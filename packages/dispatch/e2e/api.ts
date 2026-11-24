@@ -21,6 +21,7 @@ import {
 import type { Actor } from "../web/src/api/types";
 import { harnessPorts } from "./harness-ports";
 import { type DispatchProcess, pinnedTo } from "./harness-processes";
+import type { SignInLogin } from "./users";
 
 /** The Dispatch server a process of `env`'s stack addresses: the deployed server `env` names,
  *  else the harness server of that stack, whose port e2e/global-setup.ts writes into the
@@ -51,7 +52,10 @@ interface ApiOptions {
   /** The `Idempotency-Key` header the write carries, naming one intent: a repeat under it is
    *  answered what the first was answered. None when absent, which Dispatch handles unkeyed. */
   idempotencyKey?: string;
-  login?: string;
+  /** The person a `user` call signs in as: alice, bob or a `RowLogin` (`SignInLogin`,
+   *  e2e/users.ts), as a browser sign-in takes, since this sign-in records the person too; alice
+   *  when absent. */
+  login?: SignInLogin;
   /** The bearer an `as: "agent"` call sends; the shared `e2eAgentToken` when absent. */
   token?: string;
   /** In two-process mode, the process the round-robin proxy sends the call to; absent, whichever
@@ -168,7 +172,7 @@ const sessionCookies = new Map<string, CachedSession>();
  *  `target` set the sign-in is pinned to that process, so every request a pinned call makes, its
  *  sign-in included, is served by the process it names. A sign-in that fails, by its answer or by
  *  the request itself, is not kept, so the next call asks again. */
-export function sessionCookie(login: string, target?: DispatchProcess): Promise<Cookie> {
+export function sessionCookie(login: SignInLogin, target?: DispatchProcess): Promise<Cookie> {
   const key = `${target ?? ""} ${login}`;
   const cached = sessionCookies.get(key);
   if (cached !== undefined) {
@@ -215,7 +219,7 @@ const reusedSignIns = new Set<string>();
  *  login's generation, and the cached cookie, which names the generation before it, would then be
  *  refused. The suite resets the database once per worker (e2e/test.ts), so that first sign-in
  *  is the worker's, and every later one mints until a row empties the database itself. */
-export function reusableSessionCookie(login: string): Promise<Cookie> | undefined {
+export function reusableSessionCookie(login: SignInLogin): Promise<Cookie> | undefined {
   if (!isResetLogin(login) || reusedSignIns.has(login)) {
     return undefined;
   }
@@ -248,7 +252,7 @@ export function forgetSessions(): void {
  *  is given), and the dashboard origin the server requires on every cookie-authenticated write
  *  (enforceCookieOrigin admits a write whose `Origin` is the dashboard's). */
 export async function userHeaders(
-  login = "alice",
+  login: SignInLogin = "alice",
   target?: DispatchProcess
 ): Promise<Record<string, string>> {
   const cookie = await sessionCookie(login, target);
@@ -448,7 +452,7 @@ export function putProjectDefaultRepository(
 }
 
 /** Mints a personal agent token for `login`; the returned bearer acts for that human. */
-export async function mintAgentToken(name: string, login: string): Promise<string> {
+export async function mintAgentToken(name: string, login: SignInLogin): Promise<string> {
   const minted = await post("/api/v1/me/agent-tokens", { body: { name } }, { login });
   return minted.token;
 }
@@ -744,7 +748,7 @@ export function createIssueArtifact(
 export async function uploadIssueFile(
   issue: string,
   input: { bytes: Uint8Array<ArrayBuffer>; contentType: string; name: string },
-  login = "alice"
+  login: SignInLogin = "alice"
 ): Promise<Result<"/api/v1/issues/{key}/artifacts", "post">> {
   const form = new FormData();
   form.append("name", input.name);
@@ -818,7 +822,7 @@ export function answerAsk(
  *  its card; `options` names that person, alice when absent. */
 export async function handAskOn(
   id: string,
-  login: string,
+  login: SignInLogin,
   options: ApiOptions = {}
 ): Promise<void> {
   // The person it is handed to has signed in, which the route requires of them.
@@ -1282,7 +1286,7 @@ export function putIssueState(
 
 /** `login`'s own state on every issue, `GET /api/v1/me/state`: each issue's pin and its pinned
  *  items (`dismissed`), as the page reads them. */
-export function getMyState(login = "alice") {
+export function getMyState(login: SignInLogin = "alice") {
   return get("/api/v1/me/state", {}, { login });
 }
 

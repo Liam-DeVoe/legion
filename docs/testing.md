@@ -299,7 +299,7 @@ under it. Each `web/src/` and `e2e/` path below is under `packages/dispatch`.
   A helper that inserts its project straight into Postgres (`e2e/legion-seed.ts`, and the fixtures of `e2e/delivery-seed.ts` under the place `deliveryPlace` makes) inserts it with no `ON CONFLICT`, so a second project under one key fails the row rather than leaving the first in its place.
   A caller whose key is fixed on purpose writes it as `fixedKey(key, why)`, and `why` names the reason a fixed key is right there: the recording a stubbed row replays, the review corpus seeded once into each database a worker holds, the docs' pictures, the local instance, a project another service names (`e2e/read-token-live.ts`), or a row that measures layout over text of a fixed width.
   A row that measures layout over a login writes that login as `fixedPerson(login, why)` (`e2e/test.ts`), and the row's end deletes that person as it deletes a `rowPerson`, so the list of everyone who has signed in is whole again for the next row.
-  A row signs in only as alice or bob, whom every reset re-creates, or as a login that `rowPerson` or `fixedPerson` answered: `signIn`, `asUser` (`e2e/users.ts`) and the `signedIn` option (`e2e/test.ts`) take only those two and the `RowLogin` type that the two functions answer, and that `fixedLogin` (`e2e/users.ts`) answers for a caller outside the real-stack suite's rows, so a row that signs in as another literal login fails the typecheck.
+  A row signs in only as alice or bob, whom every reset re-creates, or as a login that `rowPerson` or `fixedPerson` answered: `signIn`, `asUser` (`e2e/users.ts`), the `signedIn` option (`e2e/test.ts`) and the API client's `login` (`e2e/api.ts`, with each helper that signs in as a login its caller passes) take only those two and the `RowLogin` type that the two functions answer, and that `fixedLogin` (`e2e/users.ts`) answers for a fixed login that leaves no person a later row reads (the docs' pictures, a stubbed row's seed, and alice or bob in another case), so a row that signs in as another literal login fails the typecheck.
 
 Two rules set the edges of those layers:
 
@@ -392,9 +392,11 @@ The clock of a unit test:
   of rows that check what a frame of the page did not do, such as
   `web/src/features/issue-page/IssueTree.test.tsx`'s `nextFrame`.
   `web/src/__tests__/real-clock-waits.test.ts` reads every unit test file and test helper with the
-  TypeScript parser: a `*.test.ts(x)`, a file of a `__tests__` folder, and a `*-fixture.ts(x)`,
-  `*-fixtures.ts(x)` or `*.coverage.ts(x)` helper; its own row fails when a file of any other name
-  imports `bun:test`, Testing Library or a module of a `__tests__` folder.
+  TypeScript parser: a `*.test.ts(x)`, a file of a `__tests__` folder, a `*-fixture.ts(x)`,
+  `*-fixtures.ts(x)` or `*.coverage.ts(x)` helper, and any other file that test files alone load
+  by a relative path (an import, an `import(…)`, a `require(…)` or a worker's `new URL(…)`), such
+  as `web/src/features/issue-page/chromium-focus-fixup.ts`; its own row fails when a file of any
+  other name imports `bun:test`, Testing Library or a module of a `__tests__` folder.
   It fails every call in them that reaches a wait of real time by a name, whatever its delay or
   its callback:
   a `setTimeout`, a `setInterval`, a `setImmediate` or a `requestAnimationFrame`, global or a

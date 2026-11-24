@@ -4,7 +4,7 @@ import { expectConversationInFront, frontTurns, seedPinnedRigsAtLimit } from "./
 import { frontLiveView, type ViewRestore, watchViewRestore } from "./live-views";
 import { openAgentFromRail } from "./rail";
 import { expect, type Page, rowPerson, rowSessionId, test } from "./test";
-import { asUser } from "./users";
+import { asUser, type SignInLogin } from "./users";
 
 /**
  * What the agent surfaces cost in time (INFRA-812). Every row here reads a wall clock - a
@@ -120,7 +120,7 @@ function ordinaryRig(index: number): FakeSession {
  * (`features/agent-view/live-views.ts`), so the first of these is the sleeping view the ordinary
  * wake comes back to.
  */
-async function seedPinnedOrdinaryRigs(login: string): Promise<string[]> {
+async function seedPinnedOrdinaryRigs(login: SignInLogin): Promise<string[]> {
   const sessions = Array.from({ length: ORDINARY_RIGS }, (_, index) => ordinaryRig(index));
   const ids = sessions.map((session) => session.session_id);
   await setLiveSessions(sessions);

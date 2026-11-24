@@ -20,55 +20,50 @@ import {
   replyToMessageDelivery,
 } from "./api";
 import { navigateInApp } from "./sends";
-import { sessionIds } from "./session-ids";
 import { expect, type Locator, type Page, rowPerson, rowSessionId, test } from "./test";
 import { assertPageFits } from "./unclipped";
-import { asUser } from "./users";
+import { asUser, type SignInLogin } from "./users";
 
 // No `last_seen`: the fixture answers every read of the session with the current time. A literal
 // computed when this module is imported ages with the whole suite, and a session ten minutes
 // "old" falls under `Quiet` rather than under the group this spec reads - which is how long a
 // full run takes to reach here.
-const planner: FakeSession = {
+const plannerFields: Omit<FakeSession, "session_id"> = {
   capabilities: ["aside", "btw", "steer"],
   dir: "/workspaces/planner",
   machine_id: "build-host",
   roles: ["planner"],
-  session_id: sessionIds.planner,
   title: "Planner",
 };
-const tester: FakeSession = {
+const testerFields: Omit<FakeSession, "session_id"> = {
   capabilities: ["aside", "btw", "steer"],
   dir: "/workspaces/tester",
   machine_id: "build-host",
   roles: ["tester"],
-  session_id: sessionIds.tester,
   title: "Tester",
 };
-const reviewer: FakeSession = {
+const reviewerFields: Omit<FakeSession, "session_id"> = {
   capabilities: ["aside"],
   dir: "/workspaces/reviewer",
   machine_id: "review-host",
   roles: ["reviewer"],
-  session_id: sessionIds.reviewer,
   title: "Reviewer",
 };
 
 // A third session for the order proof and the race below: it advertises both modes, so the
 // browser includes it in the first send and only the server can exclude it in the second.
-const observer: FakeSession = {
+const observerFields: Omit<FakeSession, "session_id"> = {
   capabilities: ["btw", "steer"],
   dir: "/workspaces/observer",
   machine_id: "build-host",
   roles: [],
-  session_id: sessionIds.observer,
   title: "Observer",
 };
 
 /** The four sessions above under ids of the running row's own (`rowSessionId`, e2e/test.ts):
  *  Dispatch keeps what a session said and what was said to it by its id, for every person at
  *  once, so under a fixed id a session carries every earlier row's messages and replies, and is
- *  no session Dispatch has never heard from. */
+ *  no session Dispatch has never heard from. Within a row each call answers the same ids. */
 function rowSessions(): {
   readonly observer: FakeSession;
   readonly planner: FakeSession;
@@ -76,10 +71,10 @@ function rowSessions(): {
   readonly tester: FakeSession;
 } {
   return {
-    observer: { ...observer, session_id: rowSessionId("observer") },
-    planner: { ...planner, session_id: rowSessionId("planner") },
-    reviewer: { ...reviewer, session_id: rowSessionId("reviewer") },
-    tester: { ...tester, session_id: rowSessionId("tester") },
+    observer: { ...observerFields, session_id: rowSessionId("observer") },
+    planner: { ...plannerFields, session_id: rowSessionId("planner") },
+    reviewer: { ...reviewerFields, session_id: rowSessionId("reviewer") },
+    tester: { ...testerFields, session_id: rowSessionId("tester") },
   };
 }
 
@@ -293,6 +288,7 @@ test("a broadcast written as a numbered list renders as a list on the broadcast 
 test("a Broadcasts row keeps its sender above its link and fits the screen @phone @phone-only", async ({
   browser,
 }, testInfo) => {
+  const { planner } = rowSessions();
   await setLiveSessions([planner]);
   // Longer than the row is wide on any project's viewport, so the preview has something to cut.
   await createBroadcast({
@@ -332,6 +328,7 @@ test("a Broadcasts row keeps its sender above its link and fits the screen @phon
 test("a session that goes away before the send is excluded by the server and named on the broadcast, and a failed recipient can be retried there", async ({
   browser,
 }, testInfo) => {
+  const { observer, planner, tester } = rowSessions();
   await setLiveSessions([planner, tester, observer]);
   // The Tester's listener answers every send 503, past the take-over window too, so its copy
   // fails. A 404 would not do: Dispatch queues a copy for a session no store of the listener's
@@ -391,6 +388,7 @@ test("a session that goes away before the send is excluded by the server and nam
 test("a broadcast reaches sessions the listener's list has dropped while their records stand", async ({
   browser,
 }) => {
+  const { planner, tester } = rowSessions();
   await setLiveSessions([planner, tester]);
 
   const alice = await asUser(browser, "alice");
@@ -435,6 +433,7 @@ test("a broadcast reaches sessions the listener's list has dropped while their r
 test("a second identical send of one composition is answered the original broadcast, so every agent hears it once @pr", async ({
   browser,
 }) => {
+  const { planner, tester } = rowSessions();
   await setLiveSessions([planner, tester]);
 
   const alice = await asUser(browser, "alice");
@@ -482,6 +481,7 @@ test("a session that leaves between a refused send and its restore is still in t
   browser,
 }) => {
   // The page learns of a departure on its 15 s agent poll, which the page's own clock spends.
+  const { observer, planner } = rowSessions();
   await setLiveSessions([planner, observer]);
 
   const alice = await asUser(browser, "alice");
@@ -544,7 +544,10 @@ test("a session that leaves between a refused send and its restore is still in t
 
 /** A broadcast from `login` to `sessions`, each of which has answered its copy, as the
  *  `dispatch message` reply does. */
-async function answeredBroadcast(sessions: readonly string[], login = "alice"): Promise<string> {
+async function answeredBroadcast(
+  sessions: readonly string[],
+  login: SignInLogin = "alice"
+): Promise<string> {
   const sent = await createBroadcast(
     {
       body: "Report status.",

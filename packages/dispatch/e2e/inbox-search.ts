@@ -24,6 +24,7 @@ import {
   patchIssue,
 } from "./api";
 import { setPendingCredentialRequests } from "./fake-broker-helpers";
+import { fixedLogin } from "./users";
 
 // ---------------------------------------------------------------------------
 // The three agents whose asks these files list. Each word of a title and of a
@@ -104,10 +105,12 @@ export async function seedInbox(): Promise<Seed> {
   const recorded = "inbox-search.stub.e2e.ts replays a recording made under it";
   await createProject({ key: fixedKey("LEDGER", recorded), name: "Ledger service" });
   // MIRROR names dave, a person no row of this file reads a list for: the issue the shared
-  // token makes below and the project document's question both fall to him.
+  // token makes below and the project document's question both fall to him. The seed runs in
+  // record mode alone, after the stubbed row's `resetDatabase` (e2e/stub/stub-test.ts), whose
+  // next run deletes him again.
   await createProject(
     { key: fixedKey("MIRROR", recorded), name: "Mirror service" },
-    { login: "dave" }
+    { login: fixedLogin("dave", recorded) }
   );
   // The owner a session's ask carries is the owner of the credential that wrote it, never a
   // field of the body, so bob's own token is what puts `bob` in that row's author.

@@ -22,9 +22,13 @@ import {
 } from "./api";
 import { barAction, documentEditor, selectEditorText } from "./editor";
 import { holdPosts, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
-import { expect, type Locator, type Page, rowKey, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
+/** The planner session. Its id is the running row's own (`rowSessionId`, e2e/test.ts), read from
+ *  a getter when a row names it, as `agentSessions` (e2e/agents.ts) does: Dispatch keeps a
+ *  comment's deliveries to a session and the replies on them by its id, for every person at
+ *  once, so under a fixed id a repeat of a row would meet the deliveries its earlier copy made. */
 const planner: FakeSession = {
   // The E7b retry assertion resends a steer-mode comment and expects it to succeed - a
   // real live session normally advertises steer, so the fixture must too.
@@ -33,7 +37,9 @@ const planner: FakeSession = {
   last_seen: 1_700_000_000_000,
   machine_id: "e2e",
   roles: ["role-x"],
-  session_id: "planner",
+  get session_id() {
+    return rowSessionId("planner");
+  },
   title: "Planner",
 };
 
@@ -119,7 +125,9 @@ test("E1 and E2: explicit role mentions deliver once while /btw without a mentio
       delivery: "btw",
       mentions: [{ target: "role:role-x" }],
     });
-    await expect.poll(() => getSentMessages()).toMatchObject([{ target_session: "planner" }]);
+    await expect
+      .poll(() => getSentMessages())
+      .toMatchObject([{ target_session: planner.session_id }]);
 
     await page
       .getByRole("form", { name: "Comment composer" })
@@ -158,7 +166,7 @@ test("E2b: a project-document comment preserves the canonical mention and strips
     expect((await response).request().postDataJSON()).toMatchObject({
       body: "@Planner",
       delivery: "aside",
-      mentions: [{ target: "session:planner" }],
+      mentions: [{ target: `session:${planner.session_id}` }],
     });
   } finally {
     await alice.close();
@@ -514,13 +522,13 @@ test("E7b and Retry: removing a prefilled mention creates a plain reply, and ret
   // The mention's first delivery has to FAIL for a retry to be offered at all: a same-mode
   // retry of a delivery that landed is a repeat that is recognised and dropped, so the row no
   // longer carries a Retry (LEGION-271).
-  await setSessionSendStatus("planner", 404);
+  await setSessionSendStatus(planner.session_id, 404);
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "Reply behavior" });
   const parent = await createComment(issue.key, {
     body: "Parent",
     delivery: "steer",
-    mentions: [{ target: "session:planner" }],
+    mentions: [{ target: `session:${planner.session_id}` }],
   });
   const alice = await asUser(browser, "alice");
 
@@ -547,7 +555,7 @@ test("E7b and Retry: removing a prefilled mention creates a plain reply, and ret
     await card.getByRole("button", { name: "Retry" }).click();
     expect((await retry).request().postDataJSON()).toEqual({
       delivery: "steer",
-      target: "session:planner",
+      target: `session:${planner.session_id}`,
     });
   } finally {
     await alice.close();
@@ -569,7 +577,7 @@ test("a duplicated mention delivery says the listener already had it, and offers
   const comment = await createComment(issue.key, {
     body: "@Planner take a look",
     delivery: "steer",
-    mentions: [{ target: "session:planner" }],
+    mentions: [{ target: `session:${planner.session_id}` }],
   });
   // The retry is a duplicate only once the first attempt has reached the listener. The comment
   // answers when it commits, and its mention is sent after that answer, on the mention sender's
@@ -590,7 +598,10 @@ test("a duplicated mention delivery says the listener already had it, and offers
     .toEqual([{ attempt: 1, duplicate: false, state: "sent" }]);
   // The same mention, the same mode: the stand-in recognises the repeated key exactly as
   // JetStream would and answers `duplicate`.
-  await retryCommentDelivery(comment.id, { delivery: "steer", target: "session:planner" });
+  await retryCommentDelivery(comment.id, {
+    delivery: "steer",
+    target: `session:${planner.session_id}`,
+  });
 
   const alice = await asUser(browser, "alice");
   try {
@@ -613,7 +624,7 @@ test("a duplicated mention delivery says the listener already had it, and offers
 // session working behind a cache that is refilling - the session bucket was recreated, another
 // listener's registrations are still arriving - is missing from that list. Dispatch asks about
 // the mentioned session by id now, which reads the session store through, so the comment is
-// delivered; before, the conversation showed "no live session planner" for a session that had
+// delivered; before, the conversation showed "no live session <id>" for a session that had
 // never gone anywhere.
 test("a mention reaches a session the listener's list has dropped while its record stands", async ({
   browser,
@@ -631,13 +642,15 @@ test("a mention reaches a session the listener's list has dropped while its reco
     await selectMention(page, field, "/btw @", "Planner");
     // The composer offered the mention off the listener's list, and the list drops the session
     // between that read and the send, with the session's own record untouched.
-    await setSessionLive("planner", false);
+    await setSessionLive(planner.session_id, false);
     expect(await issueCommentPayload(page, issue.key)).toEqual({
       body: "@Planner",
       delivery: "btw",
-      mentions: [{ target: "session:planner" }],
+      mentions: [{ target: `session:${planner.session_id}` }],
     });
-    await expect.poll(() => getSentMessages()).toMatchObject([{ target_session: "planner" }]);
+    await expect
+      .poll(() => getSentMessages())
+      .toMatchObject([{ target_session: planner.session_id }]);
     const deliveries = page.getByRole("list", { name: "Mention deliveries" });
     await expect(deliveries).toContainText("sent");
     await expect(deliveries).not.toContainText("no live session");
@@ -662,14 +675,14 @@ test("a mention of a session the listener holds no record of is still refused as
     await page.goto(`/issues/${issue.key}/conversation`);
     const field = page.getByRole("form", { name: "Comment composer" }).getByLabel("Comment");
     await selectMention(page, field, "/btw @", "Planner");
-    await setSessionRecord("planner", "absent");
+    await setSessionRecord(planner.session_id, "absent");
     expect(await issueCommentPayload(page, issue.key)).toEqual({
       body: "@Planner",
       delivery: "btw",
-      mentions: [{ target: "session:planner" }],
+      mentions: [{ target: `session:${planner.session_id}` }],
     });
     await expect(page.getByRole("list", { name: "Mention deliveries" })).toContainText(
-      "no live session planner"
+      `no live session ${planner.session_id}`
     );
     expect(await getSentMessages()).toEqual([]);
   } finally {
@@ -698,16 +711,16 @@ test("a mention of a session the listener could not read is refused with the lis
     await selectMention(page, field, "/btw @", "Planner");
     // The session is there as far as anyone knows; it is the read that fails, which the
     // listener answers 503 with the bus's reason.
-    await setSessionRecord("planner", "unreadable");
+    await setSessionRecord(planner.session_id, "unreadable");
     expect(await issueCommentPayload(page, issue.key)).toEqual({
       body: "@Planner",
       delivery: "btw",
-      mentions: [{ target: "session:planner" }],
+      mentions: [{ target: `session:${planner.session_id}` }],
     });
     const deliveries = page.getByRole("list", { name: "Mention deliveries" });
     await expect(deliveries).toContainText("failed");
     await expect(deliveries).toContainText(
-      "envoy listener: GET /v1/registry/planner returned 503: envoy: the message bus did not answer: nats: no responders available"
+      `envoy listener: GET /v1/registry/${planner.session_id} returned 503: envoy: the message bus did not answer: nats: no responders available`
     );
     await expect(deliveries).not.toContainText("no live session");
     expect(await getSentMessages()).toEqual([]);

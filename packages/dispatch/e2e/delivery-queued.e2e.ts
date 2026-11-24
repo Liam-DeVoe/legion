@@ -13,8 +13,7 @@ import {
   setSessionStopped,
 } from "./agents";
 import { createIssue, createMessage, createProject, queuedEnvelopesOf } from "./api";
-import { sessionIds } from "./session-ids";
-import { expect, type Locator, type Page, rowKey, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -27,12 +26,18 @@ import { asUser } from "./users";
  * word.
  */
 
+/** The two sessions, each under the running row's own id (`rowSessionId`, e2e/test.ts), which it
+ *  reads from a getter when a row names it, as `agentSessions` (e2e/agents.ts) does: Dispatch
+ *  keeps what is sent to a session, its deliveries and the envelopes it queues, by its id, for
+ *  every person at once, so a repeat of a row under a fixed id would meet its earlier copy's. */
 const planner: FakeSession = {
   capabilities: ["aside", "btw", "steer"],
   dir: "/workspaces/planner",
   machine_id: "queued-host",
   roles: [],
-  session_id: sessionIds.planner,
+  get session_id() {
+    return rowSessionId("planner");
+  },
   title: "Planner",
 };
 
@@ -41,7 +46,9 @@ const observer: FakeSession = {
   dir: "/workspaces/observer",
   machine_id: "queued-host",
   roles: [],
-  session_id: sessionIds.observer,
+  get session_id() {
+    return rowSessionId("observer");
+  },
   title: "Observer",
 };
 

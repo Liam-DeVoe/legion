@@ -14,7 +14,7 @@ import {
   storedValues,
   watchShown,
 } from "./pick-writes";
-import { expect, rowKey, rowPerson, test } from "./test";
+import { expect, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -28,7 +28,9 @@ test("a half-typed message in a live conversation survives opening the drawer, a
   browser,
 }, testInfo) => {
   const { askId } = await seedAsk("Ship the drawer behind a flag?", rowKey("CORE"));
-  const sessionID = "01a0e0c1-0000-7000-8000-0000000d4a3e";
+  // A session of the row's own (`rowSessionId`, e2e/test.ts): the relay's responder is
+  // process-global and kept by the session's id, so no other row's frames reach this one.
+  const sessionID = rowSessionId("live");
   await setAgentStreamResponder(sessionID, true);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();

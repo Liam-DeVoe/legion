@@ -34,7 +34,7 @@ import {
 import { connectedDot, documentEditor, typeAtEnd } from "./editor";
 import { sql } from "./psql";
 import { expect, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
-import { asUser } from "./users";
+import { asUser, type SignInLogin } from "./users";
 
 /** The writer the store's own delivery writer carries (`outbox.graphWriter`). */
 const OUTBOX_WRITER = `'{"kind": "system", "id": "dispatch-outbox"}'::jsonb`;
@@ -314,7 +314,7 @@ test("a supertag change leaves an open editor writing", async ({ browser }, test
  * so the node is stored as such a write would store it, and it is delivered to the same session,
  * so only the predicate keeps it off the page.
  */
-async function seedThePersonPage(person: string): Promise<{
+async function seedThePersonPage(person: SignInLogin): Promise<{
   authored: string;
   issue: string;
   received: string;

@@ -10,7 +10,7 @@ import {
   rowPerson,
   test,
 } from "./test";
-import { asUser } from "./users";
+import { asUser, type SignInLogin } from "./users";
 
 // The iPhone 13 viewport INFRA-95 measured the landing fault at. At the `phone` layout
 // `phone-conversation.e2e.ts` uses (390x844) the composer's top sits near y603, below a newest
@@ -31,7 +31,7 @@ const session = {
  *  New replies counts, and alice's, which every row before on the worker raises, take a second
  *  line, which moves the turns against the docked composer each row's landing is measured
  *  beside. */
-async function seedConversation(title: string, reader: string) {
+async function seedConversation(title: string, reader: SignInLogin) {
   const core = rowKey("CORE");
   await createProject({ key: core, name: "Core" }, { login: reader });
   const issue = await createIssue({ project: core, title }, { login: reader });

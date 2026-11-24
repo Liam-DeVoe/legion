@@ -11,15 +11,29 @@ import {
 import { seedDeliveryFixture } from "./delivery-seed";
 import { connect, isLiveSocket, type LiveSockets, watchLiveSockets } from "./live-socket-watch";
 import { navigateInApp } from "./sends";
-import { expect, type Page, type Request, rowKey, test, type WebSocketRoute } from "./test";
+import {
+  expect,
+  type Page,
+  type Request,
+  rowKey,
+  rowSessionId,
+  test,
+  type WebSocketRoute,
+} from "./test";
 import { asUser } from "./users";
 
+/** The live session, under the running row's own id (`rowSessionId`, e2e/test.ts), read from a
+ *  getter when a row names it, as `agentSessions` (e2e/agents.ts) does: the relay's replay and
+ *  responder are process-global and kept by the session's id, so under a fixed id a row would
+ *  carry the frames an earlier row published into its own. */
 const agent: FakeSession = {
   capabilities: ["aside", "btw", "steer"],
   dir: "/workspaces/live-socket",
   machine_id: "live-socket-host",
   roles: [],
-  session_id: "01a0e090-4848-7473-acc5-fc96e6a646d4",
+  get session_id() {
+    return rowSessionId("agent");
+  },
   title: "Live Socket Agent",
 };
 const bob = { actor: { id: "bob", kind: "session" as const }, as: "agent" as const };

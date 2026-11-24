@@ -25,10 +25,15 @@ import {
   replyRowId,
   seedAgentThread,
   sessionActor,
-  THREAD_SESSION,
+  threadSessions,
 } from "./inbox-threads";
-import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
-import { asUser } from "./users";
+import { expect, type Locator, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
+import { asUser, type SignInLogin } from "./users";
+
+/** The session that answers this file's threads, under the running row's own id
+ *  (`threadSessions`, e2e/inbox-threads.ts): Dispatch keeps what is sent to it, its replies and a
+ *  person's read marks of them by its id, for every person at once. */
+const threadSession = threadSessions(rowSessionId).thread;
 
 /**
  * The Inbox's reading pane over a thread (INFRA-450): a comment thread anchored in a document
@@ -92,7 +97,7 @@ test("the pane opens an anchored thread's document at its section, quote lit, th
   await createArtifactComment(
     document.artifact.id,
     { body: "One hour, then it gives up.", reply_to: root.id },
-    asSession()
+    asSession(threadSession)
   );
 
   const alice = await asUser(browser, "alice");
@@ -190,7 +195,7 @@ test("a thread of six read replies folds the oldest four and ends in its reply b
     await createComment(
       issue.key,
       { body: `Reply ${index} about the replay budget.`, reply_to: root.id },
-      asSession()
+      asSession(threadSession)
     );
   }
   const listed = await listMyReplies({ state: "unread" }, { login: me });
@@ -242,13 +247,13 @@ test("a thread of six read replies folds the oldest four and ends in its reply b
  *  oldest are read, so each thread folds exactly the same three. The reader is `me`, a person of
  *  the row's own (`rowPerson`, e2e/test.ts), whose thread lists hold these three threads and no
  *  other row's. */
-async function seedThreeShapes(me: string): Promise<{
+async function seedThreeShapes(me: SignInLogin): Promise<{
   agent: string;
   comment: string;
   message: string;
 }> {
   const core = rowKey("CORE");
-  await setLiveSessions([THREAD_SESSION]);
+  await setLiveSessions([threadSession]);
   await createProject({ key: core, name: "Core" }, { login: me });
   const issue = await createIssue({ project: core, title: "Replay budget" }, { login: me });
 
@@ -261,7 +266,7 @@ async function seedThreeShapes(me: string): Promise<{
     await createComment(
       issue.key,
       { body: `Comment reply ${index}.`, reply_to: comment.id },
-      asSession()
+      asSession(threadSession)
     );
   }
   const message = await createMessage(
@@ -273,7 +278,7 @@ async function seedThreeShapes(me: string): Promise<{
     await createMessage(
       issue.key,
       { body: `Message reply ${index}.`, in_reply_to: message.id },
-      asSession()
+      asSession(threadSession)
     );
   }
   const agent = await seedAgentThread({
@@ -281,6 +286,7 @@ async function seedThreeShapes(me: string): Promise<{
     delivery: "aside",
     login: me,
     replies: [1, 2, 3, 4, 5].map((index) => `Agent reply ${index}.`),
+    session: threadSession,
   });
 
   // A Reply row is read to a moment, an Agent row reply by reply: either way the three oldest
@@ -295,11 +301,11 @@ async function seedThreeShapes(me: string): Promise<{
   await markThreadRead(message.id, (messages?.replies ?? [])[2]?.created_at ?? "", {
     login: me,
   });
-  const exchange = (await listAgentMessages(THREAD_SESSION.session_id, { login: me })).find(
+  const exchange = (await listAgentMessages(threadSession.session_id, { login: me })).find(
     (read) => read.message.id === agent
   );
   await putAgentState(
-    THREAD_SESSION.session_id,
+    threadSession.session_id,
     { read_replies: (exchange?.replies ?? []).slice(0, 3).map((reply) => reply.id) },
     { login: me }
   );
@@ -348,14 +354,14 @@ test("a reply sent from the pane reaches the thread, and an Agent reply goes in 
   browser,
 }) => {
   const core = rowKey("CORE");
-  await setLiveSessions([THREAD_SESSION]);
+  await setLiveSessions([threadSession]);
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "Replay budget" });
   const root = await createComment(issue.key, { body: "How far back does a replay go?" });
   await createComment(
     issue.key,
     { body: "One hour, then it gives up.", reply_to: root.id },
-    asSession()
+    asSession(threadSession)
   );
   // A Send would be delivered as `steer`; this exchange's own attempts are Asides, which is
   // what a reply into it inherits.
@@ -363,12 +369,13 @@ test("a reply sent from the pane reaches the thread, and an Agent reply goes in 
     body: "What is the rollout status?",
     delivery: "aside",
     replies: ["Green."],
+    session: threadSession,
   });
-  const before = (await listAgentMessages(THREAD_SESSION.session_id)).find(
+  const before = (await listAgentMessages(threadSession.session_id)).find(
     (read) => read.message.id === agent
   );
   const live = (await listAgents()).find(
-    (candidate) => candidate.session_id === THREAD_SESSION.session_id
+    (candidate) => candidate.session_id === threadSession.session_id
   );
   if (before === undefined || live === undefined) throw new Error("the seeded exchange is missing");
   const expected = exchangeDelivery(live, before);
@@ -408,11 +415,11 @@ test("a reply sent from the pane reaches the thread, and an Agent reply goes in 
 
     // The mode the sent reply was delivered in, read back off the session's conversation, is
     // the one the Agents page would have picked for this exchange.
-    expect(expected.target).toBe(`session:${THREAD_SESSION.session_id}`);
+    expect(expected.target).toBe(`session:${threadSession.session_id}`);
     expect(expected.delivery).toBe("aside");
     await expect
       .poll(async () => {
-        const read = (await listAgentMessages(THREAD_SESSION.session_id)).find(
+        const read = (await listAgentMessages(threadSession.session_id)).find(
           (candidate) => candidate.message.id === agent
         );
         const sent = (read?.replies ?? []).find(
@@ -429,20 +436,21 @@ test("a reply sent from the pane reaches the thread, and an Agent reply goes in 
 test("a reply the session takes as its own turn says so and links the live view", async ({
   browser,
 }) => {
-  await setLiveSessions([THREAD_SESSION]);
+  await setLiveSessions([threadSession]);
   const root = await seedAgentThread({
     body: "What is the rollout status?",
     delivery: "btw",
     replies: ["Green."],
+    session: threadSession,
   });
   // The reader's own follow-up into the same conversation, which the session takes as a turn of
   // its live conversation; the Inbox still lists the row, because its root was never accepted.
-  const followUp = await createAgentMessage(THREAD_SESSION.session_id, {
+  const followUp = await createAgentMessage(threadSession.session_id, {
     body: "Then hold the mirror.",
     delivery: "steer",
     in_reply_to: root,
   });
-  await acceptAgentDelivery(followUp.id, 1, sessionActor());
+  await acceptAgentDelivery(followUp.id, 1, sessionActor(threadSession));
 
   const alice = await asUser(browser, "alice");
   try {
@@ -457,7 +465,7 @@ test("a reply the session takes as its own turn says so and links the live view"
     );
     await expect(turn.getByRole("link", { name: "Live view" })).toHaveAttribute(
       "href",
-      `/agents/${THREAD_SESSION.session_id}/live`
+      `/agents/${threadSession.session_id}/live`
     );
   } finally {
     await alice.close();

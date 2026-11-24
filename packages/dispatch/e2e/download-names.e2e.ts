@@ -18,8 +18,7 @@ import {
 } from "./api";
 import { connectedDot, documentEditor } from "./editor";
 import { ONE_PIXEL_PNG } from "./sends";
-import { sessionIds } from "./session-ids";
-import { expect, type Locator, type Page, rowKey, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowSessionId, test } from "./test";
 
 // Every "Download version N" link goes to the download address,
 // `/api/v1/artifacts/<id>/versions/<n>?download=true`, where the server names the file in
@@ -293,7 +292,10 @@ test("a project's file and a conversation's file save under their own names, an 
   const projectFile = await saveFrom(page, page.getByRole("link", { name: "Download version 1" }));
   expect(projectFile.suggestedFilename()).toBe("brief.pdf");
 
-  const planner = { session_id: sessionIds.planner, title: "Planner" };
+  // A session of the row's own (`rowSessionId`, e2e/test.ts): Dispatch keeps a conversation's
+  // documents by the session's id, so under a fixed id a repeat of this row would upload a third
+  // and a fourth version of `trace.pdf`.
+  const planner = { session_id: rowSessionId("planner"), title: "Planner" };
   await setLiveSessions([planner]);
   const conversation = "/api/v1/agents/{session_id}/artifacts";
   const { artifact: trace } = await upload(

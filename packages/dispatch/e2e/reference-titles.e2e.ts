@@ -22,7 +22,7 @@ import {
   type TargetKind,
 } from "./reference-surfaces";
 import { expect, type Locator, type Page, rowPerson, test } from "./test";
-import { asUser } from "./users";
+import { asUser, type SignInLogin } from "./users";
 
 /**
  * What a `dispatch://` reference reads as, everywhere a person meets one: the title of what it
@@ -101,7 +101,7 @@ function forms(kind: TargetKind, target: Target): readonly string[] {
  * (`rowPerson`, e2e/test.ts), so her Inbox and her Answers page hold this row's rows and no
  * other row's.
  */
-async function seedTitles(reader: string): Promise<Seeded> {
+async function seedTitles(reader: SignInLogin): Promise<Seeded> {
   const world = await seedReferenceWorld();
   const missing: Missing[] = [
     {

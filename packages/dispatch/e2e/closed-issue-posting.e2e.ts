@@ -19,8 +19,8 @@ import {
   selectEditorQuote,
   typeAtEnd,
 } from "./editor";
-import { expect, type Page, rowKey, rowPerson, test } from "./test";
-import { asUser } from "./users";
+import { expect, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
+import { asUser, type SignInLogin } from "./users";
 
 // A closed issue still takes comments and messages (dispatch://INFRA-448), so a finished issue's
 // agents can be asked from its page: each row closes the issue, then a person, in the browser,
@@ -34,16 +34,23 @@ import { asUser } from "./users";
 
 const spec = "The quick brown fox jumps over the lazy dog.";
 
-const planner: FakeSession = {
-  capabilities: ["aside", "btw", "steer"],
-  session_id: "e2e-closed-planner",
-  title: "planner",
-};
-const tester: FakeSession = {
-  capabilities: ["aside", "btw", "steer"],
-  session_id: "e2e-closed-tester",
-  title: "tester",
-};
+/** The live planner and tester, under the running row's own ids (`rowSessionId`, e2e/test.ts):
+ *  Dispatch keeps the messages sent to a session and their deliveries by its id, for every person
+ *  at once. Within a row each call answers the same two ids. */
+function sessions(): { readonly planner: FakeSession; readonly tester: FakeSession } {
+  return {
+    planner: {
+      capabilities: ["aside", "btw", "steer"],
+      session_id: rowSessionId("planner"),
+      title: "planner",
+    },
+    tester: {
+      capabilities: ["aside", "btw", "steer"],
+      session_id: rowSessionId("tester"),
+      title: "tester",
+    },
+  };
+}
 
 interface Fixture {
   readonly issueKey: string;
@@ -57,8 +64,9 @@ interface Fixture {
 
 /** The closed issue, held by `holder`: alice, or the row's own person for a row that reads as
  *  one. */
-async function seedClosedIssue(holder = "alice"): Promise<Fixture> {
+async function seedClosedIssue(holder: SignInLogin = "alice"): Promise<Fixture> {
   const e2e = rowKey("E2E");
+  const { planner, tester } = sessions();
   await setLiveSessions([planner, tester]);
   await setSessionSendStatus(tester.session_id, 503);
   await createProject({ key: e2e, name: "Closed work" }, { login: holder });
@@ -162,12 +170,12 @@ test("a message to an agent written on a closed issue posts and reaches the agen
           .find((thread) => thread.message.id === plannerMessageId)
           ?.replies?.map((message) => [message.body, message.target])
       )
-      .toEqual([["Message after the close", `session:${planner.session_id}`]]);
+      .toEqual([["Message after the close", `session:${sessions().planner.session_id}`]]);
     await expect
       .poll(async () =>
         (await getSentMessages()).some(
           (sent) =>
-            sent.target_session === planner.session_id &&
+            sent.target_session === sessions().planner.session_id &&
             JSON.stringify(sent).includes("Message after the close")
         )
       )
@@ -216,7 +224,7 @@ test("Retry of a failed delivery on a closed issue posts a new attempt", async (
     );
     const retry = card.getByRole("button", { exact: true, name: "Retry" });
     await expect(retry).toBeVisible();
-    await setSessionSendStatus(tester.session_id, 200);
+    await setSessionSendStatus(sessions().tester.session_id, 200);
     const posted = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&

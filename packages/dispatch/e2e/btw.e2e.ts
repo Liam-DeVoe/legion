@@ -1,18 +1,23 @@
 import { type FakeSession, setLiveSessions, setSessionSendStatus } from "./agents";
 import { createIssue, createProject, listComments } from "./api";
 import { selectMention } from "./mention";
-import { expect, type Page, rowKey, test } from "./test";
+import { expect, type Page, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
-const planner: FakeSession = {
-  capabilities: ["aside", "btw"],
-  dir: "/w/legion",
-  last_seen: 1_700_000_000_000,
-  machine_id: "e2e",
-  roles: [],
-  session_id: "s1",
-  title: "planner",
-};
+/** The planner session, under the running row's own id (`rowSessionId`, e2e/test.ts): Dispatch
+ *  keeps a comment's deliveries to a session by its id, for every person at once, so a repeat of
+ *  a row under a fixed id would meet the deliveries its earlier copy sent. */
+function plannerSession(): FakeSession {
+  return {
+    capabilities: ["aside", "btw"],
+    dir: "/w/legion",
+    last_seen: 1_700_000_000_000,
+    machine_id: "e2e",
+    roles: [],
+    session_id: rowSessionId("planner"),
+    title: "planner",
+  };
+}
 
 async function post(page: Page): Promise<Record<string, unknown>> {
   const response = page.waitForResponse(
@@ -32,6 +37,7 @@ test("/btw with a surviving mention strips its token and sends one comment-level
   browser,
 }) => {
   const core = rowKey("CORE");
+  const planner = plannerSession();
   await setLiveSessions([planner]);
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "BTW comment" });
@@ -44,11 +50,13 @@ test("/btw with a surviving mention strips its token and sends one comment-level
     expect(await post(page)).toEqual({
       body: "@planner",
       delivery: "btw",
-      mentions: [{ target: "session:s1" }],
+      mentions: [{ target: `session:${planner.session_id}` }],
     });
     await expect
       .poll(() => listComments(issue.key))
-      .toMatchObject([{ body: "@planner", mentions: [{ target: "session:s1" }] }]);
+      .toMatchObject([
+        { body: "@planner", mentions: [{ target: `session:${planner.session_id}` }] },
+      ]);
   } finally {
     await alice.close();
   }
@@ -80,7 +88,12 @@ test("/btw without a surviving mention remains verbatim and never sends delivery
 
 test("an unsupported selected mode warns but does not prevent Send", async ({ browser }) => {
   const core = rowKey("CORE");
-  const offline: FakeSession = { ...planner, capabilities: [], session_id: "s2", title: "worker" };
+  const offline: FakeSession = {
+    ...plannerSession(),
+    capabilities: [],
+    session_id: rowSessionId("worker"),
+    title: "worker",
+  };
   await setLiveSessions([offline]);
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "Unadvertised delivery" });
@@ -93,11 +106,11 @@ test("an unsupported selected mode warns but does not prevent Send", async ({ br
     await expect(
       page.getByText("worker advertises no delivery mode, so sending it records a failed attempt.")
     ).toBeVisible();
-    await setSessionSendStatus("s2", 404);
+    await setSessionSendStatus(offline.session_id, 404);
     expect(await post(page)).toEqual({
       body: "@worker",
       delivery: "aside",
-      mentions: [{ target: "session:s2" }],
+      mentions: [{ target: `session:${offline.session_id}` }],
     });
   } finally {
     await alice.close();
@@ -113,7 +126,7 @@ test("/btw with nothing after it keeps an agent's direct composer from sending, 
     dir: "/w/legion",
     machine_id: "e2e",
     roles: [],
-    session_id: "s3",
+    session_id: rowSessionId("worker"),
     title: "worker",
   };
   await setLiveSessions([worker]);

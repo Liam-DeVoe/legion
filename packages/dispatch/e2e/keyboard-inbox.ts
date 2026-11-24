@@ -15,6 +15,7 @@ import {
 } from "./api";
 import { type DrawnInbox, expectDrawn } from "./inbox-drawn";
 import { askControls, hasReadingPane, paneScroller, selectRow } from "./inbox-pane";
+import type { SignInLogin } from "./users";
 
 export const session = {
   actor: { kind: "session" as const, id: "e2e-keyboard-inbox" },
@@ -26,7 +27,7 @@ export const session = {
  *  row's own (`rowKey`, e2e/test.ts), and the stubbed rows replay a recording made under `CORE`.
  *  `login` is the reader the three wait on, alice unless a row names a person of its own
  *  (`rowPerson`). */
-export async function seedInbox(project: RowKey, login = "alice"): Promise<void> {
+export async function seedInbox(project: RowKey, login: SignInLogin = "alice"): Promise<void> {
   await createProject({ key: project, name: "Core" }, { login });
   for (const title of ["First", "Second", "Third"]) {
     const issue = await createIssue({ project, title }, { login });

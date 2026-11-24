@@ -25,7 +25,7 @@ import { cliSession, runDispatch } from "./dispatch-cli";
 import { expiredCredentialRequest, setPendingCredentialRequests } from "./fake-broker-helpers";
 import { askCard, inboxRow, READING_PANE_WIDTH } from "./inbox-pane";
 import { agentRowId, isThreadRow, replyRowId } from "./inbox-threads";
-import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -64,13 +64,18 @@ const asker = {
 };
 
 /** The live session the person writes to: the target of the seed's one-off message, and of the
- *  message the command's token sends. */
+ *  message the command's token sends. Its id is the running row's own (`rowSessionId`,
+ *  e2e/test.ts), read from a getter when a row names it, as `agentSessions` (e2e/agents.ts) does:
+ *  Dispatch keeps what is sent to a session and the replies on it by its id, for every person at
+ *  once, so under a fixed id its conversation would hold every earlier row's messages. */
 const worker: FakeSession = {
   capabilities: ["aside", "btw", "steer"],
   dir: "/w/inbox-cli",
   machine_id: "e2e-inbox-cli",
   roles: [],
-  session_id: "e2e-inbox-cli-worker",
+  get session_id() {
+    return rowSessionId("worker");
+  },
   title: "Worker",
 };
 

@@ -31,6 +31,7 @@ import { blockId } from "./editor";
 import { inboxList, inboxPane } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
 import { rowSessionId } from "./test";
+import type { SignInLogin } from "./users";
 
 export const session = {
   actor: { id: "e2e-reading-pane", kind: "session" as const },
@@ -170,7 +171,10 @@ const INDEX_PROBE = { intervals: [50, 50, 100, 200, 500] };
  *  well as its block, since a block id is no key of its own: a real-stack row's reader is its own
  *  person, but `login` is alice when the stubbed rows record, and her list can hold an open block
  *  of that id an earlier row of the worker seeded. */
-async function indexedRow(login: string, match: (row: InboxRow) => boolean): Promise<InboxRow> {
+async function indexedRow(
+  login: SignInLogin,
+  match: (row: InboxRow) => boolean
+): Promise<InboxRow> {
   let found: InboxRow | undefined;
   await expect
     .poll(async () => {
@@ -195,7 +199,7 @@ async function indexedRow(login: string, match: (row: InboxRow) => boolean): Pro
  * `login` is the reader every question waits on, alice unless a real-stack row names a person of
  * its own (`rowPerson`).
  */
-export async function seedInbox(project: RowKey, login = "alice"): Promise<Seed> {
+export async function seedInbox(project: RowKey, login: SignInLogin = "alice"): Promise<Seed> {
   await createProject({ key: project, name: "Pane rollout" }, { login });
 
   // Every question is its own issue or document, and the Inbox orders them by the priorities set
@@ -447,7 +451,7 @@ export interface OpenPageSeed {
  * other row's. The session that asks, replies and requests the approval is the row's own too
  * (`rowSessionId`): Dispatch keeps what a session writes by its id, for every person at once.
  */
-export async function seedOpenPage(project: RowKey, login: string): Promise<OpenPageSeed> {
+export async function seedOpenPage(project: RowKey, login: SignInLogin): Promise<OpenPageSeed> {
   const asSession = {
     actor: { id: rowSessionId("asker"), kind: "session" as const },
     as: "agent" as const,

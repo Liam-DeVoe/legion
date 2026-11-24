@@ -32,7 +32,7 @@ import {
 } from "./api";
 import { conversationFilter } from "./editor";
 import { navigateInApp } from "./sends";
-import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 const agent = {
@@ -60,15 +60,20 @@ function threadReply(page: Page, root: Locator, text: string) {
     .filter({ has: page.getByText(text, { exact: true }) });
 }
 
-const planner: FakeSession = {
-  capabilities: ["aside", "btw", "steer"],
-  dir: "/w/legion",
-  last_seen: 1_700_000_000_000,
-  machine_id: "e2e",
-  roles: [],
-  session_id: "s1",
-  title: "planner",
-};
+/** The planner session, under the running row's own id (`rowSessionId`, e2e/test.ts): Dispatch
+ *  keeps what is sent to a session, its deliveries and the replies on them, by its id, for every
+ *  person at once, so a repeat of a row under a fixed id would meet what its earlier copy sent. */
+function plannerSession(): FakeSession {
+  return {
+    capabilities: ["aside", "btw", "steer"],
+    dir: "/w/legion",
+    last_seen: 1_700_000_000_000,
+    machine_id: "e2e",
+    roles: [],
+    session_id: rowSessionId("planner"),
+    title: "planner",
+  };
+}
 
 // @pr: The Conversation tab's own row: it owns the route, lists one card per message newest first, and resolves live agent names.
 test("Conversation owns the route, lists one card per message newest first, and resolves live agent names @pr", async ({
@@ -318,13 +323,14 @@ test("a reply in a session-authored comment thread pre-fills a deletable agent m
   browser,
 }) => {
   const core = rowKey("CORE");
+  const planner = plannerSession();
   await setLiveSessions([planner]);
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "Threaded comment follow-up" });
   const parent = await createComment(
     issue.key,
     { body: "Can this ship?" },
-    { actor: { id: "s1", kind: "session" }, as: "agent" }
+    { actor: { id: planner.session_id, kind: "session" }, as: "agent" }
   );
   // The reply's mention reads the session's live title from the agents list, which lands after
   // the turns render, and a collapsed comment card shows no author. A later message from the same
@@ -334,7 +340,7 @@ test("a reply in a session-authored comment thread pre-fills a deletable agent m
     issue.key,
     { body: "Build is green." },
     {
-      actor: { id: "s1", kind: "session" },
+      actor: { id: planner.session_id, kind: "session" },
       as: "agent",
     }
   );
@@ -364,11 +370,13 @@ test("a reply in a session-authored comment thread pre-fills a deletable agent m
     expect((await response).request().postDataJSON()).toEqual({
       body: "@planner It is green now - ship it.",
       delivery: "steer",
-      mentions: [{ target: "session:s1" }],
+      mentions: [{ target: `session:${planner.session_id}` }],
       reply_to: parent.id,
     });
     await expect(threadReply(page, card, "@planner It is green now - ship it.")).toBeVisible();
-    await expect.poll(() => getSentMessages()).toMatchObject([{ target_session: "s1" }]);
+    await expect
+      .poll(() => getSentMessages())
+      .toMatchObject([{ target_session: planner.session_id }]);
   } finally {
     await alice.close();
   }
@@ -378,20 +386,21 @@ test("an agent's answer on a failed attempt is accepted and shown as the answer"
   browser,
 }) => {
   const core = rowKey("CORE");
-  // `setSessionSendStatus` patches the session `setLiveSessions` writes - `planner` is `s1` - so
-  // it cannot share their round: a PATCH that arrives first answers
-  // `404 unknown fixture session s1` and fails the row. Only the project is independent.
+  const planner = plannerSession();
+  // `setSessionSendStatus` patches the session `setLiveSessions` writes - `planner` - so it cannot
+  // share their round: a PATCH that arrives first answers `404 unknown fixture session` and fails
+  // the row. Only the project is independent.
   await Promise.all([setLiveSessions([planner]), createProject({ key: core, name: "Core" })]);
   // The listener answers every send 503, past the take-over window too, so the attempt fails. A
   // 404 would not do: Dispatch queues a targeted message for a session no store of the listener's
   // holds, and a queued attempt is no failure.
-  await setSessionSendStatus("s1", 503);
+  await setSessionSendStatus(planner.session_id, 503);
   const issue = await createIssue({ project: core, title: "Failed receipt" });
   const question = "Did you get this?";
   const message = await createMessage(issue.key, {
     body: question,
     delivery: "btw",
-    target: "session:s1",
+    target: `session:${planner.session_id}`,
   });
 
   const alice = await asUser(browser, "alice");
@@ -407,7 +416,7 @@ test("an agent's answer on a failed attempt is accepted and shown as the answer"
     const answer = (await replyToMessageDelivery(
       message.id,
       { attempt: 1, body: "Loud and clear." },
-      { id: "s1", kind: "session" }
+      { id: planner.session_id, kind: "session" }
     )) as { id: string; in_reply_to: string | null };
     expect(answer.in_reply_to).toBe(message.id);
     await expect(card).toContainText("Answered by planner");

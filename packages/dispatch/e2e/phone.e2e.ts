@@ -26,7 +26,16 @@ import { askCard, inboxList } from "./inbox-pane";
 import { expectConsecutiveLinksClear } from "./layout";
 import { insertExternalLink } from "./seed";
 import { navigateInApp, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
-import { expect, type Locator, type Page, rowKey, rowNumber, rowPerson, test } from "./test";
+import {
+  expect,
+  type Locator,
+  type Page,
+  rowKey,
+  rowNumber,
+  rowPerson,
+  rowSessionId,
+  test,
+} from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -407,7 +416,9 @@ test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @
       dir: "/w/legion",
       last_seen: 1_700_000_000_000,
       roles: ["legion-planner"],
-      session_id: "phone-planner",
+      // The row's own (`rowSessionId`, e2e/test.ts): Dispatch keeps the mention's delivery to it
+      // by its id, for every person at once.
+      session_id: rowSessionId("planner"),
       title: "planner",
     },
   ]);
@@ -835,10 +846,13 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
     "Please rebase every open pull request onto main before the stage 4b sandbox tree run, and post the new head in this thread once its checks have gone green again";
   const longTitle =
     "LEGION-67 implementer: long names end in an ellipsis wherever a link or a control truncates them, on a 390 px phone and in a 280 px margin as much as on a 1280 px desktop";
+  // The session is the row's own (`rowSessionId`, e2e/test.ts): Dispatch keeps the broadcast's
+  // copy to it by its id, for every person at once.
+  const longSessionId = rowSessionId("long-title");
   const longTitledSession = {
     actor: {
       kind: "session" as const,
-      id: "e2e-long-title",
+      id: longSessionId,
       origin: { session_title: longTitle, tmux: "legion:1.2" },
     },
     as: "agent" as const,
@@ -849,7 +863,7 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
       dir: "/w/legion",
       last_seen: Date.now(),
       roles: ["legion-implementer"],
-      session_id: "e2e-long-title",
+      session_id: longSessionId,
       title: longTitle,
     },
   ]);
@@ -879,7 +893,7 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
     },
     session
   );
-  await createBroadcast({ body: longBroadcast, delivery: "btw", session_ids: ["e2e-long-title"] });
+  await createBroadcast({ body: longBroadcast, delivery: "btw", session_ids: [longSessionId] });
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
@@ -931,7 +945,7 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
     await expectEllipsis(authorChip);
     await expect
       .soft(authorChip.getByText(longTitle, { exact: true }))
-      .toHaveAttribute("title", `${longTitle} · e2e-long-title`);
+      .toHaveAttribute("title", `${longTitle} · ${longSessionId}`);
 
     await navigateInApp(page, `/issues/${issue.key}`);
     await expectEllipsis(page.getByRole("link", { name: longUrl }));

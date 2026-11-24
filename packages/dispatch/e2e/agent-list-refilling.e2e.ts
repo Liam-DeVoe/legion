@@ -19,7 +19,7 @@ import {
 } from "./api";
 import { frontLiveView } from "./live-views";
 import { expect, type Locator, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
-import { asUser } from "./users";
+import { asUser, type SignInLogin } from "./users";
 
 // The Envoy listener refuses its two list reads while its copy of a bucket cannot be served: 503,
 // `Retry-After` and code `refilling` (the fake's `refilling` state). Dispatch answers that as
@@ -89,7 +89,10 @@ interface RefillFixture {
  *  listener's list names while it answers. `reader` makes the project and the issue, so the ask
  *  waits on her and her Inbox draws its card: the row's own person (`rowPerson`, e2e/test.ts),
  *  whose Inbox holds no other row's question to select in its place. */
-async function seedRefillFixture(sessions: FakeSession[], reader: string): Promise<RefillFixture> {
+async function seedRefillFixture(
+  sessions: FakeSession[],
+  reader: SignInLogin
+): Promise<RefillFixture> {
   const core = rowKey("CORE");
   await setLiveSessions(sessions);
   await createProject({ key: core, name: "Core" }, { login: reader });

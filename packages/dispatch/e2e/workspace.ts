@@ -25,6 +25,7 @@ import {
   type SeededInboxRow,
 } from "./local-instance-support";
 import { sessionIds } from "./session-ids";
+import type { SignInLogin } from "./users";
 
 // One realistic workspace, built through the public API, that fills every surface only a human
 // acts on: the Inbox (open, snoozed and document asks), the Agents page (open rows and both
@@ -81,6 +82,11 @@ export const workspaceSessions: FakeSession[] = [
 ];
 export const workspaceSessionIds = workspaceSessions.map((session) => session.session_id);
 
+/** The name of each of `workspaceSessions`, in its order: the logical name a caller's
+ *  `sessionId` is asked for (`seedWorkspace`). */
+const workspaceSessionNames = ["planner", "tester", "reviewer", "observer", "archivist"] as const;
+type WorkspaceSessionName = (typeof workspaceSessionNames)[number];
+
 const workflowSpec =
   "# Local testing workflow\n\nOne command, a seeded corpus, a signed-in browser.\n\n" +
   ':::ask{urgency="high" multiple="false"}\nWhich sign-in path?\n\n' +
@@ -119,20 +125,30 @@ export interface SeededWorkspace {
  *  `projects` are the keys of its two projects and `person` the human it acts as: a real-stack
  *  row passes its own (`rowKey` and `rowPerson`, e2e/test.ts), and the review corpus, the local
  *  instance and the docs pictures each pass `CORE` and `OPS` as `fixedKey`s naming why, and
- *  take alice. */
+ *  take alice. `sessionId` names the five sessions: a real-stack row passes `rowSessionId`
+ *  (e2e/test.ts), since Dispatch keeps what a session said and what was sent to it by its id, for
+ *  every person at once, and the review corpus, the local instance and the docs pictures take
+ *  the fixed ids of `workspaceSessions` (`sessionIds`), which the review corpus's rows and the
+ *  visual baselines read. */
 export async function seedWorkspace({
   boundMs,
   person,
   projects,
+  sessionId = (name) => sessionIds[name],
   signal,
 }: {
   readonly boundMs: number;
-  readonly person?: string;
+  readonly person?: SignInLogin;
   readonly projects: { readonly core: RowKey; readonly ops: RowKey };
+  readonly sessionId?: (name: WorkspaceSessionName) => string;
   readonly signal?: AbortSignal;
 }): Promise<SeededWorkspace> {
+  const live = workspaceSessions.map((session, at) => ({
+    ...session,
+    session_id: sessionId(workspaceSessionNames[at]),
+  }));
   const actor = (id: string, origin: Omit<ActorOrigin, "session_title"> = {}): Actor => {
-    const session = workspaceSessions.find((candidate) => candidate.session_id === id);
+    const session = live.find((candidate) => candidate.session_id === id);
     if (session === undefined) throw new Error(`seedWorkspace: no workspace session ${id}`);
     return { id, kind: "session", origin: { ...origin, session_title: session.title } };
   };
@@ -140,7 +156,7 @@ export async function seedWorkspace({
   const human = { login: person ?? "alice" };
   const { core, ops } = projects;
 
-  await setLiveSessions(workspaceSessions);
+  await setLiveSessions(live);
   await Promise.all([
     createProject({ key: core, name: "Core" }, human),
     createProject({ key: ops, name: "Ops" }, human),
@@ -208,12 +224,12 @@ export async function seedWorkspace({
   const blocking = await createAsk(
     folds.key,
     { question: "Fold a session unseen for ten minutes under Inactive?", urgency: "blocking" },
-    { actor: actor(sessionIds.planner, { tmux: "legion:1.2" }), as: "agent" }
+    { actor: actor(sessionId("planner"), { tmux: "legion:1.2" }), as: "agent" }
   );
   const snoozed = await createAsk(
     snooze.key,
     { question: "Snooze until tomorrow morning, or for a full day?", urgency: "high" },
-    as(sessionIds.tester)
+    as(sessionId("tester"))
   );
   const answered = await createAsk(
     broadcastOrder.key,
@@ -221,17 +237,17 @@ export async function seedWorkspace({
       options: [{ label: "Ship" }, { label: "Hold" }],
       question: "Ship the recipient-order fix?",
     },
-    as(sessionIds.reviewer)
+    as(sessionId("reviewer"))
   );
   const withdrawn = await createAsk(
     retracted.key,
     { question: "Keep the retracted ask out of the Inbox?" },
-    as(sessionIds.planner)
+    as(sessionId("planner"))
   );
   const rotation = await createAsk(
     rotate.key,
     { question: "Rotate the token before or after the deploy?", urgency: "med" },
-    as(sessionIds.reviewer)
+    as(sessionId("reviewer"))
   );
   const runbook = await createProjectDocument(
     core,
@@ -242,21 +258,21 @@ export async function seedWorkspace({
     createArtifactAsk(
       runbook.artifact.id,
       { question: "Keep the runbook in the repository?" },
-      as(sessionIds.tester)
+      as(sessionId("tester"))
     ),
     snoozeAsk(snoozed.id, new Date(Date.now() + 24 * 3_600_000).toISOString(), human),
     answerAsk(answered.id, { expected_edited_at: null, selected: ["Ship"] }, human),
     resolveAsk(
       withdrawn.id,
       { kind: "retracted", reason: "Answered live." },
-      as(sessionIds.planner)
+      as(sessionId("planner"))
     ),
   ]);
 
   const review = await createComment(
     broadcastOrder.key,
     { body: "Reviewing the diff." },
-    as(sessionIds.reviewer)
+    as(sessionId("reviewer"))
   );
   await createComment(
     broadcastOrder.key,
@@ -268,25 +284,25 @@ export async function seedWorkspace({
     {
       body: "@Tester please re-run the broadcast spec",
       delivery: "btw",
-      mentions: [{ target: `session:${sessionIds.tester}` }],
+      mentions: [{ target: `session:${sessionId("tester")}` }],
     },
     human
   );
   await replyToCommentDelivery(
     mention.id,
     { attempt: 1, body: "Re-ran: 2 passed." },
-    actor(sessionIds.tester)
+    actor(sessionId("tester"))
   );
 
   const directMessage = await createAgentMessage(
-    sessionIds.planner,
+    sessionId("planner"),
     { body: "How far is the plan?", delivery: "aside" },
     human
   );
   await replyToMessageDelivery(
     directMessage.id,
     { attempt: 1, body: "Half-way; the seed is next." },
-    actor(sessionIds.planner)
+    actor(sessionId("planner"))
   );
 
   // Not alphabetical on purpose: the broadcast page must list its recipients in the order sent.
@@ -294,7 +310,7 @@ export async function seedWorkspace({
     {
       body: "Stand down and report status.",
       delivery: "steer",
-      session_ids: [sessionIds.tester, sessionIds.observer, sessionIds.planner],
+      session_ids: [sessionId("tester"), sessionId("observer"), sessionId("planner")],
     },
     human
   );
@@ -302,13 +318,13 @@ export async function seedWorkspace({
     throw new Error(`seedWorkspace: the broadcast excluded ${JSON.stringify(broadcast.excluded)}`);
   }
   const plannerCopy = (broadcast.recipients ?? []).find(
-    (recipient) => recipient.session_id === sessionIds.planner
+    (recipient) => recipient.session_id === sessionId("planner")
   );
   if (plannerCopy === undefined) throw new Error("seedWorkspace: the planner received no copy");
   await replyToMessageDelivery(
     plannerCopy.message.id,
     { attempt: 1, body: "Standing down; build is green." },
-    actor(sessionIds.planner)
+    actor(sessionId("planner"))
   );
 
   // The rows the Inbox read returns once the seed has settled: the open asks on open issues and

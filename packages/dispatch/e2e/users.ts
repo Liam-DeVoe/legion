@@ -5,24 +5,29 @@ import { measured } from "./measure";
 
 /** A login a sign-in takes that no reset re-creates: the running row's own person,
  *  `rowPerson(...)`, or a login fixed on purpose, `fixedPerson(...)` (both e2e/test.ts), whose
- *  `people` and `user_sessions` rows the row's end deletes (`ownPeople`, e2e/test.ts); or, for a
- *  caller outside the real-stack suite's rows, `fixedLogin(...)`, below. A real-stack row that
- *  signed in as a literal login other than alice or bob would record a person nothing deletes,
- *  since no reset empties the database between the rows of a worker (e2e/test.ts), and every
- *  later row of the worker that reads the list of everyone who has signed in whole (the options
- *  of an assignee control) would read that person in it. So the brand turns that row into a type
- *  error on its own pull request, as `RowKey` does for a key (e2e/api.ts). */
+ *  `people` and `user_sessions` rows the row's end deletes (`ownPeople`, e2e/test.ts); or a
+ *  fixed login that leaves no person a later row reads, `fixedLogin(...)`, below. A real-stack
+ *  row that signed in as a literal login other than alice or bob would record a person nothing
+ *  deletes, since no reset empties the database between the rows of a worker (e2e/test.ts), and
+ *  every later row of the worker that reads the list of everyone who has signed in whole (the
+ *  options of an assignee control) would read that person in it. So the brand turns that row
+ *  into a type error on its own pull request, as `RowKey` does for a key (e2e/api.ts). */
 export type RowLogin = string & { readonly rowLogin: unique symbol };
 
-/** What `signIn`, `asUser`, `asPlainHttpUser` and the `signedIn` option (e2e/test.ts) sign in
- *  as: alice or bob (`resetLogins`, e2e/api.ts), whom every reset re-creates, or a `RowLogin`. */
+/** What `signIn`, `asUser`, `asPlainHttpUser`, the `signedIn` option (e2e/test.ts) and the API
+ *  client (`login`, e2e/api.ts) sign in as, and so what each helper that signs in as a login its
+ *  caller passes takes: alice or bob (`resetLogins`, e2e/api.ts), whom every reset re-creates, or
+ *  a `RowLogin`. */
 export type SignInLogin = ResetLogin | RowLogin;
 
-/** `login` as a login the sign-ins take, for a caller outside the real-stack suite's rows whose
- *  login is fixed on purpose: the docs' pictures, which show it (docs/site/media/broker/flow.ts).
- *  `why` names that reason where the login is written, and a call without one throws, as
- *  `fixedKey`'s does (e2e/api.ts). A row of the suite writes `fixedPerson(login, why)`
- *  (e2e/test.ts) instead, whose person the row's end deletes. */
+/** `login` as a login the sign-ins take, for a caller whose login is fixed on purpose and leaves
+ *  no person that a later row reads: the docs' pictures, outside the real-stack suite's rows,
+ *  which show it (docs/site/media/broker/flow.ts); a stubbed row's seed, whose recording holds it
+ *  and which runs in record mode alone, after `resetDatabase` (e2e/stub/stub-test.ts); and alice
+ *  or bob in another case, which the server records as that person (issue.e2e.ts reads that it
+ *  does). `why` names that reason where the login is written, and a call without one throws, as
+ *  `fixedKey`'s does (e2e/api.ts). A real-stack row that needs a person of a fixed login writes
+ *  `fixedPerson(login, why)` (e2e/test.ts) instead, whose person the row's end deletes. */
 export function fixedLogin(login: string, why: string): RowLogin {
   if (why.trim() === "") {
     throw new Error(

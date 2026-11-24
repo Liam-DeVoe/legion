@@ -35,7 +35,7 @@ import { askCard, askControls, inboxRow } from "./inbox-pane";
 import { expectInboxCount } from "./inbox-threads";
 import { setCreatedAt } from "./seed";
 import { navigateInApp } from "./sends";
-import { expect, type Locator, rowKey, rowPerson, test } from "./test";
+import { expect, type Locator, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser, type RowLogin } from "./users";
 
 const session = {
@@ -1704,7 +1704,10 @@ test("the Inbox count, the banner and an Agents card count the reader's own work
 
 test("a mentioned session's callback reply reaches the open ask card", async ({ browser }) => {
   const core = rowKey("CORE");
-  await setLiveSessions([{ capabilities: ["btw", "steer"], session_id: "planner", title: "P" }]);
+  // The session is the row's own (`rowSessionId`, e2e/test.ts): Dispatch keeps the mention's
+  // delivery to it and the reply on that delivery by its id, for every person at once.
+  const planner = rowSessionId("planner");
+  await setLiveSessions([{ capabilities: ["btw", "steer"], session_id: planner, title: "P" }]);
   // The reader is a person of the row's own (`rowPerson`): from 1280 px the Inbox draws a card
   // for its first row alone, which is this row's question only in a list holding no other row's.
   const me = rowPerson("alice");
@@ -1717,8 +1720,8 @@ test("a mentioned session's callback reply reaches the open ask card", async ({ 
     issue.key,
     {
       ask_id: ask.id,
-      body: "Say more, @session:planner.",
-      mentions: [{ target: "session:planner" }],
+      body: `Say more, @session:${planner}.`,
+      mentions: [{ target: `session:${planner}` }],
     },
     { login: me }
   );
@@ -1728,12 +1731,12 @@ test("a mentioned session's callback reply reaches the open ask card", async ({ 
     const page = await alice.newPage();
     await page.goto("/");
     const card = page.getByTestId(`ask-${ask.id}`);
-    await expect(card.getByText("Say more, @session:planner.")).toBeVisible();
+    await expect(card.getByText(`Say more, @session:${planner}.`)).toBeVisible();
 
     await replyToCommentDelivery(
       clarification.id,
       { attempt: 1, body: "The second approach." },
-      { id: "planner", kind: "session" }
+      { id: planner, kind: "session" }
     );
 
     await expect(card.getByText("The second approach.")).toBeVisible();

@@ -19,7 +19,7 @@ import { clearedInbox, expectDrawn } from "./inbox-drawn";
 import { clearIssueCreator, resetDatabase } from "./seed";
 import { expect, type Locator, rowKey, rowNumber, rowPerson, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
-import { asUser } from "./users";
+import { asUser, fixedLogin } from "./users";
 
 test("database reset clears fake Envoy subscribers before the next issue", async ({ browser }) => {
   const core = rowKey("CORE");
@@ -1051,8 +1051,12 @@ test("issue header reassigns through the Assignee picker; a personal token's iss
 }, testInfo) => {
   const core = rowKey("CORE");
   await createProject({ key: core, name: "Core" });
-  // A human's issue is assigned to its creator, whatever casing their sign-in carries.
-  const issue = await createIssue({ project: core, title: "Who answers this?" }, { login: "Bob" });
+  // A human's issue is assigned to its creator, whatever casing their sign-in carries. The
+  // server records `Bob` as bob, whom every reset re-creates, so the sign-in makes no person.
+  const issue = await createIssue(
+    { project: core, title: "Who answers this?" },
+    { login: fixedLogin("Bob", "bob in another case, the casing the server folds to bob") }
+  );
   expect(issue.assignee).toBe("bob");
 
   const context = await asUser(browser, "alice");

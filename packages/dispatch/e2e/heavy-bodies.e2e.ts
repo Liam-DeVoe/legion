@@ -43,7 +43,7 @@ import {
 import { expectSettled, markdownBody } from "./heavy-bodies-page";
 import { expectUnderTheBound, measureDraw, record } from "./main-thread-hold";
 import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
-import { asUser } from "./users";
+import { asUser, type SignInLogin } from "./users";
 
 declare global {
   interface Window {
@@ -176,7 +176,7 @@ async function expectTheBodyFilledAcrossTasks(page: Page): Promise<void> {
 /** An issue titled `title` in a project of the row's own, both written with `options`. */
 async function seedIssue(
   title: string,
-  options: { readonly login?: string } = {}
+  options: { readonly login?: SignInLogin } = {}
 ): Promise<{ key: string }> {
   const core = rowKey("CORE");
   await createProject({ key: core, name: "Core" }, options);

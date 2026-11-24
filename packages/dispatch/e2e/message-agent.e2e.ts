@@ -1,15 +1,21 @@
 import { type FakeSession, getSentMessages, setLiveSessions, setSessionSendStatus } from "./agents";
 import { createIssue, createProject, patchIssue } from "./api";
-import { expect, type Page, rowKey, test } from "./test";
+import { expect, type Page, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
+// Each session's id is the running row's own (`rowSessionId`, e2e/test.ts), read from a getter
+// when a row names it, as `agentSessions` (e2e/agents.ts) does: Dispatch keeps a comment's
+// deliveries to a session by its id, for every person at once, so under a fixed id a repeat of a
+// row would meet the deliveries its earlier copy made.
 const planner: FakeSession = {
   capabilities: ["aside", "btw"],
   dir: "/w/legion",
   last_seen: 1_700_000_000_000,
   machine_id: "e2e",
   roles: ["legion-planner"],
-  session_id: "A",
+  get session_id() {
+    return rowSessionId("planner");
+  },
   title: "planner",
 };
 const worker: FakeSession = {
@@ -18,7 +24,9 @@ const worker: FakeSession = {
   last_seen: 1_699_000_000_000,
   machine_id: "e2e",
   roles: [],
-  session_id: "B",
+  get session_id() {
+    return rowSessionId("worker");
+  },
   title: "worker",
 };
 
@@ -59,7 +67,7 @@ test("the unified composer offers live roles and sessions and posts canonical me
     expect(payload).toEqual({
       body: "@worker",
       delivery: "steer",
-      mentions: [{ target: "session:B" }],
+      mentions: [{ target: `session:${worker.session_id}` }],
     });
   } finally {
     await alice.close();
@@ -102,19 +110,19 @@ test("an offline selected mention is posted and exposes its failed delivery", as
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
     await selectMention(page, "worker");
-    await setSessionSendStatus("B", 404);
+    await setSessionSendStatus(worker.session_id, 404);
     const payload = await postPayload(page);
-    expect(payload.mentions).toEqual([{ target: "session:B" }]);
+    expect(payload.mentions).toEqual([{ target: `session:${worker.session_id}` }]);
     await expect(page.getByRole("list", { name: "Mention deliveries" })).toContainText("failed");
     // The sender retries a "no live session" answer under the one attempt and its key for the
     // listener take-over window - half a second under the harness's
     // DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW (e2e/run-server.sh), of the twelve
     // listenerTakeoverWindow gives a deployment (packages/envoy/internal/dispatch/api/
     // envoy_resolve.go) - so the listener records more than one send, all of one attempt: every
-    // one to B under the same idempotency key.
+    // one to the worker under the same idempotency key.
     const sends = await getSentMessages();
     expect(sends.length).toBeGreaterThan(0);
-    expect(sends.every((send) => send.target_session === "B")).toBe(true);
+    expect(sends.every((send) => send.target_session === worker.session_id)).toBe(true);
     expect(new Set(sends.map((send) => send.idempotency_key)).size).toBe(1);
   } finally {
     await alice.close();
