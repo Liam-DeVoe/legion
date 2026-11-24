@@ -207,15 +207,24 @@ func TestAFailedFixClaimEndsTheFixAndTellsTheOwner(t *testing.T) {
 	})
 }
 
-// A new generation of the run ends the fix of the generation before: the re-admission clears the
-// tree's generation, its settle ends the earlier generation's runs, and the fix ends stopped,
-// taking no way. No failure of the earlier generation carries into the new one, whose rule judges
-// the head again.
+// A new generation of the run ends the fix of the generation before: the tree's re-admission
+// writes the member at its next generation, at admitted with the status todo, and clears the facts
+// of the tree's generation (as admit's readmit writes it, readmitRoot here without the leave, since
+// a member re-entered with its tree's new generation did not leave itself); the settle of that
+// write ends the earlier generation's runs, and with them its fix, which ends stopped and takes no
+// way. No failure of the earlier generation carries into the next one, whose rule judges the head
+// again.
 func TestANewGenerationEndsTheOldFixAndJudgesTheHeadAgain(t *testing.T) {
 	r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
 
-	applyInTx(t, r.pool, r.engine, func(ctx context.Context, tx pgx.Tx) error {
-		return record.NewStore().ClearTreeGeneration(ctx, tx, "LEGION-208", stepClock.Add(time.Hour))
+	onStored(t, r.pool, r.engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+		issue.Generation++
+		issue.Phase, issue.Hold = phase.Admitted, nil
+		issue.Status, issue.DispatchStatus = "todo", "todo"
+		if err := r.engine.store.PutIssue(ctx, tx, issue); err != nil {
+			return err
+		}
+		return r.engine.store.ClearTreeGeneration(ctx, tx, issue.Tree, stepClock.Add(time.Hour))
 	})
 
 	r.assertWayDropped("stopped", fixHead)
