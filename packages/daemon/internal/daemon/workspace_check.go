@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -313,9 +314,14 @@ func unreadReason(failed error) string {
 // readError is a failed workspace read's error as the daemon keeps it, in a notice, a hold record
 // and a log line: the far side's text, bounded keeping both its ends (storetext.FarSideErrorEnds),
 // since the process that made the read cut its middle out and kept its end for its note on a git
-// lock (shimwire.CutAnswerError, INFRA-341's reviewer's point 6 on R6's review fixes).
+// lock (shimwire.CutAnswerError, INFRA-341's reviewer's point 6 on R6's review fixes), and quoted
+// (strconv.Quote). The text is the pod's: jj's words about files a role writes, or a path a role
+// wrote that the guard refusing the read names (workspace's sharedRepository). A notice carries it
+// to the issue's architect and, in its place, to the controller, whom the wakes reference tells to
+// publish the notice's reason, so it goes as one quoted string, which no line of it can leave
+// (INFRA-341's reviewer's point 14).
 func readError(failed error) string {
-	return storetext.FarSideErrorEnds(failed.Error())
+	return strconv.Quote(storetext.FarSideErrorEnds(failed.Error()))
 }
 
 // roleDecline is the decline of a check read through a live role's shim. Its pod is the one the
@@ -474,8 +480,8 @@ func keptMessage(issue, pod string, claims store.ClaimStates, work runtime.Works
 	}
 	found := []string{where + ". No role process runs in this pod, so the pod's launcher read its workspace before the delete."}
 	if failed != nil {
-		found = append(found, "The launcher could not read the workspace, so the daemon cannot show that the workspace holds nothing that no branch or tag on origin holds. The read failed: "+
-			readError(failed)+".")
+		found = append(found, "The launcher could not read the workspace, so the daemon cannot show that the workspace holds nothing that no branch or tag on origin holds. "+
+			"The error of the read, in quotes, is: "+readError(failed)+".")
 	} else {
 		found = append(found, "The workspace holds work that no branch or tag on origin holds.")
 		found = append(found, workFound(work)...)

@@ -274,8 +274,8 @@ func podKeptMessage(issue, pod, reasons string, work runtime.WorkspaceWork) stri
 func roundKeptMessage(issue, pod, reasons string, claims store.ClaimStates, work runtime.WorkspaceWork, failed error) string {
 	found := []string{fmt.Sprintf("The daemon did not replace the pod of %s (pod %s) for an update round. The round read the workspace before the replacement.", issue, pod)}
 	if failed != nil {
-		found = append(found, "The read failed, so the daemon cannot show that the workspace holds nothing that no branch or tag on origin holds. The read failed: "+
-			readError(failed)+".")
+		found = append(found, "The read failed, so the daemon cannot show that the workspace holds nothing that no branch or tag on origin holds. "+
+			"The error of the read, in quotes, is: "+readError(failed)+".")
 	} else {
 		found = append(found, "The workspace holds work that no branch or tag on origin holds.")
 		found = append(found, workFound(work)...)
@@ -398,10 +398,10 @@ func launchTakenMessage(taken runtime.TakenPod) string {
 // shimwire.MaxWorkspaceWorkCommits of them and by count all of them.
 func readFound(work runtime.WorkspaceWork, failed error) string {
 	if failed != nil {
-		// The notice is stored and read by the issue's architect, so the read's error, which the
-		// shim's or the launcher's jj wrote, is kept in it as the daemon keeps a read's error
-		// (readError).
-		return fmt.Sprintf("No read of the workspace could be made before the replacement: %s. The daemon does not know if the workspace held work that no branch or tag at origin holds.",
+		// The notice is stored and read by the issue's architect, and in its place by the
+		// controller, so the read's error, which the shim's or the launcher's jj wrote, is kept in it
+		// as the daemon keeps a read's error: bounded, and quoted as data (readError).
+		return fmt.Sprintf("No read of the workspace could be made before the replacement. The error of the read, in quotes, is: %s. The daemon does not know if the workspace held work that no branch or tag at origin holds.",
 			readError(failed))
 	}
 	found := []string{"Before the replacement, the daemon read the issue workspace. The read found work that no branch or tag at origin holds."}

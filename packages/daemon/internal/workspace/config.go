@@ -532,7 +532,10 @@ func refuseEnclosingWorkspace(dir string) error {
 // built as jj builds it (workspaceRepository, never cleaned) and stat'ed by the kernel, which
 // resolves it physically as jj's canonicalize does; it must be the same directory as the clone's
 // own (os.SameFile), or the command is refused, naming both, before jj opens a repository Legion
-// did not provision and before anything there is removed.
+// did not provision and before anything there is removed. The refusal names the path the file
+// holds quoted (%q), as data: a role writes it, and the refusal reaches the issue's architect and
+// the controller as a read's error (INFRA-341's reviewer's point 14 on R6 of
+// dispatch://INFRA-3271), so a path of several lines reaches them as one quoted string.
 func sharedRepository(jjDir, clone string) (string, error) {
 	own := filepath.Join(jjDir, "repo")
 	if clone != "" {
@@ -562,7 +565,7 @@ func sharedRepository(jjDir, clone string) (string, error) {
 		if resolved, err := filepath.EvalSymlinks(target); err == nil {
 			named = resolved
 		}
-		return "", fmt.Errorf("refusing to run jj in %s: its .jj/repo names %s, not the shared clone's %s", filepath.Dir(jjDir), named, expected)
+		return "", fmt.Errorf("refusing to run jj in %s: its .jj/repo names %q, not the shared clone's %s", filepath.Dir(jjDir), named, expected)
 	}
 	return expected, nil
 }
