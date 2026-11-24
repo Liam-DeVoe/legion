@@ -677,17 +677,26 @@ func resultsGitHubAnswering(
 // delivery.BranchCommitStaleAfter and which a test can reach no other way, since it cannot
 // wait five minutes out. readThroughGitHub answers the same for the read-through's cache.
 // checkRuns, where it is not nil, answers `GET /repos/{owner}/{repo}/commits/{sha}/check-runs`
-// (resultsGitHubCheckRuns); a nil one leaves that read to the mux's 404.
+// (resultsGitHubCheckRuns); a nil one leaves that read to the mux's 404. routes are further
+// routes the stand-in answers (gitHubRoute), such as a pull request's own read.
 func resultsGitHubServed(
 	t *testing.T,
 	repos, held map[string]bool,
 	defaultBranch string,
 	answer func(base, head string) (int, string),
 	checkRuns http.HandlerFunc,
+	routes ...gitHubRoute,
 ) (http.Handler, *store.Store, *server) {
 	t.Helper()
-	handler, database, _, served := newRegisteredTestServer(t, resultsGitHubOptions(t, repos, held, defaultBranch, answer, checkRuns))
+	handler, database, _, served := newRegisteredTestServer(t, resultsGitHubOptions(t, repos, held, defaultBranch, answer, checkRuns, routes...))
 	return handler, database, served
+}
+
+// gitHubRoute is one more route a results stand-in answers (resultsGitHubOptions): a
+// http.ServeMux pattern and its handler.
+type gitHubRoute struct {
+	pattern string
+	handler http.HandlerFunc
 }
 
 // resultsGitHubOptions is the server resultsGitHubServed builds, as options a test can add to
@@ -699,6 +708,7 @@ func resultsGitHubOptions(
 	defaultBranch string,
 	answer func(base, head string) (int, string),
 	checkRuns http.HandlerFunc,
+	routes ...gitHubRoute,
 ) testServerOptions {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -755,6 +765,9 @@ func resultsGitHubOptions(
 	})
 	if checkRuns != nil {
 		mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/check-runs", checkRuns)
+	}
+	for _, route := range routes {
+		mux.HandleFunc(route.pattern, route.handler)
 	}
 	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 	return testServerOptions{
