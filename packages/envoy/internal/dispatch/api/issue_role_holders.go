@@ -255,7 +255,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		}
 		if slices.Contains(sessions[:index], holder.Session) {
 			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
-				"session %s is named for two roles. A session holds one role of an issue.", holder.Session))
+				"session %s is named twice. A session holds one role of an issue.", holder.Session))
 			return
 		}
 		roles[index] = holder.Role
