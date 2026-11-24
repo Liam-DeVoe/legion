@@ -685,9 +685,7 @@ func TestTheKeeperRaisesABucketItsProgramAddsAfterTheStart(t *testing.T) {
 	info := testnats.AwaitSettledStream(t, js, stream)
 	lowered := info.Config
 	lowered.Replicas = 1
-	if _, err := js.UpdateStream(&lowered); err != nil {
-		t.Fatalf("lower %s to one copy: %v", stream, err)
-	}
+	testnats.UpdateStream(t, js, lowered)
 	heldFor(t, []*Client{client}, js, stream, "one copy", 4, func(info *nats.StreamInfo) bool { return info.Config.Replicas == 1 })
 
 	client.KeepBucket(added)

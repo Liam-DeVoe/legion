@@ -240,8 +240,8 @@ func TestAKeyValueReadLostWithItsConnectionFailsAtTheReconnect(t *testing.T) {
 // through a handle on a connection no client owns, for which that search passes every live
 // client: a handle whose own client the search found first would end it before the held one on
 // some reads and not on others.
+// It must not run in parallel: its read's watch holds liveClientsMu, the process's, up to 5 s.
 func TestAReadThroughBoundedOnWaitsForNoOtherClientsHeldHandshake(t *testing.T) {
-	t.Parallel()
 	const (
 		bucket = "envoy_read_beside_held_handshake"
 		key    = "ses_read_beside"

@@ -166,25 +166,33 @@ const worstPhasePoll = 3 * durableBindInterval
 // measured with no lapse timer, when the standby's next try was its next poll, worstPhasePoll
 // after this one.
 //
-// The phase is arranged at hooks in the two processes' lease pools, so it is met by construction
-// and not by timing. Once the standby runs, the row arms the holder's pool to cut itself and close
-// the holder's NATS client inside the Exec of the hold's next renewal, the instant Postgres has
-// answered it (cuttableLeases.afterNextRenewal): the hold's row, read then, says when that renewal
-// landed and when the hold lapses. The row then has the standby's pool hold each read of the hold
-// that goes out within worstPhasePoll before the moment worstPhaseLead ahead of that lapse until
-// that moment, and let it go then (holdReads.holdUntil). The standby polls every worstPhasePoll
-// from when its run starts, so the row reads a renewal off the hold's row and starts that run
-// (newTakeOverProcess builds it unstarted) a whole number of polls before worstPhaseEarly ahead of
-// the moment the next renewal sets. The read the pool holds is then one of that run's ticks, early
-// enough that a late tick still comes before the moment, and the standby's next poll comes
-// worstPhasePoll after that tick.
+// Two hooks in the two processes' lease pools place part of the phase, and timing margins the
+// rest. Once the standby runs, the row arms the holder's pool to cut itself and close the holder's
+// NATS client inside the Exec of the hold's next renewal, the instant Postgres has answered it
+// (cuttableLeases.afterNextRenewal): the hold's row, read then, says when that renewal landed and
+// when the hold lapses. The row then has the standby's pool hold each read of the hold that goes
+// out within worstPhasePoll before the moment worstPhaseLead ahead of that lapse until that moment,
+// and let it go then (holdReads.holdUntil). So the hooks fix which renewal the holder dies after,
+// the instant its answer returns, and when a held read goes to Postgres: at the moment.
+//
+// They do not fix whether the standby's poll is the read held. The standby polls every
+// worstPhasePoll from when its run starts, so the row reads a renewal off the hold's row and spins
+// until a whole number of polls before worstPhaseEarly ahead of the moment the next renewal sets,
+// and starts that run then (newTakeOverProcess builds it unstarted). One of its ticks then comes
+// worstPhaseEarly (100 ms) before the moment, inside holdUntil's window, and the tick before it
+// worstPhaseEarly before the window opens: a tick more than 100 ms late, or a next renewal that
+// lands more than 100 ms sooner than intakeHoldRenew after the one the row read, misses the phase.
+// Nor do they fix what that read finds: it finds the hold live only when it reaches Postgres within
+// worstPhaseLead (10 ms) of the moment, before the lapse, and the holder's death is the instant
+// after its renewal only when that renewal's answer returned within worstPhaseLead of its landing.
+// The standby's next poll comes worstPhasePoll after the held tick.
 //
 // The row checks that the phase was met: the holder died within worstPhaseLead of its renewal, the
 // standby's last read before the lapse went out within twice worstPhaseLead of it and found the
 // hold live, and the next read found the hold free and took it, which makes it the standby's last,
-// since the standby holds the hold from then on. A miss is a miss of the row's own setup, never a
-// pass and never a breach of the bound: the row fails at once, as UNARRANGED and with what it
-// observed, and does not try again.
+// since the standby holds the hold from then on. A miss of either, of what the hooks place or of
+// what rests on timing, is a miss of the row's own setup, never a pass and never a breach of the
+// bound: the row fails at once, as UNARRANGED and with what it observed, and does not try again.
 func TestADeadHolderIsReplacedWithinTheStatedBoundAtTheWorstPhase(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)

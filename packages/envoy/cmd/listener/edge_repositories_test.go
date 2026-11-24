@@ -295,7 +295,10 @@ func TestAReceiveTermsEndForgetsTheGapMarksItsRelaysNoted(t *testing.T) {
 		t.Fatalf("clear %s's mark %q as the next pod's relay does: %v", sessionID, mark, err)
 	}
 	rig.repositories.failWith(0)
-	// The relay's restart at the ack floor when the term begins again recreates this consumer.
+	// The wait is for the server to take every ack, the stand-in's done and the relay's own for the
+	// withheld event, so the relay's restart at the ack floor when the term begins again finds
+	// nothing awaiting one and keeps this consumer: it updates it in place and sends no delete and
+	// no create (bus.SessionConsumers.RestartAtFloor).
 	awaitConsumerSettled(t, rig, sessionID)
 	rig.relays.setOwned(endlessTerm())
 	if again := noted(); again != "" {

@@ -819,6 +819,7 @@ func TestAPullRequestsAgainAfterABatchAndAnExpiry(t *testing.T) {
 // its caller nothing until twice the idle heartbeat of silence ended it (ErrSessionPullStalled),
 // which is a 30 s stall of the relay of that session's consumer after an outage of 2 s.
 func TestAPullEndsAtOnceWhenItsConnectionReconnects(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_pull_reconnect"
