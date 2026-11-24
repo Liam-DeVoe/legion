@@ -1,5 +1,6 @@
 name: Docs site
 
+# why: .github/ci-notes/ci.md#the-docs-job
 # The documentation site's build, in one place. ci.yaml's docs job calls it for a pull request and
 # a merge group. docs-pages.yaml's build job calls it for a push to main, and then publishes what
 # it built to GitHub Pages. Both callers ran these same steps side by side before, and nothing

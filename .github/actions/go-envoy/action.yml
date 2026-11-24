@@ -1,0 +1,38 @@
+name: The go-envoy job's leg
+description: >-
+  The steps of a leg of ci.yaml's go-envoy job, the pull request's envoy legs: the action of
+  .github/actions/go-envoy/<leg> that `leg` names.
+# why: .github/ci-notes/ci.md#the-go-envoy-job-and-its-legs
+inputs:
+  leg:
+    description: The leg of the job's matrix (`matrix.leg`), which names the action this step runs.
+    required: true
+  migration-base:
+    description: ci.yaml's input of that name, for the envoy-go-build leg.
+    required: false
+    default: ''
+  postgres:
+    description: The id of the job's Postgres service container, for the envoy-session-stall leg.
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - if: inputs.leg == 'envoy-go-build'
+      uses: ./.github/actions/go-envoy/envoy-go-build
+      with:
+        migration-base: ${{ inputs.migration-base }}
+    - if: inputs.leg == 'envoy-infra-build'
+      uses: ./.github/actions/go-envoy/envoy-infra-build
+    - if: inputs.leg == 'airlock-lean'
+      uses: ./.github/actions/go-envoy/airlock-lean
+    - if: inputs.leg == 'envoy-session-stall'
+      uses: ./.github/actions/go-envoy/envoy-session-stall
+      with:
+        postgres: ${{ inputs.postgres }}
+    - if: inputs.leg == 'envoy-e2e-local'
+      uses: ./.github/actions/go-envoy/envoy-e2e-local
+    - if: inputs.leg == 'broker-multiprocess'
+      uses: ./.github/actions/go-envoy/broker-multiprocess
+    - if: inputs.leg == 'listener-server-change'
+      uses: ./.github/actions/go-envoy/listener-server-change

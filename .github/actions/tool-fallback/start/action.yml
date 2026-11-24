@@ -21,6 +21,7 @@ outputs:
   url:
     description: The origin's stand-in for the other sources a row names.
     value: ${{ steps.origin.outputs.url }}
+# why: .github/ci-notes/ci.md#the-tool-fallback-job
 runs:
   using: composite
   steps:

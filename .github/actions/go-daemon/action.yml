@@ -65,6 +65,7 @@ inputs:
   postgres:
     description: The id of the job's Postgres service container (ci.yaml's `job.services.postgres.id`).
     required: true
+# why: .github/ci-notes/ci.md#the-go-daemon-job
 runs:
   using: composite
   steps:

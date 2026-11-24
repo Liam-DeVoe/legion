@@ -28,6 +28,7 @@ description: >-
   where it starts one, to a directory named for it under LEGION_TEST_DAEMON_LOG_DIR
   (internal/daemon/live_proof_test.go's liveLogDir), and the step after the tests uploads that
   directory when they fail.
+# why: .github/ci-notes/ci.md#the-daemon-live-job
 runs:
   using: composite
   steps:

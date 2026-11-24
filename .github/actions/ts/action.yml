@@ -1,0 +1,25 @@
+name: The ts job's leg
+description: >-
+  The steps of a leg of ci.yaml's ts job: the action of .github/actions/ts/<leg> that `leg` names,
+  each the old job of that name, which the leg's check run carries. One step of ci.yaml runs it, so
+  the job names each leg once, in its matrix.
+# why: .github/ci-notes/ci.md#the-ts-job-and-its-legs
+inputs:
+  leg:
+    description: The leg of the job's matrix (`matrix.leg`), which names the action this step runs.
+    required: true
+runs:
+  using: composite
+  steps:
+    - if: inputs.leg == 'contracts'
+      uses: ./.github/actions/ts/contracts
+    - if: inputs.leg == 'test-fixtures'
+      uses: ./.github/actions/ts/test-fixtures
+    - if: inputs.leg == 'broker-client'
+      uses: ./.github/actions/ts/broker-client
+    - if: inputs.leg == 'envoy-client'
+      uses: ./.github/actions/ts/envoy-client
+    - if: inputs.leg == 'dispatch-ui'
+      uses: ./.github/actions/ts/dispatch-ui
+    - if: inputs.leg == 'proof-sdk-offline'
+      uses: ./.github/actions/ts/proof-sdk-offline

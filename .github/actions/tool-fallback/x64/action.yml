@@ -105,6 +105,7 @@ runs:
       run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
 
     # ------------------------------------------------------------------ after head
+    # why: .github/ci-notes/tool-fallback.md#why-the-faulted-helm-install-reads-the-copy
     - name: Check every tool is the version its row pins
       if: inputs.after == 'head'
       shell: bash
@@ -362,14 +363,43 @@ runs:
         OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
       run: .github/scripts/ci-tools-proof.sh report pulumi-cli-second-source --outcome "$OUTCOME" --row pulumi-cli --expect-source github-release
 
+    # why: .github/ci-notes/tool-fallback.md#case-17-of-18-and-the-seam-a-helm-releases-primary-is-read-through
+    - name: Corrupt helm for its primary case
+      if: inputs.after == 'pulumi-cli-second-source'
+      shell: bash
+      run: .github/scripts/ci-tools-proof.sh corrupt helm
+
+    # ------------------------------------------------------------------ after helm-primary
+    - name: Read the helm-primary case
+      if: inputs.after == 'helm-primary'
+      shell: bash
+      env:
+        OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
+      run: .github/scripts/ci-tools-proof.sh report helm-primary --outcome "$OUTCOME" --row helm --expect-source helm-releases --expect-untried ghcr-mirror
+
+    # Case 18 of 18: helm's copy serves one byte changed, after the primary - get.helm.sh, which the
+    # fault holds - did not serve them at all.
+    - name: Corrupt helm for its second-source case
+      if: inputs.after == 'helm-primary'
+      shell: bash
+      run: .github/scripts/ci-tools-proof.sh corrupt helm
+
+    # ------------------------------------------------------------------ after helm-second-source
+    - name: Read the helm-second-source case
+      if: inputs.after == 'helm-second-source'
+      shell: bash
+      env:
+        OUTCOME: ${{ fromJSON(inputs.steps)[inputs.after].outcome }}
+      run: .github/scripts/ci-tools-proof.sh report helm-second-source --outcome "$OUTCOME" --row helm --expect-source ghcr-mirror
+
     # why: .github/ci-notes/tool-fallback.md#what-this-runner-holds-after-the-eighteen-refusals
     - name: Print what every tool answers now
-      if: inputs.after == 'pulumi-cli-second-source'
+      if: inputs.after == 'helm-second-source'
       shell: bash
       run: .github/scripts/tool-fallback-final-state.sh
 
     # why: .github/ci-notes/tool-fallback.md#what-the-reading-of-the-stand-in-curl-refuses
     - name: Read what the stand-in curl measured of every fetch
-      if: inputs.after == 'pulumi-cli-second-source'
+      if: inputs.after == 'helm-second-source'
       shell: bash
       run: .github/scripts/ci-tools-proof.sh ladder-report

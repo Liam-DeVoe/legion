@@ -26,6 +26,7 @@ inputs:
     required: false
     default: ""
 
+# why: .github/ci-notes/ci.md#the-claude-envoy-names-job
 runs:
   using: composite
   steps:

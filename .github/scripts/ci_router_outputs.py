@@ -2,13 +2,16 @@
 """What each output of ci.yaml's `changes` job evaluates to for one event, one set of pull request
 labels and one set of paths-filter verdicts, read as GitHub Actions evaluates an expression. Its
 harness, ci-router-outputs.test.sh, holds the outputs' label terms to what they promise: `full-ci`
-turns on every slow suite, a `lane:<output>` label turns on that one output, and a label that names
-no output turns on nothing (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request).
+turns on every held job, a lane label turns on the one held job whose output names it, and a label
+that names no held job turns on nothing.
+legion: tool - reads ci.yaml's changes outputs and .github/ci-areas.yaml; ci-router-outputs.test.sh runs it to judge the label terms
+# why: .github/ci-notes/ci.md#a-lane-label-turns-on-one-held-job-on-a-pull-request
 
 It reads the expressions themselves rather than a copy of them, so a change to an output's text
 is what the harness tests. It evaluates the subset of GitHub's expression language those outputs
 use: string, boolean, number and null literals; the contexts `github.event_name`,
-`github.event.pull_request.labels.*.name`, `steps.<id>.outputs.<name>` and `steps.<id>.outputs`;
+`github.event.pull_request.labels.*.name`, `steps.<id>.outputs.<name>`, `steps.<id>.outputs` and
+`inputs.<name>` (a workflow_dispatch input, empty unless --input gives it);
 `!`, `==`, `!=`, `&&`, `||` and parentheses; and the functions `contains` and `toJSON`. `&&` and
 `||` yield an operand, as GitHub's do (a non-empty string such as 'false' is truthy), `==` and
 `!=` compare strings without regard to case, and `contains` of an array asks whether an element
@@ -16,13 +19,17 @@ equals the item. Anything else, an unknown function or a context it does not mod
 name with exit 2, never read as false.
 
 Usage: ci_router_outputs.py <workflow> --event <name> [--label <name>]... [--verdict <filter>=<value>]...
-  [--verdicts <true|false>]
+  [--verdicts <true|false>] [--unnamed <true|false>] [--input <name>=<value>]...
        ci_router_outputs.py <workflow> --label-readers
-Prints `<output>=<value>` for each output of the `changes` job, in the file's order. --verdicts
-sets every filter's verdict (default true); --verdict overrides one. --label-readers prints, one
-per line, each output whose expression reads the pull request's labels, found in the text
-rather than by evaluating it, so a broken term cannot drop an output from that list.
-Run from anywhere; ci.yaml's test job runs its harness."""
+       ci_router_outputs.py <workflow> --lane-labels
+Prints `<output>=<value>` for each output of the `changes` job, in the file's order. The filters are
+the areas of .github/ci-areas.yaml beside the workflow's directory. --verdicts sets every filter's
+verdict (default true); --verdict overrides one; --unnamed is the unnamed-file step's `found`
+(default false). --label-readers prints, one per line, each output whose expression reads the pull
+request's labels, found in the text rather than by evaluating it, so a broken term cannot drop an
+output from that list. --lane-labels prints `<output> <label>` for each label but full-ci an
+output's text names in a contains() term of the labels.
+Run from anywhere; ci.yaml's scripts-held job runs its harness."""
 import argparse
 import json
 import re
@@ -48,7 +55,8 @@ class Refused(Exception):
 # `github.event` as a whole among them, is refused, so an output can read the labels only
 # through the path --label-readers finds in its text.
 MODELLED = re.compile(r"github\.event_name|github\.event\.pull_request\.labels\.\*\.name"
-                      r"|steps\.[A-Za-z0-9_-]+\.outputs(?:\.[A-Za-z0-9_-]+)?")
+                      r"|steps\.[A-Za-z0-9_-]+\.outputs(?:\.[A-Za-z0-9_-]+)?|inputs\.[A-Za-z0-9_-]+")
+LANE_TERM = re.compile(r"contains\(github\.event\.pull_request\.labels\.\*\.name, '([^']+)'\)")
 
 
 def tokens(text):
@@ -165,6 +173,9 @@ class Evaluator:
         raise Refused(f"function {function} with {len(args)} arguments is not modelled")
 
     def lookup(self, path):
+        if path.startswith("inputs."):
+            # A workflow_dispatch input another event leaves empty, as GitHub does.
+            return (self.context.get("inputs") or {}).get(path.removeprefix("inputs."))
         parts = path.split(".")
         value = self.context
         for at, part in enumerate(parts):
@@ -187,6 +198,9 @@ def main():
     parser.add_argument("--label", action="append", default=[])
     parser.add_argument("--verdict", action="append", default=[])
     parser.add_argument("--verdicts", default="true", choices=["true", "false"])
+    parser.add_argument("--unnamed", default="false", choices=["true", "false"])
+    parser.add_argument("--input", action="append", default=[])
+    parser.add_argument("--lane-labels", action="store_true")
     args = parser.parse_args()
     document = yaml.safe_load(Path(args.workflow).read_text())
     outputs = document["jobs"]["changes"]["outputs"]
@@ -195,20 +209,28 @@ def main():
             if "github.event.pull_request.labels" in str(expression):
                 print(name)
         return 0
+    if args.lane_labels:
+        for name, expression in outputs.items():
+            for label in LANE_TERM.findall(str(expression)):
+                if label != "full-ci":
+                    print(f"{name} {label}")
+        return 0
     if not args.event:
         parser.error("--event is required unless --label-readers is given")
-    filters = yaml.safe_load(Path(args.workflow).parent.parent.joinpath("ci-filters.yaml").read_text())
+    filters = yaml.safe_load(Path(args.workflow).parent.parent.joinpath("ci-areas.yaml").read_text())
     verdicts = {name: args.verdicts for name in filters}
     for pair in args.verdict:
         name, _, value = pair.partition("=")
         if name not in verdicts:
-            print(f"ci_router_outputs: --verdict {pair} names no filter of ci-filters.yaml", file=sys.stderr)
+            print(f"ci_router_outputs: --verdict {pair} names no filter of ci-areas.yaml", file=sys.stderr)
             return 2
         verdicts[name] = value
     context = {
         "github": {"event_name": args.event,
                    "event": {"pull_request": {"labels": [{"name": label} for label in args.label]}}},
-        "steps": {"filter": {"outputs": verdicts}, "ref": {"outputs": {"is_main": "false"}}},
+        "steps": {"filter": {"outputs": verdicts}, "unnamed": {"outputs": {"found": args.unnamed}},
+                  "ref": {"outputs": {"is_main": "false"}}},
+        "inputs": {name: value for name, _, value in (pair.partition("=") for pair in args.input)},
     }
     evaluator = Evaluator(context)
     for name, expression in outputs.items():

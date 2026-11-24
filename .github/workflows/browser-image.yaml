@@ -1,5 +1,6 @@
 name: Browser Image
 
+# why: .github/ci-notes/ci.md#the-browser-image-job
 on:
   # ci.yaml's browser-image job calls this file on every pull request and every merge group
   # whose diff its `browser_image` filter matches, and on a workflow_dispatch run of ci.yaml,

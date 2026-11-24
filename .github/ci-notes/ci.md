@@ -1716,3 +1716,54 @@ nothing races. check-ci-layout.sh holds both jobs to their one `name:` (ci_layou
 DISPATCH_NAMES), the reconcile step to its one `if:` (RECONCILE_IF), the changes job to the
 output and the exact step (REF_OUTPUT, REF_STEP_RUN), and every other job to a name that can
 evaluate to neither check.
+
+## A lane label turns on one held job on a pull request
+
+The held jobs - go-daemon, go-envoy-held, envoy-held, scripts-held, pi-held, web-cold,
+dispatch-browser's full lane, agent-harness and airlock-arm - run in the merge queue, and on a pull
+request only where the label `full-ci` or one of the job's own lane labels names them, and where
+the job's filter selects the change. Each label is a term of the job's output of the changes job,
+`contains(github.event.pull_request.labels.*.name, 'lane:<name>')`, beside the `full-ci` term, so a
+label never turns on an output whose filter does not select the change, and a label that names no
+held job turns nothing on. main's labels keep their names (cybermonklabs/legion#4928 and #5175):
+each lifts the hold of the job of this layout that runs its suite, with that job's other suites, so
+`lane:envoy_go_race` runs go-envoy-held whole where on main it ran one suite. The held jobs that
+run no suite of main take a label of their own: `lane:agent_harness`, `lane:airlock_arm` (the arm
+job of airlock-check.sh k9) and `lane:web_cold`. ci-ok's line for a held job that did not run names
+the labels that would have run it, read off the same terms (.github/scripts/ci-ok.jq,
+hold_labels), so the two lists cannot differ; .github/scripts/ci-router-outputs.test.sh holds each
+label to its job, one case a label. kind runs on no pull request and takes no label.
+
+## The web-cold job
+
+The held part of the ts job: the Dispatch dashboard's web tests once more with each lazy load held
+back (packages/dispatch's `test:web:cold`), a mode this change brought into CI. In the head's
+dispatch runs the dispatch-ui leg took 9.5 to 10.5 minutes with it, past the 10 minutes a pull
+request's job is held to, so it is a held job of its own, one per job a held part comes from, with
+the label `lane:web_cold` (.github/actions/ts/web-cold).
+
+## The envoy-held job and its legs
+
+go-envoy's held part, a held job of its own: main's queue halves of envoy-go-checks (envoy's script
+tests, the load-test cluster's test with helm) and of envoy-infra-go (the natslive tests), the proof
+editor's parity fuzz, and the tests this change brought into CI whose pull-request leg passed 10
+minutes with them - envoy-session-stall's claimant delivery, verification results and session title
+(envoy-session-proofs, 14.7 to 16.5 minutes in the head's dispatch runs) and envoy-e2e-local's
+bucket refill (envoy-e2e-refill, 9.8 to 10.8). Each moved test passes in its held job, which stands
+for its inventory row's job. The labels `lane:envoy_go_checks` and `lane:envoy_infra_go` lift the
+job whole. Its legs keep the runners of the legs they came from; the session proofs' leg takes the
+job's Postgres, sized for its Dispatch processes.
+
+## Why every job sets JOB_TIMEOUT_MINUTES
+
+Each job and leg sets `JOB_TIMEOUT_MINUTES` in its `env:` to its `timeout-minutes` expression
+exactly as written (`${{ matrix.timeout }}` for a matrix job), and each timed step that reaches
+.github/scripts/gh-read.sh sets `STEP_TIMEOUT_MINUTES` to its own: gh-read.sh waits for a spent API
+budget within those two numbers, measured from the job's start and the step's, and without them it
+fails by name rather than wait (main's #4893). The ci-ok-report step every job ends with, and each
+carrier's leg-verdict.sh, reach gh-read.sh. check-workflow-files.sh's rule 8 holds the two equal.
+ci-ok's 188 minutes are its verdict step's 10 and its hold step's 175 (the reconcile step's 10
+runs only when the hold does not), with three over for the checkout and the two refusals. The
+hold's 175 are the age's 170 minutes (CI_OK_HOLD_AGE_SECONDS, 10,200, inside the queue's 180) and
+the last pause and read's ladder, two minutes; CI_OK_HOLD_RUN_SECONDS, 3,330, is the longest
+merge-group run of 2026-11-22 (44966798236).

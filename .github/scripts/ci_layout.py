@@ -1268,7 +1268,7 @@ def is_carrier(job: dict) -> bool:
     return any(LEG_VERDICT in str((s or {}).get("run", "")) for s in (job or {}).get("steps") or [])
 
 
-def check_carriers(documents: dict, problems: list) -> None:
+def check_carriers(documents: dict, pins, problems: list) -> None:
     """Rule 32: a job split into legs named `<name> (<i>/<n>)` has one carrier, a job named
     `<name> / <name>` that needs the split job, runs under its gate and !cancelled(), and holds
     exactly three steps: a sparse checkout of .github, leg-verdict.sh over exactly those legs, and
@@ -1283,19 +1283,22 @@ def check_carriers(documents: dict, problems: list) -> None:
             splits[(entry["job"], found.group("base"))].append(entry["name"])
     carriers = {job_id: job for job_id, job in jobs.items() if is_carrier(job)}
     names = {job_id: next((e["name"] for e in legs if e["job"] == job_id), None) for job_id in carriers}
+    named = getattr(pins, "CARRIER_NAMES", {})
+    def carried(base: str) -> str:
+        return named.get(base, f"{base} / {base}")
     for (split_job, base), leg_names in sorted(splits.items()):
-        holders = [job_id for job_id, name in names.items() if name == f"{base} / {base}"]
+        holders = [job_id for job_id, name in names.items() if name == carried(base)]
         if len(holders) != 1:
             problems.append(error(WORKFLOW, f"job {split_job} splits {base} into {len(leg_names)} legs, and "
-                                            f"{len(holders)} carrier(s) carry `{base} / {base}`, where one must"))
+                                            f"{len(holders)} carrier(s) carry `{carried(base)}`, where one must"))
     for job_id, job in carriers.items():
         steps = job.get("steps") or []
         name = names.get(job_id) or ""
-        base = name.split(" / ")[0]
+        base = next((b for b, n in named.items() if n == name), name.split(" / ")[0])
         needs = job.get("needs") or []
         needs = [needs] if isinstance(needs, str) else needs
         split = next(((sj, ln) for (sj, b), ln in splits.items() if b == base and sj in needs), None)
-        if name != f"{base} / {base}" or split is None:
+        if name != carried(base) or split is None:
             problems.append(error(WORKFLOW, f"job {job_id} runs {LEG_VERDICT}, a carrier, and carries `{name}`, which "
                                             f"is the old name of no job it needs that splits into legs: a carrier "
                                             f"carries the name of a split job alone"))
@@ -1576,7 +1579,7 @@ def check() -> int:
     check_fail_fast(documents, problems)
     report += check_main_names(documents, pins, problems)
     check_timed_steps(documents, pins, problems)
-    check_carriers(documents, problems)
+    check_carriers(documents, pins, problems)
     check_shard_legs(documents, problems)
     report += check_notes(document, problems)
     report += check_vet_tags(pins, problems)

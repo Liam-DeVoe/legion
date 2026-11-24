@@ -13,6 +13,7 @@ description: >-
   each of its targets, are also compiled here, with their release builds' CGO_ENABLED and
   -buildvcs: a compile error on one platform only fails the pull request rather than the release
   after the merge.
+# why: .github/ci-notes/ci.md#the-notices-job
 runs:
   using: composite
   steps:

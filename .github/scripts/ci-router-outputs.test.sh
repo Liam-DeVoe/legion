@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Tests for the label terms of ci.yaml's `changes` outputs, through ci_router_outputs.py, which
-# evaluates this repository's own ci.yaml as GitHub would: on a pull request the slow suites'
-# outputs are false whatever their paths say, `full-ci` turns every one of them on, a
-# `lane:<output>` label turns on that one output and no other, still only where its paths
-# matched, and a label that names no such output turns on nothing
-# (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request).
+# evaluates this repository's own ci.yaml as GitHub would: on a pull request the held jobs'
+# outputs are false whatever their paths say, `full-ci` turns every one of them on, each lane label
+# turns on the one held job whose output names it and no other, still only where its paths
+# matched, one case a label, and a label that names no held job turns on nothing.
+# why: .github/ci-notes/ci.md#a-lane-label-turns-on-one-held-job-on-a-pull-request
 #
 # The held-back set is read, not listed here, and read apart from the label terms it tests: the
 # outputs a merge group turns on and an unlabelled pull request holds false, every paths filter
@@ -13,7 +13,7 @@
 # fails its case rather than leaving the set.
 #
 # Run from anywhere: .github/scripts/ci-router-outputs.test.sh
-# CI runs it in ci.yaml's test job.
+# CI runs it in ci.yaml's scripts-held job.
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -73,18 +73,22 @@ off_under() {
 baseline=$(outputs --event pull_request)
 mapfile -t held < <(held_of "$repo/.github/workflows/ci.yaml")
 
-echo "case: exactly the fifteen gated outputs read the pull request's labels"
+echo "case: exactly the nine held jobs' outputs read the pull request's labels"
 # A count and the names, so an output whose label term is deleted outright fails here by name
-# rather than leaving the set. A sixteenth gated suite adds its name to this list.
-gated='daemon_go_tests dispatch_browser dispatch_memory dispatch_multiprocess dispatch_two_builds envoy_go envoy_go_checks envoy_go_claim_model envoy_go_race envoy_go_race_api envoy_go_race_docs envoy_infra_go envoy_smoke pi_legion test'
-check "the reader finds ${#held[@]}: ${held[*]}" "$(is "${#held[@]}" 15)"
-check "and they are the fifteen" "$(is "$(printf '%s\n' "${held[@]}" | sort | tr '\n' ' ')" "$gated ")"
+# rather than leaving the set. A tenth held job adds its name to this list.
+gated='agent-harness airlock-arm dispatch-browser envoy-held go-daemon go-envoy-held pi-held scripts-held web-cold'
+check "the reader finds ${#held[@]}: ${held[*]}" "$(is "${#held[@]}" 9)"
+check "and they are the nine" "$(is "$(printf '%s\n' "${held[@]}" | sort | tr '\n' ' ')" "$gated ")"
 
-echo "case: each of them is on for a merge group and for a push, where no label is read"
+echo "case: each of them is on for a merge group, where no label is read"
 check "a merge group leaves none off" \
   "$(is "$(not_value "$repo/.github/workflows/ci.yaml" true --event merge_group | tr '\n' ' ')" "")"
-check "a push leaves none off" \
-  "$(is "$(not_value "$repo/.github/workflows/ci.yaml" true --event push | tr '\n' ' ')" "")"
+
+echo "case: a dispatched run turns each on, agent-harness only with its input"
+check "a dispatch leaves only agent-harness off" \
+  "$(is "$(not_value "$repo/.github/workflows/ci.yaml" true --event workflow_dispatch | tr '\n' ' ')" "agent-harness ")"
+check "the input kind-and-agent-harness turns it on" \
+  "$(is "$(not_value "$repo/.github/workflows/ci.yaml" true --event workflow_dispatch --input kind-and-agent-harness=true | tr '\n' ' ')" "")"
 
 echo "case: each of them is held off on an unlabelled pull request"
 check "none is on" "$(is "$(not_value "$repo/.github/workflows/ci.yaml" false --event pull_request | tr '\n' ' ')" "")"
@@ -93,28 +97,45 @@ echo "case: full-ci turns each of them on"
 check "no one stays off under full-ci" \
   "$(is "$(off_under "$repo/.github/workflows/ci.yaml" full-ci | tr '\n' ' ')" "")"
 
-echo "case: a lane label turns on its own output and no other"
-for name in "${held[@]}"; do
-  got=$(outputs --event pull_request --label "lane:$name")
-  check "lane:$name turns $name on" "$(is "$(value "$got" "$name")" true)"
-  check "lane:$name leaves every other output as an unlabelled pull request has it" \
+echo "case: kind runs on no pull request, full-ci or not"
+check "kind is false on a pull request" "$(is "$(value "$baseline" kind)" false)"
+check "and under full-ci" "$(is "$(value "$(outputs --event pull_request --label full-ci)" kind)" false)"
+
+echo "case: each lane label turns on the one held job whose output names it, and no other"
+mapfile -t lanes < <("$script_dir/ci_router_outputs.py" "$repo/.github/workflows/ci.yaml" --lane-labels)
+check "the outputs name eighteen lane labels" "$(is "${#lanes[@]}" 18)"
+for pair in "${lanes[@]}"; do
+  name=${pair%% *}
+  label=${pair#* }
+  got=$(outputs --event pull_request --label "$label")
+  check "$label turns $name on" "$(is "$(value "$got" "$name")" true)"
+  check "$label leaves every other output as an unlabelled pull request has it" \
     "$(others_equal "$got" "$baseline" "$name")"
 done
 
-echo "case: two lane labels turn on their two outputs"
-got=$(outputs --event pull_request --label "lane:${held[0]}" --label "lane:${held[-1]}")
-check "${held[0]} is true" "$(is "$(value "$got" "${held[0]}")" true)"
-check "${held[-1]} is true" "$(is "$(value "$got" "${held[-1]}")" true)"
-check "and nothing else moves" "$(others_equal "$got" "$baseline" "${held[0]}" "${held[-1]}")"
+echo "case: two lane labels of two held jobs turn on those two"
+first=${lanes[0]}
+last=${lanes[-1]}
+got=$(outputs --event pull_request --label "${first#* }" --label "${last#* }")
+check "${first%% *} is true" "$(is "$(value "$got" "${first%% *}")" true)"
+check "${last%% *} is true" "$(is "$(value "$got" "${last%% *}")" true)"
+check "and nothing else moves" "$(others_equal "$got" "$baseline" "${first%% *}" "${last%% *}")"
 
 echo "case: a lane label still needs its paths, as full-ci does"
-got=$(outputs --event pull_request --label "lane:${held[0]}" --verdict "${held[0]}=false")
-check "${held[0]} stays false when its filter says no" "$(is "$(value "$got" "${held[0]}")" false)"
-got=$(outputs --event pull_request --label full-ci --verdict "${held[0]}=false")
-check "and so it does under full-ci" "$(is "$(value "$got" "${held[0]}")" false)"
+got=$(outputs --event pull_request --label "${first#* }" --verdict "${first%% *}=false")
+check "${first%% *} stays false when its filter says no" "$(is "$(value "$got" "${first%% *}")" false)"
+got=$(outputs --event pull_request --label full-ci --verdict "${first%% *}=false")
+check "and so it does under full-ci" "$(is "$(value "$got" "${first%% *}")" false)"
 
-echo "case: a label that names no held-back output turns on nothing"
-for label in lane:no_such_output lane:typecheck lane:envoy-go "lane:${held[0]}x" "${held[0]}" lane:; do
+echo "case: a changed file no filter names selects every job but the held ones, which need a label"
+got=$(outputs --event pull_request --verdicts false --unnamed true)
+check "go-envoy is on" "$(is "$(value "$got" go-envoy)" true)"
+check "go-envoy-held stays off" "$(is "$(value "$got" go-envoy-held)" false)"
+got=$(outputs --event pull_request --verdicts false --unnamed true --label lane:envoy_smoke)
+check "a lane label turns its held job on for it" "$(is "$(value "$got" go-envoy-held)" true)"
+
+echo "case: a label that names no held job turns on nothing"
+for label in lane:no_such_output lane:typecheck lane:envoy-go "${first#* }x" "${first%% *}" lane:; do
   got=$(outputs --event pull_request --label "$label")
   check "$label leaves every output as an unlabelled pull request has it" "$(is "$got" "$baseline")"
 done
@@ -124,47 +145,47 @@ done
 # `|`, which the sed below delimits with).
 broken_copy() {
   mkdir -p "$1/.github/workflows"
-  cp "$repo/.github/ci-filters.yaml" "$1/.github/ci-filters.yaml"
+  cp "$repo/.github/ci-areas.yaml" "$1/.github/ci-areas.yaml"
   sed -E "/^ +$2: /s|$3|$4|" "$repo/.github/workflows/ci.yaml" > "$1/.github/workflows/ci.yaml"
   cmp -s "$repo/.github/workflows/ci.yaml" "$1/.github/workflows/ci.yaml" && echo "broken_copy: $2 has no $3" >&2
   echo "$1/.github/workflows/ci.yaml"
 }
 
 echo "case: an output whose full-ci literal is broken stays in the set and fails the full-ci case"
-broken=$(broken_copy "$work/no-full-ci" envoy_go_race_api "'full-ci'" "'full-cj'")
+broken=$(broken_copy "$work/no-full-ci" pi-held "'full-ci'" "'full-cj'")
 check "the copy differs from ci.yaml" "$(is "$(cmp -s "$broken" "$repo/.github/workflows/ci.yaml" && echo same)" "")"
 check "the set keeps all ${#held[@]}" "$(is "$(held_of "$broken" | wc -l)" "${#held[@]}")"
-check "full-ci leaves exactly envoy_go_race_api off" "$(is "$(off_under "$broken" full-ci | tr '\n' ' ')" "envoy_go_race_api ")"
+check "full-ci leaves exactly pi-held off" "$(is "$(off_under "$broken" full-ci | tr '\n' ' ')" "pi-held ")"
 
 echo "case: an output whose lane literal is broken fails its lane row"
-broken=$(broken_copy "$work/no-lane" envoy_smoke "'lane:envoy_smoke'" "'lane:envoy_smokx'")
+broken=$(broken_copy "$work/no-lane" go-envoy-held "'lane:envoy_smoke'" "'lane:envoy_smokx'")
 check "the set keeps all ${#held[@]}" "$(is "$(held_of "$broken" | wc -l)" "${#held[@]}")"
-check "lane:envoy_smoke leaves it off" "$(is "$(off_under "$broken" lane:envoy_smoke | grep -c '^envoy_smoke$')" 1)"
+check "lane:envoy_smoke leaves it off" "$(is "$(off_under "$broken" lane:envoy_smoke | grep -c '^go-envoy-held$')" 1)"
 check "full-ci still turns it on" "$(is "$(off_under "$broken" full-ci | tr '\n' ' ')" "")"
 
 echo "case: an output whose event term is broken stays in the set and fails the merge-group case"
-broken=$(broken_copy "$work/no-event" envoy_go_race "github.event_name != 'pull_request'" "github.event_name == 'workflow_dispatch'")
+broken=$(broken_copy "$work/no-event" scripts-held "github.event_name != 'pull_request'" "github.event_name == 'workflow_dispatch'")
 check "the copy differs from ci.yaml" "$(is "$(cmp -s "$broken" "$repo/.github/workflows/ci.yaml" && echo same)" "")"
 check "the set keeps all ${#held[@]}" "$(is "$(held_of "$broken" | wc -l)" "${#held[@]}")"
-check "a merge group leaves exactly envoy_go_race off" \
-  "$(is "$(not_value "$broken" true --event merge_group | tr '\n' ' ')" "envoy_go_race ")"
+check "a merge group leaves exactly scripts-held off" \
+  "$(is "$(not_value "$broken" true --event merge_group | tr '\n' ' ')" "scripts-held ")"
 
 echo "case: an output that reads the labels through the whole pull request is refused, never missed"
-broken=$(broken_copy "$work/whole-pr" envoy_smoke \
-  "contains\(github\.event\.pull_request\.labels\.\*\.name, 'lane:envoy_smoke'\)" \
-  "contains(toJSON(github.event.pull_request), 'lane:envoy_smoke')")
+broken=$(broken_copy "$work/whole-pr" web-cold \
+  "contains\(github\.event\.pull_request\.labels\.\*\.name, 'lane:web_cold'\)" \
+  "contains(toJSON(github.event.pull_request), 'lane:web_cold')")
 check "the copy differs from ci.yaml" "$(is "$(cmp -s "$broken" "$repo/.github/workflows/ci.yaml" && echo same)" "")"
 set +e
 err=$("$script_dir/ci_router_outputs.py" "$broken" --event pull_request 2>&1 >/dev/null)
 status=$?
 set -e
 check "exits 2" "$(is "$status" 2)"
-check "names envoy_smoke and the read" \
-  "$(contains "$err" 'output envoy_smoke: context github.event.pull_request is outside the modelled contexts')"
+check "names web-cold and the read" \
+  "$(contains "$err" 'output web-cold: context github.event.pull_request is outside the modelled contexts')"
 
 echo "case: an expression this reader does not model is refused, never read as false"
 mkdir -p "$work/.github/workflows"
-printf 'f: []\n' > "$work/.github/ci-filters.yaml"
+printf 'f: []\n' > "$work/.github/ci-areas.yaml"
 cat > "$work/.github/workflows/ci.yaml" <<'YAML'
 jobs:
   changes:

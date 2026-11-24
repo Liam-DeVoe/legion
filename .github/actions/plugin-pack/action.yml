@@ -23,6 +23,7 @@ description: >-
   restore, since the step compiles internal/daemon's test binary, the same build the go-daemon race
   step makes; and gotestsum. No database, no tmux, no uv and no container image: the tests start
   none of them.
+# why: .github/ci-notes/ci.md#the-plugin-pack-job
 runs:
   using: composite
   steps:

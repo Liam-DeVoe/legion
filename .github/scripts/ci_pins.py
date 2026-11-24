@@ -19,9 +19,10 @@ stop saying what the pin says:
             LIVE_GROUPS' action whose -run selects one group.
   EVENT_GATES   rule 28: the gates on the event or a label that R9 names, each where it is.
   ARM_JOBS   rule 26: a job whose runner is part of what it proves.
-  MAIN_CHECK_RUN_NAMES   rule 30: the check-run names of ci.yaml at main 51d1a21ff7 (the plan's
-            Appendix A), each of which the layout still carries, but ci-filters / ci-filters,
-            whose job R9 deletes.
+  MAIN_CHECK_RUN_NAMES   rule 30: the check-run names of ci.yaml at main 51d1a21ff7 and those later
+            commits of main add (the plan's Appendix A), each of which the layout still carries,
+            but ci-filters / ci-filters, whose job R9 deletes.
+  CARRIER_NAMES   rule 32: the carriers whose old name is not `<base> / <base>`, by base.
   TIMED_STEPS   rule 31: the steps that carried a step-level timeout-minutes at main 51d1a21ff7
             and in the jobs this change added (the plan's Appendix B), each where it stands now
             and how many of it there are.
@@ -83,11 +84,20 @@ EVENT_GATES = [
     # dispatch-two-builds-same runs on a merge group alone (a leg the matrix excludes otherwise).
     (".github/workflows/ci.yaml", "go-envoy-held", "strategy.matrix.exclude",
      "github.event_name != 'merge_group' && 'dispatch-two-builds-same' || ''"),
+    # dispatch-browser-pr runs the pull-request lane of the browser suite on a pull request alone,
+    # beside dispatch-browser's full lane, which the merge queue runs (main's #5175).
+    (".github/workflows/ci.yaml", "dispatch-browser-pr", None, "github.event_name == 'pull_request'"),
     # worker-image.yaml's attestation of a pushed image, which its pull-request build never asks for.
     (".github/workflows/worker-image.yaml", "attest", None, "github.event_name != 'pull_request'"),
 ]
 
 ARM_JOBS = {"airlock-arm": "ubuntu-24.04-arm"}
+
+# Rule 32: a carrier whose old check-run name is not `<base> / <base>` for the legs it reads,
+# by the base of those legs. main's #5077 named its race job `daemon-go / daemon-go-race`; the
+# race step passes 22 minutes in one leg, so it is split into `daemon-go-race (i/2)` legs
+# (departure 10) under a carrier that keeps main's name.
+CARRIER_NAMES = {"daemon-go-race": "daemon-go / daemon-go-race"}
 
 MAIN_CHECK_RUN_NAMES = [
     "changes", "lint / lint", "lint / private-names", "ci-images / ci-images", "tool-fallback / tool-fallback",
@@ -109,6 +119,11 @@ MAIN_CHECK_RUN_NAMES = [
     "envoy-e2e-local / envoy-e2e-local", "envoy-session-stall / envoy-session-stall",
     "proof-sdk-offline / proof-sdk-offline", "worker-image / build", "worker-image / attest",
     "browser-image / build", "browser-image / attest", "pr-title", "cancel-started", "ci-ok",
+    # The names main's commits after 7cb1f229367c add (the plan's Appendix A, t35): #5077's race job
+    # and #5175's pull-request halves.
+    "daemon-go / daemon-go-race", "tooling-checks / tooling-checks", "pi-legion-build / pi-legion-build",
+    "envoy-go-build / envoy-go-build", "envoy-infra-build / envoy-infra-build", "dispatch-browser-pr / binaries",
+    "dispatch-browser-pr / shard", "dispatch-browser-pr / embedder", "dispatch-browser-pr / merge",
 ]
 
 CI = ".github/workflows/ci.yaml"
@@ -121,8 +136,8 @@ _ARM = {"if": "matrix.arm"}
 TIMED_STEPS = (
     [(CI, "tool-fallback", {**_X64, "uses": f"./.github/actions/{action}"}, 11, count)
      for action, count in (("install-changie", 3), ("install-crane", 3), ("install-docker-plugin", 4),
-                           ("install-elan", 3), ("install-jj", 3), ("install-pulumi", 3), ("install-uv", 3),
-                           ("setup-bun", 3))]
+                           ("install-elan", 3), ("install-helm", 3), ("install-jj", 3), ("install-pulumi", 3),
+                           ("install-uv", 3), ("setup-bun", 3))]
     + [(CI, "tool-fallback", {**_X64, "uses": f"./base/.github/actions/{action}"}, 11, 1)
        for action in ("install-changie", "install-crane", "install-elan", "install-jj", "install-pulumi",
                       "install-uv", "setup-bun")]

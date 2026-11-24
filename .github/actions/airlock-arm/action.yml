@@ -26,6 +26,7 @@ inputs:
   leg:
     description: The leg of ci.yaml's airlock-arm job, k9 or lease, the part of its check-run name after `airlock-arm / `.
     required: true
+# why: .github/ci-notes/ci.md#the-airlock-arm-job
 runs:
   using: composite
   steps:

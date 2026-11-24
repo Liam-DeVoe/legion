@@ -7,6 +7,7 @@ description: >-
   pushes; this action logs in with the job's token. It runs on ubuntu-24.04-arm, after the job's
   checkout.
 # why: .github/ci-notes/ci.md#the-ci-images-job
+# why: .github/ci-notes/ci.md#the-ci-images-job
 runs:
   using: composite
   steps:

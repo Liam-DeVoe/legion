@@ -1,5 +1,6 @@
 name: Worker Image
 
+# why: .github/ci-notes/ci.md#the-worker-images-pull-request-build
 on:
   # release.yaml calls this file twice in one run: once with skip_attest, which builds and pushes
   # the image's sha- tag, and once with attest_digest set to the digest that call pushed, which

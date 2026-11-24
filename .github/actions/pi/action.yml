@@ -1,0 +1,27 @@
+name: The pi job's leg
+description: >-
+  The steps of a leg of ci.yaml's pi job: the action of .github/actions/pi/<leg> that `leg` names.
+  The installs that write into $GITHUB_ENV (install-omp, install-claude-code, install-codex) stay
+  steps of ci.yaml before this one.
+# why: .github/ci-notes/ci.md#the-pi-job-and-its-legs
+inputs:
+  leg:
+    description: The leg of the job's matrix (`matrix.leg`), which names the action this step runs.
+    required: true
+  nats-port:
+    description: The host port Docker mapped the job's NATS service's 4222 to, for the pi-envoy leg.
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - if: inputs.leg == 'pi-shared'
+      uses: ./.github/actions/pi/pi-shared
+    - if: inputs.leg == 'pi-envoy'
+      uses: ./.github/actions/pi/pi-envoy
+      with:
+        nats-port: ${{ inputs.nats-port }}
+    - if: inputs.leg == 'pi-legion-build'
+      uses: ./.github/actions/pi/pi-legion-build
+    - if: inputs.leg == 'claude-envoy'
+      uses: ./.github/actions/pi/claude-envoy

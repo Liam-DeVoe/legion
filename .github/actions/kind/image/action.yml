@@ -11,6 +11,7 @@ description: >-
   (scripts/e2e/leak-guard-image-probe.sh) runs in that image on the kind job's leak-guard leg,
   loaded from the archive, so it is off the path every other leg waits on. The kind filter of
   .github/ci-areas.yaml names every file the build and that test read.
+# why: .github/ci-notes/ci.md#the-kind-image-job
 runs:
   using: composite
   steps:

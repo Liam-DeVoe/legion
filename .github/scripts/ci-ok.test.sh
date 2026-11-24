@@ -150,8 +150,15 @@ unmatched_selects=$(with_verdicts "$selects" \
 # pointed at the stand-in above: the head its check runs are on, the run they must belong to, and
 # gh-read.sh's retry delay turned off. GITHUB_STEP_SUMMARY is a fresh file of each case, never the
 # summary of the job running this harness, and step_summary is what ci-ok.sh wrote to it.
+# The case workflow's changes job holds the label terms of the held outputs docs and
+# envoy_client, as ci.yaml's write them, which ci-ok.sh reads for the labels a not-run line names
+# (ci-ok.jq, hold_labels).
 cat >"$work/ci.yaml" <<'YAML'
 jobs:
+  changes:
+    outputs:
+      docs: ${{ github.event_name != 'pull_request' && 'true' || (contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:docs')) && steps.filter.outputs.docs || 'false' }}
+      envoy_client: ${{ github.event_name != 'pull_request' && 'true' || (contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_client')) && steps.filter.outputs.envoy_client || 'false' }}
   typecheck: {runs-on: ubuntu-24.04-arm}
   envoy-client: {runs-on: ubuntu-24.04-arm}
 YAML
@@ -286,6 +293,19 @@ check "names envoy-client with its output's label" \
 check "and no label named for the job id" "$(is "$(contains "$out" 'lane:envoy-client')" false)"
 check "and names docs, whose filter said no, nowhere as not run" \
   "$(is "$(contains "$out" 'not run at this head: docs')" false)"
+
+echo "case: the not-run line names every label the held output's terms name, and no other"
+# Two lane labels lift docs here, as two of main's labels lift one held job of the layout: the line
+# names both, read off the changes job's terms, and no label the terms do not hold.
+cp "$workflow" "$work/ci-two-labels.yaml"
+sed -i "s/'lane:docs')) \&\& steps.filter.outputs.docs/'lane:docs') || contains(github.event.pull_request.labels.*.name, 'lane:docs_more')) \&\& steps.filter.outputs.docs/" "$work/ci-two-labels.yaml"
+saved=$workflow
+workflow=$work/ci-two-labels.yaml
+run_ci_ok "$(needs success "$gated_selects" success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"
+workflow=$saved
+check "passes" "$(is "$status" 0)"
+check "names full-ci and both lane labels" \
+  "$(contains "$out" '^not run at this head: docs (selected by paths, held back on a pull request without full-ci, lane:docs or lane:docs_more; runs in the merge queue)$')"
 
 echo "case: docs' paths did not match on a pull request, where the label would have changed nothing"
 run_ci_ok "$(needs success "$unmatched_selects" success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"

@@ -1,0 +1,19 @@
+name: The scripts job's leg
+description: >-
+  The steps of a leg of ci.yaml's scripts job: the action of .github/actions/scripts/<leg> that
+  `leg` names.
+inputs:
+  leg:
+    description: The leg of the job's matrix (`matrix.leg`), which names the action this step runs.
+    required: true
+runs:
+  using: composite
+  steps:
+    - if: inputs.leg == 'tooling-checks'
+      uses: ./.github/actions/scripts/tooling-checks
+    - if: inputs.leg == 'private-names-port'
+      uses: ./.github/actions/scripts/private-names-port
+    - if: inputs.leg == 'conflicts-script'
+      uses: ./.github/actions/scripts/conflicts-script
+    - if: inputs.leg == 'sessions-script'
+      uses: ./.github/actions/scripts/sessions-script

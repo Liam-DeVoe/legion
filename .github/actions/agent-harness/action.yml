@@ -29,6 +29,7 @@ inputs:
   leg:
     description: The leg of ci.yaml's agent-harness job, the part of its check-run name after `agent-harness / `.
     required: true
+# why: .github/ci-notes/ci.md#the-agent-harness-job-and-its-legs
 runs:
   using: composite
   steps:

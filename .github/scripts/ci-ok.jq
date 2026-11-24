@@ -21,7 +21,23 @@
 # accepts its skip exactly as before. `gated` marks it, so ci-ok.sh can name it apart from the
 # jobs that ran: its paths chose it and it did not run at this head.
 def output_of($job; $map): $map[$job] // $job;
-def selection($job; $map; $out; $pr; $event):
+
+# The labels that lift each held output's hold on a pull request, read off the workflow's changes
+# job (its JSON, as `yq -o=json` gives it): every label a
+# `contains(github.event.pull_request.labels.*.name, '<label>')` term of the output's expression
+# names, full-ci first as the expressions write it. ci-ok.sh hands the map to selection below, so
+# the labels a not-run line names are the terms the changes job tests and no list beside them.
+def hold_labels:
+  (.jobs.changes.outputs // {})
+  | with_entries(.value |= [tostring | match("contains\\(github\\.event\\.pull_request\\.labels\\.\\*\\.name, '([^']+)'\\)"; "g") | .captures[0].string]);
+
+# A held job's labels as the not-run line says them: "full-ci, lane:a or lane:b".
+def label_words($labels):
+  if ($labels | length) == 0 then "any label"
+  elif ($labels | length) == 1 then $labels[0]
+  else ($labels[:-1] | join(", ")) + " or " + $labels[-1] end;
+
+def selection($job; $map; $out; $pr; $event; $holds):
   output_of($job; $map) as $output
   | ($out[$output] // "unset") as $value
   | ($pr | any(. == $job)) as $pr_only
@@ -29,7 +45,7 @@ def selection($job; $map; $out; $pr; $event):
   | if $value != "true" then
       if $event == "pull_request" and $verdicts[$output] == "true" then
         {selected: false, gated: true,
-         why: "selected by paths, held back on a pull request without full-ci or lane:\($output): runs in the merge queue"}
+         why: "selected by paths, held back on a pull request without \(label_words($holds[$output] // [])): runs in the merge queue"}
       else {selected: false, why: "needs.changes.outputs.\($output) is \($value)"}
       end
     elif $pr_only and $event != "pull_request" then

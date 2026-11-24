@@ -46,7 +46,7 @@ go-daemon:
   - &dm [*pd, *pe, *gw, *ni] # pkg+mod go-test.sh ./... in packages/daemon, which requires packages/envoy
   - [*omp, *b3] # test install-omp, setup-bun
   - [packages/contracts/fixtures/**, packages/pi-legion/agents/**, packages/pi-legion/package.json, packages/pi-envoy/package.json, skills/legion-worker/**] # test internal/classify, prompts
-  - [*e2l, scripts/e2e/stage1-skeleton.sh, *k8s] # test internal/daemon, config
+  - [*e2l, scripts/e2e/stage1-skeleton.sh, *k8s, docs/deployment.md] # test internal/daemon, config, capabilities
   - &o2 .github/actions/go-daemon/** # own
 plugin-pack:
   - *dm # pkg+mod go test ./internal/daemon/
@@ -73,19 +73,20 @@ go-envoy-held:
   - [*di, packages/daemon/docker/legion-testpg, &its packages/daemon/internal/intake/testdata/**, *tpn] # test envoy-smoke
   - '**/*.md' # test the corpus tests read every tracked markdown file (git ls-files)
   - &o7 .github/actions/go-envoy-held/** # own
-ts:
+ts: &tsa # ts and web-cold
   - [*tsp, *cc, *dsp] # pkg contracts, envoy-client, dispatch-ui...
   - *bun # test bun install
   - ['**/AGENTS.md', &dss docs/site/src/**, *sk, *tpn, *its] # test the guide tests, dispatch-ui
   - [packages/envoy/internal/dispatch/**, packages/envoy/**/testdata/**, packages/envoy/internal/contracts/generated.go, packages/envoy/listenerwire/envelope_generated.go, packages/envoy/scripts/fixtures/**, packages/envoy/cmd/dispatch/*.md] # test dispatch-ui, contracts
+  - [packages/envoy/scripts/lib/pg-url.sh, scripts/e2e/lib/held-port.py, .github/workflows/dispatch-unit-repeat.yaml] # test the harness's psql, unit-repeat
   - &o8 .github/actions/ts/** # own
-pi: # pi and claude-envoy-names
+pi: &pa # pi, pi-held and claude-envoy-names
   - [*tsp, *plug, *cl, *cc, *tf] # pkg+ws bun run test in each plugin
   - [*bun, *dm, *sk, *e2l, *pp, *tpn, *omp, *pins] # test pi-legion builds the daemon; packs
   - [packages/dispatch/e2e/**, packages/dispatch/web/src/api/**, *dss, *k8s, &k8m docs/kubernetes.md] # test pi-legion, claude-envoy
   - [*ag, .claude-plugin/**, &gi .gitignore, &bj biome.json, &am AGENTS.md, README.md] # test biome check, build-inputs.test.ts
   - &o9 [.github/scripts/release-claude-envoy-*.sh, .github/actions/private-names-packed-plugin/**, .github/actions/pi/**] # own verify-build, names check
-dispatch-browser:
+dispatch-browser: &dba # dispatch-browser and dispatch-browser-pr
   - [*dsp, *tsp, *cc] # pkg+ws playwright in packages/dispatch
   - [*bun, *dm, &hp scripts/e2e/lib/held-port.py, *tpn] # test the suite builds cmd/dispatch
   - &bd [&dk .github/docker/**, .github/ci-images.yaml, &biw .github/workflows/browser-image.yaml] # test the browser image it runs
@@ -105,19 +106,19 @@ ci-images:
 tool-fallback:
   - [*b3, packages/daemon/docker/worker.Dockerfile] # test the pins it reads
   - *ctl # own
-  - &tfo [.github/scripts/tool-fallback-*.sh, .github/scripts/ci-tools-proof.sh, .github/scripts/check-ci-tools.sh, .github/actions/tool-fallback/**] # own
+  - &tfo [.github/scripts/tool-fallback-*.sh, .github/scripts/ci-tools-proof.sh, .github/scripts/check-ci-tools.sh, .github/actions/tool-fallback/**, &ihl .github/actions/install-helm/**] # own
 notices:
   - [*pd, *pe, *gw] # mod go-third-party-notices.sh over the release targets
   - [scripts/go-third-party-notices.sh, &tgt .github/*targets*.json] # test its script, target lists
   - &o10 [.github/scripts/go-release-notices.sh, .github/actions/notices/**] # own
-scripts:
+scripts: &sca # scripts and scripts-held
   - &scr scripts/** # pkg bun test scripts/...
   - [*cl, *tsp, *cc, *tf] # pkg+ws verify-build in packages/claude-envoy
   - [*bun, *pd, *pe, *gw, *plug, *dsp, *sk] # test changie; private-names-port go build; race-unit.sh
   - [*am, *bj, *gi, *k8m] # test semantic-line-breaks, biome
   - [*bd, *tgt, .github/ci-notes/README.md] # test check-ci-images.test.sh, check-workflow-files.test.sh
   - &gh [*wiw, *o1, *o2, *o3, *o4, *o5, *o6, *o7, *o8, *o9, *dbo, *dow, *cip, *biw, *cio, *ctl, *tfo, *o10, .github/actions/*-check/**, .github/scripts/*.test.sh, .github/scripts/testdata/**, .github/actions/scripts/**, .github/actions/go-envoy/**, .github/actions/text-checks/**] # own harnesses; test go-test-step-expansion
-go-envoy:
+go-envoy: &gea # go-envoy and envoy-held
   - *ew # pkg+mod go test in packages/envoy, infra
   - [packages/daemon/internal/claim/*, packages/daemon/internal/controller/*, packages/daemon/internal/notify/*, packages/daemon/internal/redact/*] # test architecture-check
   - [*bun, *tsp, *cc, *cl, *plug, *tf] # pkg+ws envoy-session-stall
@@ -125,10 +126,15 @@ go-envoy:
   - [*sk, *omp, .claude-code-pin, packages/daemon/docker/worker.Dockerfile, packages/dispatch/e2e/fake-*.ts, packages/dispatch/e2e/harness-ports.ts] # test session-stall's rig
   - *dsp # test read-token-live.ts, the dispatch:local stack it reads
   - [*scr, &dsa .dispatch/**, *tgt] # test spec-check guard, architecture-check, build-envoy-command.sh
-  - *gh # test spec-check guard; own go-envoy/**
+  - [*gh, *ihl] # test spec-check guard, cluster.test.sh's helm; own go-envoy/**
 text-checks: # credential_argument_test.go reads every text file
   - [*cc, *cl, *tsp, *plug, *dsp, *pd, *pe] # pkg+test internal/textcheck
   - [*scr, *sk, docs/**, deploy/**, *b4, *dsa, *ag, .claude-plugin/**, .superpowers/**, .github/ci-notes/**] # test
   - ['!docs/plans/**', '!docs/superpowers/**'] # no text check reads them
   - [*b3, *pins, *di, *gi, .mcp.json, *omp, '*.md', LICENSE, *bj, *b2, *gw, *b1] # test
   - [*gh, *bd, *tgt] # test; own text-checks/**
+scripts-held: *sca
+pi-held: *pa
+web-cold: *tsa
+dispatch-browser-pr: *dba
+envoy-held: *gea

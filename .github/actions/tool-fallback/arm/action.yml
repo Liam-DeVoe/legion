@@ -26,6 +26,7 @@ inputs:
       The point of the leg this step follows: `start`, `healthy-bun`, `healthy`, `faulted-bun`,
       `faulted-crane`, `faulted-changie`, `faulted-jj` or `faulted-elan`.
     required: true
+# why: .github/ci-notes/ci.md#the-arm64-half-of-the-tool-fallback-proof
 runs:
   using: composite
   steps:

@@ -107,8 +107,9 @@
 # line reads `<job>: skipped (...)` among the jobs that ran, and the pass line says every job
 # changes selected succeeded, so a reader of a green ci-ok could take it for a job that passed.
 # So after the verdict, pass or fail, each such job gets a line of its own, `not run at this head:
-# <job> (selected by paths, held back on a pull request without full-ci or lane:<output>; runs in
-# the merge queue)`, naming the job's own `changes` output, and the job summary lists those lines
+# <job> (selected by paths, held back on a pull request without full-ci or lane:<a> or lane:<b>;
+# runs in the merge queue)`, naming each label the job's `changes` output tests (ci-ok.jq,
+# hold_labels, reads them off the workflow's own terms), and the job summary lists those lines
 # apart from the jobs that ran and passed. No job runs in part: each runs all its steps wherever
 # it runs, or its own output skips it, so a success is the whole job's. A run that held nothing
 # back writes no summary: only a pull request can hold a job back, so ci-ok-report.sh's
@@ -186,7 +187,7 @@ read -r -d '' program <<'JQ' || true
 include "ci-ok";
 (.changes.outputs // {}) as $out
 | (.changes.result // "") as $changes_result
-| def selection($job): selection($job; $map; $out; $pr; $event);
+| def selection($job): selection($job; $map; $out; $pr; $event; $holds);
   def killed($job): $shutdown | any(. == $job);
   def result($job; $result):
     if $result == "failure" and killed($job) then "cancelled" else $result end;
@@ -225,7 +226,7 @@ include "ci-ok";
         (select($result == "failure" and missed_by_filters($job; $map; $out; $event))
          | ["note", "\($job) failed, and no pull request that changes this merge group's files runs it: the filters, given those files, do not select it (filter_verdicts gives \($output) false, and no changed file is one no filter names); read its filter for a file its tests read that the filter misses, and its test for a flake"]),
         (select($s.gated and $result == "skipped")
-         | ["not_run", "not run at this head: \($job) (selected by paths, held back on a pull request without full-ci or lane:\($output); runs in the merge queue)"]),
+         | ["not_run", "not run at this head: \($job) (selected by paths, held back on a pull request without \(label_words($holds[$output] // [])); runs in the merge queue)"]),
         if $result == "absent" then
           ["error", "\($job) is absent from NEEDS, but needs.changes.outputs.\($output) selects it; the ci-ok job's toJSON(needs) and ci-ok-report.sh both give every job ci-ok judges a result, so this is a defect of whichever of them built NEEDS"]
         elif $s.selected and $result != "success" then
@@ -240,8 +241,14 @@ include "ci-ok";
     ($map | keys_unsorted[] | select(. as $job | $needs | has($job) | not) | rows(.; "absent"))
 | @tsv
 JQ
+# The labels that lift each held output's hold, read off the changes job's own terms in the
+# workflow (ci-ok.jq, hold_labels), for the line naming a job a pull request held back.
+if ! holds=$(yq -o=json '.' "$workflow" | jq -c -L "$script_dir" 'include "ci-ok"; hold_labels' 2>&1); then
+  echo "::error::ci-ok.sh cannot read the label terms of $workflow's changes outputs: $holds"
+  exit 1
+fi
 rows=$(jq -L "$script_dir" -r --arg event "$EVENT" --argjson map "$SELECTED_BY" --argjson pr "$PULL_REQUEST_ONLY" \
-  --argjson always "$ALWAYS_RUN" --argjson shutdown "$shutdown" "$program" <<<"$NEEDS")
+  --argjson always "$ALWAYS_RUN" --argjson shutdown "$shutdown" --argjson holds "$holds" "$program" <<<"$NEEDS")
 
 errors=()
 notes=()

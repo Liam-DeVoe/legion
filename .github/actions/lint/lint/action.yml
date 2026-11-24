@@ -5,6 +5,7 @@ description: >-
   needs (.github/scripts/check-test-reach.sh) among them, and the checks of the CI layout and its
   workflow files. The job tests no output of the changes job, so a change anywhere starts it.
   The leg runs on ubuntu-24.04-arm, after the job's checkout.
+# why: .github/ci-notes/ci.md#the-lint-job-and-its-legs
 runs:
   using: composite
   steps:

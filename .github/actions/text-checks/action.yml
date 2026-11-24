@@ -27,6 +27,7 @@ description: >-
   86 s of the fifth call). setup-go caches nothing either (`cache: false`). Each go test runs
   under gotestsum through .github/scripts/go-test.sh, its jsonfile uploaded as
   go-test-text-checks-text-checks-<step>.
+# why: .github/ci-notes/ci.md#the-text-checks-job
 runs:
   using: composite
   steps:

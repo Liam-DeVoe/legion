@@ -1,0 +1,27 @@
+name: The envoy-held job's leg
+description: >-
+  The steps of a leg of ci.yaml's envoy-held job, go-envoy's held part, which the merge queue
+  runs, and a pull request with full-ci or one of the job's lane labels: the action of
+  .github/actions/go-envoy/<leg> that `leg` names.
+# why: .github/ci-notes/ci.md#the-envoy-held-job-and-its-legs
+inputs:
+  leg:
+    description: The leg of the job's matrix (`matrix.leg`), which names the action this step runs.
+    required: true
+  postgres:
+    description: The id of the job's Postgres service container, for the envoy-session-proofs leg.
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - if: inputs.leg == 'envoy-go-checks'
+      uses: ./.github/actions/go-envoy/envoy-go-checks
+    - if: inputs.leg == 'envoy-infra-go'
+      uses: ./.github/actions/go-envoy/envoy-infra-go
+    - if: inputs.leg == 'envoy-session-proofs'
+      uses: ./.github/actions/go-envoy/envoy-session-proofs
+      with:
+        postgres: ${{ inputs.postgres }}
+    - if: inputs.leg == 'envoy-e2e-refill'
+      uses: ./.github/actions/go-envoy/envoy-e2e-refill
