@@ -2,10 +2,13 @@ package workflow
 
 import (
 	"context"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -260,5 +263,211 @@ func TestACheckOfTheRunThatHoldsTheIssueLooksWhileItRuns(t *testing.T) {
 				t.Fatalf("the check at its bound = %+v, want it closed as not run", got)
 			}
 		})
+	}
+}
+
+// lookStarts is each start row of key that starts a look of a production check, oldest first.
+func lookStarts(t *testing.T, pool *pgxpool.Pool, key string) []record.SuperviseRequest {
+	t.Helper()
+	var looks []record.SuperviseRequest
+	for _, start := range superviseRowsOf(t, pool, key, "start") {
+		if start.CheckLook > 0 {
+			looks = append(looks, start)
+		}
+	}
+	return looks
+}
+
+// Each merge of a task opens its own production check, and its looks run while the issue's other
+// tasks go on. Of a (merges) at its merge and b (no needs) at its first step, under
+// `production_check: tester`, a's pull request merges: one check is open, of the issue's run, of
+// a's merge commit and of task a, with its first look started. That look's pending names a wake and
+// suspends nobody, since the issue is in the workflow, and the wake starts look 2 while b still
+// implements. b stands where it stood all along: no task waits for a check. Then b reaches its
+// merge and its pull request merges, which ends the issue: a second check opens beside the first,
+// and both are open.
+//
+// The fault it catches is a merge that is not the issue's last opening no check, so its work goes
+// unchecked in production until the issue's last merge (its control: closeMerged with no openCheck
+// at such a merge, under which a's merge opens none).
+func TestEachMergeOpensACheckAndItsLooksRunWhileTheIssueRuns(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	clock := &checkClock{now: stepClock}
+	engine.cfg.Clock, engine.cfg.ProductionCheckBound = clock.Now, checkBound
+	root := stepRoot(t, pool, phase.Implementing)
+	seedAAndB(t, pool, engine, root.Key, root.Generation, atMerge, atStep(1), 45)
+	b := tasksOf(t, pool, engine, root.Key)["b"]
+	apply := applyFacts(t, pool, engine)
+
+	mustSpend(t, "the merge of a's pull request", apply("merged-a", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-a"}))
+	checks := checksOfIssue(t, checkRig{pool: pool}, root.Key)
+	if len(checks) != 1 || !checks[0].Open() || checks[0].Generation != root.Generation || checks[0].MergeSHA != "merge-a" || checks[0].Task != "a" ||
+		checks[0].Looks != 1 || !checks[0].LookOpen {
+		t.Fatalf("the checks of %s after a's merge = %+v, want one open, of run %d, of a's merge-a and task a, at look 1 open", root.Key, checks, root.Generation)
+	}
+	check := checks[0]
+	if starts := lookStarts(t, pool, root.Key); len(starts) != 1 || starts[0].CheckLook != 1 || !starts[0].CheckOpenedAt.Equal(check.OpenedAt) {
+		t.Fatalf("the look starts of %s after a's merge = %+v, want one, of look 1 of the check opened at %s", root.Key, starts, check.OpenedAt)
+	}
+
+	wake := clock.now.Add(3 * time.Hour)
+	if result := apply("pending-1", intake.CheckReport{Issue: root.Key, Look: 1, Verdict: "pending", Summary: "the deploy has not carried merge-a",
+		WakeAt: &wake, OpenedAt: check.OpenedAt}); result.Refusal != nil {
+		t.Fatalf("look 1's pending = %+v, want it recorded", result.Refusal)
+	}
+	if rows := issueSuspensions(t, pool, root.Key); len(rows) != 0 {
+		t.Fatalf("the issue_suspend rows of %s after look 1's pending = %+v, want none: the issue is in the workflow", root.Key, rows)
+	}
+	if rows := superviseRowsOf(t, pool, root.Key, "suspend"); len(rows) != 0 {
+		t.Fatalf("the suspend rows of %s after look 1's pending = %+v, want none: the issue is in the workflow", root.Key, rows)
+	}
+	row := onlyWake(t, pool, root.Key)
+	if !row.nextAt.Equal(wake) {
+		t.Fatalf("the check_wake row of %s is due at %s, want the wake look 1 named, %s", root.Key, row.nextAt, wake)
+	}
+	due := decodeWake(t, row)
+	clock.now = wake
+	apply("wake", intake.CheckWakeDue{Issue: root.Key, Look: due.Look, OpenedAt: due.OpenedAt, Reason: due.Reason})
+	if starts := lookStarts(t, pool, root.Key); len(starts) != 2 || starts[1].CheckLook != 2 || !starts[1].CheckOpenedAt.Equal(check.OpenedAt) {
+		t.Fatalf("the look starts of %s at the wake = %+v, want look 2 of the check opened at %s started, not deferred", root.Key, starts, check.OpenedAt)
+	}
+	if got := tasksOf(t, pool, engine, root.Key)["b"]; !reflect.DeepEqual(got, b) {
+		t.Fatalf("task b after two looks of a's check = %+v, want it as it was, %+v: no task waits for a check", got, b)
+	}
+
+	taskMoves(t, pool, engine, root.Key, "b", TriggerImplementationReady, "")
+	taskMoves(t, pool, engine, root.Key, "b", TriggerRetroCompleted, "")
+	assertTask(t, tasksOf(t, pool, engine, root.Key), "b", record.TaskRunning, atMerge)
+	mustSpend(t, "the merge of b's pull request", apply("merged-b", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 45, MergeSHA: "merge-b"}))
+	if got := issueAt(t, pool, root.Key); got != phase.Done {
+		t.Fatalf("%s after b's merge stands in %s, want done: b's merge was its last", root.Key, got)
+	}
+	checks = checksOfIssue(t, checkRig{pool: pool}, root.Key)
+	if len(checks) != 2 || checks[0].MergeSHA != "merge-b" || checks[1].MergeSHA != "merge-a" {
+		t.Fatalf("the checks of %s after b's merge = %+v, want b's then a's", root.Key, checks)
+	}
+	for _, got := range checks {
+		if !got.Open() || got.Generation != root.Generation {
+			t.Fatalf("the check of %s after b's merge = %+v, want it open, of run %d", got.MergeSHA, got, root.Generation)
+		}
+	}
+}
+
+// A merge of a lingering tree's member that is not the member's last opens the check of that merge.
+// Of LEGION-209 under the lingering LEGION-208, a and c each merging by itself, a at its merge and c
+// at its first step, a's pull request merges: a is done, the member stays in the workflow, and one
+// check is open, of a's merge, whose first look is a wake of the checking role's claim, which the
+// linger suspended.
+//
+// The fault it catches is a lingering member's merge left unchecked until the member's last merge
+// (its control: the lingering branch of closeMerged returning with no openCheck where the merge is
+// not the last, under which no check opens).
+func TestALingeringMembersMergeThatIsNotItsLastOpensItsCheck(t *testing.T) {
+	pool := migratedPool(t)
+	engine, logged := loggedEngine()
+	until := stepClock.Add(time.Hour)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
+		Project: "LEGION", Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "U", LingerUntil: &until, LastDispatchSeq: 1})
+	child := stepChild(t, pool, heldParentChild, phase.Implementing, nil)
+	seedTasksAt(t, pool, child.Key, child.Generation,
+		taskAt{id: "a", state: record.TaskRunning, place: atMerge, number: 43, merges: true},
+		taskAt{id: "c", state: record.TaskRunning, place: atStep(1), number: 45, merges: true})
+
+	mustSpend(t, "the merge of a's pull request", applyFacts(t, pool, engine)("merged-a", mergedFact(43, "a")))
+	assertTask(t, tasksOf(t, pool, engine, child.Key), "a", record.TaskDone, atMerge)
+	if member := issueOf(t, pool, engine, child.Key); !record.InWorkflow(member) {
+		t.Fatalf("%s after a's merge stands in %s with status %q, want it in the workflow: c goes on", child.Key, member.Phase, member.Status)
+	}
+	checksAre(t, pool, child.Key, "merge-a")
+	if check := productionCheck(t, pool, child.Key); check == nil || !check.Open() || check.Looks != 1 || !check.LookOpen {
+		t.Fatalf("the check of %s after a's merge = %+v, want it open at look 1", child.Key, check)
+	}
+	opened := false
+	for _, line := range strings.Split(logged.String(), "\n") {
+		if strings.Contains(line, "production check opened") && strings.Contains(line, "issue="+child.Key) {
+			opened = strings.Contains(line, "firstLook=wake")
+		}
+	}
+	if !opened {
+		t.Fatalf("the log of a's merge = %q, want the check of %s opened with its first look a wake", logged.String(), child.Key)
+	}
+}
+
+// A re-entered child's next run opens no check of a merge of its earlier run. LEGION-209's run of
+// generation 3 merged task a's pull request #1, on the issue's own branch, and no check of that
+// merge exists. A person sets the child todo, which re-enters it at generation 4, whose plan is one
+// task a that has not started, so it holds the issue's own branch (record.StoredPlan.TasksOfBranch).
+// A person then sets it done before a opens a pull request: it holds no check. What keeps #1 out of
+// that leave is that a new generation deletes the issue's merged and closed pull requests
+// (record.Store.ClearGeneration); openCheck's compare with the issue's earlier checks has no check
+// of #1 to find here.
+//
+// The fault it catches is a merge of an earlier run read as a merge of the run that leaves, so its
+// check opens in a run that never made it (its control: a ClearGeneration that keeps merged rows,
+// under which the leave reads #1 as a's merge and opens a check of it).
+func TestAReenteredChildsNextRunOpensNoCheckOfTheEarlierRunsMerge(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Implementing)
+	seedTreeLifecycle(t, pool, root.Key)
+	parent := root.Key
+	child := record.Issue{Key: heldParentChild, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: root.Key, Project: "LEGION",
+		Title: heldParentChild, Parent: &parent, Phase: phase.Done, Generation: 3, Status: "done", DispatchStatus: "done", Rank: "V", LastDispatchSeq: 1}
+	seedIssue(t, pool, child)
+	seedTasksAt(t, pool, child.Key, child.Generation, taskAt{id: "a", state: record.TaskDone, place: atMerge, merges: true, number: 1, merged: true})
+	if got := productionChecksOf(t, pool, child.Key); len(got) != 0 {
+		t.Fatalf("premise: the checks of %s before its re-entry = %v, want none", child.Key, got)
+	}
+	apply := applyFacts(t, pool, engine)
+
+	apply("child-todo", statusMove(child.Key, root.Key, "todo", 2))
+	reentered := issueOf(t, pool, engine, child.Key)
+	if reentered.Generation != 4 || reentered.Phase != phase.Admitted {
+		t.Fatalf("premise: %s after the person's todo stands in %s at generation %d, want admitted at 4", child.Key, reentered.Phase, reentered.Generation)
+	}
+	seedTasks(t, pool, child.Key, reentered.Generation, planTask{id: "a", steps: []string{"implementer"}, agents: []claim.Agent{"implementer"}, state: record.TaskWaiting})
+	apply("child-done", statusMove(child.Key, root.Key, "done", 3))
+	if got := issueOf(t, pool, engine, child.Key); got.Phase != phase.Done {
+		t.Fatalf("premise: %s after the person's done stands in %s, want done", child.Key, got.Phase)
+	}
+	checksAre(t, pool, child.Key)
+}
+
+// A carried orphan's leave opens no second check of a merge whose check closed before the
+// hand-over. LEGION-208 stands as an orphan's re-admission that carries its run leaves it: a root of
+// its own at generation 4, its plan of a (merges) and b carried, a done at its merge with its pull
+// request #42 merged and carried to generation 4, b at its first step; the check of a's merge,
+// opened at generation 3, closed as recorded before the hand-over. A person sets it done: it holds
+// that one check of a's merge and no other.
+//
+// The fault it catches is a merge checked twice because the run that carried it reads the check of
+// its earlier generation as none of its own (its control: openCheck comparing only with the checks
+// of the issue's generation, under which a second check of a's merge opens).
+func TestACarriedOrphansLeaveOpensNoSecondCheckOfItsMerge(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	orphan := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
+		Project: "LEGION", Title: "orphan", Phase: phase.Implementing, Generation: 4, Status: "in_progress", Rank: "U", LastDispatchSeq: 1, HandedOver: true}
+	seedIssue(t, pool, orphan)
+	seedTasksAt(t, pool, orphan.Key, orphan.Generation,
+		taskAt{id: "a", state: record.TaskDone, place: atMerge, merges: true, number: 42, merged: true},
+		taskAt{id: "b", state: record.TaskRunning, place: atStep(1), number: 45})
+	if _, err := pool.Exec(context.Background(), "update pull_requests set generation = $2 where issue = $1", orphan.Key, orphan.Generation); err != nil {
+		t.Fatal(err)
+	}
+	opened, closed := stepClock.Add(-48*time.Hour), stepClock.Add(-24*time.Hour)
+	recorded := record.ProductionCheck{Issue: orphan.Key, Project: orphan.Project, Tree: orphan.Tree, Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-a",
+		Role: claim.RoleTester, OpenedAt: opened, BoundAt: opened.Add(checkBound), Looks: 1, LookWakeAt: &opened, LastWakeKind: wakeMerge,
+		LastWakeDetail: "merge-a", LastWakeAt: &opened, ClosedAt: &closed, Outcome: record.CheckRecorded, Generation: 3, Task: "a"}
+	seedRecord(t, pool, func(tx pgx.Tx) error { return record.NewStore().PutProductionCheck(t.Context(), tx, recorded) })
+
+	mustSpend(t, "the person's done", applyFacts(t, pool, engine)("done", statusMove(orphan.Key, "", "done", 2)))
+	if got := issueOf(t, pool, engine, orphan.Key); got.Phase != phase.Done {
+		t.Fatalf("premise: %s after the person's done stands in %s, want done", orphan.Key, got.Phase)
+	}
+	checks := checksOfIssue(t, checkRig{pool: pool}, orphan.Key)
+	if len(checks) != 1 || !checks[0].OpenedAt.Equal(opened) || checks[0].Open() || checks[0].Generation != 3 {
+		t.Fatalf("the checks of %s after its done = %+v, want the one of a's merge, closed at generation 3, and no other", orphan.Key, checks)
 	}
 }
