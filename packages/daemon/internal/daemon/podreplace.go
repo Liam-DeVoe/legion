@@ -3,10 +3,11 @@ package daemon
 // podreplace.go is the record of each replacement of an issue pod that may take a disk (R7 of
 // dispatch://INFRA-3271; GPT-6.1 Sol's points 1 and 2 on #5285 at 0259f8af, which INFRA-3118's
 // architect ruled fixes inside R7). The daemon writes the record before the runtime acts, keyed by
-// the issue and the pod's uid (store's pod_replacements): an update round's replacement in its last
-// word under the pod's launch turn (recordedDue), one a launch makes as the round's own as the
-// launch's reading of the round answers it (roundPodEndsAtLaunch), and a launch's own replacement
-// before its suspension (recordLaunchTakes, runtime.LaunchTakes). The record holds the read of the
+// the issue and the pod's uid (store's pod_replacements): an update round's replacement before the
+// call whose last word the runtime asks under the pod's launch turn (recordRoundReplacement,
+// recordedDue), one a launch makes as the round's own as the launch's reading of the round answers
+// it (roundPodEndsAtLaunch), and a launch's own replacement before its suspension
+// (recordLaunchTakes, runtime.LaunchTakes). The record holds the read of the
 // workspace made before the act. Once the act is made the record goes, in the transaction that
 // queues the issue's architect's workspace-taken notice where the read found work or failed
 // (finishReplacement), so the notice is queued exactly once whatever fails or stops between. A
@@ -102,19 +103,52 @@ func (r replacementRecord) taken(issue, pod string) runtime.TakenPod {
 	return taken
 }
 
-// recordedDue is due, a replacement's last word, followed by the write of the replacement's record,
-// recorded, for issue's pod: under the pod's launch turn and one statement before the suspension,
-// so a suspension that lands always has its record. A record that cannot be written refuses the
-// replacement, which then takes nothing.
+// recordRoundReplacement writes the record of round's replacement of issue's pod, made over read,
+// the round recording reasons (roundRecordOf), before the runtime is asked to act: through a
+// process (replacePodForRound) or by issue (replaceIssuePodForRound) before the call, and at a
+// launch (roundPodEndsAtLaunch) before the answer that has the launch suspend the pod. The record
+// is written before the last word, so the last word is the last decision before the suspension
+// (GPT-6.1 Sol's point 1 on #5285 at fa9deb04), and a pod the runtime finds gone at the call is a
+// replacement whose record stands, and whose notice goes out (INFRA-341's reviewer's minor point
+// 3). A record that cannot be encoded or written is logged, and nothing is replaced: a reading
+// nobody recorded may not delete a disk. It answers the record, and false where none is written.
+func (s *supervision) recordRoundReplacement(ctx context.Context, issue, round, pod, reasons string, read workspaceRead) ([]byte, bool) {
+	recorded, err := roundRecordOf(read, reasons)
+	if err == nil {
+		err = s.supervisor.store.RecordPodReplacement(ctx, s.plan.project, issue, pod, recorded)
+	}
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Error("supervise: write the record of this update round's replacement; nothing is replaced, and the round stays open",
+				"issue", issue, "round", round, "pod", pod, "replacer", read.by.String(), "error", err)
+		}
+		return nil, false
+	}
+	return recorded, true
+}
+
+// recordedDue is due, a replacement's last word, for issue's replacement of pod whose record,
+// recorded, the caller wrote before it called the runtime (recordRoundReplacement). The runtime
+// asks it under the pod's launch turn, one statement before the suspension. A last word that
+// refuses takes the record away again (forgetReplacement): the replacement takes nothing, and the
+// next sweep decides the round afresh.
 func (s *supervision) recordedDue(issue, pod string, recorded []byte, due func(context.Context) error) func(context.Context) error {
 	return func(ctx context.Context) error {
-		if err := due(ctx); err != nil {
-			return err
+		err := due(ctx)
+		if err != nil {
+			s.forgetReplacement(ctx, issue, pod, recorded)
 		}
-		if err := s.supervisor.store.RecordPodReplacement(ctx, s.plan.project, issue, pod, recorded); err != nil {
-			return fmt.Errorf("%w: the record of the replacement cannot be written: %w", errReplacementNotDue, err)
-		}
-		return nil
+		return err
+	}
+}
+
+// forgetReplacement takes away the record recorded of issue's replacement of pod, which the
+// runtime did not make. A store that refuses leaves it for the next sweep, which reads the pod
+// running and forgets it there (finishReplacements).
+func (s *supervision) forgetReplacement(ctx context.Context, issue, pod string, recorded []byte) {
+	if _, err := s.supervisor.store.ForgetPodReplacement(ctx, s.plan.project, issue, pod, recorded); err != nil && ctx.Err() == nil {
+		s.log.Error("supervise: forget the record of a replacement its last word refused; it stands, and the next sweep forgets it",
+			"issue", issue, "pod", pod, "error", err)
 	}
 }
 

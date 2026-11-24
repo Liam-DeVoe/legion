@@ -1152,12 +1152,12 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 		s.keepPodForRound(ctx, issue, round, pod, reasons, read, live)
 		return
 	}
-	// The replacement's record, written in its last word before the suspension (recordedDue) and
-	// finished with the architect's notice once the replacement is made (roundReplaced).
-	recorded, err := roundRecordOf(read, reasons)
-	if err != nil {
-		s.log.Error("supervise: encode the record of this update round's replacement; nothing was replaced and the round stays open",
-			"issue", issue, "round", round, "pod", pod, "error", err)
+	// The replacement's record, written before the call, so the last word the runtime asks under
+	// the pod's launch turn is the last decision before the suspension (recordRoundReplacement), and
+	// finished with the architect's notice once the replacement is made (roundReplaced). A last word
+	// that refuses takes it away again (recordedDue).
+	recorded, ok := s.recordRoundReplacement(ctx, issue, round, pod, reasons, read)
+	if !ok {
 		return
 	}
 	limited, done := context.WithTimeout(ctx, s.plan.orphanSweep)
@@ -1175,9 +1175,9 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 			return
 		}
 		if ctx.Err() == nil {
-			// The suspension may have landed before the call failed: the record written in the
-			// last word stands, and the next sweep finishes the replacement from it where the
-			// runtime shows the pod taken, or forgets it (finishReplacements).
+			// The suspension may have landed before the call failed: the record written before the
+			// call stands, and the next sweep finishes the replacement from it where the runtime
+			// shows the pod taken, or forgets it (finishReplacements).
 			s.log.Error("supervise: replace the pod of a finished update round; retrying at the next sweep, which finishes the replacement from its record where its suspension landed",
 				"issue", issue, "round", round, "pod", pod, "error", err)
 			s.tellLateRound(ctx, issue, live, round, pod, reasons, refusedReason(err), clock)
@@ -1776,18 +1776,18 @@ func (s *supervision) replaceIssuePodForRound(ctx context.Context, replace podRe
 		s.keepPodForRound(ctx, issue, round, pod, reasons, read, told)
 		return
 	}
-	recorded, err := roundRecordOf(read, reasons)
-	if err != nil {
-		s.log.Error("supervise: encode the record of this update round's replacement by issue; nothing was replaced and the round stays open",
-			"issue", issue, "round", round, "pod", pod, "error", err)
+	// The replacement's record, written before the call (recordRoundReplacement), which a last word
+	// that refuses takes away again (recordedDue) and a failed call leaves for the next sweep to
+	// finish or forget (finishReplacements).
+	recorded, ok := s.recordRoundReplacement(ctx, issue, round, pod, reasons, read)
+	if !ok {
 		return
 	}
 	limited, done := context.WithTimeout(ctx, s.plan.orphanSweep)
 	defer done()
 	// ended is what the last word read of the round's end under the launch turn. It stays the
 	// zero roundEnd, which no bound made, where the runtime returns nil without asking the last
-	// word. The last word writes the replacement's record (recordedDue), which a failed call
-	// leaves for the next sweep to finish or forget (finishReplacements).
+	// word.
 	var ended roundEnd
 	if err := replacer.ReplaceIssuePod(limited, issue, pod, s.recordedDue(issue, pod, recorded, s.issueReplacementDue(issue, round, read.at, &ended))); err != nil {
 		if errors.Is(err, errReplacementNotDue) {
@@ -1980,15 +1980,10 @@ func (s *supervision) roundPodEndsAtLaunch(ctx context.Context, token claim.Toke
 	}
 	// The replacement's record, written before the answer that has the launch suspend the pod, and
 	// kept for the sweep that ends the round as this replacement (endRoundALaunchReplaced, or
-	// finishReplacements after a restart). A record that cannot be written keeps the pod: a
-	// reading nobody recorded may not delete a disk.
-	recorded, err := roundRecordOf(read, reasons)
-	if err == nil {
-		err = s.supervisor.store.RecordPodReplacement(ctx, s.plan.project, issue, podUID, recorded)
-	}
-	if err != nil {
-		s.log.Error("supervise: write the record of a launch's replacement of an update round's pod; the launch keeps the pod",
-			"issue", issue, "round", round, "claim", token, "error", err)
+	// finishReplacements after a restart). A record that cannot be written keeps the pod
+	// (recordRoundReplacement).
+	recorded, ok := s.recordRoundReplacement(ctx, issue, round, podUID, reasons, read)
+	if !ok {
 		return s.keepAtLaunch(issue, round, token, "the record of the replacement cannot be written")
 	}
 	s.replacedAtLaunch(issue, round, readRoundEnd(group, round, clock), read, recorded)
