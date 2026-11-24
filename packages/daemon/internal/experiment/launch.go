@@ -50,8 +50,10 @@ func ForLaunch(declared []config.Experiment, stateDir string) Launch {
 // which holds every answer it runs under, its issue experiments' and its tree experiments' alike.
 // A tree experiment's answer is the issue's own row too, copied at its first start from the
 // nearest issue above it that holds one, or drawn for it there (admit's takeTreeDraw, R17 of
-// dispatch://INFRA-3320), so no tree the record stores and no issue above it is read: a change of
-// parent changes no arm.
+// dispatch://INFRA-3320), so for an issue the daemon records no tree the record stores and no
+// issue above it is read: a change of parent changes no arm. An issue the daemon holds no record
+// of holds no row, and its caller reads the rows of its Dispatch chain in place of its own
+// (internal/daemon's launchVariants), so its arm follows that chain at each launch.
 //
 // It is none at all where no declared arm names a file: an experiment whose every arm names
 // neither a config file nor an instructions path contributes nothing to any launch, since there
@@ -69,9 +71,10 @@ func (l Launch) Keys(issue string) []string {
 // Arms are the arms recorded puts this launch in: for each experiment the project declares, in
 // the file's order, the arm recorded for the issue under that experiment (record.Assignment, the
 // issue's own row whatever the experiment's unit, as Keys says, read back at every launch of its
-// roles). recorded is what the caller read for Keys. An issue with no row for an experiment, one
-// no experiment was declared for, and one first started before the experiment was declared run
-// in no arm of it.
+// roles). recorded is what the caller read for Keys, or, for an issue the daemon holds no record
+// of, the tree rows its caller took from the nearest issue above it in their place. An issue with
+// no row for an experiment, one no experiment was declared for, and one first started before the
+// experiment was declared run in no arm of it.
 //
 // An issue whose recorded arm the project's file no longer names contributes nothing: a launch
 // names the files the file still holds, so an arm taken out of the file takes its overlays and

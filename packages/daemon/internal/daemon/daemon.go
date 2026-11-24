@@ -1361,9 +1361,15 @@ func checkPaneRoleOverlays(ctx context.Context, cfg config.Config, image capabil
 // launchVariants is the one reader a launch's arms come from: the experiments the project
 // declares, resolved against the answers the daemon's own store recorded for the launch's issue
 // itself, its tree experiments' included (experiment.Launch, which decides which keys to read and
-// which arms the rows put the launch in), and against the launch's role. No tree the issue's
-// record stores is read: a change of parent changes no arm (R17 of dispatch://INFRA-3320).
-// Everything here is the transaction that reads those rows.
+// which arms the rows put the launch in), and against the launch's role. For an issue the daemon
+// records, no tree its record stores and no issue above it is read: a change of parent changes no
+// arm (R17 of dispatch://INFRA-3320). Everything here is the transaction that reads those rows.
+//
+// An issue the daemon holds no record of holds no row, so its launch takes, for each tree-unit
+// experiment, the row of the nearest issue above it on its Dispatch chain that is in Legion's work
+// and holds one: the carry's order and choice of row at a start (record.ReadChainsOf over the
+// daemon's copy, record.Chains.Above, record.Postgres.NearestTreeAssignments). It runs in no arm of
+// an experiment no such issue holds, and its issue-unit experiments give it nothing.
 //
 // It reads the daemon's own store rather than the workflow's, in a transaction of its own as the
 // supervisor's predicates read a record: the operator's spawn draws a tree's experiments through
@@ -1371,7 +1377,7 @@ func checkPaneRoleOverlays(ctx context.Context, cfg config.Config, image capabil
 // read that draw back would run the issue against an arm the daemon had already recorded for it.
 // A declaration no launch could use names no key to read, so such a deployment opens no
 // transaction per worker spawn at all (experiment.Launch.Keys).
-func launchVariants(st *store.Store, declared []config.Experiment, stateDir string) func(ctx context.Context, issue string, role claim.Role) (experiment.Arms, error) {
+func launchVariants(st *store.Store, declared []config.Experiment, stateDir, project string) func(ctx context.Context, issue string, role claim.Role) (experiment.Arms, error) {
 	launch := experiment.ForLaunch(declared, stateDir)
 	records := record.NewStore()
 	return func(ctx context.Context, issue string, role claim.Role) (experiment.Arms, error) {
@@ -1382,7 +1388,20 @@ func launchVariants(st *store.Store, declared []config.Experiment, stateDir stri
 		var recorded map[string][]record.Assignment
 		if err := store.TransactWith(ctx, st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
-			recorded, err = records.AssignmentsFor(ctx, tx, keys)
+			// A row is keyed by its issue's record (experiment_assignments.issue_key), so an issue
+			// that holds one is recorded and reads nothing more.
+			if recorded, err = records.AssignmentsFor(ctx, tx, keys); err != nil || len(recorded[issue]) > 0 {
+				return err
+			}
+			own, err := records.Issue(ctx, tx, issue)
+			if err != nil || own != nil {
+				return err
+			}
+			chains, err := record.ReadChainsOf(ctx, tx, records, project, []string{issue})
+			if err != nil {
+				return err
+			}
+			recorded[issue], err = records.NearestTreeAssignments(ctx, tx, chains.Above(issue))
 			return err
 		}); err != nil {
 			return experiment.Arms{}, err
@@ -1883,7 +1902,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
-			variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir),
+			variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir, cfg.Project),
 		},
 		Identity:                adoptIdentity(p.identity, p.repository),
 		IssueInTurn:             sup.claimInTurn,

@@ -2064,11 +2064,12 @@ func (s *Postgres) PutAssignments(ctx context.Context, tx pgx.Tx, issue string, 
 // CarryAssignments gives key, an issue at its first start, the tree-unit assignments of the issues
 // above it in Legion's work (R17 of dispatch://INFRA-3320): above is those issues nearest first
 // (Chains.Above), and for each tree-unit experiment the row of the nearest of them that holds one
-// is copied onto key with its arm, its mode and its instant verbatim and the carried mark set, so
-// the work under that issue runs under the arm it runs under. The write is the write-once insert,
-// so a row key already holds stands: a draw stays as it was made, whatever parent the issue has
-// later. It reports how many rows it wrote; an experiment no issue of above holds a row for is
-// left for key's own draw (experiment.DrawAndRecord, whose write is the same write-once one).
+// (nearestTreeRows) is copied onto key with its arm, its mode and its instant verbatim and the
+// carried mark set, so the work under that issue runs under the arm it runs under. The write is
+// the write-once insert, so a row key already holds stands: a draw stays as it was made, whatever
+// parent the issue has later. It reports how many rows it wrote; an experiment no issue of above
+// holds a row for is left for key's own draw (experiment.DrawAndRecord, whose write is the same
+// write-once one).
 //
 // Only the tree rows are copied. An issue row is that one issue's own answer, drawn for it and
 // read back under its own key alone, so it says nothing about the issues under it. key's own
@@ -2079,17 +2080,52 @@ func (s *Postgres) CarryAssignments(ctx context.Context, tx pgx.Tx, key string, 
 		return 0, nil
 	}
 	tag, err := tx.Exec(ctx, `insert into experiment_assignments (issue_key, experiment, unit, variant, mode, drawn_at, carried)
-		select distinct on (source.experiment) target.key, source.experiment, source.unit, source.variant, source.mode, source.drawn_at, true
+		select target.key, nearest.experiment, nearest.unit, nearest.variant, nearest.mode, nearest.drawn_at, true
 		from issues target
-		cross join unnest($2::text[]) with ordinality as up(key, nearness)
-		join experiment_assignments source on source.issue_key = up.key and source.unit = 'tree'
+		cross join (`+nearestTreeRows("$2")+`) nearest
 		where target.key = $1
-		order by source.experiment, up.nearness
 		on conflict (issue_key, experiment) do nothing`, key, above)
 	if err != nil {
 		return 0, fmt.Errorf("carry the tree-unit experiment assignments above %s: %w", key, err)
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+// NearestTreeAssignments is the rows CarryAssignments would copy onto an issue with above over
+// it, read rather than written: for each tree-unit experiment, the row of the nearest issue of
+// above that holds one (nearestTreeRows), as that issue holds it, in experiment order. No issue
+// above reads nothing. It is what a launch of an issue the daemon holds no record of runs under
+// (internal/daemon's launchVariants), since CarryAssignments writes no row onto such an issue.
+// It is no method of the Store interface, as AssignmentsOf is not: the launch reads the store
+// itself.
+func (s *Postgres) NearestTreeAssignments(ctx context.Context, tx pgx.Tx, above []string) ([]Assignment, error) {
+	if len(above) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, `select `+assignmentColumns+` from (`+nearestTreeRows("$1")+`) nearest
+		order by experiment`, above)
+	if err != nil {
+		return nil, fmt.Errorf("read the tree-unit experiment assignments nearest in %v: %w", above, err)
+	}
+	nearest, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Assignment, error) {
+		_, assignment, err := scanAssignment(row)
+		return assignment, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the tree-unit experiment assignments nearest in %v: %w", above, err)
+	}
+	return nearest, nil
+}
+
+// nearestTreeRows is the carry's choice of row, written once for CarryAssignments, which copies
+// it, and NearestTreeAssignments, which reads it: for each tree-unit experiment, the row of the
+// nearest issue that holds one among the keys the parameter above names, nearest first
+// (Chains.Above). An issue-unit row is never chosen.
+func nearestTreeRows(above string) string {
+	return `select distinct on (source.experiment) source.*
+		from unnest(` + above + `::text[]) with ordinality as up(key, nearness)
+		join experiment_assignments source on source.issue_key = up.key and source.unit = 'tree'
+		order by source.experiment, up.nearness`
 }
 
 // AssignmentsOf is every assignment recorded for issue, in experiment order, so two reads of one
