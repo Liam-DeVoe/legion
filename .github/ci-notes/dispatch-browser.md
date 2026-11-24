@@ -88,20 +88,21 @@ check is posted.
 ## What the job set costs, and the machine-time ceiling the run holds it to
 
 What the job set of dispatch-browser.yaml costs, measured rather than estimated, on
-2026-11-23 at e2399655. Its full lane there is run 45151841335, read over three attempts: a
+2026-11-24 at dfc51f65. Its full lane there is run 45306966549, read over three attempts: a
 workflow_dispatch of ci.yaml, and two re-runs of its browser jobs from the binaries job on,
 which is the rule the architect set on 2026-11-23 after INFRA's controller, since a dispatch of
-ci.yaml runs every suite it holds. The three cost 2,635, 2,706 and 2,674 s, each over eight jobs
-for 1,730 rows: 1.523, 1.564 and 1.546 machine-seconds a row, in own times of 1,270, 1,241 and
-1,166 s - each attempt's binaries job, longest leg and merge job, end to end - and wall times of
-1,276, 1,248 and 1,496 s. Attempts 1 and 3 read no flaky row, and attempt 2 one of its 1,730
-(approval.e2e.ts:747, on chromium). The same lane on the default branch that day, every green
-merge-queue full lane of ci.yaml up to 13:11:30Z, is 43 runs of twelve jobs for 1,677 to 1,681
-rows that cost 3,431 to 4,034 s, a median of 3,840 s and 2.28571 s a row at the median of their
-per-row figures. So the three attempts cost 0.686, 0.705 and 0.696 of that median, and spend
-0.666, 0.684 and 0.676 of its row's machine time. Each head's reading of the pull-request lane
-is in pull request #3513; the last one measured here is run 45130649093 at 5e22df0a: 701 s over
-five jobs for 290 rows, in an own time of 432 s.
+ci.yaml runs every suite it holds. The three cost 2,662, 2,450 and 2,494 s, each over eight jobs
+for 1,732 rows: 1.537, 1.415 and 1.440 machine-seconds a row, in own times of 1,235, 1,191 and
+1,216 s - each attempt's binaries job, longest leg and merge job, end to end - and wall times of
+1,425, 1,198 and 1,223 s. Attempts 1 and 3 read no flaky row, and attempt 2 one of its 1,732
+(credential-expired.e2e.ts:115, on chromium, a row that compared a time's spelling and now
+compares its moment). The same lane on the default branch that day, every green merge-queue full
+lane of ci.yaml up to 02:17:35Z, is 3 runs of twelve jobs for 1,682 rows that cost 3,740 to
+3,816 s, a median of 3,763 s and 2.2372 s a row at the median of their per-row figures. So the
+three attempts cost 0.707, 0.651 and 0.663 of that median, and spend 0.687, 0.632 and 0.644 of
+its row's machine time. The pull-request lane at the same commit is run 45306887784, read over
+three attempts the same way: 839, 725 and 857 s over five jobs for 290 rows, in own times of 538,
+451 and 541 s.
 
 That cost is now held to a budget by the run itself, at the merge job's step "Reading five, the
 lane's machine time": the jobs of a lane, this merge job apart, may cost that lane's committed

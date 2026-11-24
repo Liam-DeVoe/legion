@@ -5,15 +5,16 @@ name: Dispatch browser nightly
 # pull-request lane on a pull request, the rows a pull request is held to, and its
 # dispatch-browser job runs the full lane - every project the shard job's browser step names for
 # it (.github/scripts/dispatch-browser-shard-suite.sh), the three `-alone` ones and the
-# two-process job - in the merge queue, so the merge group runs it on the tree a change lands
-# as. The full lane's jobs are dispatch-browser.yaml's, whose notes name them and the machines
-# they take
+# two-process job - in the merge queue, on a pull request labelled full-ci or
+# lane:dispatch_browser, and on a workflow_dispatch of ci.yaml (ci.yaml's dispatch_browser
+# output), so the merge group runs it on the tree a change lands as. The full lane's jobs are
+# dispatch-browser.yaml's, whose notes name them and the machines they take
 # (.github/ci-notes/dispatch-browser.md#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows);
-# full-lane run 45276500169 at 4935c4af (2026-11-23) ran them as seven jobs on eight machines,
-# and its three attempts cost 2,885, 2,603 and 2,740 machine-seconds for 1,731 rows, 1.50 to
-# 1.67 s a row, where the default branch's twelve-job lane cost a median of 3,830.5 s for 1,677
-# to 1,681 rows, 2.28 s a row, over that day's 68 green merge-queue runs to 19:28:31Z. This run
-# covers a day with no merge group, and is what runs the full lane on main's tip
+# full-lane run 45306966549 at dfc51f65 (2026-11-24) ran them as seven jobs on eight machines,
+# and its three attempts cost 2,662, 2,450 and 2,494 machine-seconds for 1,732 rows, 1.42 to
+# 1.54 s a row, where the default branch's twelve-job lane cost a median of 3,763 s for 1,682
+# rows, 2.24 s a row, over that day's 3 green merge-queue runs to 02:17:35Z. This run covers a
+# day with no merge group, and is what runs the full lane on main's tip
 # (.github/workflows/dispatch-browser.yaml, which
 # holds every step). The re-record job's own head, below, says what it guards and why it is here
 # rather than in a file of its own.
