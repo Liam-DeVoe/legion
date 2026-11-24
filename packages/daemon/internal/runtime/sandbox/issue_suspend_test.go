@@ -377,7 +377,7 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 			if sandbox, present := g.r.IssueSandbox(childIssue); !present || sandbox != name {
 				t.Fatalf("IssueSandbox of the running kept Sandbox = %q, %t; want %s present", sandbox, present, name)
 			}
-			if released, err := g.r.ReleaseIssue(g.ctx, childIssue, testTree, authorized); err != nil || !released {
+			if released, err := g.r.ReleaseIssue(g.ctx, childIssue, testTree, authorized, nil); err != nil || !released {
 				t.Fatalf("ReleaseIssue = %t, %v; want the running kept Sandbox released", released, err)
 			}
 			if s := g.sandbox(name); s == nil || s.UID != uid || s.mode() != modeSuspended || !ownsKeptVolume(s) {
@@ -611,8 +611,12 @@ func TestIssueSandboxAnswersASandboxThatIsGoingAbsent(t *testing.T) {
 		}
 		took := stored.GetUID()
 
-		if released, err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized); err != nil || !released {
-			t.Fatalf("ReleaseIssue = %t, %v; want the running pod's Sandbox released", released, err)
+		// The release calls its writing callback once, before its first write: it took the pod.
+		var wrote int
+		writing := func(context.Context) error { wrote++; return nil }
+		if released, err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized, writing); err != nil || !released || wrote != 1 {
+			t.Fatalf("ReleaseIssue = %t, %v with its writing callback called %d times; want the running pod's Sandbox released and the callback called once",
+				released, err, wrote)
 		}
 		if s := g.sandbox(name); s != nil {
 			t.Fatalf("after the release the API holds the Sandbox %+v, want it deleted", s)
@@ -625,8 +629,9 @@ func TestIssueSandboxAnswersASandboxThatIsGoingAbsent(t *testing.T) {
 		}
 		// The teardown of a second release, as the daemon's would run, finds no Sandbox and
 		// answers that it released none.
-		if released, err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized); err != nil || released {
-			t.Fatalf("a second ReleaseIssue = %t, %v; want false: there is no Sandbox left to release", released, err)
+		if released, err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized, writing); err != nil || released || wrote != 1 {
+			t.Fatalf("a second ReleaseIssue = %t, %v with the callback called %d times in all; want false and no call: there is no Sandbox left to release",
+				released, err, wrote)
 		}
 
 		// A Sandbox made again under the name is another object, and answers present once the
@@ -691,7 +696,7 @@ func TestIssueSandboxAnswersASandboxThatIsGoingAbsent(t *testing.T) {
 			t.Fatalf("IssueSandbox of the running kept Sandbox = %q, %t; want %s present", got, present, kept)
 		}
 
-		if released, err := g.r.ReleaseIssue(g.ctx, childIssue, testTree, authorized); err != nil || !released {
+		if released, err := g.r.ReleaseIssue(g.ctx, childIssue, testTree, authorized, nil); err != nil || !released {
 			t.Fatalf("ReleaseIssue = %t, %v; want the running kept Sandbox released", released, err)
 		}
 		s := g.sandbox(kept)
@@ -707,8 +712,11 @@ func TestIssueSandboxAnswersASandboxThatIsGoingAbsent(t *testing.T) {
 		// The teardown of a second release, as the daemon's would run, finds the Sandbox the first
 		// one kept, takes nothing and answers that it released nothing.
 		g.clearActions()
-		if released, err := g.r.ReleaseIssue(g.ctx, childIssue, testTree, authorized); err != nil || released {
-			t.Fatalf("a second ReleaseIssue = %t, %v; want false: the kept Sandbox holds nothing left to release", released, err)
+		var wrote int
+		writing := func(context.Context) error { wrote++; return nil }
+		if released, err := g.r.ReleaseIssue(g.ctx, childIssue, testTree, authorized, writing); err != nil || released || wrote != 0 {
+			t.Fatalf("a second ReleaseIssue = %t, %v with its writing callback called %d times; want false and no call: the kept Sandbox holds nothing left to release",
+				released, err, wrote)
 		}
 		if writes := g.writes(); len(writes) != 0 {
 			t.Fatalf("the second release wrote %v, want nothing: an earlier release already kept the Sandbox", writes)

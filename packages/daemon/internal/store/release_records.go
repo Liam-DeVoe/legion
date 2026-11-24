@@ -29,6 +29,10 @@ type PodRelease struct {
 	// BundleBytes is the size of the bundle the release saved; zero when it saved none because
 	// the workspace held nothing unpushed.
 	BundleBytes int
+	// Release is the id of the release's mark (issue_releases.id) the record stands for, written
+	// to pod_releases.issue_release_id; zero for a record that names no mark. A release is
+	// recorded once per mark (RecordPodRelease).
+	Release int64
 }
 
 // PodResume is one wake of a released pod and what it cost: which wake brought it back, when the
@@ -108,15 +112,26 @@ type PodReleaseRecords struct {
 // of releases is complete without reading any resume. It ends every hold streak of that pod: the
 // pod is gone, so whatever was keeping it is over, and a pod held again after it comes back is
 // a streak of its own.
+//
+// A record that names its release's mark (rel.Release) is written once per mark
+// (pod_releases_one_per_issue_release): the teardown records the release and clears the mark in
+// transactions of their own, so a teardown that failed, or whose daemon died, between the two runs
+// again and records the release again. That second write takes the record the first one wrote,
+// answers its id and ends no streak, since the first one ended them.
 func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, error) {
 	if rel.Project == "" || rel.Issue == "" {
 		return 0, errors.New("a pod release record needs its project and issue")
 	}
 	var id int64
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `insert into pod_releases (project, issue, generation, roles, at, bundle_bytes)
-			values ($1, $2, $3, $4, $5, $6) returning id`,
-			rel.Project, rel.Issue, int64(rel.Generation), strings.Join(rel.Roles, ","), rel.At, rel.BundleBytes).Scan(&id); err != nil {
+		err := tx.QueryRow(ctx, `insert into pod_releases (project, issue, generation, roles, at, bundle_bytes, issue_release_id)
+			values ($1, $2, $3, $4, $5, $6, nullif($7::bigint, 0))
+			on conflict (issue_release_id) where issue_release_id is not null do nothing returning id`,
+			rel.Project, rel.Issue, int64(rel.Generation), strings.Join(rel.Roles, ","), rel.At, rel.BundleBytes, rel.Release).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return tx.QueryRow(ctx, `select id from pod_releases where issue_release_id = $1`, rel.Release).Scan(&id)
+		}
+		if err != nil {
 			return err
 		}
 		return endPodHoldStreaks(ctx, tx, rel.Project, rel.Issue, "")

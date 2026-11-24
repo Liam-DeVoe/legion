@@ -171,9 +171,11 @@ import (
 // (20261123224717) is applied after all of these but dispatch://INFRA-3149's 20261124143026 and
 // touches no outbox_kind_check either: it adds
 // issues.members_owed and marks the roots whose re-admitted generation no promotion has opened.
-// dispatch://INFRA-3149's note of what a release's teardown met of the runtime (20261124143026) is
-// applied after all of these and touches no outbox_kind_check: it adds issue_releases.teardown at
-// its default, the empty note, on every mark it finds (migration_20261124143026_test.go).
+// dispatch://INFRA-3149's release teardown (20261124143026) is applied after all of these and
+// touches no outbox_kind_check: it adds issue_releases.teardown at its default, the empty note,
+// starts each standing mark of the release of a pod no role can use at `reached`, and adds
+// pod_releases.issue_release_id, null on every row it finds, under a unique index of the rows that
+// name a mark (migration_20261124143026_test.go).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,

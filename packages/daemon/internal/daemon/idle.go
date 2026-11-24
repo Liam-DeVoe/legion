@@ -429,9 +429,12 @@ func endIdleHolds(ctx context.Context, st *store.Store, project, issue string, l
 // here would charge this release with a role it never touched and the hours that role's pod was
 // gone a second time.
 //
+// The record names the release's mark (release, issue_releases.id), so a teardown that runs again
+// after its record and before the mark's clear writes no second record (store.RecordPodRelease).
+//
 // A record that cannot be written is logged: the pod is already released, and nothing undoes
 // that for want of a row.
-func (r *outbox) recordPodRelease(ctx context.Context, issue string, generation uint64, suspended []claim.Role, bundleBytes int) {
+func (r *outbox) recordPodRelease(ctx context.Context, issue string, release int64, generation uint64, suspended []claim.Role, bundleBytes int) {
 	if r.supervisor == nil || r.supervisor.store == nil {
 		return
 	}
@@ -442,7 +445,7 @@ func (r *outbox) recordPodRelease(ctx context.Context, issue string, generation 
 	slices.Sort(roles)
 	if _, err := r.supervisor.store.RecordPodRelease(ctx, store.PodRelease{
 		Project: r.project, Issue: issue, Generation: generation, Roles: roles,
-		At: time.Now().UTC(), BundleBytes: bundleBytes,
+		At: time.Now().UTC(), BundleBytes: bundleBytes, Release: release,
 	}); err != nil {
 		r.log.Warn("outbox: could not record an issue pod's release", "issue", issue, "error", err)
 	}
