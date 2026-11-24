@@ -167,6 +167,7 @@ func TestPreconditionBlocksRefuseARemovalOfABlockTheGuardDoesNotCover(t *testing
 			markdown: nested,
 			op:       func(map[string]string) model.EditOp { return model.EditOp{Op: "delete", Find: "- Parent"} },
 			covered:  []string{"Parent", "bullet_list 1"},
+			written:  "- Other\n",
 		},
 		{
 			name:     "a delete whose list marker selects an item, under its paragraph and one of the two items nested in it",
@@ -183,6 +184,8 @@ func TestPreconditionBlocksRefuseARemovalOfABlockTheGuardDoesNotCover(t *testing
 			},
 			op:      func(map[string]string) model.EditOp { return model.EditOp{Op: "delete", Find: "- Parent"} },
 			covered: []string{"bullet_list 0", "list_item 0", "Parent", "bullet_list 1", "list_item 1", "Child", "list_item 2", "Other"},
+			// The insert wrote Noted. into Parent's item, and the delete keeps it where Parent stood.
+			written: "- Noted.\n- Other\n",
 		},
 		{
 			name:     "a delete whose list marker selects an item an earlier move put an item into, under the blocks each names",
@@ -243,6 +246,7 @@ func TestPreconditionBlocksRefuseARemovalOfABlockTheGuardDoesNotCover(t *testing
 			markdown: nested,
 			op:       func(ids map[string]string) model.EditOp { return model.EditOp{Op: "delete", Block: ids["list_item 0"]} },
 			covered:  []string{"list_item 0"},
+			written:  "- Other\n",
 		},
 		{
 			name:     "a move of a list's only item, under the anchor and the item's paragraph",
