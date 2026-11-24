@@ -396,7 +396,7 @@ func TestAMessageOfTheStoreASettingNamedBeforeCallsForTheOwedRead(t *testing.T) 
 		if err != nil || !found {
 			t.Fatalf("read INFRA's cursor: found %v, %v", found, err)
 		}
-		if current.stateID == nil || *current.stateID != namedStore || !current.forgets(rigStateID) || !current.readFor("", rig.clock.now(), 0, false).read {
+		if current.stateID == nil || *current.stateID != namedStore || !current.forgets(rigStateID) || !current.readFor("", rig.clock.now(), 0, false, nil).read {
 			t.Fatalf("INFRA's cursor is %s, want the store %s, the store %s dropped, and a read that a call no message makes would make now",
 				cursorOf(t, rig.database, "INFRA"), namedStore, rigStateID)
 		}
@@ -644,6 +644,54 @@ func TestASettingDeletedDuringAHoldDropsTheHeldMessage(t *testing.T) {
 	}
 	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); slices.Contains(got, `"merging"`) {
 		t.Errorf("the phase's history is %v: the held message was applied", got)
+	}
+}
+
+// TestAWriteRecordsTheReleasedHolderOnlyWhereTheCursorFollowedAnotherDaemon: a write of the
+// setting that resets the cursor records the message that held the owed read as released
+// (released_holder) only where the cursor followed another daemon (settingWritten). While a
+// starting read is in flight, a message past stateMaxWaiting can hold the read after it on a
+// cursor that follows no daemon yet, the one judgeCrowded gives a project with no cursor
+// (lockCursor). The test writes INFRA's cursor so by hand: it owes the gap read and names stream
+// sequence 42 as the holder, gone back once. A write of the setting's own URL then resets the
+// cursor and ends the hold. It records no released holder: 42 is not finished at its next
+// delivery as a message whose hold a write of another daemon ended (endHold), and its store, which
+// may be the setting's own daemon's, is not marked as no daemon of INFRA. The control: where the
+// cursor followed another daemon, the same write records 42 as released.
+func TestAWriteRecordsTheReleasedHolderOnlyWhereTheCursorFollowedAnotherDaemon(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		follows string
+		// released is the holder the write records, 0 for none.
+		released int64
+	}{
+		{name: "a cursor that follows no daemon", follows: ""},
+		{name: "a cursor that follows another daemon", follows: "http://another-daemon.example", released: 42},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, setting := configured(t, "http://127.0.0.1:1")
+			if _, err := database.Pool.Exec(t.Context(), `
+				insert into legion_event_cursors (project, state_url, read_reasons, read_holder, read_holds)
+				values ('INFRA', $1, '{gap}', 42, 1)
+			`, tc.follows); err != nil {
+				t.Fatalf("write INFRA's cursor: %v", err)
+			}
+			if _, err := PutSettings(t.Context(), database.Pool, "INFRA", setting.StateURL,
+				model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
+				t.Fatalf("write INFRA's setting again with its own URL: %v", err)
+			}
+			c := cursorOf(t, database, "INFRA")
+			if c.readOwed || c.readHolder != nil || c.readHolds != 0 {
+				t.Errorf("INFRA's cursor after the write is %s, want it reset: nothing owed, no holder and no hand-back counted", c)
+			}
+			var released int64
+			if c.releasedHolder != nil {
+				released = *c.releasedHolder
+			}
+			if released != tc.released {
+				t.Errorf("INFRA's cursor after the write is %s, want the released holder %d (0 for none)", c, tc.released)
+			}
+		})
 	}
 }
 

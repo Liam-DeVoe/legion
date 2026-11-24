@@ -56,10 +56,12 @@
 --   `retry`, a message that calls for a read inside a minute of the last one adds its reason, and a
 --   read clears the reasons the row held when the read was decided. A reason a message added while
 --   the read was in flight stays on a failed read, since that message's events may be past the
---   read's snapshot. A successful read keeps it, and owes `gap` with it, only where
---   skipped_state_ids and skipped_seqs hold a sequence of the read's store above the read's
---   stateSeq, whatever the row owed when the read was decided; otherwise it clears it too. The
---   read is recorded under the first reason and logged with them all.
+--   read's snapshot. A successful read clears it too, but for two cases. Where skipped_state_ids
+--   and skipped_seqs hold a sequence of the read's store above the read's stateSeq, the read keeps
+--   it and owes `gap` with it, whatever the row owed when the read was decided. Where they hold a
+--   store other than the read's, which neither previous_state_id nor foreign_state_ids names as
+--   the read leaves them, the read keeps it and owes `store` with it. The read is recorded under
+--   the first reason and logged with them all.
 -- - read_owed is a whole read owed, which Postgres generates from read_reasons, so no write names
 --   it.
 -- - last_read_started_at is when the project's newest whole read began, whatever its reason and
@@ -128,12 +130,13 @@
 --   started behind that URL in such a store is found again. A read that finds the row's store
 --   unchanged leaves the mark, and never marks previous_state_id. Empty for none.
 -- - released_holder is the stream sequence of the state message that held the owed read when a
---   write of the setting that names another daemon reset the row: the write sets it to read_holder
---   where read_holder is set, and keeps it otherwise. At that message's next delivery the intake
---   acknowledges it unapplied, it holds no read, its store goes into foreign_state_ids as above,
---   and the intake clears this column. So a write that names another daemon ends the hold of the
---   message before it within one read's 60 s and a second, and a message of the newly named daemon
---   may hold the read from a count of 1. Null for none.
+--   write of the setting reset a row that followed another daemon: a state_url that is neither ''
+--   nor the write's URL. Such a write sets it to read_holder where read_holder is set, and every
+--   other write keeps it. At that message's next delivery the intake acknowledges it unapplied, it
+--   holds no read, its store goes into foreign_state_ids as above, and the intake clears this
+--   column. So a write that names another daemon ends the hold of the message before it within one
+--   read's 60 s and a second, and a message of the newly named daemon may hold the read from a
+--   count of 1. Null for none.
 -- - skipped_state_ids and skipped_seqs are, pair by pair (the check holds them to one length), a
 --   store and the highest seq of a state message of that store that the intake acknowledged
 --   unapplied because it arrived while legion's stateMaxWaiting messages of the project waited,
@@ -142,9 +145,11 @@
 --   commits each event before it publishes it, so the read holds every message published before
 --   it; what they hold as the read lands was skipped while it was in flight, and such a message's
 --   events may be past its snapshot. So a successful read that finds a seq of its own store above
---   its stateSeq still owes `gap` (read_reasons), and every successful read empties both. A read
---   that failed keeps them, and every write of the setting that resets the row empties them. Empty
---   for none.
+--   its stateSeq still owes `gap` (read_reasons). One that finds a store other than its own, which
+--   neither previous_state_id nor foreign_state_ids names as the read leaves them, still owes
+--   `store`: that message came after the read began, so the read does not answer it. Every
+--   successful read empties both. A read that failed keeps them, and every write of the setting
+--   that resets the row empties them. Empty for none.
 --
 -- legion_event_parts holds the messages of a transaction the daemon split over several messages
 -- (each but the last carries `more: true`) until its last message arrives: the intake then applies

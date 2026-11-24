@@ -124,15 +124,15 @@ func GetSettings(ctx context.Context, db RowQueryer, project string) (Settings, 
 // The write forgets how far the project's observations had followed its daemon, in its own
 // transaction (settingWritten): the intake then has no starting point for the project, and reads
 // the daemon whole when the write's notification wakes it. So a write of the same URL is the way
-// to have a project's state read whole again. Where a message holds the project's owed read, a
-// write of the same URL joins that read and forgets nothing: the message's redelivery makes the
-// read, a whole read, and the hold's count of hand-backs goes on. A write that names another daemon
-// ends that hold instead: the message is finished unapplied at its next delivery. After such a
-// write, the intake finishes each message of the store the project followed before, unapplied,
-// until a write names that daemon's URL again or a good read of the daemon the setting names gives
-// that same store (recordWhole). Such a message waits on the project's runner behind the write's
-// starting read, for one RequestTimeout at the most, as every message does, and is judged against
-// the cursor that read leaves.
+// to have a project's state read whole again. Where a message holds the owed read of a cursor that
+// follows the setting's daemon, a write of the same URL joins that read and forgets nothing: the
+// message's redelivery makes the read, a whole read, and the hold's count of hand-backs goes on. A
+// write that names another daemon ends that hold instead: the message is finished unapplied at its
+// next delivery. After such a write, the intake finishes each message of the store the project
+// followed before, unapplied, until a write names that daemon's URL again or a good read of the
+// daemon the setting names gives that same store (recordWhole). Such a message waits on the
+// project's runner behind the write's starting read, for one RequestTimeout at the most, as every
+// message does, and is judged against the cursor that read leaves.
 func PutSettings(ctx context.Context, pool *store.Pool, project, stateURL string, actor model.Actor) (Settings, error) {
 	createdBy, err := json.Marshal(actor)
 	if err != nil {
@@ -194,28 +194,32 @@ func DeleteSettings(ctx context.Context, pool *store.Pool, project string) (bool
 //     while a read is in flight or owed joins it: the message's redelivery makes the read, a whole
 //     read, and the cursor counts the hold's hand-backs on from read_holds (stateMaxHolds). The
 //     wake's call for the project's starting point joins that read too (cursor.readFor).
-//   - Every other write of a URL resets the cursor: it makes the cursor follow no daemon (an empty
-//     state_url), with every position, reason, holder, store, sequence skipped past the cap
-//     (skipped_state_ids, skipped_seqs) and mark of a store that is no daemon of the project
-//     (foreign_state_ids) back to its empty value, and deletes the parts of a split transaction
-//     held for it, so the intake has no starting point for the project and reads the setting's
-//     daemon whole at the wake (ReadReasonStart), once that read is due. The reset keeps the start
-//     of the project's newest whole read (last_read_started_at): whole reads of one project start
-//     ReadRetryAfter apart whatever their reasons, so a write within a minute of a read makes its
-//     starting read when that minute ends (Intake.startingPoint). A mark says only that its store
-//     is no daemon the setting named before the write, so no mark outlives a write. A reset records
-//     the stream sequence of the message that held the owed read (released_holder), which can only
-//     be a write that names another daemon, and keeps the one recorded already where no message
-//     held the read: that message is finished unapplied at its next delivery, which clears the
-//     record and marks the message's store as no daemon of the project, unless it is the store
-//     recorded below or the cursor's own (cursor.releases, endHold). A write that names another
-//     daemon records the store the cursor held with the URL it followed, or keeps the pair
-//     recorded already where it held none, as the store of the daemon the setting named before
-//     (previous_state_id, previous_state_url): the intake finishes each message of that store
-//     unapplied (outcomeForgotten). A write of the URL recorded there names that daemon again, so
-//     it clears the pair, and the daemon's messages are judged as the setting's daemon's: they hold
-//     and make an owed read as every message does. A good read that gives the cursor the store
-//     recorded there clears the pair too (recordWhole). A write of the same daemon keeps what is
+//   - Every other write of a URL resets the cursor (resetCursor): it makes the cursor follow no
+//     daemon (an empty state_url), with every position, reason, holder, store, sequence skipped
+//     past the cap (skipped_state_ids, skipped_seqs) and mark of a store that is no daemon of the
+//     project (foreign_state_ids) back to its empty value (emptyCursor), and deletes the parts of
+//     a split transaction held for it, so the intake has no starting point for the project and
+//     reads the setting's daemon whole at the wake (ReadReasonStart), once that read is due. The
+//     reset keeps the start of the project's newest whole read (last_read_started_at): whole reads
+//     of one project start ReadRetryAfter apart whatever their reasons, so a write within a minute
+//     of a read makes its starting read when that minute ends (Intake.startingPoint). A mark says
+//     only that its store is no daemon the setting named before the write, so no mark outlives a
+//     write. A reset records the stream sequence of the message that held the owed read
+//     (released_holder) only where the cursor followed another daemon: a state_url that is
+//     neither empty nor the write's URL. Otherwise, and where no message held the read, it keeps
+//     the one recorded already. The message so recorded is finished unapplied at its next
+//     delivery, which clears the record and marks the message's store as no daemon of the
+//     project, unless it is the store recorded below or the cursor's own (cursor.releases,
+//     endHold). A reset of a cursor that follows no daemon, whose holder took the hold during a
+//     starting read (judgeCrowded), ends that hold and records nothing: that message is judged at
+//     its next delivery as any message is. A write that names another daemon records the store
+//     the cursor held with the URL it followed, or keeps the pair recorded already where it held
+//     none, as the store of the daemon the setting named before (previous_state_id,
+//     previous_state_url): the intake finishes each message of that store unapplied
+//     (outcomeForgotten). A write of the URL recorded there names that daemon again, so it clears
+//     the pair, and the daemon's messages are judged as the setting's daemon's: they hold and make
+//     an owed read as every message does. A good read that gives the cursor the store recorded
+//     there clears the pair too (cursor.afterRead). A write of the same daemon keeps what is
 //     recorded there.
 //   - A delete deletes the cursor, and with it the held parts (their foreign key).
 func settingWritten(ctx context.Context, tx pgx.Tx, project, stateURL string) error {
@@ -225,32 +229,54 @@ func settingWritten(ctx context.Context, tx pgx.Tx, project, stateURL string) er
 			with forgotten as (delete from legion_event_cursors where project = $1)
 			select pg_notify($2, $1)
 		`, project, SettingsChannel)
-	} else {
-		_, err = tx.Exec(ctx, `
-			with forgotten as (
-				update legion_event_cursors set
-					state_url = '', run = null, last_seq = null, read_reasons = '{}',
-					read_holder = null, read_holds = 0, state_id = null, schema_version = null, foreign_state_ids = '{}',
-					skipped_state_ids = '{}', skipped_seqs = '{}',
-					released_holder = coalesce(read_holder, released_holder),
-					previous_state_id = case
-						when previous_state_url = $3 then null
-						when state_url = $3 then previous_state_id
-						else coalesce(state_id, previous_state_id) end,
-					previous_state_url = case
-						when previous_state_url = $3 then null
-						when state_url = $3 or state_id is null then previous_state_url
-						else state_url end
-				where project = $1 and (state_url <> $3 or read_holder is null)
-				returning project
-			), parts as (delete from legion_event_parts where project in (select project from forgotten))
-			select pg_notify($2, $1)
-		`, project, SettingsChannel, stateURL)
+	} else if err = resetCursor(ctx, tx, project, stateURL); err == nil {
+		_, err = tx.Exec(ctx, `select pg_notify($2, $1)`, project, SettingsChannel)
 	}
 	if err != nil {
 		return fmt.Errorf("forget where the Legion events of %s stood: %w", project, err)
 	}
 	return nil
+}
+
+// resetCursor is what settingWritten does to project's cursor for a write of stateURL, inside tx:
+// it locks the cursor, then writes the cursor the write resets it to (cursor.reset, writeCursor)
+// and deletes the parts held for it. It writes nothing for a project with no cursor, or for a
+// write that names the daemon the cursor follows while a message holds the owed read.
+func resetCursor(ctx context.Context, tx pgx.Tx, project, stateURL string) error {
+	current, err := scanCursor(tx.QueryRow(ctx, `select `+cursorColumns+` from legion_event_cursors where project = $1 for update`, project))
+	if err != nil || !current.exists || (current.stateURL == stateURL && current.readHolder != nil) {
+		return err
+	}
+	if err := writeCursor(ctx, tx, project, current.reset(stateURL)); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `delete from legion_event_parts where project = $1`, project)
+	return err
+}
+
+// reset is the cursor that a write of the setting naming stateURL resets c to (resetCursor): a
+// cursor that follows no daemon, with every column at its empty value (emptyCursor) but these.
+//   - lastReadStartedAt is c's.
+//   - releasedHolder is c's readHolder where c followed another daemon (a stateURL that is
+//     neither empty nor the write's URL) and a message held the read, and c's releasedHolder
+//     otherwise.
+//   - previousStateID and previousStateURL are none where the write names the URL recorded there.
+//     They are c's store and URL where c followed a URL other than the write's and held a store,
+//     and c's own pair otherwise.
+func (c cursor) reset(stateURL string) cursor {
+	next := emptyCursor()
+	next.exists, next.lastReadStartedAt, next.releasedHolder = true, c.lastReadStartedAt, c.releasedHolder
+	if c.stateURL != "" && c.stateURL != stateURL && c.readHolder != nil {
+		next.releasedHolder = c.readHolder
+	}
+	next.previousStateID, next.previousStateURL = c.previousStateID, c.previousStateURL
+	switch {
+	case c.previousStateURL != nil && *c.previousStateURL == stateURL:
+		next.previousStateID, next.previousStateURL = nil, nil
+	case c.stateURL != stateURL && c.stateID != nil:
+		next.previousStateID, next.previousStateURL = c.stateID, &c.stateURL
+	}
+	return next
 }
 
 // recordRead is the step every whole read's record takes inside its transaction (recordWhole):
