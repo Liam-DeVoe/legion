@@ -24,22 +24,11 @@ func standAtOwnersStep(t *testing.T, pool *pgxpool.Pool, key string) {
 			t.Fatalf("read %s: %v", key, err)
 		}
 		member.Phase, member.Hold, member.Status, member.DispatchStatus = phase.Implementing, nil, "in_progress", "in_progress"
-		v := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner, GivenBy: ownersArchitect(t, key), GivenAt: fixedNow}
-		task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
-		steps := record.NameAgents(nil, nil, []record.PlanStep{
-			{Issue: key, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation", AgentKey: "owner"},
-			{Issue: key, Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
-		})
-		for _, put := range []error{
-			records.PutIssue(ctx, tx, *member),
-			records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps),
-			records.MoveTask(ctx, tx, key, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning),
-		} {
-			if put != nil {
-				t.Fatalf("seed the owner's step of %s: %v", key, put)
-			}
+		if err := records.PutIssue(ctx, tx, *member); err != nil {
+			t.Fatalf("put %s at implementing: %v", key, err)
 		}
 	})
+	runAtStep(t, pool, key, 1, 1, "implementer:owner", "reviewer")
 }
 
 // ownerStepsOf is every notice owner-step of issue the outbox holds, in order.

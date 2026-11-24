@@ -17,10 +17,10 @@ import (
 // acceptance is the role of the step of the type acceptance (plan.BuiltinRoles).
 const acceptance claim.Role = "acceptance"
 
-// runAtAcceptanceStep writes key's plan of one task, a, at generation, from words (`implementer
+// runAtStep writes key's plan of one task, a, at generation, from words (such as `implementer
 // acceptance`, or `implementer acceptance:owner` for the owner's acceptance), its agents named as
-// a given plan names them (record.NameAgents), and its task running at step 2.
-func runAtAcceptanceStep(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, words ...string) {
+// a given plan names them (record.NameAgents), and its task running at step position.
+func runAtStep(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, position int, words ...string) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
 		ctx, records := context.Background(), record.NewStore()
@@ -34,10 +34,10 @@ func runAtAcceptanceStep(t *testing.T, pool *pgxpool.Pool, key string, generatio
 		}
 		for _, put := range []error{
 			records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, steps)),
-			records.MoveTask(ctx, tx, key, generation, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning),
+			records.MoveTask(ctx, tx, key, generation, "a", record.TaskPlace{Kind: record.PlaceStep, Position: position}, record.TaskRunning),
 		} {
 			if put != nil {
-				t.Fatalf("seed the acceptance step of %s: %v", key, put)
+				t.Fatalf("seed step %d of %s: %v", position, key, put)
 			}
 		}
 	})
@@ -62,7 +62,7 @@ func TestTheEntryRepairResumesAFreshAcceptanceAgentThatLostItsTask(t *testing.T)
 			pool := migratedPool(t)
 			const root, key = "LEGION-760", "LEGION-761"
 			seedTreeAndMember(t, pool, root, key, phase.Accepting, 1, false)
-			runAtAcceptanceStep(t, pool, key, 1, tc.words...)
+			runAtStep(t, pool, key, 1, 2, tc.words...)
 			token := keyedToken(t, key, claim.Agent(acceptance))
 			inTx(t, pool, func(tx pgx.Tx) {
 				if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: key, Role: acceptance, Claim: token,
