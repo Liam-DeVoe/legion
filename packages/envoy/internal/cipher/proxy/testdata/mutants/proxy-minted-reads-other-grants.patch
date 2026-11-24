@@ -2,7 +2,6 @@
 # grants for a request that carries another whole placeholder, with an enrollment id that is empty,
 # so the store refuses it and the request answers 503 where it was refused 403 NO_PLACEHOLDER.
 # must fail: TestAMintedConnectionReadsNoOtherGrant
-# must fail: TestAMintedConnectionCarryingAnotherMintedPlaceholderIsRefusedAsOnMain
 # Applied with patch -p1 from a copy.
 
 --- a/packages/envoy/internal/cipher/proxy/enrollment.go

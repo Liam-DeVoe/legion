@@ -547,8 +547,10 @@ func (g memoryMinted) mint(t *testing.T, digest string) string {
 // refuses an empty enrollment id, which would answer 503 "make the call again". It runs under the
 // dpop entry alone, and again with a stored secret's entry binding the same host, so a read would
 // have a name to ask for. The control is the same connection carrying a string that is no
-// placeholder, refused alike. The named revert: proxy-minted-reads-other-grants, which fails the
-// second set; TestAStoredGrantsConnectToADPoPHostReadsNoOtherGrant holds the dpop entry's name out.
+// placeholder, refused alike. It skips when BROKER_TEST_DATABASE_URL is unset (storetest.Open), so
+// the mutant run names the rig row below instead, which catches proxy-minted-reads-other-grants
+// with no database; TestAStoredGrantsConnectToADPoPHostReadsNoOtherGrant holds the dpop entry's
+// name out.
 func TestAMintedConnectionCarryingAnotherMintedPlaceholderIsRefusedAsOnMain(t *testing.T) {
 	const digest = "3333333333333333333333333333333333333333333333333333333333333333"
 	beside := dpopRules()

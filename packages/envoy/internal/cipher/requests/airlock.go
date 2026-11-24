@@ -22,7 +22,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/githubname"
-	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
@@ -760,23 +759,18 @@ func (m *Machine) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exc
 //   - A secret's release placeholder is read from airlock_placeholders, by the table's primary
 //     key: it names its grant live or ended, until the sweep has deleted an ended grant's rows
 //     (deleteSpentPlaceholders).
-//   - A minted capability's placeholder is read from its kind's grants alone, as AirlockConnection
-//     reads it (mintedKindOfPlaceholder), and never falls through to airlock_placeholders: it
-//     names its grant, by the kind's word and the grant's id, while the grant lives, and none
-//     once it has ended or for a kind this broker does not serve.
+//   - A minted capability's placeholder is read by mintedConnection, the read AirlockConnection
+//     makes of it, and never falls through to airlock_placeholders: it names its grant, by the
+//     kind's word and the grant's id, exactly when a connection of it would be opened - while the
+//     grant lives under this broker's entry digest - and none once it has ended, for a grant made
+//     under another digest, or for a kind this broker does not serve.
 func (m *Machine) ProxyPlaceholderGrant(ctx context.Context, placeholder string) (string, error) {
 	if kind, minted := m.mintedKindOfPlaceholder(placeholder); minted {
-		if kind == nil || kind.Grants == nil {
+		conn, err := m.mintedConnection(ctx, kind, placeholder)
+		if errors.Is(err, ErrGrantNotLive) {
 			return "", nil
 		}
-		grant, err := kind.Grants.MintedByPlaceholder(ctx, placeholderHash(placeholder))
-		if errors.Is(err, oauthstore.ErrMintedGrantNotLive) {
-			return "", nil
-		}
-		if err != nil {
-			return "", err
-		}
-		return kind.Word + ":" + grant.ID, nil
+		return conn.GrantID, err
 	}
 	var grantID string
 	err := m.Store.Pool.QueryRow(ctx, `select grant_id from airlock_placeholders where placeholder_sha256 = $1`, placeholderHash(placeholder)).Scan(&grantID)

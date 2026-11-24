@@ -1404,7 +1404,6 @@ EOF
 	K6_AZ_ASSERTION="${K6_AZ_ASSERTION//%3D/=}"
 	# The access token az held after each run, and how many of the five open with the
 	# placeholder prefix: a run whose file is missing or holds no token counts as none.
-	K6_AZ_ACCESS="$(jq -r '.accessToken // ""' "$d/access-1.json" 2>/dev/null)"
 	K6_AZ_ACCESS_SHAPES="" K6_AZ_ACCESS_PLACEHOLDERS=0
 	local token
 	for run in 1 2 3 4 5; do
@@ -1533,9 +1532,8 @@ check_k6() {
 	observe "the clients this run drove: $CLIENT_VERSIONS, each installed by scripts/airlock-clients.sh at a pinned version whose SHA-256 it checked"
 
 	k6_azure
-	local federated access_shape
+	local federated
 	federated="$(cat "$AIRLOCK_DIR/azure-identity-token")"
-	access_shape="$(shape "$K6_AZ_ACCESS")"
 	observe "the five az runs: $K6_AZ_RUNS runs, $K6_AZ_FAILED of them non-zero ($K6_AZ_ARM_STATUS); what they reached on the Microsoft stand-in was $K6_AZ_REACHED, and the first ERROR line az wrote, if any, was: ${K6_AZ_ERROR:-none}"
 	observe "the exchange: the token endpoint was asked $K6_AZ_EXCHANGES times and its client_assertion was $(shape "$K6_AZ_ASSERTION") against the stack's own federated token $(shape "$federated") (compared by SHA-256 and length)"
 	observe "the access token az itself holds after its login (az account get-access-token), for each run: ${K6_AZ_ACCESS_SHAPES}$K6_AZ_ACCESS_PLACEHOLDERS of the five open 'agent-secrets-placeholder'"

@@ -8,7 +8,7 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/airlock-k7-inputs.XXXXXX")"
 approve_stand=""
 # One EXIT trap for the whole test: it stops the approval page's stand-in, where one was started,
 # by its PID and waits for it, then removes the work directory.
-trap '[[ -z "$approve_stand" ]] || { kill "$approve_stand" 2>/dev/null; wait "$approve_stand" 2>/dev/null || true; }; rm -rf "$work"' EXIT
+trap '[[ -z "$approve_stand" ]] || { kill "$approve_stand" 2>/dev/null || true; wait "$approve_stand" 2>/dev/null || true; }; rm -rf "$work"' EXIT
 mkdir -p "$work/bin"
 cat >"$work/bin/mktemp" <<'EOF'
 #!/usr/bin/env bash
@@ -526,21 +526,25 @@ output="status $status; left: $(ls -A "$login_dir/tmp")"
 check test "$output" = "status 143; left: "
 
 # --- This file's own EXIT trap, read out of it and run in a shell of its own under set -euo
-# pipefail, as this test runs: with a stand-in process to stop, the shell must end with the status
-# its last command left - 0 after a pass, 1 after a failure - and must remove its work directory
-# either way. A trap whose wait on the killed stand-in ends the shell under set -e answers 143
-# both times and leaves the directory, which is how CI read a test that passed as a failure.
+# pipefail, as this test runs: with a stand-in process to stop, still running or already exited,
+# the shell must end with the status its last command left - 0 after a pass, 1 after a failure -
+# and must remove its work directory either way. A trap whose wait on the killed stand-in ends the
+# shell under set -e answers 143 and leaves the directory, which is how CI read a test that passed
+# as a failure; one whose kill of a stand-in that already exited ends it answers 1.
 trap_line="$(grep -m1 '^trap .*approve_stand.* EXIT$' "${BASH_SOURCE[0]}")"
 [[ -n "$trap_line" ]] || { printf 'FAIL: this file has no EXIT trap that stops approve_stand\n'; exit 1; }
-for want in 0 1; do
-  trap_work="$(mktemp -d "$work/trap.XXXXXX")/work"
-  mkdir -p "$trap_work"
-  status=0
-  # shellcheck disable=SC2016 # the script is the child shell's, expanded there
-  bash -c 'set -euo pipefail; work="$1"; sleep 60 & approve_stand=$!; eval "$2"; exit "$3"' _ "$trap_work" "$trap_line" "$want" >/dev/null 2>&1 || status=$?
-  label="this file's EXIT trap, with a stand-in to stop, ends the shell with its own status $want and removes the work directory"
-  output="status $status; left: $([[ -e "$trap_work" ]] && echo "$trap_work" || echo nothing)"
-  check test "$output" = "status $want; left: nothing"
+for stand in running exited; do
+  for want in 0 1; do
+    trap_work="$(mktemp -d "$work/trap.XXXXXX")/work"
+    mkdir -p "$trap_work"
+    status=0
+    # shellcheck disable=SC2016 # the script is the child shell's, expanded there
+    bash -c 'set -euo pipefail; work="$1"; sleep 60 & approve_stand=$!; if [[ "$4" == exited ]]; then kill "$approve_stand"; wait "$approve_stand" || true; fi; eval "$2"; exit "$3"' \
+      _ "$trap_work" "$trap_line" "$want" "$stand" >/dev/null 2>&1 || status=$?
+    label="this file's EXIT trap, with a stand-in that is $stand, ends the shell with its own status $want and removes the work directory"
+    output="status $status; left: $([[ -e "$trap_work" ]] && echo "$trap_work" || echo nothing)"
+    check test "$output" = "status $want; left: nothing"
+  done
 done
 
 if [[ "$failed" -ne 0 ]]; then

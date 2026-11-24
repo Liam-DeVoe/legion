@@ -162,19 +162,22 @@ func TestProxyPlaceholderGrantNamesTheGrantOfAPlaceholderLiveOrEnded(t *testing.
 }
 
 // TestProxyPlaceholderGrantNamesAMintedGrantWhileItLives: a minted capability's placeholder is
-// read from its kind's grants, as AirlockConnection reads it, so the refusal of a request that
-// still carries one after the swap names the grant, by its kind's word and its id. Its grant
-// past its end names none, nor does a minted placeholder of a kind this broker does not serve,
-// and neither falls through to airlock_placeholders.
+// read as AirlockConnection reads it (mintedConnection), so the refusal of a request that still
+// carries one after the swap names the grant, by its kind's word and its id, exactly when a
+// connection of it would be opened. Its grant past its end names none, nor does a grant made
+// under another entry digest than this broker's, nor a minted placeholder of a kind this broker
+// does not serve.
 func TestProxyPlaceholderGrantNamesAMintedGrantWhileItLives(t *testing.T) {
 	m, _, _, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
 	grants := &memoryGrants{}
 	withMintedKind(m, grants, &mintedTokens{})
 	live, grant := grants.grant(t, testEntryDigest, time.Now().Add(time.Hour))
 	ended, _ := grants.grant(t, testEntryDigest, time.Now().Add(-time.Second))
+	moved, _ := grants.grant(t, otherEntryDigest, time.Now().Add(time.Hour))
 	for _, c := range []struct{ what, text, want string }{
 		{"a live minted grant's placeholder", live, testMintedWord + ":" + grant.ID},
 		{"an ended minted grant's placeholder", ended, ""},
+		{"a live grant made under another entry digest", moved, ""},
 		{"a minted placeholder of a kind no one serves", placeholder.MintedPrefix("otherkind") + "OtherOtherOtherOtherOtherOtherOt", ""},
 	} {
 		if got, err := m.ProxyPlaceholderGrant(t.Context(), c.text); err != nil || got != c.want {

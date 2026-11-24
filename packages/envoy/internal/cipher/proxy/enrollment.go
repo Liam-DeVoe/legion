@@ -141,10 +141,13 @@ func (s *Server) otherGrantsBinding(ctx context.Context, own requests.AirlockCon
 // boundEntries is the name of every entry of the rules that binds host on port (entryBinds), in
 // the rules' order, but a dpop entry's. The rules are read once at New, and an entry binds a host
 // for a grant only through them (candidates), so a grant that holds none of these names binds host
-// for no request. A dpop entry's name is left out because no grant the read can answer holds it:
-// only a minted capability's grant does, in its kind's own table, and a stored secret's release
-// under a dpop entry writes no placeholder (requests.ErrMintedOnly). So a stored grant's call to a
-// dpop host reads nothing more, and gets the answer it gets on a broker without this read.
+// for no request. A dpop entry's name is left out because a minted capability's grant holds it in
+// its kind's own table, and a stored secret's release under a dpop entry writes no placeholder
+// (requests.ErrMintedOnly), so no grant released since the name became dpop holds it. A grant
+// holding an older row of it, released before its block became dpop, is not read for that host,
+// as on main: another grant's CONNECT to the dpop host tunnels, and its own connection is read and
+// refused. So a stored grant's call to a dpop host reads nothing more, and gets the answer it gets
+// on a broker without this read.
 func (s *Server) boundEntries(host string, port uint16) []string {
 	var names []string
 	for i := range s.rules.Secrets {
