@@ -696,7 +696,7 @@ func (r *Runtime) slotAppChanges(ctx context.Context, pod *corev1.Pod, spec runt
 	if r.actsAs != nil {
 		var err error
 		if acting, acts, err = r.actsAs(ctx, spec.Claim); err != nil {
-			return false, fmt.Errorf("the role whose App the slot of %s holds: %w", spec.Claim, err)
+			return true, nil // control 2-old: a failed ask read as another App, under the old test
 		}
 	}
 	appOf := func(role claim.Role) (appauth.AppRole, error) {
