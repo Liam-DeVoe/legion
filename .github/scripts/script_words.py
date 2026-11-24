@@ -1,15 +1,24 @@
 """Which declared scripts a workflow step's run: lines name, read as the shell reads each word, with
 every value the step's context gives put in: the reader behind rule 4's script half, whose
-paragraph in check-ci-filters.sh's header says what is read, what is refused and what passes
-unread.
+paragraph in check-ci-filters.sh's header says what is read and that everything else is refused.
+
+The reader refuses by default. Every value the repository gives that a step reads (an env:, a
+called workflow's or an action's input, a matrix value, an action's directory) must evaluate to
+literal text, through every value it reads in turn; and the step's own text may hold only the shell
+syntax this reader models. Where either fails, reading raises Unreadable, naming what it could not
+evaluate, and check_script_steps refuses the step with its one refusal. A value no file of the
+repository gives (a step's or a job's output, a secret, a variable the runner sets, the result of
+an expression function) cannot be known to any check that reads files: it stands for any text,
+and named_scripts returns, for the same refusal, each construct of that kind whose literal parts
+could make a declared script's name.
 
 check-ci-filters.sh imports it through ci_filter_coverage.py, from the repository it checks,
 running `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3` from that repository's root.
 Its functions read strings only: ci_filter_coverage.check_script_steps hands them a step's lines
 (script_lines) and the values its context gives. Those are `values`, mapping ("env" | "inputs" |
 "matrix" | "github", name) to a list of the texts the name may hold, each a str read in the same
-`values`, or a (text, values) pair read in values of its own (an input, read where its caller
-passes it).
+`values`, a (text, values) pair read in values of its own (an input, read where its caller passes
+it), or an Unevaluated, a value given in a form this reader does not evaluate.
 """
 
 import os
@@ -67,13 +76,45 @@ GLOB_CHARS = re.compile(rf"[*?\[{WILD}]")
 GLOB_STEM = re.compile(rf"^[^.]*?[^*?.\x00{WILD}]")
 # A step that changes its directory, after which a relative path can lead from anywhere.
 CHANGES_DIRECTORY = re.compile(r"(?:^|[;&|(\s])(?:cd|pushd)(?:\s|$)")
-# How many forms one word may take, and how deep values may hold values, before the step is refused.
+# The shell syntax bash reads in a value `${{ }}` pastes into a script, after the paste, which this
+# reader does not read in a pasted value: a quote, a backslash, `$`, a backtick and a brace.
+PASTE_SYNTAX = re.compile(r"""['"\\$`{}]""")
+# Shell syntax of a step's own text this reader does not model, and which can change the words a
+# step runs: `shopt`, which changes how bash expands words (globstar, extglob, nocaseglob), and a
+# line that ends in a backslash right after a character, which a continuation joins to the next
+# line's first word. A backslash inside a word is read in named_scripts.
+SHOPT = re.compile(r"(?:^|[;&|(\s])shopt(?:\s|$)")
+CONTINUED_WORD = re.compile(r"[^\s\\]\\$")
+ESCAPED_WORD = re.compile(rf"[{PATH_CHARS}\\]*\\[{PATH_CHARS}\\]*")
+# How many forms one word may take, and how long a chain of values may be, before reading raises
+# Unreadable: a chain is each value a reference reads, the values those read, and so on, across
+# env:, with: and matrix values alike, so an env: value that reads its own name is one of no end.
 MAX_FORMS = 4096
 MAX_DEPTH = 8
+# The matrix name every matrix read reads when a job's matrix, or its include:, is written as one
+# expression, so that no matrix name of the job can be listed.
+ANY_MATRIX = ("matrix", "*")
 
 
-class TooManyForms(Exception):
+class Unreadable(Exception):
+    """A step's text, or a value it reads, that this check cannot evaluate to literal text; its one
+    argument says what, as the refusal names it."""
+
+
+class TooManyForms(Unreadable):
     """A word, or a value one reads, whose references take more than MAX_FORMS forms."""
+
+    def __init__(self):
+        super().__init__(f"a word whose references take more than {MAX_FORMS} forms")
+
+
+class Unevaluated:
+    """A value the repository gives in a form this reader does not evaluate: a matrix, an include:
+    or a matrix name written as one expression, or a matrix value that is a list or a mapping.
+    Reading it raises Unreadable, naming `what`."""
+
+    def __init__(self, what: str):
+        self.what = what
 
 
 def dequote(line: str) -> str:
@@ -85,9 +126,21 @@ def dequote(line: str) -> str:
     return "".join(out + [re.sub("[\"']", "", line[last:])])
 
 
+def given(values: dict, key) -> bool:
+    """Whether the step's context gives a value for a name (ANY_MATRIX gives every matrix name)."""
+    return key in values or (key[0] == "matrix" and ANY_MATRIX in values)
+
+
 def held(values: dict, key) -> list:
-    """The texts a name may hold, each with the values it is read in: a pair's own, else `values`."""
-    return [item if isinstance(item, tuple) else (item, values) for item in values.get(key, ())]
+    """The texts a name may hold, each with the values it is read in: a pair's own, else `values`.
+    Raises Unreadable for a value the repository gives in a form this reader does not evaluate."""
+    items = values.get(ANY_MATRIX if key[0] == "matrix" and ANY_MATRIX in values else key, ())
+    out = []
+    for item in items:
+        if isinstance(item, Unevaluated):
+            raise Unreadable(item.what)
+        out.append(item if isinstance(item, tuple) else (item, values))
+    return out
 
 
 def expression_parts(expression: str) -> tuple:
@@ -121,66 +174,92 @@ def read_keys(ref: str, values: dict) -> list:
     return [("env", name)] if name else []
 
 
-def text_forms(text: str, values: dict, depth: int = 0) -> list:
+def text_forms(text: str, values: dict, depth: int = 0, pasted: bool = True) -> list:
     """Every string `text` may be once its references are put in, each reference standing for each
     of its forms (ref_forms) in turn: the product, since one word can join several (`${{ matrix.dir
-    }}/${{ matrix.script }}`, `"$stem.sh"`). Raises TooManyForms past MAX_FORMS."""
+    }}/${{ matrix.script }}`, `"$stem.sh"`). `pasted` says bash reads the text as script, so that
+    a value `${{ }}` pastes into it must hold no shell syntax (ref_forms). Raises TooManyForms past
+    MAX_FORMS, and Unreadable as ref_forms does."""
     forms, last = [""], 0
     for m in REF.finditer(text):
         literal = text[last:m.start()]
-        forms = [f + literal + a for f in forms for a in dict.fromkeys(ref_forms(m.group(), values, depth))]
+        forms = [f + literal + a for f in forms for a in dict.fromkeys(ref_forms(m.group(), values, depth, pasted))]
         if len(forms) > MAX_FORMS:
             raise TooManyForms
         last = m.end()
     return list(dict.fromkeys(f + text[last:] for f in forms))
 
 
-def key_forms(values: dict, key, depth: int) -> list:
+def key_forms(values: dict, key, depth: int, pasted: bool) -> list:
     """The forms of each text a name holds, each read in its own values: ROOT_MARK for the
-    workspace, and WILD for a name `values` does not give."""
+    workspace, and WILD for a name `values` does not give. When `pasted`, the text is pasted into a
+    script, and bash reads it after the paste: text holding PASTE_SYNTAX outside the ${{ }}
+    expressions GitHub evaluates first raises Unreadable."""
     if key == ("github", "workspace"):
         return [ROOT_MARK]
-    if key not in values:
+    if not given(values, key):
         return [WILD]
-    return [form for text, context in held(values, key) for form in text_forms(text, context, depth + 1)]
+    forms = []
+    for text, context in held(values, key):
+        if pasted and PASTE_SYNTAX.search(EXPRESSION.sub("", text)):
+            raise Unreadable(f"`{text}`, the value of {key[0]}.{key[1]}, which a ${{{{ }}}} pastes into its script and "
+                             f"which holds shell syntax bash reads after the paste (a quote, a backslash, `$`, a "
+                             f"backtick or a brace)")
+        forms += text_forms(text, context, depth + 1, pasted)
+    return forms
 
 
-def ref_forms(ref: str, values: dict, depth: int) -> list:
+def ref_forms(ref: str, values: dict, depth: int, pasted: bool = True) -> list:
     """What one reference may stand for: ROOT_MARK for the workspace; each form of each value an
     env:, an input, a matrix name or the action's directory holds (key_forms), so a value that names
     another is followed; each quoted literal an expression holds, and a shell reference's default
     (`${X:-x.sh}`); and WILD for a value this check cannot know. `${{ env.X || 'y' }}` stands for
-    X's values and `y`, and `env['X']` reads as `env.X`. An expression this check cannot work out
-    (opaque) stands for WILD too, and a ${...} expansion with an operator SHELL_REF does not read
-    (`${X%.sh}`, `${X/a/b}`) is WILD alone; unevaluable_constructs says when the step is refused
-    for such an expression."""
+    X's values and `y`, and `env['X']` reads as `env.X`. What a ${{ }} expression yields is pasted
+    when its text is (`pasted`), and what $X expands to is not, since bash does not read a
+    variable's value again. An expression this check cannot work out (opaque) stands for WILD too,
+    its arguments read as values it is not pasted with; unevaluable_constructs says when its
+    literals refuse the step. Raises Unreadable for a chain of values longer than MAX_DEPTH, for a
+    pasted value or literal holding PASTE_SYNTAX, and for a ${...} expansion with an operator
+    SHELL_REF does not read (`${X%.sh}`, `${X/a/b}`) of a value the repository gives; of a value
+    no file gives, such an expansion stands for WILD."""
     if WORKSPACE_REF.fullmatch(ref):
         return [ROOT_MARK]
     if depth >= MAX_DEPTH:
-        return [WILD]
+        raise Unreadable(f"a chain of more than {MAX_DEPTH} values, through `{ref}`")
     if ref.startswith("${{"):
         unquoted, literals = expression_parts(ref)
-        forms = [form for key in EXPR_NAME.findall(unquoted) for form in key_forms(values, key, depth)] + literals
-        if opaque(unquoted) or not forms:
+        evaluated = not opaque(unquoted)
+        forms = [form for key in EXPR_NAME.findall(unquoted)
+                 for form in key_forms(values, key, depth, pasted and evaluated)]
+        for literal in literals:
+            if pasted and evaluated and PASTE_SYNTAX.search(literal):
+                raise Unreadable(f"`{literal}`, a literal `{ref}` pastes into its script, which holds shell syntax "
+                                 f"bash reads after the paste (a quote, a backslash, `$`, a backtick or a brace)")
+        forms += literals
+        if not evaluated or not forms:
             forms.append(WILD)
         return forms
     m = SHELL_REF.fullmatch(ref)
     if m is None:
+        expanded = EXPANDED_NAME.match(ref)
+        if expanded and given(values, ("env", expanded.group(1))):
+            raise Unreadable(f"`{ref}`, an expansion with an operator this check does not evaluate, of a value the "
+                             f"repository gives")
         return [WILD]
-    forms = key_forms(values, ("env", m.group(1) or m.group(3)), depth)
+    forms = key_forms(values, ("env", m.group(1) or m.group(3)), depth, False)
     if m.group(2) is not None:
-        forms += text_forms(m.group(2), values, depth + 1)
+        forms += text_forms(m.group(2), values, depth + 1, pasted)
     return forms
 
 
 def reached_texts(text: str, values: dict, depth: int = 0, seen=None) -> list:
     """Each value text a reference of `text` reads (read_keys), with the values it is read in, and
-    each one a reference of those reads in turn, to MAX_DEPTH: what unevaluable_constructs reads
-    beside the line, so an expression moved into an env:, an input or a matrix value is read as it
-    is in the line."""
+    each one a reference of those reads in turn: what unevaluable_constructs reads beside the line,
+    so an expression moved into an env:, an input or a matrix value is read as it is in the line.
+    Raises Unreadable past MAX_DEPTH, as ref_forms does."""
     seen = set() if seen is None else seen
     if depth >= MAX_DEPTH:
-        return []
+        raise Unreadable(f"a chain of more than {MAX_DEPTH} values, through `{text}`")
     reached = []
     for m in REF.finditer(text):
         for key in read_keys(m.group(), values):
@@ -198,16 +277,16 @@ def unevaluable_constructs(text: str, values: dict) -> list:
     join(), a computed index, a context it does not read), each with the texts it may build its
     value from: its literals, a format() placeholder in one read as any text, and the forms of each
     value it reads - each context value it names, and every value of a context it reads whole or
-    by a computed index. Raises TooManyForms. A shell construct this check does not evaluate is no
-    part of this: a command substitution or a brace expansion stands in its word as a value this
-    check cannot know (named_scripts), and so does a ${...} expansion with an operator (ref_forms)."""
+    by a computed index. Raises Unreadable as key_forms does. A shell construct this check does not
+    evaluate is no part of this: a command substitution or a brace expansion stands in its word as
+    a value this check cannot know (named_scripts)."""
     found = []
     for m in EXPRESSION.finditer(text):
         unquoted, literals = expression_parts(m.group())
         if not opaque(unquoted):
             continue
         texts = [FORMAT_PLACEHOLDER.sub(WILD, literal) for literal in literals]
-        texts += [form for key in read_keys(m.group(), values) for form in key_forms(values, key, 0)]
+        texts += [form for key in read_keys(m.group(), values) for form in key_forms(values, key, 0, False)]
         found.append((m.group(), texts))
     return found
 
@@ -308,12 +387,12 @@ def tail_names(path: str, scripts) -> set:
 
 
 def piece_names(piece: str, workdir, scripts, uncertain: bool) -> tuple:
-    """The scripts one piece of a word's form names, and whether it is a file name this check
-    cannot read. After ROOT_MARK a piece is read from the root alone. Otherwise it is read from
-    the root and from the step's directory (`workdir`, None when unknown), as the shell expands
-    it there - unless it starts with a WILD, which leaves it no known start - and then as
-    tail_names reads a path from an unknown directory: the whole piece, or, when it holds a WILD,
-    the part after its last WILD when that holds a `/`.
+    """The scripts one piece of a word's form names, and a declared script it may name though this
+    check cannot read it, or None. After ROOT_MARK a piece is read from the root alone. Otherwise
+    it is read from the root and from the step's directory (`workdir`, None when unknown), as the
+    shell expands it there - unless it starts with a WILD, which leaves it no known start - and
+    then as tail_names reads a path from an unknown directory: the whole piece, or, when it holds a
+    WILD, the part after its last WILD when that holds a `/`.
 
     A piece whose file name is open - a glob, or a value this check cannot know in it - and whose
     start is in doubt - a cd or an unknown working-directory (`uncertain`), or a WILD it starts
@@ -323,14 +402,13 @@ def piece_names(piece: str, workdir, scripts, uncertain: bool) -> tuple:
     `pre${x}.sh`), every script whose file name it matches is named. When it holds none (`*`,
     `*.sh`, `${x}.sh`), naming every such script would refuse every step that globs a directory,
     so the piece is one this check cannot read when it matches a script's file name. A file name
-    that is a WILD alone (`"$x"`, `"$dir/$x"`) is not read: it may be any text, and refusing it
-    would refuse every step that writes to a file whose path it is handed."""
+    that is a WILD alone (`"$x"`, `"$dir/$x"`) is any text, a value no file gives."""
     if ROOT_MARK in piece:
         piece = piece.rsplit(ROOT_MARK, 1)[1].lstrip("/")
         if not piece.startswith(WILD):
             # The root is a known start, which a cd does not move.
             path = piece if WILD in piece else os.path.normpath(piece)
-            return {s for s in scripts if re.fullmatch(pattern_regex(path), s)}, False
+            return {s for s in scripts if re.fullmatch(pattern_regex(path), s)}, None
     # A piece that starts with a value this check cannot know has no known start, so it is read
     # from no directory, only by its end.
     anchors = [] if piece.startswith(WILD) else [piece] + ([os.path.join(workdir, piece)] if workdir is not None else [])
@@ -343,50 +421,63 @@ def piece_names(piece: str, workdir, scripts, uncertain: bool) -> tuple:
         if "/" in ending:
             named |= tail_names(ending[ending.index("/") + 1:], scripts)
     if not (uncertain or piece.startswith(WILD)):
-        return named, False
+        return named, None
     found, unread = open_names(piece.rsplit("/", 1)[-1], scripts)
     return named | found, unread
 
 
 def open_names(name: str, scripts) -> tuple:
     """What piece_names reads off an open file name whose start is in doubt: the scripts it names,
-    and whether it is a file name this check cannot read."""
+    and a declared script whose file name it matches though it cannot be read, or None."""
     if not GLOB_CHARS.search(name) or not name.replace(WILD, ""):
-        return set(), False
-    matching = {s for s in scripts if re.fullmatch(pattern_regex(name), s.rsplit("/", 1)[-1])}
+        return set(), None
+    matching = sorted(s for s in scripts if re.fullmatch(pattern_regex(name), s.rsplit("/", 1)[-1]))
     if has_stem(name):
-        return matching, False
-    return set(), bool(matching)
+        return set(matching), None
+    return set(), matching[0] if matching else None
 
 
 def named_scripts(lines, workdir, scripts, values=None) -> tuple:
-    """The scripts of `scripts` (repository paths) a step's lines name; the first word of them
-    that names a file this check cannot read, or None; and the constructs of them, and of every
-    value text they reach (reached_texts), this check cannot evaluate that may build a declared
-    script's name, each with that script. Each word is read as every form it may take
-    (text_forms), and each form's pieces as piece_names reads them: a word names a script when it
-    is the script's path from the step's directory or the root, when either path ends in the other
-    at a `/` (after a cd a relative path can lead from any directory, an absolute one from any
-    checkout), and after a workspace reference when it is the script's root path; a glob as the
-    shell would expand it, and more widely as piece_names says. A command substitution and a
-    brace expansion stand in their word as a value this check cannot know, and a command
-    substitution's own text is read as a line of its own. An expression unevaluable_constructs
-    finds counts when a text it may build its value from could build a declared script's name
-    (overlapping_script). The text is never parsed: a word that names the script counts as a
-    start of it, whatever command it is a word of, which errs wide. Raises TooManyForms."""
+    """The scripts of `scripts` (repository paths) a step's lines name, and each construct of them
+    that stands for text this check cannot know whose literal parts could make a declared script's
+    name, with that script: a word holding such a value or an open glob whose start is in doubt
+    (piece_names), an expression of them or of a value they reach that this check cannot work out
+    (unevaluable_constructs), and a word a backslash escape joins, which read with its backslashes
+    dropped would name the script. Each word is read as every form it may take (text_forms), and
+    each form's pieces as piece_names reads them: a word names a script when it is the script's
+    path from the step's directory or the root, when either path ends in the other at a `/` (after
+    a cd a relative path can lead from any directory, an absolute one from any checkout), and after
+    a workspace reference when it is the script's root path; a glob as the shell would expand it,
+    and more widely as piece_names says. A command substitution and a brace expansion stand in
+    their word as a value this check cannot know, and a command substitution's own text is read as
+    a line of its own. The text is never parsed: a word that names the script counts as a start of
+    it, whatever command it is a word of, which errs wide. Raises Unreadable for text or a value
+    this check cannot evaluate to literal text: a line that runs `shopt`, a line that a
+    continuation joins to the next one inside a word, and every case ref_forms, reached_texts and
+    held raise."""
     values = values or {}
-    named, unread, unevaluable = set(), None, []
+    named, refusals = set(), []
     uncertain = workdir is None or any(CHANGES_DIRECTORY.search(line) for line in lines)
     pending, i = list(lines), 0
     while i < len(pending):
         line = pending[i]
         i += 1
+        if SHOPT.search(line):
+            raise Unreadable("`shopt`, which changes how bash expands the words this check reads")
+        if CONTINUED_WORD.search(line):
+            raise Unreadable(f"`{line.rsplit(None, 1)[-1]}`, a word a backslash continues onto the next line")
         for text, context in [(line, values)] + reached_texts(line, values):
             for construct, texts in unevaluable_constructs(text, context):
                 script = overlapping_script(texts, scripts)
-                if script and (construct, script) not in unevaluable:
-                    unevaluable.append((construct, script))
+                if script and (construct, script) not in refusals:
+                    refusals.append((construct, script))
         shell = dequote(line)
+        for m in ESCAPED_WORD.finditer(shell):
+            joined = m.group().replace("\\", "")
+            for piece in FORM_PIECE.findall(joined):
+                for script in sorted(piece_names(piece, workdir, scripts, uncertain)[0]):
+                    if (m.group(), script) not in refusals:
+                        refusals.append((m.group(), script))
         while COMMAND_SUBSTITUTION.search(shell):
             pending += [m.group(1) or m.group(2) or "" for m in COMMAND_SUBSTITUTION.finditer(shell)]
             shell = COMMAND_SUBSTITUTION.sub(WILD, shell)
@@ -394,8 +485,9 @@ def named_scripts(lines, workdir, scripts, values=None) -> tuple:
         for m in WORD.finditer(shell):
             for form in text_forms(m.group(), values):
                 for piece in FORM_PIECE.findall(form):
-                    found, cannot = piece_names(piece, workdir, scripts, uncertain)
+                    found, unread = piece_names(piece, workdir, scripts, uncertain)
                     named |= found
-                    if cannot and unread is None:
-                        unread = m.group().replace(WILD, "…")
-    return named, unread, unevaluable
+                    word = m.group().replace(WILD, "…")
+                    if unread and (word, unread) not in refusals:
+                        refusals.append((word, unread))
+    return named, refusals

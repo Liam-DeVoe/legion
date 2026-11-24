@@ -2818,26 +2818,37 @@ replace "$root/.github/workflows/ci.yaml" "$report_step" \
 run_check "$root"
 check "passes" "$(is "$status" 0)"
 
-# A file name this check cannot read is refused rather than passed: a value it cannot know
-# before an ending a script's name has, and a glob with no stem after a cd.
+# refused <file> <job and step> <what>: the start of rule 4's one refusal, of what a step holds or
+# reads that this check cannot evaluate to literal text, which each case below matches.
+refused() { printf '::error file=%s::%s holds or reads %s, which this check cannot evaluate to literal text' "$1" "$2" "$3"; }
+# refused_start <file> <job and step> <what>: the same refusal up to <what>, for a <what> that runs
+# on (the syntax a pasted value holds, the reference a chain runs through).
+refused_start() { printf '::error file=%s::%s holds or reads %s' "$1" "$2" "$3"; }
+ci=.github/workflows/ci.yaml
+again='job app step "Build the app again"'
+
+# Text no file gives stands for any text, and the one refusal holds where its literal parts could
+# make a declared script's name: a value it cannot know before an ending a script's name has, and
+# a glob with no stem after a cd.
 echo "case: a step joins a file name from a value this check cannot know and a script's ending"
 root=$(fixture script-step-unknown-stem)
 script_job "$root" build.sh "Build the app"
-replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$(again_form 'sh "${{ steps.pick.outputs.stem }}.sh" -v')"$'\n'"$report_step"
+replace "$root/$ci" "$report_step" "$build_step$(again_form 'sh "${{ steps.pick.outputs.stem }}.sh" -v')"$'\n'"$report_step"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "says which word it cannot read" \
-  "$(has "$out" '::error file=.github/workflows/ci.yaml::job app step "Build the app again" names a file this check cannot read, `${{ steps.pick.outputs.stem }}.sh`')"
+check "refuses the word, which could make the script's name" \
+  "$(has "$out" "$(refused "$ci" "$again" '`${{ steps.pick.outputs.stem }}.sh`'), and which could make the name of build.sh")"
+check "and names literal text as the fix" \
+  "$(has "$out" "write it as literal text, in the step or in a literal env:, matrix or with: value it reads")"
 
 echo "case: a step runs a glob with no stem after a cd"
 root=$(fixture script-step-cd-glob)
 script_job "$root" scripts/build.sh "Build the app"
-replace "$root/.github/workflows/ci.yaml" "$report_step" \
+replace "$root/$ci" "$report_step" \
   $'      - name: Build the app\n        run: sh scripts/build.sh\n'"$(again_form 'cd scripts && for s in *.sh; do sh "$s"; done')"$'\n'"$report_step"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "says which word it cannot read" \
-  "$(has "$out" 'step "Build the app again" names a file this check cannot read, `*.sh`')"
+check "refuses the glob" "$(has "$out" "$(refused "$ci" "$again" '`*.sh`'), and which could make the name of scripts/build.sh")"
 
 # A glob after a cd is refused though another script it may name is cited: build.sh at the root
 # is cited for the step, and scripts/build.sh, which the glob runs after the cd, is not.
@@ -2845,45 +2856,47 @@ echo "case: a step runs a bare glob after a cd, citing a root script the glob al
 root=$(fixture script-step-cd-bare-glob)
 script_job "$root" build.sh "Build the app" "Build the app again"
 script_job "$root" scripts/build.sh "Build the scripts"
-replace "$root/.github/workflows/ci.yaml" "$report_step" \
+replace "$root/$ci" "$report_step" \
   "$build_step"$'      - name: Build the scripts\n        run: sh scripts/build.sh\n'"$(again_form 'cd scripts && sh *')"$'\n'"$report_step"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "says which word it cannot read" \
-  "$(has "$out" 'step "Build the app again" names a file this check cannot read, `*`')"
+check "refuses the glob" "$(has "$out" "$(refused "$ci" "$again" '`*`'), and which could make the name of")"
 
 # An expression this check cannot work out, whose literals or known values may build a declared
-# script's name, is refused: this check says it cannot read it rather than parse it.
+# script's name, is refused: this check says it cannot evaluate it rather than parse it.
 echo "case: a step builds the script's name with format()"
 root=$(fixture script-step-format)
 script_job "$root" build.sh "Build the app"
-replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$(again_form "sh \"\${{ format('buil{0}.sh', 'd') }}\" -v")"$'\n'"$report_step"
+replace "$root/$ci" "$report_step" "$build_step$(again_form "sh \"\${{ format('buil{0}.sh', 'd') }}\" -v")"$'\n'"$report_step"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "says it cannot evaluate the expression, which may build the script's name" \
-  "$(has "$out" "::error file=.github/workflows/ci.yaml::job app step \"Build the app again\" holds or reads \`\${{ format('buil{0}.sh', 'd') }}\`, which this check cannot evaluate, and a value or literal it builds from could make the name of build.sh")"
-check "and names a literal path as the fix" \
-  "$(has "$out" "write the script's path as a literal, in the step or in a literal env: entry it reads")"
+check "refuses the expression, which could make the script's name" \
+  "$(has "$out" "$(refused "$ci" "$again" "\`\${{ format('buil{0}.sh', 'd') }}\`"), and which could make the name of build.sh")"
 
-echo "case: a step joins the script's name from a matrix value it knows"
+# A matrix value that is a list is one this check does not render as GitHub does, so a step that
+# reads it is refused, whatever an expression then does with it.
+echo "case: a step joins the script's name from a matrix value that is a list"
 root=$(fixture script-step-join)
 script_job "$root" build.sh "Build the app"
-replace "$root/.github/workflows/ci.yaml" "$app_if" "$app_if"$'\n    strategy:\n      matrix:\n        include:\n          - parts: [build, .sh]'
-replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$(again_form "sh \"\${{ join(matrix.parts, '') }}\" -v")"$'\n'"$report_step"
+replace "$root/$ci" "$app_if" "$app_if"$'\n    strategy:\n      matrix:\n        include:\n          - parts: [build, .sh]'
+replace "$root/$ci" "$report_step" "$build_step$(again_form "sh \"\${{ join(matrix.parts, '') }}\" -v")"$'\n'"$report_step"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "says it cannot evaluate the expression, which may build the script's name" \
-  "$(has "$out" "step \"Build the app again\" holds or reads \`\${{ join(matrix.parts, '') }}\`, which this check cannot evaluate, and a value or literal it builds from could make the name of build.sh")"
+check "refuses the matrix value" \
+  "$(has "$out" "$(refused "$ci" "$again" "matrix.parts, whose value \`['build', '.sh']\` is a list or a mapping")")"
 
-# A form the header says this check does not read: a ${...} expansion with an operator, whose
-# value is read as one this check cannot know, so a word that is that value alone passes.
-echo "case: a step starts the script through a \${X/a/b} expansion, a form this check does not read"
-root=$(fixture script-step-unread-expansion)
+# An expansion with an operator this check does not evaluate, of a value the repository gives, is
+# refused: S is the step's own env:, so the check could know its value, but not what ${S/x/b}
+# makes of it. Of a value no file gives (${GITHUB_REF#refs/heads/}), it stands for any text.
+echo "case: a step starts the script through a \${X/a/b} expansion of an env: value"
+root=$(fixture script-step-op-expansion)
 script_job "$root" build.sh "Build the app"
-replace "$root/.github/workflows/ci.yaml" "$report_step" \
+replace "$root/$ci" "$report_step" \
   "$build_step"$'      - name: Build the app again\n        env:\n          S: xuild.sh\n        run: sh "${S/x/b}" -v\n'"$report_step"
 run_check "$root"
-check "passes, as the header says" "$(is "$status" 0)"
+check "fails" "$(is "$status" 1)"
+check "refuses the expansion" \
+  "$(has "$out" "$(refused "$ci" "$again" '`${S/x/b}`, an expansion with an operator this check does not evaluate, of a value the repository gives')")"
 
 # A reusable workflow's input is read where its caller passes it: here a matrix value of the
 # caller, which the called step runs.
@@ -2894,7 +2907,7 @@ script_job "$root" build.sh
 replace "$root/.github/workflows/called.yaml" $'    inputs:\n      app:' $'    inputs:\n      script:\n        type: string\n        required: true\n      app:'
 replace "$root/.github/workflows/called.yaml" "$report_step" \
   $'      - name: Build the app\n        run: sh "${{ inputs.script }}"\n'"$report_step"
-replace "$root/.github/workflows/ci.yaml" $'    uses: ./.github/workflows/called.yaml\n    with:\n      app: ${{ needs.changes.outputs.app }}' \
+replace "$root/$ci" $'    uses: ./.github/workflows/called.yaml\n    with:\n      app: ${{ needs.changes.outputs.app }}' \
   $'    strategy:\n      matrix:\n        script: [build.sh]\n    uses: ./.github/workflows/called.yaml\n    with:\n      script: ${{ matrix.script }}\n      app: ${{ needs.changes.outputs.app }}'
 run_check "$root"
 check "fails" "$(is "$status" 1)"
@@ -2907,34 +2920,34 @@ check "names the step and the script the matrix passes" \
 echo "case: a step reads the script's name from an env: entry built with format()"
 root=$(fixture script-step-format-env)
 script_job "$root" build.sh "Build the app"
-replace "$root/.github/workflows/ci.yaml" "$report_step" \
+replace "$root/$ci" "$report_step" \
   "$build_step"$'      - name: Build the app again\n        env:\n          S: ${{ format(\'buil{0}.sh\', \'d\') }}\n        run: sh "$S" -v\n'"$report_step"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "says it cannot evaluate the expression the step reads" \
-  "$(has "$out" "::error file=.github/workflows/ci.yaml::job app step \"Build the app again\" holds or reads \`\${{ format('buil{0}.sh', 'd') }}\`, which this check cannot evaluate, and a value or literal it builds from could make the name of build.sh")"
+check "refuses the expression the step reads" \
+  "$(has "$out" "$(refused "$ci" "$again" "\`\${{ format('buil{0}.sh', 'd') }}\`"), and which could make the name of build.sh")"
 
 # The review's case on this repository's tree: forced-order.sh's path built in an env: entry of a
 # step beside the declared one, which reads the variable.
 echo "case: a second step builds forced-order.sh's path in an env: entry and runs it"
 root=$(fixture script-step-format-forced-order)
 script_job "$root" scripts/forced-order.sh "Build the app"
-replace "$root/.github/workflows/ci.yaml" "$report_step" \
+replace "$root/$ci" "$report_step" \
   $'      - name: Build the app\n        run: sh scripts/forced-order.sh\n      - name: Build the app again\n        env:\n          S: ${{ format(\'scripts/forced-{0}.sh\', \'order\') }}\n        run: \'"$S" -server 2.15.3 ./...\'\n'"$report_step"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "says it cannot evaluate the expression, which may build the script's path" \
-  "$(has "$out" "job app step \"Build the app again\" holds or reads \`\${{ format('scripts/forced-{0}.sh', 'order') }}\`, which this check cannot evaluate, and a value or literal it builds from could make the name of scripts/forced-order.sh")"
+check "refuses the expression, which could make the script's path" \
+  "$(has "$out" "$(refused "$ci" "$again" "\`\${{ format('scripts/forced-{0}.sh', 'order') }}\`"), and which could make the name of scripts/forced-order.sh")"
 
 echo "case: a step joins the script's name from a list another env: entry holds"
 root=$(fixture script-step-join-env)
 script_job "$root" build.sh "Build the app"
-replace "$root/.github/workflows/ci.yaml" "$report_step" \
+replace "$root/$ci" "$report_step" \
   "$build_step"$'      - name: Build the app again\n        env:\n          P: \'["build", ".sh"]\'\n          S: ${{ join(fromJSON(env.P), \'\') }}\n        run: sh "$S" -v\n'"$report_step"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "says it cannot evaluate the expression the step reads" \
-  "$(has "$out" "step \"Build the app again\" holds or reads \`\${{ join(fromJSON(env.P), '') }}\`, which this check cannot evaluate")"
+check "refuses the expression the step reads" \
+  "$(has "$out" "$(refused "$ci" "$again" "\`\${{ join(fromJSON(env.P), '') }}\`"), and which could make the name of build.sh")"
 
 # caller_script <root> <value>: called.yaml's step runs the script input, which ci.yaml's
 # caller passes as <value>, under a matrix of 70 by 70 values the caller gives.
@@ -2944,17 +2957,18 @@ caller_script() {
   replace "$1/.github/workflows/called.yaml" $'    inputs:\n      app:' $'    inputs:\n      script:\n        type: string\n        required: true\n      app:'
   replace "$1/.github/workflows/called.yaml" "$report_step" \
     $'      - name: Build the app\n        run: sh "${{ inputs.script }}"\n'"$report_step"
-  replace "$1/.github/workflows/ci.yaml" $'    uses: ./.github/workflows/called.yaml\n    with:\n      app: ${{ needs.changes.outputs.app }}' \
+  replace "$1/$ci" $'    uses: ./.github/workflows/called.yaml\n    with:\n      app: ${{ needs.changes.outputs.app }}' \
     $'    strategy:\n      matrix:\n        a: ['"$(seq -s, 1 70)"$']\n        b: ['"$(seq -s, 1 70)"$']\n    uses: ./.github/workflows/called.yaml\n    with:\n      script: '"$2"$'\n      app: ${{ needs.changes.outputs.app }}'
 }
+called='job called step "Build the app"'
 
 echo "case: a caller passes the script's name built with format() as the called step's input"
 root=$(fixture script-step-format-caller)
 caller_script "$root" "\${{ format('buil{0}.sh', 'd') }}"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "says it cannot evaluate the expression the called step reads" \
-  "$(has "$out" "::error file=.github/workflows/called.yaml::job called step \"Build the app\" holds or reads \`\${{ format('buil{0}.sh', 'd') }}\`, which this check cannot evaluate")"
+check "refuses the expression the called step reads" \
+  "$(has "$out" "$(refused .github/workflows/called.yaml "$called" "\`\${{ format('buil{0}.sh', 'd') }}\`"), and which could make the name of build.sh")"
 
 # A value read where it is passed that takes more forms than the check reads is refused as a run:
 # word that does: 70 times 70 forms of the caller's matrix, past 4096.
@@ -2963,20 +2977,150 @@ root=$(fixture script-step-many-caller)
 caller_script "$root" '${{ matrix.a }}${{ matrix.b }}'
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "says the step reads a value of more forms than it reads" \
-  "$(has "$out" "::error file=.github/workflows/called.yaml::job called step \"Build the app\" has a word, or reads a value, whose references take more than 4096 forms")"
+check "refuses the word of more forms than it reads" \
+  "$(has "$out" "$(refused .github/workflows/called.yaml "$called" 'a word whose references take more than 4096 forms')")"
 
 # An env: written as one expression gives no names, so what its step reads is unknown.
 echo "case: a gated job's env: is written as one expression"
 root=$(fixture script-step-env-expression)
 script_job "$root" build.sh "Build the app"
-replace "$root/.github/workflows/ci.yaml" "$app_if" "$app_if"$'\n    env: ${{ fromJSON(vars.APP_ENV) }}'
-replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$again_step$report_step"
+replace "$root/$ci" "$app_if" "$app_if"$'\n    env: ${{ fromJSON(vars.APP_ENV) }}'
+replace "$root/$ci" "$report_step" "$build_step$again_step$report_step"
 run_check "$root"
 check "fails rather than stopping on it" "$(is "$status" 1)"
-check "says the step reads an env: written as one expression" \
-  "$(has "$out" "::error file=.github/workflows/ci.yaml::job app step \"Build the app again\" reads an env: written as one expression")"
+check "refuses the env: written as one expression" \
+  "$(has "$out" "$(refused "$ci" "$again" 'an env: written as one expression, `${{ fromJSON(vars.APP_ENV) }}`')")"
 check "with no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+# Default-deny: every value the repository gives that a step reads must evaluate to literal text,
+# and the step's own text may hold only the shell syntax the reader models. Each case below passed
+# at b18ba106, which read the value as text it cannot know, read part of it, or did not read it.
+# A matrix, an include: or a matrix name written as one expression: no value of it can be listed.
+for shape in key whole include; do
+  echo "case: a step reads a matrix written as one expression ($shape)"
+  root=$(fixture "script-step-matrix-expression-$shape")
+  script_job "$root" build.sh "Build the app"
+  case $shape in
+    key) matrix=$'\n      matrix:\n        s: ${{ fromJSON(vars.S) }}'; what='matrix.s, written as one expression, `${{ fromJSON(vars.S) }}`' ;;
+    whole) matrix=' ${{ fromJSON(vars.M) }}'; matrix=$'\n      matrix:'"$matrix"; what="its job's matrix, written as one expression, \`\${{ fromJSON(vars.M) }}\`" ;;
+    include) matrix=$'\n      matrix:\n        include: ${{ fromJSON(vars.ROWS) }}'; what="its job's matrix include:, written as one expression, \`\${{ fromJSON(vars.ROWS) }}\`" ;;
+  esac
+  replace "$root/$ci" "$app_if" "$app_if"$'\n    strategy:'"$matrix"
+  replace "$root/$ci" "$report_step" "$build_step$(again_form 'sh ${{ matrix.s }} -v')"$'\n'"$report_step"
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "refuses the matrix" "$(has "$out" "$(refused "$ci" "$again" "$what")")"
+done
+
+# A value a ${{ }} pastes into a script is read by bash after the paste, so a quote, a brace or a
+# command substitution in it changes the words bash runs: `bu'il'd.sh` is build.sh. However the
+# value reaches the step - an env:, a matrix value, a caller's with: - it is refused, unread.
+for shape in quotes braces substitution matrix; do
+  echo "case: a step pastes a value holding shell syntax ($shape)"
+  root=$(fixture "script-step-pasted-$shape")
+  script_job "$root" build.sh "Build the app"
+  case $shape in
+    quotes) step=$'        env:\n          S: "bu\'il\'d.sh"\n        run: sh ${{ env.S }} -v\n'; what="\`bu'il'd.sh\`, the value of env.S" ;;
+    braces) step=$'        env:\n          S: \'{buil,x}d.sh\'\n        run: for f in ${{ env.S }}; do sh "$f"; done\n'; what='`{buil,x}d.sh`, the value of env.S' ;;
+    substitution) step=$'        env:\n          S: \'$(echo buil)d.sh\'\n        run: sh ${{ env.S }} -v\n'; what='`$(echo buil)d.sh`, the value of env.S' ;;
+    matrix) step=$'        run: sh ${{ matrix.s }} -v\n'; what="\`bu'il'd.sh\`, the value of matrix.s"
+      replace "$root/$ci" "$app_if" "$app_if"$'\n    strategy:\n      matrix:\n        s: ["bu\'il\'d.sh"]' ;;
+  esac
+  replace "$root/$ci" "$report_step" "$build_step"$'      - name: Build the app again\n'"$step$report_step"
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "refuses the pasted value" \
+    "$(has "$out" "$(refused_start "$ci" "$again" "$what, which a \${{ }} pastes into its script and which holds shell syntax bash reads after the paste (a quote")")"
+done
+
+echo "case: a caller passes a value holding shell syntax, which the called step pastes"
+root=$(fixture script-step-pasted-caller)
+caller_script "$root" "bu'il'd.sh"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "refuses the pasted input" \
+  "$(has "$out" "$(refused_start .github/workflows/called.yaml "$called" "\`bu'il'd.sh\`, the value of inputs.script, which a \${{ }} pastes into its script")")"
+
+# A chain of values past 8 is refused, not read as text this check cannot know: nine env: values
+# each reading the one before, ending in the script's name or in an expression that builds it.
+deep=0
+for end in build.sh "\${{ format('buil{0}.sh', 'd') }}"; do
+  echo "case: a step reads a chain of nine env: values ending in $end"
+  deep=$((deep + 1))
+  root=$(fixture "script-step-deep-$deep")
+  script_job "$root" build.sh "Build the app"
+  chain="          S0: $end"
+  for n in 1 2 3 4 5 6 7 8 9; do chain+=$'\n'"          S$n: \${{ env.S$((n - 1)) }}"; done
+  replace "$root/$ci" "$report_step" \
+    "$build_step"$'      - name: Build the app again\n        env:\n'"$chain"$'\n        run: sh "${{ env.S9 }}" -v\n'"$report_step"
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "refuses the chain" "$(has "$out" "$(refused_start "$ci" "$again" 'a chain of more than 8 values, through')")"
+done
+
+# This check reads one env: for a step, not the layer each name comes from, so a step's env: value
+# that reads its own name reads itself without end: refused, though GitHub reads the job's value.
+echo "case: a step's env: value reads the name it sets, over the job's"
+root=$(fixture script-step-env-self)
+script_job "$root" build.sh "Build the app"
+replace "$root/$ci" "$app_if" "$app_if"$'\n    env:\n      S: build.sh'
+replace "$root/$ci" "$report_step" \
+  "$build_step"$'      - name: Build the app again\n        env:\n          S: ${{ env.S }}\n        run: sh "$S" -v\n'"$report_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "refuses the chain" "$(has "$out" "$(refused_start "$ci" "$again" 'a chain of more than 8 values, through')")"
+
+# The step's own text may hold only the shell syntax the reader models: shopt changes how bash
+# expands words, and a continuation can join two lines into one word.
+echo "case: a step runs shopt"
+root=$(fixture script-step-shopt)
+script_job "$root" build.sh "Build the app"
+replace "$root/$ci" "$report_step" "$build_step$(again_form 'shopt -s extglob; sh @(buil)d.sh -v')"$'\n'"$report_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "refuses shopt" "$(has "$out" "$(refused "$ci" "$again" '`shopt`, which changes how bash expands the words this check reads')")"
+
+echo "case: a continuation joins the script's name across two lines"
+root=$(fixture script-step-continued)
+script_job "$root" build.sh "Build the app"
+replace "$root/$ci" "$report_step" \
+  "$build_step"$'      - name: Build the app again\n        run: |\n          sh bu\\\n          ild.sh -v\n'"$report_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "refuses the continued word" "$(has "$out" "$(refused "$ci" "$again" '`bu\`, a word a backslash continues onto the next line')")"
+
+# A backslash escape the reader does not model: the word is refused where it would name a declared
+# script read with its backslashes dropped, and an escape that names none passes.
+echo "case: a backslash escape inside the script's name"
+root=$(fixture script-step-escape)
+script_job "$root" build.sh "Build the app"
+replace "$root/$ci" "$report_step" "$build_step$(again_form 'sh buil\d.sh -v')"$'\n'"$report_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "refuses the escaped word" "$(has "$out" "$(refused "$ci" "$again" '`buil\d.sh`'), and which could make the name of build.sh")"
+
+echo "case: a backslash escape that names no script"
+root=$(fixture script-step-escape-none)
+script_job "$root" build.sh "Build the app"
+replace "$root/$ci" "$report_step" "$build_step$(again_form "printf '%s\\n' build")"$'\n'"$report_step"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+
+# The shell: a step runs its script with, and the file BASH_ENV names, which bash runs first, are
+# what the step runs too.
+for shape in shell bash-env; do
+  echo "case: a step starts the script through its $shape"
+  root=$(fixture "script-step-$shape")
+  script_job "$root" build.sh "Build the app"
+  case $shape in
+    shell) step=$'        shell: sh build.sh {0}\n        run: echo hi\n' ;;
+    bash-env) step=$'        env:\n          BASH_ENV: build.sh\n        run: echo hi\n' ;;
+  esac
+  replace "$root/$ci" "$report_step" "$build_step"$'      - name: Build the app again\n'"$step$report_step"
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "names the step and the script" "$(contains "$out" "$undeclared")"
+done
 
 # A composite action's shells inherit the environment of the step that uses it.
 echo "case: a step starts the script through its own env:, read by a composite action it uses"

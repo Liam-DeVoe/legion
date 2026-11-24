@@ -328,7 +328,10 @@ in any spelling), its `env:`, its matrix values, its caller's inputs and a compo
 steps put in, so `"$GITHUB_WORKSPACE/packages/envoy/scripts/forced-order.sh" -server <version>` is
 read like the plain path. A new step that runs a declared script fails the check until a
 `script_run` of the script in each of its gates cites it; cite a step by its `id:` when another
-step of the job shares its name. The check's header says which forms of a step it reads.
+step of the job shares its name. What the check cannot evaluate to literal text - a matrix or an
+`env:` written as one expression, a value a `${{ }}` pastes that holds quotes, braces or `$` - fails
+the step too, with one refusal that names it: write the value as literal text. The check's header
+says which forms of a step it reads.
 
 It fails too when a pinned text or an exact entry's step is gone, when a job or step is gated on a
 filter no gate declares, when a read a gate or a `//ci:` line declares matches no file, and when a

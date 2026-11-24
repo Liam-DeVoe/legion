@@ -45,7 +45,7 @@ from pathlib import Path
 
 import yaml
 from go_build_tags import constraint_names, decode_stream, go_files, go_skips_dir, is_tag, platforms
-from script_words import MAX_FORMS, ROOT_MARK, WILD, TooManyForms, named_scripts, text_forms
+from script_words import ANY_MATRIX, ROOT_MARK, WILD, Unevaluated, Unreadable, named_scripts, text_forms
 from workflow_paths import PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns
 
 WORKFLOW = ".github/workflows/ci.yaml"
@@ -1167,11 +1167,9 @@ ENV_EXPRESSION = ("env-expression", "")
 def resolved_workdir(given: str, values: dict):
     """A step's working directory with its references put in: the one directory its one form
     names, a workspace reference standing for the root; None where it takes another form or holds
-    a value this check cannot know."""
-    try:
-        forms = text_forms(given, values)
-    except TooManyForms:
-        return None
+    a value no file gives. A working-directory is no script, so a value it reads may hold any
+    text; one this check cannot evaluate raises Unreadable, as script_words.text_forms does."""
+    forms = text_forms(given, values, pasted=False)
     if len(forms) != 1 or WILD in forms[0]:
         return None
     return clean_dir(forms[0].rsplit(ROOT_MARK, 1)[-1].lstrip("/"))
@@ -1180,7 +1178,7 @@ def resolved_workdir(given: str, values: dict):
 def env_values(*holders) -> dict:
     """The env: of each holder (a workflow, a job, a step), later ones over earlier ones, keyed as
     script_words reads them. An env: written as one expression (`env: ${{ fromJSON(x) }}`) gives no
-    name, and its text under ENV_EXPRESSION, as env_reason reads it."""
+    name, and its text under ENV_EXPRESSION, which check_script_steps refuses."""
     values = {}
     for holder in holders:
         env = (holder or {}).get("env")
@@ -1191,21 +1189,24 @@ def env_values(*holders) -> dict:
     return values
 
 
-def step_texts(step: dict, workdir, values: dict, seen=()) -> list:
-    """What a step runs, as (a text, its directory, its values): a run: step's script; for a step
-    that uses an action, each value its with: passes, since a command an action runs can be one of
-    them (a retry action's `command:`); and for a step that uses a composite action of this
-    repository (`uses: ./<dir>`), the run: script of each step of that action, read the same way
-    through the actions it uses in turn. An action's step gets the environment of the step that
-    uses the action (the env: of the workflow, the job and that step, which the action's shells
-    inherit) and every other value of its context, the action's inputs in place of the caller's
-    (their defaults, and what the step's with: passes, read in the step's own values), its own
-    env: over those, its own directory as GITHUB_ACTION_PATH, and the workspace as its directory
-    unless it says another. A local action that is not there is read as running nothing, since
-    GitHub refuses the workflow itself; one whose file is not valid YAML stops the check naming
-    it."""
+def step_texts(step: dict, workdir, values: dict, seen=(), shell: str = "") -> list:
+    """What a step runs, as (a text, its directory, its values): a run: step's script, the shell:
+    it runs it with (its own, else `shell`, the job's or the workflow's defaults.run.shell), and
+    `$BASH_ENV`, the file bash runs before the script; for a step that uses an action, each value
+    its with: passes, since a command an action runs can be one of them (a retry action's
+    `command:`); and for a step that uses a composite action of this repository (`uses: ./<dir>`),
+    the run: script of each step of that action, read the same way through the actions it uses in
+    turn. An action's step gets the environment of the step that uses the action (the env: of the
+    workflow, the job and that step, which the action's shells inherit) and every other value of
+    its context, the action's inputs in place of the caller's (their defaults, and what the step's
+    with: passes, read in the step's own values), its own env: over those, its own directory as
+    GITHUB_ACTION_PATH, and the workspace as its directory unless it says another. A local action
+    that is not there is read as running nothing, since GitHub refuses the workflow itself; one
+    whose file is not valid YAML stops the check naming it."""
     if "run" in step:
-        return [(str(step["run"]), workdir, values)]
+        texts = [(str(step["run"]), workdir, values), ("$BASH_ENV", workdir, values)]
+        own_shell = str(step.get("shell") or shell)
+        return texts + ([(own_shell, workdir, values)] if own_shell else [])
     uses = str(step.get("uses", ""))
     texts = [(str(v), workdir, values) for v in (step.get("with") or {}).values()]
     if not uses.startswith("./") or uses in seen:
@@ -1240,20 +1241,42 @@ def caller_input_values(called: dict, caller: dict, context: dict) -> dict:
 
 def matrix_values(job: dict) -> dict:
     """Each name a job's matrix gives, keyed as script_words reads it and mapped to every value it
-    takes: its own list and each include entry's value for it, a value that is itself a list or a
-    mapping read as its text. A matrix written as one expression (a fromJSON() of another job's
-    output) gives no name, so a reference to it is a value this check cannot know."""
+    takes: its own list and each include entry's value for it, a value rendered as GitHub writes it
+    into an expression (`true`, `false`, an empty string for null). What this check does not
+    evaluate is an Unevaluated, which refuses the step that reads it: a matrix name whose value is
+    no list (an expression), a matrix value that is a list or a mapping, and, under ANY_MATRIX,
+    which every matrix name reads, a matrix, an include: or an include entry written as one
+    expression, since then no matrix name of the job can be listed. exclude: only takes values
+    away, and is not read."""
     matrix = (job.get("strategy") or {}).get("matrix")
-    if not isinstance(matrix, dict):
+    if matrix is None:
         return {}
+    if not isinstance(matrix, dict):
+        return {ANY_MATRIX: [Unevaluated(f"its job's matrix, written as one expression, `{matrix}`")]}
+
+    def value(name, item):
+        if isinstance(item, (list, dict)):
+            return Unevaluated(f"matrix.{name}, whose value `{item}` is a list or a mapping")
+        return "" if item is None else str(item).lower() if isinstance(item, bool) else str(item)
+
     values = defaultdict(list)
+    include = matrix.get("include")
     for name, own in matrix.items():
-        if name not in ("include", "exclude") and isinstance(own, list):
-            values[("matrix", str(name))] += [str(v) for v in own]
-    for entry in matrix.get("include") or []:
-        if isinstance(entry, dict):
-            for name, value in entry.items():
-                values[("matrix", str(name))].append(str(value))
+        if name in ("include", "exclude"):
+            continue
+        if not isinstance(own, list):
+            values[("matrix", str(name))] = [Unevaluated(f"matrix.{name}, written as one expression, `{own}`")]
+            continue
+        values[("matrix", str(name))] += [value(name, item) for item in own]
+    if include is not None and not isinstance(include, list):
+        values[ANY_MATRIX].append(Unevaluated(f"its job's matrix include:, written as one expression, `{include}`"))
+    for entry in include if isinstance(include, list) else []:
+        if not isinstance(entry, dict):
+            values[ANY_MATRIX].append(Unevaluated(f"an include: entry of its job's matrix written as one "
+                                                  f"expression, `{entry}`"))
+            continue
+        for name, item in entry.items():
+            values[("matrix", str(name))].append(value(name, item))
     return dict(values)
 
 
@@ -1718,6 +1741,23 @@ def declared(g: Gate) -> str:
                  and r.glob.endswith(".py") and "*" not in r.glob), ".github/scripts/ci_job_reads.py")
 
 
+def env_expression(values: dict) -> str | None:
+    """What rule 4's one refusal names for an env: written as one expression that a step reads
+    (env_values), or None."""
+    return f"an env: written as one expression, `{values[ENV_EXPRESSION][0]}`" if ENV_EXPRESSION in values else None
+
+
+def cannot_evaluate(path: str, where: str, what: str, script: str | None) -> Annotation:
+    """Rule 4's one refusal, of what a step holds or reads that this check cannot evaluate to
+    literal text. `script` is the declared script a construct standing for text no file gives could
+    name, or None for what refuses the step whatever the rest of its text is."""
+    could = f", and which could make the name of {script}," if script else ","
+    return error(path, f"{where} holds or reads {what}, which this check cannot evaluate to literal text{could} so "
+                       f"whether the step starts a script a Run of {GATES_DIR} lists go commands of is unknown; write "
+                       f"it as literal text, in the step or in a literal env:, matrix or with: value it reads "
+                       f"(check-ci-filters.sh's header lists what this check reads)")
+
+
 def check_script_steps(documents: dict, data, units: list, caller_jobs: dict, inputs_of: dict,
                        excluded: dict, problems: list[Annotation]) -> None:
     """Rule 4's script half, which check-ci-filters.sh's header says in full: a step a filter gates
@@ -1726,8 +1766,11 @@ def check_script_steps(documents: dict, data, units: list, caller_jobs: dict, in
     with at(). Which filters gate the step is read off the workflows under the one caller that
     runs it (gated_filters over the caller's if:, the called job's and the step's, an input
     resolved through that caller's with:). What the step names is read by
-    script_words.named_scripts over what it runs (step_texts), in the values its context gives.
-    A citation counts for a step only when no other step of its job answers to it."""
+    script_words.named_scripts over what it runs (step_texts), in the values its context gives,
+    and what that reading cannot evaluate to literal text refuses the step by one refusal
+    (cannot_evaluate): every value the repository gives must evaluate, and text no file gives is
+    refused where its literal parts could make a declared script's name. A citation counts for a
+    step only when no other step of its job answers to it."""
     index = defaultdict(set)  # a citation() text -> the CITED entries that make it
     for entry in CITED:
         index[citation(*entry)].add(entry)
@@ -1754,41 +1797,25 @@ def check_script_steps(documents: dict, data, units: list, caller_jobs: dict, in
             if not gating:
                 continue
             step_values = {**values, **env_values(step)}
-            named, unread, unevaluable, many, env_expression = set(), None, [], False, None
-            workdir = resolved_workdir(given_workdir(holder, job, step), step_values)
-            for text, text_dir, text_values in step_texts(step, workdir, step_values):
-                env_expression = env_expression or (text_values.get(ENV_EXPRESSION) or [None])[0]
-                try:
-                    found, cannot, opaque = named_scripts(script_lines(text), text_dir, scripts, text_values)
-                except TooManyForms:
-                    many = True
-                    continue
-                named |= found
-                unread = unread or cannot
-                unevaluable += [pair for pair in opaque if pair not in unevaluable]
+            # The one refusal of what this check cannot evaluate to literal text: `unreadable`, what
+            # it could not evaluate at all, which refuses the step whatever the text is; and
+            # `could`, each construct standing for text no file gives whose literal parts could
+            # make a declared script's name, with that script.
+            named, could = set(), []
+            unreadable = env_expression(step_values)
+            try:
+                workdir = resolved_workdir(given_workdir(holder, job, step), step_values)
+                default_shell = str(run_default(job, "shell") or run_default(holder, "shell") or "")
+                for text, text_dir, text_values in step_texts(step, workdir, step_values, shell=default_shell):
+                    unreadable = unreadable or env_expression(text_values)
+                    found, refusals = named_scripts(script_lines(text), text_dir, scripts, text_values)
+                    named |= found
+                    could += [pair for pair in refusals if pair not in could]
+            except Unreadable as failure:
+                unreadable = unreadable or str(failure)
             where = f"{where_job(path, name_there, own)} step \"{step_label(step)}\""
-            if env_expression:
-                problems.append(error(path, f"{where} reads an env: written as one expression, `{env_expression}`, so "
-                                            f"which values it holds is unknown to this check, and so is which scripts "
-                                            f"a Run of {GATES_DIR} lists go commands of the step names; write that "
-                                            f"env: as a mapping of names to values"))
-            if many:
-                problems.append(error(path, f"{where} has a word, or reads a value, whose references take more than "
-                                            f"{MAX_FORMS} forms, so which scripts a Run of {GATES_DIR} lists go "
-                                            f"commands of it names is unknown; write its script's path as a literal"))
-            if unread:
-                problems.append(error(path, f"{where} names a file this check cannot read, `{unread}`: its "
-                                            f"name ends as a script a Run of {GATES_DIR} lists go commands of ends, after "
-                                            f"a value this check cannot know or as a glob in a directory it cannot "
-                                            f"know, so whether the step starts that script is unknown; write the "
-                                            f"script's path as a literal"))
-            for construct, script in unevaluable:
-                problems.append(error(path, f"{where} holds or reads `{construct}`, which this check cannot evaluate, "
-                                            f"and a value or literal it builds from could make the name of {script}, a "
-                                            f"script a Run of {GATES_DIR} lists go commands of, so whether the step "
-                                            f"starts it is unknown; write the script's path as a literal, in the "
-                                            f"step or in a literal env: entry it reads (check-ci-filters.sh's header "
-                                            f"lists what this check reads)"))
+            for what, script in ([(unreadable, None)] if unreadable else []) + [(f"`{c}`", s) for c, s in could]:
+                problems.append(cannot_evaluate(path, where, what, script))
             if not named:
                 continue
             refs = {ref for p, j, ref in CITED if (p, j) == (path, name_there) and step_matches(step, ref)}

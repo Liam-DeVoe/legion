@@ -2346,10 +2346,15 @@ runs a second time, in a file small enough to start when this one is too large t
 
 It also holds every step a filter gates that names a script a gate's Run lists go commands of
 (forced-order.sh, pg-connection-ceiling.sh, ...) to a Run of that script, in a gate of each filter
-that gates the step, that cites the step. Which forms of a step it reads, which it refuses as
-forms it cannot evaluate, and which pass unread are in rule 4's script-half paragraph of
-check-ci-filters.sh's header. Where a step fails because the check cannot evaluate how it builds
-the script's name, write the script's path as a literal, in the step or in a literal env: entry.
+that gates the step, that cites the step. The reader refuses by default: every value the
+repository gives that the step reads (an env:, a matrix value, a called workflow's or an
+action's input) must evaluate to literal text, and the step's own text may hold only the shell
+syntax the reader models; anything else fails the step with one refusal that names what the
+check cannot evaluate. What no file of the repository holds (a step's output, a secret, a runner
+variable, an expression function's result) is read as any text, refused where its literal parts
+could make a declared script's name. Rule 4's script-half paragraph of check-ci-filters.sh's
+header lists what is read. Where a step fails, write the value as literal text, in the step or
+in a literal env:, matrix or with: value it reads.
 
 ## What the proof editor's offline proof shows
 
