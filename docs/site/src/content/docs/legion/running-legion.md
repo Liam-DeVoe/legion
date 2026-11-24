@@ -142,8 +142,9 @@ key is `owner`, such as `implementer:owner`), the daemon asks the architect to m
 forward, in any phase, and its slot works as the implement App until
 that ask ends. The ask ends when its merge lands, when a move into the implementation step, a new
 generation of the issue (a child set back to `todo`, or an adoption into a tree) or the issue's
-leave of the workflow clears it, when the pull request closes or merges, and when the issue is
-held or its task stopped. Everywhere else, and always while the issue is held, the architect's
+leave of the workflow clears it, when the pull request closes or merges, when the issue is held or
+its task stopped, and when a newer ask reaches another agent. Everywhere else, and always while the
+issue is held, the architect's
 slot works as its own App, the review App. Where the App of the architect's act is not its own
 (the implement App, say), the daemon writes the slot, judging its App as it writes, so an act that
 has ended by then leaves the architect's own App there; a step of the review App, the architect's

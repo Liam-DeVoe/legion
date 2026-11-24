@@ -53,13 +53,14 @@ Read it also when a retro reports to you.
   It ends when its merge lands, or the pull request closes or merges.
   It also ends when the issue moves into its implementation step, leaves, is held, or its task stops.
   It ends too when the issue is set back to `todo` or adopted into another tree.
+  A newer ask that reaches another agent ends it as well.
   Each end writes your own App back to your slot, as a step's end does.
   Where your tree lingers, nothing is written, and your next launch writes it.
   Until the ask ends, Legion tells you no step or retro of another App, such as your review step or your acceptance.
-  Where you also work the step the issue stands at, the ask is the one message you get.
+  Where you also work the step the issue stands at, the ask is the one merge-forward message you get.
   Your step then waits for the merge and goes on at the head the merge leaves.
   A review of a landed merge can be asked of you while you also work the step the issue stands at.
-  That review is then the one message you get, and you go on with your step at the new head.
+  That review is then the one merge-forward message you get, and you go on with your step at the new head.
   You get no landed message for a merge you pushed yourself.
   A `sign_off` or a `complete_step` is a call to the daemon, not to GitHub, so your slot's App does not change it.
 
