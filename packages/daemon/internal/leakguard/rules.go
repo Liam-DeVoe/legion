@@ -51,7 +51,7 @@ const MaxRulesFile = 256 << 10
 // write is: a body can be a mebibyte of one line and a push thousands of added lines, and the
 // report is read in a terminal and in a log. A match is shown to maxMatchShown bytes; the line it
 // stands on, to maxContextShown bytes on either side of the part of the match shown; and the
-// report, to maxLinesShown lines and one more that counts the lines it leaves out.
+// report, to maxLinesShown lines and one more that counts the matches it leaves out.
 const (
 	maxMatchShown   = 200
 	maxContextShown = 120
@@ -340,7 +340,7 @@ func (r *RuleSet) scan(ctx context.Context, record Record, rep *shownReport) err
 	return nil
 }
 
-// shownReport is a report being written: the lines it shows and the count of the lines past
+// shownReport is a report being written: the lines it shows and the count of the matches past
 // maxLinesShown. A line already among the shown lines is not written or counted again, which needs
 // only those lines, so a path rule's finding that every line of a file repeats is one line of the
 // report. A line past the bound is counted each time it comes and nothing of it is kept, so the

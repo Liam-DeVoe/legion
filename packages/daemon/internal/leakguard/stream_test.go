@@ -563,7 +563,7 @@ func TestARefusalNamesAtMostItsBoundOfLines(t *testing.T) {
 		// line, and the path's own record is two more, one of the path rule and one of the word
 		// rule.
 		lines int
-		// left is how many lines the report leaves out.
+		// left is how many matches the report leaves out.
 		left int
 	}{
 		{name: "fewer lines than the bound", lines: 3},
@@ -635,15 +635,20 @@ func TestARefusalCountsEachMatchPastItsBoundAndKeepsNothingOfIt(t *testing.T) {
 		t.Errorf("the report shows %d lines, from %q, want the first %d lines, each once", len(pass.report.shown), pass.report.shown[:min(2, len(pass.report.shown))], maxLinesShown)
 	}
 	if pass.report.left != counted {
-		t.Errorf("the report counts %d lines past its bound, want %d, each add past the bound that is not a line it shows", pass.report.left, counted)
+		t.Errorf("the report counts %d matches past its bound, want %d, each add past the bound that is not a line it shows", pass.report.left, counted)
 	}
+	// Every map or slice the report keeps holds at most maxLinesShown entries, so a field that
+	// keeps something of each line past the bound fails here whatever it is named; the shown lines
+	// and the count are pinned exactly above.
 	report := reflect.ValueOf(pass.report)
 	for i := range report.NumField() {
 		name, field := report.Type().Field(i).Name, report.Field(i)
 		switch {
-		case name == "shown" || field.CanInt():
+		case field.CanInt():
 		case field.Kind() == reflect.Map || field.Kind() == reflect.Slice:
-			t.Errorf("the report keeps %s, %d entries beside its %d shown lines, want nothing of a line past them", name, field.Len(), len(pass.report.shown))
+			if field.Len() > maxLinesShown {
+				t.Errorf("the report keeps %s, %d entries after %d matching lines, want at most its %d shown lines: nothing of a line past them", name, field.Len(), lines, maxLinesShown)
+			}
 		default:
 			t.Errorf("the report keeps %s, a %s, want its shown lines and counts alone", name, field.Kind())
 		}
