@@ -246,12 +246,12 @@ func TestProviderKeysMayNotNameAGhVariableEveryPaneSets(t *testing.T) {
 	}
 }
 
-// A provider key under tmux named for a variable the tmux runtime refuses at boot (tmux's
-// readProviderKeyNames: every name runtime.PaneVariableRefusal refuses with no value, as
+// A provider key under tmux named for a variable that runtime.PaneVariableRefusal refuses with no
+// value, which the tmux runtime also refuses at boot (tmux's readProviderKeyNames), as
 // LEGION_ROLE_IDENTITIES, a variable a resumed Oh My Pi pane is told after the operator's, and a
-// launch secret's pointer) is refused by the loader with that function's reason, a secretsd key
+// launch secret's pointer, is refused by the loader with that function's reason, a secretsd key
 // and a file alike, so `legion config check` refuses the file rather than the daemon at boot.
-func TestATmuxProviderKeyMayNotNameAVariableTheTmuxRuntimeRefuses(t *testing.T) {
+func TestATmuxProviderKeyIsRefusedForAVariablePaneEnvMayNotSet(t *testing.T) {
 	for _, tc := range []struct{ name, how, value string }{
 		{runtime.RoleIdentitiesVariable, "a secretsd key", runtime.RoleIdentitiesVariable + "_TESTS"},
 		{runtime.RoleIdentitiesVariable, "a file", "file:/etc/legion/providers/" + runtime.RoleIdentitiesVariable},

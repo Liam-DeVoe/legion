@@ -841,8 +841,8 @@ var paneGitHubEnv = []string{"GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "GH_HO
 // it, both sides environment variable names, or to `file:` and the absolute path of the file that
 // holds it, in file order. A variable named twice is refused rather than one entry silently
 // winning, as is one the daemon sets on every pane itself. Which runtime reads a file, and which
-// names the tmux runtime refuses at boot, are resolve's to check (checkProviderKeyFiles,
-// checkTmuxProviderKeyNames).
+// of the names runtime.PaneVariableRefusal refuses a tmux pane, are resolve's to check
+// (checkProviderKeyFiles, checkTmuxProviderKeyNames).
 func readProviderKeys(value *yaml.Node, key string) ([]ProviderKey, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
@@ -1250,8 +1250,10 @@ func checkProviderKeyFiles(file fileConfig) error {
 // secret's pointer, and LEGION_ROLE_IDENTITIES), naming the variable and that function's reason.
 // The shim exports a provider key into the agent's environment, where it acts as the pane variable
 // of that name, so the tmux runtime refuses the same name at its construction, at boot (tmux's
-// readProviderKeyNames); refusing it here lets `legion config check` see it. Under runtime
-// kubernetes it refuses nothing: sandbox.CheckPod refuses those names there.
+// readProviderKeyNames, which also refuses names only the tmux runtime knows, such as one every
+// pane carries); refusing it here lets `legion config check` see it. Under runtime kubernetes it
+// refuses nothing: there sandbox.CheckPod holds each provider key to the variables a pod sets
+// (podVariables).
 func checkTmuxProviderKeyNames(file fileConfig) error {
 	if file.Kubernetes != nil {
 		return nil
