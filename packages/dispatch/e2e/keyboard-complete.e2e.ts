@@ -9542,3 +9542,73 @@ test("k-phone: a tap opens the status menu of today's issue page, and a tap at t
     expect(lands, `k-phone: a tap at the centre of ${label} lands on ${label}`).toBe(true);
   }
 });
+
+// The tester's red row of round 16 (R15): on a phone, right after a tap on P1 moves a card, a tap
+// on another card's Snooze opens its menu. At 9d3e0777 that tap scrolls the page and opens nothing.
+/** k-phone after a pick that moves a card: six asks at P2 on a phone, a tap on P1 in a low card's
+ *  priority menu, which moves that card up into the P1 band, then a tap on another card's Snooze
+ *  (R15: "a tap on a control of R4 opens its menu"): its menu opens, and the tap scrolls the page
+ *  nowhere. */
+// SLOW(>=2s): six asks on a phone, a priority picked by taps, and a second card's Snooze tapped.
+test("k-phone: right after a tap on P1 moves a card, a tap on another card's Snooze opens its menu and scrolls the page nowhere @phone @phone-only", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issueOf = new Map<string, string>();
+  for (const title of ["Ledger", "Mirror", "Lease", "Replay", "Quota", "Clock"]) {
+    const issue = await createIssue({ force: true, project: "CORE", title: `${title} rollout` });
+    await patchIssue(issue.key, { priority: 2 });
+    const ask = await createAsk(
+      issue.key,
+      { question: `Ship the ${title.toLowerCase()} rollout?` },
+      asker
+    );
+    issueOf.set(ask.id, issue.key);
+  }
+  await page.goto("/");
+  const rows = page.locator("[data-inbox-row]");
+  await expect(rows).toHaveCount(6);
+  const order = await rows.evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute("data-inbox-row") ?? "")
+  );
+  const [moved, other] = order.slice(3, 5);
+  const movedKey = issueOf.get(moved ?? "");
+  if (moved === undefined || other === undefined || movedKey === undefined) {
+    throw new Error("the Inbox lists other asks than the six seeded");
+  }
+  /** Scrolls the page so `control`'s top stands at `at` of the viewport's height. */
+  const scrollTo = async (control: Locator, at: number) => {
+    await control.evaluate((node, fraction) => {
+      window.scrollBy(0, node.getBoundingClientRect().top - innerHeight * fraction);
+    }, at);
+    await settledScrollTop(page, 5);
+  };
+  const writes = issueWrites(page, movedKey);
+  const priority = priorityTrigger(inboxRow(page, moved), movedKey);
+  await scrollTo(priority, 0.8);
+  await priority.tap();
+  await expect(
+    listOf(priority),
+    "k-phone: a tap on the low card's priority opens its menu"
+  ).toBeVisible();
+  await listOf(priority).getByRole("option", { exact: true, name: "P1" }).tap();
+  await expect
+    .poll(() => writesSent(writes), { message: "k-phone: a tap on P1 sends one write" })
+    .toBe(1);
+  // The pick's write lands and the card moves into the P1 band within this second and a half.
+  await page.waitForTimeout(1500);
+
+  const snooze = inboxRow(page, other).getByRole("button", { name: /^Snooze / });
+  await scrollTo(snooze, 0.85);
+  const before = await page.evaluate(() => Math.round(window.scrollY));
+  await snooze.tap();
+  await expect(
+    listOf(snooze),
+    "k-phone: right after the pick, a tap on another card's Snooze opens its menu"
+  ).toBeVisible();
+  const after = await page.evaluate(() => Math.round(window.scrollY));
+  expect(
+    Math.abs(after - before),
+    `k-phone: the tap on the Snooze scrolls the page nowhere (scrollY ${before} before, ${after} after)`
+  ).toBeLessThanOrEqual(4);
+});
