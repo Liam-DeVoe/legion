@@ -118,10 +118,7 @@ type ReleaseDecision struct {
 }
 
 // ReleaseTeardown is whether the teardown of the release of a pod no role can use may have taken
-// the pod, as its mark notes it (issue_releases.teardown, NoteReleaseTeardown). The rule, the
-// protocol and the window below are stated here: the outbox's releaseIssue carries them out, and
-// the migration that adds the column and docs/kubernetes.md say what their readers need of them
-// and point here.
+// the pod, as its mark notes it (issue_releases.teardown, NoteReleaseTeardown).
 //
 // The rule: that release records a pod release when the runtime took a Sandbox (its own answer,
 // runtime.IssueReleaser's true) or the mark says TeardownReached, and otherwise records none — the

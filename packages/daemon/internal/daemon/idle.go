@@ -559,12 +559,11 @@ func endIdleHolds(ctx context.Context, st *store.Store, project, issue string, l
 //
 // The record names the release's mark (release, issue_releases.id), so a teardown that runs again
 // after its record and before the mark's clear writes no second record (store.RecordPodRelease).
-// It answers whether the teardown logs its release line, which follows the record: false only where
-// the store answers that this mark's record was already written, by an earlier attempt of this
-// teardown that logged the line, so a retry logs it no second time.
+// The release line follows the record's first write. A retry whose record was already written
+// logs no second line.
 //
-// A record that cannot be written is logged: the pod is already released, and nothing undoes
-// that for want of a row. The release line is logged then too, since no attempt has logged it.
+// If the write fails, the teardown logs the release line beside the warning: the pod is already
+// released, and nothing undoes that for want of a row.
 func (r *outbox) recordPodRelease(ctx context.Context, issue string, release int64, generation uint64, suspended []claim.Role) bool {
 	if r.supervisor == nil || r.supervisor.store == nil {
 		return true

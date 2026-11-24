@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -154,20 +155,38 @@ func (s *clearFaults) ClearIssueRelease(ctx context.Context, project, issue stri
 // release this way, and each records it again on the retry: the idle release whatever the runtime
 // answers, the release of a pod no claim owns because the mark says its teardown reached the
 // runtime. The release line follows the record, so the retry logs it no second time.
+// If the first record write fails, its release line follows the warning instead. If the clear
+// fails too, the retry writes the record and logs the release line again.
 func TestATeardownRetriedAfterItsRecordRecordsTheReleaseOnce(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
+	queueUnowned := func(t *testing.T, rig *idleRig) {
+		rig.stoppedImplementer(t, false)
+		rig.w.releaseUnownedPods(ctx)
+	}
 	for _, release := range []struct {
 		name  string
 		queue func(t *testing.T, rig *idleRig)
 		// line is the release line the teardown logs once it has recorded the release.
-		line string
+		line         string
+		refuseRecord bool
 	}{
-		{"the idle release", func(_ *testing.T, rig *idleRig) { rig.w.releaseIdlePod(ctx, rig.issue.Key) }, idleRigIdleTeardown},
-		{"the release of a pod no claim owns", func(t *testing.T, rig *idleRig) {
-			rig.stoppedImplementer(t, false)
-			rig.w.releaseUnownedPods(ctx)
-		}, idleRigUnownedTeardown},
+		{
+			name:  "the idle release",
+			queue: func(_ *testing.T, rig *idleRig) { rig.w.releaseIdlePod(ctx, rig.issue.Key) },
+			line:  idleRigIdleTeardown,
+		},
+		{
+			name:  "the release of a pod no claim owns",
+			queue: queueUnowned,
+			line:  idleRigUnownedTeardown,
+		},
+		{
+			name:         "the release of a pod no claim owns whose record is refused once",
+			queue:        queueUnowned,
+			line:         idleRigUnownedTeardown,
+			refuseRecord: true,
+		},
 	} {
 		t.Run(release.name, func(t *testing.T) {
 			rig := newIdleRig(t)
@@ -178,6 +197,12 @@ func TestATeardownRetriedAfterItsRecordRecordsTheReleaseOnce(t *testing.T) {
 			if queued := rig.queuedBy(t, func() { release.queue(t, rig) }); !slices.Contains(queued, "issue_release") {
 				t.Fatalf("queued rows = %v, want the release's teardown among them", queued)
 			}
+			if release.refuseRecord {
+				// Refuse the real store's insert until the first attempt has run.
+				if _, err := rig.pool.Exec(ctx, `alter table pod_releases add constraint test_refuses_release_record check (false)`); err != nil {
+					t.Fatalf("refuse the release's record: %v", err)
+				}
+			}
 			rig.drain(t)
 			if !faults.refused {
 				t.Fatal("the teardown never reached the clear of its mark")
@@ -186,7 +211,29 @@ func TestATeardownRetriedAfterItsRecordRecordsTheReleaseOnce(t *testing.T) {
 			if err := rig.pool.QueryRow(ctx, `select id from issue_releases where issue = $1`, rig.issue.Key).Scan(&mark); err != nil {
 				t.Fatalf("the mark is gone though its clear was refused: %v", err)
 			}
-			if releases := rig.records(t).Releases; len(releases) != 1 || releases[0].Release != mark {
+			wantLines := 1
+			if release.refuseRecord {
+				if releases := rig.records(t).Releases; len(releases) != 0 {
+					t.Fatalf("releases recorded before the retry = %+v, want none after the refused write", releases)
+				}
+				lines := loggedLines(t, logs.String(), `"msg":`)
+				const warning = "outbox: could not record an issue pod's release"
+				at := slices.IndexFunc(lines, func(line map[string]any) bool {
+					detail, _ := line["error"].(string)
+					return line["msg"] == warning && line["level"] == "WARN" && line["issue"] == rig.issue.Key &&
+						strings.Contains(detail, "test_refuses_release_record")
+				})
+				if at < 0 {
+					t.Fatalf("no warning for the refused release record of %s:\n%s", rig.issue.Key, logs.String())
+				}
+				if at+1 == len(lines) || lines[at+1]["msg"] != release.line || lines[at+1]["issue"] != rig.issue.Key {
+					t.Fatalf("the refused record's warning was not followed by the release line %q:\n%s", release.line, logs.String())
+				}
+				if _, err := rig.pool.Exec(ctx, `alter table pod_releases drop constraint test_refuses_release_record`); err != nil {
+					t.Fatalf("allow the retry to record the release: %v", err)
+				}
+				wantLines++
+			} else if releases := rig.records(t).Releases; len(releases) != 1 || releases[0].Release != mark {
 				t.Fatalf("releases recorded before the retry = %+v, want the one the first attempt wrote, naming mark %d", releases, mark)
 			}
 
@@ -194,8 +241,8 @@ func TestATeardownRetriedAfterItsRecordRecordsTheReleaseOnce(t *testing.T) {
 			rig.drain(t)
 
 			retriedTeardownRecorded(t, rig, 1)
-			if got := loggedMessages(t, logs.String(), release.line); len(got) != 1 {
-				t.Fatalf("the teardown and its retry logged %d lines %q, want the 1 of the first attempt", len(got), release.line)
+			if got := loggedMessages(t, logs.String(), release.line); len(got) != wantLines {
+				t.Fatalf("the teardown and its retry logged %d lines %q, want %d", len(got), release.line, wantLines)
 			}
 		})
 	}
