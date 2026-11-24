@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -250,6 +251,81 @@ func TestRegisterPlanRefusesACycleOfNeedsNamingIt(t *testing.T) {
 	}
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("a refused registration recorded %#v, want nothing", got)
+	}
+}
+
+// A refused plan's answer names its first plan.MostReasons reasons and counts the rest in one
+// more, so its size does not grow with the plan. Each version below is one `plan_task` block whose
+// one attribute holds 1 MiB of words, the most a Dispatch document holds as its server writes it,
+// each word a cause of its own: 262,144 `needs` words that name no task, 209,712 roles nobody
+// defines, and 116,508 steps `tester:k`, each with a key and with no implementer before it. Each
+// is answered 409 PLAN_REFUSED with plan.MostReasons reasons and one that counts the rest, in its
+// sentence too, within answerBound bytes. The fault is an answer with a reason for each cause;
+// the control is plan's reasons with its bound taken out, under which each answer is tens of MB.
+// It holds the count and the size, and no sentence.
+func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
+	// answerBound is plan.MostReasons reasons and the count, each written twice (in `error` and
+	// in `reasons`) at under 200 bytes with its JSON, then the code and the sentence's opening.
+	const answerBound = 8 << 10
+	const mib = 1 << 20
+	// digits is i written in n digits of the base len(alphabet), the first digit the largest.
+	digits := func(i int, alphabet string, n int) string {
+		word := make([]byte, n)
+		for at := n - 1; at >= 0; at-- {
+			word[at] = alphabet[i%len(alphabet)]
+			i /= len(alphabet)
+		}
+		return string(word)
+	}
+	// Each three-character word over 64 characters, each a need that names no task.
+	words := make([]string, 64*64*64)
+	for i := range words {
+		words[i] = digits(i, "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_", 3)
+	}
+	// The implementer, then roles of four characters, a letter and three of [a-z0-9-], each once.
+	const letters, rest = "abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz0123456789-"
+	roles := []string{"implementer"}
+	for i := range (mib - len("implementer ")) / len("abcd ") {
+		roles = append(roles, string(letters[i/(37*37*37)])+digits(i, rest, 3))
+	}
+	keyed := strings.TrimSuffix(strings.Repeat("tester:k ", mib/len("tester:k ")), " ")
+	for _, tc := range []struct {
+		name  string
+		block dispatch.DocumentBlock
+		left  int // the causes the last reason counts
+	}{
+		{"262,144 needs words that name no task", needing(taskBlock("a", "implementer reviewer"), strings.Join(words, " ")), len(words) - plan.MostReasons},
+		{"209,712 roles nobody defines", taskBlock("a", strings.Join(roles, " ")), len(roles) - 1 - plan.MostReasons},
+		// A key and no implementer before it at each step, the role tester at two steps, and no implementer.
+		{"116,508 steps tester:k", taskBlock("a", keyed), 2*(mib/len("tester:k ")) + 2 - plan.MostReasons},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts, statuses := planHarness(t)
+			architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+			statuses.givePlan(planDoc, 1, tc.block)
+			written := 0
+			for _, value := range tc.block.Attributes {
+				written = max(written, len(value))
+			}
+
+			answer := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1)
+			size := answer.Body.Len()
+			t.Logf("%s: an attribute of %d bytes is answered %d in %d bytes", tc.name, written, answer.Code, size)
+			if answer.Code != http.StatusConflict || size > answerBound {
+				t.Fatalf("an attribute of %d bytes is answered %d in %d bytes, want 409 in at most %d", written, answer.Code, size, answerBound)
+			}
+			var refusal PlanRefusal
+			decodeInto(t, answer, &refusal)
+			count := fmt.Sprintf(" %d ", tc.left)
+			if refusal.Code != "PLAN_REFUSED" || len(refusal.Reasons) != plan.MostReasons+1 ||
+				refusal.Reasons[plan.MostReasons].Task != "" || !strings.Contains(refusal.Reasons[plan.MostReasons].Reason, count) || !strings.Contains(refusal.Error, count) {
+				t.Fatalf("refusal %s of %d reasons, want PLAN_REFUSED of %d reasons, the last of the whole plan counting %d more, in its sentence too: %.2000s",
+					refusal.Code, len(refusal.Reasons), plan.MostReasons+1, tc.left, refusal.Error)
+			}
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("a refused registration recorded %#v, want nothing", got)
+			}
+		})
 	}
 }
 

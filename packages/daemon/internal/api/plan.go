@@ -103,9 +103,10 @@ func (s *server) writeRefusal(w http.ResponseWriter, r *http.Request, refusal *i
 // document's approval for the version Dispatch has and the issue carrying it (documentOfIssue),
 // reads the plan's blocks at the version given, each need as the task it names (planAt, through
 // plan.FromBlocks), and refuses with one reason for each cause of a plan this release does not
-// carry out (plan.Supported) or no release can (plan.Validate); each of those answers records
-// nothing. A plan both take is recorded as intake.PlanGiven, its needs as task ids, whose rules of
-// a later version are the workflow's.
+// carry out (plan.Supported) or no release can (plan.Validate), the first plan.MostReasons named
+// and the rest counted (plan.Refusals); each of those answers records nothing. A plan both take is
+// recorded as intake.PlanGiven, its needs as task ids, whose rules of a later version are the
+// workflow's.
 //
 // The fact's id is the issue, the generation the plan is given at, the document and the version:
 // a retry of a registration taken is that fact, answered the same, and the same version given at
@@ -153,8 +154,8 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	// FromBlocks read each need as the task it names, so a need that names no task is Validate's,
 	// and the plan recorded and answered holds task ids, which every reader of a need reads. Both
 	// checks run, so a plan with two causes gets two reasons: what this release does not carry out
-	// yet, then what no release can.
-	refusals := append(plan.Supported(given), plan.Validate(given, plan.Deployment{Roles: plan.BuiltinRoles()})...)
+	// yet, then what no release can, as one refusal that names at most plan.MostReasons of them.
+	refusals := plan.Refusals(given, plan.Deployment{Roles: plan.BuiltinRoles()})
 	if len(refusals) > 0 {
 		s.writeRefusal(w, r, intake.PlanRefused(refusals))
 		return

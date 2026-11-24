@@ -1,7 +1,10 @@
 package plan
 
 import (
+	"fmt"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -143,10 +146,10 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 		}
 	}
 
-	// Both checks run, so a plan with causes of each kind gets the reasons of both.
+	// Both checks run, so a plan with causes of each kind gets the reasons of both, as one refusal.
 	twoTasks := oneTask("a", "implementer prober")
 	twoTasks.Tasks = append(twoTasks.Tasks, Task{ID: "b", Steps: implementer})
-	got := append(Supported(twoTasks), Validate(twoTasks, Deployment{Roles: BuiltinRoles()})...)
+	got := Refusals(twoTasks, Deployment{Roles: BuiltinRoles()})
 	want := []Refusal{
 		{Task: "", Reason: "the plan has 2 tasks (a, b), and this release runs one task for each issue." + yet},
 		{Task: "", Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself." + yet},
@@ -202,5 +205,90 @@ func TestAStepThatReadsAPullRequestNeedsAnImplementerBeforeIt(t *testing.T) {
 	}
 	if r := Supported(oneTask("a", "tester")); !reflect.DeepEqual(r, want) {
 		t.Fatalf("Supported(tester) =\n%+v\nwant\n%+v", r, want)
+	}
+}
+
+// numbered is count words, prefix then a number of five digits from 1, so no word holds another.
+func numbered(prefix string, count int) []string {
+	words := make([]string, count)
+	for i := range words {
+		words[i] = fmt.Sprintf("%s%05d", prefix, i+1)
+	}
+	return words
+}
+
+// One refusal of a plan names the first MostReasons causes in the order the checks find them and
+// counts the rest in one more reason, of the whole plan, so its size does not grow with the plan.
+// Each check that finds a cause for each item of the plan is held to it: a `needs` word that names
+// no task, a role nobody defines, a step's key, and a step that reads a pull request with no
+// implementer before it (which comes after the role named at two steps); and Supported's and
+// Validate's causes share the one bound. A plan of MostReasons causes or fewer gets every cause
+// and no count. Each case holds the word or the step each named reason names, in order, and the
+// count; none holds a sentence. The fault is a refusal that names every cause; the control is
+// reasons.add with its bound taken out, under which each case past the bound names every cause.
+func TestARefusalNamesItsFirstReasonsAndCountsTheRest(t *testing.T) {
+	d := Deployment{Roles: BuiltinRoles()}
+	steps := func(words ...[]string) Plan { return oneTask("a", strings.Join(slices.Concat(words...), " ")) }
+	keyed := func(role string, keys []string) []string {
+		words := make([]string, len(keys))
+		for i, key := range keys {
+			words[i] = role + ":" + key
+		}
+		return words
+	}
+	testers := func(count int) []string { return slices.Repeat([]string{"tester"}, count) }
+	// stepAt names the steps from 1 to count, as a reason of a step names it.
+	stepAt := func(count int) []string {
+		words := make([]string, count)
+		for i := range words {
+			words[i] = fmt.Sprintf("step %d of", i+1)
+		}
+		return words
+	}
+	implementer := []string{"implementer"}
+	const past = MostReasons + 7
+	for _, tc := range []struct {
+		name  string
+		plan  Plan
+		named []string // what each named reason names, in order
+		left  int      // how many causes the last reason counts
+	}{
+		{name: "needs words that name no task, past the bound", plan: planOf(t, 1, taskNeeding("a", numbered("x", past)...)),
+			named: numbered("x", MostReasons), left: 7},
+		{name: "needs words that name no task, at the bound", plan: planOf(t, 1, taskNeeding("a", numbered("x", MostReasons)...)),
+			named: numbered("x", MostReasons)},
+		{name: "roles nobody defines, past the bound", plan: steps(implementer, numbered("r", past)), named: numbered("r", MostReasons), left: 7},
+		{name: "roles nobody defines, at the bound", plan: steps(implementer, numbered("r", MostReasons)), named: numbered("r", MostReasons)},
+		// Each step reviewer:kNNNNN names a key, and then the role reviewer is named at two steps.
+		{name: "keys, past the bound", plan: steps(implementer, keyed("reviewer", numbered("k", past))), named: numbered("k", MostReasons), left: 8},
+		{name: "keys, at the bound", plan: steps(implementer, keyed("reviewer", numbered("k", MostReasons-1))),
+			named: append(numbered("k", MostReasons-1), "reviewer at steps 2 and 3")},
+		// The role tester is named at two steps, and then each tester step has no implementer before it.
+		{name: "steps with no implementer before them, past the bound", plan: steps(testers(past), implementer),
+			named: append([]string{"tester at steps 1 and 2"}, stepAt(MostReasons-1)...), left: 8},
+		{name: "steps with no implementer before them, at the bound", plan: steps(testers(MostReasons-1), implementer),
+			named: append([]string{"tester at steps 1 and 2"}, stepAt(MostReasons-1)...)},
+		{name: "Supported's causes, then Validate's, share the bound", plan: steps(implementer, keyed("reviewer", numbered("k", 12)), numbered("r", 12)),
+			named: slices.Concat(numbered("k", 12), []string{"reviewer at steps 2 and 3"}, numbered("r", 7)), left: 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Refusals(tc.plan, d)
+			named := got
+			if tc.left > 0 && len(got) > 0 {
+				named = got[:len(got)-1]
+				count := got[len(got)-1]
+				if count.Task != "" || !strings.Contains(count.Reason, fmt.Sprintf(" %d ", tc.left)) {
+					t.Errorf("the last reason is %+v, want one of the whole plan that counts %d more", count, tc.left)
+				}
+			}
+			if len(named) != len(tc.named) {
+				t.Fatalf("the refusal names %d causes, want %d, then a count of %d: %+v", len(named), len(tc.named), tc.left, got)
+			}
+			for i, item := range tc.named {
+				if named[i].Task != "a" || !strings.Contains(named[i].Reason, item) {
+					t.Errorf("reason %d is %+v, want one of task a naming %q", i+1, named[i], item)
+				}
+			}
+		})
 	}
 }
