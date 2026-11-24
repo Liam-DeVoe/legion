@@ -21,9 +21,11 @@ import (
 
 // stalledRoleKV is a role bucket whose claim read does not answer: a Get blocks until the test
 // ends, the way a legacy nats.go KV call waits out the JetStream MaxWait on a bus that has stopped
-// answering. Every other call goes to the real bucket. So only the route's own budget can end a
-// request that reads the claim: a route bounded by its budget answers once that budget is spent,
-// and one that waited the call out would not answer before the test ends.
+// answering, and a read of the bucket stream's leader (bus.LeaderReads, which the publish route's
+// resolution makes) blocks until its context ends, as the stream message get it stands for does.
+// Every other call goes to the real bucket. So only the route's own budget can end a request that
+// reads the claim: a route bounded by its budget answers once that budget is spent, and one that
+// waited the call out would not answer before the test ends.
 type stalledRoleKV struct {
 	nats.KeyValue
 	stallGet bool
@@ -36,6 +38,18 @@ func (kv stalledRoleKV) Get(key string) (nats.KeyValueEntry, error) {
 		return nil, errors.New("the role bucket's read never answered")
 	}
 	return kv.KeyValue.Get(key)
+}
+
+func (kv stalledRoleKV) NewestFromLeader(ctx context.Context, key string) (nats.KeyValueEntry, error) {
+	if !kv.stallGet {
+		return nil, fmt.Errorf("stalledRoleKV reads no stream leader unstalled (key %s)", key)
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-kv.released:
+		return nil, errors.New("the role bucket's leader read never answered")
+	}
 }
 
 // A role send through the publish route resolves its role's holder within sendRequestBudget of the

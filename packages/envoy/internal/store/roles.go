@@ -599,6 +599,11 @@ func (e *ErrRoleClaimRevisionMismatch) Error() string {
 // which is why this hands back no entry: a caller testing whether the bucket holds a record for
 // the role reads claim.Revision == 0, and one writing conditionally over the record it read names
 // claim.Revision, as releaseReadRoleClaim already does.
+//
+// It is the read of a claim for the readers that decide no delivery: the role lookup, the soft
+// claim, and this store's claim, release and renewal reads. A reader that decides which session a
+// role's message reaches reads RoleClaimFromLeader instead: a direct get cannot tell a message the
+// server wrote under the role's key from a writer's claim.
 func (r *Registry) RoleClaim(ctx context.Context, role string) (RoleClaim, error) {
 	roles := r.roles()
 	entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return roles.Get(role) })
@@ -622,19 +627,33 @@ func (r *Registry) RoleClaim(ctx context.Context, role string) (RoleClaim, error
 // RoleClaimFromLeader reads role's claim as RoleClaim does, from the role bucket stream's leader
 // (bus.KeyValue.ReadFromLeader) rather than by a direct get, which on a replicated bucket any copy
 // near enough to current answers: a copy that has not applied a takeover answers the previous
-// holder's claim. It is the read for a decision a stale claim would get wrong for good, such as the
-// session relay's judgement of whether a role message still belongs to the session it was stored
-// for. A role with no claim, or a delete or purge marker, is the zero claim without an error; a
-// message the server wrote under the role's key is ErrMalformedRoleClaim, as a value no claim
-// decodes from is.
+// holder's claim. It is the one read of a claim for a decision about which session a role's
+// message reaches: the session relay's judgement of whether a role message still belongs to the
+// session it was stored for, the publish route's and the role lane's resolution of the holder, the
+// kept lane's, and a controller notice lane's (ReadLaneHolders). It decodes what the leader
+// answers as DecodeLeaderRoleClaim does, which Dispatch's outbox decodes its own leader read with
+// (roles.Buckets), so every such reader reads one record alike.
 func (r *Registry) RoleClaimFromLeader(ctx context.Context, role string) (RoleClaim, error) {
 	leader, err := r.roles().ReadFromLeader(ctx, role)
-	switch {
-	case err != nil:
+	if err != nil {
 		return RoleClaim{}, fmt.Errorf("read role %s's claim: %w", role, err)
-	case leader.Kind == bus.LeaderAbsent || leader.Kind == bus.LeaderMarker:
+	}
+	return DecodeLeaderRoleClaim(role, leader)
+}
+
+// DecodeLeaderRoleClaim reads role's claim from leader, the newest message the role bucket
+// stream's leader holds under role's key (bus.KeyValue.ReadFromLeader). A key that holds no
+// message, and a delete or purge marker, is the zero claim without an error. A message the server
+// wrote under the key on its own (bus.LeaderServerWritten) is ErrMalformedRoleClaim whatever its
+// body reads as: no writer wrote it, and a direct get, which cannot tell it from a writer's record,
+// would read a copy of another role's claim or a RePublished body as the claim of whichever
+// session it names. A writer's put is decoded as DecodeRoleClaim decodes one, stamped with the
+// sequence the leader stores it at.
+func DecodeLeaderRoleClaim(role string, leader bus.LeaderEntry) (RoleClaim, error) {
+	switch leader.Kind {
+	case bus.LeaderAbsent, bus.LeaderMarker:
 		return RoleClaim{}, nil
-	case leader.Kind == bus.LeaderServerWritten:
+	case bus.LeaderServerWritten:
 		return RoleClaim{}, fmt.Errorf("%w: role %s's key holds a message the server wrote", ErrMalformedRoleClaim, role)
 	}
 	claim, err := DecodeRoleClaim(leader.Value)
@@ -646,9 +665,10 @@ func (r *Registry) RoleClaimFromLeader(ctx context.Context, role string) (RoleCl
 }
 
 // RoleHolder returns the authoritative session ID for role, read with no deadline of its own. Only
-// tests call it, to read what a claim left behind; the listener reads RoleClaim within a deadline,
-// its routes and its role lane through the one resolution (roles.ResolveHolder, internal/roles)
-// and its kept lane directly. An unclaimed role returns an empty holder without an error.
+// tests call it, to read what a claim left behind; the listener reads RoleClaim within a deadline
+// for the reads that decide no delivery, and RoleClaimFromLeader for the ones that do: its publish
+// route and its role lane through the one resolution (roles.ResolveHolder, internal/roles), its
+// kept lane and its relay directly. An unclaimed role returns an empty holder without an error.
 func (r *Registry) RoleHolder(role string) (string, error) {
 	claim, err := r.RoleClaim(context.Background(), role)
 	if err != nil {

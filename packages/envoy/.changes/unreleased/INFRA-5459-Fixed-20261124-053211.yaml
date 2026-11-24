@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+  A message the NATS server stores under a role's key on its own, such as a RePublish of another
+  stream or a direct get's copy of another role's claim, no longer reaches the session its body
+  names. Every reader that decides which session a role's message reaches now reads the role's
+  claim from the role bucket stream's leader, with one decoding: the publish route, the role lane,
+  the controller notice lane's read behind `recipients`, a stored row's filter and the interest
+  writes, and Dispatch's outbox. Such a message is an unreadable claim at each of them: the publish
+  route answers `500` naming `a message the server wrote` and forwards nothing, the role lane keeps
+  the message under `claim_unread`, the lane goes to nobody, and the outbox holds the event pending.
+  Before, the lane read, the publish route, the role lane and the outbox read it as that session's
+  claim and forwarded to it, while the relay's check refused every such frame. While the role
+  bucket has no leader, the publish route answers `503` and the role lane and the outbox hold the
+  message until a leader answers, where a follower answered before. `GET /v1/roles/<role>` and the
+  soft claim still read the claim by a direct get.
+time: 2026-11-24T05:32:11Z
+custom:
+    Issue: INFRA-5459
