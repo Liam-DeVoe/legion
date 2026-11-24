@@ -30,13 +30,13 @@ func TestTheOwnerStepsWayBackIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
 		ownerStepsWayBackSection, ownerStepsWayBackMark)
 }
 
-// The statements of the rollback below the release whose owner does a step stand in a fenced block
-// of docs/kubernetes.md alone, under "Rolling back below the release whose owner does a step", since
-// no migration header carries them, and in internal/store's owner_does_a_step_way_back_extract.txt,
-// a copy of that block committed beside the test that runs it
-// (TestTheOwnerDoesAStepWayBackLeavesItsProjectOnlyRowsTheReleaseBeforeReads). That test
-// reads the copy and not the guide, so an edit of the guide alone starts this run and not the
-// daemon's Go lane, and this test holds the copy to the guide's block.
+// No migration header carries the statements of the rollback below the release whose owner does a
+// step, so they stand in two files: a fenced block of docs/kubernetes.md, under "Rolling back below
+// the release whose owner does a step", which is where an operator reads them, and internal/store's
+// owner_does_a_step_way_back_extract.txt, a copy of that block committed beside the test that runs
+// it (TestTheOwnerDoesAStepWayBackLeavesItsProjectOnlyRowsTheReleaseBeforeReads). That test reads
+// the copy and not the guide, so an edit of the guide alone starts this run and not the daemon's
+// Go lane, and this test holds the copy to the guide's block.
 const (
 	// ownerDoesAStepExtract is the committed copy, read from the package whose test runs it.
 	ownerDoesAStepExtract = "../store/owner_does_a_step_way_back_extract.txt"
