@@ -226,7 +226,7 @@ case "$command" in
         if ! sees_priv "$person" && [ "$scenario" != alice-enrolled ]; then
           refusal="broker 403 PROJECT_NOT_VISIBLE: the session names a project its person cannot see: PRIV"
         elif [ "$scenario" = f ]; then
-          refusal="broker 403 MACHINE_NOT_REGISTERED: machine_not_registered: PRIV is private, and this machine is not registered to it"
+          refusal="broker 403 PRIVATE_PROJECT_POD_ONLY: private_project_pod_only: PRIV is private; its sessions run only in its own cluster namespace (theorem-session launch --project PRIV)"
         fi
         ;;
     esac
@@ -355,8 +355,8 @@ case "${AGENT_SECRETS_MACHINE_IDENTITY:-}" in
       *" PRIV "*)
         if [ "$person" = carol@example.com ]; then
           case "$scenario" in
-            # f-trade-only: a broker whose machine check refuses the trade and not the enrollment.
-            f | f-trade-only) echo "print-trade: invalid_request: The subject token was refused: machine_not_registered: PRIV is private, and this machine is not registered to it" >&2; exit 3 ;;
+            # f-trade-only: a broker whose F check refuses the trade and not the enrollment.
+            f | f-trade-only) echo "print-trade: invalid_request: The subject token was refused: private_project_pod_only: PRIV is private; its sessions run only in its own cluster namespace (theorem-session launch --project PRIV)." >&2; exit 3 ;;
             carol-other-refusal) echo "print-trade: temporarily_unavailable: Dispatch could not be asked whether the token's person sees the projects it names; try again." >&2; exit 3 ;;
             carol-other-list) answer "$person" "" person '["PUB"]'; exit 0 ;;
           esac
@@ -600,7 +600,7 @@ run_driver() { # <name> <scenario> [driver arguments...]
 
 readonly all_rows="project-secrets-check: 16 rows ran, 16 passed"
 
-# The right answers, before avenue F's machine check: every row passes and says which branch the
+# The right answers, before avenue F's check: every row passes and says which branch the
 # dev-box row took.
 run_driver before-f before-f --database-url "$admin_url"
 check "before F: the run exits 0" exits 0
@@ -632,12 +632,12 @@ check "before F: no curl command line carried the grant's proxy password" not_in
 check "before F: no curl command line carried the grant's placeholder" not_in_curl_args agent-secrets-placeholder-not-a-secret
 check "before F: dev-stack.sh is given the --database-url in LEGION_TEST_PG_DSN and in none of its arguments" stack_url_in_env
 
-# F's machine check present: the dev-box row passes on F's refusal alone, and says so.
+# F's check present: the dev-box row passes on F's refusal alone, and says so.
 run_driver f f --database-url "$admin_url"
 check "F: the run exits 0" exits 0
 check "F: the last line counts 16 rows, all passed" says "$all_rows"
-check "F: carol's trade passes as refused by F's check" says "PASS: carol's session listing PRIV: its trade: refused by F's check (machine_not_registered)"
-check "F: carol's PRIV_KEY passes as refused at enrollment by F's check" says "PASS: carol's session listing PRIV: PRIV_KEY: refused at enrollment by F's check (MACHINE_NOT_REGISTERED)"
+check "F: carol's trade passes as refused by F's check" says "PASS: carol's session listing PRIV: its trade: refused by F's check (private_project_pod_only)"
+check "F: carol's PRIV_KEY passes as refused at enrollment by F's check" says "PASS: carol's session listing PRIV: PRIV_KEY: refused at enrollment by F's check (PRIVATE_PROJECT_POD_ONLY)"
 check "F: no before-F line is printed" says_not "before F's check"
 
 # One answer wrong at a time: each fails its own row, naming its caller and its secret, and no

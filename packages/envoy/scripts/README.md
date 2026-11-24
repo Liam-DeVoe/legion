@@ -391,7 +391,7 @@ cd packages/envoy && LEGION_TEST_PG_DSN=... bash scripts/project-secrets-check.s
 | Caller | What passes |
 | --- | --- |
 | PRIV's pod (`legion-priv-worker`, mapped to PRIV for carol by its exchange entry) | its trade is `named` with `["PRIV"]`; after `agent-secrets enroll --pod --service legion-priv`, `PRIV_KEY` and `PUB_KEY` are granted |
-| carol's session listing PRIV (`AGENT_SECRETS_PROJECTS=PRIV`) on the stack's machine, which no machine registration names | avenue F's refusal (`machine_not_registered` at the trade, `MACHINE_NOT_REGISTERED` at enrollment); before F's check exists, only a `person`-scope token with `["PRIV"]`, and both secrets granted. The line says which branch ran |
+| carol's session listing PRIV (`AGENT_SECRETS_PROJECTS=PRIV`) on the stack's machine, a developer box and no pod of PRIV | avenue F's refusal (`private_project_pod_only` at the trade, `PRIVATE_PROJECT_POD_ONLY` at enrollment); before F's check exists, only a `person`-scope token with `["PRIV"]`, and both secrets granted. The line says which branch ran |
 | alice's session listing PRIV | her trade is refused (her person cannot see PRIV) and her enrollment is refused `PROJECT_NOT_VISIBLE` |
 | carol's session naming nothing | `PUB_KEY` granted, `PRIV_KEY` denied `project-not-named` |
 | the machine's own session | its trade names no project, `PUB_KEY` granted, `PRIV_KEY` denied `project-not-named` |
@@ -413,8 +413,9 @@ LEGION_TEST_PG_DSN=... bash scripts/project-secrets-check.sh --control untagged
 ```
 
 Live mode checks one secret of one private project against a deployment and writes
-nothing. A deployment's check runs it after each apply of the broker, once for each
-private project it declares and each of that project's secrets:
+nothing. It is made for a deployment's check after each apply of the broker, which is to
+run it once for each private project the deployment declares and each of that project's
+secrets; no such check runs it yet:
 
 ```bash
 bash scripts/project-secrets-check.sh --broker-url <broker> --secret <NAME> --project <KEY>

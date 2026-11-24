@@ -14,9 +14,9 @@
 #   * PRIV's pod, the production path: the pod of legion-priv-worker, whose exchange entry maps it
 #     to PRIV for carol. Its trade of its exchange token is project scope "named" with ["PRIV"];
 #     it enrols itself (agent-secrets enroll --pod --service legion-priv) and is granted both.
-#   * carol's session listing PRIV, the refusal case: a session on the stack's machine, which no
-#     machine registration names, started with AGENT_SECRETS_PROJECTS=PRIV. It reads avenue F's
-#     machine check (see the row).
+#   * carol's session listing PRIV, the refusal case: a session on the stack's machine, a developer
+#     box and no pod of PRIV, started with AGENT_SECRETS_PROJECTS=PRIV. It reads avenue F's check
+#     (see the row).
 #   * alice's session listing PRIV: her person cannot see PRIV, so her trade and her session's
 #     enrollment are both refused, with or without F's check.
 #   * carol's session naming nothing: PUB_KEY granted, PRIV_KEY denied project-not-named.
@@ -37,9 +37,10 @@
 # is exactly an untagged one.
 #
 # Live mode, --broker-url URL --secret NAME --project KEY: no stack and no write, against a running
-# deployment, for one secret of one private project. A deployment's check after each apply of the
-# broker runs it once for each private project it declares and each of that project's secrets.
-# It needs, in its environment, the exchange token of a pod of the
+# deployment, for one secret of one private project. It is made for a deployment's check after each
+# apply of the broker, which is to run it once for each private project the deployment declares and
+# each of that project's secrets; no such check runs it yet. It needs, in its environment, the
+# exchange token of a pod of the
 # project (AGENT_SECRETS_MACHINE_TOKEN_FILE), that pod's enrolled key directory
 # (AGENT_SECRETS_KEY_DIR), the enrolled key directory of a pod whose credential names no private
 # project (AGENT_SECRETS_PUBLIC_KEY_DIR), and an account token the broker lists in
@@ -83,11 +84,11 @@ PUB_SECRET="PUB_KEY"
 K3_CACHE_WAIT=35
 # How long a person's session waits for its helper to enrol it.
 REGISTER_WAIT=20
-# Avenue F's refusal of a session listing a private project from a machine not registered to it
-# (#t-f-9, its codes KF2, dispatch://INFRA-3894/artifact/plan-md): the trade's hint opens with the
-# first, the enrollment is refused 403 with the second.
-F_TRADE_REFUSAL="machine_not_registered"
-F_ENROLL_REFUSAL="MACHINE_NOT_REGISTERED"
+# Avenue F's refusal of a box, VM or sign-in session that lists a private project, whose sessions
+# run only in its own cluster namespace (#t-f-9, its codes KF2, dispatch://INFRA-3894/artifact/plan-md):
+# the trade's hint opens with the first, the enrollment is refused 403 with the second.
+F_TRADE_REFUSAL="private_project_pod_only"
+F_ENROLL_REFUSAL="PRIVATE_PROJECT_POD_ONLY"
 # The number of rows each mode runs; a run that ran fewer is not a pass.
 STACK_ROWS=16
 LIVE_ROWS=3
@@ -331,7 +332,7 @@ expect_f_refusal() { # <caller> <secret>
   fi
 }
 
-# expect_listing_trade is the refusal case's trade, which reads avenue F's machine check, and sets
+# expect_listing_trade is the refusal case's trade, which reads avenue F's check, and sets
 # BRANCH to the branch that ran: "f" when F refused it, "before-f" otherwise.
 #
 # Before F's check exists (#t-f-9 of dispatch://INFRA-3894/artifact/plan-md), the broker mints, and
@@ -660,7 +661,7 @@ for secret in "$PRIV_SECRET" "$PUB_SECRET"; do
   expect_granted "$POD" "$secret"
 done
 
-# --- carol's session listing PRIV: the refusal case. It reads avenue F's machine check
+# --- carol's session listing PRIV: the refusal case. It reads avenue F's check
 # (dispatch://INFRA-3894/artifact/plan-md, #t-f-9): F's refusal passes the row, and before F's check
 # exists the row passes only on D1's answer, a person-scope token carrying ["PRIV"]. When F's check
 # lands, F's task deletes the before-F branch of expect_listing_trade and the granted branch below,
