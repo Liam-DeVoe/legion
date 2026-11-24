@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A settlement's stages are tested one at a time, each over a live service and its PostgreSQL:
@@ -69,7 +70,7 @@ func openStageTransaction(t *testing.T, pass *settlementPass, parent context.Con
 		t.Fatalf("begin the settlement's transaction: %v", err)
 	}
 	tx := pass.tx
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := tx.Rollback(context.Background()); errors.Is(err, pgx.ErrTxClosed) {
 			return
 		}
@@ -135,6 +136,7 @@ func seedAnsweredAskBlock(t *testing.T, service *Service, artifactID string) str
 // document's, and stands at the generation the room holds then, which every later stage compares
 // the room against.
 func TestSettlementTakeCopiesTheRoomsTreeAndRendersIt(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "Context.\n")
@@ -170,6 +172,7 @@ func TestSettlementTakeCopiesTheRoomsTreeAndRendersIt(t *testing.T) {
 // connection of that pool carries it, outside any transaction too, since nothing on that pool sits
 // idle in a transaction for longer by design.
 func TestASettlementPassRunsUnderTheSettlementsPoolsIdleBound(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "Context.\n")
@@ -235,7 +238,7 @@ func requireFoldsCarryNoIdleBound(t *testing.T, pool foldPool, pid int32) {
 		if err != nil {
 			t.Fatalf("begin a fold's read-only transaction: %v", err)
 		}
-		t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+		testcleanup.Add(t, func() { _ = tx.Rollback(context.Background()) })
 		if got := idleSetting(t, ctx, tx); got != 0 {
 			t.Fatalf("a fold's read-only transaction reads idle_in_transaction_session_timeout = %v, want none: the bound is the write's transaction's alone", got)
 		}
@@ -249,6 +252,7 @@ func requireFoldsCarryNoIdleBound(t *testing.T, pool foldPool, pid int32) {
 // readLocked reads what a version of the pass is compared against and credited to, under the
 // document's owner row and cursor lock.
 func TestSettlementReadLockedReadsWhatTheVersionIsComparedAgainst(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "Context.\n")
@@ -274,6 +278,7 @@ func TestSettlementReadLockedReadsWhatTheVersionIsComparedAgainst(t *testing.T) 
 // applyStamp stamps into the room the block ids the document lacks, holding the stamp's update
 // from the room's persistence until the pass stores it.
 func TestSettlementApplyStampStampsTheBlockIdsTheDocumentLacks(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	owedStamp(t, service, artifactID)
@@ -309,6 +314,7 @@ func TestSettlementApplyStampStampsTheBlockIdsTheDocumentLacks(t *testing.T) {
 // and committed with no version, and the settlement goes on to a pass that reads the stamped
 // document.
 func TestSettlementCommitStampCommitsTheStampAlone(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	owedStamp(t, service, artifactID)
@@ -341,6 +347,7 @@ func TestSettlementCommitStampCommitsTheStampAlone(t *testing.T) {
 // planRepairs plans the repairs the reconciliation found, outside the document's locks: its pass
 // rolls back having written nothing into the room, and the plan is what the next pass commits.
 func TestSettlementPlanRepairsPlansTheAnsweredAskBlocksRepair(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedAnsweredAskBlock(t, service, artifactID)
@@ -374,6 +381,7 @@ func TestSettlementPlanRepairsPlansTheAnsweredAskBlocksRepair(t *testing.T) {
 // commitRepairs writes the planned repairs into the room and commits them with the rows and
 // events their reconciliation wrote, and no version: the pass after it versions what they left.
 func TestSettlementCommitRepairsWritesTheRepairIntoTheRoom(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedAnsweredAskBlock(t, service, artifactID)
@@ -404,6 +412,7 @@ func TestSettlementCommitRepairsWritesTheRepairIntoTheRoom(t *testing.T) {
 // below and the test fails - with the repair planned after the pass that writes it, the
 // settlement writes nothing into the room and versions the document unrepaired.
 func TestSettlementStagesSettleTheDocumentInOrder(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	want := seedAnsweredAskBlock(t, service, artifactID)

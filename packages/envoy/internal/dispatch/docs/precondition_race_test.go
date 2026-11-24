@@ -16,9 +16,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name         string
 		precondition bool
@@ -47,7 +49,7 @@ func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *
 			})
 			artifactID := createDocument(t, database, "")
 			service := New(Deps{Store: database, Settle: time.Hour})
-			t.Cleanup(func() {
+			testcleanup.Add(t, func() {
 				shutdown, cancel := context.WithTimeout(context.Background(), time.Second)
 				defer cancel()
 				if err := service.Shutdown(shutdown); err != nil {
