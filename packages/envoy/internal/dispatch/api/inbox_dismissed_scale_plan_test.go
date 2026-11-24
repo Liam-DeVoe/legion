@@ -428,8 +428,8 @@ func planRowsOver(t *testing.T, planJSON json.RawMessage, index string) float64 
 // explainDismissedScaleGeneric is explainDismissedScaleStatement under the generic plan: statement
 // prepared on connection, and its EXECUTE explained under plan_cache_mode force_generic_plan and
 // settings, each a statement the transaction runs first, inside a transaction that is rolled back.
-// EXECUTE takes no bind parameter (explaintest.GenericPlan), so args go as literals pgx writes into
-// it (the simple protocol), each cast to the type the prepare gave that parameter. The prepared
+// EXECUTE takes no bind parameter (explaintest.GenericPlan), so args go into it as literals, each
+// cast to the type the prepare gave that parameter (dismissedScaleLiterals). The prepared
 // statement is deallocated afterwards.
 func explainDismissedScaleGeneric(
 	t *testing.T, connection *pgx.Conn, name, statement string, args []any, settings ...string,
@@ -446,25 +446,8 @@ func explainDismissedScaleGeneric(
 			t.Errorf("deallocate %s: %v", name, err)
 		}
 	}()
-	placeholders := make([]string, len(described.ParamOIDs))
-	for index, oid := range described.ParamOIDs {
-		var typed string
-		if err := connection.QueryRow(ctx, `select $1::oid::regtype::text`, oid).Scan(&typed); err != nil {
-			t.Fatalf("name the type of %s's $%d: %v", name, index+1, err)
-		}
-		placeholders[index] = fmt.Sprintf("$%d::%s", index+1, typed)
-	}
-	execute := "execute " + prepared + "(" + strings.Join(placeholders, ", ") + ")"
-	// A []byte argument - the acting credential, JSON (refs.VisibilityArg) - goes as its text: pgx
-	// writes bytes as a bytea literal, which no json cast reads.
-	literals := []any{pgx.QueryExecModeSimpleProtocol}
-	for _, arg := range args {
-		if raw, isBytes := arg.([]byte); isBytes {
-			arg = string(raw)
-		}
-		literals = append(literals, arg)
-	}
-	return explainDismissedScaleStatement(t, connection, name, execute, literals,
+	execute := "execute " + prepared + dismissedScaleLiterals(t, connection, name, described.ParamOIDs, args)
+	return explainDismissedScaleStatement(t, connection, name, execute, nil,
 		append([]string{"set local plan_cache_mode = force_generic_plan"}, settings...)...)
 }
 
@@ -648,23 +631,8 @@ func explainDismissedScaleStatement(
 	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+statement, args...).Scan(&planJSON); err != nil {
 		t.Fatalf("explain %s: %v", name, err)
 	}
-	rows, err := tx.Query(ctx, "explain (analyze, buffers) "+statement, args...)
-	if err != nil {
-		t.Fatalf("explain %s as text: %v", name, err)
-	}
-	defer rows.Close()
-	lines := []string{}
-	for rows.Next() {
-		var line string
-		if err := rows.Scan(&line); err != nil {
-			t.Fatalf("scan a plan line of %s: %v", name, err)
-		}
-		lines = append(lines, line)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("explain %s as text: %v", name, err)
-	}
-	return explaintest.OnePlan(t, planJSON), strings.Join(lines, "\n")
+	text := explainDismissedScaleLines(t, tx, name, statement, args)
+	return explaintest.OnePlan(t, planJSON), text
 }
 
 // explainDismissedScaleText is one statement's plan made for its arguments, run under EXPLAIN
@@ -677,7 +645,14 @@ func explainDismissedScaleText(t *testing.T, connection *pgx.Conn, name, stateme
 		t.Fatalf("begin the explain of %s: %v", name, err)
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, "explain (analyze, buffers) "+statement, args...)
+	return explainDismissedScaleLines(t, tx, name, statement, args)
+}
+
+// explainDismissedScaleLines runs one statement under EXPLAIN (ANALYZE, BUFFERS) as text on tx, and
+// answers the plan's lines, one a line, as the report prints them.
+func explainDismissedScaleLines(t *testing.T, tx pgx.Tx, name, statement string, args []any) string {
+	t.Helper()
+	rows, err := tx.Query(context.Background(), "explain (analyze, buffers) "+statement, args...)
 	if err != nil {
 		t.Fatalf("explain %s as text: %v", name, err)
 	}

@@ -186,8 +186,9 @@ func TestDismissedScaleHoldsTheInboxsReads(t *testing.T) {
 	loaded := seedDismissedScale(t, "loaded", dismissedScaleReplyPile, dismissedScaleAgentPile)
 	none := seedDismissedScale(t, "no dismissed", 0, 0)
 	onePage := seedDismissedScale(t, "one page dismissed", dismissedScalePageReplies, dismissedScalePageAgents)
+	shapes := []*dismissedScaleShape{loaded, none, onePage}
 	var jit []string
-	for _, shape := range []*dismissedScaleShape{loaded, none, onePage} {
+	for _, shape := range shapes {
 		jit = append(jit, shape.name+": "+requireJITOff(t, "the "+shape.name+" shape's database", shape.database.Pool.Config().ConnString()))
 	}
 
@@ -221,7 +222,7 @@ func TestDismissedScaleHoldsTheInboxsReads(t *testing.T) {
 			sent[measured.operation+" @ "+shape.name] = statements
 		}
 	}
-	for _, shape := range []*dismissedScaleShape{loaded, none, onePage} {
+	for _, shape := range shapes {
 		if _, err := shape.database.Pool.Exec(context.Background(), "vacuum analyze"); err != nil {
 			t.Fatalf("vacuum %s after the recorded requests: %v", shape.name, err)
 		}
@@ -237,7 +238,7 @@ func TestDismissedScaleHoldsTheInboxsReads(t *testing.T) {
 			work[key] = explainDismissedScale(t, shape, measured.operation, sent[key], shape == loaded)
 		}
 	}
-	for _, shape := range []*dismissedScaleShape{loaded, none, onePage} {
+	for _, shape := range shapes {
 		explainDismissedScaleOneRead(t, shape, shape == loaded)
 	}
 

@@ -1264,7 +1264,6 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 		pageNodes = `
 	page_nodes(node_kind, node_id) as materialized (
 		select pr.node_kind, pr.node_id from page_rows pr
-		order by ` + order.by("pr") + `
 		limit ` + meInboxDismissedLimit + `
 	),`
 		walkFrom = `
@@ -1407,17 +1406,13 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	// record and the columns every row repeats - the read's moment, the roster and the two counts,
 	// each read once - are put beside them, so the sort holds the entries alone: sorted with the
 	// record, which holds every row the page draws, c-p99's heavy history (4,003 entries) spilled
-	// to disk (external merge, 3,984 kB; INFRA-4948). The outer `order by` names the inner one's
-	// keys as columns of the sorted rows (meInboxOrder.keys), so the planner takes the inner sort's
-	// order for its own and sorts nothing again.
+	// to disk (external merge, 3,984 kB; INFRA-4948). The outer `order by` names exactly the inner
+	// one's keys, each by the column of the sorted rows that holds it - the entry's own, or a column
+	// selected beside them for a key that is an expression, the Dismissed view's id as a uuid
+	// (meInboxOrder.sorted) - so the planner takes the inner sort's order for its own and sorts
+	// nothing again.
 	const carries = `(entry.ord is null or entry.ord = 1)`
-	keys := order.keys("entry")
-	keyColumns, sortedBy := make([]string, len(keys)), make([]string, len(keys))
-	for index, key := range keys {
-		column := `key_` + strconv.Itoa(index)
-		keyColumns[index] = key + ` as ` + column
-		sortedBy[index] = `sorted.` + column + ` desc`
-	}
+	keyColumns, sortedBy := order.sorted("entry", "sorted")
 	statement.WriteString(`
 	select now(), ` + roster + `, coalesce(` + total + `, 0),
 	       coalesce((select r.remaining from remaining r limit 1), 0), sorted.carries,
@@ -1428,12 +1423,12 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	from (
 		select ` + carries + ` as carries,
 		       entry.node_kind, entry.node_id, entry.moment, entry.kinds, entry.directions, entry.ats,
-		       entry.page, entry.agent, ` + strings.Join(keyColumns, `, `) + `
+		       entry.page, entry.agent` + keyColumns + `
 		from (values (true)) as one (present)
 		left join paged entry on true
 		order by ` + order.by("entry") + `
 	) sorted
-	order by ` + strings.Join(sortedBy, `, `))
+	order by ` + sortedBy)
 	return statement.String(), args.values[slots.first:], nil
 }
 
@@ -1595,6 +1590,7 @@ func meInboxOwnerArgs(shape meInboxShape) (issue, artifact string) {
 // drops a root holding no session reply. No dismissal mark names such a root: a dismissal is
 // refused for a root whose newest reply the page did not draw (inboxDismissCheckAgentRoots), and no
 // statement deletes a message.
+//
 // page_rows reads each row from its key (meInboxPageRows), so every step after it meets those rows
 // alone, and an Agent root's thread (myAgentRowFacts) is walked for the Agent rows among them and
 // for no other: with each arm cut on its own, every step met both arms' offset + limit + 1 rows,
@@ -1692,13 +1688,14 @@ func meInboxOrderOf(shape meInboxShape) meInboxOrder {
 	return meInboxOrder{byID: shape.state == myRepliesStateDismissed}
 }
 
-// after is whether the entry row names lies past the cursor in this order.
+// after is whether the entry row names lies past the cursor in this order: the row's keys (keys)
+// against the cursor's, each argument typed as the key it is compared with.
 func (order meInboxOrder) after(row string) string {
+	cursor := meInboxCursorMoment + `::timestamptz, ` + meInboxCursorKind + `::text, ` + meInboxCursorID + `::text`
 	if order.byID {
-		return `(` + row + `.moment, ` + row + `.node_id::uuid) < (` + meInboxCursorMoment + `::timestamptz, ` + meInboxCursorID + `::text::uuid)`
+		cursor = meInboxCursorMoment + `::timestamptz, ` + meInboxCursorID + `::text::uuid`
 	}
-	return `(` + row + `.moment, ` + row + `.node_kind, ` + row + `.node_id) < (` + meInboxCursorMoment + `::timestamptz, ` +
-		meInboxCursorKind + `::text, ` + meInboxCursorID + `::text)`
+	return `(` + strings.Join(order.keys(row), `, `) + `) < (` + cursor + `)`
 }
 
 // keys are this order's keys over the entry rows row names, each an expression its `order by`
@@ -1713,6 +1710,18 @@ func (order meInboxOrder) keys(row string) []string {
 // by is this order over the entry rows row names, for an `order by`.
 func (order meInboxOrder) by(row string) string {
 	return strings.Join(order.keys(row), ` desc, `) + ` desc`
+}
+
+// sorted is this order once a subquery named outer has selected the entry rows row names and
+// sorted them by by(row): the columns the subquery selects beside the rows' own, each led by a
+// comma, for a key that is an expression of a column rather than a column - under byID the node's
+// id as a uuid - and the order over outer's columns, which names exactly the keys the subquery
+// sorted on, so the planner takes the subquery's order for the outer one (meInboxBuild).
+func (order meInboxOrder) sorted(row, outer string) (columns, by string) {
+	if order.byID {
+		return `, ` + row + `.node_id::uuid as node_uuid`, outer + `.moment desc, ` + outer + `.node_uuid desc`
+	}
+	return ``, order.by(outer)
 }
 
 // meInboxReads is what the page's rows draw, as meInboxPageReads writes it: the statement's
