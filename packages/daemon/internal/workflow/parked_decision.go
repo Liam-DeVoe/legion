@@ -331,18 +331,24 @@ func stepRef(key string, step record.DesignStep) string {
 
 // ChangesSuperseded says whether notice, a design-changes-requested notice on issue, is no longer
 // the changes request the gate of its document records as told, issue's gates being gates: the
-// gate records another (record.DesignGate.ToldChangesVersion and ToldChangesReason). The gate
-// records every changes request it applies as told (applyArtifact), and tells one a newer review
-// already replaced without recording it, as the person's words, when no approval followed it; so a
-// notice the gate's record does not match is of a request the person has since replaced. The
-// outbox's parkDecision relays no such notice to the controller: kept, it would take the place of
-// the newer decision kept under the same document's ref, and of the claim a start holds on it. A
-// gate that records no request, or no gate of the notice's document, says nothing against it.
+// gate records another (record.DesignGate.ToldChangesVersion, ToldChangesReason and
+// ToldChangesMark). The gate records every changes request it applies as told (applyArtifact), and
+// tells one a newer review already replaced without recording it, as the person's words, when no
+// approval followed it; so a notice the gate's record does not match is of a request the person
+// has since replaced. The outbox's parkDecision relays no such notice to the controller: kept, it
+// would take the place of the newer decision kept under the same document's ref, and of the claim
+// a start holds on it. A gate that records no request, or no gate of the notice's document, says
+// nothing against it.
 //
-// The gate records the whole reason, and the notice carries it cut to texts.OneAct
-// (ChangesRequestedNotice), so the notice is of the told request where it names the told version
-// and its reason is the told reason's head at that bound, or the whole told reason, which a row
-// an older daemon queued carries.
+// The notice names the time of its review (record.Notice.At, from the review's mark), and the
+// gate the told review's place (ToldChangesMark), so where both carry a time a notice of another
+// time, read at the microseconds the store keeps a time at, is of another review: two changes
+// requests on one version whose reasons share their first texts.OneAct units carry the same cut
+// reason, and only their times tell them apart. The gate records the whole reason, and the notice
+// carries it cut to texts.OneAct (ChangesRequestedNotice), so the notice is of the told request
+// where it names the told version and its reason is the told reason's head at that bound, or the
+// whole told reason, which a row an older daemon queued carries. A notice or a gate with no time,
+// such as a row an older daemon queued, is read by its version and its reason alone.
 func ChangesSuperseded(gates map[record.DesignStep]record.DesignGate, issue string, notice record.Notice) bool {
 	for step, gate := range gates {
 		if stepRef(issue, step) != notice.Ref {
@@ -352,6 +358,9 @@ func ChangesSuperseded(gates map[record.DesignStep]record.DesignGate, issue stri
 		case gate.ToldChangesVersion == nil:
 			return false
 		case *gate.ToldChangesVersion != notice.Version:
+			return true
+		case !notice.At.IsZero() && !gate.ToldChangesMark.At.IsZero() &&
+			!notice.At.Truncate(time.Microsecond).Equal(gate.ToldChangesMark.At.Truncate(time.Microsecond)):
 			return true
 		case notice.Reason == gate.ToldChangesReason:
 			return false

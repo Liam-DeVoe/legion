@@ -425,7 +425,8 @@ func (f DispatchAskClosed) namedIssue() (string, bool) { return f.Key, true }
 // comment's time (the event's own where the payload gives none): its body, with More set where
 // the event marked the body cut (body_truncated) or reached the daemon as a payload_omitted
 // stand-in, which leaves the body out. The comment itself holds the rest. A hand-back writes no
-// words, so its Words are nil.
+// words, and a reply its author deleted gives its body to no read (its event carries deleted_at
+// and deleted_by in place of the body), so the Words of each are nil.
 type DispatchAskReply struct {
 	Key       string
 	Ask       string

@@ -677,17 +677,24 @@ func closeWords(event dispatchEvent, unread *[]string) *record.ActWords {
 // commentWords are the words of a comment as its payload carries them (DispatchAskReply.Words):
 // its body, at the comment's time, with more to follow where Dispatch cut the body
 // (body_truncated, model.CommentEventPayload) or sent a stand-in that left it out
-// (payload_omitted). Words the decoder cannot read are reported, as closeWords reports them.
+// (payload_omitted). A comment its author deleted has none: every read of its event carries
+// deleted_at and deleted_by in place of its body (Dispatch's attachPostMarks), and a deleted post
+// gives its body to no read. Words the decoder cannot read are reported, as closeWords reports
+// them.
 func commentWords(event dispatchEvent, unread *[]string) *record.ActWords {
 	var payload struct {
-		Body           string    `json:"body"`
-		BodyTruncated  bool      `json:"body_truncated"`
-		CreatedAt      time.Time `json:"created_at"`
-		PayloadOmitted bool      `json:"payload_omitted"`
+		Body           string          `json:"body"`
+		BodyTruncated  bool            `json:"body_truncated"`
+		CreatedAt      time.Time       `json:"created_at"`
+		PayloadOmitted bool            `json:"payload_omitted"`
+		DeletedAt      json.RawMessage `json:"deleted_at"`
 	}
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		*unread = append(*unread, fmt.Sprintf("the words of %s: %v", event.Type, err))
 		return event.words("", nil, time.Time{}, true)
+	}
+	if len(payload.DeletedAt) > 0 && string(payload.DeletedAt) != "null" {
+		return nil
 	}
 	return event.words(payload.Body, nil, payload.CreatedAt, payload.BodyTruncated || payload.PayloadOmitted)
 }

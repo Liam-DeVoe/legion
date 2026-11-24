@@ -20,6 +20,10 @@ import (
 //
 // A primitive is nil (null), a string, a bool or an int64. Render makes these values from a
 // record, so a time is already a string here.
+//
+// It departs from 4.1.1 in one rule: a string's next line (U+0085) and line and paragraph
+// separators (U+2028, U+2029), which 4.1.1 writes as they are, are written as spaces
+// (foldUnescapedBreaks), so no value breaks its line.
 
 const (
 	toonIndent    = "  "
@@ -205,12 +209,33 @@ func assertWellFormed(value, context string) error {
 	return nil
 }
 
-// encodeStringLiteral is encodeStringLiteral of 4.1.1.
+// encodeStringLiteral is encodeStringLiteral of 4.1.1, of the value with its unescaped line breaks
+// folded (foldUnescapedBreaks) first, so that every string the writer writes stays on its line.
 func encodeStringLiteral(value string) string {
+	value = foldUnescapedBreaks(value)
 	if isSafeUnquoted(value) {
 		return value
 	}
 	return `"` + escapeString(value) + `"`
+}
+
+// foldUnescapedBreaks is value with each character that breaks a line and that escapeString has
+// no escape for written as one space: the next line (U+0085) and the line and paragraph
+// separators (U+2028, U+2029). 4.1.1 writes them as they are, quoted or not, and a reader takes
+// each for a line break, so a value that held one, such as a title, would end its field's line
+// there and the words after it would read as a line of the record, such as a field of its own.
+// TOON has no escape for them, so the value is folded as the check-look lead folds a title
+// (CheckLookRecord.Lead). The line feed, the carriage return and every other control character
+// keep their escapes. A Words block is no value and keeps its words as they are. A value with
+// none of the three is returned as it is.
+func foldUnescapedBreaks(value string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\u0085', '\u2028', '\u2029':
+			return ' '
+		}
+		return r
+	}, value)
 }
 
 // encodeKey is encodeKey of 4.1.1.

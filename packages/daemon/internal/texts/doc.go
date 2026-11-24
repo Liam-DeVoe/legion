@@ -74,6 +74,9 @@
 //     list of primitives is one key[n]: a,b line. A list of records is a key[n]{f,g}: line,
 //     then one row for each record, with an indent of two spaces. An empty list or a nil list
 //     is key: []. A string that TOON cannot write bare is quoted and escaped as TOON does it.
+//     TOON has no escape for the next line (U+0085) and the line and paragraph separators
+//     (U+2028, U+2029), which a reader takes for a line break, so each of them in a string is
+//     written as a space, and the string stays on its line.
 //     A time is RFC 3339 in UTC, with the fraction of a second only where the time has one.
 //     A nil pointer is null. Omitempty and omitzero leave out a field as encoding/json does.
 //  3. The kept sentences, where the record has the method Kept() []string. Each sentence is
