@@ -1193,10 +1193,13 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 // It logs the replacement's line, and the bound's own line where the bound let the replacement
 // through (ended, what the last word or the launch read of the round's end under the pod's launch
 // turn), finishes the replacement's record, recorded, telling the issue's architect what the
-// replacement took where the read before it found work or failed (finishReplacement), and ends the
-// round on the claims of members (endPodUpdates). The round ends whether or not the store took the
-// notice: the record stands until it does, and a later sweep finishes it (GPT-6.1 Sol's point 2).
-// It answers whether the record is finished.
+// replacement took where the read before it found work or failed (finishReplacement), and only
+// then ends the round on the claims of members (endPodUpdates). A store that refuses the finish
+// leaves the round open with its record (INFRA-341's reviewer's point D on fa9deb04): the notice
+// names what the round's claims record — the members that had not answered, and whether the kept
+// volume was still the round's — and the end clears it, so a later sweep finishes the record from
+// the round as it stands, and ends it then (finishReplacements, or the walk's end of a round a
+// launch replaced). It answers whether the record is finished and the round ended.
 //
 // read is what the read of the workspace before the replacement found (workspaceRead), and read.by
 // is who made the replacement (roundReplacer). The line of a replacement of a pod no role process
@@ -1232,9 +1235,13 @@ func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reas
 	if !read.clean() {
 		reason = workspaceTakenMessage(issue, round, pod, reasons, named, read.work, read.err, kept)
 	}
-	finished := s.finishReplacement(ctx, recorded, reason, "round", round)
+	if !s.finishReplacement(ctx, recorded, reason, "round", round) {
+		s.log.Info("supervise: the round stays open until its replacement's record is finished; a later sweep finishes it",
+			"issue", issue, "round", round, "pod", pod)
+		return false
+	}
 	s.endPodUpdates(issue, members, round)
-	return finished
+	return true
 }
 
 // workspaceRead is what the read of an issue's workspace before one of a round's replacements
