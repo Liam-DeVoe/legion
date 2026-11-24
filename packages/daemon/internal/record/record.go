@@ -1150,9 +1150,11 @@ type ConflictRead struct {
 // as, that step's role, "" in a record of the release before, which asked the implementer: the one
 // builder of the ask's message reads both (MergeForward.Ask). Told is whom the ask's message
 // reached, by the one rule of told an owner-step's run holds too (OwnerTold: the launch and the
-// session of the owner's claim, the daemon's ownerToldMark, Store.MarkMergeForwardTold), nil until
-// it reached one: a fresh session of the owner holds nothing of the one told, so the owner's
-// catch-up at a launch names an open ask its session was not told (workflow's untoldMergeForward).
+// session of the owner's claim, the daemon's ownerToldMark, Store.MarkMergeForwardTold), and the
+// zero OwnerTold, which reached nobody, until it reached one: a record with no told key, an ask not
+// yet delivered or one the release before wrote, reads as that zero. A fresh session of the owner
+// holds nothing of the one told, so the owner's catch-up at a launch names an open ask its session
+// was not told (workflow's untoldMergeForward).
 // AskedAt is when the ask was written. Landed is the first new head that arrived after the ask, ""
 // until one does; ReviewAsked is whether that landing queued a review of the merge for the
 // reviewer, which it does when the issue stands past review and its task has a reviewer step
@@ -1171,7 +1173,7 @@ type MergeForward struct {
 	Own         bool                 `json:"own,omitempty"`
 	Agent       claim.Token          `json:"agent,omitempty"`
 	Role        claim.Role           `json:"role,omitempty"`
-	Told        *OwnerTold           `json:"told,omitempty"`
+	Told        OwnerTold            `json:"told,omitzero"`
 	Why         ConflictWhy          `json:"why"`
 	AskedAt     time.Time            `json:"askedAt"`
 	Landed      string               `json:"landed,omitempty"`
