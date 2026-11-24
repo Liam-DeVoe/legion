@@ -198,12 +198,12 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // owner and still open (record.OwnersMergeForward) where the owner's claim as it is ready now at
 // launch was not told it, and nil where no such ask stands: no ask row of it is still queued, whose
 // delivery tells it (record.Store.MergeForwardAskPending), and the mark of whom its ask reached
-// (record.MergeForward.Told) does not hold the session or the launch the claim runs at now, by the
-// one rule of told an owner-step is judged by too (toldNow). A fresh session — after the owner's
-// claim failed, or a launch whose resume of the session told failed — holds nothing of the one
-// told, and the ask asks an act that no step's notice repeats, so the catch-up of that launch names
-// it (untoldAskWords). A resumed session holds the ask's message and is not told it again, and no
-// second message of the ask is written for it.
+// (record.MergeForward.Told, the zero OwnerTold while it reached nobody) does not hold the session
+// or the launch the claim runs at now, by the one rule of told an owner-step is judged by too
+// (toldNow). A fresh session — after the owner's claim failed, or a launch whose resume of the
+// session told failed — holds nothing of the one told, and the ask asks an act that no step's
+// notice repeats, so the catch-up of that launch names it (untoldAskWords). A resumed session holds
+// the ask's message and is not told it again, and no second message of the ask is written for it.
 func untoldMergeForward(ctx context.Context, tx pgx.Tx, store record.Store, issue record.Issue, launch uint64) (*record.PullRequest, error) {
 	pr, err := store.PullRequest(ctx, tx, issue.Key)
 	if err != nil || !record.OwnersMergeForward(issue, pr) {
@@ -213,10 +213,8 @@ func untoldMergeForward(ctx context.Context, tx pgx.Tx, store record.Store, issu
 	if pending, err := store.MergeForwardAskPending(ctx, tx, issue.Key, asked.Agent, asked.Head); err != nil || pending {
 		return nil, err
 	}
-	if asked.Told != nil {
-		if told, err := toldNow(ctx, tx, store, issue, *asked.Told, launch); err != nil || told {
-			return nil, err
-		}
+	if told, err := toldNow(ctx, tx, store, issue, asked.Told, launch); err != nil || told {
+		return nil, err
 	}
 	return pr, nil
 }

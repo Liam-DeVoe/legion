@@ -2956,19 +2956,21 @@ A plan given or a step started since the first run shows there, and to finish or
 In a rollback past several releases, run this section's steps first, before the ways back of the older releases: the release that keys a phases row by its step, the release whose deployment defines roles, and the release whose owner's plan picks the steps, with the migrations its section runs before it (`20261117213545_plan_step_agent.up.sql`, `20261117201743_plan_roles.up.sql`).
 The stops need this release's `stop_task`, and the statement reads the plan rows that the last of those ways back drops.
 
-No migration of that earlier release deletes the `owner-step`, `merge-forward-lost` and `slot_credential` rows, nor a merge-forward row that carries `covers`, so the delete is the operator's.
+No migration of that earlier release deletes the `owner-step`, `merge-forward-lost` and `slot_credential` rows, nor takes `covers` off a merge-forward row, so these statements are the operator's.
 Run this with every project's daemon on that database stopped, before the earlier image is pinned, with `<PROJECT>` the key of the project whose daemon rolls back:
 
 ```sql
 delete from outbox where kind = 'notice' and payload->>'kind' = 'owner-step' and split_part(issue, '-', 1) = '<PROJECT>';
 delete from outbox where kind = 'notice' and payload->>'kind' = 'merge-forward-lost' and split_part(issue, '-', 1) = '<PROJECT>';
-delete from outbox where kind = 'merge_forward' and payload ? 'covers' and split_part(issue, '-', 1) = '<PROJECT>';
+update outbox set payload = payload - 'covers' where kind = 'merge_forward' and payload ? 'covers' and split_part(issue, '-', 1) = '<PROJECT>';
 delete from outbox where kind = 'supervise' and payload->>'op' = 'slot_credential' and split_part(issue, '-', 1) = '<PROJECT>';
 ```
 
 Each deleted `owner-step` row is a step or a retro of the owner that its owner is never told of.
 Each deleted `merge-forward-lost` row is an ask or a review that did not reach its agent, which the architect is never told of.
-Each deleted merge-forward row that carries `covers` is an ask or a review its agent is never told of: the earlier release asks again on its next confirmed conflict at that head only where its record holds no ask, and the record holds this one, so the message is lost.
+Each merge-forward row that carried `covers` stays without it, and the earlier release sends it as it sends an ask or a review of its own, to the claim the row names.
+So the ask or the review that the pull request's record says was asked is still sent: the merger does not wait for an approval nobody was asked for, and the merge forward is not left unasked at that head, which the earlier release asks again only where its record holds no ask.
+What the row loses is what `covers` added in place of the message it stood in for, which was never queued: the ask no longer tells its agent that it also works the step the issue stands at, to write nothing else in the workspace until the merge is pushed and then go on with that step at the head the merge leaves, and the review no longer tells its agent to go on with that step at the new head.
 Each deleted `slot_credential` row is a write the earlier release makes anyway: its refresh writes every slot for its claim's own role's App within a minute.
 
 ### Pinning a release that drops what a running pod still uses
@@ -5237,9 +5239,9 @@ Each mint asks for what the App's installation on that owner is granted of the s
 
 The architect acts as another role at a step of its own plan, as the step's role, and at its retro where the task's last implementation step is its own, as that step's role.
 It acts as the implementer while a merge forward the daemon asked of it has not ended, since that merge is the implementer's act: where the agent of the task's implementation step is the architect (a step of the type implementation whose key is `owner`, such as `implementer:owner`), the ask goes to the architect, in any phase.
-The ask ends when its merge lands, when a move into the implementation step, a new generation of the issue (a child set back to `todo`, or an adoption into a tree) or the issue's leave of the workflow clears it, when the pull request closes or merges, and when the issue is held or its task stopped.
+The ask ends when its merge lands, when a move into the implementation step, a new generation of the issue (a child set back to `todo`, or an adoption into a tree) or the issue's leave of the workflow clears it, when the pull request closes or merges, when the issue is held or its task stopped, and when a newer ask reaches the agent of another implementation step.
 Everywhere else, and always while the issue is held, the architect's slot holds its own App, the review App.
-While its slot holds the implement App for a merge forward, the daemon tells the architect no step or retro of another App: its review step and its acceptance wait until the ask ends and the slot holds their App again, and so does the landed message to its review step.
+While its slot holds the implement App for a merge forward, the daemon tells the architect no step or retro of another App: its review step and its acceptance wait until the ask ends and the slot holds their App again.
 The review a landed merge forward asks of a `reviewer:owner` reaches the architect only once its slot holds the review App, after its retro of its own implementation step ended or after the landing of a merge forward asked of it, since GitHub refuses an approval from the pull request's author.
 The end of each of these acts queues the write of the architect's own App back into its slot (`slot_credential`), which writes nothing where another act of the architect's of another App already runs.
 The linger of the issue's tree, and the delete of its pull request record by a rename collision, queue none: no slot of the architect's runs then, and its next launch writes its own App.

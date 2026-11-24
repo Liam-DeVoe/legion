@@ -3176,9 +3176,10 @@ package api
 // object. The request records of 227 hold the new route's request, and no recorded request field
 // leaves. A claim of the role `acceptance`, the fresh agent of a step `acceptance` with no key, is
 // a role outside Legion's six, which 221's band already leaves out of the state served a caller
-// below 221. The two notice kinds this entry adds (`owner-step`, and `merge-forward-lost` for a
-// merge forward's ask that did not reach its agent) ride inside a notice row's payload, as 189's
-// does, and are no key or value of an answer a plugin parses. From this entry the last number
+// below 221. The two notice kinds this entry adds (`owner-step`, and `merge-forward-lost` for an
+// ask or a review of a merge forward that did not reach its agent) ride inside a notice row's
+// payload, as 189's does, and are no key or value of an answer a plugin parses. From this entry the
+// last number
 // of answers.go's SupportedContracts is
 // `api.completeStepContract`; `deploymentRolesContract` stays 221 and `strandedTokenContract` 222.
 // (This entry takes 227, the lowest number above 222 (the stranded claims' token, the entry

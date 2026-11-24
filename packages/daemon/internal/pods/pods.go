@@ -284,3 +284,18 @@ func (v IdleView) QuietSince() (time.Time, bool) {
 	}
 	return newest, !newest.IsZero()
 }
+
+// BackstopClaim says whether a claim of an issue's pod, token, serving the run serving, is the one
+// a backstop of that pod is armed for, by every path that arms one (R5): the release (the daemon's
+// armBackstops), a pause's stop of a released claim (the daemon's projectPause.stopTx) and a cancel
+// of a release while the project is paused (the store's stopReleasedForPause). role and target are
+// the claim the workflow's BackstopTargetAt reads, "" for none: the owner's, the architect's
+// backstop, whatever run it served last, and a worker's where it serves the issue's run,
+// generation. The store is one of those paths and sits below workflow, so the rule lives here,
+// where both reach it.
+func BackstopClaim(role claim.Role, target, token claim.Token, serving, generation uint64) bool {
+	if role == "" || target == "" || token != target {
+		return false
+	}
+	return role == claim.RoleArchitect || serving == generation
+}

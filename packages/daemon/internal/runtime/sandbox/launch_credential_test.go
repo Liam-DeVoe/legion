@@ -140,22 +140,8 @@ func TestALaunchOfAReroledClaimWritesItsSlotsCredentialAtOnce(t *testing.T) {
 // names that longer bound, so the projection bound never shortens a launch's wait.
 func TestALaunchIntoAKeptPodWaitsAsLongAsTheKubeletTakesToProjectItsCredential(t *testing.T) {
 	keyed := claim.Token("legion-legion-legion-208-implementer")
-	// apps gives each role the gh bundle of its own App, so the re-roled claim's launch writes its
-	// slot for another App than the slot held.
-	apps := func(o *Options) {
-		o.GitHubCredential = appauth.CredentialOf(func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-			owner := strings.ToLower(repo.Owner())
-			if owner == "" {
-				owner = "sjawhar"
-			}
-			appRole, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
-			if err != nil {
-				return ghconfig.Bundle{}, err
-			}
-			app := string(appRole)
-			return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{owner: ghconfig.Render("ghs_"+app, app, staticCredentialExpiry)}}, nil
-		})
-	}
+	// The rig's credential renders each role its own App's token (staticCredential), so the
+	// re-roled claim's launch writes its slot for another App than the slot held.
 	spec := testSpec(t, keyed, claim.RoleTester, testTree)
 	// named is the bound the start of spec's launch names on the launcher's wait for its credential.
 	named := func(t *testing.T, g *rig) time.Duration {
@@ -167,7 +153,7 @@ func TestALaunchIntoAKeptPodWaitsAsLongAsTheKubeletTakesToProjectItsCredential(t
 		return time.Duration(start.GitHubCredential.WaitMs) * time.Millisecond
 	}
 
-	g := newRig(t, nil, withOptions(apps))
+	g := newRig(t, nil)
 	g.spawn(rootSpec(t))
 	g.launcher(keyed)
 	hold := make(chan struct{})
@@ -201,10 +187,7 @@ func TestALaunchIntoAKeptPodWaitsAsLongAsTheKubeletTakesToProjectItsCredential(t
 	}
 
 	long := secretProjectionBound + time.Minute
-	control := newRig(t, nil, withOptions(func(o *Options) {
-		apps(o)
-		o.BootTimeout = long
-	}))
+	control := newRig(t, nil, withOptions(func(o *Options) { o.BootTimeout = long }))
 	control.spawn(rootSpec(t))
 	control.spawn(spec)
 	if bound := named(t, control); bound <= secretProjectionBound || bound > long {

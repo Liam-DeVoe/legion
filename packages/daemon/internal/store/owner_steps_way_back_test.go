@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -312,60 +314,50 @@ func TestTheOwnerStepsWayBackClearsItsProjectsTwoNewHoldReasons(t *testing.T) {
 	}
 }
 
-// ownerDoesAStepSection is the heading of docs/kubernetes.md's section on the rollback below the
-// release whose owner does a step. No migration header carries that release's delete of the queued
-// rows the release before cannot read, so the guide is where an operator reads it, and where this
-// test reads it.
-const ownerDoesAStepSection = "#### Rolling back below the release whose owner does a step"
+// ownerDoesAStepExtract is this package's copy of the statements docs/kubernetes.md gives under
+// "Rolling back below the release whose owner does a step". No migration header carries that
+// release's statements on the queued rows the release before cannot read, so the guide is where
+// an operator reads them, and internal/textcheck's
+// TestTheOwnerDoesAStepWayBackExtractIsTheGuidesBlock holds this copy to the guide's block. This
+// file reads the copy alone, as the plan ratings' test reads the header alone, so the guide stays
+// out of this package's CI filter.
+const ownerDoesAStepExtract = "owner_does_a_step_way_back_extract.txt"
 
-// ownerDoesAStepWayBack is the delete that section gives: its one fenced sql block whose every line
-// is a delete from the outbox, with <PROJECT> for the project that rolls back. A section or a block
-// of another shape stops the test by name.
+// ownerDoesAStepWayBack is the block ownerDoesAStepExtract carries, with <PROJECT> for the project
+// that rolls back: every byte under the blank line that ends the file's `#` header. A copy with no
+// blank line under its header, or with nothing under it, stops the test by name, since a block this
+// cannot read is a block the test would pass while running nothing.
 func ownerDoesAStepWayBack(t *testing.T) string {
 	t.Helper()
-	guide, err := os.ReadFile("../../../../docs/kubernetes.md")
+	text, err := os.ReadFile(ownerDoesAStepExtract)
 	if err != nil {
-		t.Fatalf("read docs/kubernetes.md: %v", err)
+		t.Fatalf("read %s: %v", ownerDoesAStepExtract, err)
 	}
-	_, section, found := strings.Cut(string(guide), "\n"+ownerDoesAStepSection+"\n")
-	if !found {
-		t.Fatalf("docs/kubernetes.md holds no section %q", ownerDoesAStepSection)
+	body := string(text)
+	for strings.HasPrefix(body, "#") {
+		_, body, _ = strings.Cut(body, "\n")
 	}
-	if end := strings.Index(section, "\n#"); end >= 0 {
-		section = section[:end]
+	body, ended := strings.CutPrefix(body, "\n")
+	if !ended {
+		t.Fatalf("%s carries no blank line under its `#` header: that line is what ends the header, and every byte under it is the block", ownerDoesAStepExtract)
 	}
-	var deletes []string
-	for _, fenced := range strings.Split(section, "```sql\n")[1:] {
-		block, _, closed := strings.Cut(fenced, "\n```")
-		if !closed {
-			t.Fatalf("the section %q opens an sql block it does not close", ownerDoesAStepSection)
-		}
-		every := true
-		for _, line := range strings.Split(block, "\n") {
-			every = every && strings.HasPrefix(line, "delete from outbox ")
-		}
-		if every {
-			deletes = append(deletes, block)
-		}
+	if block := strings.TrimRight(body, "\n"); block != "" {
+		return block
 	}
-	if len(deletes) != 1 {
-		t.Fatalf("the section %q holds %d sql blocks of deletes from the outbox alone, want one", ownerDoesAStepSection, len(deletes))
-	}
-	return deletes[0]
+	t.Fatalf("%s carries nothing under its header: its copy of the guide's block is gone", ownerDoesAStepExtract)
+	return ""
 }
 
 // refusedBeforeOwnerDoesAStep is why the release before the one whose owner does a step refuses
 // row, "" where it takes it. That release decodes every payload the tree decodes, strictly, but for
-// what the release whose owner does a step adds (ownerDoesAStepSection): the notice kinds owner-step
+// what the release whose owner does a step adds (ownerDoesAStepExtract): the notice kinds owner-step
 // and merge-forward-lost, the supervise op slot_credential, and the field covers of a merge-forward
-// message. It fails such a row at every attempt.
+// message. It fails such a row at every attempt. This is a hand-written stand-in for that release's
+// decode, since its code is not in the tree: it reads each row with this release's decoder and
+// names what that release lacks.
 func refusedBeforeOwnerDoesAStep(t *testing.T, row record.OutboxRow) string {
 	t.Helper()
-	payload, err := record.DecodeOutboxPayload(row)
-	if err != nil {
-		t.Fatalf("this release's decode of row %d: %v", row.ID, err)
-	}
-	switch value := payload.(type) {
+	switch value := mustDecode(t, row).(type) {
 	case record.Notice:
 		if value.Kind == record.OwnerStepNotice || value.Kind == record.MergeForwardLostNotice {
 			return fmt.Sprintf("unknown notice kind %q", value.Kind)
@@ -382,25 +374,41 @@ func refusedBeforeOwnerDoesAStep(t *testing.T, row record.OutboxRow) string {
 	return ""
 }
 
-// The operator's delete of the release whose owner does a step (ownerDoesAStepWayBack) deletes the
-// queued rows the release before cannot read, for the project whose daemon rolls back alone: its
-// owner-step and merge-forward-lost notices, its merge-forward messages that carry covers, and its
-// writes of the owner's slot back to its own App (slot_credential). Another project's rows of the
-// same kinds stand, and so does every row the release before reads, of either project: a
-// merge-forward ask that covers nothing, a task-stopped notice, a phase-finished notice and a
-// suspend. The rows are queued for LEGION, which rolls back, and OTHER, which does not, and the
-// block runs as the guide gives it, as one exec, with <PROJECT> LEGION.
+// The operator's statements of the release whose owner does a step (ownerDoesAStepWayBack) leave
+// the project whose daemon rolls back only queued rows the release before reads, and lose no
+// message that release can send: they delete its owner-step and merge-forward-lost notices and its
+// writes of the owner's slot back to its own App (slot_credential), and take the key covers off its
+// merge-forward messages and keep them, so the ask or the review its pull request's record says it
+// asked is still sent. Another project's rows of the same kinds stand as they are, and so does
+// every row the release before reads, of either project: a merge-forward ask that covers nothing,
+// a task-stopped notice, a phase-finished notice and a suspend. The rows are queued for LEGION,
+// which rolls back, and OTHER, which does not, and the block runs as the guide gives it
+// (ownerDoesAStepExtract), as one exec, with <PROJECT> LEGION. Then each row of LEGION left takes
+// the release before's decode, and each row left, of either project, takes this release's decode,
+// which the roll forward reads, with the payload it was queued with, less covers where the block
+// took it off.
 //
-// Two controls. Before the block, the release before's decode (refusedBeforeOwnerDoesAStep) refuses
-// each row of a new kind and takes each other row. And the same block with its project predicate
-// taken off deletes OTHER's rows of the new kinds too.
-func TestTheOwnerDoesAStepWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCannotRead(t *testing.T) {
+// Two controls. Before the block, the release before's decode refuses each row of a kind or a
+// field the release whose owner does a step adds and takes each other row, so the test sees the
+// rows the statements exist for. And the same block with its project predicate taken off deletes
+// and strips OTHER's rows too.
+//
+// What this cannot show is the earlier daemon running: its binary is not here, so its decode is
+// the hand-written stand-in above (refusedBeforeOwnerDoesAStep).
+func TestTheOwnerDoesAStepWayBackLeavesItsProjectOnlyRowsTheReleaseBeforeReads(t *testing.T) {
 	ctx := context.Background()
 	queuedAt := time.Date(2026, 11, 24, 3, 0, 0, 0, time.UTC)
+	// does is what the block does to a row of the project that rolls back.
+	type does int
+	const (
+		keepsIt does = iota
+		deletesIt
+		stripsCovers
+	)
 	type queued struct {
 		name    string
 		payload record.OutboxPayload
-		newKind bool
+		does    does
 	}
 	rowsOf := func(project string) []queued {
 		key, tree := project+"-208", project+"-208"
@@ -412,14 +420,17 @@ func TestTheOwnerDoesAStepWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCanno
 			return token
 		}
 		return []queued{
-			{name: "an owner-step", newKind: true, payload: record.Notice{Kind: record.OwnerStepNotice, Role: claim.RoleImplementer,
+			{name: "an owner-step", does: deletesIt, payload: record.Notice{Kind: record.OwnerStepNotice, Role: claim.RoleImplementer,
 				Phase: phase.Implementing, Reason: "Step 1 of 2: implementer:owner.", OwnerStep: &record.NoticeStep{Task: "a", Kind: "step", Place: 1, Starts: 1}}},
-			{name: "a merge-forward-lost notice", newKind: true, payload: record.Notice{Kind: record.MergeForwardLostNotice, Role: claim.RoleReviewer,
+			{name: "a merge-forward-lost notice", does: deletesIt, payload: record.Notice{Kind: record.MergeForwardLostNotice, Role: claim.RoleReviewer,
 				Phase: phase.Reviewing, Reason: "the review of the merge forward of #42 did not reach the reviewer"}},
-			{name: "a review that covers the landed", newKind: true, payload: record.MergeForwardMessage{Role: claim.RoleReviewer,
+			{name: "a review that covers the landed", does: stripsCovers, payload: record.MergeForwardMessage{Role: claim.RoleReviewer,
 				Claim: token(claim.RoleReviewer), Step: record.MergeForwardReview, Head: "sha-1", Landed: "sha-2", Base: "main", Phase: phase.Reviewing,
 				PullRequest: 42, Covers: record.MergeForwardLanded}},
-			{name: "the write-back of the owner's slot", newKind: true, payload: record.SuperviseRequest{Op: "slot_credential", Tree: tree,
+			{name: "an ask of the owner that covers the hold", does: stripsCovers, payload: record.MergeForwardMessage{Role: claim.RoleImplementer,
+				Claim: token(claim.RoleArchitect), Step: record.MergeForwardAsk, Head: "sha-1", Base: "main", Phase: phase.Reviewing, PullRequest: 42,
+				Why: record.ConflictCheckNotGreen, Covers: record.MergeForwardHold}},
+			{name: "the write-back of the owner's slot", does: deletesIt, payload: record.SuperviseRequest{Op: "slot_credential", Tree: tree,
 				Role: claim.RoleArchitect, Claim: token(claim.RoleArchitect), Generation: 1}},
 			{name: "an ask that covers nothing", payload: record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk,
 				Head: "sha-1", Base: "main", Phase: phase.Reviewing, PullRequest: 42, Why: record.ConflictCheckNotGreen}},
@@ -434,15 +445,15 @@ func TestTheOwnerDoesAStepWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCanno
 	for _, tc := range []struct {
 		name  string
 		block string
-		// otherKept says whether OTHER's rows of the new kinds stand after the block.
+		// otherKept says whether OTHER's rows stand as they were queued after the block.
 		otherKept bool
 	}{
-		{name: "control: the block without its project predicate deletes the other project's rows too", block: unscoped},
-		{name: "the block deletes the rows of the project that rolls back alone", block: scoped, otherKept: true},
+		{name: "control: the block without its project predicate deletes and strips the other project's rows too", block: unscoped},
+		{name: "the block leaves the project that rolls back only rows the release before reads", block: scoped, otherKept: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if !tc.otherKept && unscoped == scoped {
-				t.Fatalf("the block of %q holds no %q to take off: no delete of it names the project that rolls back", ownerDoesAStepSection,
+				t.Fatalf("the block of %s holds no %q to take off: no statement of it names the project that rolls back", ownerDoesAStepExtract,
 					ownerStepsProjectPredicate)
 			}
 			store := emptyStore(t)
@@ -450,9 +461,9 @@ func TestTheOwnerDoesAStepWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCanno
 				t.Fatalf("migrate: %v", err)
 			}
 			type queuedRow struct {
-				project, name string
-				newKind       bool
-				id            int64
+				project string
+				queued
+				id int64
 			}
 			var rows []queuedRow
 			for _, project := range []string{"LEGION", "OTHER"} {
@@ -467,31 +478,61 @@ func TestTheOwnerDoesAStepWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCanno
 						t.Fatalf("insert %s of %s: %v", q.name, project, err)
 					}
 					row.ID = id
-					if refused := refusedBeforeOwnerDoesAStep(t, row); (refused != "") != q.newKind {
-						t.Fatalf("the release before's decode of %s of %s refuses it with %q; the control wants it to refuse the rows of the new kinds alone, "+
-							"or this test cannot see the rows the delete exists for", q.name, project, refused)
+					if refused := refusedBeforeOwnerDoesAStep(t, row); (refused != "") != (q.does != keepsIt) {
+						t.Fatalf("the release before's decode of %s of %s refuses it with %q; the control wants it to refuse the rows of a new kind or field alone, "+
+							"or this test cannot see the rows the statements exist for", q.name, project, refused)
 					}
-					rows = append(rows, queuedRow{project: project, name: q.name, newKind: q.newKind, id: id})
+					rows = append(rows, queuedRow{project: project, queued: q, id: id})
 				}
 			}
 
 			if _, err := store.Pool().Exec(ctx, strings.ReplaceAll(tc.block, "<PROJECT>", "LEGION"), pgx.QueryExecModeSimpleProtocol); err != nil {
-				t.Fatalf("run the delete the section %q gives: %v", ownerDoesAStepSection, err)
+				t.Fatalf("run the statements %s gives: %v", ownerDoesAStepExtract, err)
 			}
 
 			for _, q := range rows {
-				var stands bool
-				if err := store.Pool().QueryRow(ctx, `select exists (select 1 from outbox where id = $1)`, q.id).Scan(&stands); err != nil {
+				rolledBack := q.project == "LEGION" || !tc.otherKept
+				var kind string
+				var payload []byte
+				err := store.Pool().QueryRow(ctx, `select kind, payload from outbox where id = $1`, q.id).Scan(&kind, &payload)
+				if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 					t.Fatalf("read row %d: %v", q.id, err)
 				}
-				kept := !q.newKind || (q.project == "OTHER" && tc.otherKept)
-				switch {
-				case kept && !stands:
-					t.Errorf("the delete deleted %s of %s (row %d), want it kept", q.name, q.project, q.id)
-				case !kept && stands:
-					t.Errorf("the delete left %s of %s (row %d), want it deleted", q.name, q.project, q.id)
+				stands, gone := err == nil, rolledBack && q.does == deletesIt
+				if stands == gone {
+					t.Errorf("after the block %s of %s (row %d) stands: %t, want %t", q.name, q.project, q.id, stands, !gone)
+				}
+				if !stands || gone {
+					continue
+				}
+				row := record.OutboxRow{ID: q.id, Kind: record.OutboxKind(kind), Issue: q.project + "-208", Payload: payload}
+				want := q.payload
+				if rolledBack && q.does == stripsCovers {
+					stripped := q.payload.(record.MergeForwardMessage)
+					stripped.Covers = ""
+					want = stripped
+				}
+				queuedAs, err := record.NewOutboxRow(row.Issue, want, queuedAt)
+				if err != nil {
+					t.Fatalf("queue %+v of %s: %v", want, row.Issue, err)
+				}
+				if !reflect.DeepEqual(mustDecode(t, row), mustDecode(t, queuedAs)) {
+					t.Errorf("after the block %s of %s (row %d) holds %s, want the payload %+v", q.name, q.project, q.id, payload, want)
+				}
+				if refused := refusedBeforeOwnerDoesAStep(t, row); rolledBack && refused != "" {
+					t.Errorf("after the block the release before refuses %s of %s (row %d) with %q, want it read", q.name, q.project, q.id, refused)
 				}
 			}
 		})
 	}
+}
+
+// mustDecode is this release's decode of row, which fails the test where it refuses the row.
+func mustDecode(t *testing.T, row record.OutboxRow) record.OutboxPayload {
+	t.Helper()
+	value, err := record.DecodeOutboxPayload(row)
+	if err != nil {
+		t.Fatalf("this release's decode of row %d: %v", row.ID, err)
+	}
+	return value
 }

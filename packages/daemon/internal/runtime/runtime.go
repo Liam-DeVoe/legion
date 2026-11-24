@@ -865,24 +865,37 @@ func (id GitIdentity) Env() map[string]string {
 // decides it (internal/daemon's ownerActsAs, which lists the owner's acts): a merge forward asked of
 // the owner, which it does as the implementer, a step of the owner's own plan, and the owner's
 // retro of a task whose last implementation step was its own. A runtime is given one in its options
-// (nil by default), and SlotRole, the one function that answers a slot's App role, reads it.
+// (nil by default). Acting is the one ask of it, and SlotRole, the one function that answers a
+// slot's App role, answers from that ask.
 type ActsAs func(ctx context.Context, token claim.Token) (claim.Role, bool, error)
 
-// SlotRole is the role whose App the slot of token holds: the role actsAs gives the token where
-// actsAs is set and gives one, else role, which its caller reads: at a launch, the role of the
-// step the claim is launched for; at a refresh, the role the slot's process was launched as where
-// the slot records that launch for the stored claim's generation or a later one, and otherwise the
-// claim's stored role (the sandbox runtime's slotAppRole, the tmux runtime's paneRole). It is never
-// the slot's name: a keyed agent's slot is named by its agent, and that agent can do a step of
-// another role. Each write of a slot's gh credential asks it, so a re-roled claim's slot holds the
-// App of the role its process was launched as.
-func SlotRole(ctx context.Context, actsAs ActsAs, token claim.Token, role claim.Role) (claim.Role, error) {
+// Acting is the one ask of actsAs for token: the role actsAs gives the token and true, and false
+// where actsAs is nil or gives none. A failed ask is its error, which names the slot whose App role
+// was asked. SlotRole answers from it, and so does a reader that needs only whether actsAs gives
+// the token a role (the sandbox runtime's slotAppChanges).
+func Acting(ctx context.Context, actsAs ActsAs, token claim.Token) (claim.Role, bool, error) {
 	if actsAs == nil {
-		return role, nil
+		return "", false, nil
 	}
 	acting, ok, err := actsAs(ctx, token)
 	if err != nil {
-		return "", fmt.Errorf("the role whose App the slot of %s holds: %w", token, err)
+		return "", false, fmt.Errorf("the role whose App the slot of %s holds: %w", token, err)
+	}
+	return acting, ok, nil
+}
+
+// SlotRole is the role whose App the slot of token holds: the role actsAs gives the token where
+// actsAs is set and gives one (Acting), else role, which its caller reads: at a launch, the role of
+// the step the claim is launched for; at a refresh, the role the slot's process was launched as
+// where the slot records that launch for the stored claim's generation or a later one, and
+// otherwise the claim's stored role (the sandbox runtime's slotAppRole, the tmux runtime's
+// paneRole). It is never the slot's name: a keyed agent's slot is named by its agent, and that
+// agent can do a step of another role. Each write of a slot's gh credential asks it, so a re-roled
+// claim's slot holds the App of the role its process was launched as.
+func SlotRole(ctx context.Context, actsAs ActsAs, token claim.Token, role claim.Role) (claim.Role, error) {
+	acting, ok, err := Acting(ctx, actsAs, token)
+	if err != nil {
+		return "", err
 	}
 	if ok {
 		return acting, nil

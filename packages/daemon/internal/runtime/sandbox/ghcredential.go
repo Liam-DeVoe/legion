@@ -54,11 +54,11 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 
 // refreshGitHubCredentials brings the slot Secrets of every live pod to the current render of the
 // GitHub credential each slot holds — the App of the role runtime.SlotRole answers for it: the
-// role the runtime's ActsAs gives the claim in it (the step's while the architect there does a
-// step of its own or the retro of one, and the implementer while a merge forward asked of it has
-// not ended), else the role its process was launched as, which that launch recorded on the
-// Secret, else the stored claim's role, and its own name's App where no stored claim runs in it
-// (slotAppRole) — so the gh files its container projects (GHConfigDir)
+// role the runtime's ActsAs gives the claim in it (the implementer while a merge forward asked of
+// the architect there has not ended, whatever step it does then, else the step's while it does a
+// step of its own or the retro of one), else the role its process was launched as, which that
+// launch recorded on the Secret, else the stored claim's role, and its own name's App where no
+// stored claim runs in it (slotAppRole) — so the gh files its container projects (GHConfigDir)
 // carry the tokens the daemon holds now: the kubelet rewrites the projection in place once the
 // Secret changes. It walks the pod store for the pods of this project (every launcher slot holds
 // an App's gh bundle, the controller's included; a repository cache's pod names no kind and holds
@@ -116,12 +116,12 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		mints[key] = mint{token: token, ok: err == nil}
 		return token, err == nil
 	}
-	// Each slot holds the App of the role the runtime's ActsAs gives its claim (the step's, while
-	// the architect does a step of its own or the retro of one, and the implementer while a merge
-	// forward asked of it has not ended), else of the role its process was launched as, which that
-	// launch recorded on the slot's Secret, else of the step its claim does now, read from the
-	// stored claims once a tick (slotAppRole); the role is judged on the Secret each write reads
-	// (refreshGitHubCredential).
+	// Each slot holds the App of the role the runtime's ActsAs gives its claim (the implementer
+	// while a merge forward asked of the architect has not ended, whatever step it does then, else
+	// the step's while it does a step of its own or the retro of one), else of the role its process
+	// was launched as, which that launch recorded on the slot's Secret, else of the step its claim
+	// does now, read from the stored claims once a tick (slotAppRole); the role is judged on the
+	// Secret each write reads (refreshGitHubCredential).
 	// A tick that cannot read the stored claims refreshes no slot of an issue pod, each of which
 	// keeps its last tokens until the next tick, rather than mint a slot for its name.
 	held, heldErr := r.slotHolders(ctx)
@@ -221,15 +221,16 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 //
 // That role is judged on the Secret the write reads, under its resourceVersion (slotAppRole):
 // the role the runtime's ActsAs gives the claim in the slot where it gives one (runtime.SlotRole:
-// the step's role while the architect does a step of its own or the retro of one, and the
-// implementer while a merge forward asked of it has not ended), else the role the slot's process
-// was launched as, which the launch's own write of the Secret recorded (launchedRoleAnnotation),
-// and, on a Secret no launch into this pod wrote, the stored role the tick read of the claim in
-// the slot, held. A launch of a re-roled claim into the pod writes the slot for its new role's App
-// at once and waits for that token (writeLaunchCredential), so a refresh that read the stored
-// claims before the re-role must not write the old role's App over it: the launch's write lands
-// before this one reads the Secret, and records the role, or between its read and its write, and
-// the write is refused as a conflict and judged again on a fresh read (writeSlotCredential).
+// the implementer while a merge forward asked of the architect has not ended, whatever step it
+// does then, else the step's role while it does a step of its own or the retro of one), else the
+// role the slot's process was launched as, which the launch's own write of the Secret recorded
+// (launchedRoleAnnotation), and, on a Secret no launch into this pod wrote, the stored role the
+// tick read of the claim in the slot, held. A launch of a re-roled claim into the pod writes the
+// slot for its new role's App at once and waits for that token (writeLaunchCredential), so a
+// refresh that read the stored claims before the re-role must not write the old role's App over
+// it: the launch's write lands before this one reads the Secret, and records the role, or between
+// its read and its write, and the write is refused as a conflict and judged again on a fresh read
+// (writeSlotCredential).
 //
 // A refresh writes nothing into a slot while a launch into the pod is in flight in it, from just
 // before the launch writes the slot to the end of its start (markSlotLaunch, refreshUpdate): the
@@ -674,38 +675,31 @@ func (r *Runtime) writeLaunchCredential(ctx context.Context, pod *corev1.Pod, sp
 }
 
 // slotAppChanges is whether a launch of spec into pod, a pod it keeps, would start its claim's slot
-// as another App than the slot's gh files may hold: the App of the role the launch's process runs
-// as (runtime.SlotRole) against that of the slot's own name, the role a slot of a pod the release
-// before built ran as, and that of the role the slot's last launch recorded on its Secret
-// (launchedRoleAnnotation), where it records one. A role that acts as no App the deployment or the
-// plan of the claim's issue defines is another App (appauth.RoleApps.Of). It reads the slot's
-// Secret and writes nothing; relaunch asks it only of a launcher that does not wait for a start's
-// credential.
+// as another App than the slot's gh files may hold. It reads the slot's Secret and writes nothing;
+// relaunch asks it only of a launcher that does not wait for a start's credential.
 //
-// It asks the runtime's ActsAs once, for the claim, as runtime.SlotRole does, and judges each role
-// by that one answer (acting): an ActsAs that gives the claim a role gives it for every role read
-// here. A failed ask, a failed read of a role's App (the plan of the claim's issue, which
+// It asks the runtime's ActsAs once, for the claim (runtime.Acting, the ask runtime.SlotRole
+// answers from). A claim ActsAs gives a role answers false, with no other read: SlotRole judges
+// every write of its slot for that role, whatever role the claim is launched for and whatever
+// role the slot's Secret records, so no role of the slot names another App for it. For any other
+// claim, the App of the role the launch's process runs as, spec's, is compared with that of the
+// slot's own name, the role a slot of a pod the release before built ran as, and that of the role
+// the slot's last launch recorded on its Secret (launchedRoleAnnotation), where it records one
+// (appauth.RoleApps.Of). A role that acts as no App the deployment or the plan of the claim's
+// issue defines is another App.
+//
+// A failed ask, a failed read of a role's App (the plan of the claim's issue, which
 // appauth.RoleApps.Of reads for a role that is none of Legion's) or a failed read of the Secret is
 // an error the launch retries; only a role that acts as no App (appauth.ErrRoleNotDefined) is read
 // as another App. A failed read is never a slot read as starting another App: that answer ends the
 // launch for the pod's update round (runtime.AwaitsPodUpdate), which a read that failed for a
 // moment must not cost.
 func (r *Runtime) slotAppChanges(ctx context.Context, pod *corev1.Pod, spec runtime.SpawnSpec) (bool, error) {
-	var acting claim.Role
-	acts := false
-	if r.actsAs != nil {
-		var err error
-		if acting, acts, err = r.actsAs(ctx, spec.Claim); err != nil {
-			return false, fmt.Errorf("the role whose App the slot of %s holds: %w", spec.Claim, err)
-		}
+	_, acts, err := runtime.Acting(ctx, r.actsAs, spec.Claim)
+	if err != nil || acts {
+		return false, err
 	}
-	appOf := func(role claim.Role) (appauth.AppRole, error) {
-		if acts {
-			role = acting
-		}
-		return r.roleApps.Of(ctx, spec.Issue, role)
-	}
-	app, err := appOf(spec.Role)
+	app, err := r.roleApps.Of(ctx, spec.Issue, spec.Role)
 	if err != nil {
 		return false, err
 	}
@@ -719,7 +713,7 @@ func (r *Runtime) slotAppChanges(ctx context.Context, pod *corev1.Pod, spec runt
 		held = append(held, launched)
 	}
 	for _, role := range held {
-		was, err := appOf(role)
+		was, err := r.roleApps.Of(ctx, spec.Issue, role)
 		if errors.Is(err, appauth.ErrRoleNotDefined) {
 			return true, nil
 		}
