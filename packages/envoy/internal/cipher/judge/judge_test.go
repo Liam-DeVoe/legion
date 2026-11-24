@@ -440,18 +440,23 @@ func TestTheModelsWordsAreClampedAndFiltered(t *testing.T) {
 // handed over while the judge was reading, or the policy moved under it, so ApplyJudgeDecision
 // answers a refusal and writes nothing. The verdict is still worth keeping, so it is written on its
 // own, saying the grant did not land (D10, D11), and that row hands a request still pending to its
-// person. The model's grant stays in the row's one call; the row's verdict says what became of the
-// request: not pending where it was decided or expired first, handed to the person where only the
-// judge's hold had ended.
+// person. The model's grant stays in the row's one call; the row's verdict is what the row's own
+// transaction read the request to be: not pending where it was decided or expired first, handed to
+// the person where only the judge's hold had ended.
 func TestAGrantTheRequestMachineRefusedStillRecordsItsVerdict(t *testing.T) {
-	for refusal, outcome := range map[error]string{
-		requests.ErrTerminal:       requests.JudgedNotPending,
-		requests.ErrExpired:        requests.JudgedNotPending,
-		requests.ErrJudgeHoldEnded: requests.JudgedHandedOver,
+	for _, c := range []struct {
+		refusal        error
+		state, outcome string
+	}{
+		{requests.ErrTerminal, "denied", requests.JudgedNotPending},
+		{requests.ErrExpired, "expired", requests.JudgedNotPending},
+		{requests.ErrJudgeHoldEnded, "pending", requests.JudgedHandedOver},
 	} {
+		refusal, outcome := c.refusal, c.outcome
 		t.Run(refusal.Error(), func(t *testing.T) {
 			dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 			machine.applyErr = refusal
+			machine.onApply = func() { machine.state = c.state }
 			New(t.Context(), testOptions(t, dispatch, model, machine)).consider(t.Context(), pending())
 
 			applied, logged := machine.rows()
@@ -494,6 +499,13 @@ func TestALostRaceRaisesNoErrorLineAndEveryOtherRefusalDoes(t *testing.T) {
 		// The target check an approval makes again (requests.checkTarget): the profiles file
 		// rolled while the model was answering, and the target is no longer in the profile.
 		{fmt.Errorf("%w: APP_KEY: the target ada/site is outside the profile, which names the account ada", requests.ErrTargetRefused), false},
+		// The key's judge tag, which the decision reads live (record.MayJudge): its owner lowered
+		// it below the request's lifetime, or took it off, while the model was answering.
+		{fmt.Errorf("judge record record-1: %w", record.JudgeTagRefusal{Name: testSecret, Tagged: true, Bound: 300, Lifetime: 600}), false},
+		{fmt.Errorf("judge record record-1: %w", record.JudgeTagRefusal{Name: testSecret}), false},
+		// A record the judge may never decide whatever its tags say (no signed lifetime) is a
+		// judge that reached a request it should not have, though it too is ErrNotJudgeable.
+		{fmt.Errorf("judge record record-1: %w: the record asks for no lifetime", record.ErrNotJudgeable), true},
 		{errors.New("the grant could not be written"), true},
 	} {
 		t.Run(c.refusal.Error(), func(t *testing.T) {

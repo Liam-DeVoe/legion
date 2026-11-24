@@ -256,8 +256,11 @@ identify the consumer's existing broker names and account; they do not rename th
 operator's logins. `bash packages/envoy/scripts/airlock-check.test.sh` calls the k7
 fixture and Google consumer boundary directly under fakes. It checks required inputs,
 fake broker rules, store names and consumer results without starting a stack, k8a's
-broker start on its own, and k6's az wrapper with an az shim first on PATH (a shim that
-looks az up on PATH again must reach the real az, not the wrapper).
+broker start on its own, k6's az wrapper with an az shim first on PATH (a shim that
+looks az up on PATH again must reach the real az, not the wrapper), and `approve_record`
+against a `python3` stand-in of the broker's approval page: it must post back every
+`printed` and every `profile_digest` field of a page that prints two records, and the same
+helper without either is refused 403.
 
 The programs the checks drive are files, not text a run writes out. The three Go
 clients are subcommands of `cmd/dev-proxy-stands`, the binary `dev-broker.sh`
@@ -742,6 +745,12 @@ exits 1 when any was not caught, else 3 when any was not run or none ran, else 0
 model mutants need `lake` and it is not installed. `airlock-check.sh k15` passes it
 `BROKER_TEST_DATABASE_URL`, else `DEV_BROKER_POSTGRES_URL`. No patch ever touches this
 repository.
+
+`bash packages/envoy/scripts/airlock-mutants-apply.test.sh` checks that every mutant patch of
+those four directories still applies to the tree (`git apply --check -p1`, which writes
+nothing), so a change to the code a patch mutates cannot leave the patch stale unseen. It needs
+no database, model or Lean, and envoy-go-checks runs it. It exits 0 when every patch applies, 1
+naming each one that does not, and 3 when it found no patch.
 
 ## listener-deploy-probe.sh
 

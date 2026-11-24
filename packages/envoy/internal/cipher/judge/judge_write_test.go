@@ -110,18 +110,22 @@ func TestAnApprovalWhoseAnswerWasLostWritesNoSecondRow(t *testing.T) {
 }
 
 // TestTheVerdictLineIsTheVerdictTheRowHolds: a row LogJudged writes takes its verdict from the
-// request's state in its own transaction, so a request its person decided after the run's last
-// read and before that row is not pending, although the run guessed it handed over. The run's
-// verdict line says what the row says, never the run's guess.
+// request's state in its own transaction, and the run gives it no verdict of its own to write. A
+// request its person decided after the run's last read is not pending by the time of that row, so
+// the row says not pending, and the run's verdict line says what the row says.
 func TestTheVerdictLineIsTheVerdictTheRowHolds(t *testing.T) {
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
-	machine.verdict = requests.JudgedNotPending
+	machine.state = "denied"
 	runner := New(t.Context(), testOptions(t, dispatch, model, machine))
 	lines := capturedLog(t, func() {
 		runner.write(t.Context(), pending(), verdictRow{asked: true, err: errors.New("the model did not answer")})
 	})
-	if _, logged := machine.rows(); len(logged) != 1 || logged[0]["verdict"] != requests.JudgedHandedOver {
-		t.Fatalf("the run gave LogJudged %v; want one row, guessed %q", logged, requests.JudgedHandedOver)
+	_, logged := machine.rows()
+	if len(logged) != 1 || logged[0]["verdict"] != requests.JudgedNotPending {
+		t.Fatalf("the rows LogJudged wrote are %v; want one, verdict %q", logged, requests.JudgedNotPending)
+	}
+	if given := machine.givenVerdicts(); len(given) != 0 {
+		t.Errorf("the run gave the machine the verdicts %q; want none, since the row's own transaction reads the outcome", given)
 	}
 	if line := lineWith(lines, "wrote a verdict"); !strings.Contains(line, `verdict="`+requests.JudgedNotPending+`"`) {
 		t.Errorf("the verdict line is %q; want it to say %q, the verdict the row holds", line, requests.JudgedNotPending)

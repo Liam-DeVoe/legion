@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -464,7 +465,7 @@ type fakeRequests struct {
 	projectReasons []string
 	projectTakes   time.Duration
 	// state and stateErr are what JudgeRequestState answers, and stateAsked how many
-	// times a run asked it.
+	// times a run asked it. LogJudged reads state too, for the verdict of the row it writes.
 	state      string
 	stateErr   error
 	stateAsked int
@@ -478,12 +479,9 @@ type fakeRequests struct {
 	writeTakes, applyTakes time.Duration
 	// commitTakes is how long ApplyJudgeDecision's transaction takes before it commits, ended
 	// with the context's own error when the context ends first, as a stopping broker's does;
-	// wrote is what LogJudged answers it did, JudgedWritten when empty, and verdict the verdict
-	// it answers it wrote, as the machine reads it off the request's state: applied unknown where
-	// wrote says so, else verdict, else the verdict the caller gave.
+	// wrote is what LogJudged answers it did, JudgedWritten when empty.
 	commitTakes time.Duration
 	wrote       requests.JudgedWrite
-	verdict     string
 	// onApply, when set, runs as ApplyJudgeDecision ends, before it answers, so a test can
 	// stop the broker while an approval is in flight.
 	onApply func()
@@ -491,10 +489,37 @@ type fakeRequests struct {
 	// (JudgePolicy and JudgeProject), the method's name and whether its context was one
 	// requests.JudgeDispatch made.
 	bounded []boundedCall
-	// applied, logged and denied are the detail objects of each write, in order, and refusals
-	// the reason each denial gave its agent.
+	// applied, logged and denied are the rows of each write, in order (written), and refusals
+	// the reason each denial gave its agent; given is every verdict the run itself gave a
+	// write, which the machine never takes.
 	applied, logged, denied []map[string]any
 	refusals                []string
+	given                   []string
+}
+
+// written is the row a write of this machine keeps: what the run gave it, with the verdict the
+// row's own transaction sets, as the machine's do (decider.judgedRow, LogJudged), and none where
+// that transaction wrote nothing. A verdict the run gave is recorded in given and not kept.
+func (f *fakeRequests) written(judged map[string]any, verdict string) map[string]any {
+	row := maps.Clone(judged)
+	if row == nil {
+		row = map[string]any{}
+	}
+	if given, ok := row["verdict"]; ok {
+		f.given = append(f.given, fmt.Sprint(given))
+		delete(row, "verdict")
+	}
+	if verdict != "" {
+		row["verdict"] = verdict
+	}
+	return row
+}
+
+// givenVerdicts is every verdict the run gave a write of this machine.
+func (f *fakeRequests) givenVerdicts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.given...)
 }
 
 func newRequests() *fakeRequests {
@@ -608,7 +633,11 @@ func (f *fakeRequests) ApplyJudgeDecision(ctx context.Context, recordID, modelID
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.applied = append(f.applied, judged)
+	verdict := requests.JudgedGranted
+	if f.applyErr != nil {
+		verdict = "" // the transaction rolled back and wrote nothing
+	}
+	f.applied = append(f.applied, f.written(judged, verdict))
 	if f.onApply != nil {
 		f.onApply()
 	}
@@ -619,7 +648,9 @@ func (f *fakeRequests) ApplyJudgeDecision(ctx context.Context, recordID, modelID
 }
 
 // LogJudged writes the row, or answers what wrote answers in its place: JudgedAlreadyApplied
-// writes nothing, as the machine does when the approval's own row is there.
+// writes nothing, as the machine does when the approval's own row is there. The row's verdict is
+// what the machine's is: applied unknown where wrote says so, else handed to the person for a
+// request still pending (state), else not pending.
 func (f *fakeRequests) LogJudged(ctx context.Context, _, _ string, judged map[string]any) (requests.JudgedLog, error) {
 	if err := f.transact(ctx); err != nil {
 		return requests.JudgedLog{}, err
@@ -630,12 +661,14 @@ func (f *fakeRequests) LogJudged(ctx context.Context, _, _ string, judged map[st
 	if wrote == requests.JudgedAlreadyApplied {
 		return requests.JudgedLog{Write: wrote}, f.logErr
 	}
-	f.logged = append(f.logged, judged)
-	given, _ := judged["verdict"].(string)
-	verdict := cmp.Or(f.verdict, given)
-	if wrote == requests.JudgedAppliedUnknown {
+	verdict := requests.JudgedNotPending
+	switch {
+	case wrote == requests.JudgedAppliedUnknown:
 		verdict = requests.AppliedUnknown
+	case f.state == "pending":
+		verdict = requests.JudgedHandedOver
 	}
+	f.logged = append(f.logged, f.written(judged, verdict))
 	return requests.JudgedLog{Write: wrote, Verdict: verdict}, f.logErr
 }
 
@@ -645,7 +678,11 @@ func (f *fakeRequests) DenyJudged(ctx context.Context, recordID, modelID string,
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.denied = append(f.denied, judged)
+	verdict := requests.JudgedRefused
+	if f.denyErr != nil {
+		verdict = "" // the transaction rolled back and wrote nothing
+	}
+	f.denied = append(f.denied, f.written(judged, verdict))
 	f.refusals = append(f.refusals, why)
 	if f.denyErr != nil {
 		return requests.Decision{}, f.denyErr

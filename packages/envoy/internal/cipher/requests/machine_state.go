@@ -2086,14 +2086,22 @@ func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judge
 		}
 	}
 	// The enrollment is the one the request hangs off now, never the one the record froze, as
-	// every other read of this package is (the package comment's moved session). No lock and no
-	// liveness test: the row is written for the trail, and a verdict on a request whose box has
-	// gone is as worth keeping as one on a live request.
+	// every other read of this package is (the package comment's moved session). No liveness
+	// test: the row is written for the trail, and a verdict on a request whose box has gone is as
+	// worth keeping as one on a live request. The request's row is taken for share, so a cancel or
+	// a decision already writing it is waited for and the verdict below is the state it left: the
+	// hand-over's update further down would wait for that write anyway, after the state was read.
+	// A row whose approval could not be read takes no lock, since that approval may still hold the
+	// request's row and the row must be written all the same; its verdict reads no state.
+	lock := " for share of req"
+	if wrote == JudgedAppliedUnknown {
+		lock = ""
+	}
 	var requestID, state string
 	var enr enrollmentRow
 	if err := tx.QueryRow(ctx, `select req.id, req.state, e.id, e.kind, e.operator, c.service, e.runtime_id, coalesce(e.session_id,'')
 		from requests req join enrollments e on e.id = req.enrollment_id
-		left join launcher_credentials c on c.id = e.launcher_credential_id where req.record_id=$1`, recordID).
+		left join launcher_credentials c on c.id = e.launcher_credential_id where req.record_id=$1`+lock, recordID).
 		Scan(&requestID, &state, &enr.ID, &enr.Kind, &enr.Operator, &enr.Service, &enr.RuntimeID, &enr.SessionID); err != nil {
 		return JudgedLog{}, err
 	}

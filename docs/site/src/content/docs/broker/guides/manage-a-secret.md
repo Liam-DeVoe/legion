@@ -264,7 +264,9 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   anything is written, naming the limit and, for a character, the first one that fails. The judge
   shows it to
   its model with each request, and anyone who can reach the broker can read it
-  (`GET /v1/settings`), so write nothing in it you would not show them. `retag --guidance none`
+  (`GET /v1/settings`), so write nothing in it you would not show them. A profile is decided on its
+  source's guidance, so the judge shows one guidance for every profile made from that source; to
+  give them different rules, name each profile in it with its own. `retag --guidance none`
   removes it; writing it ends no grant.
 - **`--project`** is optional. It names the one Dispatch project the secret belongs to, by its
   key as Dispatch writes it: `--project PRIV`. A secret of a **private** project goes only to a
@@ -606,8 +608,9 @@ max_grant: -
 default_grant: -
 created: 2026-10-06T20:31:08Z
 last_changed: 2026-10-06T20:31:08Z
-decides: nobody, for a session its tags allow; otherwise a person, on the broker page
+judge: -
 guidance: -
+decides: nobody, for a session its tags allow; otherwise a person, on the broker page
 version: 8ae2ea20-8e93-4f1a-b3d1-2e5396ecef72 AWSCURRENT
 ```
 

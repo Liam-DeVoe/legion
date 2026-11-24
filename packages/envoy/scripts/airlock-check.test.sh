@@ -318,17 +318,20 @@ check "$passed"
 
 # --- approve_record, read out of airlock-check.sh and run on its own against a stand-in of the
 # broker's approval page. The stand-in signs the approver in as the stack's issuer does (a
-# redirect, a sign-in cookie, a session cookie), prints a form with two profile_digest fields, as
-# the broker prints one for each profile a request names, and holds the POST to the broker's own
-# rule for them (approval.profilesMoved): every printed fingerprint must come back as printed, or
-# the answer is 403 "Profile changed" and nothing is decided, else 303. The control runs the same
-# helper with its profile_digest fields taken out, which the stand-in must answer 403.
+# redirect, a sign-in cookie, a session cookie), prints a form for two records with two printed
+# fields and two profile_digest fields on one line, as the broker's record.html prints them, and
+# holds the POST to the broker's own rules for them: every printed record must come back, or the
+# page token's MAC is refused 403 (approval.pageMAC), and every fingerprint must come back, or the
+# answer is 403 "Profile changed" (approval.profilesMoved); nothing is decided either way, else
+# 303. The controls run the same helper with its profile_digest fields taken out, and with its
+# printed fields taken out, each of which the stand-in must answer 403.
 approve_dir="$work/approve"
 mkdir -p "$approve_dir"
 cat >"$approve_dir/stand.py" <<'PY'
 import http.server, sys, urllib.parse
 REC = "ab" * 32
-DIGESTS = [REC + " AIRLOCK_AZURE_LOGIN " + "1f" * 32, REC + " AIRLOCK_OTHER " + "2e" * 32]
+PRINTED = [REC, "cd" * 32]
+DIGESTS = [REC + " AIRLOCK_AZURE_LOGIN " + "1f" * 32, PRINTED[1] + " AIRLOCK_OTHER " + "2e" * 32]
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def send(self, code, headers=(), body=b""):
@@ -345,7 +348,7 @@ class H(http.server.BaseHTTPRequestHandler):
         if self.path == "/callback" and "__Host-broker-signin=i" in cookie:
             return self.send(302, [("Location", base + "/approve/" + REC), ("Set-Cookie", "__Host-broker-session=s; Secure")])
         if self.path == "/approve/" + REC:
-            fields = '<input type="hidden" name="printed" value="%s">' % REC
+            fields = "".join('<input type="hidden" name="printed" value="%s">' % p for p in PRINTED)
             fields += "".join('<input type="hidden" name="profile_digest" value="%s">' % d for d in DIGESTS)
             fields += '<input type="hidden" name="token" value="tok"><input type="hidden" name="expires" value="9">'
             fields += '<input type="hidden" name="record" value="%s">' % REC
@@ -353,16 +356,20 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send(404)
     def do_POST(self):
         form = urllib.parse.parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode(), keep_blank_values=True)
-        ok = ("__Host-broker-session=s" in self.headers.get("Cookie", "") and self.headers.get("Origin")
-              and form.get("decision") == ["approve"] and form.get("record") == [REC] and form.get("token") == ["tok"]
-              and sorted(form.get("profile_digest", [])) == sorted(DIGESTS))
-        self.send(303 if ok else 403, body=b"" if ok else b"Profile changed")
+        signed_in = ("__Host-broker-session=s" in self.headers.get("Cookie", "") and self.headers.get("Origin")
+                     and form.get("decision") == ["approve"] and form.get("record") == [REC] and form.get("token") == ["tok"])
+        if not signed_in or sorted(form.get("printed", [])) != sorted(PRINTED):
+            return self.send(403, body=b"Page token invalid")
+        if sorted(form.get("profile_digest", [])) != sorted(DIGESTS):
+            return self.send(403, body=b"Profile changed")
+        self.send(303)
 s = http.server.HTTPServer(("127.0.0.1", 0), H)
 print(s.server_port, flush=True)
 s.serve_forever()
 PY
 python3 "$approve_dir/stand.py" >"$approve_dir/port" &
 approve_stand=$!
+trap 'kill "$approve_stand" 2>/dev/null; rm -rf "$work"' EXIT
 for _ in $(seq 1 50); do [[ -s "$approve_dir/port" ]] && break; sleep 0.1; done
 definition="$(sed -n '/^approve_record() {/,/^}/p' "$script_dir/airlock-check.sh")"
 [[ -n "$definition" ]] || { printf 'FAIL: airlock-check.sh defines no approve_record()\n'; exit 1; }
@@ -373,13 +380,19 @@ approve_once() { # <the helper's definition> <work dir>
 }
 status=0
 output="$(approve_once "$definition" "$approve_dir/with" 2>&1)" || status=$?
-label="approve_record posts back each profile_digest the page printed, and the approval is decided (303)"
+label="approve_record posts back each printed record and each profile_digest the page printed, and the approval is decided (303)"
 check test "$output" = 303
-# shellcheck disable=SC2016 # the pattern is the helper's own text, with its "$digest" unexpanded
-without="${definition//'digests+=(--data-urlencode "profile_digest=$digest")'/:}"
+# shellcheck disable=SC2016 # the pattern is the helper's own text, with its "$value" unexpanded
+without="${definition//'digests+=(--data-urlencode "profile_digest=$value")'/:}"
 [[ "$without" != "$definition" ]] || { printf 'FAIL: the control could not take profile_digest out of approve_record\n'; exit 1; }
 output="$(approve_once "$without" "$approve_dir/without" 2>&1)" || status=$?
 label="control: the same helper without its profile_digest fields is refused 403 Profile changed"
+check test "$output" = 403
+# shellcheck disable=SC2016 # the pattern is the helper's own text, with its "$value" unexpanded
+unprinted="${definition//'printed+=(--data-urlencode "printed=$value")'/:}"
+[[ "$unprinted" != "$definition" ]] || { printf 'FAIL: the control could not take printed out of approve_record\n'; exit 1; }
+output="$(approve_once "$unprinted" "$approve_dir/unprinted" 2>&1)" || status=$?
+label="control: the same helper without its printed fields is refused 403, its page token's records unnamed"
 check test "$output" = 403
 kill "$approve_stand" 2>/dev/null || true
 

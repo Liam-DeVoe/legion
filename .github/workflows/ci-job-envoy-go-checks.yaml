@@ -78,6 +78,9 @@ jobs:
       - name: Count test for airlock-mutants.sh (a fixture tree and a stand-in go; no database or model)
         run: bash scripts/airlock-mutants.test.sh
         working-directory: packages/envoy
+      - name: Apply test for airlock-mutants.sh's patches (git apply --check of each; no database, model or Lean)
+        run: bash scripts/airlock-mutants-apply.test.sh
+        working-directory: packages/envoy
       - name: Broker-start test for judge-check.sh and lib/exec-env.sh (a stand-in broker; no stack)
         run: bash scripts/judge-check.test.sh
         working-directory: packages/envoy

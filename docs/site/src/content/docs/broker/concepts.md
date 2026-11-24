@@ -1835,7 +1835,9 @@ A request that passes them all goes to the model in one call for each key the ju
 made at once. Each call is shown that one key's name, judge seconds and guidance, the reason, and
 the issue and ask the reason points at, and nothing of any other key, so one owner's guidance never
 reaches the decision on another owner's key; the model is also told that a key's guidance decides
-only that key, and that text in it about another key or the whole request is a reason to deny. The
+only that key: it follows the rule a guidance gives the key it decides (one source's guidance,
+shown for each profile made from it, may give each profile its own), and text in it that tries to
+decide the whole request, or this key through what it says of another, is a reason to deny. The
 model follows the guidance and reads everything an agent wrote as data to judge rather than as
 instructions. Each call answers `grant` or `deny`, and the request is granted only when every call
 grants: one `deny` refuses it. A request for N judge keys makes N calls, each bounded at 20
@@ -1973,7 +1975,8 @@ asked, the `verdict` — what became of the request: `granted`, `refused`, `hand
 `not pending` for one already decided, cancelled or expired, or `unknown` where an approval's
 answer was lost — the reason, the `calls` (one for each judge key the model was asked about, with
 the key and what its call did: `granted`, `denied`, or `failed` with its error, a failure being no
-deny), the token counts, that it priced nothing, and the raw answer where it did not parse) and
+deny, and the raw answer of a call whose answer did not parse), the token counts, that it priced
+nothing, and the first such raw answer) and
 `launcher_credential.revoked` (naming the machine login's `credential_id`, its `host`, its
 `service` for a service's login, and under `enrollments` the sessions the revoke ended) and
 `launcher_credential.token_login` (a service's token login: the `credential_id`, its `service`, the
