@@ -1,6 +1,6 @@
 import { expect, type Mock, spyOn, test } from "bun:test";
 import { hashKey, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: the presses that end a title edit go inside one act, so React commits what they change after them as a browser does; user-event commits inside each event
+// biome-ignore lint/style/noRestrictedImports: the presses that end a title edit go inside one act, so React commits what they change after them as a browser does; user-event commits inside each event; and a key that ends an IME composition is marked as the input method's, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -261,6 +261,34 @@ test("Enter and Escape that end an IME composition in the title's editor save no
     await pressAsBrowser(() => fireEvent.keyDown(editor, { key: "Enter" }));
     await afterFrameAndTasks();
     await expectNextKeyEditsNoTitle(user, patches, "Renamed");
+  } finally {
+    unmount();
+  }
+});
+
+// Safari sends the Escape that ends an input method's composition after the composition's end,
+// unmarked - `isComposing` false - with keyCode 229 (WebKit bug 165004): that Escape cancels what
+// the reader was composing and is the composition's, so it discards neither the message route nor
+// the parent being typed, and each editor stays open on its draft. A plain Escape after it
+// discards the draft and closes the editor.
+test("an Escape that ends an IME composition in Safari, at keyCode 229, keeps the route's and the parent's editors open on their drafts", async () => {
+  const { unmount, user } = header();
+  try {
+    for (const [opener, box, draft] of [
+      ["Messages default to no route", "Message route", "role:reviewer"],
+      ["None, set parent issue", "Parent", "CORE-2"],
+    ] as const) {
+      await user.click(await screen.findByRole("button", { name: opener }));
+      const editor = screen.getByRole("textbox", { name: box });
+      await user.type(editor, draft);
+      // user-event has no form for this: it cannot mark a key as an IME composition.
+      fireEvent.keyDown(editor, { isComposing: false, key: "Escape", keyCode: 229 });
+      expect(screen.queryByRole("textbox", { name: box }), `${box} at keyCode 229`).toBe(editor);
+      expect(editor, `${box} at keyCode 229`).toHaveValue(draft);
+
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("textbox", { name: box }), box).not.toBeInTheDocument();
+    }
   } finally {
     unmount();
   }

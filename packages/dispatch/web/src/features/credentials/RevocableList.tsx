@@ -44,7 +44,8 @@ export interface RevocableColumn<Row> {
  * revoke was of (`rowName`), and it goes once that row leaves the list - revoked elsewhere, or
  * expired - rather than stand under rows it was never about. Each section hands over its own
  * query, columns and revoke call, and `confirm` when a revoke asks first; the list owns the one
- * revoke in flight: every Revoke button is held while it is pending (`heldPress`), and the submit
+ * revoke in flight: every Revoke button is held while it is pending (`heldPress`), never disabled,
+ * so the pressed Revoke keeps the focus and a press of any Revoke does nothing, and the submit
  * guard drops a second press that lands before that re-render (a same-tick double click).
  * `onRevoked` runs once a revoke succeeds, for the section to refresh what it changed. A section
  * may also list rows the broker lets nobody revoke: `unrevocable` names why for such a row, which

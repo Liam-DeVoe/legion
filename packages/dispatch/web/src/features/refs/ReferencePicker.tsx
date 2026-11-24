@@ -4,6 +4,7 @@ import { type KeyboardEvent, type ReactNode, useState } from "react";
 import { api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import { SearchBox } from "../../components/SearchBox";
+import { inputMethodKey } from "../../lib/input-method";
 import {
   backdrop40,
   card,
@@ -69,9 +70,9 @@ export function ReferencePicker({ issueKey, onClose, onSelect }: ReferencePicker
               label="Filter issues"
               onChange={setFilter}
               onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => {
-                // An Enter that ends or moves an input method's composition is the composition's:
-                // it picks nothing.
-                if (event.key !== "Enter" || event.nativeEvent.isComposing) {
+                // An Enter that ends or moves an input method's composition is the composition's
+                // (`inputMethodKey`): it picks nothing.
+                if (event.key !== "Enter" || inputMethodKey(event.nativeEvent)) {
                   return;
                 }
                 // The filter sits inside the composer's <form>; without this the implicit

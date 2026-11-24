@@ -2495,6 +2495,30 @@ test("the assignee options list Unassigned first, then the logins, and detail th
   }
 });
 
+// The Filter panel counts each value under every filter that is on but its control's own, and
+// the typed text is no filter there, as on `main`: text that hides the reader's own question
+// leaves it counted under their name, so the counts read what the filters keep, whatever is typed.
+test("text typed that hides a row leaves that row counted in the Filter panel", async () => {
+  const user = userEvent.setup();
+  const rows = filterRows();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const listUsers = mockPeople();
+  const { unmount } = renderInbox("/?assignee=everyone");
+  try {
+    await screen.findByText("Bob's question?");
+    await user.type(screen.getByRole("searchbox", { name: "Search asks" }), "Bob");
+    await waitFor(() => expect(rowIds()).toEqual(["ask-bob"]));
+    await openAssignee(user);
+    expect(await assigneeOptionTexts()).toEqual(["Unassigned0", "aliceyou · 1", "bob1"]);
+  } finally {
+    unmount();
+    listUsers.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
 test("a failed people read says so and leaves the assignee filter working from the address", async () => {
   const user = userEvent.setup();
   const rows = filterRows();

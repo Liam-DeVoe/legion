@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-// biome-ignore lint/style/noRestrictedImports: the outside press below is a pointerdown with no release, which user-event has no form for.
+// biome-ignore lint/style/noRestrictedImports: the outside press below is a pointerdown with no release, and the Escape that ends an IME composition is a key marked as the input method's; user-event has no form for either.
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useRef, useState } from "react";
@@ -327,6 +327,30 @@ test("Escape in a panel a key opened with nothing focused leaves the focus on th
     await user.tab();
     expect(screen.queryByRole("menu", { name: "Panel" })).toBeNull();
     expect(open).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+// Safari sends the Escape that ends an input method's composition after the composition's end,
+// unmarked - `isComposing` false - with keyCode 229 (WebKit bug 165004): that Escape cancels what
+// the reader was composing and is the input method's, so the panel stays open and its host is
+// told of no dismissal. A plain Escape after it closes the panel.
+test("an Escape that ends an IME composition in Safari, at keyCode 229, leaves the panel open", async () => {
+  const user = userEvent.setup();
+  const dismissals: PanelDismissal[] = [];
+  const view = render(<DismissedPanel dismissals={dismissals} />);
+  try {
+    await user.click(screen.getByRole("button", { name: "Open" }));
+    const inside = screen.getByRole("button", { name: "Inside" });
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(inside, { isComposing: false, key: "Escape", keyCode: 229 });
+    expect(screen.queryByRole("dialog", { name: "Panel" }), "Escape at keyCode 229").not.toBeNull();
+    expect(dismissals).toEqual([]);
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Panel" })).toBeNull();
+    expect(dismissals).toEqual(["escape"]);
   } finally {
     view.unmount();
   }

@@ -1,7 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 // fireEvent also gives one row's press below a click with no pointer press before it, which
 // user-event has no form for either.
-// biome-ignore lint/style/noRestrictedImports: the outside-press sites below are a pointerdown with no release, which user-event has no form for.
+// biome-ignore lint/style/noRestrictedImports: the outside-press sites below are a pointerdown with no release, and the keys that end or move an IME composition are keys marked as the input method's; user-event has no form for either.
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type KeyboardEvent as ReactKeyboardEvent, useState } from "react";
@@ -533,6 +533,32 @@ test("Enter, Escape and Tab that end or move an IME composition leave a single p
     expect(screen.getByTestId("handed").textContent).toBe("");
 
     // The same keys with no composition are the reader's: Enter picks the active row.
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(screen.getByTestId("handed").textContent).toBe("docs");
+  } finally {
+    view.unmount();
+  }
+});
+
+// Safari sends the key that ends an input method's composition after the composition's end,
+// unmarked - `isComposing` false - with keyCode 229 (WebKit bug 165004): that Enter, Escape or Tab
+// is the input method's as well, and neither picks nor closes. The plain Enter after it picks.
+test("Enter, Escape and Tab that end an IME composition in Safari, at keyCode 229, leave a single pick open with nothing picked", async () => {
+  const user = userEvent.setup();
+  const view = render(<SingleHost initial="api" options={["api", "docs"]} />);
+  try {
+    await user.click(screen.getByRole("button", { name: pickNamed("Epic") }));
+    const box = screen.getByRole("combobox", { name: "Search epics" });
+    await user.keyboard("{ArrowDown}");
+    for (const key of ["Enter", "Escape", "Tab"]) {
+      // user-event cannot mark a key as an input method's, so the key is fired with keyCode 229.
+      fireEvent.keyDown(box, { isComposing: false, key, keyCode: 229 });
+      expect(screen.queryByRole("listbox"), `${key} at keyCode 229`).not.toBeNull();
+      expect(box, `${key} at keyCode 229`).toHaveFocus();
+    }
+    expect(screen.getByTestId("handed").textContent).toBe("");
+
     await user.keyboard("{Enter}");
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
     expect(screen.getByTestId("handed").textContent).toBe("docs");
@@ -1989,6 +2015,26 @@ test("a digit writes its own choice whatever the narrowing", async () => {
     expect(handed()).toBe("tomorrow,clear,unsnooze");
     expect(row).toHaveFocus();
     expect(screen.getByTestId("closings").textContent).toBe("pick,pick,pick");
+  } finally {
+    view.unmount();
+  }
+});
+
+// Safari sends a key typed while an input method composes after the composition's end, unmarked,
+// at keyCode 229 (WebKit bug 165004): a digit typed so is the input method's text, not a choice.
+test("a digit that ends an IME composition in Safari, at keyCode 229, writes no choice", async () => {
+  const user = userEvent.setup();
+  const view = render(<MenuHost />);
+  try {
+    await openFromRow(user);
+    // user-event cannot mark a key as an input method's, so the key is fired with keyCode 229.
+    fireEvent.keyDown(menuBox(), { isComposing: false, key: "2", keyCode: 229 });
+    expect(handed()).toBe("");
+    expect(screen.queryByRole("listbox")).not.toBeNull();
+    expect(menuBox()).toHaveFocus();
+
+    await user.keyboard("2");
+    expect(handed()).toBe("tomorrow");
   } finally {
     view.unmount();
   }

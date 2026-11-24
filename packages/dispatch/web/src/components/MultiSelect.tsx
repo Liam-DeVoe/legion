@@ -10,6 +10,7 @@ import {
 
 import { focusOnDocument, stepIndex } from "../features/shell/roving";
 import { ControlKeyHint, digitKbdClass, keyshortcutsOf } from "../features/shell/ShortcutHelp";
+import { inputMethodKey } from "../lib/input-method";
 import {
   borderDefault,
   borderStrong,
@@ -648,7 +649,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // closes give the focus back to the trigger a key on it opened the list from.
   const openFromKey = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (open || disabled || ariaDisabled || event.ctrlKey || event.metaKey) return;
-    if (event.nativeEvent.isComposing) return;
+    if (inputMethodKey(event.nativeEvent)) return;
     const typed = !event.altKey && event.key.length === 1 && event.key !== " ";
     const steps = keysOnTrigger && !event.altKey && MOVE_KEYS[event.key] === true;
     if (!typed && !steps && event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
@@ -720,7 +721,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     // A key that ends or moves an IME composition is the input method's: Enter commits the
     // composed text into the box and picks nothing, and Tab leaves the list open.
-    if (event.nativeEvent.isComposing) return;
+    if (inputMethodKey(event.nativeEvent)) return;
     const plain = !event.altKey && !event.ctrlKey && !event.metaKey;
     // A menu's digit is the list's before the text box takes it: it writes its own choice at
     // once, whatever the box has narrowed, and a digit no choice has writes nothing.

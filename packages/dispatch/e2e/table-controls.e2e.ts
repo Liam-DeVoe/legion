@@ -1570,6 +1570,21 @@ test("the Agents page, the Delivery page and the project List keep the keyboard 
       await page.keyboard.press("Enter");
       await expect(notice).toHaveCount(0);
       await after(`project List at ${at}`, `Enter on the interrupted action's ${press}`);
+      // Finish goes on writing after its notice goes, and a page load before its last write
+      // stops it, so the List keeps the action and refuses the New epic below. The row waits
+      // until the List has let go of the action's record.
+      await expect
+        .poll(
+          () =>
+            page.evaluate((key) => {
+              const record: unknown = JSON.parse(localStorage.getItem(key) ?? "{}");
+              return typeof record === "object" && record !== null && "action" in record
+                ? (record.action ?? null)
+                : null;
+            }, "dispatch.project-table.CORE"),
+          { message: `project List at ${at}: the interrupted action's ${press} never ended` }
+        )
+        .toBeNull();
     }
 
     // The project List's possible-duplicate notice: Cancel new epic and Create anyway each take
