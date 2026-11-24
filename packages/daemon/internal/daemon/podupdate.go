@@ -1234,7 +1234,7 @@ func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reas
 	// queues the architect's notice: a store that refuses that notice leaves the round open, and
 	// each later sweep tries again, so the lines that say the round is over come once, after the
 	// finish commits.
-	if !s.finishReplacement(ctx, recorded.Operation, issue, pod, reason, "round", round) {
+	if !s.finishReplacement(ctx, recorded.Operation, issue, pod, "", reason, "round", round) {
 		s.log.Info("supervise: the pod of this update round is replaced, and the round stays open: the store refused to finish the replacement's record and to queue the architect's workspace-taken notice with it; a later sweep finishes it",
 			"issue", issue, "round", round, "pod", pod)
 		return false

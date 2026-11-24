@@ -587,7 +587,9 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 //   - A pod of the Sandbox's own takes its disk with it, unless the launch keeps the issue's volume
 //     and its Sandbox (keepsVolume, replacement ""): the pod (runtime.TakesPod, the pod's uid its
 //     target), or, where the launch replaces a Sandbox that owns a volume, that volume
-//     (runtime.TakesVolume, the Sandbox's uid its target). A launcher of the pod reads the issue's
+//     (runtime.TakesVolume, the Sandbox's uid its target) with the pod (runtime.TakenPod.WithPod),
+//     so that the finish of the act takes the records of the pod's own acts with it. A launcher of
+//     the pod reads the issue's
 //     workspace first (launcherWorkspaceWork): any launcher connected and authenticated for that
 //     pod that says it reads a workspace, whatever the bindings of the other roles say. The read
 //     runs under the pod's launch turn, which it does not take: no turn voids it, and the launch
@@ -618,7 +620,9 @@ func (r *Runtime) launchTaken(ctx context.Context, l launch, s *sandbox, pod *co
 	taken := &runtime.TakenPod{Operation: uuid.NewString(), Claim: l.spec.Claim, Issue: l.spec.Issue, PodUID: string(pod.UID), Why: took,
 		Act: runtime.PodAct(string(pod.UID))}
 	if replacement != "" && ownsVolume {
-		taken.Act = runtime.VolumeAct(string(s.UID))
+		// The launch deletes the Sandbox, and the volume with it, over the Sandbox's own pod, which
+		// goes with them (runtime.TakenPod.WithPod).
+		taken.Act, taken.WithPod = runtime.VolumeAct(string(s.UID)), true
 	}
 	if !live {
 		taken.Err = errors.New("the pod is not live, so no process in it can read the workspace")

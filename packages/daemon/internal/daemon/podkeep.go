@@ -417,7 +417,10 @@ func launchTakenMessage(taken runtime.TakenPod) string {
 	if taken.Act.Takes == runtime.TakesVolume {
 		took = fmt.Sprintf("A launch of the %s deleted the Sandbox of %s (uid %s) and the kept volume it owned, which was the disk of the issue's pods, on its own account, because %s.",
 			role, taken.Issue, taken.Act.Target, why)
-		if taken.PodUID != "" {
+		switch {
+		case taken.WithPod:
+			took += fmt.Sprintf(" The Sandbox ran pod %s, and the pod went with it.", taken.PodUID)
+		case taken.PodUID != "":
 			took += fmt.Sprintf(" The last pod that used the volume was pod %s.", taken.PodUID)
 		}
 	}

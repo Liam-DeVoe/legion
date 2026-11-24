@@ -55,6 +55,9 @@ type replacementRecord struct {
 	Commits []string    `json:"commits,omitempty"`
 	Count   int         `json:"count,omitempty"`
 	Failed  string      `json:"failed,omitempty"`
+	// WithPod is a launch's act that takes the volume and, with it, the live pod of its Sandbox
+	// (runtime.TakenPod.WithPod).
+	WithPod bool `json:"withPod,omitempty"`
 }
 
 // failedText is the error of a read as the record keeps it, "" for a read that was made.
@@ -82,7 +85,7 @@ func roundRecordOf(issue, pod string, read workspaceRead, reasons string) (store
 // launchRecordOf is the record of a launch's own replacement, as the runtime hands it, under the
 // operation identity the runtime gave it, with what the act takes and its target.
 func launchRecordOf(taken runtime.TakenPod) (store.PodReplacement, error) {
-	encoded, err := json.Marshal(replacementRecord{Claim: taken.Claim, Why: taken.Why,
+	encoded, err := json.Marshal(replacementRecord{Claim: taken.Claim, Why: taken.Why, WithPod: taken.WithPod,
 		Head: taken.Work.Head, Changed: taken.Work.Changed, Commits: taken.Work.Commits, Count: taken.Work.Count, Failed: failedText(taken.Err)})
 	if err != nil {
 		return store.PodReplacement{}, err
@@ -116,7 +119,7 @@ func (r replacementRecord) read(pod string) workspaceRead {
 // taken is a launch's record, recorded, as the runtime handed it (runtime.TakenPod).
 func (r replacementRecord) taken(recorded store.PodReplacement) runtime.TakenPod {
 	taken := runtime.TakenPod{Operation: recorded.Operation, Claim: r.Claim, Issue: recorded.Issue, PodUID: recorded.PodUID, Why: r.Why,
-		Act: recorded.Act}
+		Act: recorded.Act, WithPod: r.WithPod}
 	taken.Work, taken.Err = r.work(recorded.PodUID)
 	return taken
 }
@@ -172,14 +175,15 @@ func (s *supervision) forgetReplacement(ctx context.Context, recorded store.PodR
 }
 
 // finishReplacement finishes the record of operation, a replacement of issue's pod pod, now the
-// act is made: it deletes the record, with every other record of an act on the same target, and,
+// act is made: it deletes the record, with every other record of an act on the same target, and
+// of an act on withPod, where it is not "", a pod the act took with its volume (tookWithPod), and,
 // in the same transaction, queues reason, where it is not "", as the issue's architect's
 // workspace-taken notice (store.Store.FinishPodReplacement). It answers false where the store
 // refused, and the records then stand for a later sweep (finishReplacements); a record that the
 // finish of another act on its target took, or another finish of the same act, is finished
 // already, and nothing is queued for it here (the Legion reviewer's Important 1 on #5285 at
 // 7da847c0). attrs name the replacement on its lines.
-func (s *supervision) finishReplacement(ctx context.Context, operation, issue, pod, reason string, attrs ...any) bool {
+func (s *supervision) finishReplacement(ctx context.Context, operation, issue, pod, withPod, reason string, attrs ...any) bool {
 	attrs = append([]any{"issue", issue, "pod", pod, "operation", operation}, attrs...)
 	var notice *store.IdleReleaseRow
 	if reason != "" {
@@ -191,7 +195,7 @@ func (s *supervision) finishReplacement(ctx context.Context, operation, issue, p
 		}
 		notice = &store.IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload}
 	}
-	finished, told, err := s.supervisor.store.FinishPodReplacement(ctx, s.plan.project, issue, operation, notice)
+	finished, told, err := s.supervisor.store.FinishPodReplacement(ctx, s.plan.project, issue, operation, withPod, notice)
 	switch {
 	case err != nil:
 		if ctx.Err() == nil {
@@ -247,7 +251,17 @@ func (s *supervision) tellLaunchTook(ctx context.Context, taken runtime.TakenPod
 			append([]any{"issue", taken.Issue, "pod", taken.PodUID}, attrs...)...)
 		return
 	}
-	s.finishReplacement(ctx, taken.Operation, taken.Issue, taken.PodUID, launchTakenMessage(taken), attrs...)
+	s.finishReplacement(ctx, taken.Operation, taken.Issue, taken.PodUID, tookWithPod(taken), launchTakenMessage(taken), attrs...)
+}
+
+// tookWithPod is the pod a launch's act took with its volume, "" for an act that took no pod
+// beside its target (runtime.TakenPod.WithPod): the records of acts on that pod are over with the
+// launch's (the Legion reviewer's Important 1 on #5285 at acda4d1e).
+func tookWithPod(taken runtime.TakenPod) string {
+	if !taken.WithPod {
+		return ""
+	}
+	return taken.PodUID
 }
 
 // finishReplacements finishes, at the start of a sweep, every record of a replacement that a call
@@ -319,7 +333,7 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 			s.log.Info("supervise: a recorded replacement of the issue's pod took nothing: the pod still runs as the issue's own; its record is forgotten", attrs...)
 		case !ofRound:
 			taken := rec.taken(r)
-			s.finishReplacement(ctx, r.Operation, r.Issue, r.PodUID, launchTakenMessage(taken), "claim", taken.Claim, "why", taken.Why)
+			s.finishReplacement(ctx, r.Operation, r.Issue, r.PodUID, tookWithPod(taken), launchTakenMessage(taken), "claim", taken.Claim, "why", taken.Why)
 		default:
 			told := s.noticeGroup(claimsOf(claims, r.Issue))
 			s.log.Info("supervise: a recorded replacement of the issue's pod took it, and its round is not over yet: its call did not answer so, its daemon stopped, or the store refused the architect's workspace-taken notice; the round ends as that replacement, from the read made before it",

@@ -40,14 +40,14 @@ func TestTheFinishOfAnActFinishesEveryRecordOfItsTarget(t *testing.T) {
 	}
 	notice := &IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload}
 
-	finished, told, err := st.FinishPodReplacement(ctx, "legion", rootIssue, "launch-1", notice)
+	finished, told, err := st.FinishPodReplacement(ctx, "legion", rootIssue, "launch-1", "", notice)
 	if err != nil || !finished || !told {
 		t.Fatalf("the finish of launch-1 = %t, %t, %v; want its record finished and its notice queued", finished, told, err)
 	}
 	if standing := operationsStanding(t, st); !slices.Equal(standing, []string{"launch-2", "launch-3"}) {
 		t.Errorf("records standing once launch-1's act on pod-a is finished = %v, want the two records of the Sandbox's volume: round-1's record of pod-a goes with launch-1's", standing)
 	}
-	finished, told, err = st.FinishPodReplacement(ctx, "legion", rootIssue, "round-1", notice)
+	finished, told, err = st.FinishPodReplacement(ctx, "legion", rootIssue, "round-1", "", notice)
 	if err != nil || finished || told {
 		t.Errorf("the later finish of round-1 = %t, %t, %v; want no record found and nothing queued", finished, told, err)
 	}
@@ -60,12 +60,49 @@ func TestTheFinishOfAnActFinishesEveryRecordOfItsTarget(t *testing.T) {
 		t.Errorf("workspace-taken notices queued = %d, want one for the one act on pod-a", queued)
 	}
 
-	finished, told, err = st.FinishPodReplacement(ctx, "legion", rootIssue, "launch-2", nil)
+	finished, told, err = st.FinishPodReplacement(ctx, "legion", rootIssue, "launch-2", "", nil)
 	if err != nil || !finished || told {
 		t.Fatalf("the finish of launch-2 with no notice = %t, %t, %v; want its record finished and nothing queued", finished, told, err)
 	}
 	if standing := operationsStanding(t, st); len(standing) != 0 {
 		t.Errorf("records standing once launch-2's delete of the Sandbox is finished = %v, want none: launch-3's record of the same Sandbox goes with it", standing)
+	}
+}
+
+// A launch's delete of the issue's Sandbox and its kept volume over a live pod of that Sandbox
+// takes the pod with the volume (runtime.TakenPod.WithPod): its finish takes the records of acts on
+// that pod too, and leaves a record of another pod (the Legion reviewer's Important 1 on #5285 at
+// acda4d1e). The same finish with no pod named leaves the pod's records, as a launch's delete over
+// a Sandbox that ran no pod of its own does.
+func TestTheFinishOfAVolumeActWithItsPodFinishesThatPodsRecords(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		withPod  string
+		standing []string
+	}{
+		{name: "with_its_pod", withPod: "pod-a", standing: []string{"round-b"}},
+		{name: "control:_no_pod_named", standing: []string{"round-a", "round-b"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := migratedStore(t)
+			ctx := context.Background()
+			openRunningTree(t, st)
+			for _, r := range []PodReplacement{
+				{Operation: "round-a", Issue: rootIssue, PodUID: "pod-a", Act: runtime.PodAct("pod-a"), Record: []byte(`{}`)},
+				{Operation: "round-b", Issue: rootIssue, PodUID: "pod-b", Act: runtime.PodAct("pod-b"), Record: []byte(`{}`)},
+				{Operation: "launch-volume", Issue: rootIssue, PodUID: "pod-a", Act: runtime.VolumeAct("uid-sandbox"), Record: []byte(`{}`)},
+			} {
+				if err := st.RecordPodReplacement(ctx, "legion", r); err != nil {
+					t.Fatalf("record %s: %v", r.Operation, err)
+				}
+			}
+			if finished, _, err := st.FinishPodReplacement(ctx, "legion", rootIssue, "launch-volume", tc.withPod, nil); err != nil || !finished {
+				t.Fatalf("the finish of launch-volume = %t, %v; want its record finished", finished, err)
+			}
+			if standing := operationsStanding(t, st); !slices.Equal(standing, tc.standing) {
+				t.Errorf("records standing once the launch's delete of the Sandbox is finished = %v, want %v", standing, tc.standing)
+			}
+		})
 	}
 }
 

@@ -95,18 +95,29 @@ func (s *Store) PodReplacements(ctx context.Context, project string) ([]PodRepla
 // which is the last read of the target before it was taken. It answers whether it found the record
 // of operation. A notice of an issue of another project than project is queued by no daemon of
 // this one, so the records go with no row queued, and told says so.
-func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operation string, notice *IdleReleaseRow) (finished, told bool, err error) {
+//
+// withPod, where it is not "", is a pod the act took with its own target: a launch's delete of the
+// issue's Sandbox and its kept volume over a live pod of that Sandbox (runtime.TakenPod.WithPod).
+// The records of acts that take that pod are over with it, and go too (the Legion reviewer's
+// Important 1 on #5285 at acda4d1e).
+func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operation, withPod string, notice *IdleReleaseRow) (finished, told bool, err error) {
 	err = Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `with act as (
-				select issue, takes, target_uid from pod_replacements where project = $1 and issue = $2 and operation = $3)
-			delete from pod_replacements r using act
-			where r.project = $1 and r.issue = act.issue and r.takes = act.takes and r.target_uid = act.target_uid`,
-			project, issue, operation)
+		var takes, target string
+		err := tx.QueryRow(ctx, `delete from pod_replacements where project = $1 and issue = $2 and operation = $3
+			returning takes, target_uid`, project, issue, operation).Scan(&takes, &target)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
-		finished = tag.RowsAffected() > 0
-		if !finished || notice == nil || !claim.KeyOfProject(project, issue) {
+		finished = true
+		if _, err := tx.Exec(ctx, `delete from pod_replacements where project = $1 and issue = $2
+			and ((takes = $3 and target_uid = $4) or ($5 <> '' and takes = $6 and target_uid = $5))`,
+			project, issue, takes, target, withPod, string(runtime.TakesPod)); err != nil {
+			return err
+		}
+		if notice == nil || !claim.KeyOfProject(project, issue) {
 			return nil
 		}
 		if _, err := insertOutboxRow(ctx, tx, project, issue, *notice); err != nil {
