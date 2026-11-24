@@ -32,9 +32,13 @@ import (
 // queued task is judged by (Deps.PhaseHolds), where it brings the claim back (startHolds) and, for
 // a launch the wake pacing parks, at that launch's turn (launchAfter). The zero StartWork — an
 // operator's request, the boot's, a start of no phase — is judged by nothing.
+//
+// LeaveSession is the session the start's claim must not resume (record.SuperviseRequest's
+// LeaveSession).
 type StartWork struct {
-	Phase      phase.Phase
-	Generation uint64
+	Phase        phase.Phase
+	Generation   uint64
+	LeaveSession string
 }
 
 // ErrStartLeft is a start the machine judged no longer the work of its claim's issue
