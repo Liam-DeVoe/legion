@@ -1271,10 +1271,10 @@ export class Writes {
 
   /** The write `entry` landed with `answer` (`null` for a landing with none): it leaves, or stays
    *  made for its kind to show, its kind refreshes what it wrote, and each refused write it
-   *  carries is made needless and kept no longer (`#outdate`). The landing is told before the
-   *  store reads anything again for it, so every read it starts was sent after it: a listener
-   *  that orders Dispatch's answers by when each read went out (`issue-field-writes.ts`) counts
-   *  those reads as newer than the landing. */
+   *  carries that ended with no verdict is made needless and kept no longer (`#outdate`). The
+   *  landing is told before the store reads anything again for it, so every read it starts was
+   *  sent after it: a listener that orders Dispatch's answers by when each read went out
+   *  (`issue-field-writes.ts`) counts those reads as newer than the landing. */
   #landed(entry: Entry, answer: unknown): void {
     const kind = kinds.get(entry.write.kind);
     const awaited = entry.press !== undefined;

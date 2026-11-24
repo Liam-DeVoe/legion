@@ -189,8 +189,8 @@ function PriorityShown({
               drawn in it, it would be read as part of the heading's name. Each field's write
               names the server's text the field last took in (`from`), never the page's read,
               which may hold another person's text the field has not taken in yet, and hands on
-              the text the field held as the edit began (`builtOn`); the page says what each
-              kept text's own write was made on (`keptMadeOn`). */}
+              the text the edit was made on (`on`); the page says what each kept text's own
+              write was made on (`keptMadeOn`). */}
           {canWrite ? (
             <InPlaceField
               closed="heading"
@@ -199,8 +199,8 @@ function PriorityShown({
               label="Title"
               maxLength={ISSUE_TITLE_MAX}
               onKeptChange={(texts) => keep(id, "title", texts)}
-              onSave={(next, from, builtOn) =>
-                rename(id, next, from, builtOn, textWriteLabel("title", title, next))
+              onSave={(next, from, on) =>
+                rename(id, next, from, on, textWriteLabel("title", title, next))
               }
               required
               value={title}
@@ -260,8 +260,8 @@ function PriorityShown({
                 keptMadeOn={(text) => keptMadeOn(id, "description", text)}
                 label="Description"
                 onKeptChange={(texts) => keep(id, "description", texts)}
-                onSave={(next, from, builtOn) =>
-                  describe(id, next, from, builtOn, textWriteLabel("description", title, next))
+                onSave={(next, from, on) =>
+                  describe(id, next, from, on, textWriteLabel("description", title, next))
                 }
               />
             </div>

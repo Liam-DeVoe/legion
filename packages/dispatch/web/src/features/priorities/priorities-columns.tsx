@@ -37,13 +37,13 @@ export interface PriorityRowActions {
   readonly onOpen: (item: PriorityItem) => void;
   /** Writes `description` as the priority's description, over `from`, the server's text the
    *  description's editor last took in, which the write names as the text it goes over unless a
-   *  write of the page's own goes before it (`describe`), made on `builtOn`, the text the editor
-   *  held as the edit began. Answers whether it landed. */
+   *  write of the page's own goes before it (`describe`), made on `on` (`PriorityDescription`'s
+   *  `onSave`). Answers whether it landed. */
   readonly onDescribe: (
     item: PriorityItem,
     description: string,
     from: string,
-    builtOn: string
+    on: string
   ) => Promise<boolean>;
   /** The reader's texts kept beside a priority's description while it shows another person's,
    *  where the page reads `held`, and the change of them: held in the write store
@@ -213,7 +213,7 @@ function TitleCell({ item }: { item: PriorityItem }) {
           keptMadeOn={(text) => actions.keptMadeOn(id, text)}
           label={`Description of ${item.order}`}
           onKeptChange={(texts) => actions.onKeep(id, texts)}
-          onSave={(next, from, builtOn) => actions.onDescribe(item, next, from, builtOn)}
+          onSave={(next, from, on) => actions.onDescribe(item, next, from, on)}
         />
       ) : excerpt === undefined || excerpt.text === "" ? null : (
         // Muted, in at most two lines that end in '…' where it runs on; the whole excerpt is its

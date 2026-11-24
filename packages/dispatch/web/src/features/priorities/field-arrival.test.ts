@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { answered, arrival, type FieldStand, NOTHING_KEPT, type SentText } from "./field-arrival";
 
 /** A field that took "Old" in and holds nothing of the reader's: nothing out, nothing kept. */
-const SETTLED: FieldStand = { base: "Old", kept: NOTHING_KEPT, sent: [] };
+const SETTLED: FieldStand = { base: "Old", kept: NOTHING_KEPT, made: "Old", sent: [] };
 
 /** Texts the field wrote, in order, whose writes the page has not answered. */
 function out(...texts: string[]): readonly SentText[] {
@@ -10,22 +10,26 @@ function out(...texts: string[]): readonly SentText[] {
 }
 
 test("the text the field holds is no change: nothing is left to write, and nothing is taken in", () => {
-  expect(arrival("One", "One", { base: "Old", kept: NOTHING_KEPT, sent: out("One") })).toEqual({
+  expect(
+    arrival("One", "One", { base: "Old", kept: NOTHING_KEPT, made: "Old", sent: out("One") })
+  ).toEqual({ base: "One", kept: [], made: "One", sent: [], take: false });
+  // The same where another person wrote what the reader holds, typed but not yet written.
+  expect(arrival("One", "One", SETTLED)).toEqual({
     base: "One",
     kept: [],
+    made: "One",
     sent: [],
     take: false,
   });
-  // The same where another person wrote what the reader holds, typed but not yet written.
-  expect(arrival("One", "One", SETTLED)).toEqual({ base: "One", kept: [], sent: [], take: false });
 });
 
 test("the answer to a write with a later one still out answers that write alone", () => {
   expect(
-    arrival("One", "Two", { base: "Two", kept: NOTHING_KEPT, sent: out("One", "Two") })
+    arrival("One", "Two", { base: "Two", kept: NOTHING_KEPT, made: "Two", sent: out("One", "Two") })
   ).toEqual({
     base: "Two",
     kept: [],
+    made: "Two",
     sent: out("Two"),
     take: false,
   });
@@ -36,11 +40,18 @@ test("the answer to an earlier write the reader typed back to leaves the later o
   const next = arrival("Old A", "Old A", {
     base: "Old AB",
     kept: NOTHING_KEPT,
+    made: "Old AB",
     sent: out("Old A", "Old AB"),
   });
   // "Old AB" is still out, and the server holds it once it lands: the field compares with it, so
   // the reader's "Old A" differs from it, and the write waiting for the typing to rest goes.
-  expect(next).toEqual({ base: "Old AB", kept: [], sent: out("Old AB"), take: false });
+  expect(next).toEqual({
+    base: "Old AB",
+    kept: [],
+    made: "Old AB",
+    sent: out("Old AB"),
+    take: false,
+  });
   // That later answer is the reader's own write coming back, and is not taken in over "Old A".
   expect(arrival("Old AB", "Old A", next).take).toBe(false);
 });
@@ -52,13 +63,14 @@ test("the answer to an earlier write the reader typed back to leaves the later o
 test("the answer to a write after the later one ended without landing leaves the reader's stopped text unwritten", () => {
   const [a, ab] = out("A", "AB") as [SentText, SentText];
   const sent = answered(answered([a, ab], ab, false), a, true);
-  expect(arrival("A", "AB", { base: "AB", kept: NOTHING_KEPT, sent })).toEqual({
+  expect(arrival("A", "AB", { base: "AB", kept: NOTHING_KEPT, made: "AB", sent })).toEqual({
     base: "AB",
     kept: [],
+    made: "AB",
     sent: [],
     take: false,
   });
-  expect(arrival("A", "ABC", { base: "AB", kept: NOTHING_KEPT, sent }).base).toBe("A");
+  expect(arrival("A", "ABC", { base: "AB", kept: NOTHING_KEPT, made: "AB", sent }).base).toBe("A");
 });
 
 test("the text the field compares with, with no write over it out, takes nothing of the reader's typing", () => {
@@ -69,6 +81,7 @@ test("another person's text over a field holding nothing of the reader's is take
   expect(arrival("Written elsewhere", "Old", SETTLED)).toEqual({
     base: "Written elsewhere",
     kept: [],
+    made: "Written elsewhere",
     sent: [],
     take: true,
   });
@@ -78,6 +91,7 @@ test("another person's text over the reader's typing is taken in, and their text
   expect(arrival("Written elsewhere", "Old, mine", SETTLED)).toEqual({
     base: "Written elsewhere",
     kept: ["Old, mine"],
+    made: "Written elsewhere",
     sent: [],
     take: true,
   });
@@ -85,8 +99,19 @@ test("another person's text over the reader's typing is taken in, and their text
 
 test("another person's text over a write still out is taken in, and the text written kept beside it", () => {
   expect(
-    arrival("Written elsewhere", "One", { base: "One", kept: NOTHING_KEPT, sent: out("One") })
-  ).toEqual({ base: "Written elsewhere", kept: ["One"], sent: [], take: true });
+    arrival("Written elsewhere", "One", {
+      base: "One",
+      kept: NOTHING_KEPT,
+      made: "One",
+      sent: out("One"),
+    })
+  ).toEqual({
+    base: "Written elsewhere",
+    kept: ["One"],
+    made: "Written elsewhere",
+    sent: [],
+    take: true,
+  });
 });
 
 // The page said "One" landed before any read showed it, and another person's text replaced it: it
@@ -94,9 +119,12 @@ test("another person's text over a write still out is taken in, and the text wri
 test("another person's text over a write that landed, unseen, is taken in, and nothing kept", () => {
   const one = out("One");
   const sent = answered(one, one[0] as SentText, true);
-  expect(arrival("Written elsewhere", "One", { base: "One", kept: NOTHING_KEPT, sent })).toEqual({
+  expect(
+    arrival("Written elsewhere", "One", { base: "One", kept: NOTHING_KEPT, made: "One", sent })
+  ).toEqual({
     base: "Written elsewhere",
     kept: [],
+    made: "Written elsewhere",
     sent: [],
     take: true,
   });
@@ -109,6 +137,7 @@ test("a second change while a notice shows keeps both of the reader's texts, new
   expect(second).toEqual({
     base: "Carol's",
     kept: ["Bob's, mine", "Old, mine"],
+    made: "Carol's",
     sent: [],
     take: true,
   });
@@ -118,6 +147,24 @@ test("a second change while a notice shows keeps both of the reader's texts, new
   expect(arrival("Dan's", "Old, mine", second).kept).toEqual(["Old, mine", "Bob's, mine"]);
   // And a kept text the server now holds goes, whatever arrived it.
   expect(arrival("Old, mine", "Carol's", second).kept).toEqual(["Bob's, mine"]);
+});
+
+// The reader's next edit is made on the text the field takes in, or on the one it compares with
+// where the reader holds that very text. Typing not yet written that survives the arrival began on
+// the text the edit was made on until then, which stays.
+test("the reader's next edit is made on the text the field takes in or holds, and typing not yet written keeps the text it began on", () => {
+  // Another person's text, taken in over the reader's typing on "Old".
+  expect(arrival("Written elsewhere", "Old, mine", SETTLED).made).toBe("Written elsewhere");
+  // Another person's text that is the very text the reader holds, typed on "Old".
+  expect(arrival("One", "One", SETTLED).made).toBe("One");
+  // "A" over "Old" lands and "AB" over "A" ends without landing; she types on to "ABC", and a read
+  // shows "A". The field compares with "A" from then on, but her typing began on "AB".
+  const [a, ab] = out("A", "AB") as [SentText, SentText];
+  const sent = answered(answered([a, ab], ab, false), a, true);
+  expect(arrival("A", "ABC", { base: "AB", kept: NOTHING_KEPT, made: "AB", sent })).toMatchObject({
+    base: "A",
+    made: "AB",
+  });
 });
 
 // The page answers each write of the field's text: one that landed stays until a read shows it,

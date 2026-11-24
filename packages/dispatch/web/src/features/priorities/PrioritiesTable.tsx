@@ -144,12 +144,12 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
     [order, patch.mutate]
   );
   const onDescribe = useCallback(
-    (item: PriorityItem, description: string, from: string, builtOn: string) =>
+    (item: PriorityItem, description: string, from: string, on: string) =>
       describe(
         item.priority.id,
         description,
         from,
-        builtOn,
+        on,
         textWriteLabel("description", item.priority.title, description)
       ),
     [describe]

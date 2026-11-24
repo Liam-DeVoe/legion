@@ -252,11 +252,11 @@ function pageWrites(shown: readonly string[] = [], Client: typeof QueryClient = 
       return { page: drawAnother(ids, after), store };
     },
     /** The reader writes `title` as priority `id`'s, where its field last took `from` in from the
-     *  server - the text it was drawn with, or the last a read brought it - and held `builtOn` as
-     *  the edit began: `from`, unless given, as a field drawn over `from` holds it. */
-    rename: (title: string, from: string, builtOn = from, id = "p1") =>
+     *  server - the text it was drawn with, or the last a read brought it - and made the edit on
+     *  `on`: `from`, unless given, as a field drawn over `from` holds it. */
+    rename: (title: string, from: string, on = from, id = "p1") =>
       act(() => {
-        void hook.result.current.rename(id, title, from, builtOn, "Rename the priority");
+        void hook.result.current.rename(id, title, from, on, "Rename the priority");
       }),
     /** What the `index`th write to go out changed, once it went. */
     sentAt: async (index: number) => {
@@ -557,10 +557,9 @@ test("a stopped write that a newer landed write made on its text carries is let 
     const stopped = await stopLate(0);
     expect(stopped?.detail).toEqual({
       attribute: "title",
-      builtOn: "Old",
       expected: "Old",
       id: "p1",
-      madeAt: expect.any(Number),
+      made: { at: expect.any(Number), on: "Old" },
       text: "A",
     });
     rename("B", "Old", "A");
@@ -584,7 +583,7 @@ test("a stopped write that a newer landed write made on its text carries is kept
     rename("A", "Old");
     key = (await stopLate(0))?.key ?? "";
     expect(JSON.parse(sessionStorage.getItem(`dispatch.write:${key}`) ?? "null")).toMatchObject({
-      detail: { builtOn: "Old", expected: "Old", text: "A" },
+      detail: { expected: "Old", made: { on: "Old" }, text: "A" },
     });
     rename("B", "Old", "A");
     await sentAt(1);
@@ -611,8 +610,8 @@ test("stopped writes each made on the one before are let go together once a writ
     rename("B", "Old", "A");
     stopped.push(await stopLate(1));
     expect(stopped.map((write) => write?.detail)).toMatchObject([
-      { builtOn: "Old", text: "A" },
-      { builtOn: "A", text: "B" },
+      { made: { on: "Old" }, text: "A" },
+      { made: { on: "A" }, text: "B" },
     ]);
     rename("C", "Old", "B");
     expect(await sentAt(2)).toEqual({ expected: { title: "Old" }, title: "C" });
@@ -630,7 +629,7 @@ test("stopped writes each made on the one before are let go together once a writ
   }
 });
 
-// The order the reader made her edits in is the writes' own (`madeAt`), not the store's: a Retry
+// The order the reader made her edits in is the writes' own (`made.at`), not the store's: a Retry
 // puts a write at the back of its line, and a reload hands the writes out in the order they were
 // last pressed. "OldY", made on "Old", is out when she takes the "Y" back, and "Old", made on
 // "OldY", waits behind it. Both are stopped; she retries "OldY", and the tab reloads while it is
@@ -778,7 +777,10 @@ test("a write made after a reload is made after every write the reload took up, 
   const ahead = Date.now() + 3_600_000;
   sessionStorage.setItem(
     name,
-    JSON.stringify({ ...kept, detail: { ...kept.detail, madeAt: ahead } })
+    JSON.stringify({
+      ...kept,
+      detail: { ...kept.detail, made: { ...kept.detail.made, at: ahead } },
+    })
   );
   undraw();
   const { page, store } = reloadShowing(SHOWS_P1);
@@ -786,9 +788,9 @@ test("a write made after a reload is made after every write the reload took up, 
     void page.result.current.rename("p1", "B", "Old", "Old", "Rename the priority");
   });
   expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "B" });
-  const made = store.rows().map((write) => ofKind(write, priorityTextWrite)?.detail);
-  expect(made).toMatchObject([{ madeAt: ahead, text: "A" }, { text: "B" }]);
-  expect(made[1]?.madeAt).toBeGreaterThan(ahead);
+  const records = store.rows().map((write) => ofKind(write, priorityTextWrite)?.detail);
+  expect(records).toMatchObject([{ made: { at: ahead }, text: "A" }, { text: "B" }]);
+  expect(records[1]?.made?.at).toBeGreaterThan(ahead);
 });
 
 // "A" over "Old" was stopped with no verdict and stays on the shell's line. Another person's "Bob"
@@ -910,7 +912,7 @@ test("a stopped write a reload takes up stays once a newer write made on the ser
   const { page, store } = reloadShowing(SHOWS_P1);
   const [line] = store.rows();
   expect(store.rows()).toMatchObject([
-    { detail: { builtOn: "Old", expected: "Old", text: "A" }, status: "refused" },
+    { detail: { expected: "Old", made: { on: "Old" }, text: "A" }, status: "refused" },
   ]);
   await read(1, "Old");
   act(() => {
@@ -930,43 +932,44 @@ test("a stopped write a reload takes up stays once a newer write made on the ser
   ]);
 });
 
-// A build before this one kept neither the text a write was made on nor when it was made. Here
-// "A" and "B", which the field made on "A", are both stopped, and the tab keeps one of them
-// without one of those records, as that build would; a reload takes both up, and the Retry of
-// "B" lands. Without either record, "A" is carried by nothing, and "B" carries nothing: "A" stays
+// A text a field kept on its own as another person's text arrived over it is held with no record
+// of what it was made on or when (`keep`): no write of it was sent. "A" over "Old" is stopped; the
+// reader types "AB" over it, and another person's "Bob" arrives, which the field takes in,
+// keeping "AB" on its own. A write of that very text, "AB" over "Bob", made on "Bob", lands while
+// the store still holds the kept one. The kept text has no time to be older than that write by,
+// so the landing does not carry it, and no text it was made on, so it carries nothing: "A" stays
 // on the line and in the tab.
-test.each([
-  ["the text it was made on", "builtOn", "the stopped write", 0],
-  ["the text it was made on", "builtOn", "the write that lands", 1],
-  ["when it was made", "madeAt", "the stopped write", 0],
-  ["when it was made", "madeAt", "the write that lands", 1],
-] as const)("a write kept with no record of %s (`%s`), %s, neither lets a stopped write go nor is let go", async (_what, field, _which, old) => {
-  const { answer, read, reload, rename, sentAt, stopLate, undraw } = pageWrites(SHOWS_P1);
+test("a text a field kept on its own, with no record of what it was made on or when, neither carries a stopped write nor is carried by one", async () => {
+  const { answer, client, keep, read, rename, sentAt, stopLate } = pageWrites(SHOWS_P1);
   await read(0, "Old");
-  const keys: string[] = [];
+  const writes = writesOf(client);
   await onFakeClock(async () => {
     rename("A", "Old");
-    keys.push((await stopLate(0))?.key ?? "");
-    rename("B", "Old", "A");
-    keys.push((await stopLate(1))?.key ?? "");
+    const stopped = await stopLate(0);
+    act(() => {
+      void client.invalidateQueries({ queryKey: ["priorities"] });
+    });
+    await read(1, "Bob");
+    keep(["AB"]);
+    expect(writes.rows().map((write) => ofKind(write, priorityTextWrite)?.detail)).toEqual([
+      {
+        attribute: "title",
+        expected: "Old",
+        id: "p1",
+        made: { at: expect.any(Number), on: "Old" },
+        text: "A",
+      },
+      { attribute: "title", expected: "Bob", id: "p1", text: "AB" },
+    ]);
+    rename("AB", "Bob");
+    expect(await sentAt(1)).toEqual({ expected: { title: "Bob" }, title: "AB" });
+    await answer(1, false);
+    expect(writes.rows()).toMatchObject([
+      { id: stopped?.id, status: "refused" },
+      { detail: { text: "AB" }, sent: false, status: "refused" },
+    ]);
+    expect(sessionStorage.getItem(`dispatch.write:${stopped?.key}`)).not.toBeNull();
   });
-  const name = `dispatch.write:${keys[old]}`;
-  const kept = JSON.parse(sessionStorage.getItem(name) ?? "null");
-  const { [field]: _dropped, ...before } = kept.detail;
-  sessionStorage.setItem(name, JSON.stringify({ ...kept, detail: before }));
-  undraw();
-  const after = reload();
-  await turns();
-  const [first, second] = after.rows();
-  expect(after.rows()).toMatchObject([{ detail: { text: "A" } }, { detail: { text: "B" } }]);
-  expect(
-    after.rows().map((write) => ofKind(write, priorityTextWrite)?.detail[field] !== undefined)
-  ).toEqual([old !== 0, old !== 1]);
-  act(() => after.retry(second?.id ?? 0));
-  expect(await sentAt(2)).toEqual({ expected: { title: "Old" }, title: "B" });
-  await answer(2, false);
-  expect(after.rows()).toMatchObject([{ detail: { text: "A" }, id: first?.id, status: "refused" }]);
-  expect(sessionStorage.getItem(`dispatch.write:${keys[0]}`)).not.toBeNull();
 });
 
 // A chain's start is a text the server took: an edit started from it after a read showed it -

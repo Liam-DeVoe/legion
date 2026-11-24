@@ -138,10 +138,10 @@ function HeldField({
     <>
       <InPlaceField
         label="Title"
-        onSave={(next, from, builtOn) => {
+        onSave={(next, from, on) => {
           writes.push(next);
           froms?.push(from);
-          builts?.push(builtOn);
+          builts?.push(on);
           if (answers === undefined) return;
           const answer = Promise.withResolvers<boolean>();
           answers.push(answer.resolve);
@@ -718,12 +718,12 @@ test("a write that ended without landing is not written again once a read shows 
   expect(writes).toEqual(["A", "AB"]);
 });
 
-// Each write hands on the text the field held as its edit began (`onSave`'s `builtOn`): the text
-// it was drawn with; its own last write, though that did not land; the other person's text it
-// took in; for Use my text that writes the field's last write again, the text that write was made
-// on, since it is that same edit; and, drawn again, the server's text once more, whatever the
-// field before it wrote. A newer write lets a stopped one go only where it was made on that one's
-// text (`priorityTextWrite.outdates`).
+// Each write hands on the text the field held as its edit began (`onSave`'s `on`): the text it
+// was drawn with; its own last write, though that did not land; the other person's text it took
+// in; for Use my text that writes the field's last write again, the text that write was made on,
+// since it is that same edit; and, drawn again, the server's text once more, whatever the field
+// before it wrote. A newer write lets a stopped one go only where it was made on that one's text,
+// or writes that very text again (`priorityTextWrite.outdates`).
 test("each write hands on the text the field held as its edit began, and a field drawn again starts from the server's", async () => {
   const user = userEvent.setup({ delay: null });
   const writes: string[] = [];

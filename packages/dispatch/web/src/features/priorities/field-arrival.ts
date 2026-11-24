@@ -21,6 +21,9 @@ export interface FieldStand {
   /** The reader's own texts kept beside the field while it shows another person's
    *  (`ChangedMeanwhile`), newest first, none twice. */
   readonly kept: readonly string[];
+  /** The text the reader's next edit is made on: the last text the field wrote, or the last of
+   *  the server's it came to hold. Typing not yet written began on it (`arrival`). */
+  readonly made: string;
 }
 
 /** Where a field stands once a new text of the server's arrived, and whether it takes that text
@@ -60,7 +63,10 @@ function without(kept: readonly string[], text: string): readonly string[] {
  *   kept beside the field, ahead of any kept there already. One that landed was the server's text
  *   until theirs replaced it, as one a read had shown would have been.
  *
- * A kept text the server now holds is no longer the reader's to put back, and goes.
+ * A kept text the server now holds is no longer the reader's to put back, and goes. The reader's
+ * next edit is made on the text the field takes in, or on the text it compares with where the
+ * reader holds that very text (`made`). Typing not yet written that survives the arrival began on
+ * the text the edit was made on until then, which stays.
  */
 export function arrival(server: string, held: string, stand: FieldStand): Arrival {
   const kept = without(stand.kept, server);
@@ -68,14 +74,16 @@ export function arrival(server: string, held: string, stand: FieldStand): Arriva
   if (own !== -1) {
     const sent = stand.sent.slice(own + 1);
     const base = sent.at(-1)?.text ?? (held === stand.base ? stand.base : server);
-    return { base, kept, sent, take: false };
+    return { base, kept, made: held === base ? base : stand.made, sent, take: false };
   }
-  if (server === held) return { base: server, kept, sent: [], take: false };
+  if (server === held) return { base: server, kept, made: server, sent: [], take: false };
+  // Here the reader holds typing not yet written over `base`: it began on `made`, which stays.
   if (server === stand.base) return { ...stand, kept, take: false };
   const holding = held !== stand.base || stand.sent.some((one) => !one.landed);
   return {
     base: server,
     kept: holding ? [held, ...without(kept, held)] : kept,
+    made: server,
     sent: [],
     take: true,
   };
@@ -94,14 +102,6 @@ export function answered(
   if (at === -1) return sent;
   if (!landed) return [...sent.slice(0, at), ...sent.slice(at + 1)];
   return sent.map((one, place) => (place === at ? { ...one, landed } : one));
-}
-
-/** The text the reader's next edit is made on once `next` arrived over `held`, the reader's text
- *  as the field compares it, where it was made on `made` until then: the text the field takes in,
- *  or the one it compares with where the reader holds that very text. Typing she has not written
- *  that survives the arrival began on `made`, which stays. */
-export function madeAfter(next: Arrival, held: string, made: string): string {
-  return next.take || held === next.base ? next.base : made;
 }
 
 /** The text Use my text of `text`, one of the reader's kept texts `kept`, is made on, where the

@@ -36,7 +36,7 @@ afterEach(() => {
  * its parser takes the text whole (`description_tree_exact`), which `rerender` moves, and every
  * write lands in `onSave`, with the server's text the editor last took in, unanswered unless a
  * test gives `onSave` answers of its own; `built` holds, for each write, the text the editor held
- * as its edit began (`onSave`'s `builtOn`). `imports` is the length of each text the editor took
+ * as its edit began (`onSave`'s `on`). `imports` is the length of each text the editor took
  * in as markdown (`setMarkdown`), its own parse of a text, which the browser spec counts as a
  * parse of the page (`e2e/parse-counting.ts`). A text a test puts in `undrawable` is one the
  * editor cannot take in: `setMarkdown` throws for it, as for a text holding what it may not create
@@ -84,8 +84,8 @@ function described(description: string, canWrite = true, tree?: DisplayTree, exa
             descriptionTree={reading}
             descriptionTreeExact={readingExact}
             label="Description of P1"
-            onSave={(next, from, builtOn) => {
-              built.push(builtOn);
+            onSave={(next, from, on) => {
+              built.push(on);
               return onSave(next, from);
             }}
           />
@@ -337,7 +337,7 @@ test("Use my text with no editor drawn names the newest text the server sent, th
   expect(built).toEqual(["Written elsewhere, again."]);
 });
 
-// Each write hands on the text the editor held as its edit began (`onSave`'s `builtOn`), in the
+// Each write hands on the text the editor held as its edit began (`onSave`'s `on`), in the
 // form the editor writes, so a write made on the editor's own earlier one names that one's text:
 // the text it opened on, as it reads it back; its own last write, though that did not land; the
 // other person's text it took in; and for Use my text that writes the editor's last write again,
