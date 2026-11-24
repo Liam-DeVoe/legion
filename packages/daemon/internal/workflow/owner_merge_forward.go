@@ -114,9 +114,12 @@ func (e *Engine) clearGeneration(ctx context.Context, tx pgx.Tx, issue record.Is
 // is asked once for each head (mergeForward), and the slot's next refresh or launch comes after the
 // owner was told to merge. The ask told again is that write: its delivery has the runtime write the
 // owner's slot for the implement App and tells the owner only once the slot's gh files hold it (the
-// daemon's ownerSlotActs). An ask of the owner at that head still queued does both already
-// (record.Store.MergeForwardAskPending), among them the ask the same transaction just wrote, so
-// none is queued behind it. A tree that lingers has every role suspended and is asked nothing, as
+// daemon's ownerSlotActs). It is the ask the record holds, built by the one builder both writers use
+// (tellAsk, record.MergeForward.Ask): to the claim it reached, as the role it was made as, covering
+// the hold where the owner works the step the task stands at. An ask of the owner at that head
+// still queued does both already (record.Store.MergeForwardAskPending), so none is queued behind
+// it; mergeForward relies on that, since it queues its ask before it writes the record that opens
+// the merge forward. A tree that lingers has every role suspended and is asked nothing, as
 // mergeForward asks it nothing.
 func (e *Engine) askOwnerAgain(ctx context.Context, tx pgx.Tx, issue record.Issue, pr record.PullRequest) error {
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
@@ -128,8 +131,7 @@ func (e *Engine) askOwnerAgain(ctx context.Context, tx pgx.Tx, issue record.Issu
 	}
 	e.logOnCommit(ctx, "workflow: a merge forward asked of the owner opens again, and the owner is asked again", "issue", issue.Key,
 		"tree", issue.Tree, "owner", asked.Agent, "head", asked.Head, "base", asked.Base)
-	return e.enqueue(ctx, tx, issue.Key, record.MergeForwardMessage{Role: claim.RoleImplementer, Claim: asked.Agent, Step: record.MergeForwardAsk,
-		Head: asked.Head, Base: asked.Base, Phase: asked.Phase, PullRequest: pr.Number, Why: asked.Why})
+	return e.tellAsk(ctx, tx, issue, *asked, pr.Number, true, false)
 }
 
 // mergeForwardWriteBack queues the supervise slot_credential that writes the slot of issue's owner

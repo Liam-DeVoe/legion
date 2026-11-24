@@ -65,7 +65,7 @@ type roleForReader struct {
 // for a parent held before its retro for the issues beneath it), or answers RoleFor's role for every
 // phase but step and its place's, which admitted never is, to the readers this list holds
 // (record.Issue.RoleAt), or names the worker of the step a task stands at for messages that tell
-// the architect, its answer at admitted, nothing (record.Issue.StepWorkerRole: a merge forward
+// the architect, its answer at admitted, nothing (record.Issue.StepWorker: a merge forward
 // reaches no architect's step, and the design gate's message passes the architect over), or reads
 // the phase a held issue's retry restores only past the refusal of
 // a plan's own hold, which is the one hold an issue at admitted takes (Engine.retryOrEscalate, for
@@ -107,7 +107,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	// role at a place the owner works, else RoleAt. Its architect at admitted is told none of
 	// them: record.MergeForwardReaches gives the architect no hold and no landed, and
 	// tellGateMoved passes the architect over and tells the root's architect once.
-	{file: "internal/record/record.go", fn: "Issue.StepWorkerRole"}: {calls: 1, tests: []string{
+	{file: "internal/record/record.go", fn: "Issue.StepWorker"}: {calls: 1, tests: []string{
 		"TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole",
 		"TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward", "TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge",
 		"TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole", "TestTheOwnerAtItsOwnStepIsHeldAndToldTheMergeLanded",

@@ -1926,7 +1926,9 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 // step when it runs. Head is the head that conflicted, Landed the head the merge left ("" before it
 // lands), Base the base branch, Phase the phase the issue stays in, PullRequest the pull request's
 // number, and Why the first of R0's reasons that held (MergeForward.Why), which the ask and the
-// hold state.
+// hold state. Covers is the step of the message this one stands in for, "" for none: where one
+// claim holds the recipients of two messages of one event, it is sent the one that asks the more of
+// it alone (MergeForwardCovers), which also says what the other asked.
 //
 // It is a row of its own kind rather than a RoleMessage, because a RoleMessage ends undelivered on
 // a released claim, and a released agent of the implementation step must still be woken for the
@@ -1941,6 +1943,38 @@ type MergeForwardMessage struct {
 	Phase       phase.Phase      `json:"phase"`
 	PullRequest int              `json:"pullRequest"`
 	Why         ConflictWhy      `json:"why,omitempty"`
+	Covers      MergeForwardStep `json:"covers,omitempty"`
+}
+
+// mergeForwardOrder is the one order of a merge forward's messages to one agent. The messages of
+// one event go to two recipients each: the ask and the hold (workflow's mergeForward and its ask
+// again), and the review and the landed (workflow's mergeForwardLanded). Where one claim holds both
+// recipients of an event, it is sent the earlier message of the two alone, and that message carries
+// what the later one asked (MergeForwardMessage.Covers), so the agent gets each thing it is asked
+// for, once: the ask asks the agent to do the merge whose hold would tell it to stop writing for
+// the merge, and says that its step waits and goes on at the head the merge leaves; the review asks
+// it to read the merge, as the landed does, and to approve the new head or request changes, and
+// says that its step goes on at the new head. Every step of a merge forward has its place here
+// (mergeForwardRoles names them all, and a test holds the two lists to one set), so a step added
+// later is placed before anything addresses it: either it covers the step after it in the same
+// event, or no claim holds two of its event's recipients.
+var mergeForwardOrder = []MergeForwardStep{MergeForwardAsk, MergeForwardHold, MergeForwardReview, MergeForwardLanded}
+
+// mergeForwardCovered is the step of one event each step covers where one claim holds both
+// recipients (mergeForwardOrder): the ask covers the hold, and the review covers the landed.
+var mergeForwardCovered = map[MergeForwardStep]MergeForwardStep{MergeForwardAsk: MergeForwardHold, MergeForwardReview: MergeForwardLanded}
+
+// MergeForwardOrder is step's place in the one order of a merge forward's messages to one agent
+// (mergeForwardOrder), from 0, and -1 for a word that is no step.
+func MergeForwardOrder(step MergeForwardStep) int {
+	return slices.Index(mergeForwardOrder, step)
+}
+
+// MergeForwardCovers says whether a message of step stands in for one of covered where one claim
+// holds the recipients of both (mergeForwardOrder).
+func MergeForwardCovers(step, covered MergeForwardStep) bool {
+	other, ok := mergeForwardCovered[step]
+	return ok && other == covered
 }
 
 func (MergeForwardMessage) OutboxKind() OutboxKind { return OutboxKindMergeForward }
@@ -2003,6 +2037,12 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // merging; the architect alone in accepting). The agent asked is the agent of the task's last step
 // of the type implementation before the issue's place: the owner where that step's key is owner,
 // and the implementer for a run with no plan rows.
+//
+// A message that covers another (Covers, mergeForwardOrder) also says what that one asked: the
+// ask that covers the hold says that the agent also works the step the issue stands in, so it
+// writes nothing else in the workspace until the merge is pushed and then goes on with that step
+// at the head the merge leaves; the review that covers the landed says that the agent also works
+// that step, and goes on with it at the new head after its review.
 func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 	pull := fmt.Sprintf("pull request %s#%d", pr.Repo, p.PullRequest)
 	switch p.Step {
@@ -2010,6 +2050,9 @@ func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 		own := ""
 		if asked := pr.MergeForward; asked != nil && asked.Own && asked.Phase == p.Phase {
 			own = fmt.Sprintf(" Your own assignment in %s stands, and so does its completion.", p.Phase)
+		} else if p.Covers == MergeForwardHold {
+			own = fmt.Sprintf(" You also work the step of %s. Write nothing else in the workspace until the merge is pushed."+
+				" Then go on with that step at the head the merge leaves.", p.Phase)
 		}
 		return fmt.Sprintf("%s: %s at head %s conflicts with its base branch %s, and a second read of GitHub confirmed it."+
 			" The issue stays in %s. %s"+
@@ -2046,11 +2089,15 @@ func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 		case phase.Merging:
 			tell = "the architect and the merger, each on the topic of the claim that works its step"
 		}
+		goOn := ""
+		if p.Covers == MergeForwardLanded {
+			goOn = fmt.Sprintf(" You also work the step of %s. Then go on with that step at the new head %s.", p.Phase, p.Landed)
+		}
 		return fmt.Sprintf("%s: the merge of %s forward landed on %s, and the issue stands in %s. The old head is %s, and the new head is %s."+
 			" Read what the merge changed since the old head: %s"+
 			" Then approve the new head %s by its SHA, with the Legion footer of your review naming that head, or request changes."+
-			" Write no handoff and make no completion for this review. Then tell %s what you decided.",
-			issue, p.Base, pull, p.Phase, p.Head, p.Landed, p.readMerge(), p.Landed, tell)
+			" Write no handoff and make no completion for this review. Then tell %s what you decided.%s",
+			issue, p.Base, pull, p.Phase, p.Head, p.Landed, p.readMerge(), p.Landed, tell, goOn)
 	}
 }
 
@@ -2627,6 +2674,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if mergeForwardReason(value.Why, value.Base) == "" && (value.Why != "" || !landing) {
 			return fmt.Errorf("a merge-forward ask or hold names why the daemon acted, as one of R0's reasons, and a landed or a review names one of them or none; a %s names %q", value.Step, value.Why)
 		}
+		if value.Covers != "" && !MergeForwardCovers(value.Step, value.Covers) {
+			return fmt.Errorf("a merge-forward ask covers only a hold, and a review only a landed (mergeForwardOrder); a %s covers %q", value.Step, value.Covers)
+		}
 	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
 	// with a warning (the outbox's permanentRefusal). These two it would not: an empty id
 	// addresses the route's parent path, which Dispatch's router answers NOT_FOUND "no route for
@@ -2738,6 +2788,16 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // that step would be sent (workflow's Engine.start). No earlier release decodes it, so the way
 // back of the release that adds it deletes its unsent rows (docs/kubernetes.md, "Rolling back
 // below the release whose owner does a step").
+//
+// `merge-forward-lost` is an ask or a review of a merge forward that will not reach its agent,
+// another agent than the issue's owner, because that agent's claim has failed or retired (the
+// daemon's mergeForwardLost): its role is the role the message did not reach, its phase the phase
+// the issue stays in, and its reason names the head and what nobody does for that message. A move
+// back into that role's step starts the claim again, and so does an operator's retry of it; the
+// daemon asks once for each head, so nothing asks again at that head. It is a kind of its own and
+// not `checks-red`, which says only that a merge forward was asked (workflow's mergeForward). No
+// earlier release decodes it, so the way back of the release that adds it deletes its unsent rows
+// (docs/kubernetes.md, "Rolling back below the release whose owner does a step").
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
@@ -2745,7 +2805,7 @@ var validNoticeKinds = []NoticeKind{
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
 	"session-lost", "session-forgotten", "session-store-fault", "task-stopped", "plan-not-taken", "retro-held",
-	OwnerStepNotice,
+	OwnerStepNotice, MergeForwardLostNotice,
 }
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left
@@ -2760,6 +2820,10 @@ const VolumeNearFullNotice NoticeKind = "volume-near-full"
 // owner, or the retro of a task whose retro is the owner's. It goes to the owner by rule
 // (OwnerClaim), the issue's own architect, and to no architect above it.
 const OwnerStepNotice NoticeKind = "owner-step"
+
+// MergeForwardLostNotice is the architect's notice of an ask or a review of a merge forward that
+// will not reach its agent, whose claim has failed or retired (validNoticeKinds says what it means).
+const MergeForwardLostNotice NoticeKind = "merge-forward-lost"
 
 // validNoticeKind says whether kind is a notice an architect is told.
 func validNoticeKind(kind NoticeKind) bool {

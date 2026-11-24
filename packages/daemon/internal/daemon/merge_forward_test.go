@@ -22,7 +22,6 @@ import (
 const (
 	mergeForwardDelivered = "outbox merge-forward message delivered"
 	mergeForwardLeftLine  = "outbox merge-forward message finished undelivered: the workflow no longer delivers it"
-	mergeForwardEnded     = "outbox merge-forward message finished undelivered: the role's claim has failed or retired"
 )
 
 // mergeForwardRunner is an outbox runner over an isolated database holding LEGION-208 in testing
@@ -213,11 +212,11 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 		// The ask's row is finished; the one row left is the checks-red notice that tells the
 		// architect the ask did not reach the implementer (mergeForwardLost).
 		notices := architectNoticesQueued(t, pool)
-		if attempts, _ := publisher.snapshot(); attempts != 0 || outboxRows(t, pool) != 1 || len(notices) != 1 || notices[0].Kind != "checks-red" {
-			t.Fatalf("the row made %d publishes, left %d rows and queued the notices %+v; want the row finished with nothing published and one checks-red notice",
-				attempts, outboxRows(t, pool), notices)
+		if attempts, _ := publisher.snapshot(); attempts != 0 || outboxRows(t, pool) != 1 || len(notices) != 1 || notices[0].Kind != record.MergeForwardLostNotice {
+			t.Fatalf("the row made %d publishes, left %d rows and queued the notices %+v; want the row finished with nothing published and one %s notice",
+				attempts, outboxRows(t, pool), notices, record.MergeForwardLostNotice)
 		}
-		if lines := loggedLines(t, logs.String(), mergeForwardEnded); len(lines) != 1 || lines[0]["state"] != string(supervise.StateRetired) {
+		if lines := loggedLines(t, logs.String(), mergeForwardEndedLine); len(lines) != 1 || lines[0]["state"] != string(supervise.StateRetired) {
 			t.Fatalf("the row logged %v, want one line naming the retired claim", lines)
 		}
 	})

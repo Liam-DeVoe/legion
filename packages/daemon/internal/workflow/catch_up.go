@@ -175,12 +175,12 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 	if ownStep != "" {
 		reason += fmt.Sprintf("; at a step of yours, which no worker does: %s at %s (do it as its owner-step notice says, then report it with complete_step)", issue.Key, ownStep)
 	}
-	asked, err := untoldMergeForward(ctx, tx, store, issue)
+	asked, err := untoldMergeForward(ctx, tx, store, issue, launch)
 	if err != nil {
 		return err
 	}
-	if asked != "" {
-		reason += "; " + asked
+	if asked != nil {
+		reason += "; " + untoldAskWords(issue, *asked)
 	}
 	if relaunch != "" {
 		reason = relaunch + "\n\n" + reason
@@ -194,33 +194,41 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 	return EnqueueNaming(ctx, tx, store, issue.Key, issue.Tree, notice, kept, at)
 }
 
-// untoldMergeForward is the words of the merge forward the record holds asked of issue's owner and
-// still open (record.OwnersMergeForward) where the session the owner's claim runs in now was not
-// told it, and "" where no such ask stands: no ask row of it is still queued, whose delivery tells
-// it (record.Store.MergeForwardAskPending), and the session its ask reached (record.MergeForward.Told)
-// is not the session the owner's claim records now (record.Store.ClaimSession). A fresh session —
-// after the owner's claim failed, or a launch whose resume of the session told failed — holds
-// nothing of the one told, and the ask asks an act that no step's notice repeats, so the catch-up
-// of that launch names it, with its head and base, as the ask would. A resumed session holds the
-// ask's message and is not told it again, and no second message of the ask is written for it.
-func untoldMergeForward(ctx context.Context, tx pgx.Tx, store record.Store, issue record.Issue) (string, error) {
+// untoldMergeForward is the pull request whose merge forward the record holds asked of issue's
+// owner and still open (record.OwnersMergeForward) where the owner's claim as it is ready now at
+// launch was not told it, and nil where no such ask stands: no ask row of it is still queued, whose
+// delivery tells it (record.Store.MergeForwardAskPending), and the mark of whom its ask reached
+// (record.MergeForward.Told) does not hold the session or the launch the claim runs at now, by the
+// one rule of told an owner-step is judged by too (toldNow). A fresh session — after the owner's
+// claim failed, or a launch whose resume of the session told failed — holds nothing of the one
+// told, and the ask asks an act that no step's notice repeats, so the catch-up of that launch names
+// it (untoldAskWords). A resumed session holds the ask's message and is not told it again, and no
+// second message of the ask is written for it.
+func untoldMergeForward(ctx context.Context, tx pgx.Tx, store record.Store, issue record.Issue, launch uint64) (*record.PullRequest, error) {
 	pr, err := store.PullRequest(ctx, tx, issue.Key)
 	if err != nil || !record.OwnersMergeForward(issue, pr) {
-		return "", err
+		return nil, err
 	}
 	asked := pr.MergeForward
 	if pending, err := store.MergeForwardAskPending(ctx, tx, issue.Key, asked.Agent, asked.Head); err != nil || pending {
-		return "", err
+		return nil, err
 	}
-	if asked.Told != "" {
-		session, err := store.ClaimSession(ctx, tx, asked.Agent)
-		if err != nil || session == asked.Told {
-			return "", err
+	if asked.Told != nil {
+		if told, err := toldNow(ctx, tx, store, issue, *asked.Told, launch); err != nil || told {
+			return nil, err
 		}
 	}
+	return pr, nil
+}
+
+// untoldAskWords is how the catch-up names the open merge forward of pr, the pull request of
+// issue, asked of its owner and not told to the owner's session now (untoldMergeForward), with its
+// head and base, as the ask would.
+func untoldAskWords(issue record.Issue, pr record.PullRequest) string {
+	asked := pr.MergeForward
 	return fmt.Sprintf("a merge forward the daemon asked of you, still open and not told to this session: pull request #%d of %s at head %s conflicts with %s; "+
 		"merge %s forward in the issue workspace and push the issue branch, with no handoff and no completion for the merge",
-		pr.Number, issue.Key, asked.Head, asked.Base, asked.Base), nil
+		pr.Number, issue.Key, asked.Head, asked.Base, asked.Base)
 }
 
 // queuedRowCovers is whether a row the outbox already holds for this role covers its phase: a

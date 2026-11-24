@@ -136,13 +136,15 @@ func (s *Postgres) ResetOwnerRestarts(ctx context.Context, tx pgx.Tx, issue stri
 	return nil
 }
 
-// OwnerTold is whom an owner-step of a step's run reached: the session the listener forwarded it
-// to, and the launch generation of the owner's claim where that claim ran in that session when
-// the outbox read it, 0 where it did not (the daemon's ownerStepTold). The zero OwnerTold is a run
-// no owner-step has reached.
+// OwnerTold is whom a message to the owner reached, by the one rule of told the owner-step of a
+// step's run (Store.MarkOwnerStepTold) and a merge forward's ask (MergeForward.Told,
+// Store.MarkMergeForwardTold) both hold: the session the listener forwarded it to, and the launch
+// generation of the owner's claim where that claim ran in that session when the outbox read it, 0
+// where it did not (the daemon's ownerToldMark). The zero OwnerTold reached nobody. Whether the
+// owner's claim as it is ready now holds what the mark reached is the workflow's toldNow.
 type OwnerTold struct {
-	Launch  uint64
-	Session string
+	Launch  uint64 `json:"launch,omitempty"`
+	Session string `json:"session,omitempty"`
 }
 
 // MarkOwnerStepTold records that the owner-step of the run step names reached told, for the
