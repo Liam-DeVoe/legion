@@ -28,7 +28,7 @@ import (
 func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, fresh bool,
 	by supervise.SuspendSource) (int, bool) {
 	c := m.Claim()
-	if failedOrRetired(c.State) {
+	if supervise.FailedOrRetired(c.State) {
 		if status, refusal, restarted := s.restartWorkedPhase(r, token, c, fresh); restarted {
 			if refusal != "" {
 				s.refuse(w, r, status, refusal)
@@ -121,12 +121,6 @@ func (s *server) machineRetry(w http.ResponseWriter, r *http.Request, m *supervi
 		return http.StatusAccepted, true
 	}
 	return http.StatusOK, true
-}
-
-// failedOrRetired is whether a claim's state is one in which the operator's retry starts the agent
-// through its issue's phase: the claim is failed or retired, whatever ended its agent, so its process is gone.
-func failedOrRetired(state supervise.ClaimState) bool {
-	return state == supervise.StateFailed || state == supervise.StateRetired
 }
 
 // forgetRecordedSession has the claim drop the session it recorded, for a caller that is
