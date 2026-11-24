@@ -362,11 +362,12 @@ The Go copies its tests hold the TypeScript to: src/dispatch-href.test.ts's "the
 reader's table is the same table" and src/dispatch-text-references.test.ts's "the Go
 reader's text table is the same table" read the Go reader's JSON tables,
 src/dispatch-block-ref.test.ts reads pmdoc's block pointer and typed block id
-tables, and scripts/gen-go.test.ts checks every file scripts/gen-go.ts writes - the
-Go contract, pmdoc's generated block schema and contracts' own generated TypeScript
-- is current. Not pmdoc/schema, the block schema those generated types are the
-shape of: this job generates that Go from packages/contracts/schemas, and reads no
-file of pmdoc/schema itself.
+tables, scripts/gen-go.test.ts checks every file scripts/gen-go.ts writes - the
+Go contract, the Go copy of the tool specs, pmdoc's generated block schema and contracts'
+own generated TypeScript - is current, and src/dispatch-tools.test.ts reads that Go copy
+of the tool specs for the rule and the bounds each tool states. Not pmdoc/schema, the
+block schema those generated types are the shape of: this job generates that Go from
+packages/contracts/schemas, and reads no file of pmdoc/schema itself.
 
 ## contracts: `bun run check:api` renders schemas/dispatch-openapi.json into
 
@@ -1154,9 +1155,9 @@ docs/solutions/github/join-a-job-to-the-ci-router.md walks through it.
 
 Caches: no step of the jobs this workflow calls saves an Actions cache entry itself; three
 actions its jobs call can save one, and only in a dispatched run (setup-bun, and
-architecture-check and spec-check at this paragraph's end). dispatch-two-builds restores the two
+architecture-check and spec-check at this paragraph's end). dispatch-two-builds restores the three
 earlier Dispatch builds it runs (ci-job-dispatch-two-builds.yaml) and builds one on a miss;
-ci-caches.yaml's dispatch-builds job fills both on main (the two-build section below says why).
+ci-caches.yaml's dispatch-builds job fills all three on main (the two-build section below says why).
 setup-go caches nothing here (`cache: false` on every step, the two check actions'
 included). The jobs that cache Go restore, in steps of their own, one of seven families with
 actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same
@@ -2270,23 +2271,23 @@ the whole repository, 3,242 branches and 3,710 tags on 2026-11-23, took the chec
 The first-rollout row runs the first-rollout build instead, the newest release before the first
 that registers its schema numbers: the job pins it by its commit (FIRST_ROLLOUT_COMMIT), the
 resolve step fails when its tag, legion-envoy-v30.20.2, names another commit, and the job builds
-it the same way.
-Each build is cached by its commit and the hash of the script that built it, with its src/ left
-out, since the test reads only the parts the script copies out of it. The job restores each and
-saves neither: .github/workflows/ci-caches.yaml's dispatch-builds job builds both on a push to
-main, and again when release-envoy-listener.yaml has tagged a release (it dispatches
-ci-caches.yaml with `only: dispatch-builds`), and saves them in main's scope, which every pull
-request and merge group reads; its dispatch-builds-superseded job then deletes main's older
-entries of each build and every entry of it on any other ref. The job saved them itself before,
-in the scope of its run's own ref, where a merge group's entry is read by no later run and a pull
-request's by that pull request alone: on 2026-11-23 25 such entries held 12.2 GB of the
+it the same way. The going-runs row of INFRA-1588's check c25 runs a third build, the release
+legion-envoy-v32.15.0, pinned by its commit (GOING_RELEASE_COMMIT) in the same way and for a
+reason of its own: that release's sweep deletes going_requests older than an hour, which the
+newest release need not do, so only a fixed release shows that a run of the head survives it.
+Each of the three builds is cached by its commit and the hash of the script that built it, with
+its src/ left out, since the test reads only the parts the script copies out of it. The job
+restores each and saves none: .github/workflows/ci-caches.yaml's dispatch-builds job builds all
+three on a push to main, and again when release-envoy-listener.yaml has tagged a release (it
+dispatches ci-caches.yaml with `only: dispatch-builds`), and saves them in main's scope, which
+every pull request and merge group reads; its dispatch-builds-superseded job then deletes main's
+older entries of each build and every entry of it on any other ref. The job saved them itself
+before, in the scope of its run's own ref, where a merge group's entry is read by no later run and
+a pull request's by that pull request alone: on 2026-11-23 25 such entries held 12.2 GB of the
 repository's 25 GB cache and main held none, and on 2026-11-22 308 of 351 successful jobs built
 the previous release again (107 s at the median, against 11 s to restore it). A run that resolves
 a release main holds no entry of (one tagged minutes ago, or an older one a pull request's merge
-base still names) builds it. The going-runs row of INFRA-1588's check c25 runs a third build, the
-release legion-envoy-v32.15.0, pinned by its commit (GOING_RELEASE_COMMIT) in the same way and for
-a reason of its own: that release's sweep deletes going_requests older than an hour, which the
-newest release need not do, so only a fixed release shows that a run of the head survives it.
+base still names) builds it.
 Each row's NATS runs in its own test process (internal/testnats), so the job
 needs no container runtime of its own. Then the browser half
 (packages/dispatch/e2e/cross-build.multiprocess.e2e.ts), which runs twice: the browser suite's
@@ -2296,6 +2297,35 @@ build's server. Playwright installs as it does for dispatch-browser-multiprocess
 get a database of their own, since they truncate it. In a merge-group run the called file's
 dispatch-two-builds-same job also runs the Go suite with this tree's own build as the previous
 build, beside this job and not after it (that job's comment says why).
+
+ci-caches.yaml's dispatch-builds job keys each entry on the key dispatch-two-builds restores,
+from the same steps: the previous build's commit from build-dispatch-build.sh, and the
+first-rollout and going-runs commits from that job's own env (FIRST_ROLLOUT_COMMIT and
+GOING_RELEASE_COMMIT), each its one pin in CI, which this job reads rather than copies. It looks
+each key up first, so a run after which neither the newest release nor the script nor a pin
+changed builds nothing. Its run after a release's tag (the `only: dispatch-builds` dispatch
+above) fills that release within minutes of the tag, for the pull requests and merge groups that
+resolve it from then on. It runs on ubuntu-24.04, the runner dispatch-two-builds runs on.
+
+Its dispatch-builds-superseded job deletes, on main and once dispatch-builds has looked its keys
+up, the entries of the three builds this repository keeps no more. For each build it keeps main's
+entry under the key dispatch-builds found or saved, and every main entry created after it, which
+a run that resolved a newer release beside this one saved (a release's dispatch-builds run can
+overlap a push's). It deletes the main entries created before it, of an older release or an older
+script, and every entry of that build, runner and architecture on any other ref, which only that
+ref's runs could read: the entries dispatch-two-builds saved in its runs' own refs before it
+stopped saving. That is a retention choice, not a proof that nothing reads them: a pull request
+whose merge base is older than main's newest release still resolves the older release, misses,
+and builds it (107 s at the median), as most runs did before. A run that is downloading a deleted
+entry at that moment gets a cache miss: actions/cache/restore warns and the job builds the
+release, slower but not failed. It runs on main alone, since dispatch-builds saves nothing on
+another branch. It deletes none unless the kept key is among main's entries and has the shape
+dispatch-builds gives it (the build, the runner's OS and architecture, the script's 64-hex hash,
+the 40-hex commit), from which the step takes the prefix it deletes under; the entries come from
+GitHub newest first and the step reads every one of them, so "created before" is GitHub's own
+order. It is as safe as ci-caches.yaml's envoy-infra-superseded job, for the reasons that job's
+comment gives: a job of its own, the list kept as JSON, jq selecting numeric ids, each id checked
+to be a number before `gh cache delete` gets it.
 
 ## The server-change soak
 
