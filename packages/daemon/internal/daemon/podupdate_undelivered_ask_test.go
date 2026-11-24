@@ -363,7 +363,7 @@ func TestPodUpdateAskWaitsWhileItsClaimsLockIsHeldAndIsDeliveredOnce(t *testing.
 	gone := supervise.RuntimeObservation{Observation: runtime.Observation{
 		Locator: *rig.claimOf(claim.RoleImplementer).Locator, Kind: runtime.Gone, Detail: "the process ended",
 	}}
-	go func() { _ = m.Handle(rig.ctx, gone) }()
+	go func() { _ = m.Handle(rig.worker(), gone) }()
 	select {
 	case <-inside:
 	case <-time.After(10 * time.Second):
@@ -371,7 +371,7 @@ func TestPodUpdateAskWaitsWhileItsClaimsLockIsHeldAndIsDeliveredOnce(t *testing.
 	}
 
 	ran := make(chan error, 1)
-	go func() { ran <- rig.lane.execute(rig.ctx, row) }()
+	go func() { ran <- rig.lane.execute(rig.worker(), row) }()
 	select {
 	case err := <-ran:
 		if !errors.Is(err, wait.ErrWaiting) {
