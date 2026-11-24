@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  The Legion skills `legion-architect`, `legion-controller`, `legion-oracle`, `legion-retro`,
+  `legion-worker` and `simplify-settled-diff` are written in the style of writing-agent-skills, with
+  the same rules. No skill tells an agent not to rebase its own issue branch. A wrong pushed commit
+  can be fixed with a follow-up commit or with a rewrite pushed by `jj git push`.
+  `legion-retro` again says why a learning must carry what the skill librarian needs.
+  `legion-worker` again routes a result against a check to the reference that holds the result rules.
+time: 2026-11-24T03:01:49Z
+custom:
+    Issue: INFRA-4849

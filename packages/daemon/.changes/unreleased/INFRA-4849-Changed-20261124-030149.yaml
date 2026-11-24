@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The merger's role prompt no longer tells it not to rebase. The implementer and the tester run each
+  `before_merge` check of the issue, not each check. A refusal of `release_children` or
+  `rerun_child` under a root that the daemon has already accepted names the backward move that
+  undoes it. The root's own close does not undo it, because that close lingers the tree.
+time: 2026-11-24T03:01:49Z
+custom:
+    Issue: INFRA-4849
