@@ -2064,7 +2064,7 @@ func HeldParentWaitsForChildren(issue, holding string) string {
 
 // HeldParentRetroStarts is what starts the retro of a parent held before it (record.HoldForChildren):
 // none of the three holds on its acceptance holding it any longer, which Legion reads again at the
-// settle of each fact and at each admission pass, with nobody acting (workflow's startHeldRetro).
+// settle of each fact and at each admission pass, with nobody acting (workflow's StartHeldRetro).
 // The reason beside a held root's set-back todo, the refusal of a release of the hold
 // (HeldParentWaitsForChildren) and the architect's retro-held notice say it in these words.
 const HeldParentRetroStarts = "Legion starts the retro by itself once nothing holds it any longer: no issue beneath it is still in the workflow, " +

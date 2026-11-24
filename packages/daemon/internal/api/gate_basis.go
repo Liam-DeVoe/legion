@@ -289,8 +289,7 @@ func (s *server) registrationBasis(w http.ResponseWriter, r *http.Request, grant
 			ancestor.Key, dispatch.LegionLabel, labelNames(ancestor.Labels))
 	}
 	if record.AcceptedStatus(ancestor.Status) {
-		return refuse("BASIS_ACCEPTED", "Dispatch shows %s %s, so it has been accepted; a basis is an ancestor not yet accepted, so request a person's approval of the issue's own document",
-			ancestor.Key, ancestor.Status)
+		return refuse("BASIS_ACCEPTED", "Dispatch shows %s %s, so it has been accepted; %s", ancestor.Key, ancestor.Status, record.BasisNotYetAccepted)
 	}
 	recorded, err := s.recordedIssue(ctx, ancestor.Key)
 	if err != nil {
@@ -298,8 +297,8 @@ func (s *server) registrationBasis(w http.ResponseWriter, r *http.Request, grant
 		return nil, false
 	}
 	if recorded != nil && record.Accepted(*recorded) {
-		return refuse("BASIS_ACCEPTED", "the daemon records %s in %s, so it has accepted %s's reviewed head; a basis is an ancestor not yet accepted, so request a person's approval of the issue's own document",
-			ancestor.Key, record.StandsAt(*recorded), ancestor.Key)
+		return refuse("BASIS_ACCEPTED", "the daemon records %s in %s, so it has accepted the head the step before %s's retro passed; %s",
+			ancestor.Key, record.StandsAt(*recorded), ancestor.Key, record.BasisNotYetAccepted)
 	}
 
 	// The ancestor's approval: a person's of its latest version, or its open request of that version

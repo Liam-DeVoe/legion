@@ -119,9 +119,9 @@ func OpenChildHolds(p phase.Phase) bool {
 //
 // Nothing here is stored, and nothing here moves an issue: the admission pass moves a started
 // parent with an open child into awaiting_children and takes one whose last open child has gone
-// back to the start it held (admit's childrenWaits), and the held list names the children of a
-// parent in awaiting_children and of one held before its retro (HeldReasonOf), each from this one
-// read of the pass.
+// back to the step ReturnStep gives its held start (admit's childrenWaits), and the held list
+// names the children of a parent in awaiting_children and of one held before its retro
+// (HeldReasonOf), each from this one read of the pass.
 func readChildWaits(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, held []string, facts LineFacts) (childrenFirst, started, retroHeld map[string]ChildWait, err error) {
 	candidates := ChildrenFirstCandidates(issues, facts.Gates)
 	parents := StartedParents(issues, facts.Owed)

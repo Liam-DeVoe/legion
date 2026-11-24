@@ -5055,7 +5055,7 @@ backlog_child_issue "$child4" "$child4_pod"
 # and, since tree 1 has Dispatch children, ends with the sentence every testing task of a parent
 # carries (workflow's baseMergeRun). No child merged during the wait, so the task names none.
 on_tree "$tree1" wait_for_phase "$tree1" testing 900
-returned=$(log_lines "workflow: a parent's open children are finished, so it goes back to the start it held" |
+returned=$(log_lines "workflow: a parent's open children are finished, so it goes back to the step its return takes" |
   jq -c --arg issue "$tree1" 'select(.issue == $issue and .held == "accepting" and .to == "testing")' | grep -c . || true)
 [ "$returned" = 1 ] ||
   fail "the daemon logged $tree1's return from awaiting_children $returned times with held=accepting to=testing, want once"

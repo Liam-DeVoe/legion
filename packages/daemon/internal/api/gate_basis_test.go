@@ -312,7 +312,7 @@ func TestBasisGateRefusals(t *testing.T) {
 		{name: "P in Dispatch status retro", change: func(world *statusRecorder, _ map[string]any) { setStatus(world, basisP, "retro") },
 			status: http.StatusConflict, code: "BASIS_ACCEPTED", says: []string{"Dispatch shows LEGION-150 retro"}},
 		{name: "P recorded by the daemon in merging", record: phase.Merging,
-			status: http.StatusConflict, code: "BASIS_ACCEPTED", says: []string{"the daemon records LEGION-150 in merging"}},
+			status: http.StatusConflict, code: "BASIS_ACCEPTED", says: []string{"the daemon records LEGION-150 in merging, so it has accepted the head the step before LEGION-150's retro passed;"}},
 		{name: "P's document with no review", change: func(world *statusRecorder, _ map[string]any) {
 			world.approvals[pSpec] = dispatch.Approval{State: "draft", LatestVersion: 3}
 			world.reviews[pSpec] = nil

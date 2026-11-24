@@ -2794,7 +2794,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   the first `sign_off` is refused `WAITING_ON_CHILDREN` naming both children, and tree 1 stays in `awaiting_children`;
   the proof human moves child 3 to the backlog (`backlog`, leaving it no Sandbox, no pod and no disk, its planner suspended), and the next `sign_off` is refused naming child 4 alone, which is what makes the wait every open child rather than any.
   The proof human commits a file under `docs/solutions/`, named after tree 1, to the base, so the base has moved past the head when the wait ends, and moves child 4 to the backlog:
-  the pass takes tree 1 back to `testing` in place of the acceptance it held (the log's `workflow: a parent's open children are finished, so it goes back to the start it held` with `held=accepting to=testing`, once), and the tester's task names that held start and asks for the round on the head merged with the tip of the base branch.
+  the pass takes tree 1 back to `testing` in place of the acceptance it held (the log's `workflow: a parent's open children are finished, so it goes back to the step its return takes` with `held=accepting to=testing`, once), and the tester's task names that held start and asks for the round on the head merged with the tip of the base branch.
   The tester runs that round in a checkout of its own and pushes nothing, at the review round the return left unchanged;
   after it the pull request's head is still the one the review approved, so no role merged the base forward;
   and the reviewer's decision on that head in its new round is its own, a request for changes failing the proof.
@@ -5245,7 +5245,7 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
   [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/parent-waits.sh     # → "parent waits e2e: PASS in <n>s", exit 0
 ```
 
-dispatch://INFRA-3320's check k14: a parent starts no phase while a Dispatch child of it is open (R9), its worker and its architect are told (R10), it waits holding no slot (R11), and it comes back to the start it held once no open child is left, on a task that names each child that merged during the wait and asks for no forward merge (R12).
+dispatch://INFRA-3320's check k14: a parent starts no phase while a Dispatch child of it is open (R9), its worker and its architect are told (R10), it waits holding no slot (R11), and once no open child is left it comes back as the step its return takes (`record.ReturnStep`: the start it held, or for a held testing, reviewing or accepting the first step of its walk after the implementer's), on a task that names each child that merged during the wait and asks for no forward merge (R12).
 Runs on any Linux host with `go`, `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no agent, no GitHub — so a Legion pod, CI and a devbox all run it.
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none.
@@ -5424,8 +5424,9 @@ The refusal names the remedies: fetch the history (`git fetch --unshallow`), or,
 `--control` runs part one's negative control against the base, and `--base-commit <rev>` against `<rev>` in its place, with no search for the base.
 The script takes that commit's tree with `git archive | tar -x` into a scratch directory under `TMPDIR`, copies this checkout's part-one driver into it (`approved_version_news_live_test.go`, `approved_version_news_part_one_steps_live_test.go` and `approved_version_news_seed_live_test.go`), and builds the daemon and Dispatch both from that tree, so nothing of this checkout is written.
 The seed calls two seams the base lacks, which this change defines beside the basis tests (`internal/daemon/basis_stays_scratch_dispatch_test.go`), a file the control does not copy: `seedTransact`, the seed's transaction, and `recordTaskAt`, which keeps a member's plan task where its recorded phase stands.
-So the control writes the base's version of each into the scratch tree, a test file of package daemon of its own under `//go:build e2e`, only where that tree defines no such function, and its transcript names each file it writes (`control_compat`).
+So the control copies the base's version of each into the scratch tree, a test file of package daemon of its own under `//go:build e2e`, only where that tree defines no such function, and its transcript names each file it writes (`control_compat`).
 The base's packages, and any daemon built from them, carry neither.
+Each version's Go is a file under `scripts/e2e/lib` whose name ends `.go.txt`, so no Go tool reads it there: `approved-version-news-control-transact.go.txt` and `approved-version-news-control-task.go.txt`.
 There, `seedTransact` opens a commit scope (`intake.WithCommitHooks`), runs the write in one transaction on the base's `Pool` and runs the hooks once it committed, as the seed did before #4533 moved it onto `store.Transact`, which the base lacks; and `recordTaskAt` does nothing, since the base records no task place.
 The rest of the driver is main's own start path, and it reads and writes the told record in SQL alone, so it builds there.
 On that daemon A2's five setup checks hold and its sixth fails, since no task is ever queued for the reviewer.

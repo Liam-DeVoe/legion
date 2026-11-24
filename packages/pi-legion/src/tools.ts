@@ -965,8 +965,11 @@ export function createLegionTool(deps: {
               const basisArtifactId =
                 "id" in ancestor
                   ? ancestor.id
-                  : await lookUpDocument("register_gate", ancestor.issue, ancestor.document, () =>
-                      resolveIssueDocumentId(board, ancestor.issue, ancestor.document)
+                  : await documentIdOf(
+                      "register_gate",
+                      dispatch,
+                      ancestor.issue,
+                      ancestor.document
                     );
               basisFields = { basisArtifactId, basisVersion: basis.version, reason: basis.reason };
             }

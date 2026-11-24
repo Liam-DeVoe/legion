@@ -2935,12 +2935,13 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // architect, in its reason.
 //
 // `retro-held` is a parent whose task's last step is not the owner's acceptance, held before its
-// retro because it passed its last step while a hold on its acceptance holds it: issues beneath it
-// still in the workflow, roots that rest on its approval still in the workflow, or its open
-// Dispatch children (workflow's retroHeld, retroHeldNotice; HoldForChildren). Its reason names
-// each issue of the first of them that holds it and what starts the retro: none of them holding
-// it any longer (workflow's startHeldRetro). It is told once for each of the three holds and each
-// run of the retro (workflow's tellRetroHeld).
+// retro because it passed its last step, or moved back out of merging, while a hold on its
+// acceptance holds it: issues beneath it still in the workflow, roots that rest on its approval
+// still in the workflow, or its open Dispatch children (workflow's retroHeld, retroHeldNotice;
+// HoldForChildren). Its reason names the move that entered the hold, each issue of the first of
+// them that holds it and what starts the retro: none of them holding it any longer (workflow's
+// StartHeldRetro). It is told once for each of the three holds and each run of the retro
+// (workflow's tellRetroHeld).
 //
 // `plan-not-taken` is a plan its issue's first step did not take, the first step telling the
 // issue's architect once, whatever number of versions it passed over, after it deleted their

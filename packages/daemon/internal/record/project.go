@@ -30,13 +30,18 @@ func RankLess(a, b Issue) bool {
 // the same question are here too (cycleAncestor).
 const DoneStatus = "done"
 
-// AcceptedStatus says whether Dispatch shows an issue accepted: retro, its reviewed head accepted,
-// or done (DoneStatus). It is the Dispatch half of R1's first condition for a basis
-// (dispatch://INFRA-3320): register_gate refuses an ancestor Dispatch shows so, and the daemon
-// ends a step's wait on such an ancestor's request, wherever it reads the status.
+// AcceptedStatus says whether Dispatch shows an issue accepted: retro, the head the step before its
+// retro passed accepted, or done (DoneStatus). It is the Dispatch half of R1's first condition for
+// a basis (dispatch://INFRA-3320): register_gate refuses an ancestor Dispatch shows so, and the
+// daemon ends a step's wait on such an ancestor's request, wherever it reads the status.
 func AcceptedStatus(status string) bool {
 	return status == DoneStatus || status == "retro"
 }
+
+// BasisNotYetAccepted is what every BASIS_ACCEPTED refusal of a registration on a basis ends with:
+// register_gate's of an ancestor that Dispatch shows accepted or the daemon records so (api's
+// registrationBasis), and the daemon's of one accepted since that read (workflow's acceptedBasis).
+const BasisNotYetAccepted = "a basis is an ancestor not yet accepted, so request a person's approval of the issue's own document"
 
 // OutOfWorkflowStatuses are the four Dispatch statuses that take an issue out of the workflow,
 // and the one list of them: OutOfWorkflow is this list read as a predicate, so a status added
@@ -608,13 +613,13 @@ type LineFacts struct {
 	// by parent key (readChildWaits over StartedParents): an issue in planning through
 	// accepting, held from one of them, owing a start, or waiting in awaiting_children, with no
 	// entry for one no open child holds. It is what the admission pass moves a started parent into
-	// awaiting_children by and takes one back to the start it held by (admit's childrenWaits), and
-	// the children the held word awaiting_children names (HeldReasonOf). It is apart from
-	// ChildWaits, the wait of an issue whose first phase has not started: a started parent's
-	// children hold no first phase, so no children-first notice, no children_first word and no
-	// wait of a started issue on another issue (Waits) reads them. ReadLineFacts fills it, since
-	// the judgement reads the mirror against the daemon's records in the transaction the line is
-	// never given; it is never stored, and each read of the facts judges it again.
+	// awaiting_children by and returns one by, to the step ReturnStep gives its held start (admit's
+	// childrenWaits), and the children the held word awaiting_children names (HeldReasonOf). It is
+	// apart from ChildWaits, the wait of an issue whose first phase has not started: a started
+	// parent's children hold no first phase, so no children-first notice, no children_first word
+	// and no wait of a started issue on another issue (Waits) reads them. ReadLineFacts fills it,
+	// since the judgement reads the mirror against the daemon's records in the transaction the line
+	// is never given; it is never stored, and each read of the facts judges it again.
 	StartedParentWaits map[string]ChildWait
 	// RetroHeldChildren is the open Dispatch children of each parent held before its retro
 	// (HoldForChildren), by parent key, judged as StartedParentWaits is (readChildWaits over

@@ -145,7 +145,7 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 //     reviewer step moves out of implementing into its retro, or into an acceptance no step
 //     follows, the ask of implementing stays on the record, and the move into merging asks the
 //     merger. A parent held before its retro, and its release into it, ask nothing either and
-//     make no call here (holdBeforeRetro, startHeldRetro).
+//     make no call here (holdBeforeRetro, StartHeldRetro).
 //
 // mergeForward asks once for each head, so a move into merging at a head the merger was already
 // asked of asks nothing more.

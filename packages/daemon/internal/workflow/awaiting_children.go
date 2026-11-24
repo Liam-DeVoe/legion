@@ -562,7 +562,7 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 		return err
 	}
-	e.logOnCommit(ctx, "workflow: a parent's open children are finished, so it goes back to the start it held", "issue", issue.Key,
+	e.logOnCommit(ctx, "workflow: a parent's open children are finished, so it goes back to the step its return takes", "issue", issue.Key,
 		"tree", issue.Tree, "held", held.Start, "to", back.Phase, "merged", merged)
 	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
 		return err

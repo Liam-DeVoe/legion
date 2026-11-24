@@ -87,8 +87,7 @@ func (e *Engine) acceptedBasis(ctx context.Context, tx pgx.Tx, fact intake.GateR
 	}
 	e.logOnCommit(ctx, "workflow: a registration on a basis whose ancestor was accepted since register_gate read it records nothing", "issue", fact.Issue,
 		"step", fact.Step.OrSpec(), "ancestor", ancestor, "accepted", why)
-	result := refused("BASIS_ACCEPTED", fmt.Sprintf("%s, so %s has been accepted since this registration read it; a basis is an ancestor not yet accepted, so request a person's approval of the issue's own document",
-		why, ancestor))
+	result := refused("BASIS_ACCEPTED", fmt.Sprintf("%s, so %s has been accepted since this registration read it; %s", why, ancestor, record.BasisNotYetAccepted))
 	result.Unspent = true
 	return result, nil
 }
@@ -114,7 +113,7 @@ func ancestorLeft(ancestor, why, status string, labelled bool) string {
 // accepted it (record.Accepted), as the end of a step's wait on key's approval request names it
 // (ancestorLeft): "The daemon moved LEGION-100 into retro, so LEGION-100 is accepted." The pass of
 // a step into either phase (transition) and the release of a parent held before its retro
-// (startHeldRetro) end such waits with it.
+// (StartHeldRetro) end such waits with it.
 func movedAccepted(key string, to phase.Phase) string {
 	return ancestorLeft(key, fmt.Sprintf("The daemon moved %s into %s", key, to), "", true)
 }
@@ -141,6 +140,11 @@ func sameBasis(a, b *record.GateBasis) bool {
 	return a.Issue == b.Issue && a.ArtifactID == b.ArtifactID && a.Version == b.Version
 }
 
+// ancestorOpenedStep is the opening of each text that tells a step an ancestor's approval opened, a
+// format of the step and the root: the design-approved notice's reason (openedNotice) and the
+// resting-root notice of the opening (tellRegisteredBasis).
+const ancestorOpenedStep = "An ancestor's approval opened the %s step of %s."
+
 // openedNotice is the design-approved notice of a registration that opened gate on root. For a
 // step a person's approval of the root's own document opened, it names the version registered and
 // reviewer, the person whose approval the read carried, as it always has. For a step an ancestor's
@@ -154,7 +158,7 @@ func openedNotice(root string, gate record.DesignGate, reviewer string) record.N
 	}
 	basis := gate.Basis
 	return record.Notice{Kind: "design-approved", Version: basis.Version, Actor: basis.Approver, Ref: stepRef(basis.Issue, step),
-		Reason: fmt.Sprintf("An ancestor's approval opened the %s step of %s. A person approved version %d of the %s of %s. "+
+		Reason: fmt.Sprintf(ancestorOpenedStep+" A person approved version %d of the %s of %s. "+
 			"%s registered version %d of its own %s on that approval. No person approved that version.",
 			step, root, basis.Version, step.Document(), basis.Issue, root, gate.LatestVersion, step.Document())}
 }
@@ -211,7 +215,7 @@ func (e *Engine) tellRegisteredBasis(ctx context.Context, tx pgx.Tx, root record
 		}
 		e.logOnCommit(ctx, "workflow: a design gate step opened on an ancestor's approval", "issue", root.Key, "step", step,
 			"version", gate.LatestVersion, "ancestor", basis.Issue, "basis", basis.ArtifactID, "basis_version", basis.Version, "recorded_before", stood)
-		what := fmt.Sprintf("An ancestor's approval opened the %s step of %s. A person approved version %d of %s. %s rests on this approval.",
+		what := fmt.Sprintf(ancestorOpenedStep+" A person approved version %d of %s. %s rests on this approval.",
 			step, root.Key, basis.Version, documentOf(basis.Issue, step), root.Key)
 		return e.queueRestingRoot(ctx, tx, root, step, basis, restingOpened, what)
 	}
@@ -250,7 +254,7 @@ func basisOpenedMessage(root string, gate record.DesignGate) string {
 	if len(basis.Serves) == 0 {
 		line("%s", servesSentence(root, basis.Issue, nil))
 	} else {
-		line("The checks of %s serve these requirements of %s:", root, basis.Issue)
+		line("%s:", servesOpening(root, basis.Issue))
 		for _, served := range basis.Serves {
 			body.WriteString("  - " + served + "\n")
 		}
@@ -334,7 +338,14 @@ func servesSentence(root, ancestor string, serves []string) string {
 	if len(serves) == 0 {
 		return fmt.Sprintf("The daemon records no requirement of %s that the checks of %s serve.", ancestor, root)
 	}
-	return fmt.Sprintf("The checks of %s serve these requirements of %s: %s.", root, ancestor, strings.Join(serves, ", "))
+	return servesOpening(root, ancestor) + ": " + strings.Join(serves, ", ") + "."
+}
+
+// servesOpening is the opening of each text that names the ancestor's requirements the checks of
+// root serve: servesSentence's, and the basis-opened message's line above the list of them
+// (basisOpenedMessage).
+func servesOpening(root, ancestor string) string {
+	return fmt.Sprintf("The checks of %s serve these requirements of %s", root, ancestor)
 }
 
 // ancestorInLiveTree says whether the daemon records key in a live tree: key is recorded, and the
@@ -942,8 +953,8 @@ func (e *Engine) endPendingOnRequest(ctx context.Context, tx pgx.Tx, fact intake
 		act := fmt.Sprintf("%s closed approval request %s of version %d of %s, as %s, with no approval of that version.",
 			cmp.Or(fact.Actor.Name(), "Someone Dispatch does not name"), fact.Ask, gate.Basis.Version, document, fact.State)
 		if fact.Withdrawn {
-			act = fmt.Sprintf("Dispatch shows %s done, so %s is accepted. Its close withdrew approval request %s of version %d of %s, with no approval of that version.",
-				fact.Key, fact.Key, fact.Ask, gate.Basis.Version, document)
+			act = ancestorLeft(fact.Key, "", record.DoneStatus, true) + fmt.Sprintf(" Its close withdrew approval request %s of version %d of %s, with no approval of that version.",
+				fact.Ask, gate.Basis.Version, document)
 		}
 		if err := e.endPendingBasis(ctx, tx, *root, gate, act, fact.Actor.Name()); err != nil {
 			return err

@@ -808,7 +808,7 @@ type PhaseRow struct {
 	// EntryFrom is the phase the start that raised that entry moved the issue from, written beside
 	// the four fields above in the same transaction (workflow's start and enter): the phase a
 	// transition left, awaiting_children for the return from a wait on the children, and held for
-	// the release of a hold that raises one (workflow's restartTask and startHeldRetro). It is
+	// the release of a hold that raises one (workflow's restartTask and StartHeldRetro). It is
 	// "" where no move raised the entry: the promotion's start of a mid-phase worker a re-admitted
 	// tree brings back, which hands the role the phase it already stands in, and every row a
 	// daemon upgraded in place found. Like the entry it is never reset: ClearGeneration leaves it

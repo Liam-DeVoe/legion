@@ -293,10 +293,10 @@ func TestTheRefusalsOverChildrenInTheWorkflowNameTheStatusWrite(t *testing.T) {
 			return ChildrenFirstNotice(record.ChildWait{Parent: "LEGION-208", Open: []record.OpenChild{{Key: "LEGION-209", Status: "triage"}}}).Reason
 		}},
 		{"retro-held", true, func(*testing.T) string {
-			return retroHeldNotice("LEGION-208", acceptanceHold{code: signOffChildInWorkflow, names: "LEGION-209"}).Reason
+			return retroHeldNotice("LEGION-208", acceptanceHold{code: signOffChildInWorkflow, names: "LEGION-209"}, false).Reason
 		}},
 		{"retro-held over an open Dispatch child", true, func(*testing.T) string {
-			return retroHeldNotice("LEGION-208", acceptanceHold{code: signOffChildOpen, names: "LEGION-209 (backlog)"}).Reason
+			return retroHeldNotice("LEGION-208", acceptanceHold{code: signOffChildOpen, names: "LEGION-209 (backlog)"}, true).Reason
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

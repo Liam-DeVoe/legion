@@ -150,7 +150,7 @@ func (e *Engine) closeLinger(ctx context.Context, tree string) error {
 // restEnded names ancestor as one a root stopped resting on in this fact (dispatch://INFRA-3320
 // R8): the root left the workflow (tellRestingLeft), or its step's wait on ancestor's approval
 // request ended (tellPendingEnded). A parent held before its retro waits for each root still in
-// the workflow that rests on it (startHeldRetro), and neither end writes a record of the parent's
+// the workflow that rests on it (StartHeldRetro), and neither end writes a record of the parent's
 // tree, so the fact's settle reads ancestor's tree as it reads a tree the fact wrote
 // (releaseHeldParents). A transaction no fact opened has no settle to read it in, and names
 // nothing: the next admission pass of the held parent's project reads it again (admit's

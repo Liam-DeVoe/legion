@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -85,16 +86,11 @@ func retryRefusedWith(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, mes
 	}
 }
 
-// A parent whose plan has no acceptance step passes its last step while a root of another tree
-// rests on its approval (dispatch://INFRA-3320 R8): P (LEGION-100) walks `implementer reviewer`,
-// and R (LEGION-208), a view root of its own tree, has its spec step waiting on P's open approval
-// request. The checks of the issues under an ancestor prove its requirements together, so P is
-// accepted only after R, which no sign-off reads on such a plan. So the reviewer's pass holds P
-// before its retro: held from retro for its children, accepted by nothing, R's wait on P's request
-// standing, and P's architect told once which root holds it, in the words of the sign-off's
-// refusal. A retry of the hold is refused naming R. R's leave of the workflow ends the hold with
-// nobody acting: P's retro starts in the fact of the leave, which writes no issue of P's tree.
-func TestARootRestingOnAParentHoldsItsRetroUntilTheRootLeaves(t *testing.T) {
+// heldForARestingRoot is P (LEGION-100), walking `implementer reviewer`, held before its retro by
+// the reviewer's pass while R (LEGION-208), a view root of its own tree, has its spec step waiting
+// on P's open approval request ask-100, and by nothing else.
+func heldForARestingRoot(t *testing.T) (*pgxpool.Pool, *Engine) {
+	t.Helper()
 	pool := migratedPool(t)
 	engine := gatedStepEngine(config.DesignGateRootIssues, nil)
 	seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
@@ -118,6 +114,20 @@ func TestARootRestingOnAParentHoldsItsRetroUntilTheRootLeaves(t *testing.T) {
 	approvesReviewOf(t, pool, engine, basisAncestor)
 
 	heldBeforeItsRetro(t, pool, engine, basisAncestor, "after the reviewer's pass")
+	return pool, engine
+}
+
+// A parent whose plan has no acceptance step passes its last step while a root of another tree
+// rests on its approval (dispatch://INFRA-3320 R8): P (LEGION-100) walks `implementer reviewer`,
+// and R (LEGION-208), a view root of its own tree, has its spec step waiting on P's open approval
+// request. The checks of the issues under an ancestor prove its requirements together, so P is
+// accepted only after R, which no sign-off reads on such a plan. So the reviewer's pass holds P
+// before its retro: held from retro for its children, accepted by nothing, R's wait on P's request
+// standing, and P's architect told once which root holds it, in the words of the sign-off's
+// refusal. A retry of the hold is refused naming R. R's leave of the workflow ends the hold with
+// nobody acting: P's retro starts in the fact of the leave, which writes no issue of P's tree.
+func TestARootRestingOnAParentHoldsItsRetroUntilTheRootLeaves(t *testing.T) {
+	pool, engine := heldForARestingRoot(t)
 	if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; !gate.PendingOnBasis() || gate.Basis.Pending.Ask != "ask-100" {
 		t.Fatalf("R's spec step after P's hold = %#v, want it still waiting on ask-100: nothing accepted P", gate)
 	}
@@ -145,6 +155,35 @@ func TestARootRestingOnAParentHoldsItsRetroUntilTheRootLeaves(t *testing.T) {
 	}
 	if got := noticesOf(t, pool, basisAncestor, "retro-held"); len(got) != 1 {
 		t.Fatalf("P was told %d retro-held notices in all, want the one of its hold", len(got))
+	}
+}
+
+// A parent held before its retro by a root that rests on its approval, and by nothing else, is
+// released once that root's step stops waiting on its approval request while the root stays in
+// the workflow (dispatch://INFRA-3320 R8): here a session closes P's request ask-100 with no
+// approval, which ends R's wait (tellPendingEnded) and leaves R's step resting on nothing. The
+// fact writes no issue of P's tree, so its settle reads P's tree only because the end names P to
+// it (restEnded), and P's retro starts in that fact, with nobody acting.
+func TestTheEndOfAWaitOnTheParentsRequestStartsItsHeldRetro(t *testing.T) {
+	pool, engine := heldForARestingRoot(t)
+
+	if result := applyFacts(t, pool, engine)("request-closed", intake.DispatchAskClosed{Key: basisAncestor, Ask: "ask-100", Kind: record.AskApproval,
+		Artifact: basisDoc, State: "resolved", Actor: dispatch.Actor{Kind: "session", ID: "session-other"}, Mark: askSeq(61)}); result.Refusal != nil {
+		t.Fatalf("the close of ask-100 was refused: %+v", result.Refusal)
+	}
+
+	if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; gate.Basis != nil || gate.RestsOnIssue(basisAncestor) {
+		t.Fatalf("R's spec step after the close = %#v, want its wait ended and resting on nothing", gate)
+	}
+	if root := issueOf(t, pool, engine, gatedRoot); !record.InWorkflow(root) {
+		t.Fatalf("R after the close = %s, want it still in the workflow: only its wait on P ended", root.Phase)
+	}
+	assertWalksAt(t, pool, engine, basisAncestor, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
+	if got := issueOf(t, pool, engine, basisAncestor); got.Hold != nil || !record.Accepted(got) {
+		t.Fatalf("P after the end of R's wait = %s with hold %+v, want its retro started and P accepted", got.Phase, got.Hold)
+	}
+	if starts := startsIn(t, pool, basisAncestor, claim.RoleImplementer, phase.Retro); len(starts) != 1 {
+		t.Fatalf("the end of R's wait wrote %d starts of P's retro, want one", len(starts))
 	}
 }
 

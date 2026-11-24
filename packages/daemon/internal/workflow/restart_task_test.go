@@ -160,7 +160,7 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 		// beside the board's move: the issues the retro waits for. The architect's rules for
 		// ending a child stay in the architect's retro-held notice, which this text is not.
 		why := root.Key + " waits before its retro while these issues beneath it are still in the workflow: " + heldBeneath + ". " + retroHeldStarts
-		if notice := retroHeldNotice(root.Key, acceptanceHold{code: signOffChildInWorkflow, names: heldBeneath}).Reason; !strings.Contains(notice, record.EndChildRule) || !strings.Contains(notice, record.StatusNotTakenYet) {
+		if notice := retroHeldNotice(root.Key, acceptanceHold{code: signOffChildInWorkflow, names: heldBeneath}, false).Reason; !strings.Contains(notice, record.EndChildRule) || !strings.Contains(notice, record.StatusNotTakenYet) {
 			t.Fatalf("the architect's retro-held notice = %q, want it carrying the rules for ending a child and the sentence on a status not taken yet", notice)
 		}
 		if got, writes := outboxRowsOf(t, pool, root.Key), statusWrites(t, pool, root.Key); got != outbox+1 || len(writes) != statuses+1 ||
@@ -308,7 +308,7 @@ func TestARestartDoesWhatAMoveDoesAfterItsStart(t *testing.T) {
 // recorded, which that start cannot carry. The three releases are the restart of a stopped task
 // at step 1 (restartTask); the retry of any other hold back into the phase it is from
 // (retryPhase), here a person's todo on a root with no plan rows that a failed claim holds; and
-// the start of a parent's retro once nothing beneath it is in the workflow (startHeldRetro), for
+// the start of a parent's retro once nothing beneath it is in the workflow (StartHeldRetro), for
 // a parent walking `implementer reviewer`. Each is crossed with its control, a holder that took
 // the approved version, which is owed nothing and queues no reconcile. The deployment gates the
 // spec of each root, and no reconcile stands queued before the release, so the count is the

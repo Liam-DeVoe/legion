@@ -328,7 +328,7 @@ func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 // waits in place of its retro while a hold on its acceptance holds it (record.HoldForChildren). No
 // path that resumes the work of a held issue resumes such a hold: a later version of the plan or a
 // person's todo on a root ends a task's stop (restartTask, or waitForFirstStep for a task stopped
-// before its first step), and the parent's retro starts once nothing holds it (startHeldRetro).
+// before its first step), and the parent's retro starts once nothing holds it (StartHeldRetro).
 // stored says whether the issue's run has plan rows: no plan holds a run that has none, so a hold
 // of either reason on such a run, which the roll-forward of a way back that left its reason finds,
 // is a plain hold that a retry releases.

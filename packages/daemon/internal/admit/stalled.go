@@ -684,7 +684,8 @@ func (h lineHolds) waitsByDesign(issue record.Issue) bool {
 // its wait is on its open children as the pass judged them (record.LineFacts.StartedParentWaits),
 // so it is answered true where it has an open child and the daemon has released every one, and
 // false where any is a child nobody released, which leaves it to waitsByDesign. One whose last
-// open child has gone waits on nothing here: the pass takes it back to the start it held.
+// open child has gone waits on nothing here: the pass takes it back to the step its return takes
+// (workflow's ReturnFromChildren, record.ReturnStep).
 func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
 	var open []record.OpenChild
 	if issue.Phase == phase.AwaitingChildren {

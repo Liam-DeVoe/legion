@@ -25,8 +25,10 @@ const (
 	// AwaitingChildren is a parent that held a phase start because a Dispatch child of it is still
 	// open: it keeps none of the cap's slots while it waits (record.PhaseKeepsSlot leaves it out),
 	// shows in_progress in Dispatch (workflow's phaseStatus), and no worker of it is woken for its
-	// work. When no open child is left it goes back to the start it held. It stands outside Order,
-	// so no move into or out of it is a move back, and outside RoleFor, since no role works it.
+	// work. When no open child is left it comes back as the step its return takes (record's
+	// ReturnStep): the start it held, or for a held testing, reviewing or accepting the first step
+	// of its walk after the implementer's. It stands outside Order, so no move into or out of it is
+	// a move back, and outside RoleFor, since no role works it.
 	AwaitingChildren Phase = "awaiting_children"
 	Planning         Phase = "planning"
 	Implementing     Phase = "implementing"
