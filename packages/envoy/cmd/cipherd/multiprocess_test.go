@@ -1091,9 +1091,11 @@ func TestTwoBrokers(t *testing.T) {
 	// neither of them signalled, put the retag on the peer within milliseconds. What this row
 	// changes is the signal, and nothing else.
 	t.Run("7_ADrainingPodStillTakesAPeersReread", func(t *testing.T) {
-		// drain is long enough to hold the whole observation inside the window in which the pod
-		// is still being sent traffic, which is what the row is about.
-		const drain = 30 * time.Second
+		// drain is the longest BROKER_DRAIN_SECONDS config.Load takes, so the whole observation
+		// falls inside the window in which the pod is still being sent traffic, which is what
+		// the row is about, with the most room a loaded machine can take from it. The cleanup's
+		// signal, the second, ends the drain (startBroker).
+		const drain = 120 * time.Second
 		stopping := startBrokerFleet(t, binary, []time.Duration{0, drain})
 		serving, draining := stopping.Processes[0], stopping.Processes[1]
 
