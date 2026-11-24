@@ -2,14 +2,18 @@ package daemon
 
 // R7 of dispatch://INFRA-3271, GPT-6.1 Sol's point 2 on #5285 at 0259f8af (and INFRA-341's
 // reviewer's point 10, its enqueue part), which INFRA-3118's architect ruled a fix inside R7: the
-// issue's architect's word of what a replacement took is a durable pending row, keyed by the issue
-// and the pod, which only the commit of its outbox row clears. A store that refuses the outbox row
-// once, after the replacement took the pod, loses nothing: the round ends, or the launch goes on,
-// and once the store takes rows again the notice goes out, once.
+// issue's architect's word of what a replacement took is a durable pending row, keyed by the
+// replacement's own identity, which only the commit of its outbox row clears. A store that refuses
+// the outbox row once, after the replacement took the pod, loses nothing: the launch goes on, and
+// once the store takes rows again the notice goes out, once. A round stays open until then
+// (INFRA-341's reviewer's point D on fa9deb04): its end clears what each claim records of the
+// round, which is what the notice names, so a notice queued after the end would name no role that
+// had not answered, and would read a kept volume as one marked for a reset.
 
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -60,7 +64,8 @@ func TestAWorkspaceTakenNoticeTheStoreRefusedGoesOutOnceTheStoreTakesIt(t *testi
 	t.Parallel()
 
 	// A round over a drift that breaks the pod replaces it over a workspace that holds an unpushed
-	// commit. The store refuses the notice: the round ends all the same.
+	// commit. The store refuses the notice: the round stays open until the store takes it, and
+	// then ends.
 	t.Run("a_round's_replacement", func(t *testing.T) {
 		t.Parallel()
 		rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
@@ -68,14 +73,10 @@ func TestAWorkspaceTakenNoticeTheStoreRefusedGoesOutOnceTheStoreTakesIt(t *testi
 		lift := rig.refuseWorkspaceTaken()
 		rig.answerRound(roundBreakingDrift, claim.RoleImplementer, claim.RoleTester)
 		rig.awaitReplacement(1, "of a round over a drift that breaks the pod")
-		for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
-			rig.awaitClaim(role, "its round to end with the replacement", func(c supervise.Claim) bool { return c.UpdateRound == "" })
-		}
-		if told := rig.architectNotices(record.WorkspaceTakenNotice); len(told) != 0 {
-			t.Fatalf("the store refused every workspace-taken notice, yet the outbox holds %+v", told)
-		}
+		rig.wantRoundOpenWhileRefused()
 		lift()
 		rig.wantToldOnce("once the store takes the row")
+		rig.wantRoundEnded()
 	})
 
 	// A launch's own replacement of the issue's pod records what it is about to take
@@ -99,4 +100,53 @@ func TestAWorkspaceTakenNoticeTheStoreRefusedGoesOutOnceTheStoreTakesIt(t *testi
 		lift()
 		rig.wantToldOnce("once the store takes the row")
 	})
+}
+
+// wantRoundOpenWhileRefused sweeps roundSweeps times and holds every role of the issue to its
+// round, and the outbox to no workspace-taken notice: the store refuses the notice, and the round
+// ends only once the notice is queued.
+func (r *podUpdateRig) wantRoundOpenWhileRefused() {
+	r.t.Helper()
+	for range roundSweeps {
+		r.tick()
+	}
+	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+		if c := r.claimOf(role); c.UpdateRound != podUpdateRound {
+			r.t.Fatalf("the %s records round %q while the store refuses the round's notice, want the round still open", role, c.UpdateRound)
+		}
+	}
+	if told := r.architectNotices(record.WorkspaceTakenNotice); len(told) != 0 {
+		r.t.Fatalf("the store refused every workspace-taken notice, yet the outbox holds %+v", told)
+	}
+}
+
+// wantRoundEnded sweeps until the implementer and the tester record no round.
+func (r *podUpdateRig) wantRoundEnded() {
+	r.t.Helper()
+	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+		r.awaitSwept(role, "its round to end once its notice is queued", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	}
+}
+
+// INFRA-341's reviewer's point D on fa9deb04: a round over a drift its roles can keep working under
+// replaces a pod whose disk is a kept volume that the issue's next pod mounts, over a read that found
+// an unpushed commit. The store refuses the notice. The round stays open, and once the store takes
+// the notice, the notice is the one the replacement built: the work is on the kept volume, which is
+// still there, not on one the replacement marked for a reset.
+func TestARoundWhoseNoticeTheStoreRefusedIsToldWhatItsReplacementFound(t *testing.T) {
+	t.Parallel()
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	rig.rt.ScriptKeptVolume(podUpdateIssue, podUpdateStart.Add(-time.Hour))
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, roundUnpushed)
+	lift := rig.refuseWorkspaceTaken()
+	rig.answerRound(podUpdateDrift, claim.RoleImplementer, claim.RoleTester)
+	rig.awaitReplacement(1, "of a pod whose disk is a kept volume")
+	rig.wantRoundOpenWhileRefused()
+	lift()
+	rig.wantToldOnce("once the store takes the row")
+	rig.wantRoundEnded()
+	told := rig.architectNotices(record.WorkspaceTakenNotice)
+	if reason := told[0].Reason; !strings.Contains(reason, "the volume is still there") || strings.Contains(reason, "deletes its volume") {
+		t.Fatalf("the architect was told %q, want the notice the replacement built: the work is on the kept volume, which is still there", reason)
+	}
 }
