@@ -5,8 +5,9 @@ body: |-
   `legion.daemonApiVersion` where the manifest holds one, as every packed plugin's does. Else, in
   a checkout (a directory from `from` up that holds
   `packages/contracts/fixtures/daemon-api/released-contracts.json`), it returns the greatest
-  number of that list plus the count of entry fixtures beside it, `contracts/*.json`. Else it
-  throws, naming both.
+  number of that list plus the count of entry fixtures beside it, the names in `contracts/` of
+  the form `<14-digit id>_<slug>.json`. Else it throws, naming both. A `released-contracts.json`
+  that is not a list of integers in strictly ascending order throws, naming it.
 time: 2026-11-24T13:20:00Z
 custom:
   Issue: INFRA-1569

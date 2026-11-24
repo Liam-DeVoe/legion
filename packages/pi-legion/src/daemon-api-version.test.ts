@@ -10,9 +10,10 @@ function json(relative: string): unknown {
 // The daemon's boot gate (`packages/daemon/internal/daemon/bootgate.go`) holds the installed
 // manifest's `legion.daemonApiVersion` to its `DaemonAPIVersion()`, L plus its count of entries.
 // The committed manifest names no number: every pack writes the tree's, L, the greatest number of
-// `released-contracts.json`, plus the count of entry fixtures, one for each entry the daemon
-// registers (`TestEveryEntryHasOneFixture`). So a contract change is one entry, and neither side
-// is bumped by hand. Run from this checkout, the plugin speaks that same number.
+// `released-contracts.json`, plus the count of entry fixtures (`<14-digit id>_<slug>.json`), one
+// for each entry the daemon registers (`TestEveryEntryHasOneFixture`). So a contract change is one
+// entry, and neither side is bumped by hand. Run from this checkout, the plugin speaks that same
+// number.
 test("package.json names no daemon API contract, and the plugin speaks this tree's", () => {
   const manifest = json("../package.json") as PluginManifest;
   expect(manifest.legion).toBeUndefined();
@@ -20,7 +21,7 @@ test("package.json names no daemon API contract, and the plugin speaks this tree
   const released = json(path.join(fixtures, "released-contracts.json")) as readonly number[];
   const contracts = path.join(fixtures, "contracts");
   const entries = existsSync(contracts)
-    ? readdirSync(contracts).filter((name) => name.endsWith(".json")).length
+    ? readdirSync(contracts).filter((name) => /^[0-9]{14}_.+\.json$/.test(name)).length
     : 0;
   expect(daemonContract(manifest, import.meta.dir)).toBe(Math.max(...released) + entries);
 });

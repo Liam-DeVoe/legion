@@ -21,7 +21,7 @@ test("package.json names no daemon API contract, and the plugin speaks this tree
   const released = json(path.join(fixtures, "released-contracts.json")) as readonly number[]
   const contracts = path.join(fixtures, "contracts")
   const entries = existsSync(contracts)
-    ? readdirSync(contracts).filter((name) => name.endsWith(".json")).length
+    ? readdirSync(contracts).filter((name) => /^[0-9]{14}_.+\.json$/.test(name)).length
     : 0
   expect(daemonContract(manifest, import.meta.dir)).toBe(Math.max(...released) + entries)
 })
