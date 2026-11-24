@@ -213,8 +213,8 @@ export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
 /**
  * The code of the `403` for a request by an access token the secrets broker issued that holds
  * only the OAuth scope `read`, to a route the read list does not name. Such a token names a
- * service and a session, no person and no project, and Dispatch serves it on the routes its read
- * list (`readScopeRoutes`) names and refuses it on every other one, before the route's handler
+ * service and a session, no person and no project, and Dispatch serves it on the routes whose
+ * declaration states `ReadScope` and refuses it on every other one, before the route's handler
  * runs and before its idempotency key is read, so the refused request claims no key and writes
  * nothing but the row that records its DPoP proof as spent. No sign-in and no other scope makes
  * the request possible for that token.

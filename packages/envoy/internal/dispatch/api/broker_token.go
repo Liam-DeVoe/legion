@@ -95,7 +95,7 @@ var brokerPersonScopes = []string{model.ScopePerson}
 // still: the scope read alone, the project scope none, no project (ciphertoken.Caller.ReadOnly,
 // which only a verifier built with Options.ServesReadOnly answers). Its credential is marked
 // read-only (model.Credential.ReadOnly) and holds no OAuth scope, and refuseReadOnlyToken answers
-// it 403 READ_ONLY_TOKEN on every route the read list does not name (readScopeRoutes), ahead of
+// it 403 READ_ONLY_TOKEN on every route whose declaration does not state ReadScope, ahead of
 // the scope gate, the sign-in check and everything else the route does. On a listed route it is
 // the session it names, reading as that session does.
 //

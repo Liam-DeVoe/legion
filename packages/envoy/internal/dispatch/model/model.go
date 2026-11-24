@@ -75,7 +75,7 @@ type Credential struct {
 	// ReadOnly is a broker-issued token that holds only the scope read (ciphertoken.ScopeRead):
 	// one the secrets broker minted from a read entry, naming a service and a session and no
 	// person and no project. Dispatch serves it on the routes its read list names
-	// (readScopeRoutes) alone and answers it 403 READ_ONLY_TOKEN on every other
+	// (the routes whose declaration states ReadScope) alone and answers it 403 READ_ONLY_TOKEN on every other
 	// (refuseReadOnlyToken), before anything else the route does. The scope itself is not among
 	// Scopes: those are what a route can require of a credential, and read meets no route's
 	// requirement; it narrows what this credential may call rather than widening it. False for

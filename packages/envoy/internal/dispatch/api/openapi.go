@@ -34,7 +34,7 @@ const openAPISchemaPrefix = "#/components/schemas/"
 
 // openAPISessionParameter is the one query parameter every operation carries. It is read by
 // actingPerson (server.go) on every route that resolves a person rather than by any one handler,
-// so it belongs to the whole API and routeShapes names it on no row.
+// so it belongs to the whole API and no route's Shape names it.
 const openAPISessionParameter = "the session the caller's credential acts for, where that " +
 	"credential proved none; a credential that proved a session is refused a parameter naming " +
 	"another (403 ACTOR_SESSION_MISMATCH)"

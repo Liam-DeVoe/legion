@@ -223,7 +223,7 @@ A decision's Keep (`POST /api/v1/artifacts/{id}/blocks/{block_id}/keep`) needs `
 A read-only token is the token the broker mints from a read entry (`BROKER_EXCHANGE_READ_ACCOUNTS`).
 It holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
 `brokerTokenVerifier` builds the verifier with `ciphertoken.Options.ServesReadOnly` set, so Dispatch accepts such a token and marks its credential read-only (`model.Credential.ReadOnly`), with no OAuth scope.
-Dispatch serves it on the routes its read list names (`readScopeRoutes` in `internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone.
+Dispatch serves it on the routes its read list names (the routes whose declaration states `ReadScope`, `routeDecl` in `internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone.
 Every other route of the table, and `GET /ws/live`, answers it `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseReadOnlyToken`).
 That refusal comes before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing but the row of its spent DPoP proof, which the token's verification records before the refusal.
 The other mounts outside the table read no broker token: `/ws/doc/{room}` answers such a token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
@@ -232,8 +232,8 @@ The document socket's heartbeat re-checks the browser credential it was admitted
 A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`, and the NATS auth service, which reads the broker's answer through `ciphertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
 
 A credential that names one project may write that project and nothing else.
-Every mutating row of the route table declares what its write belongs to (`internal/dispatch/api/routes_table.go`, `writeClasses`;
-a `GET` row declares nothing), in four classes:
+Every mutating route declares what its write belongs to (its `WriteClass`, `routeDecl` in `internal/dispatch/api/routes_table.go`;
+a `GET` route declares nothing), in four classes:
 *a project's* — the issue-key rows, the project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the message rows that carry an issue;
 *a project the body names* — the issue create alone, whose project its address does not name, so `createIssue` makes the same check itself once that project is settled;
 *the calling session's* — an agent conversation's own artifact and messages, the two routes a session answers its own delivery on (or, for a delivery sent for a `role:` route, one sent for a role the listener's role lookup names it the live holder of, which a session that took the role from the one the delivery went to answers it by), and the caller-private `me` rows;
@@ -4261,7 +4261,7 @@ The line is one synchronous write to stderr per request, so a log pipe that bloc
 every mounted `/api/v1` route with its `method`, `path`, `auth` (`public`, `any`, `human`, or `bearer`), and `description`, sorted by path then method.
 `envoy-dispatch routes` prints the same body from the table alone, with no database or listener and never a test hook;
 the docs site's HTTP API reference is generated from it.
-`envoy-dispatch openapi` prints the OpenAPI 3.1 document of the same table with its test hooks in, each hook's operation marked `x-test-hook`, from the table, the Go types beside it (`internal/dispatch/api/routes_shapes.go`) and nothing else;
+`envoy-dispatch openapi` prints the OpenAPI 3.1 document of the same table with its test hooks in, each hook's operation marked `x-test-hook`, from the table, the Go types each route's declaration names as its `Shape` (`internal/dispatch/api/routes_shapes.go`) and nothing else;
 `--out <path>` writes it to a file and `--check` compares the committed `packages/contracts/schemas/dispatch-openapi.json` with a fresh render, printing a unified diff and exiting 1 when the two differ.
 The clients' TypeScript types are rendered from that committed document, so a route added to the table reaches them with no type hand-written for it.
 The list below is a summary.
@@ -4986,7 +4986,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}` (PATCH; cookie, trusted header, or bearer)
 
   Update an issue's `title`, `status`, `priority`, `labels` (or `labels_add`, which adds to the labels the issue holds when the write commits;
-  not with `labels`), `route`, `external_links`, `parent`, `rank`, `assignee`, `components` or `repo` (`null` clears it); the route's row in `internal/dispatch/api/routes_table.go` (`GET /api/v1`) and `patchIssue` in `internal/dispatch/api/issue_patch.go` give each field's rules.
+  not with `labels`), `route`, `external_links`, `parent`, `rank`, `assignee`, `components` or `repo` (`null` clears it); the route's declaration, `internal/dispatch/api/route_api_v1_issues_{key}+patch.go` (`GET /api/v1`), and `patchIssue` in `internal/dispatch/api/issue_patch.go` give each field's rules.
   A `parent` may be an issue of any project, under the refusals a create meets, and one that would make the issue its own ancestor is `409 PARENT_INPUT`;
   a parent of another project passes on no repository, components or `legion` label, as on creation.
   A title is trimmed, and one over 1,000 characters is `400 CAP_EXCEEDED`, as on creation.

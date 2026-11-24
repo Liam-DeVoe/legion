@@ -2,7 +2,7 @@
  *  mints reads a running Dispatch's architecture route and nothing else. A read entry's pod token
  *  (BROKER_EXCHANGE_READ_ACCOUNTS) is exchanged at the broker for a token that holds the scope
  *  `read` alone and names no person and no project; Dispatch serves it on the routes its read list
- *  names (`readScopeRoutes`, packages/envoy/internal/dispatch/api/routes_table.go) and answers it
+ *  names (each route whose declaration states `ReadScope`, packages/envoy/internal/dispatch/api) and answers it
  *  403 READ_ONLY_TOKEN on every other one. The example entry's token, which writes its project,
  *  then sends the same write and is answered 2xx, so the refusal is the scope's and not the
  *  write's.

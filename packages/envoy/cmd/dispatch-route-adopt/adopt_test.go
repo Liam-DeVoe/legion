@@ -1,0 +1,287 @@
+package main
+
+import (
+	"bytes"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+)
+
+// The old layout as main held it the moment routes moved into files of their own (843a9f45),
+// frozen: a branch made before the move holds this layout, and the splitter must read it.
+const (
+	oldTableFixture  = "testdata/old_routes_table.go.txt"
+	oldShapesFixture = "testdata/old_routes_shapes.go.txt"
+)
+
+// The one row of the frozen table whose pattern is a constant another file of package api declares.
+const goingPathsFile = "package api\n\nconst goingCataloguePath = \"/api/v1/going/catalogue\"\n"
+
+// A row of the old layout a branch adds beside GET /api/v1/limits, with its shape: two branches
+// that each add one there conflict in the old layout, since both insert at one line.
+func addedRoute(name string) (row, shape string) {
+	return "\t\t{http.MethodGet, \"/api/v1/adopt-test-" + name + "\", authAny, \"Route " + name + ".\", s.getAdoptTest" + strings.ToUpper(name) + "},\n",
+		"\t\"GET /api/v1/adopt-test-" + name + "\": {Status: http.StatusOK, Response: routeIndex{}},\n"
+}
+
+// scratchRepo is a git repository holding package api in the old layout on main, with its
+// commits made by a fixed author.
+type scratchRepo struct {
+	t    *testing.T
+	root string
+}
+
+func newScratchRepo(t *testing.T) *scratchRepo {
+	t.Helper()
+	for name, value := range map[string]string{
+		"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+		"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+		"GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
+		"JJ_CONFIG": "/dev/null", "JJ_USER": "t", "JJ_EMAIL": "t@example.invalid",
+	} {
+		t.Setenv(name, value)
+	}
+	repo := &scratchRepo{t: t, root: t.TempDir()}
+	repo.git("init", "-q", "-b", "main", ".")
+	repo.write(tableFile, fixture(t, oldTableFixture))
+	repo.write(shapesFile, fixture(t, oldShapesFixture))
+	repo.write("going_paths.go", goingPathsFile)
+	repo.commit("the old layout")
+	return repo
+}
+
+func fixture(t *testing.T, name string) string {
+	t.Helper()
+	content, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(content)
+}
+
+// git runs git in the repository and answers its stdout, failing the test on an error.
+func (r *scratchRepo) git(args ...string) string {
+	r.t.Helper()
+	output, err := r.run("git", args...)
+	if err != nil {
+		r.t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
+	}
+	return output
+}
+
+// run runs a command in the repository and answers its combined output and error.
+func (r *scratchRepo) run(name string, args ...string) (string, error) {
+	command := exec.Command(name, args...)
+	command.Dir = r.root
+	output, err := command.CombinedOutput()
+	return string(output), err
+}
+
+func (r *scratchRepo) path(name string) string { return filepath.Join(r.root, apiDir, name) }
+
+func (r *scratchRepo) write(name, content string) {
+	r.t.Helper()
+	if err := os.MkdirAll(filepath.Dir(r.path(name)), 0o755); err != nil {
+		r.t.Fatal(err)
+	}
+	if err := os.WriteFile(r.path(name), []byte(content), 0o644); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+func (r *scratchRepo) read(name string) string {
+	r.t.Helper()
+	content, err := os.ReadFile(r.path(name))
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return string(content)
+}
+
+func (r *scratchRepo) commit(message string) string {
+	r.t.Helper()
+	r.git("add", "-A")
+	r.git("commit", "-q", "-m", message)
+	return strings.TrimSpace(r.git("rev-parse", "HEAD"))
+}
+
+// moveMain makes main the new layout: the old layout split into its route files, and the two
+// files the split leaves holding shared code alone.
+func (r *scratchRepo) moveMain() map[string][]byte {
+	r.t.Helper()
+	r.git("checkout", "-q", "main")
+	files, err := splitOldLayout(dirTree(filepath.Join(r.root, apiDir)))
+	if err != nil {
+		r.t.Fatalf("split the old layout: %v", err)
+	}
+	for name, content := range files {
+		r.write(name, string(content))
+	}
+	r.write(tableFile, "package api\n\n// The new layout's shared code.\n")
+	r.write(shapesFile, "package api\n\n// The new layout's shared shapes.\n")
+	r.commit("one file per route")
+	return files
+}
+
+// addRouteOn makes a branch from the base commit that adds one route in the old layout.
+func (r *scratchRepo) addRouteOn(branch, base, name string) string {
+	r.t.Helper()
+	r.git("checkout", "-q", "-b", branch, base)
+	row, shape := addedRoute(name)
+	table, shapes := r.read(tableFile), r.read(shapesFile)
+	limitsRow := strings.Index(table, "{http.MethodGet, \"/api/v1/limits\"")
+	limitsShape := strings.Index(shapes, "\t\"GET /api/v1/limits\":")
+	if limitsRow < 0 || limitsShape < 0 {
+		r.t.Fatal("the frozen old layout holds no GET /api/v1/limits row and shape to add beside")
+	}
+	rowEnd := limitsRow + strings.Index(table[limitsRow:], "\n") + 1
+	shapeEnd := limitsShape + strings.Index(shapes[limitsShape:], "\n") + 1
+	r.write(tableFile, table[:rowEnd]+row+table[rowEnd:])
+	r.write(shapesFile, shapes[:shapeEnd]+shape+shapes[shapeEnd:])
+	return r.commit("add GET /api/v1/adopt-test-" + name)
+}
+
+// adoptBranch merges main into the branch, runs the adopt step and commits the merge.
+func (r *scratchRepo) adoptBranch(branch string) (*adoptReport, string) {
+	r.t.Helper()
+	r.git("checkout", "-q", branch)
+	if output, err := r.run("git", "merge", "--no-edit", "main"); err == nil {
+		r.t.Fatalf("merging main into %s stopped on no conflict, so there is nothing to adopt: %s", branch, output)
+	}
+	repo, err := findRepo(r.root)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	report, err := adopt(repo)
+	if err != nil {
+		r.t.Fatalf("adopt on %s: %v", branch, err)
+	}
+	r.git("commit", "-q", "--no-edit")
+	return report, strings.TrimSpace(r.git("rev-parse", "HEAD"))
+}
+
+// Two branches that each add a route beside one row conflict in the old layout. Each takes main's
+// move with the adopt step: it writes the route the branch added, leaves nothing for the person,
+// and leaves no conflict; and then the two adopted branches merge with each other cleanly, which
+// is what the move is for. The control is the merge of the two branches before adoption, which
+// must conflict for the clean merge after it to mean anything.
+func TestTheAdoptStepCarriesARouteAcrossTheMoveAndTwoAddedRoutesMerge(t *testing.T) {
+	repo := newScratchRepo(t)
+	base := strings.TrimSpace(repo.git("rev-parse", "HEAD"))
+	headA := repo.addRouteOn("branch-a", base, "a")
+	headB := repo.addRouteOn("branch-b", base, "b")
+	if _, err := repo.run("git", "merge-tree", "--write-tree", headA, headB); err == nil {
+		t.Fatal("the control failed: the two branches merge cleanly in the old layout, so a clean merge after adoption proves nothing")
+	}
+	repo.moveMain()
+
+	adopted := map[string]string{}
+	for _, name := range []string{"a", "b"} {
+		report, head := repo.adoptBranch("branch-" + name)
+		file, err := routeFileName("GET", "/api/v1/adopt-test-"+name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(report.written, []string{file}) {
+			t.Fatalf("branch %s: the adopt step wrote %v, want only %s", name, report.written, file)
+		}
+		if report.left() {
+			var out bytes.Buffer
+			report.print(&out)
+			t.Fatalf("branch %s: the adopt step left work for the person:\n%s", name, out.String())
+		}
+		split, err := splitOldLayout(gitTree{gitRepo{root: repo.root}, map[string]string{"a": headA, "b": headB}[name]})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := repo.read(file); got != string(split[file]) {
+			t.Fatalf("branch %s: %s holds\n%s\nwant the branch's route as the splitter writes it:\n%s", name, file, got, split[file])
+		}
+		if got := repo.read(tableFile); got != "package api\n\n// The new layout's shared code.\n" {
+			t.Fatalf("branch %s: %s is not main's: %q", name, tableFile, got)
+		}
+		adopted[name] = head
+	}
+	if output, err := repo.run("git", "merge-tree", "--write-tree", "--name-only", adopted["a"], adopted["b"]); err != nil {
+		t.Fatalf("the two adopted branches conflict: %v\n%s", err, output)
+	}
+}
+
+// The same step under jj, where a merge is the working-copy commit `jj new <branch> main` makes
+// and jj reads no git index: the route the branch added is written, routes_table.go and
+// routes_shapes.go are main's, and jj holds no conflict afterwards.
+func TestTheAdoptStepResolvesAJJMerge(t *testing.T) {
+	if _, err := exec.LookPath("jj"); err != nil {
+		t.Skip("jj is not installed; the git path is tested above")
+	}
+	repo := newScratchRepo(t)
+	base := strings.TrimSpace(repo.git("rev-parse", "HEAD"))
+	repo.addRouteOn("branch-a", base, "a")
+	repo.moveMain()
+	if output, err := repo.run("jj", "git", "init", "--colocate"); err != nil {
+		t.Fatalf("jj git init: %v: %s", err, output)
+	}
+	if output, err := repo.run("jj", "new", "branch-a", "main", "-m", "merge main"); err != nil {
+		t.Fatalf("jj new: %v: %s", err, output)
+	}
+	found, err := findRepo(repo.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found.jj {
+		t.Fatal("findRepo took a jj workspace for a git checkout")
+	}
+	report, err := adopt(found)
+	if err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	file, _ := routeFileName("GET", "/api/v1/adopt-test-a")
+	if !slices.Equal(report.written, []string{file}) || report.left() {
+		var out bytes.Buffer
+		report.print(&out)
+		t.Fatalf("the adopt step under jj:\n%s", out.String())
+	}
+	conflicts, err := repo.run("jj", "file", "list", "-r", "@", "-T", `if(conflict, path ++ "\n")`)
+	if err != nil || strings.TrimSpace(conflicts) != "" {
+		t.Fatalf("jj still holds conflicts after the adopt step: %v %q", err, conflicts)
+	}
+	listed, err := repo.run("jj", "file", "list", "-r", "@", "--", filepath.Join(apiDir, file))
+	if err != nil || strings.TrimSpace(listed) == "" {
+		t.Fatalf("jj's merge commit does not hold %s: %v %q", file, err, listed)
+	}
+}
+
+// Splitting the frozen old layout writes one route file per row, each named by routeFileName and
+// no two alike, and splitting it again writes the same bytes.
+func TestTheSplitterIsDeterministic(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		tableFile: fixture(t, oldTableFixture), shapesFile: fixture(t, oldShapesFixture), "going_paths.go": goingPathsFile,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := splitOldLayout(dirTree(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := splitOldLayout(dirTree(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 222 {
+		t.Fatalf("the frozen table splits into %d route files, want its 222 rows", len(first))
+	}
+	for name, content := range first {
+		if !isRouteFile(name) {
+			t.Errorf("%s is no route file name", name)
+		}
+		if !bytes.Equal(content, second[name]) {
+			t.Errorf("%s: two splits of one table differ", name)
+		}
+	}
+}

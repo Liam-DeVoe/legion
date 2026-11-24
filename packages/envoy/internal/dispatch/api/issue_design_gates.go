@@ -21,7 +21,7 @@ import (
 // document a gate really records and stays quiet about every other document.
 //
 // The write belongs to the deployment's daemon and to no person, which is why the route declares
-// no personal scope — routeScopes names it nowhere (routes_table.go): the daemon presents the
+// no personal scope — its declaration states no OAuthScopes: the daemon presents the
 // credential the deployment configured, as it does on PUT /api/v1/projects/{key}/gated-steps,
 // and such a credential holds no scope at all. Nothing is lost by letting a machine write it,
 // because the record is what that deployment's gate did, not a choice a person makes here.
