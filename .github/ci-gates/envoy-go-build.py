@@ -58,10 +58,10 @@ GATE = gate("envoy_go_build", "envoy-go-build", runs=[
 ], reads=reads(
     (f"{ENVOY}/**", f"{at('envoy-go-build', 'Check Go formatting')}: gofmt -l . in packages/envoy reads every .go file under it, infra included"),
     ("packages/contracts/scripts/gen-go.ts", f"{at('envoy-go-build', 'Check Go contracts are generated from the shared schema')} (packages/contracts/package.json check:go)"),
-    ("packages/contracts/scripts/gen-go-tools.ts", "packages/contracts/scripts/gen-go.ts:130 imports renderDispatchTools, whose output --check compares"),
-    ("packages/contracts/scripts/gen-go-dispatch-frame.ts", "packages/contracts/scripts/gen-go.ts:125-129 imports the Dispatch frame renderers, whose outputs --check compares"),
+    ("packages/contracts/scripts/gen-go-tools.ts", "packages/contracts/scripts/gen-go.ts:133 imports renderDispatchTools, whose output --check compares"),
+    ("packages/contracts/scripts/gen-go-dispatch-frame.ts", "packages/contracts/scripts/gen-go.ts:128-132 imports the Dispatch frame renderers, whose outputs --check compares"),
     ("packages/contracts/scripts/dispatch-frame-corpus.ts", "packages/contracts/scripts/gen-go-dispatch-frame.ts:10 imports dispatchFrameCorpus, the payloads whose verdicts --check compares with fixtures/dispatch-frame-verdicts.json"),
-    (f"{FIX}/dispatch-frame-verdicts.json", "packages/contracts/scripts/gen-go.ts:1369-1373 is an output --check reads to compare with its render"),
+    (f"{FIX}/dispatch-frame-verdicts.json", "packages/contracts/scripts/gen-go.ts:1385-1389 is an output --check reads to compare with its render"),
     ("packages/contracts/schemas/**", "packages/contracts/scripts/gen-go.ts's envelopeFile and blockSchemaFile read schemas/, and --check reads schemas/dispatch-frame.schema.json to compare"),
     # The pinned step above compares the emitter's bytes with this file, so an edit of it alone
     # must start this job: the Run stands for what the command compiles, never for what it reads.
