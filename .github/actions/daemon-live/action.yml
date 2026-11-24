@@ -89,7 +89,6 @@ runs:
       shell: bash
       working-directory: packages/daemon
       env:
-        LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
         # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
         # clean up, and its image (testcontainers/ryuk, on Docker Hub) would be one more registry
         # pull a test could fail on.
