@@ -3292,6 +3292,18 @@ package api
 // architect, for a replacement that still took a disk that may hold work
 // (`record.WorkspaceTakenNotice`), which the same rollback deletes with the `workspace-kept`
 // rows. The round's ask (`supervise.UpdateTask`) changes words only, and no answer's shape moves.
+//
+// R6's review fixes change how the launcher makes its read, and no shape of its wire: the read
+// runs jj in an environment and a home of its own, behind the workspace guards
+// (`workspace.GuardJJ`), keeping the commits the clone keeps visible. So they ride this entry too.
+// The number stays because no daemon or image of the read as this branch's first R6 head,
+// 7c0d8f35, made it was ever merged or released: an image probe that pairs by 238 finds only a
+// launcher of this entry's read. One durable shape did change between the two heads: a launcher's
+// workspace check row (`record.IssueWorkspaceCheck`, `launcher`) names no role now, and this
+// release's decode refuses one that names a role, as a daemon of 7c0d8f35 wrote it
+// (`record.DecodeOutboxPayload`). An upgrade from that head alone, such as a test deployment of
+// it, lets its outbox run dry of them first: `select count(*) from outbox where kind =
+// 'issue_bundle' and payload ? 'launcher'` prints 0.
 // (This entry takes 238, above main's 219 at 7cb1f229367c: a reading of `const DaemonAPIVersion`
 // at refs/pull/<n>/head for each of the 493 open pull requests of this repository, made between
 // 2026-11-23T19:54:14Z and 19:54:42Z, found every number from 220 to 237 declared (220 by #4930 and
