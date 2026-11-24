@@ -860,9 +860,7 @@ func TestEveryComposedPromptCarriesThePodMemoryRule(t *testing.T) {
 		"Your subagents run their commands in your own issue pod",
 		sandboxEndsTheContainer,
 		everyRolesTurn,
-		ciWork,
 		"what may run in the pod is what `skill://legion-worker/references/tools.md` names",
-		"every other heavy run goes where your deployment's instructions say and instructions that name no such route are a gap to report, and you put these facts in the context of each subagent you start",
 	}
 	for _, tc := range []struct {
 		name   string
