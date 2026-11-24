@@ -405,7 +405,11 @@ func TestTheOwnerDoesAStepWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCanno
 	rowsOf := func(project string) []queued {
 		key, tree := project+"-208", project+"-208"
 		token := func(role claim.Role) claim.Token {
-			return claim.Token(strings.ToLower(project) + "-" + strings.ToLower(project) + "-" + strings.ToLower(key) + "-" + string(role))
+			token, err := claim.NewToken(strings.ToLower(project), key, role)
+			if err != nil {
+				t.Fatalf("the token of %s's %s: %v", key, role, err)
+			}
+			return token
 		}
 		return []queued{
 			{name: "an owner-step", newKind: true, payload: record.Notice{Kind: record.OwnerStepNotice, Role: claim.RoleImplementer,
