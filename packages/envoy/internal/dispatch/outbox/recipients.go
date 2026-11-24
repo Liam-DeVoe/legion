@@ -205,14 +205,15 @@ func loadThreadRecipients(ctx context.Context, db queryer, what, query string, a
 }
 
 // takesPrimaryAuthors reports whether a person's comment event reaches the sessions of its issue's
-// primary document (addPrimaryDocumentAuthors): it is a comment.created or comment.edited, it
-// notifies (only a person's comment does, events.Broker.Notify), it names an issue, and that issue
-// has no route and no session claimant (routing), either of which hears it in their place. A reply
-// in a thread whose session counts reaches only those of them a mention of the reply decides: the
-// thread rule leaves out every other session that only a document credits (takesThreadRule,
-// creditFilter.copyOf).
+// primary document (addPrimaryDocumentAuthors): it is a comment.created, a comment.edited or a
+// comment.deleted, it notifies (only a person's comment does, events.Broker.Notify), it names an
+// issue, and that issue has no route and no session claimant (routing), either of which hears it
+// in their place. A reply in a thread whose session counts reaches only those of them a mention of
+// the reply decides: the thread rule leaves out every other session that only a document credits
+// (takesThreadRule, creditFilter.copyOf).
 func takesPrimaryAuthors(event model.Event, routing routing) bool {
-	if !event.Notify || (event.Type != "comment.created" && event.Type != "comment.edited") {
+	kind := event.Type
+	if !event.Notify || (kind != "comment.created" && kind != "comment.edited" && kind != "comment.deleted") {
 		return false
 	}
 	if event.IssueKey == nil || routing.claimant != "" {
@@ -222,12 +223,12 @@ func takesPrimaryAuthors(event model.Event, routing routing) bool {
 }
 
 // takesThreadRule reports whether the thread rule may leave the credits of a document out of
-// event: takesPrimaryAuthors holds for it, and it is a person's reply in a thread or the edit of
-// one - a reply under a comment (reply_to) or a comment in an ask's thread (ask_id). Whether the
-// rule does is whether a session of that thread counts (routing.threadHeard, threadHearing.hear). A
-// person's reply answers the thread, so the sessions of the thread hear it, and a session that
-// only wrote or edited a document the reply is about does not. The rule takes copies away and
-// adds none.
+// event: takesPrimaryAuthors holds for it, and it is a person's reply in a thread or the edit or
+// the delete of one - a reply under a comment (reply_to) or a comment in an ask's thread (ask_id).
+// Whether the rule does is whether a session of that thread counts (routing.threadHeard,
+// threadHearing.hear). A person's reply answers the thread, so the sessions of the thread hear it,
+// and a session that only wrote or edited a document the reply is about does not. The rule takes
+// copies away and adds none.
 func takesThreadRule(event model.Event, routing routing) bool {
 	if !takesPrimaryAuthors(event, routing) {
 		return false
@@ -628,8 +629,8 @@ func takesClaimantRoute(event model.Event, claimant string) bool {
 	}
 	switch event.Type {
 	case "ask.answered", "ask.handed_back", "ask.resolved",
-		"comment.created", "comment.edited", "comment.resolved", "comment.reopened",
-		"message.created", "message.answered":
+		"comment.created", "comment.edited", "comment.deleted", "comment.resolved", "comment.reopened",
+		"message.created", "message.answered", "message.edited", "message.deleted":
 		return true
 	}
 	return false

@@ -16,7 +16,7 @@ import (
 // goldenStep is one step this change took out of a daemon text, for one set of its readers: the
 // kind, main's sentence as the Go literal of its builder at b4a566cb, or at 237f31c7, 724196ef,
 // c7e1cbd5, 3d2dddd0, 6d50ef31, a4cd4949, 5f2bf9af, d46ec4e0, c03d3afe, b537812f, 2f7ee6dc,
-// 054cd5ca, 74cb6855, 7cb1f229, 7df64124, f8a5195a or 40b01992 for a sentence main wrote since (a format verb, %s, %[1]s or %d, and …
+// 054cd5ca, 74cb6855, 7cb1f229, 7df64124, f8a5195a, 40b01992 or 1e54a54b for a sentence main wrote since (a format verb, %s, %[1]s or %d, and …
 // stand for any text), the readers, and the passage of the readers' prompt
 // (packages/daemon/internal/prompts) that gives each of them its own rule for the step, quoted
 // word for word from the one line of the file that holds it.
@@ -637,6 +637,8 @@ var goldenSteps = []goldenStep{
 		rolePrompts + "controller-root.md", "the round waits for a claim of the issue to run again."},
 	{texts.ProviderErrors, "; the daemon keeps the task and sends it again every %s at most", "controller",
 		rolePrompts + "controller-root.md", "the daemon keeps the task and sends it again every `retry_every` at most."},
+	{texts.ProviderErrors, "the last of them ran no prompt of the daemon's (a phase reminder, an Envoy message or a background job's result), so the daemon sends no task again for it", "controller",
+		rolePrompts + "controller-root.md", "ran no prompt of the daemon's (a phase reminder, an Envoy message or a background job's result), so the daemon sends no task again for it"},
 	{texts.TreeStalled, "Read the tree and decide what it needs. You can ask a role what it waits on. You can park the tree.", "controller",
 		rolePrompts + "controller-root.md", "`first: read_tree` says to read the tree first; then decide what it needs among the choices `decide` names: `ask_role_what_it_waits_on`, ask a role what it waits on; and `park_tree`, park the tree, which you ask a person about first, as `skill://legion-controller` says."},
 	{texts.TreeStalled, "No agent of the tree is at work.", "controller",

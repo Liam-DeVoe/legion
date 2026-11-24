@@ -715,8 +715,10 @@ func (b *goldenBuild) controllerNotices(r goldenRendering) {
 	}
 
 	// provider-errors, tree-stalled, architect-stalled in each arm.
-	b.notice(r, "errors", ctl, supervise.ProviderErrorsNotice(r.key(220), claim.RoleTester, 5+r.n, "model-"+r.words("model", 6), []int{529, 0}[r.n-1]),
+	b.notice(r, "errors", ctl, supervise.ProviderErrorsNotice(r.key(220), claim.RoleTester, 5+r.n, "model-"+r.words("model", 6), []int{529, 0}[r.n-1], false),
 		goldenWant("issue", r.key(220), "role", claim.RoleTester, "turns", 5+r.n))
+	b.notice(r, "errors-unprompted", ctl, supervise.ProviderErrorsNotice(r.key(221), claim.RoleImplementer, 5+r.n, "", []int{429, 0}[r.n-1], true),
+		goldenWant("issue", r.key(221), "role", claim.RoleImplementer, "turns", 5+r.n, "last_turn_unprompted", true))
 	{
 		root := r.key(230)
 		members := []record.Issue{

@@ -10963,6 +10963,41 @@
       }
     },
     {
+      "kind": "provider-errors",
+      "variant": "errors-unprompted",
+      "sample": 1,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "ALPHA-1221",
+      "summary": "provider-errors on ALPHA-1221",
+      "payload": {
+        "kind": "provider-errors",
+        "role": "implementer",
+        "issue": "ALPHA-1221",
+        "turns": 6,
+        "http_status": 429,
+        "last_turn_unprompted": true
+      }
+    },
+    {
+      "kind": "provider-errors",
+      "variant": "errors-unprompted",
+      "sample": 2,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "BRAVO-2221",
+      "summary": "provider-errors on BRAVO-2221",
+      "payload": {
+        "kind": "provider-errors",
+        "role": "implementer",
+        "issue": "BRAVO-2221",
+        "turns": 7,
+        "last_turn_unprompted": true
+      }
+    },
+    {
       "kind": "tree-stalled",
       "variant": "stopped",
       "sample": 1,

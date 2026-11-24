@@ -184,7 +184,7 @@ describe("a reply too large for the bus, on an ask seven sessions own, as each s
     const raw = JSON.stringify(copy.envelope);
     return [
       read(renderInbound(raw, copy.reader, copy.topic).content),
-      read(renderInbound(raw, copy.reader, copy.topic, wholeBody).content),
+      read(renderInbound(raw, copy.reader, copy.topic, { body: wholeBody }).content),
     ];
   }
 

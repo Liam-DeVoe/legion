@@ -64,21 +64,97 @@ func promptRetryDelay(attempt int) time.Duration {
 // one cause; the controller's notice and the prompt the task goes behind state the status it is
 // built from (tellControllerOfProviderErrors, ProviderErrorNote).
 func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) error {
-	cause := providerErrorCause(r.HTTPStatus)
-	m.claim.ProviderErrorRun++
-	m.log.Warn("supervise: the turn this task's prompt ran ended in a provider error; the task is kept and sent again",
-		"delivery", r.DeliveryID, "retryable", r.Retryable, "httpStatus", r.HTTPStatus,
-		"provider", r.Provider, "model", r.Model, "providerErrorRun", m.claim.ProviderErrorRun)
-	m.tellControllerOfProviderErrors(r.Model, r.HTTPStatus)
-	// The prompt's turn ran and is over, and its result has ended the wait for results
-	// (promptResulted), so nothing of the task is left outstanding.
-	if err := m.takeBackPending(ctx, taskRead); err != nil {
+	cause, failed, err := m.providerErrorTurnEnded(ctx, providerErrorTurn{
+		status: r.HTTPStatus, model: r.Model,
+		line:  "supervise: the turn this task's prompt ran ended in a provider error; the task is kept and sent again",
+		attrs: []any{"delivery", r.DeliveryID, "retryable", r.Retryable, "provider", r.Provider},
+		turn:  "this claim's turn",
+		// The prompt's turn ran and is over, and its result has ended the wait for results
+		// (promptResulted), so nothing of the task is left outstanding.
+		before: func(ctx context.Context) error { return m.takeBackPending(ctx, taskRead) },
+	})
+	if err != nil || failed {
 		return err
 	}
-	if holdsTheIssue(r.HTTPStatus) {
-		return m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended this claim's turn: "+cause)
-	}
 	return m.providerErrorClears(ctx, cause, r.HTTPStatus)
+}
+
+// unpromptedTurnEnded judges a refused turn that ran no prompt of the daemon's — a phase reminder
+// the plugin sent, an Envoy message, a background job's result — from its turn-outcome report
+// (turnOutcome), as providerErrored judges a prompt's turn from that prompt's result, and in the
+// same run of provider-error turns (providerErrorTurnEnded); a clean report ends that run in
+// turnOutcome, whoever ran the turn. It differs in one thing: no task is the turn's to keep or
+// send again, since whatever the claim owes, this turn did not carry it, and the reminder that
+// started it keeps its own pace (packages/pi-shared/src/phase-reminder.ts). So a refusal that can
+// clear, or whose report carries no status, is counted and written down and nothing more, and the
+// controller's notice says that the turn ran no prompt of the daemon's, so nothing is sent again.
+// The cause is built from the status alone, and the notice names no model, since a report carries
+// none. Whether the report failed the claim is what the turn-outcome answer says
+// (Machine.turnOutcomeFailed, HandleTurnOutcome).
+func (m *Machine) unpromptedTurnEnded(ctx context.Context, r RequestTurnOutcome) error {
+	_, failed, err := m.providerErrorTurnEnded(ctx, providerErrorTurn{
+		status:     r.HTTPStatus,
+		line:       "supervise: a turn that ran no prompt of the daemon's ended in a provider error",
+		attrs:      []any{"generation", r.Generation, "sequence", r.Sequence},
+		turn:       "a turn this claim's agent ran with no prompt of the daemon's",
+		unprompted: true,
+	})
+	m.turnOutcomeFailed = failed
+	if err != nil || failed {
+		return err
+	}
+	return m.persist(ctx)
+}
+
+// providerErrorTurn is one turn that ended in a provider error, as providerErrorTurnEnded counts
+// it: the status and the model the error named (each zero where it named none), the warning
+// line's message and its own attributes, the failure sentence's words for the turn, whether the
+// turn ran no prompt of the daemon's, which the notice states because the daemon then has no task
+// to send again (ProviderErrorsNotice), and what runs before a failure, if anything.
+type providerErrorTurn struct {
+	status     int
+	model      string
+	line       string
+	attrs      []any
+	turn       string
+	unprompted bool
+	before     func(context.Context) error
+}
+
+// providerErrorTurnEnded is what every turn that ended in a provider error does, whatever ran it
+// (providerErrored, unpromptedTurnEnded), so that both kinds make the claim's one run: the cause
+// built from the status alone (providerErrorCause), one more turn in the run, the warning line,
+// the controller's notice at providerErrorRunTold, then t.before, and, for a status that cannot
+// clear (holdsTheIssue), the claim's failure under CauseProviderError, which holds the issue for
+// its architect. It answers the cause, and whether it failed the claim; what a turn whose error
+// can clear does next is its caller's.
+func (m *Machine) providerErrorTurnEnded(ctx context.Context, t providerErrorTurn) (string, bool, error) {
+	cause := providerErrorCause(t.status)
+	m.claim.ProviderErrorRun++
+	m.log.Warn(t.line, append(t.attrs, "httpStatus", t.status, "model", t.model, "providerErrorRun", m.claim.ProviderErrorRun)...)
+	m.tellControllerOfProviderErrors(t.model, t.status, t.unprompted)
+	if t.before != nil {
+		if err := t.before(ctx); err != nil {
+			return cause, false, err
+		}
+	}
+	if !holdsTheIssue(t.status) {
+		return cause, false, nil
+	}
+	return cause, true, m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended "+t.turn+": "+cause)
+}
+
+// providerErrorRunOver puts the claim's run of provider-error turns back to zero for a turn that
+// ended with none, whatever ran it (promptResulted, turnOutcome), and logs line with
+// attrs and the run that ended. It answers whether the run moved, which is whether the claim owes
+// a write for it.
+func (m *Machine) providerErrorRunOver(line string, attrs ...any) bool {
+	if m.claim.ProviderErrorRun == 0 {
+		return false
+	}
+	m.log.Info(line, append(attrs, "providerErrorRun", m.claim.ProviderErrorRun)...)
+	m.claim.ProviderErrorRun = 0
+	return true
 }
 
 // holdsTheIssue is whether an error of this HTTP status fails the claim, so that the workflow
@@ -169,34 +245,43 @@ func ProviderErrorNote(issue string, status int) texts.ProviderErrorNoteRecord {
 // provider-error turns reaches providerErrorRunTold; a turn with no error puts the run back to
 // zero, and only then can another notice go. It is the one exit from a run of such turns, and it
 // is a notice rather than a hold: R2 forbids an attempt limit. The notice is the provider-errors
-// record (texts.ProviderErrorsRecord): the claim's role, the run of turns, model, the model the
-// failed request went to (empty when the error named none), status, the HTTP status the provider
-// answered (0 for none, as a content filter's refusal answers), and promptRetryMax, the longest
-// the ladder waits between sends. The provider's own text is in no part of it
-// (providerErrorCause).
-func (m *Machine) tellControllerOfProviderErrors(model string, status int) {
+// record (ProviderErrorsNotice): the claim's role, the run of turns, model, the model the failed
+// request went to (empty when the error named none), status, the HTTP status the provider
+// answered (0 for none, as a content filter's refusal answers), and what the daemon does about the
+// turn that reached the count: a prompt's task is kept and sent again, every promptRetryMax at
+// most, and unprompted says that turn ran no prompt of the daemon's, so it has no task to send
+// (providerErrorTurnEnded). The provider's own text is in no part of it (providerErrorCause).
+func (m *Machine) tellControllerOfProviderErrors(model string, status int, unprompted bool) {
 	if m.claim.ProviderErrorRun != providerErrorRunTold || m.deps.ProviderErrorRunReached == nil {
 		return
 	}
-	told := ProviderErrorsNotice(m.claim.Issue, m.claim.Role, m.claim.ProviderErrorRun, model, status)
+	told := ProviderErrorsNotice(m.claim.Issue, m.claim.Role, m.claim.ProviderErrorRun, model, status, unprompted)
 	m.log.Warn("supervise: a run of turns that ended in a provider error; the controller is told",
-		"providerErrorRun", m.claim.ProviderErrorRun, "model", model, "httpStatus", status)
+		"providerErrorRun", m.claim.ProviderErrorRun, "model", model, "httpStatus", status, "unprompted", unprompted)
 	m.deps.ProviderErrorRunReached(m.current(), told)
 }
 
 // ProviderErrorsNotice is the provider-errors notice of issue: the role whose run of turns ended
 // in provider errors, the count of those turns, the model the failed request went to (empty when
-// the error named none), the HTTP status the provider answered (0 for none), and promptRetryMax,
-// the longest the ladder waits between sends.
-func ProviderErrorsNotice(issue string, role claim.Role, turns int, model string, status int) texts.ProviderErrorsRecord {
-	return texts.ProviderErrorsRecord{
-		NoticeHead: texts.NoticeHead{Kind: texts.ProviderErrors, Issue: issue},
-		Role:       role,
-		Turns:      turns,
-		Model:      model,
-		HTTPStatus: status,
-		RetryEvery: promptRetryMax.String(),
+// the error named none), the HTTP status the provider answered (0 for none), and what the daemon
+// does about the last of those turns. Where that turn ran a prompt of the daemon's, the daemon
+// keeps the prompt's task and sends it again, and the notice names promptRetryMax, the longest the
+// ladder waits between sends. Where it ran none (unprompted: a phase reminder, an Envoy message or
+// a background job's result), the notice says so (texts.ProviderErrorsRecord.LastTurnUnprompted)
+// and names no wait, since the daemon sends no task again for that turn.
+func ProviderErrorsNotice(issue string, role claim.Role, turns int, model string, status int, unprompted bool) texts.ProviderErrorsRecord {
+	notice := texts.ProviderErrorsRecord{
+		NoticeHead:         texts.NoticeHead{Kind: texts.ProviderErrors, Issue: issue},
+		Role:               role,
+		Turns:              turns,
+		Model:              model,
+		HTTPStatus:         status,
+		LastTurnUnprompted: unprompted,
 	}
+	if !unprompted {
+		notice.RetryEvery = promptRetryMax.String()
+	}
+	return notice
 }
 
 // waitsForProviderError is whether the ladder's wait is armed for the delivery of this id.

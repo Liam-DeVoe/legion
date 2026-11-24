@@ -688,10 +688,12 @@ type Notice struct {
 	SetTodo          string `json:"set_todo,omitempty"`
 	// What holds an update round past its bound (update-stalled).
 	Holds string `json:"holds,omitempty"`
-	// The provider errors of a role (provider-errors).
-	Turns      int    `json:"turns,omitempty"`
-	Model      string `json:"model,omitempty"`
-	HTTPStatus int    `json:"http_status,omitempty"`
+	// The provider errors of a role (provider-errors), and whether the last of those turns ran no
+	// prompt of the daemon's, so that the daemon sends no task again for it.
+	Turns              int    `json:"turns,omitempty"`
+	Model              string `json:"model,omitempty"`
+	HTTPStatus         int    `json:"http_status,omitempty"`
+	LastTurnUnprompted bool   `json:"last_turn_unprompted,omitempty"`
 	// A stopped tree (tree-stalled), the step the controller takes first for it
 	// (texts.TreeStalledFirst) and what it decides among then (texts.TreeStalledChoices).
 	QuietFor string             `json:"quiet_for,omitempty"`

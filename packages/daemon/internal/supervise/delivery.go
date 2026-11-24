@@ -1852,16 +1852,16 @@ func CutTurnNote(issue, cause string) texts.CutTurnNoteRecord {
 
 // AbandonedSessionNote is the abandoned-session note of issue (texts.AbandonedSessionNoteRecord),
 // which begins the first prompt given to the agent of role that replaced a session the claim
-// abandoned (forgetSession): one the provider refused out of its budget, one an operator retried
+// abandoned (forgetSession): one whose last turns the provider refused, one an operator retried
 // with --fresh-session, or one no session store holds any more. Nothing in a new session says
 // that an older one existed, so a worker reading an empty transcript takes its task for a fresh
 // start and does again what is already pushed (dispatch://INFRA-714, item 4 of the refusal
-// section). It names the session that was left behind and why, in the words the claim recorded —
-// for a refused session the provider's own, the size it refused at among them — and the issue's
-// branch, which outlives a session. The controller is given no branch, since it works no
-// checkout. What the agent reads next, the handoff records among it, is its role prompt's.
+// section). It names the session that was left behind and why, in the words the claim recorded,
+// and the issue's branch, which outlives a session. The controller is given no branch, since it
+// works no checkout. What the agent reads next, the handoff records among it, is its role prompt's.
 //
-// The reason is the provider's own text, so it is a field of its own, which the renderer quotes
+// The reason can be far-side text — a runtime's account of a death, or the provider's own words
+// in a failure an earlier daemon wrote — so it is a field of its own, which the renderer quotes
 // where it must (texts.Render): a newline or a quote inside it is escaped rather than read as a
 // line of the daemon's own. The abandoned session's id, which the agent's registration chose, is
 // a field of its own for the same reason.

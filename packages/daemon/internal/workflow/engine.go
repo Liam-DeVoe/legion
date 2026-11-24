@@ -1438,12 +1438,12 @@ func diedOf(died *texts.WorkerDiedRecord, fact intake.ClaimFailed, failureCarrie
 // whether the bound cut it: the text on one line with every character it keeps written as
 // lineEscaped writes it (a line break and a backslash as Go writes them in a string), cut so that
 // what it carries is at most runtime.PodEndRunes runes, the bound the pod end beside it is cut to.
-// For a run of refused turns the sentence holds the provider's message as the role's own plugin
-// posted it (supervise's refusalCause, api's turn-outcome route), which can run to a mebibyte
-// over many lines; the claim and a failure record's `detail` keep it whole (noticeFailure). The
-// text is read a character at a time and the read stops at the bound, so no more of a mebibyte is
-// read than the bound keeps. The cut falls between two characters of the text, never inside one
-// nor inside the escape of one, so the carried text never ends in half an escape.
+// A failure an earlier daemon wrote for a run of refused turns holds the provider's message as the
+// role's own plugin posted it (the turn-outcome route), which can run to a mebibyte over many
+// lines; the claim and a failure record's `detail` keep it whole (noticeFailure). The text is read
+// a character at a time and the read stops at the bound, so no more of a mebibyte is read than the
+// bound keeps. The cut falls between two characters of the text, never inside one nor inside the
+// escape of one, so the carried text never ends in half an escape.
 func oneBoundedLine(text string) (string, bool) {
 	if at := runeOffset(text, runtime.PodEndRunes); at == len(text) && !needsEscape(text) {
 		return text, false
@@ -2123,8 +2123,8 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 //
 // freshSession is the operator's `--fresh-session`: the start it queues retries the claim in a
 // new session rather than the one it recorded. An architect's retry of a held phase asks for
-// none — a claim the provider refused out of its budget takes a new session all the same, which
-// the claim's own retry decides (supervise's freshSession).
+// none, and resumes the recorded session, whatever the claim's run of refused turns (supervise's
+// freshSession).
 //
 // The release is logged as it commits: the issue, the phase it comes back to, who retried it and
 // the architect's own words where its retry named any.

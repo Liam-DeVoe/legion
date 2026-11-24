@@ -369,6 +369,9 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"update.waiting[1].role", "update.waiting[1].suspended_by", "update.waiting[2].suspended_by"}},
 	{kind: texts.ProviderErrors, from: "supervise/providererror.go:tellControllerOfProviderErrors (the run of turns)",
 		keys: []string{"issue", "role", "turns"}},
+	{kind: texts.ProviderErrors, variants: []string{"errors-unprompted"}, from: "supervise/providererror.go:unpromptedTurnEnded at 1e54a54b " +
+		"(the last of them ran no prompt of the daemon's)",
+		keys: []string{"last_turn_unprompted"}},
 	{kind: texts.TreeStalled, from: "admit/stalled.go:stalledTreeReason (each member, its phase, its pull request)",
 		keys: []string{"issue", "members[0].key", "members[0].phase", "members[0].pull_request", "members[1].key", "members[1].phase"}},
 	{kind: texts.ArchitectStalled, from: "admit/architect_stall.go:architectStalls (the root's phase)",

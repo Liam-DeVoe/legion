@@ -1,4 +1,5 @@
 import {
+  type Actor,
   ArtifactCreatedEventPayloadSchema as ArtifactCreatedPayloadSchema,
   ArtifactHumanEditedEventPayloadSchema as ArtifactHumanEditedPayloadSchema,
   ArtifactVersionEventPayloadSchema as ArtifactVersionPayloadSchema,
@@ -7,6 +8,7 @@ import {
   AskEventPayloadSchema as AskPayloadSchema,
   ChildStatusEventPayloadSchema as ChildStatusPayloadSchema,
   CommentEventPayloadSchema as CommentPayloadSchema,
+  type CommentRead,
   DELIVERY_DUPLICATE_WINDOW_MS,
   type DeliveryCapability,
   DISPATCH_DOCUMENT_TOPIC_PREFIX,
@@ -26,11 +28,12 @@ import {
   legacyAgentSubject,
   MessageDeliveryEventPayloadSchema as MessageDeliveryPayloadSchema,
   MessageEventPayloadSchema as MessagePayloadSchema,
+  type MessageRead,
   type SessionAnswerRelation,
   SubscriptionRemovedEventPayloadSchema as SubscriptionRemovedPayloadSchema,
   topicForms,
 } from "@legion/contracts";
-import { encode } from "@toon-format/toon";
+import { encode, encodeLines, escapeString } from "@toon-format/toon";
 import { z } from "zod";
 import { textHead } from "./ask-answer";
 import { commandLine } from "./dispatch-command";
@@ -494,9 +497,10 @@ export type RenderInboundResult = {
    *  Absent when the event carried the body whole, and from a render given that body. */
   readonly cutItem?: CarriedItem;
   /** Why the card shows the payload as the text its sender sent rather than laid out: what the
-   *  card's encoder threw on the parsed value (one nested past the depth its recursion reaches).
-   *  Absent when the card lays the payload out. A host logs it once, with the message's id, for
-   *  a frame it shows. */
+   *  card's encoder threw on the parsed value (one nested past the depth its recursion reaches),
+   *  or that its layout passes the card's bound (`INBOUND_CARD_MAX_BYTES`, or twice the text it
+   *  lays out when that is more). Absent when the card lays the payload
+   *  out. A host logs it once, with the message's id, for a frame it shows. */
   readonly payloadShownAsText?: string;
 };
 
@@ -589,30 +593,56 @@ function carriedBodyNote(event: DispatchEvent): string | undefined {
   return item === undefined ? what : `${what}; read it whole with ${wholeItemRoute(item)}`;
 }
 
+/** A comment or message as Dispatch's API reads it whole (`wholeCarriedBody`): its body, and the
+ *  marks of a correction its author made since the event, each a field of its own on the card the
+ *  frame is rendered again as (`renderInbound`'s `wholeBody`): when they last edited it
+ *  (`edited_at`), or when and as whom they deleted it (`deleted_at`, `deleted_by`), whose body the
+ *  delete cleared. A mark the post does not carry is left out. */
+export interface WholeBody {
+  readonly body: string;
+  readonly edited_at?: string;
+  readonly deleted_at?: string;
+  readonly deleted_by?: Actor | null;
+}
+
 /** The whole body of a comment or message, read from the server. Undefined when the read fails
  *  or its answer does not hold the item, so the caller keeps the part its event carried: a body
  *  the server will not answer is still better read in part than not at all. A direct message,
- *  which belongs to no issue, is read through the session it was delivered to. */
+ *  which belongs to no issue, is read through the session it was delivered to. An item its
+ *  author deleted since answers no body, and the time and the author of the delete
+ *  (`deleted_at`, `deleted_by`), which the card states as fields where the body the delete
+ *  cleared would stand. An item its author edited answers its current body and the time of its
+ *  last edit (`edited_at`): the card a host renders with this body re-read the post, so it prints
+ *  the words the post holds now, which an edit since the event may have changed, and says when
+ *  they were written. The marks are fields and never words of the body's block, which holds the
+ *  author's words alone. A card that prints only what its frame carried reads nothing here, and
+ *  keeps the delivery Dispatch sent as it was sent. */
 export async function wholeCarriedBody(
   client: DispatchClient,
   item: CarriedItem,
   session?: string
-): Promise<string | undefined> {
+): Promise<WholeBody | undefined> {
   try {
+    let posts: readonly (CommentRead["comment"] | MessageRead["message"])[];
     if (item.resource === "comment") {
       const read = await client.getComment(item.id);
-      return [read.comment, ...(read.replies ?? [])].find((comment) => comment.id === item.id)
-        ?.body;
+      posts = [read.comment, ...(read.replies ?? [])];
+    } else {
+      if (item.issueKey === null && session === undefined) return undefined;
+      const read =
+        item.issueKey === null
+          ? await client.getMessageThread(item.id, session)
+          : await client.getMessage(item.issueKey, item.id);
+      posts = [read.message, ...(read.replies ?? [])];
     }
-    const read =
-      item.issueKey === null
-        ? session === undefined
-          ? undefined
-          : await client.getMessageThread(item.id, session)
-        : await client.getMessage(item.issueKey, item.id);
-    return read === undefined
-      ? undefined
-      : [read.message, ...(read.replies ?? [])].find((message) => message.id === item.id)?.body;
+    const post = posts.find((candidate) => candidate.id === item.id);
+    if (post === undefined) return undefined;
+    if (post.deleted_at != null) {
+      return { body: "", deleted_at: post.deleted_at, deleted_by: post.deleted_by };
+    }
+    return post.edited_at == null
+      ? { body: post.body }
+      : { body: post.body, edited_at: post.edited_at };
   } catch {
     return undefined;
   }
@@ -697,11 +727,14 @@ const DISPATCH_PAYLOAD_SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   "comment.resolved": CommentPayloadSchema,
   "comment.reopened": CommentPayloadSchema,
   "comment.edited": CommentPayloadSchema,
+  "comment.deleted": CommentPayloadSchema,
   "suggestion.accepted": CommentPayloadSchema,
   "suggestion.rejected": CommentPayloadSchema,
   "message.created": MessagePayloadSchema,
   "message.delivery": MessageDeliveryPayloadSchema,
   "message.answered": MessagePayloadSchema,
+  "message.edited": MessagePayloadSchema,
+  "message.deleted": MessagePayloadSchema,
   "child.status": ChildStatusPayloadSchema,
 };
 function topicDocument(
@@ -1115,18 +1148,30 @@ function isObject(value: unknown): value is Readonly<Record<string, unknown>> {
 }
 
 /** `event` with the whole body of the item it carried only the first part of, or none of: the
- *  body the server answered, and neither flag that said the body on the event was not the
- *  item's own (`bodyWasCut`). The event is left as it arrived when the caller read no body. */
-function withWholeBody(event: DispatchEvent, body: string | undefined): DispatchEvent {
-  if (body === undefined || !isObject(event.payload) || !bodyWasCut(event.payload)) return event;
-  const { body_truncated: _cut, payload_omitted: _omitted, ...carried } = event.payload;
-  return { ...event, payload: { ...carried, body } };
+ *  body the server answered, the marks of an edit or a delete since (`wholeCarriedBody`) as the
+ *  payload's own fields, and neither flag that said the body on the event was not the item's own
+ *  (`bodyWasCut`). An item deleted since has no body: the payload names the delete instead, so the
+ *  card draws no block for words that are gone. The event is left as it arrived when the caller
+ *  read no body. */
+function withWholeBody(event: DispatchEvent, whole: WholeBody | undefined): DispatchEvent {
+  if (whole === undefined || !isObject(event.payload) || !bodyWasCut(event.payload)) return event;
+  const {
+    body_truncated: _cut,
+    payload_omitted: _omitted,
+    body: _part,
+    ...carried
+  } = event.payload;
+  const { body, ...marks } = whole;
+  return {
+    ...event,
+    payload: { ...carried, ...(whole.deleted_at === undefined ? { body } : {}), ...marks },
+  };
 }
 
-/** The frame one Dispatch envelope's payload carries. `wholeBody` is the body of the item the
- *  event named as cut, read from the server since (`renderInbound`'s `cutItem`); the event then
- *  reads as though it had carried that body whole. */
-function parseDispatchFrame(rawPayload: string, wholeBody?: string): DispatchFrame {
+/** The frame one Dispatch envelope's payload carries. `wholeBody` is the item the event named as
+ *  cut, read from the server since (`renderInbound`'s `cutItem`); the event then reads as though
+ *  it had carried that body whole. */
+function parseDispatchFrame(rawPayload: string, wholeBody?: WholeBody): DispatchFrame {
   let value: unknown;
   try {
     value = parseFrameJSON(rawPayload);
@@ -1192,6 +1237,34 @@ type WireEvent = DispatchEvent & {
   readonly quiet?: unknown;
   readonly created_at?: unknown;
 };
+
+/**
+ * The fewest bytes a card may lay a payload out in: the hub's largest frame (nats-server's
+ * `max_payload`, 1 MiB). A card may hold more, up to twice the text it lays out (its frame and a
+ * body read whole), since a body Dispatch's API gives whole comes from no frame. A layout
+ * normally holds about as many bytes as the text it lays out, since TOON drops JSON's quotes and
+ * braces and escapes no character JSON does not. Measured with Bun 1.4.4: the largest card laid
+ * out in this package's tests is 7,007 bytes, of the 29 envelope fixtures in `@legion/contracts`
+ * 2,632 bytes (from a 2,726-byte frame), a GitHub comment at GitHub's 65,536-character limit
+ * 65,783 bytes, a 1 MiB frame of a table 478,316 bytes, and a Dispatch comment read whole near
+ * Dispatch's 1 MiB request limit about 480 bytes more than its body. A layout past the bound is
+ * indentation: an array chain 1,400 levels deep, a 3 KB frame, lays out in about 2 MB.
+ */
+export const INBOUND_CARD_MAX_BYTES = 1 << 20;
+
+/** `value` as TOON, or undefined once its lines pass `maxBytes`. The encoder yields one line at a
+ *  time, so a layout far larger than its value costs no more than the bound to refuse. */
+function encodeWithin(value: unknown, maxBytes: number): string | undefined {
+  const lines: string[] = [];
+  // The newlines that join the lines: one fewer than the lines.
+  let bytes = -1;
+  for (const line of encodeLines(value)) {
+    bytes += Buffer.byteLength(line) + 1;
+    if (bytes > maxBytes) return undefined;
+    lines.push(line);
+  }
+  return lines.join("\n");
+}
 
 export function inboundTimestamp(milliseconds: number | undefined): string {
   if (milliseconds === undefined) return "unknown";
@@ -1471,17 +1544,23 @@ function summaryOpens(text: string, summary: string | undefined): boolean {
  * object chain 7,000 deep does in the encoder in Bun 1.4.4, and one 40,000 deep that holds a
  * `words` object does in the walk). A throw out of `renderInbound` throws in every host's render
  * and in the consumer's give-up alike, so the frame would go back to the stream on every delivery
- * and nobody would be told of it. So both run here, inside one fallback. The payload is the text
- * its sender sent, so the card shows it as that text in the field that lays it out (`payloadKey`:
- * `message`, or a Dispatch frame's `dispatch`), with no block of its words, `payloadShownAsText`
- * says what threw, and the host takes the frame. That text is bounded as every message's is: by
- * the frame, at most the hub's 1 MiB. A throw the payload is not behind is thrown as before.
+ * and nobody would be told of it. And each level indents every line below it, so a deep value the
+ * encoder does reach the bottom of lays out in bytes that grow with the square of its depth: a
+ * 20 KB array chain made a 100 MB card. So a payload's field that is an object or a list is laid
+ * out within `bound` bytes (`encodeWithin`), and the walk, the encoder and that bound are one
+ * fallback here. Either way the payload is the text its sender sent, so the card shows it as that
+ * text in the field that lays it out (`payloadKey`: `message`, or a Dispatch frame's `dispatch`),
+ * with no block of its words, `payloadShownAsText` says what threw or that the layout passed the
+ * bound, and the host takes the frame. That text is bounded as every message's is: by the frame,
+ * at most the hub's 1 MiB. A payload's field that already is text is bounded so already, and a
+ * throw the payload is not behind is thrown as before.
  */
 function encodeCardFields(
   shown: Readonly<Record<string, unknown>>,
   after: Readonly<Record<string, unknown>>,
   payloadKey: "dispatch" | "message",
   payload: string | undefined,
+  bound: number,
   layPayload?: () => LaidPayload
 ): {
   readonly toon: string;
@@ -1489,25 +1568,28 @@ function encodeCardFields(
   readonly words: readonly NamedWords[];
   readonly payloadShownAsText?: string;
 } {
+  let reason: string;
   try {
     const laid = layPayload?.();
     const fields = laid === undefined ? shown : { ...shown, [payloadKey]: laid.fields };
-    return {
-      toon: encode({ envoy: { ...fields, ...after } }),
-      shown: fields,
-      words: laid?.words ?? [],
-    };
+    const card = { envoy: { ...fields, ...after } };
+    const value = fields[payloadKey];
+    const toon =
+      typeof value === "object" && value !== null ? encodeWithin(card, bound) : encode(card);
+    if (toon !== undefined) return { toon, shown: fields, words: laid?.words ?? [] };
+    reason = `its layout is larger than the ${bound} bytes a card holds`;
   } catch (error) {
     if (payload === undefined || !(payloadKey in shown)) throw error;
-    // The payload's field keeps its place among the card's fields.
-    const asText = { ...shown, [payloadKey]: payload };
-    return {
-      toon: encode({ envoy: { ...asText, ...after } }),
-      shown: asText,
-      words: [],
-      payloadShownAsText: messageFor(error),
-    };
+    reason = messageFor(error);
   }
+  // The payload's field keeps its place among the card's fields.
+  const asText = { ...shown, [payloadKey]: payload };
+  return {
+    toon: encode({ envoy: { ...asText, ...after } }),
+    shown: asText,
+    words: [],
+    payloadShownAsText: reason,
+  };
 }
 
 /**
@@ -1524,14 +1606,15 @@ function encodeCardFields(
  *
  * A body is bounded block by block, so one event can carry its first part alone, or none of it, and
  * the result names that item as `cutItem`: a host that reads it whole (`wholeCarriedBody`) renders
- * again with the body in `wholeBody`, and the card then holds the body the comment or message route
- * answers rather than one that stops mid-thought.
+ * again with that read in `wholeBody`, and the card then holds the body the comment or message
+ * route answers rather than one that stops mid-thought, with the marks of an edit or a delete
+ * since as fields of its own.
  */
 export function renderInbound(
   raw: string,
   sessionID: string,
   subject?: string,
-  wholeBody?: string
+  wholeBody?: WholeBody
 ): RenderInboundResult {
   let value: unknown;
   try {
@@ -1883,7 +1966,25 @@ export function renderInbound(
   };
   const issues = unrecognised === undefined ? {} : { unrecognised };
   const payloadKey = dispatchRendered ? "dispatch" : "message";
-  const laidOut = encodeCardFields(shownFields, issues, payloadKey, envelope.payload, layPayload);
+  // A layout holds about as many bytes as the text it lays out, and a body Dispatch's API gave
+  // whole (`wholeBody`) is text the frame did not carry, so a card may hold twice that text when
+  // that is more than the hub's frame: a 1 MiB comment read whole still lays out whole. The body
+  // counts as the card writes it (`escapeString`, TOON's own escaping), since TOON writes a
+  // control character as six bytes: a body of them lays out in six times its own bytes.
+  const cardBound = Math.max(
+    INBOUND_CARD_MAX_BYTES,
+    2 *
+      (Buffer.byteLength(raw) +
+        (wholeBody === undefined ? 0 : Buffer.byteLength(escapeString(wholeBody.body))))
+  );
+  const laidOut = encodeCardFields(
+    shownFields,
+    issues,
+    payloadKey,
+    envelope.payload,
+    cardBound,
+    layPayload
+  );
   blocks.push(...laidOut.words);
   let fields = laidOut.toon;
   let payloadShownAsText = laidOut.payloadShownAsText;
@@ -1898,7 +1999,8 @@ export function renderInbound(
       laidOut.shown,
       { note, ...issues },
       payloadKey,
-      envelope.payload
+      envelope.payload,
+      cardBound
     );
     fields = noted.toon;
     payloadShownAsText ??= noted.payloadShownAsText;

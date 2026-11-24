@@ -241,14 +241,24 @@ type UpdateWaiting struct {
 
 // ProviderErrorsRecord is the notice that a role ended turns in a row in a provider error
 // (supervise's tellControllerOfProviderErrors): the role, the count of those turns, the model, the
-// HTTP status the provider answered, and how often at most the daemon sends the task again.
+// HTTP status the provider answered, and what the daemon does about the last of those turns.
+// Where that turn ran a prompt of the daemon's, the daemon keeps its task and sends it again, and
+// RetryEvery names how often at most. Where it ran none — a phase reminder, an Envoy message or a
+// background job's result — LastTurnUnprompted says so, and the notice names no RetryEvery: the
+// daemon has no task to send again for that turn. Main's notice (1e54a54b) said each in its reason
+// ("%d turns in a row%s ended in %s; %s", the last part either "the daemon keeps the task and sends
+// it again every %s at most" or "the last of them ran no prompt of the daemon's (a phase reminder,
+// an Envoy message or a background job's result), so the daemon sends no task again for it"), and
+// R8 of dispatch://INFRA-3686 keeps each fact as a field; what the daemon does for each is the
+// controller's prompt's (roles/controller-root.md).
 type ProviderErrorsRecord struct {
 	NoticeHead
-	Role       claim.Role `json:"role,omitempty"`
-	Turns      int        `json:"turns"`
-	Model      string     `json:"model,omitempty"`
-	HTTPStatus int        `json:"http_status,omitempty"`
-	RetryEvery string     `json:"retry_every"`
+	Role               claim.Role `json:"role,omitempty"`
+	Turns              int        `json:"turns"`
+	Model              string     `json:"model,omitempty"`
+	HTTPStatus         int        `json:"http_status,omitempty"`
+	RetryEvery         string     `json:"retry_every,omitempty"`
+	LastTurnUnprompted bool       `json:"last_turn_unprompted,omitempty"`
 }
 
 // TreeStalledRecord is the notice that a tree has stopped (admit's tellStalledTrees): how long the

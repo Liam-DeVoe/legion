@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { DispatchEvent } from "@legion/contracts";
+import { decode } from "@toon-format/toon";
 
 import { bearerCredential } from "../bearer";
 import { type CarriedItem, renderInbound, wholeCarriedBody } from "../delivery";
@@ -10,6 +11,7 @@ import { splitWordsBlocks } from "../words-block";
 
 const SERVER = "https://dispatch.example";
 const COMMENT_ID = "22222222-2222-4222-8222-222222222222";
+const MESSAGE_ID = "33333333-3333-4333-8333-333333333333";
 const PICTURE = "dispatch://DSP-1/artifact/shot-png@v1";
 /** The comment as it is stored: the picture its author embedded sits past where the event's
  *  share of the body ends. */
@@ -23,16 +25,25 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-/** A Dispatch that answers the one comment read, recording each path; `fail` answers it 500
- *  instead, which is how a host meets a Dispatch that is down. */
-function dispatch(fail = false) {
+/** A Dispatch that answers the one comment read, as `stored` says the comment now stands, and
+ *  the read of issue message `MESSAGE_ID`, as `storedMessage` says that message stands,
+ *  recording each path; `fail` answers every read 500 instead, which is how a host meets a
+ *  Dispatch that is down. */
+function dispatch(
+  fail = false,
+  stored: object = { body: STORED_BODY },
+  storedMessage: object = { body: STORED_BODY }
+) {
   const requests: string[] = [];
   const fetchImpl = async (input: RequestInfo | URL): Promise<Response> => {
     const url = new URL(input instanceof Request ? input.url : input.toString());
     requests.push(url.pathname);
     if (fail) return json({ code: "INTERNAL", error: "down" }, 500);
     if (url.pathname === `/api/v1/comments/${COMMENT_ID}`) {
-      return json({ comment: { ...comment, body: STORED_BODY }, replies: [] });
+      return json({ comment: { ...comment, ...stored }, replies: [] });
+    }
+    if (url.pathname === `/api/v1/issues/DSP-1/messages/${MESSAGE_ID}`) {
+      return json({ message: { ...message, ...storedMessage }, replies: [] });
     }
     return json({ code: "NOT_FOUND", error: "not found" }, 404);
   };
@@ -56,11 +67,28 @@ const comment = {
   resolved_by: null,
   resolved_at: null,
   edited_at: null,
+  deleted_at: null,
+  deleted_by: null,
   suggestion: null,
   reply_block: null,
   answers: null,
   mentions: [],
   deliveries: [],
+  created_at: "2026-09-09T00:00:00Z",
+};
+
+const message = {
+  id: MESSAGE_ID,
+  issue_key: "DSP-1",
+  author: { kind: "user" as const, id: "alice" },
+  body: CARRIED_BODY,
+  in_reply_to: null,
+  broadcast_id: null,
+  reply_block: null,
+  deliveries: [],
+  edited_at: null,
+  deleted_at: null,
+  deleted_by: null,
   created_at: "2026-09-09T00:00:00Z",
 };
 
@@ -154,6 +182,15 @@ function bodyBlocks(content: string): string[] {
     .map((block) => block.text);
 }
 
+/** The payload fields of a Dispatch card's event, as TOON's `decode` reads the card's fields once
+ *  its blocks are split off. */
+function cardPayload(content: string): Record<string, unknown> {
+  const card = decode(splitWordsBlocks(content).head) as {
+    readonly envoy: { readonly dispatch: { readonly payload: Record<string, unknown> } };
+  };
+  return card.envoy.dispatch.payload;
+}
+
 describe("renderInbound and a body an event did not carry whole", () => {
   const SESSION = "ses_reader";
   const ITEM: CarriedItem = { resource: "comment", id: COMMENT_ID, issueKey: "DSP-1" };
@@ -168,7 +205,7 @@ describe("renderInbound and a body an event did not carry whole", () => {
     const body = await wholeCarriedBody(client, ITEM, SESSION);
     const whole = renderInbound(envelopeOf(cutEvent), SESSION, undefined, body);
 
-    expect(body).toBe(STORED_BODY);
+    expect(body).toEqual({ body: STORED_BODY });
     expect(requests).toEqual([`/api/v1/comments/${COMMENT_ID}`]);
     expect(bodyBlocks(whole.content)).toEqual([STORED_BODY]);
     expect(whole.content).not.toContain("first part only");
@@ -206,5 +243,94 @@ describe("renderInbound and a body an event did not carry whole", () => {
     const rode = renderInbound(envelopeOf(wholeEvent), SESSION);
     expect(rode.cutItem).toBeUndefined();
     expect(rode.content).not.toContain("first part only");
+  });
+
+  // An item deleted since the event has no body: the card names the delete in fields of its own
+  // (`deleted_at`, `deleted_by`), where the body the delete cleared would stand, and draws no
+  // block for words that are gone.
+  test("an item deleted since the event reads as the delete's fields and no body", async () => {
+    const deletion = {
+      deleted_at: "2026-09-10T00:00:00Z",
+      deleted_by: { kind: "user", id: "alice" },
+    };
+    const deleted = dispatch(false, { body: "", ...deletion }, { body: "", ...deletion }).client;
+    // The event's carried part embeds the picture, so the card lists it until the body read whole
+    // replaces that part: the deleted post has no body the card may draw from.
+    const cutWithPicture = {
+      ...cutEvent,
+      payload: { ...comment, body: STORED_BODY, body_truncated: true, artifact_name: "" },
+    };
+    expect(renderInbound(envelopeOf(cutWithPicture), SESSION).pictures).toEqual([PICTURE]);
+
+    // The delete cleared the body, which the card would otherwise print empty.
+    const body = await wholeCarriedBody(deleted, ITEM, SESSION);
+    expect(body).toEqual({ body: "", ...deletion });
+    const whole = renderInbound(envelopeOf(cutWithPicture), SESSION, undefined, body);
+    const payload = cardPayload(whole.content);
+    expect(payload).toMatchObject(deletion);
+    expect(payload["body"]).toBeUndefined();
+    expect(bodyBlocks(whole.content)).toEqual([]);
+    expect(whole.content).not.toContain(CARRIED_BODY);
+    expect(whole.content).not.toContain("first part only");
+    expect(whole.pictures).toBeUndefined();
+    expect(
+      await wholeCarriedBody(
+        deleted,
+        { resource: "message", id: MESSAGE_ID, issueKey: "DSP-1" },
+        SESSION
+      )
+    ).toEqual({ body: "", ...deletion });
+  });
+
+  // A card that re-reads the post holds the words the post holds now, which an edit since the
+  // event replaced, so it says when they were written: `edited_at`, a field of the card's own,
+  // with the words alone in their block.
+  test("a card that re-reads an item edited since carries the edit's time beside its words", async () => {
+    const edit = { body: STORED_BODY, edited_at: "2026-09-10T00:00:00Z" };
+    const { client, requests } = dispatch(false, edit, edit);
+
+    const body = await wholeCarriedBody(client, ITEM, SESSION);
+    expect(body).toEqual(edit);
+    expect(requests).toEqual([`/api/v1/comments/${COMMENT_ID}`]);
+    const whole = renderInbound(envelopeOf(cutEvent), SESSION, undefined, body);
+    expect(cardPayload(whole.content)["edited_at"]).toBe("2026-09-10T00:00:00Z");
+    expect(bodyBlocks(whole.content)).toEqual([STORED_BODY]);
+    expect(whole.content).not.toContain("first part only");
+    expect(
+      await wholeCarriedBody(
+        client,
+        { resource: "message", id: MESSAGE_ID, issueKey: "DSP-1" },
+        SESSION
+      )
+    ).toEqual(edit);
+  });
+
+  // A card that prints only what its delivery frame carried is a delivery Dispatch already sent,
+  // and keeps what it carried, with no mark, though Dispatch now holds the post edited. Each frame
+  // here carries an edited_at of its own, so a card that printed a mark from its frame would print
+  // one.
+  test("a card that prints only what its frame carried carries no edited mark", () => {
+    const edited_at = "2026-09-10T00:00:00Z";
+    const rode = renderInbound(
+      envelopeOf({
+        ...wholeEvent,
+        payload: { ...comment, body: STORED_BODY, edited_at, artifact_name: "" },
+      }),
+      SESSION
+    );
+    expect(bodyBlocks(rode.content)).toEqual([STORED_BODY]);
+    expect(rode.content).not.toContain("· edited");
+
+    const kept = renderInbound(
+      envelopeOf({
+        ...cutEvent,
+        payload: { ...comment, edited_at, body_truncated: true, artifact_name: "" },
+      }),
+      SESSION,
+      undefined,
+      undefined
+    );
+    expect(bodyBlocks(kept.content)).toEqual([CARRIED_BODY]);
+    expect(kept.content).not.toContain("· edited");
   });
 });

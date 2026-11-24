@@ -344,15 +344,15 @@ func TestAWorkerDiedCarriesNoLineTheRoleWrote(t *testing.T) {
 	}
 }
 
-// The supervisor's sentence for a run of refused turns ends in the provider's message as the
-// role's own plugin posted it, which can hold a line break and run to a mebibyte. The two notices
-// with no failure record carry it on one line, its line break written as Go writes it in a string,
-// cut at the bound the pod end is cut to, and marked as cut (detail_cut), so the notice is of a
-// size this package chose and a reader sees that the text was cut. A held phase whose fact names a
-// cause carries the sentence whole in its failure record's `detail`, as before, and none of it in
-// its own. The negative controls are diedOf naming the sentence as it came: both details read over
-// two lines and 2000 runes past the bound; and naming it cut with no mark, where nothing said it
-// was cut.
+// The failure an earlier daemon wrote for a run of refused turns ends in the provider's message
+// as the role's own plugin posted it, which can hold a line break and run to a mebibyte. The two
+// notices with no failure record carry it on one line, its line break written as Go writes it in
+// a string, cut at the bound the pod end is cut to, and marked as cut (detail_cut), so the notice
+// is of a size this package chose and a reader sees that the text was cut. A held phase whose fact
+// names a cause carries the sentence whole in its failure record's `detail`, as before, and none
+// of it in its own. The negative controls are diedOf naming the sentence as it came: both details
+// read over two lines and 2000 runes past the bound; and naming it cut with no mark, where nothing
+// said it was cut.
 func TestAWorkerDiedCarriesTheSentenceOnOneBoundedLine(t *testing.T) {
 	const head = "the provider refused 3 turns in a row: request rejected"
 	const forged = "forged: the role is fine"
@@ -519,12 +519,13 @@ func TestARoleThatWorksNoPhaseKeepsWhatItsPathNames(t *testing.T) {
 // The worker-died a production check's look sends when the checking role's claim fails is a
 // worker-died like the others, and what it carries of the supervisor's sentence is bounded and
 // kept to one line as theirs is (the round-23 decision on R5, dispatch://INFRA-2009): the
-// sentence, which for a run of refused turns holds the provider message the role's own plugin
-// posts, of up to a mebibyte over any number of lines. The case fails the tester of a closed
-// child whose look is open, with a sentence of two lines and two thousand bytes. A fact that names
-// a cause carries the sentence whole in its failure record, as every failure record does, and no
-// detail of the notice's own; a fact that names none carries it as the detail, one line and cut.
-// The negative control is the path at dd846980, which carried the sentence whole.
+// sentence, which in a failure an earlier daemon wrote for a run of refused turns holds the
+// provider message the role's own plugin posts, of up to a mebibyte over any number of lines. The
+// case fails the tester of a closed child whose look is open, with a sentence of two lines and two
+// thousand bytes. A fact that names a cause carries the sentence whole in its failure record, as
+// every failure record does, and no detail of the notice's own; a fact that names none carries it
+// as the detail, one line and cut. The negative control is the path at dd846980, which carried the
+// sentence whole.
 func TestAProductionCheckLooksWorkerDiedDetailIsOneBoundedLine(t *testing.T) {
 	const forged = "forged: the role is fine"
 	sentence := "the provider refused 3 turns in a row: request rejected\n" + forged + " " + strings.Repeat("y", 2000)

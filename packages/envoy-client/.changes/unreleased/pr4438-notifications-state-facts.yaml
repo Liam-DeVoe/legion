@@ -36,4 +36,6 @@ body: |-
   its editors on an `edit:` line, stay on that line: each run of white space in them, NEXT LINE
   (U+0085), LINE SEPARATOR and PARAGRAPH SEPARATOR included, prints as one space (`oneLine`). A
   daemon card whose payload is nested too deep to lay out shows that payload as text, as any other
-  card does, also where the payload holds `words`.
+  card does, also where the payload holds `words`. A card whose body the plugin reads again from
+  Dispatch states an edit or a delete of that post as fields (`edited_at`, or `deleted_at` and
+  `deleted_by`), and the post's body block holds the author's words alone, none for a deleted post.
