@@ -212,8 +212,8 @@ func TestAReviewerStepALaterVersionGivesToAnotherAgentIsNamedThatAgentsOwnCommit
 // stepFourRead. The owner stops task a and gives version 2, `implementer:a reviewer:a tester:s
 // reviewer:s`, and step 2, whose row key s's runs wrote, passes to agent a: its task names
 // stepFourRead as agent a's own and no other agent's commit, and its row holds it. Before, the
-// commit was read from agent a's rows at earlier places alone, so step 2 named `none` and key s's
-// commit, though agent a's own review on the task had read stepFourRead.
+// commit was read from agent a's rows at earlier places alone, so step 2 named `none` and no other
+// agent's commit, though agent a's own review on the task had read stepFourRead.
 func TestAReviewerStepALaterVersionGivesToAnAgentIsNamedItsCommitOfALaterStep(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
