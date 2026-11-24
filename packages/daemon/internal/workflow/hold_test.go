@@ -256,9 +256,11 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 			}
 		}
 		// The supervisor's sentence is quoted, as every worker-died's reason carries it
-		// (deathSentence); this one is a single short line, so nothing of it is cut.
+		// (deathSentence); this one is a single short line, so nothing of it is cut. The cause and
+		// the look that retries the claim follow it (checkRoleFailedReason).
 		want := record.Notice{Kind: "worker-died", Role: claim.RoleTester,
-			Reason: "production check look 1 lost its tester: " + strconv.Quote(sentence)}
+			Reason: "production check look 1 lost its tester: " + strconv.Quote(sentence) + "; its cause is died; look 2 retries the claim at " +
+				checkOpened.Add(CheckLookBound).Format(time.RFC3339) + " with one attempt left of the budget its failure spent (failed looks in a row: 1)"}
 		if len(died) != 1 || !reflect.DeepEqual(died[0], want) {
 			t.Fatalf("worker-died notices of the ended look = %+v, want %+v once: its reason names the failure already, the sentence quoted", died, want)
 		}
