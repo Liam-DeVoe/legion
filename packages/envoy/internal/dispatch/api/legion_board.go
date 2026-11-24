@@ -149,10 +149,11 @@ type legionBoardColumn struct {
 // issues table, joined on the daemon's key (the plan's D13; the daemon's state carries none of the
 // three). Phase, PhaseSince, Slot, Roles and WaitingOn are the newest observations of that issue,
 // PhaseSince being when the phase it is in was first recorded — the time in the phase the card
-// shows. BlockedBy names the issues a blocker link holds it on, and Children counts the issues of
-// its tree that its tree has not started, which are on no card of their own. The card carries no
-// CI verdict: the daemon's state has none since cybermonklabs/legion#2539, and a verdict row a
-// read wrote before then is read by nothing.
+// shows. BlockedBy names the issues a blocker link holds it on; for a parent in
+// `awaiting_children` it names the open children the daemon lists it as blocked on, not blocker
+// links. Children counts the issues of its tree that its tree has not started, which are on no
+// card of their own. The card carries no CI verdict: the daemon's state has none since
+// cybermonklabs/legion#2539, and a verdict row a read wrote before then is read by nothing.
 type legionBoardCard struct {
 	Key        string           `json:"key"`
 	Title      string           `json:"title"`

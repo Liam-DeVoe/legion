@@ -181,23 +181,27 @@ func basisSeedPending(generation uint64) record.PendingBasisSeed {
 		Ask: "ask-100", Generation: generation}
 }
 
-// The pending-basis seed reads the ancestor's approval and reviews at the version the step waits
-// on, and applies what it finds as the events it missed would have: the person's approval opens
-// the step; their approval and then a changes request on that version opens it and passes the
-// changes request on to both architects; a changes request, a newer version or the request closed
-// with no approval ends the wait; a request still waiting changes nothing. The person's approval
-// opens no step on an ancestor that Dispatch shows accepted or without the legion label, which
-// the seed reads of the ancestor's issue as register_gate reads it: the wait ends instead. Each
-// changes request names the reason the review list gives it, also where a newer version leaves the
-// document's approval showing none. A read for another generation changes nothing, and the same
-// read again is told nothing new.
+// The pending-basis seed reads Dispatch's state of the ancestor's document and of its issue
+// (readBasis), the read a cue's preparation makes, and the workflow judges it by the one verdict
+// it judges a cue's read by: the person's approval of the version, as the document's latest
+// review of its latest version, opens the step; a changes request as that latest review ends the
+// wait, also where the review list shows the person's approval of the version before it (decision
+// E1: the seed no longer opens on that earlier approval and passes the changes request on); a
+// newer version ends it whatever the list shows of the version before; and so does the request
+// closed with no approval, while a request still waiting changes nothing. The person's approval
+// opens no step on an ancestor that Dispatch shows accepted or without the legion label: the wait
+// ends instead. A read for another generation changes nothing, and the same read again is told
+// nothing new.
 func TestThePendingBasisSeedOpensOrEndsTheWaitAsDispatchShowsIt(t *testing.T) {
 	approvedAt, sentBackAt := basisSeedApprovedAt.Add(24*time.Hour), basisSeedApprovedAt.Add(25*time.Hour)
-	approved := dispatch.Review{Version: 4, State: "approved", Actor: basisSeedPerson, At: approvedAt}
-	sentBack := dispatch.Review{Version: 4, State: "changes_requested", Actor: basisSeedPerson, At: sentBackAt, Reason: "name the rollback path"}
 	reason := "name the rollback path"
+	// The review list of version 4 Dispatch serves, newest first: the person approved it, and then
+	// sent it back.
+	history := []dispatch.Review{{Version: 4, State: "changes_requested", Actor: basisSeedPerson, At: sentBackAt, Reason: reason},
+		{Version: 4, State: "approved", Actor: basisSeedPerson, At: approvedAt}}
 	changesEnded := `user:alice requested changes on version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec): "name the rollback path".`
 	approvedRead := dispatch.Approval{State: "approved", LatestVersion: 4, Version: new(4), At: approvedAt, Seq: 60, By: basisSeedPerson}
+	sentBackRead := dispatch.Approval{State: "changes_requested", LatestVersion: 4, Version: new(4), Reason: &reason, At: sentBackAt, Seq: 61, By: basisSeedPerson}
 	for _, tc := range []struct {
 		name       string
 		approval   dispatch.Approval
@@ -207,27 +211,21 @@ func TestThePendingBasisSeedOpensOrEndsTheWaitAsDispatchShowsIt(t *testing.T) {
 		open       bool
 		pending    bool
 		ended      string
-		asked      int
 	}{
-		{name: "approved by the person", approval: approvedRead, reviews: []dispatch.Review{approved}, open: true},
-		{name: "approved by the person, with the ancestor done", approval: approvedRead, reviews: []dispatch.Review{approved},
+		{name: "approved by the person", approval: approvedRead, open: true},
+		{name: "approved by the person, with the ancestor done", approval: approvedRead,
 			ancestor: &dispatch.Issue{Key: basisSeedAncestor, Status: "done", Labels: []string{dispatch.LegionLabel}, HandedOver: true},
 			ended:    "Dispatch shows LEGION-100 done, so LEGION-100 is accepted."},
-		{name: "approved by the person, with the ancestor no longer labelled", approval: approvedRead, reviews: []dispatch.Review{approved},
+		{name: "approved by the person, with the ancestor no longer labelled", approval: approvedRead,
 			ancestor: &dispatch.Issue{Key: basisSeedAncestor, Status: "in_progress", Labels: []string{"infra"}},
 			ended:    "LEGION-100 no longer carries the legion label."},
-		{name: "approved and then sent back", approval: dispatch.Approval{State: "changes_requested", LatestVersion: 4, Version: new(4), Reason: &reason,
-			At: sentBackAt, Seq: 61, By: basisSeedPerson}, reviews: []dispatch.Review{sentBack, approved}, open: true, asked: 1},
-		{name: "approved, sent back, and then a newer version", approval: dispatch.Approval{State: "draft", LatestVersion: 5},
-			reviews: []dispatch.Review{sentBack, approved}, open: true, asked: 1},
-		{name: "sent back", approval: dispatch.Approval{State: "changes_requested", LatestVersion: 4, Version: new(4), Reason: &reason, At: sentBackAt, Seq: 61,
-			By: basisSeedPerson}, reviews: []dispatch.Review{sentBack}, ended: changesEnded},
-		{name: "sent back, and then a newer version", approval: dispatch.Approval{State: "draft", LatestVersion: 5}, reviews: []dispatch.Review{sentBack}, ended: changesEnded},
-		{name: "a newer version", approval: dispatch.Approval{State: "draft", LatestVersion: 5}, ended: "Version 5 of the primary document of LEGION-100"},
+		{name: "approved and then sent back", approval: sentBackRead, reviews: history, ended: changesEnded},
+		{name: "approved, sent back, and then a newer version", approval: dispatch.Approval{State: "draft", LatestVersion: 5}, reviews: history,
+			ended: "Version 5 of the primary document of LEGION-100 (dispatch://LEGION-100/spec) is newer than version 4"},
 		{name: "the request closed with no approval", approval: dispatch.Approval{State: "draft", LatestVersion: 4},
 			ended: "Dispatch shows approval request ask-100 of version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec) closed with no approval"},
 		{name: "still waiting", approval: dispatch.Approval{State: "awaiting", LatestVersion: 4, AskID: "ask-100", WaitingOn: "human"}, pending: true},
-		{name: "another generation", approval: approvedRead, reviews: []dispatch.Review{approved}, generation: 2, pending: true},
+		{name: "another generation", approval: approvedRead, generation: 2, pending: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newBasisSeedRig(t)
@@ -245,8 +243,8 @@ func TestThePendingBasisSeedOpensOrEndsTheWaitAsDispatchShowsIt(t *testing.T) {
 			if record.GateOpen(gate) != tc.open || gate.OnBasis() != tc.open || gate.PendingOnBasis() != tc.pending {
 				t.Fatalf("the spec step = %#v, want open=%t pending=%t", gate, tc.open, tc.pending)
 			}
-			if tc.open && gate.Basis.Approval != (record.EventMark{Seq: 60, At: approvedAt}) && gate.Basis.Approval != (record.EventMark{At: approvedAt}) {
-				t.Fatalf("the basis = %#v, want it on the person's approval of version 4 at %s", gate.Basis, approvedAt)
+			if tc.open && gate.Basis.Approval != (record.EventMark{Seq: 60, At: approvedAt}) {
+				t.Fatalf("the basis = %#v, want it on the person's approval of version 4 at sequence 60, %s", gate.Basis, approvedAt)
 			}
 			if opened := noticesOfKind(t, rig.pool, basisSeedRoot, "design-approved"); (len(opened) == 1) != tc.open || len(opened) > 1 {
 				t.Fatalf("design-approved notices = %#v, want one for an opening alone", opened)
@@ -256,9 +254,8 @@ func TestThePendingBasisSeedOpensOrEndsTheWaitAsDispatchShowsIt(t *testing.T) {
 				t.Fatalf("basis-ended notices = %#v, want one naming %q, or none", ended, tc.ended)
 			}
 			root, ancestor := noticesOfKind(t, rig.pool, basisSeedRoot, "basis-changes-requested"), noticesOfKind(t, rig.pool, basisSeedAncestor, "basis-changes-requested")
-			if len(root) != tc.asked || len(ancestor) != tc.asked ||
-				tc.asked == 1 && (!strings.Contains(root[0].Reason, `"name the rollback path"`) || !strings.Contains(ancestor[0].Reason, `"name the rollback path"`)) {
-				t.Fatalf("basis-changes-requested notices = %#v to the root and %#v to the ancestor, want %d each naming the reason", root, ancestor, tc.asked)
+			if len(root) != 0 || len(ancestor) != 0 {
+				t.Fatalf("basis-changes-requested notices = %#v to the root and %#v to the ancestor, want none: the seed opens no step before a changes request", root, ancestor)
 			}
 		})
 	}
@@ -413,7 +410,6 @@ func TestTheBootQueuesAPendingBasisSeedForEachPendingStep(t *testing.T) {
 
 	rig.client.approvals[basisSeedDoc] = dispatch.Approval{State: "approved", LatestVersion: 4, Version: new(4), At: basisSeedApprovedAt.Add(24 * time.Hour),
 		Seq: 60, By: basisSeedPerson}
-	rig.client.reviews[basisSeedDoc] = []dispatch.Review{{Version: 4, State: "approved", Actor: basisSeedPerson, At: basisSeedApprovedAt.Add(24 * time.Hour)}}
 	rig.execute(seeds[0].seed)
 	if gate := rig.gate(); !gate.OnBasis() || !record.GateOpen(gate) || gate.Basis.Version != 4 {
 		t.Fatalf("the spec step after the boot's seed = %#v, want it open on version 4 of the ancestor's document", gate)

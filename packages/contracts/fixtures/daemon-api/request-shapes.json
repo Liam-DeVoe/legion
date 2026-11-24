@@ -2498,11 +2498,13 @@
       "bootToken",
       "claimToken",
       "generation",
+      "httpStatus",
       "message",
       "outcome",
       "secret",
       "sequence",
-      "sessionId"
+      "sessionId",
+      "unprompted"
     ]
   },
   {

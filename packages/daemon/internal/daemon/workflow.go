@@ -206,9 +206,9 @@ type workflowRuntime struct {
 	// record (tellReleaseWaits), and which leave with the repository's own marker where a pass
 	// stops reading GitHub for it (settleRecovery, tellLetGoWaits); recoveryHeldSince is when a
 	// recovery's listing was first found held with waits to tell (zero for none), so a hold past
-	// recoveryHoldBound tells them, and recoveryBoundChecked whether a run of the recovery has begun
-	// with that bound passed (recoverRepositories), after which the refresher no longer cuts its wait
-	// to it.
+	// the read bounds' holdBound (repositoryReadBounds) tells them, and recoveryBoundChecked
+	// whether a run of the recovery has begun with that bound passed (recoverRepositories), after
+	// which the refresher no longer cuts its wait to it.
 	// recheckAfter is the refresher's wait before it runs a job of its own (refreshRepositories),
 	// time.After when nil; a test sees each wait through it.
 	repositories         *repositories
@@ -311,27 +311,58 @@ type workflowRuntime struct {
 	handedOff *wakeSet[string]
 	// mergeStates is each issue a fact owes a read of GitHub's merge state (queueMergeState, the
 	// engine's Config.ReadMergeState: a round waiting on GitHub's answer, and by the gate
-	// classify.MergeStateReadOwed a head move in implementing through merging or a base push in
-	// testing through merging), each the start read found GitHub still computing
-	// (readIssuesAtStart), and each a second read of a conflicting head left reading no answer
-	// (queueMergeStateFollow), that readMergeStates has not started a ladder for yet;
-	// mergeStateQueued is what each of them asked for, the head its ladder starts by following or
-	// "" for a climb (queueMergeStateFollow); and mergeStateRunning each issue whose ladder is still
-	// reading, a climb or a follow (mergeStateRun), which is why a second fact of an issue already
-	// being read starts no second ladder. mergeStateRetry is how long a ladder waits between reads
-	// of a state GitHub answers `unknown` for, the unit the reads after a ladder wait in, and how
-	// long the outbox's merge-queue read and second conflict read wait before they read again
-	// (mergeStateWait, which attach hands the outbox), mergeStateLadderWait when zero, which a test
-	// shortens (overrides.mergeStateRetry).
+	// classify.MergeStateReadOwed a head move in implementing through merging), each the start read
+	// found GitHub still computing (readIssuesAtStart), and each a second read of a conflicting head
+	// left reading no answer (queueMergeStateFollow), that readMergeStates has not started a ladder
+	// for yet; mergeStateQueued is what each of them asked for, the pull request its ladder hands
+	// to the reads of its base, as the read that handed it over held it, or nil for a climb
+	// (queueMergeStateFollow); and mergeStateRunning each issue whose ladder is still climbing
+	// (mergeStateRun), which is why a second fact of an issue already being read starts no second
+	// ladder. mergeStateRetry is how long a ladder waits between reads of a state GitHub answers
+	// `unknown` for, the unit the reads after a ladder wait in, and how long the outbox's
+	// merge-queue read and second conflict read wait before they read again (mergeStateWait, which
+	// attach hands the outbox), mergeStateLadderWait when zero, which a test shortens
+	// (overrides.mergeStateRetry).
+	//
+	// baseReads is each base of a repository whose owed pull requests the daemon reads in batches
+	// (merge_state_batches.go's baseRead): a push to that base owes them a read (queueBaseMergeStates,
+	// the engine's Config.ReadBaseMergeStates), or a ladder handed it a head GitHub still answers
+	// `unknown` for (followOnBase). baseReadOf is the base each owed issue is read under,
+	// baseWake the bases readBaseMergeStates has not started a batch ladder for yet, and baseAsks
+	// the number of the last request put in any batch (putLocked, baseOwed.asked): one count for
+	// the runtime, so a batch made again for a base whose last batch ended reuses no number a climb
+	// or a read still holds. All of it is guarded by mergeStateMu, so a request moves an issue
+	// between a ladder of its own and its base's batch under one lock. baseChunk is how many pull
+	// requests one query of a batch asks for, baseReadChunk when zero, which a test shortens.
 	mergeStates       *wakeSet[string]
 	mergeStateMu      sync.Mutex
-	mergeStateQueued  map[string]string
+	mergeStateQueued  map[string]*record.PullRequest
 	mergeStateRunning map[string]*mergeStateRun
 	mergeStateRetry   time.Duration
+	baseWake          *wakeSet[string]
+	baseReads         map[string]*baseRead
+	baseReadOf        map[string]string
+	baseAsks          uint64
+	baseChunk         int
+	// gates is each installation's GraphQL queries, by the implement App's scope for the owner
+	// (implementScope; merge_state_gate.go's queryGate): one rate-limit hold, one pace and one
+	// query at a time, shared by every base's batch of that installation. gateMu guards the map.
+	// graphQLShare is the share of the time each gate's queries may keep GitHub at work, the
+	// configuration's `github_graphql_share` (queryShare).
+	gateMu       sync.Mutex
+	gates        map[string]*queryGate
+	graphQLShare float64
+	// etags is what the conditional reads of a pull request and of its base's rules keep
+	// (githubrest.ETags, readPullRequest, readBaseRules): GitHub answers an unchanged one 304, which
+	// costs the implement App's installation none of its rate limit.
+	etags *githubrest.ETags
 	// appCalls are the start's App-call bounds the daemon was given (overrides.appCalls), nil for
 	// the production ones (callBounds): they bound the start's App calls and the runtime's reads
 	// that take the same bound (recordedRepositories, recordedBranches, rereadHeldBranches).
 	appCalls *appCallBounds
+	// readBounds are the bounds of the runtime's reads for a repository and of the refresher's
+	// waits, nil for the production ones (reads). Only a test sets them (withReads).
+	readBounds *repositoryReadBounds
 }
 
 // readyReleaseTimeout bounds one release of ready architects' waiting notices
@@ -658,8 +689,9 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 // for its own, with a seed for each step that waits on an ancestor's request
 // (queueRecordedGatesPublish). The key proof under the App's JWT mints no token for an owner. It
 // reads GitHub for a repository only to fill a record that lacks its repository columns, one read
-// per such record bounded by installReadAttempt (backfillRead), which mints the token that read
-// needs, a read that fails leaving the record for the refresher; the preparation of the
+// per such record bounded by the read attempt bound (repositoryReadBounds.attempt, backfillRead),
+// which mints the token that read needs, a read that fails leaving the record for the refresher;
+// the preparation of the
 // repositories the records name is the refresher's first job, once the API serves
 // (prepareAtStart), beside the boot, so no other read of GitHub for a repository here can stop or
 // slow the boot. The boot's one-time rename pass, which runs after this (renameAtBoot), reads
@@ -732,8 +764,8 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1), chainWake: make(chan struct{}, 1),
 		heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1),
 		readied: newWakeSet[claim.Token](), handedOff: newWakeSet[string](), mergeStates: newWakeSet[string](),
-		mergeStateRunning: map[string]*mergeStateRun{},
-		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock, appCalls: appCalls,
+		mergeStateRunning: map[string]*mergeStateRun{}, baseWake: newWakeSet[string](), etags: githubrest.NewETags(etagBytes),
+		controllerWake: cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock, graphQLShare: cfg.GitHubGraphQLShare, appCalls: appCalls,
 		defaultBranches: newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
 	}
 	// A read of a default branch GitHub's rate limit refuses, answered from the branch held, is
@@ -765,6 +797,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	}
 	engineCfg.Repositories, engineCfg.NoteUnread = w, w.noteUnread
 	engineCfg.ReadMergeState, engineCfg.HearRepository = w.queueMergeState, w.hearRecorded
+	engineCfg.ReadBaseMergeStates = w.queueBaseMergeStates
 	engineCfg.StepAgent = w.stepAgent
 	// The one wake the engine causes is the catch-up a start writes in place of a launch
 	// (workflow's claimReady), and it is paced with the launches it stands among, from the one
@@ -802,7 +835,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// blocked-by-only edit this mirror exists for, and admission runs second in any case.
 	w.handlers, w.reviewAppLogin = []intake.Handler{blockers.NewMirror(w.records, cfg.Project), w.engine, w.admission}, reviewAppLogin
 	w.gatedSteps = cfg.Gates.Steps()
-	left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, cfg.Project, cfg.StateDir, w.defaultBranches, cfg.RepositoryRenames, log)
+	left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, cfg.Project, cfg.StateDir, w.defaultBranches, cfg.RepositoryRenames, w.reads(), log)
 	if err != nil {
 		return nil, err
 	}
@@ -873,14 +906,15 @@ func (w *workflowRuntime) queueGatedStepsPublish(ctx context.Context) error {
 // for each step of the project that waits, closed, on an ancestor's approval request
 // (record.DesignGate.PendingOnBasis), whatever phase its root stands in, since the boot's catch-up
 // reads no root in a phase of its tree (catchesUp) and the ancestor's events may have come while
-// the daemon was down or been dropped: each seed reads the ancestor's approval and reviews at the
-// version the step waits on, so the person's approval opens it and a changes request, a newer
-// version or the request's close ends it (dispatch://INFRA-3320, R1). The seeds carry their roots'
-// generations, read in one query (IssuesOf) where any step waits so and in none otherwise, and
-// run on each root's lifecycle lane once the outbox attaches. An issue Dispatch shows done is left
-// out by the read (record.GatedIssues), as its gates are left out of the publication. A restart
-// loop that queues a second seed beside one still waiting costs one more read of Dispatch: the
-// seed's fact is the step, the request and what the read found, so it applies once.
+// the daemon was down or been dropped: each seed reads Dispatch's state of the ancestor's document
+// and issue (readBasis), which the workflow judges as it judges a cue's read, so the person's
+// approval of the version opens the step and a changes request, a newer version, the request's
+// close or the ancestor's leave ends its wait (dispatch://INFRA-3320, R1). The seeds carry their
+// roots' generations, read in one query (IssuesOf) where any step waits so and in none otherwise,
+// and run on each root's lifecycle lane once the outbox attaches. An issue Dispatch shows done is
+// left out by the read (record.GatedIssues), as its gates are left out of the publication. A
+// restart loop that queues a second seed beside one still waiting costs one more read of Dispatch:
+// the seed's fact is the step, the request and what the read found, so it applies once.
 func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 	now := time.Now().UTC()
 	queued := 0
@@ -1217,7 +1251,7 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 		Project: cfg.Project, Repositories: heard, Renames: cfg.RepositoryRenames,
 		AckWait: cfg.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
 		ReviewPermission: w.reviewerCanWrite, ReviewBody: w.reviewBody,
-		PrepareRepository: w.prepareRepository, PrepareArtifact: w.prepareArtifact,
+		PrepareRepository: w.prepareRepository, PrepareArtifact: w.prepareArtifact, PrepareBasis: w.prepareBasis,
 		WakeOutbox: w.wakeOutbox,
 	})
 	if err != nil {
@@ -2072,8 +2106,17 @@ func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 // budget shared by the whole replay. A fact may wait its turn on the lock behind a live one (a
 // restored claim's failure, a daemon of another project on the same database), so a replay of
 // hundreds of facts takes as long as they take, and the boot never exits on their count; a
-// Postgres that never answers still ends the boot within one budget, and the daemon's stop ends
-// the replay. supervision.start runs it before any hello is admitted.
+// Postgres that never answers still ends the boot within one wait for a connection and one budget
+// (below), and the daemon's stop ends the replay. supervision.start runs it before any hello is
+// admitted.
+//
+// Each budget counts from the moment its transaction holds a connection of the pool, and the wait
+// for that connection has replayAcquire of its own (store.BoundAfterAcquire). Counted from before
+// that wait, a budget was the pool queue's bound as well: the live failures of the restored claims
+// apply beside the replay, each on a connection of its own, and the replay's read waited behind
+// them for one of the pool's few connections until its budget ran out ("read which supervise facts
+// are applied: context deadline exceeded after 5.012s", TestAReplayOfHundredsOfUnappliedFacts
+// BesideLiveFailuresOutlastsItsBudget on main's CI).
 func (w *workflowRuntime) replayTerminal(ctx context.Context, claims []supervise.Claim, budget time.Duration) error {
 	var terminal []supervise.Claim
 	var ids []string
@@ -2084,7 +2127,7 @@ func (w *workflowRuntime) replayTerminal(ctx context.Context, claims []supervise
 		terminal = append(terminal, c)
 		ids = append(ids, terminalEventID(c, c.State))
 	}
-	read, cancel := context.WithTimeout(ctx, budget)
+	read, cancel := store.BoundAfterAcquire(ctx, replayAcquire, budget)
 	applied, err := intake.Applied(read, w.pool, terminalSource, ids)
 	cancel()
 	if err != nil {
@@ -2100,7 +2143,7 @@ func (w *workflowRuntime) replayTerminal(ctx context.Context, claims []supervise
 		w.log.Info("legion daemon is replaying the terminal facts no daemon applied", "count", len(unapplied), "terminalClaims", len(terminal))
 	}
 	for _, c := range unapplied {
-		fact, cancel := context.WithTimeout(ctx, budget)
+		fact, cancel := store.BoundAfterAcquire(ctx, replayAcquire, budget)
 		err := w.applyTerminal(fact, c, c.State)
 		cancel()
 		if err != nil {
@@ -2109,6 +2152,12 @@ func (w *workflowRuntime) replayTerminal(ctx context.Context, claims []supervise
 	}
 	return nil
 }
+
+// replayAcquire is how long each read and fact of the boot's terminal replay waits for a
+// connection of the pool before its budget starts (replayTerminal). The pool turns over as each
+// transaction ends, so thirty seconds is a queue many writes deep, against writes of milliseconds;
+// a Postgres that gives no connection at all still ends the boot within it and the budget.
+const replayAcquire = 30 * time.Second
 
 // Each retry of the boot fact waits twice the last, from bootRetryFirst to at most bootRetryMax.
 const (

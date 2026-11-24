@@ -122,7 +122,7 @@ func TestTheResumeOfARootWaitingOnAPersonNamesWhatItsBasisDid(t *testing.T) {
 		{
 			name:  "the ancestor's changes request on the version the step waited on",
 			basis: pendingBasis(),
-			act:   ancestorReview(intake.DispatchArtifactChangesRequested, 4, 61, "name the rollback path"),
+			act:   current(ancestorReview(intake.DispatchArtifactChangesRequested, 4, 61, "name the rollback path")),
 			want: []string{"The wait of your spec step on an ancestor's approval request ended: user:alice requested changes on version 4 of the primary document of LEGION-100",
 				"no longer waits on approval request ask-100", "Read that document before you register the spec step again."},
 			not: []string{"A person requested changes to your", "revise the primary document as they ask"},

@@ -566,7 +566,7 @@ function requiredString(
   return value;
 }
 
-/** A whole number from 1: a give-up's record id, a stream sequence or a gate's version. */
+/** A whole number from 1: a give-up's record id or a stream sequence. */
 const isWholeFromOne = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
 

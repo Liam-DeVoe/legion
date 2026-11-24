@@ -3592,20 +3592,21 @@ package api
 // `lastPause` as well, the entry of 178 above (`withoutPause`), a caller below 146 the issues
 // without both entry times and `architectStalls`, the entry of 146 (`withoutEntryTimes`), and so
 // on down `stateNarrowings`. 178's band and this one touch no key of each other's, and the bands
-// of 193, 202, 220 and 228 stand between them, so a caller at 202 through 238 is served the pause,
-// the keys 193 added and the repositories block 202 writes, and none of this entry's keys and
-// words (a caller that states 203 or 204 is served 202's records, the nearest recorded contract at
-// or below it, one that states 205 to 212 is served 205's, which are 202's under its own number, as
-// 205's entry says, one that states 213 to 216 is served 213's, which are 205's with `caches` among
-// the words of a capability row's `source`, as 213's entry says, one that states 217 or 218 is
-// served 217's, which are 213's under its own number, as 217's entry says, one that states 219 is
-// served 219's, which are 217's with the owner's plan's routes, fields and words, as 219's entry
-// says, one that states 220 to 227 is served 220's, which are 219's with each assignment's `plan`,
-// as 220's entry says, one that states 228 to 231 is served 228's, which are 220's with
-// `intakeGiveUps` and the two give-up answers, as 228's entry says, and one that states 232 to 238
-// is served 232's, which are 228's under its own number, since 232 moves no shape of an answer a
-// plugin parses, so a caller below 228 is served no `intakeGiveUps`, one below 220 no
-// assignment's `plan` either, and one below 219 none of 219's additions either), a
+// of 193, 202, 220 and 228 stand between them (232 adds none), so a caller at 202 through 238 is
+// served the pause, the keys 193 added and the repositories block 202 writes, and none of this
+// entry's keys and words (a caller that states 203 or 204 is served 202's records, the nearest
+// recorded contract at or below it, one that states 205 to 212 is served 205's, which are 202's
+// under its own number, as 205's entry says, one that states 213 to 216 is served 213's, which
+// are 205's with `caches` among the words of a capability row's `source`, as 213's entry says,
+// one that states 217 or 218 is served 217's, which are 213's under its own number, as 217's
+// entry says, one that states 219 is served 219's, which are 217's with the owner's plan's
+// routes, fields and words, as 219's entry says, one that states 220 to 227 is served 220's,
+// which are 219's with each assignment's `plan`, as 220's entry says, one that states 228 to 231
+// is served 228's, which are 220's with `intakeGiveUps` and the two give-up answers, as 228's
+// entry says, and one that states 232 to 238 is served 232's, whose answer records are 228's
+// under its own number, since 232 adds two fields to a request and moves no answer's shape, so a
+// caller below 228 is served no `intakeGiveUps`, one below 220 no assignment's `plan` either, and
+// one below 219 none of 219's additions either), a
 // caller at 193 through 201 the pause, 193's keys and the block in 152's shape (one that states
 // 194 to 198 is served 193's shape and one that states 199 to 201 199's, and 199's is 193's, since
 // 199 moves no shape of an answer a plugin parses), a caller at 178 through 192 the pause and the
@@ -3793,13 +3794,18 @@ package api
 // of main 4ad19fe8459c a census of the 520 open heads (2026-11-24T01:48:37Z to 01:54:21Z) found 221
 // to 238 and 240 declared by other pull requests and 239 by none, so this change keeps 239
 // (dispatch://INFRA-4728/artifact/contract-census-2026-11-24-md). At the merge of main
-// 9688b2b23292, which carried 228 (dispatch://INFRA-1575, the entry above), a census of the 493
-// open heads (2026-11-24T09:42:14Z to 09:47:58Z) found 239 declared by this change's pull request
-// alone, so this change keeps 239, above main's 228
-// (dispatch://INFRA-4728/artifact/contract-census-2026-11-24-d-md). From this entry answers.go's
-// SupportedContracts names `gateBasisContract` after `intakeGiveUpsContract`. Read the base's own
-// number and every open head again, by a REST raw read of each head's file, at the next forward
-// merge rather than from this line.)
+// 843a9f45a3a0, which carries 228 (dispatch://INFRA-1575, the entry above), a census of the 493
+// open heads (2026-11-24T09:42:14Z to 09:47:58Z, against main 9688b2b23292; the five main commits
+// after it declare no contract) found 239 declared by this change's pull request alone, so this
+// change keeps 239, above main's 228
+// (dispatch://INFRA-4728/artifact/contract-census-2026-11-24-d-md). At the merge of main
+// d27405712c7c, which carries 232 (dispatch://INFRA-4508, the entry above), a census of the 479
+// open heads (2026-11-24T12:41:23Z to 12:47:35Z) found 239 declared by this change's pull request
+// alone, so this change keeps 239, above main's 232
+// (dispatch://INFRA-4728/artifact/contract-census-2026-11-24-e-md). From this entry answers.go's
+// SupportedContracts names `gateBasisContract` after 232. Read the base's own number and every
+// open head again, by a REST raw read of each head's file, at the next forward merge rather than
+// from this line.)
 //
 // 242: dispatch://INFRA-4730 -- the daemon stores no tree: it reads every parent and child question
 // from its copy of Dispatch's links (dispatch://INFRA-3320, R15 to R26), and three surfaces move.
