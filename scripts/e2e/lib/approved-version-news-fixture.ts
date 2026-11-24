@@ -94,10 +94,10 @@ const skippedEnd = [
 const failedEnd = [`--- FAIL: ${body} (0.00s)`, ...refusedTrailer("").slice(2)];
 
 /** How the benchmark's body ended in a stand-in run. */
-export type Ended = "PASS" | "FAIL" | "SKIP";
+type Ended = "PASS" | "FAIL" | "SKIP";
 
 /** Where a stand-in sends its signal: the plan check's run of the benchmark, or the sessions'. */
-export type KillPoint = "plan" | "sessions";
+type KillPoint = "plan" | "sessions";
 
 /** What one stand-in run of the script asks for. */
 export type NewsRun = {

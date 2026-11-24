@@ -180,25 +180,25 @@ fail() { echo "FAIL $check: $*" >&2; exit 1; }
 version_news_evidence=${APPROVED_VERSION_NEWS_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/legion-approved-version-news-evidence.XXXXXXXX")}
 work=''
 prompts_tree=''
-full_plan=''
-part_two_plan=''
 verdict=''
+sessions_ran=''
 part_two_said=''
 check=setup
 check_started=$SECONDS
 version_news_started=$SECONDS
 
 # finish removes the scratch trees the run made, by their exact paths, and prints the run's last
-# line through run_verdict: what the run counted in each arm, or that it did not run, and, for a
-# run that picks its runs, MEASURED in place of PASS (pick_said). PASS or MEASURED needs status 0
-# and a run that reached its end; a run that ended before that with status 0, as a signal leaves
-# the EXIT trap, reads FAIL at the check it stopped in, and says so.
+# line through run_verdict: what the run counted in each arm, or that the sessions ran and the run
+# stopped before it counted them, or that they did not run, and, for a run that picks its runs,
+# MEASURED in place of PASS (pick_said). PASS or MEASURED needs status 0 and a run that reached its
+# end; a run that ended before that with status 0, as a signal leaves the EXIT trap, reads FAIL at
+# the check it stopped in, and says so.
 finish() {
   local status=$? said
   for tree in "$work" "$prompts_tree"; do
     [ -z "$tree" ] || rm -rf "$tree"
   done
-  said=${part_two_said:-the sessions did not run}
+  said=${part_two_said:-${sessions_ran:-the sessions did not run}}
   run_verdict "$status" \
     "approved version news: ${verdict:-PASS} in $((SECONDS - version_news_started))s ($said, evidence: $version_news_evidence)" \
     "approved version news: FAIL at $check after $((SECONDS - version_news_started))s ($said, evidence: $version_news_evidence)"
@@ -507,6 +507,7 @@ APPROVED_VERSION_NEWS_MODEL_KEY_FILE=$key_file APPROVED_VERSION_NEWS_BASE_PROMPT
   go -C "$root/packages/daemon" test -count=1 -v -timeout "$deadline" -run '^$' -bench "^$bench\$" \
   -benchtime=1x ./internal/daemon 2>&1 | tee "$proof" || status=$?
 note "the benchmark ended with status $status; $proof keeps its output"
+sessions_ran='the sessions ran, and the run stopped before it counted them'
 pass
 
 # The key's first 8 characters, counted in every file the run kept and printed nowhere: grep reads

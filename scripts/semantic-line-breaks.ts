@@ -3,7 +3,8 @@
 // no list item or table row longer than one screen (R3, which counts a nested item's lines toward
 // that item, not toward its parent). The guides that
 // scripts/semantic-line-breaks.guides.test.ts checks keep this layout, and ci.yaml's scripts job
-// runs that test behind the guide_layout filter, which names those guides and this script;
+// runs that test when a change touches the `scripts` area of .github/ci-areas.yaml, which names
+// those guides and this script;
 // `--write` fixes the layout by changing only whitespace, and only where the check finds a fault:
 // it re-lays out a paragraph in which R1 finds two sentences on one line, and adds the blank lines
 // R2 asks for. A paragraph the check accepts keeps its line breaks, so a file the check accepts

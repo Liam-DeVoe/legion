@@ -320,7 +320,7 @@ push_in_shape() { # push_in_shape <shape> <workspace> <bare> <branch>
     jj-named) env "${push_env[@]}" jj -R "$2" git push --remote origin --named "$4=@-" ;;
     jj-deleted) env "${push_env[@]}" jj -R "$2" git push --remote origin --deleted ;;
     jj-gerrit) env "${push_env[@]}" jj -R "$2" gerrit upload --remote origin --remote-branch main -r @- --config "git.executable-path=$real_git" ;;
-    jj-unwrapped) env "${push_env[@]}" PATH="$unwrapped_path" jj -R "$2" git push --remote origin --named "$4=@-" ;;
+    jj-unwrapped) env "${push_env[@]}" PATH="$bypassed_path" jj -R "$2" git push --remote origin --named "$4=@-" ;;
     *) die "no such shape: $1" ;;
   esac
 }
@@ -514,27 +514,20 @@ run_arm bypassed
 #
 #   jj-gerrit     a `jj gerrit upload` that names its git on the command line,
 #                 `--config git.executable-path=/usr/bin/git`. jj uploads through that git, which
-#                 has no wrapper and so no pre-push hook, so on the head's image the jj wrapper
-#                 refuses the upload before it starts: exit 2, its `LEAK CHECK SETUP ERROR` line
-#                 saying `git.executable-path is /usr/bin/git`, and the remote unchanged. On an
-#                 image published before the wrappers it lands, as refs/for/main.
-#   jj-unwrapped  the negative control: a `jj git push --named` with /opt/legion/bin taken off
-#                 PATH, so jj is the real /usr/local/bin/jj and the git it runs the real
-#                 /usr/bin/git, with no wrapper and no hook. It lands on either arm, which shows
-#                 that this probe tells a push the guard checked from one the guard never saw: the
-#                 refusals above are the wrappers', not the fixtures'.
+#                 has no wrapper and so no pre-push hook, so the jj wrapper refuses the upload
+#                 before it starts: exit 2, its `LEAK CHECK SETUP ERROR` line saying
+#                 `git.executable-path is /usr/bin/git`, and the remote unchanged.
+#   jj-unwrapped  the negative control: a `jj git push --named` on the bypassed arm's PATH, so jj
+#                 is the real /usr/local/bin/jj and the git it runs the real /usr/bin/git, with no
+#                 wrapper and no hook. It lands, which shows that this probe tells a push the guard
+#                 checked from one the guard never saw: the refusals above are the wrappers', not
+#                 the fixtures'.
 #
 # Both run on the head arm's PATH, where the wrappers lead: the bypassed arm above runs no wrapper
 # for the gerrit upload to meet, and the negative control takes the wrappers' directory off that
-# PATH itself.
-arm=head
+# PATH itself (bypassed_path).
 PATH=$image_path
 export PATH
-unwrapped_path=""
-IFS=: read -ra path_entries <<< "$PATH"
-for entry in "${path_entries[@]}"; do
-  [ "$entry" = /opt/legion/bin ] || unwrapped_path=${unwrapped_path:+$unwrapped_path:}$entry
-done
 
 run_outside_case() { # run_outside_case <jj-gerrit|jj-unwrapped>
   local shape=$1
@@ -554,12 +547,12 @@ run_outside_case() { # run_outside_case <jj-gerrit|jj-unwrapped>
   echo "---- $id (branch $branch)"
   before=$(remote_state "$bare")
   case "$shape" in
-    jj-gerrit) ref=refs/for/main ;;
+    jj-gerrit) ;;
     jj-unwrapped)
       ref=refs/heads/$branch
       # In a subshell of its own, so the lookup reads the changed PATH and not this shell's hash.
-      check "$id the jj off the wrappers' PATH" "$(PATH=$unwrapped_path; command -v jj || echo 'no jj at all')" /usr/local/bin/jj
-      check "$id the git off the wrappers' PATH" "$(PATH=$unwrapped_path; command -v git || echo 'no git at all')" "$real_git"
+      check "$id the jj off the wrappers' PATH" "$(PATH=$bypassed_path; command -v jj || echo 'no jj at all')" /usr/local/bin/jj
+      check "$id the git off the wrappers' PATH" "$(PATH=$bypassed_path; command -v git || echo 'no git at all')" "$real_git"
       ;;
     *) die "no such shape: $shape" ;;
   esac
@@ -571,7 +564,7 @@ run_outside_case() { # run_outside_case <jj-gerrit|jj-unwrapped>
 
   local remote_word=changed
   [ "$before" != "$after" ] || remote_word=unchanged
-  if [ "$shape" = jj-gerrit ] && [ "$arm" = head ]; then
+  if [ "$shape" = jj-gerrit ]; then
     check "$id the push" "exit $status" "exit 2"
     check "$id the remote" "$remote_word" unchanged
     check "$id names the failure" "$(says "$out" 'LEAK CHECK SETUP ERROR')" yes

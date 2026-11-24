@@ -464,6 +464,46 @@ It sources `e2e/acceptance/lib.sh`, a preamble that refuses an unset input or a 
 with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing
 it, unsetting both so no process the script starts inherits it.
 
+`e2e/acceptance/graph-store.sh` drives the people and the agents of the node and tuple store: what
+each person authored, what reached each session, a comment that reached nobody, a failed attempt,
+an attempt the listener queued for a session that is not running, and the role, the session and
+the page a delivery writes. It takes `DISPATCH_URL`, the bearer (`DISPATCH_TOKEN` or
+`DISPATCH_TOKEN_FILE`), `PROJECT` (an existing project key), `DATABASE_URL` (the database that
+server serves, on this machine, which it reads the tuples no route answers through) and
+`FAKE_ENVOY_PORT` (the harness's fake Envoy, whose session fixture it adds role-less sessions, one
+of them stopped, and a role's holder to and puts back on exit), with `DEV_SIGNIN_LOGIN` optional.
+Its delivery checks need the server to have a bus: `bun run dispatch:local` leaves NATS off, and
+without `DISPATCH_E2E_NATS_URLS` (which `e2e/run-server.sh` hands the server as its `NATS_URLS`)
+the publisher writes no `delivered_to` tuple and those checks wait out their 30 s poll. Start a
+JetStream NATS of your own (`nats-server -js`) and name it when you start the instance,
+`DISPATCH_E2E_NATS_URLS=nats://127.0.0.1:<port> bun run dispatch:local`; then, against it:
+
+```bash
+DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e FAKE_ENVOY_PORT=9023 \
+  DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
+  DEV_SIGNIN_LOGIN=alice bash packages/dispatch/e2e/acceptance/graph-store.sh
+```
+
+`e2e/acceptance/graph-sizing.sh` drives `envoy-dispatch census --store --sizing`: the write rate
+by kind, every table this branch's migrations touch, where the two store tables reach in a year,
+two runs printing one report, and the block-index backlog, with the reconciliation's own drain
+timed beside a request that indexes the same document itself, a reading that gates nothing. It
+takes `DISPATCH_URL`, the bearer, `PROJECT`, `DATABASE_URL`, the built `envoy-dispatch` on `PATH`,
+and two required inputs of the production reading: `PRODUCTION_PROJECT`, the Google Cloud project
+whose Cloud Monitoring holds production's disk use, and `PRODUCTION_DATABASE_ID`, the Cloud SQL
+instance whose disk use it reads, through this pod's own Google identity. This repository is
+public and names neither, so the driver refuses to start without them (exit 2).
+`PRODUCTION_WINDOW_DAYS` is optional (21 unset, refused below 14). It writes a corpus under an
+issue of its own and removes it on exit, since a corpus left behind is read by the next run as
+growth:
+
+```bash
+DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e DISPATCH_URL=http://127.0.0.1:8777 \
+  DISPATCH_TOKEN=e2e-token PROJECT=CORE PRODUCTION_PROJECT=<gcp-project> \
+  PRODUCTION_DATABASE_ID=<gcp-project>:<cloud-sql-instance> \
+  bash packages/dispatch/e2e/acceptance/graph-sizing.sh
+```
+
 `e2e/acceptance/outside-edge-refusals.sh` is the HTTPS refusal check of an outside edge: it asks the
 edge's one IPv4 address, on 443, for each path and Host the edge must not forward, and reads
 whether one of the edge's routes took the request, by the `X-Outside-Edge-Backend` marker every
@@ -489,8 +529,10 @@ on a runner on the public internet. `e2e/acceptance/outside-agent-acceptance.md`
 them, what each row reads, and the controls. `cd packages/dispatch && bun test
 e2e/__tests__/outside-agent-acceptance.test.ts e2e/__tests__/outside-agent-public.test.ts` checks
 that each leg prints `UNKNOWN`, never `PASS`, for a row whose target is absent, and that each leg
-holds its rows to their controls (the public leg's P6, P7, P10 and T5 part; the tailnet leg's T2,
-T3, T5, P7, the sweep, the workflow's inputs and the pins) against stand-ins of what it drives.
+holds its rows to their controls (the public leg's P6, P7, P9, P10 and T5 part; the tailnet leg's
+T2, T3, T5, P7, the sweep, the workflow's inputs and the pins) against stand-ins of what it drives.
+P9 runs the deployment's own TCP reach check, the file `OUTSIDE_PATH_REACH` names, whose copy is
+`legion/checks/outside-path-reach.sh` in theorem-labs/agent-infra; this repository holds none.
 
 ## Acceptance run against the deployed image
 

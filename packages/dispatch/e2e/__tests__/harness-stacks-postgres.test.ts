@@ -38,10 +38,10 @@ function run(argv: string[], env: Record<string, string>) {
 
 // The database a stack reads is the psql it starts, so the case that proves which one it picked
 // needs psql and a live database to answer; without either it would prove nothing and is
-// skipped, as e2e/__tests__/psql-session.test.ts's cases are, and on GitHub Actions it fails, and
-// its two halves are composed into one line for the reason that file gives. The case runs
-// `select 1` and writes nothing, so it runs on the server's own database rather than one of its
-// own.
+// skipped, as e2e/__tests__/psql-session-postgres.test.ts's cases are, and on GitHub Actions it
+// fails, and its two halves are composed into one line for the reason that file gives. The case
+// runs `select 1` and writes nothing, so it runs on the server's own database rather than one of
+// its own.
 const live = (process.env.LEGION_TEST_PG_DSN ?? "").trim();
 const missingForDatabase = [
   ...(hostTool("psql") === null ? ["psql on this host's PATH"] : []),

@@ -21,7 +21,8 @@
  *  Postgres, a Go server and the fakes, which is minutes of work and needs
  *  `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE` to make the databases at all
  *  (`e2e/harness-postgres.ts`). Without one it would prove nothing, so it is skipped and says
- *  so, as `e2e/__tests__/psql-session.test.ts`'s cases are, and on GitHub Actions it fails. */
+ *  so, as `e2e/__tests__/psql-session-postgres.test.ts`'s cases are, and on GitHub Actions it
+ *  fails. */
 
 import { expect, test } from "bun:test";
 import { tmpdir } from "node:os";

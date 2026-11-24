@@ -26,7 +26,7 @@ export const stopHere = `stop_here() {
 }`;
 
 /** How a run ended: its exit status or the signal that ended it, and what it printed. */
-export type GroupRun = { code: number | null; signal: string | null; out: string; err: string };
+type GroupRun = { code: number | null; signal: string | null; out: string; err: string };
 
 /**
  * Runs COMMAND (argv) in a session and process group of its own (`setsid -w`), so a stand-in's

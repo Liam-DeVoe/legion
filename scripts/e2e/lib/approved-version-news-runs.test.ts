@@ -128,22 +128,17 @@ const onePlan = plan(
 );
 
 host.describe("the script's run", () => {
-  test("reads PASS for a full run, which picks nothing", () => {
+  // A full run reads PASS. Its plan check reads the benchmark's plan with no database, and the run
+  // hands the benchmark the base commit's prompt files, that commit, a log directory in the
+  // evidence directory and the key file, once, under the deadline the plan makes: nine minutes for
+  // each of its 12 runs and twenty more.
+  test("reads PASS for a full run, which picks nothing, and runs the benchmark once, with the base's prompts and the plan's deadline", () => {
     const run = newsRun({}, { plans: { full: fullPlan }, sessions: fullRuns });
     expect(run.code).toBe(0);
     expect(run.last).toMatch(/^approved version news: PASS in \d+s \(/);
     expect(run.last).toContain(
       `(a4 head 3/3 ${a4Head}; off head 3/3, base 0/3 (control bites); answers head 3/3 ${answersHead}; model calls: 12, evidence: `
     );
-  }, 60_000);
-
-  // The plan check reads the benchmark's plan with no database, and the run hands the benchmark
-  // the base commit's prompt files, that commit, a log directory in the evidence directory and the
-  // key file, once, under the deadline the plan makes: nine minutes for each of its 12 runs and
-  // twenty more.
-  test("runs the benchmark once, with the base's prompts and the plan's deadline", () => {
-    const run = newsRun({}, { plans: { full: fullPlan }, sessions: fullRuns });
-    expect(run.code).toBe(0);
     const [planCall, sessionsCall, ...more] = run.calls;
     expect(more).toEqual([]);
     expect(planCall).toContain(
@@ -246,6 +241,8 @@ host.describe("the script's run", () => {
     expect(run.last).toMatch(/^approved version news: FAIL at counts after \d+s \(/);
   }, 60_000);
 
+  // The sessions ran before the key-leak check, so its last line says they ran and were not
+  // counted, never that they did not run.
   test("fails at the key-leak check where the evidence holds the key's first 8 characters", () => {
     const run = newsRun(
       {},
@@ -256,7 +253,9 @@ host.describe("the script's run", () => {
       "FAIL key-leak: the model key's first 8 characters are in the evidence directory "
     );
     expect(run.last).not.toContain(modelKey.slice(0, 8));
-    expect(run.last).toMatch(/^approved version news: FAIL at key-leak after \d+s \(/);
+    expect(run.last).toMatch(
+      /^approved version news: FAIL at key-leak after \d+s \(the sessions ran, and the run stopped before it counted them, evidence: /
+    );
   }, 60_000);
 
   // The script keeps no table of the steps: a step the driver's plan adds is counted in each arm

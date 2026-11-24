@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { readdirSync } from "node:fs";
+import { chmodSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 // lib/kind-sandbox.sh's kind_node_pulls, the list of images a kind node pulled that
 // kind_sandbox_teardown reads from each node's containerd journal and holds to
@@ -66,6 +67,56 @@ describe("kind_node_pulls", () => {
     const { code, lines } = pulls("no-pull");
     expect(lines).toHaveLength(1);
     expect(lines[0]).toStartWith("CHECK kind-node-pulls: FAIL: no containerd journal of the nodes");
-    expect(code).toBe(3);
+    expect(code).toBe(4);
+  });
+});
+
+// kind_sandbox_teardown over a cluster whose node left no journal to read, as a rig that failed
+// before its first pull leaves it: kind, kubectl and docker are stand-ins that list the cluster,
+// no node, and do nothing else. A test that failed already (STATUS 1) gets no second failure from
+// the empty journal list; a test that passed (STATUS 0), the control, fails on it with status 3.
+const scratch = temporaryDirectories("kind-sandbox-teardown");
+
+/** The teardown as the rig calls it, after kind_sandbox_use, over the stand-ins: its exit status
+ *  and what it printed. */
+function teardown(status: number): { code: number; out: string } {
+  const dir = scratch("rig");
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  const standIn = (name: string, body: string) => {
+    writeFileSync(join(bin, name), `#!/usr/bin/env bash\n${body}\n`);
+    chmodSync(join(bin, name), 0o755);
+  };
+  standIn("kind", '[ "$1 $2" != "get clusters" ] || echo rig\nexit 0');
+  standIn("kubectl", "exit 1");
+  standIn("docker", "exit 0");
+  const script = `. "$1"
+note() { printf '%s\\n' "$*"; }
+fail() { printf 'FAIL: %s\\n' "$*"; exit 1; }
+kind_sandbox_use rig "$2"
+kind_sandbox_teardown "$3" "$2/evidence"`;
+  const run = Bun.spawnSync(["bash", "-c", script, "kind-rig", library, dir, String(status)], {
+    env: {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      LEGION_E2E_KIND: join(bin, "kind"),
+    },
+    stderr: "pipe",
+    stdout: "pipe",
+  });
+  return { code: run.exitCode, out: `${run.stdout}${run.stderr}` };
+}
+
+describe("kind_sandbox_teardown", () => {
+  test("a journal with no pull is no second failure of a test that failed already, and fails a test that passed", () => {
+    const failed = teardown(1);
+    expect({ code: failed.code, out: failed.out }).toMatchObject({ code: 0 });
+    expect(failed.out).toContain("CHECK kind-node-pulls: FAIL: no containerd journal of the nodes");
+    expect(failed.out).toContain(
+      "the test failed already (status 1), so a journal with no pull is no second failure"
+    );
+    const passed = teardown(0);
+    expect({ code: passed.code, out: passed.out }).toMatchObject({ code: 3 });
+    expect(passed.out).not.toContain("no second failure");
   });
 });

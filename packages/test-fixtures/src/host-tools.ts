@@ -43,8 +43,8 @@ export function skipWithout(names: readonly string[], job: string): boolean {
  * skips or throws by `skipWithout`'s rule, with `what` in place of the programs.
  *
  * A file that needs several such things, or a program beside them, builds one list of what it
- * lacks and hands it here joined (`packages/dispatch/e2e/__tests__/psql-session.test.ts`), so a
- * host that lacks them all reads one line naming each rather than one line per gate.
+ * lacks and hands it here joined (`packages/dispatch/e2e/__tests__/psql-session-postgres.test.ts`),
+ * so a host that lacks them all reads one line naming each rather than one line per gate.
  */
 export function requireOrSkip(what: string, present: boolean, job: string): boolean {
   if (present) return false;

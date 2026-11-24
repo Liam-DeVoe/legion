@@ -29,7 +29,7 @@
  * `prepareStandIn` of `outside-agent-tailnet-stand-ins.ts` starts, and the squatters `squat` of
  * `outside-agent-acceptance.test.ts` leaves running until its row ends. Three subprocesses a row
  * can wait for run outside it, as stated edges. One is the psql of `e2e/psql.ts` (the rows and
- * hooks of `psql-session.test.ts`), whose `sqlAt` `e2e/harness-postgres.ts` and
+ * hooks of `psql-session-postgres.test.ts`), whose `sqlAt` `e2e/harness-postgres.ts` and
  * `e2e/local-instance.ts` call too, so bounding that psql would reach past `e2e/__tests__/`.
  * Another is the `ps` that reads the process table on a machine with no `/proc`, here
  * (`processTable`) and in `bounded-subprocess.test.ts`, which runs with no bound. Linux lists its
@@ -126,12 +126,12 @@
  * total): a hung child of either fails at its own 60 s bound.
  *
  * The two-stack row of `second-global-setup.test.ts` runs in no `bun run test`. It, the rows of
- * `psql-session.test.ts` and those of `harness-stacks.test.ts` are `bun run test:postgres`,
- * which the `postgres-rows` job of `.github/workflows/dispatch-browser.yaml` runs on the image's
- * PostgreSQL 18, with the server and broker binaries its `binaries` job built, so the child
- * there builds no Go. The row's 1 830 000 ms is the bound of a child that builds two stacks from
- * cold, which that job's step budget is far below: a stuck child there fails at that budget,
- * which names the step.
+ * `psql-session-postgres.test.ts` and that of `harness-stacks-postgres.test.ts` are
+ * `bun run test:postgres`, which the `postgres-rows` job of
+ * `.github/workflows/dispatch-browser.yaml` runs, in its full lane, on the image's PostgreSQL 18,
+ * with the server and broker binaries its `binaries` job built, so the child there builds no Go.
+ * The row's 1 830 000 ms is the bound of a child that builds two stacks from cold, which that
+ * job's step budget is far below: a stuck child there fails at that budget, which names the step.
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -1108,15 +1108,14 @@ async function drain(
  *  and never into the text this answers with: rows of this directory read a child's stderr as
  *  exactly empty.
  *
- *  This never throws for an exit status. Ten files of this directory run children that are
+ *  This never throws for an exit status. Eleven files of this directory run children that are
  *  meant to exit non-zero and read the code - `compare-recordings-refusal.test.ts`,
  *  `delivery-live-probe.test.ts`, `harness-signin.test.ts`, `harness-stacks.test.ts`,
- *  `outside-agent-acceptance.test.ts`, `outside-agent-public.test.ts`,
- *  `outside-edge-refusals.test.ts` (through `outside-edge-refusals-fixtures.ts`),
- *  `round-robin-proxy.test.ts`, `unit-repeat.test.ts` and `visual-run.test.ts` - so a helper
- *  that always threw
- *  would fail every row of theirs that reads a refusal. A caller that does refuse a non-zero exit
- *  builds its message from `named`.
+ *  `harness-stacks-postgres.test.ts`, `outside-agent-acceptance.test.ts`,
+ *  `outside-agent-public.test.ts`, `outside-edge-refusals.test.ts` (through
+ *  `outside-edge-refusals-fixtures.ts`), `round-robin-proxy.test.ts`, `unit-repeat.test.ts` and
+ *  `visual-run.test.ts` - so a helper that always threw would fail every row of theirs that reads
+ *  a refusal. A caller that does refuse a non-zero exit builds its message from `named`.
  *
  *  The bound covers the whole wait: the child's exit and the end of both pipes, so a process the
  *  child left holding a pipe is stuck as the child itself would be. It holds at any depth, since

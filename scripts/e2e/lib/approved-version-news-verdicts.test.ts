@@ -57,7 +57,7 @@ function proofLog(lines: string[]): string {
 /** Runs COMMANDS after the script's plan and count settings, its plan and count functions and
  * its note and fail, in its plan check, over the driver's plan of a full run at this change
  * (fullPlan) with no pick: COMMANDS set another plan or a pick. */
-function controls(commands: string) {
+function inPlanCheck(commands: string) {
   const result = Bun.spawnSync([
     "bash",
     "-c",
@@ -105,7 +105,7 @@ const harnessFailed = "HARNESS: the harness failed; its log is above";
  * step's part of the last line, the head runs that missed, and the notes it printed. */
 function partTwoStep(word: string, lines: string[], pick = "") {
   const proof = proofLog([`=== RUN   ${body}`, ...lines]);
-  const run = controls(`${pick}
+  const run = inPlanCheck(`${pick}
 part_two_step ${JSON.stringify(proof)} ${word}
 printf 'said=%s\\nmissed=%s\\n' "$step_said" "$head_missed"`);
   expect(run.err).toBe("");
@@ -253,7 +253,7 @@ describe("part two's count of each arm", () => {
 /** check_plan over the driver's plan of a full run PLAN: its exit status and what it printed on
  * stderr. */
 function checkPlan(text: string) {
-  const run = controls(`full_plan=${quoted(text)}
+  const run = inPlanCheck(`full_plan=${quoted(text)}
 check_plan`);
   return { code: run.code, err: run.err };
 }
@@ -306,7 +306,7 @@ describe("the plan check", () => {
 
 /** part_two_deadline after PICK, the plan of a pick ("" for a full run's). */
 function partTwoDeadline(pick = "") {
-  const run = controls(`${pick}
+  const run = inPlanCheck(`${pick}
 part_two_deadline`);
   expect(run.err).toBe("");
   return run.out.trim();

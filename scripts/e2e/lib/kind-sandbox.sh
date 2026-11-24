@@ -75,7 +75,9 @@
 # container logs and the nfs and postgres namespaces', every event, and the Agent Sandbox
 # controller's log) to EVIDENCE, deletes the routes kind_route_pods made, and deletes the cluster
 # and the registry. It does nothing before kind_sandbox_use or kind_sandbox_create has named a
-# cluster, and deletes nothing once the cluster is gone. It returns 3 when kind_node_pulls fails.
+# cluster, and deletes nothing once the cluster is gone. It returns 3 when kind_node_pulls fails,
+# except for journals with no pull when STATUS is not 0: a rig that failed before its first pull
+# leaves those.
 #
 # LEGION_E2E_KIND names the kind binary when kind_sandbox_install_kind has not run in this shell.
 
@@ -502,9 +504,10 @@ EOF
 # returns image reference "<id>"`), since images kind load put in the node and the node image's
 # own are no pull, and a refused pull returns no reference. It prints `CHECK kind-node-pulls:
 # PASS` when each is ghcr.io/cybermonklabs/legion/ci by digest or the rig's registry
-# (localhost:<port>); it prints `CHECK kind-node-pulls: FAIL` and returns 3 when one is neither, or
-# when no journal holds a pull, since every rig pulls the gVisor check's busybox and its own
-# image: a journal with no pull is one the reader did not read, not a cluster that pulled nothing.
+# (localhost:<port>); it prints `CHECK kind-node-pulls: FAIL` and returns 3 when one is neither,
+# and returns 4 when no journal holds a pull, since every rig that reaches its test pulls the
+# gVisor check's busybox and its own image: a journal with no pull is one the reader did not read,
+# not a cluster that pulled nothing, unless the rig failed before its first pull.
 kind_node_pulls() {
   local journal node pulled ref outside=0 pulls=0
   for journal in "$@"; do
@@ -527,7 +530,7 @@ kind_node_pulls() {
   fi
   if [ "$pulls" -eq 0 ]; then
     note "CHECK kind-node-pulls: FAIL: no containerd journal of the nodes ($*) holds the line of a pull that succeeded, and every rig pulls at least its own image"
-    return 3
+    return 4
   fi
   note "CHECK kind-node-pulls: PASS: each of the $pulls images the nodes pulled is ghcr.io/cybermonklabs/legion/ci by digest or the rig's registry"
 }
@@ -536,7 +539,8 @@ kind_node_pulls() {
 # containerd journal in EVIDENCE and names each image the nodes pulled (kind_node_pulls), keeps
 # the cluster's state in EVIDENCE when STATUS is not 0, then deletes the cluster, the routes
 # kind_route_pods made and the registry. It returns 3, after the deletes, when kind_node_pulls
-# failed, which the rig reports as the test's failure.
+# failed, which the rig reports as the test's failure; a journal with no pull is no failure of its
+# own when STATUS is not 0, since a rig that failed before its first pull leaves one.
 kind_sandbox_teardown() {
   local status=$1 evidence=$2 namespace pod clusters refused node journals=() verdict=0 cidr via out
   [ -n "$kind_cluster" ] || return 0
@@ -561,6 +565,10 @@ kind_sandbox_teardown() {
       journals+=("$evidence/containerd-$node.journal")
     done
     kind_node_pulls "${journals[@]+"${journals[@]}"}" || verdict=$?
+    if [ "$verdict" -eq 4 ] && [ "$status" -ne 0 ]; then
+      note "the test failed already (status $status), so a journal with no pull is no second failure: the rig may have failed before its first pull"
+      verdict=0
+    fi
     if [ "$status" -ne 0 ]; then
       {
         kind_k get nodes -o wide
