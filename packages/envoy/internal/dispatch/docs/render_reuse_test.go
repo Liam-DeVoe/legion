@@ -737,12 +737,14 @@ func sortedIDs(ids map[string]struct{}) []string {
 	return slices.Sorted(maps.Keys(ids))
 }
 
-// newRenderReuseService is a service whose settlement waits an hour, with renders watched from
-// before the document is seeded with renderReuseDocument. No room holds the document yet.
+// newRenderReuseService is a service whose settlement waits an hour and whose rooms stay resident
+// for the test's run (holdRoomsResident), with renders watched from before the document is seeded
+// with renderReuseDocument. No room holds the document yet.
 func newRenderReuseService(t *testing.T) (*Service, string, *renderShadow) {
 	t.Helper()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
+	holdRoomsResident(t, service)
 	sh := watchRenders(t, service, artifactID)
 	seedServiceText(t, service, artifactID, renderReuseDocument())
 	return service, artifactID, sh
@@ -1269,9 +1271,11 @@ func TestRenderReuseADocumentOutsideTheSchema(t *testing.T) {
 		logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 		return logs
 	}
+	// Every write below repairs a tree outside the Proof schema, which renders no markdown and
+	// has no token for any caller to name (ReplaceText's one exception).
 	replaceWhole := func(service *Service, artifactID string) func(ctx context.Context) error {
 		return func(ctx context.Context) error {
-			_, err := service.ReplaceText(ctx, artifactID, renderReuseDocument(), reuseAgent)
+			_, err := service.ReplaceText(ctx, artifactID, renderReuseDocument(), reuseAgent, nil)
 			return err
 		}
 	}
@@ -1676,6 +1680,7 @@ func insertBlocksAfter(t *testing.T, prefix, markdown string) func(*pmdoc.Node) 
 func TestRenderReuseABrowserTypingScript(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
+	holdRoomsResident(t, service)
 	sh := watchRenders(t, service, artifactID)
 	document := typingDocument()
 	if len(document) < 390<<10 {
@@ -1780,6 +1785,7 @@ func TestRenderReuseABrowserTypingScript(t *testing.T) {
 func TestRenderReuseAnUnreadableAskBlockKeepsTheRoomsAskAuthors(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
+	holdRoomsResident(t, service)
 	seedServiceText(t, service, artifactID, "The typed paragraph opens the document.\n\nThe last paragraph closes it.\n")
 	browser := newRoomPeer(t, service, artifactID, 1, reuseBob, nil)
 	browser.editTree(insertBlocksAfter(t, "The typed paragraph",

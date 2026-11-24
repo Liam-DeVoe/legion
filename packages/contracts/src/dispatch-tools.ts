@@ -1,12 +1,16 @@
 import {
   DEFAULT_ISSUE_PAGE_LIMIT,
   DEFAULT_ISSUE_READ_EVENTS,
+  ISSUE_LABEL_MAX,
   ISSUE_TITLE_MAX,
   MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
+  MAX_ISSUE_COMPONENTS,
+  MAX_ISSUE_LABELS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
 } from "./dispatch-api-limits";
+import { goBlankPattern } from "./go-blank";
 import { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST } from "./legion-roles";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
 
@@ -137,21 +141,26 @@ const ARTIFACT_CONTENT_NAME_RULE = `${CONTENT_IS_MARKDOWN}, so a document's name
 /**
  * What `dispatch artifact` says of a name the owner already holds. The command refuses it before
  * it uploads anything, because an upload of that name writes the document's next version and
- * replaces its text. `force` is what asks for that version. The refusal is the command's: the
- * API writes the version for every other caller, the Dispatch page's own upload among them.
+ * replaces its text. `force` is what asks for that version. The refusal is the command's; the
+ * API's own guard is the document token, which Dispatch checks under the write's lock where a
+ * replacement names it, the Dispatch page's own upload among them. A replacement naming none is
+ * taken unchecked for now and refused 400 PRECONDITION_REQUIRED in a later release (INFRA-4980),
+ * so the rule names both.
  */
 export const ARTIFACT_NAME_EXISTS_RULE =
-  "An upload under the name of a document the owner already holds is refused: it writes that document's next version, over the text it holds. Change a document with dispatch doc-edit. Send the upload again with force (--force) to write the next version.";
+  'An upload under the name of a document the owner already holds is refused: it writes that document\'s next version, over the text it holds. Change a document with dispatch doc-edit. To write the next version, send the upload again with force (--force) and the token of the version it replaces (--precondition-json \'{"document":"sha256:…"}\', the token dispatch doc-read prints).';
 
 /**
  * What `dispatch artifact` says of inline text the store would change. The command renders the
  * text as Dispatch renders a document it stores and compares the two, so a text stored under
  * another spelling (a `*` list stored with `-`, an ordered list renumbered, a CR LF stored as a
- * line feed) is refused before the upload rather than stored changed. The rule holds for both
- * kinds of name: `--path` keeps the bytes of a name that is not Markdown, and a Markdown name is
- * parsed and rendered whichever flag sends it, so its one way out is to send the stored text.
+ * line feed) is refused before the upload rather than stored changed. A typed block's attributes
+ * in another order are the one spelling it stores rather than refuses, since an attribute's
+ * position carries no meaning. The rule holds for both kinds of name: `--path` keeps the bytes of
+ * a name that is not Markdown, and a Markdown name is parsed and rendered whichever flag sends
+ * it, so its one way out is to send the stored text.
  */
-export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dispatch stores as Markdown, and a text the store would write under another spelling is refused. The refusal prints the text Dispatch stores: send that text. A name that does not end in .md or .markdown has a second way out, which keeps the text as it was written: send it as a file with ${PATH_KEEPS_BYTES}.`;
+export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dispatch stores as Markdown, and a text the store would write under another spelling is refused. A typed block whose attributes differ from Dispatch's only in their order is not refused: the command uploads it with them in Dispatch's order and names each such block. A refusal names the first difference: a changed line by the attribute or the word that differs, a word of more than 200 characters by a window from its first character that differs, and a line the store adds or drops by a quote cut at 200 characters, each cut named. The refusal prints the text Dispatch stores: send that text. A name that does not end in .md or .markdown has a second way out, which keeps the text as it was written: send it as a file with ${PATH_KEEPS_BYTES}.`;
 
 /** A name's extension, or undefined for a name with none: what follows its last dot when that
  *  holds no blank. Digits count, so "rows.jsonl.1" has one, and so does a title such as
@@ -159,6 +168,51 @@ export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dis
 const NAME_EXTENSION = /\.([^\s.]+)$/u;
 
 const MARKDOWN_EXTENSION = /^(md|markdown)$/i;
+
+/** The guard dispatch_doc_edit takes: exactly one of a document token and a set of block
+ *  tokens. An upload takes the document token alone and has a shape of its own
+ *  (uploadPreconditionArgument). */
+function preconditionArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
+  return z
+    .object({
+      document: z
+        .string({ min: 1 })
+        .describe("Token for the exact canonical document returned by dispatch doc-read.")
+        .optional(),
+      blocks: z
+        .array(
+          z.object({
+            id: z.string({ min: 1 }).describe("Stable block id dispatch doc-read --blocks lists."),
+            token: z
+              .string({ min: 1 })
+              .describe("That block's full-state token, including inline marks."),
+          }),
+          { min: 1 }
+        )
+        .describe(
+          "Every content block this batch changes, each with the token dispatch doc-read --blocks lists."
+        )
+        .optional(),
+    })
+    .describe("Optional optimistic-concurrency guard; select exactly one of document or blocks.")
+    .optional();
+}
+
+/** The guard dispatch_artifact takes. An upload rewrites the whole document, so only the
+ *  document token says which text it replaces: the server refuses a blocks guard on an upload
+ *  (400 INVALID_PRECONDITION), and a writer is offered no shape it would refuse. */
+function uploadPreconditionArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
+  return z
+    .object({
+      document: z
+        .string({ min: 1 })
+        .describe("Token for the exact canonical document returned by dispatch doc-read."),
+    })
+    .describe(
+      "The token of the version this upload replaces, which an upload over a document the owner already holds must name; a first upload under a name replaces nothing and names none."
+    )
+    .optional();
+}
 
 /**
  * Whether `--path` would store this name's text as the bytes it was written as: true for every
@@ -211,56 +265,144 @@ function preconditionKept(value: unknown): boolean {
   return (typeof precondition.document === "string") !== Array.isArray(precondition.blocks);
 }
 
+/** The keys a replace operation takes. Every other key an operation may carry is another
+ *  operation's, so a replace that carries one sends text that replace never writes. */
+const REPLACE_OP_KEYS: Readonly<Record<string, true>> = {
+  op: true,
+  find: true,
+  with: true,
+  occurrence: true,
+};
+
+const REPLACE_OP_RULE =
+  'A replace names with and takes find, with and occurrence alone: with "" deletes the match on purpose, and a replace without with, or with its new text under another key such as markdown, would delete the match too.';
+
+/** The refusal of each replace operation of `value` that names no with or carries a key replace
+ *  does not take, each by its index in ops, or undefined when every replace keeps the rule. */
+function replaceOpsProblem(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null || !("ops" in value)) return undefined;
+  const ops = value.ops;
+  if (!Array.isArray(ops)) return undefined;
+  const problems: string[] = [];
+  ops.forEach((op: unknown, index) => {
+    if (typeof op !== "object" || op === null || !("op" in op) || op.op !== "replace") return;
+    const foreign = Object.entries(op)
+      .filter(([key, held]) => REPLACE_OP_KEYS[key] !== true && held !== undefined)
+      .map(([key]) => key);
+    if (foreign.length > 0) {
+      problems.push(
+        `ops[${index}] is a replace carrying ${foreign.join(" and ")}, which replace does not take: it takes find, with and occurrence, and its new text goes in with.`
+      );
+    }
+    if (!("with" in op) || op.with === undefined) {
+      problems.push(
+        `ops[${index}] is a replace with no with, which would delete the text find matches: write the new text in with, or with "" to delete it on purpose.`
+      );
+    }
+  });
+  return problems.length === 0 ? undefined : problems.join(" ");
+}
+
 function documentEditProblem(value: unknown): string | undefined {
+  const replaceProblem = replaceOpsProblem(value);
   return brokenParts([
     [documentEditOwner.check(value), documentEditOwner.message],
     [preconditionKept(value), PRECONDITION_RULE],
+    [replaceProblem === undefined, replaceProblem ?? REPLACE_OP_RULE],
   ]);
 }
 
 const documentEditValidation: NonNullable<DispatchToolSpec["validation"]> = {
   check: (value) => documentEditProblem(value) === undefined,
-  message: `${documentEditOwner.message} ${PRECONDITION_RULE}`,
+  message: `${documentEditOwner.message} ${PRECONDITION_RULE} ${REPLACE_OP_RULE}`,
   refusal: (value) =>
-    documentEditProblem(value) ?? `${documentEditOwner.message} ${PRECONDITION_RULE}`,
+    documentEditProblem(value) ??
+    `${documentEditOwner.message} ${PRECONDITION_RULE} ${REPLACE_OP_RULE}`,
 };
 
-/** dispatch_comment: the document-owner rule plus `turn` only alongside `reply_to_ask`. */
+/** dispatch_comment: the document-owner rule, `turn` only alongside `reply_to_ask`, and the
+ *  mention rules below. */
 const commentOwner = documentOwnerValidation(true);
 const COMMENT_TURN_RULE =
   "turn requires reply_to_ask: turn says who holds an open ask's thread after the reply. Pass reply_to_ask with the open ask's id, or drop turn.";
 
+/** The most mentions one comment carries, and the refusal of one more, both as Dispatch states
+ *  them (`validateCommentMentions` in packages/envoy/internal/dispatch/api/comment_create.go). */
+const MAX_COMMENT_MENTIONS = 10;
+const COMMENT_MENTION_LIMIT_RULE = `mentions allow at most ${MAX_COMMENT_MENTIONS} targets`;
+
+/** The two forms of a mention's target and the refusal of any other, as Dispatch reads them
+ *  (`model.ParseRoute`'s roleRoutePattern and sessionRoutePattern in
+ *  packages/envoy/internal/dispatch/model/model.go, and `validateCommentMentions`). */
+const MENTION_TARGET_PATTERNS = [/^role:[a-z0-9-]+$/, /^session:[A-Za-z0-9_-]+$/] as const;
+const COMMENT_MENTION_TARGET_RULE = "mention target must be role:<name> or session:<id>";
+
+/** The refusal of a target named twice in one comment's mentions, as Dispatch states it
+ *  (`validateCommentMentions`). */
+const COMMENT_MENTION_REPEAT_RULE = "mentions must not repeat a target";
+
+/** The mention rule a comment's mentions break, in Dispatch's words and in its order: the count
+ *  first, then each target in turn, its form before whether an earlier one named it. Undefined
+ *  when they keep all three, or name none. */
+function mentionProblem(mentions: unknown): string | undefined {
+  if (!Array.isArray(mentions)) return undefined;
+  if (mentions.length > MAX_COMMENT_MENTIONS) return COMMENT_MENTION_LIMIT_RULE;
+  const seen = new Set<string>();
+  for (const target of mentions) {
+    if (
+      typeof target !== "string" ||
+      !MENTION_TARGET_PATTERNS.some((pattern) => pattern.test(target))
+    ) {
+      return COMMENT_MENTION_TARGET_RULE;
+    }
+    if (seen.has(target)) return COMMENT_MENTION_REPEAT_RULE;
+    seen.add(target);
+  }
+  return undefined;
+}
+
 function commentProblem(value: unknown): string | undefined {
-  const input = value as { readonly turn?: unknown; readonly reply_to_ask?: unknown };
+  const input = value as {
+    readonly turn?: unknown;
+    readonly reply_to_ask?: unknown;
+    readonly mentions?: unknown;
+  };
+  const mention = mentionProblem(input.mentions);
   return brokenParts([
     [commentOwner.check(value), commentOwner.message],
     [input.turn === undefined || typeof input.reply_to_ask === "string", COMMENT_TURN_RULE],
+    [mention === undefined, mention ?? ""],
   ]);
 }
 
+const COMMENT_RULE = `${commentOwner.message} ${COMMENT_TURN_RULE} ${COMMENT_MENTION_LIMIT_RULE}, each ${COMMENT_MENTION_TARGET_RULE}, and ${COMMENT_MENTION_REPEAT_RULE}.`;
+
 const commentValidation: NonNullable<DispatchToolSpec["validation"]> = {
   check: (value) => commentProblem(value) === undefined,
-  message: `${commentOwner.message} ${COMMENT_TURN_RULE}`,
-  refusal: (value) => commentProblem(value) ?? `${commentOwner.message} ${COMMENT_TURN_RULE}`,
+  message: COMMENT_RULE,
+  refusal: (value) => commentProblem(value) ?? COMMENT_RULE,
 };
 
 const ISSUE_UPDATE_FIELDS_RULE =
-  "Issue update requires at least one field besides issue: status, title, labels, priority, assignee, external_links, route, parent, blocked_by, advances, components, repo, before, or after.";
+  "Issue update requires at least one field besides issue: status, title, labels, labels_add, priority, assignee, external_links, route, parent, blocked_by, advances, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
   "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note";
 const ISSUE_UPDATE_REASON_RULE = "reason goes only with status done";
-const ISSUE_UPDATE_RULE = `${ISSUE_UPDATE_FIELDS_RULE} ${ISSUE_UPDATE_DONE_RULE}; ${ISSUE_UPDATE_REASON_RULE}.`;
+const ISSUE_UPDATE_LABELS_RULE = "labels_add goes without labels";
+const ISSUE_UPDATE_RULE = `${ISSUE_UPDATE_FIELDS_RULE} ${ISSUE_UPDATE_DONE_RULE}; ${ISSUE_UPDATE_REASON_RULE}; ${ISSUE_UPDATE_LABELS_RULE}.`;
 
 /** The refusal of the part of dispatch_issue_update's rule `value` breaks, or undefined when it
- *  keeps the rule: reason is the close's note, so it goes with status done and with nothing else,
- *  and the update names at least one field to change. `check` and `refusal` both read this one
- *  function, so the refusal never names a part the call kept. */
+ *  keeps the rule: reason is the close's note, so it goes with status done and with nothing else;
+ *  labels replaces every label and labels_add adds to them, so a call names one of the two, as
+ *  the route refuses both; and the update names at least one field to change. `check` and
+ *  `refusal` both read this one function, so the refusal never names a part the call kept. */
 function issueUpdateProblem(value: unknown): string | undefined {
   const input = value as {
     readonly status?: unknown;
     readonly reason?: unknown;
     readonly title?: unknown;
     readonly labels?: unknown;
+    readonly labels_add?: unknown;
     readonly priority?: unknown;
     readonly assignee?: unknown;
     readonly external_links?: unknown;
@@ -282,10 +424,14 @@ function issueUpdateProblem(value: unknown): string | undefined {
       typeof input.status === "string" ? `status ${input.status}` : "an update without status done";
     return `${ISSUE_UPDATE_REASON_RULE}: it is the note posted on the issue as it closes, and ${status} closes nothing. Drop reason, or set status done to close the issue.`;
   }
+  if (input.labels !== undefined && input.labels_add !== undefined) {
+    return `${ISSUE_UPDATE_LABELS_RULE}: labels replaces every label the issue holds and labels_add adds to them, so name the labels to add in labels_add alone, or the whole set in labels alone.`;
+  }
   const changesAField =
     typeof input.status === "string" ||
     typeof input.title === "string" ||
     Array.isArray(input.labels) ||
+    Array.isArray(input.labels_add) ||
     typeof input.priority === "number" ||
     input.priority === null ||
     typeof input.assignee === "string" ||
@@ -320,16 +466,19 @@ const messageValidation: NonNullable<DispatchToolSpec["validation"]> = {
  * dispatch_read: an issue, a project (alone, its documents; with artifact, one of them), or a ref,
  * exactly as every owned read - or a `message` alone, which addresses a conversation by any
  * message in it. A human's direct message to this session and the replies to it belong to no
- * issue or document, so the id is all there is.
+ * issue or document, so the id is all there is. `history` reads one post's replaced bodies, and
+ * a post is named by `ref` alone.
  */
 const readOwner = documentOwnerValidation(false);
 const READ_OWNER_RULE =
   "Exactly one of issue and project is required; project alone lists its documents, and with artifact names one.";
 const READ_MESSAGE_RULE =
   "message stands alone: it names the conversation, so name no issue, project, artifact, or ref with it.";
+const READ_HISTORY_RULE =
+  "history reads each body an edit or the delete of one post replaced, so it needs a ref naming one comment or one issue message: message stands alone and names a whole conversation, which keeps no history of its own.";
 
 /** dispatch_read's refusal: a call with message breaks only the message rule, and a call
- *  without it only the owner rule. */
+ *  without it only the owner rule; history breaks its own rule beside either. */
 function readProblem(value: unknown): string | undefined {
   const input = value as {
     readonly message?: unknown;
@@ -337,49 +486,78 @@ function readProblem(value: unknown): string | undefined {
     readonly project?: unknown;
     readonly artifact?: unknown;
     readonly ref?: unknown;
+    readonly history?: unknown;
   };
+  const historyKept = input.history !== true || typeof input.ref === "string";
   if (typeof input.message !== "string") {
-    return readOwner.check(value) ? undefined : READ_OWNER_RULE;
+    return brokenParts([
+      [readOwner.check(value), READ_OWNER_RULE],
+      [historyKept, READ_HISTORY_RULE],
+    ]);
   }
   const alone =
     input.issue === undefined &&
     input.project === undefined &&
     input.artifact === undefined &&
     input.ref === undefined;
-  return alone ? undefined : READ_MESSAGE_RULE;
+  return brokenParts([
+    [alone, READ_MESSAGE_RULE],
+    [historyKept, READ_HISTORY_RULE],
+  ]);
 }
 
 const readValidation: NonNullable<DispatchToolSpec["validation"]> = {
   check: (value) => readProblem(value) === undefined,
-  message: `${READ_OWNER_RULE} ${READ_MESSAGE_RULE}`,
-  refusal: (value) => readProblem(value) ?? `${READ_OWNER_RULE} ${READ_MESSAGE_RULE}`,
+  message: `${READ_OWNER_RULE} ${READ_MESSAGE_RULE} ${READ_HISTORY_RULE}`,
+  refusal: (value) =>
+    readProblem(value) ?? `${READ_OWNER_RULE} ${READ_MESSAGE_RULE} ${READ_HISTORY_RULE}`,
 };
 
 /** Component attachment modes an issue write accepts. */
 export const ISSUE_COMPONENTS_MODES = ["inherit", "explicit", "none"] as const;
 
+/** The rule of a `components` argument's parts, which the server holds every issue write to. */
+const COMPONENTS_RULE = "components mode explicit names ids, and mode none names a reason.";
+
 /** The `components` argument of dispatch_issue and dispatch_issue_update. */
 function componentsArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
   return z
-    .object({
-      mode: z
-        .enum(ISSUE_COMPONENTS_MODES)
-        .describe(
-          "inherit: take the parent chain's attachment (the default; deletes this issue's own). explicit: attach to ids. none: not architectural work, with reason."
-        ),
-      ids: z
-        .array(z.string({ min: 1 }), { min: 1, max: 50 })
-        .describe(
-          "For mode explicit: bare component ids from the project's architecture model (web, dispatch-server), not external ones."
-        )
-        .optional(),
-      reason: z
-        .string({ min: 1 })
-        .describe("For mode none: why this issue is not architectural (process, hiring, ops).")
-        .optional(),
-    })
+    .refineObject(
+      {
+        mode: z
+          .enum(ISSUE_COMPONENTS_MODES)
+          .describe(
+            "inherit: take the parent chain's attachment within the issue's own project (the default; deletes this issue's own). explicit: attach to ids, which it requires. none: not architectural work, with the reason it requires."
+          ),
+        ids: z
+          .array(z.string({ min: 1 }), { min: 1, max: MAX_ISSUE_COMPONENTS })
+          .describe(
+            "Required for mode explicit: bare component ids from the project's architecture model (web, dispatch-server), not external ones."
+          )
+          .optional(),
+        reason: z
+          .string({ min: 1 })
+          .describe(
+            "Required for mode none: why this issue is not architectural (process, hiring, ops)."
+          )
+          .optional(),
+      },
+      (value) => {
+        const input = value as {
+          readonly mode?: unknown;
+          readonly ids?: unknown;
+          readonly reason?: unknown;
+        };
+        if (input.mode === "explicit") return Array.isArray(input.ids) && input.ids.length > 0;
+        // The route trims the reason as Go's strings.TrimSpace does, which is not trim.
+        if (input.mode === "none")
+          return typeof input.reason === "string" && !goBlankPattern.test(input.reason);
+        return true;
+      },
+      COMPONENTS_RULE
+    )
     .describe(
-      "Attach the issue to architecture components. Attach the root before decomposing it; children inherit unless they choose."
+      `Attach the issue to architecture components. Attach the root before decomposing it; children inherit unless they choose. ${COMPONENTS_RULE}`
     );
 }
 
@@ -452,6 +630,19 @@ const BODY_BLOCK_RULE =
   "is refused however short it is, since nobody can answer a question put in a comment or a " +
   "message: ask the question in the issue's own document, as a decision block there, or open an " +
   "ask with `dispatch ask`.";
+
+/** How dispatch_resolve_comment, dispatch_edit_comment and dispatch_delete_comment each name the
+ *  comment they act on, written once so the three say it the same way. */
+const COMMENT_ARGUMENT =
+  "Comment id (uuid), or a dispatch://KEY/comment/<id> or " +
+  "dispatch://PROJECT/artifact/<slug>/comment/<id> reference; a reference accepts an " +
+  "8+ character id prefix that is unique on its owner.";
+
+/** How dispatch_edit_message and dispatch_delete_message each name the message they act on. Both
+ *  act on an issue message alone, which is the one kind a dispatch:// reference addresses. */
+const MESSAGE_ARGUMENT =
+  "Message id (uuid), or a dispatch://KEY/message/<id> reference; a reference accepts an " +
+  "8+ character id prefix that is unique on its owner.";
 
 /** What dispatch_ask and dispatch_edit_ask say about the bound on a question. It carries no
  *  number: the server owns the bound and `dispatch limits` prints it. */
@@ -539,7 +730,7 @@ function handoffProblem(value: unknown): string | undefined {
   if (typeof phase === "string" && !HANDOFF_PHASE_PATTERN.test(phase)) return HANDOFF_PHASE_RULE;
   if (typeof body !== "string") return undefined;
   if (!isJsonObjectText(body)) {
-    return 'body is not one JSON object: a handoff body is a JSON object such as {"schemaVersion":1}';
+    return 'body is not one JSON object: a handoff body is a JSON object such as {"head":"<the commit your phase ended at>","note":"<one paragraph for the next role>"}';
   }
   return undefined;
 }
@@ -564,7 +755,7 @@ const reviewValidation: NonNullable<DispatchToolSpec["validation"]> = {
     const input = value as { readonly verdict?: unknown; readonly reason?: unknown };
     return (
       input.verdict !== "changes_requested" ||
-      (typeof input.reason === "string" && input.reason.trim() !== "")
+      (typeof input.reason === "string" && !goBlankPattern.test(input.reason))
     );
   },
   message: REVIEW_REASON_RULE,
@@ -628,11 +819,15 @@ function resultProblem(value: unknown): string | undefined {
 }
 
 /**
- * Longest `dispatch_search` query (`GET /api/v1/search`'s `q`, trimmed), in UTF-16 units. The
- * query rides in the URL beside `project`, `limit` and `offset`, so this refusal and `project`'s
- * key rule are what keep the tool's URL under the load balancer's limit;
- * `packages/contracts/AGENTS.md` "Search limits" owns that budget. Generated into Go as
- * `contracts.SearchQueryMax`, which the server enforces.
+ * Longest `dispatch_search` query (`GET /api/v1/search`'s `q`, trimmed), in UTF-16 units.
+ * Generated into Go as `contracts.SearchQueryMax`, which the server enforces.
+ *
+ * The URL budget: `dispatch search` sends its query and filters in the URL (`q` beside `project`,
+ * `limit` and `offset`), and the load balancer in front of Dispatch answers a path and query over
+ * 16,369 bytes with a bare `414` before the server runs. This limit and `PROJECT_KEY_PATTERN` (at
+ * most 10 characters) keep the largest call the tool accepts at a 9,069-byte path and query, since
+ * percent-encoding costs at most 9 bytes a unit. Raising either, or adding a parameter, means
+ * redoing that sum.
  */
 export const SEARCH_QUERY_MAX = 1000;
 
@@ -733,18 +928,22 @@ export const dispatchToolSpecs = [
     example: { project: "DSP", title: "Native workspace" },
     description:
       "Create a native Dispatch issue for newly tracked work. Search first with dispatch search; if potentially duplicate issues exist, this returns 409 POSSIBLE_DUPLICATE unless --force is set after reading them, or, when the refusal cannot be recorded, creates the issue and names the near copy to read in the result. " +
-      "When passing a spec, before calling, have a fresh read-only reader check it against the code and the human's words, then resolve every finding; a Legion architect uses `plan-gap-analyst`. " +
+      "Where the spec is large, or changed in a way you cannot check alone, a fresh read-only reader can find its gaps and check its factual claims; a Legion architect can use `plan-gap-analyst` and `plan-reviewer`. " +
       "A spec holding an ask block whose body breaks its content rule (one or more question paragraphs, then at most one bullet list of options, last) is refused with 400 INVALID_ASK_BLOCK. " +
       `${CI_CHECK_RULE} ` +
       "Create a project only when a person asks for one; work that spans projects goes in the project that owns most of it. " +
       `${RELATED_CHECK_RESULT} With --force, the result also names each issue whose title you forced past. ` +
       `Do not use it when an existing issue already covers the work; read or update that issue instead. ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
-      project: z.string().describe("Project key for the new issue."),
+      project: z
+        .string({ min: 1 })
+        .describe(
+          "Project key for the new issue. Every create needs one, also a create that names external."
+        ),
       title: z
         .string({ max: ISSUE_TITLE_MAX })
         .describe("Concise issue title, at most 1,000 characters."),
-      parent: z.string().describe("Optional parent issue.").optional(),
+      parent: z.string().describe("Optional parent issue, in any project.").optional(),
       blocked_by: z
         .array(z.string({ min: 1 }), { max: MAX_ISSUE_BLOCKERS })
         .describe(
@@ -757,7 +956,12 @@ export const dispatchToolSpecs = [
           "Ids of the deployment's priorities this issue advances, which dispatch priorities lists. A child inherits every priority the issues above it advance, so name here only what this issue adds."
         )
         .optional(),
-      external: z.string().describe("Optional external issue reference.").optional(),
+      external: z
+        .string()
+        .describe(
+          "Optional external issue reference, owner/repo#n: the GitHub issue to import into the project this call names. A reference already imported into that project answers its issue and creates nothing; one already imported into another project is refused with 400 EXTERNAL_PROJECT_MISMATCH."
+        )
+        .optional(),
       force: z
         .boolean()
         .describe(
@@ -769,8 +973,10 @@ export const dispatchToolSpecs = [
         .describe(`Optional initial primary-document markdown. ${SPEC_WRITING_POINTER}`)
         .optional(),
       labels: z
-        .array(z.string({ min: 1, max: 40 }), { max: 20 })
-        .describe("Optional initial labels, at most 20 labels of up to 40 characters.")
+        .array(z.string({ min: 1, max: ISSUE_LABEL_MAX }), { max: MAX_ISSUE_LABELS })
+        .describe(
+          `Optional initial labels, at most ${MAX_ISSUE_LABELS} labels of up to ${ISSUE_LABEL_MAX} characters.`
+        )
         .optional(),
       priority: z
         .number({ int: true, min: 0, max: 3 })
@@ -779,14 +985,14 @@ export const dispatchToolSpecs = [
       assignee: z
         .string()
         .describe(
-          "Email of the person who answers this issue's asks (someone who has signed in to Dispatch); defaults to your owner when you act for a person, else the parent's assignee, else the project's default assignee. Every project names a default assignee, so a new issue always has one. A question on it reaches the person it was handed to, else the issue's assignee, else the project's default assignee. Set it only when a person said who owns the issue."
+          "Email of the person who answers this issue's asks (someone who has signed in to Dispatch); defaults to your owner when you act for a person, else the parent's assignee, else the project's default assignee. Every project names a default assignee, so a new issue always has one. A parent in another project passes on no assignee. A question on it reaches the person it was handed to, else the issue's assignee, else the project's default assignee. Set it only when a person said who owns the issue."
         )
         .optional(),
       components: componentsArgument(z).optional(),
       repo: z
         .string()
         .describe(
-          "The repository the issue targets, owner/name. A child inherits its parent's when unset, and an issue with none on its parent chain takes the project's default."
+          "The repository the issue targets, owner/name. When unset, the issue takes the nearest ancestor's in its own project, and an issue with none above it in its own project takes the project's default."
         )
         .optional(),
     }),
@@ -799,7 +1005,8 @@ export const dispatchToolSpecs = [
       before: "DSP-2",
     },
     description:
-      "Update an existing issue: move its lifecycle status, retitle it, replace its labels, set " +
+      "Update an existing issue: move its lifecycle status, retitle it, add labels to it or " +
+      "replace its labels, set " +
       "its priority, set or clear its assignee, link a URL (the pull request that delivers it, a " +
       "run, a document), set its " +
       "route, set or clear its parent, replace the issues it is blocked by, replace the " +
@@ -807,7 +1014,9 @@ export const dispatchToolSpecs = [
       "architecture components, set the repository it targets, or move it on its project's " +
       "board. Status is one of " +
       `${ISSUE_STATUSES.join(", ")}; outside Legion, move it yourself as the work advances; inside ` +
-      "Legion the daemon moves it. A non-empty external_links is " +
+      "Legion the daemon moves it. labels_add adds labels and keeps every label the issue holds; " +
+      "labels replaces the whole set, so a label it does not name is removed, and the two never " +
+      "go together. A non-empty external_links is " +
       "merged into the issue's existing links by URL, so linking the pull request you just opened " +
       "keeps every earlier link; an empty external_links removes every link instead. components " +
       "replaces the issue's own attachment. Closing an issue " +
@@ -849,9 +1058,15 @@ export const dispatchToolSpecs = [
         .describe("Replacement title, at most 1,000 characters.")
         .optional(),
       labels: z
-        .array(z.string({ min: 1, max: 40 }), { max: 20 })
+        .array(z.string({ min: 1, max: ISSUE_LABEL_MAX }), { max: MAX_ISSUE_LABELS })
         .describe(
-          "Replacement label set, at most 20 labels of up to 40 characters; replaces every existing label."
+          `Replacement label set, at most ${MAX_ISSUE_LABELS} labels of up to ${ISSUE_LABEL_MAX} characters; replaces every existing label, so a label it does not name is removed. To add labels and keep the others, use labels_add. Not with labels_add.`
+        )
+        .optional(),
+      labels_add: z
+        .array(z.string({ min: 1, max: ISSUE_LABEL_MAX }), { max: MAX_ISSUE_LABELS })
+        .describe(
+          `Labels to add, at most ${MAX_ISSUE_LABELS} of up to ${ISSUE_LABEL_MAX} characters: each is added to the labels the issue holds when the write lands, and every label it holds stays; the issue holds at most ${MAX_ISSUE_LABELS} in all. Not with labels.`
         )
         .optional(),
       // `.describe()` comes last here, unlike every other field. On the OMP host's Zod facade a
@@ -882,7 +1097,9 @@ export const dispatchToolSpecs = [
         .optional(),
       parent: z
         .string()
-        .describe("Parent issue key in the same project; an empty string clears the parent.")
+        .describe(
+          "Parent issue key, in any project; an empty string clears the parent. A parent in another project passes on no repository, components or legion label."
+        )
         .optional(),
       blocked_by: z
         .array(z.string({ min: 1 }), { max: MAX_ISSUE_BLOCKERS })
@@ -906,7 +1123,7 @@ export const dispatchToolSpecs = [
       repo: z
         .string()
         .describe(
-          "The repository the issue targets, owner/name. An empty string clears it, so the issue inherits its parent's or the project's default again."
+          "The repository the issue targets, owner/name. An empty string clears it, so the issue takes the nearest ancestor's in its own project, or the project's default, again."
         )
         .optional(),
       before: z
@@ -1168,13 +1385,7 @@ export const dispatchToolSpecs = [
       "the person scope: a browser sign-in, or a personal token that holds it. " +
       "Not for asks: use dispatch resolve-ask.",
     arguments: (z) => ({
-      comment: z
-        .string()
-        .describe(
-          "Comment id (uuid), or a dispatch://KEY/comment/<id> or " +
-            "dispatch://PROJECT/artifact/<slug>/comment/<id> reference; a reference accepts an " +
-            "8+ character id prefix that is unique on its owner."
-        ),
+      comment: z.string().describe(COMMENT_ARGUMENT),
     }),
     strict: true,
   },
@@ -1246,6 +1457,15 @@ export const dispatchToolSpecs = [
             "request-approval hands it back at the current version."
         )
         .optional(),
+      mentions: z
+        .array(z.string())
+        .describe(
+          "Optional targets the comment mentions: role:<name> (lowercase letters, digits and -), " +
+            "which reaches the session holding that role, or session:<id> (letters, digits, _ " +
+            "and -); at most 10, none named twice. Dispatch delivers the comment to each target, " +
+            "retries a send that does not go through, and records every attempt on the comment."
+        )
+        .optional(),
       images: imagesArgument(z, "the issue (or the project document's project)"),
     }),
     validation: commentValidation,
@@ -1275,7 +1495,12 @@ export const dispatchToolSpecs = [
       replace_with: z
         .string()
         .describe(
-          "Replacement text; a CR LF or a lone carriage return in it is written as a line feed."
+          "Replacement markdown for the quoted text. Text alone stays in the quoted text's block; whole blocks " +
+            "(paragraphs, lists, headings written with their #s) stand where the quoted text stood, and over a " +
+            "heading's whole text they take the heading's place, so a heading that stays is written with its #s. " +
+            "A table cell takes text alone. To move a section, write its blocks beside the whole text of the block " +
+            "where it goes, and suggest each moved block's text replaced with nothing where it stood (an emptied " +
+            "heading stays as its #s alone). A CR LF or a lone carriage return in it is written as a line feed."
         ),
       body: z.string().describe(`Optional rationale. ${BODY_BLOCK_RULE}`).optional(),
       occurrence: z
@@ -1284,6 +1509,60 @@ export const dispatchToolSpecs = [
         .optional(),
     }),
     validation: documentOwnerValidation(true, true),
+  },
+  {
+    name: "dispatch_edit_comment",
+    example: {
+      comment: "01234567-0000-4000-8000-000000000001",
+      body: "Corrected: the retry window is 72 hours, not 24.",
+    },
+    description:
+      "Replace the body of a comment or a suggestion you wrote, to correct it. The author alone " +
+      "may edit a comment: every other caller is refused 403 NOT_AUTHOR. The comment keeps its " +
+      "id, its place in its thread and its anchor, and every read of it carries the time of the " +
+      "edit. A Dispatch of this release keeps the body you replace: " +
+      "dispatch read --ref dispatch://KEY/comment/<id> --history lists each earlier body with the " +
+      "actor that replaced it and the time. Use it to correct what you wrote, never to answer: a " +
+      "new point is a reply (dispatch comment --reply-to), which the thread shows in its own " +
+      "place. A comment of a closed issue is edited too, and a deleted comment is refused 409 " +
+      `POST_DELETED. ${BODY_BLOCK_RULE}`,
+    arguments: (z) => ({
+      comment: z.string().describe(COMMENT_ARGUMENT),
+      body: z
+        .string()
+        .describe(`The comment's new body, which replaces the old one whole. ${BODY_BLOCK_RULE}`),
+    }),
+    strict: true,
+  },
+  {
+    name: "dispatch_delete_comment",
+    example: { comment: "01234567-0000-4000-8000-000000000001" },
+    description:
+      "Withdraw a comment or a suggestion you wrote, where the text itself should not stand. The " +
+      "author alone may delete a comment: every other caller is refused 403 NOT_AUTHOR. The " +
+      "comment keeps its id and its place in its thread, and no read of it gives any part of its " +
+      "body again: each read of it marks it deleted and names who deleted it and when. The " +
+      "events of a reply's creation and of each edit of the reply written before the delete keep " +
+      "the preview of it they carried, and the document's events written " +
+      "before the delete keep the name an accepted suggestion gave its version, which the delete " +
+      "renames. Its " +
+      "replies keep their own text and their own places, a suggestion's replacement text goes " +
+      "from the comment with the body (an accepted one's stays in the document as its own text), " +
+      "the document's margin mark holds no text, each mention delivery still waiting is failed, " +
+      "and search stops matching it. A suggestion of it still waiting is rejected out of the " +
+      "document before the body goes, so the text an insert suggestion put there goes with it. " +
+      "Every block of it loses the text each revision recorded, so a reference pinned to a block " +
+      "of the comment reads none either. A Dispatch of this release keeps the body: " +
+      "dispatch read --ref dispatch://KEY/comment/<id> --history then marks the comment deleted " +
+      "and lists no body. Correct a wording with dispatch edit-comment instead, and close an " +
+      "addressed thread with dispatch resolve-comment. A comment of a closed issue is deleted " +
+      "too, and a second delete is refused 409 POST_DELETED. A mention delivery its sender moves " +
+      "while the delete is being written is 409 DELETE_CONTENDED, with nothing written: run the " +
+      "same command again.",
+    arguments: (z) => ({
+      comment: z.string().describe(COMMENT_ARGUMENT),
+    }),
+    strict: true,
   },
   {
     name: "dispatch_message",
@@ -1327,6 +1606,54 @@ export const dispatchToolSpecs = [
       ),
     }),
     validation: messageValidation,
+  },
+  {
+    name: "dispatch_edit_message",
+    example: {
+      message: "01234567-0000-4000-8000-000000000001",
+      body: "Corrected: the export runs at 02:00 UTC, not 02:00 local.",
+    },
+    description:
+      "Replace the body of an issue message you wrote, to correct it. The author alone may edit a " +
+      "message: every other caller is refused 403 NOT_AUTHOR. Only a message on an issue is " +
+      "edited; a message of a direct conversation, which names no issue, is refused 409 " +
+      "NOT_AN_ISSUE_MESSAGE. The message keeps its id and its place in its thread, and every read " +
+      "of it carries the time of the edit. A Dispatch of this release keeps the body you replace: " +
+      "dispatch read --ref dispatch://KEY/message/<id> --history lists each earlier body with the " +
+      "actor that replaced it and the time. Use it to correct what you wrote, never to answer: a " +
+      "new point is a reply (dispatch message --in-reply-to). The block ids follow the new text, " +
+      "so a reply that names a block of this message may name a block the edit removed. A message " +
+      `of a closed issue is edited too, and a deleted message is refused 409 POST_DELETED. ${BODY_BLOCK_RULE}`,
+    arguments: (z) => ({
+      message: z.string().describe(MESSAGE_ARGUMENT),
+      body: z
+        .string()
+        .describe(`The message's new body, which replaces the old one whole. ${BODY_BLOCK_RULE}`),
+    }),
+    strict: true,
+  },
+  {
+    name: "dispatch_delete_message",
+    example: { message: "01234567-0000-4000-8000-000000000001" },
+    description:
+      "Withdraw an issue message you wrote, where the text itself should not stand. The author " +
+      "alone may delete a message: every other caller is refused 403 NOT_AUTHOR. Only a message on " +
+      "an issue is deleted; a message of a direct conversation, which names no issue, is refused " +
+      "409 NOT_AN_ISSUE_MESSAGE. The message keeps its id and its place in its thread, and no read " +
+      "of it gives any part of its body again: each read of it marks it deleted and names who " +
+      "deleted it and when, and the events of a reply's creation and of each edit of the reply " +
+      "written before the delete keep the preview of it they carried. " +
+      "Its replies keep their own text, each send still waiting is failed, and search stops " +
+      "matching it. A Dispatch of this release keeps the body: dispatch read --ref " +
+      "dispatch://KEY/message/<id> " +
+      "--history then marks the message deleted and lists no body. Correct a wording with " +
+      "dispatch edit-message instead. A message of a closed issue is deleted too, and a second " +
+      "delete is refused 409 POST_DELETED. A send its sender moves while the delete is being " +
+      "written is 409 DELETE_CONTENDED, with nothing written: run the same command again.",
+    arguments: (z) => ({
+      message: z.string().describe(MESSAGE_ARGUMENT),
+    }),
+    strict: true,
   },
   {
     name: "dispatch_send_to_agent",
@@ -1385,7 +1712,7 @@ export const dispatchToolSpecs = [
     description:
       "Apply deterministic document edits: replace or delete quoted text, insert markdown at an anchor, retype an identified paragraph or typed block into a schema-declared typed block, delete or move a whole block by its id, or delete a table row or column in place. " +
       "Do not use it for review feedback or for reading; use dispatch comment, dispatch suggest, or dispatch doc-read instead. " +
-      "For replace, delete, and quote anchors, find text as rendered: inline Markdown (**bold**, `code`) is tolerated and must be balanced; a leading '# ' matches a heading at any level. A find that opens with a list marker ('- ', '5. ', with an optional '[ ] ' or '[x] ' after it) and matches no text as written selects an item of that kind of list whose text starts with the rest, its number not matched and a box matching only a task item in that state. A find or quote anchor stays inside one block, and in a table inside one cell: ' | ' is the boundary markdown writes between two cells, not text a cell holds, so a quote that runs across cells is refused, naming the cells; change several cells with one operation per cell in the same batch, and anchor on one cell's text. replace parses with as markdown, as insert parses its markdown: a with that parses to one paragraph is the new text of the matched span, and one that parses to blocks ('---' over a paragraph, a list, a table, two paragraphs) writes those blocks where the match sits, so a marker of a different kind from the block's own opens the block it names ('4. Design' is an ordered list, which a heading cannot hold) unless you escape it ('4\\. Design'). A with that opens with a marker of the same kind as the matched block's own would write it twice and is INVALID_OP - including prose that merely looks like one ('1999. was a year' into an ordered item), which you write as text by escaping it ('1999\\. was a year'). The exceptions are an item a find's list marker selected (it matched no text as written): replace(find=\"5. Old\", with=\"5. New\") gives the item the text 'New' under its own number, and a with that is the marker alone is INVALID_OP; and a heading rename whose find carried a heading marker: replace(find=\"## Old\", with=\"## New\") gives '## New', where a different level applies only when find named the heading's actual level (find \"## Old\" with \"### New\" makes it an h3), since '# ' selects a heading without naming its level. A task item (`- [ ]` / `- [x]`) is ticked the same way: when find matches from the start of the item's text and with opens with '[x] ' or '[ ] ', the opening sets the item's box and the rest is its new text (replace(find=\"Write it\", with=\"[x] Write it\") ticks it); the same opening over a plain list item or a paragraph stays literal text. Any non-empty with that renders to no text - whitespace alone - is INVALID_OP rather than a silent deletion; pass an empty with to delete the matched text on purpose - a list item, quote, typed block or footnote definition left holding only the emptied paragraph keeps it. " +
+      "For replace, delete, and quote anchors, find text as rendered: inline Markdown (**bold**, `code`) is tolerated and must be balanced; a leading '# ' matches a heading at any level whose whole text is the rest. A find that opens with a list marker ('- ', '5. ', with an optional '[ ] ' or '[x] ' after it) and matches no text as written selects an item of that kind of list whose text starts with the rest, its number not matched and a box matching only a task item in that state. A find or quote anchor stays inside one block, and in a table inside one cell: ' | ' is the boundary markdown writes between two cells, not text a cell holds, so a quote that runs across cells is refused, naming the cells; change several cells with one operation per cell in the same batch, and anchor on one cell's text. replace parses with as markdown, as insert parses its markdown: a with that parses to one paragraph is the new text of the matched span, and one that parses to blocks ('---' over a paragraph, a list, a table, two paragraphs) writes those blocks where the match sits, so a marker of a different kind from the block's own opens the block it names ('4. Design' is an ordered list, which a heading cannot hold) unless you escape it ('4\\. Design'). A with that opens with a marker of the same kind as the matched block's own would write it twice and is INVALID_OP - including prose that merely looks like one ('1999. was a year' into an ordered item), which you write as text by escaping it ('1999\\. was a year'). The exceptions are an item a find's list marker selected (it matched no text as written): replace(find=\"5. Old\", with=\"5. New\") gives the item the text 'New' under its own number, and a with that is the marker alone is INVALID_OP; and a heading rename whose find carried a heading marker: replace(find=\"## Old\", with=\"## New\") gives '## New', where a different level applies only when find named the heading's actual level (find \"## Old\" with \"### New\" makes it an h3), since '# ' selects a heading without naming its level. A task item (`- [ ]` / `- [x]`) is ticked the same way: when find matches from the start of the item's text and with opens with '[x] ' or '[ ] ', the opening sets the item's box and the rest is its new text (replace(find=\"Write it\", with=\"[x] Write it\") ticks it); the same opening over a plain list item or a paragraph stays literal text. Any non-empty with that renders to no text - whitespace alone - is INVALID_OP rather than a silent deletion; pass an empty with to delete the matched text on purpose - a list item, quote, typed block or footnote definition left holding only the emptied paragraph keeps it. " +
       "The blocks a with writes are refused, with the document unchanged, where the block holding the match cannot hold them: a heading and any cell of a table, which hold one line of text, and a typed block whose content rule they break - write that block's new text alone, and insert the blocks beside it. A hard break in with is INVALID_OP when the matched text is in a heading or a table cell, which are written on one line. In a table cell, with is the cell's text: write a | in it bare, in code too, since code whose text has an odd run of backslashes right before a | cannot be stored in a cell and is INVALID_OP, naming the cell. " +
       "A delete whose find is a block's entire text removes the block (a list emptied of its items goes too); delete with block removes any block by id, and move with block relocates one. A delete or retype that would take an ask block out of the document while its ask is open is refused, with nothing sent. delete_row and delete_column take a table block and a zero-based index, preserving the table block id and refusing to remove cells with open asks or unresolved comments. " +
       'Insert and move anchors also accept "start", "end", "heading:<exact heading text>", and "block:<id>"; dispatch doc-read --blocks lists every block\'s id, type, opening words and token, and each table\'s rows and cells with the indexes delete_row and delete_column take (GET /api/v1/artifacts/{artifact UUID}/blocks serves the same list). ' +
@@ -1397,7 +1724,7 @@ export const dispatchToolSpecs = [
       "Several paragraphs, or a list, go in one replace, since with writes the blocks its markdown names; blocks beside a block go in one insert, since two inserts at one anchor come out reversed. The result prints the markdown of each block the edit wrote, so read that rather than the document again. " +
       "Each decision block the edit adds gets the related-item check dispatch ask gets, waiting at most five seconds for all of them together: the result prints, after its first line, `Decision block <id>:` and what that check found, that it found nothing, or that it was not made and why. " +
       "A block id written as {#id} longer than 256 bytes is stored, but its block is no graph node, so no reference reaches it. " +
-      `The spec holds requirements, design, and decisions - never progress, status, or timestamps; a record of open items or progress is a document of its own. ${OWNER_REFERENCE} ${SPEC_WRITING_POINTER}`,
+      `The spec holds requirements, design, and decisions - never progress, status, or timestamps. Work still to do is a task in the issue's plan, an issue, or an ask, never a separate document that lists it. ${OWNER_REFERENCE} ${SPEC_WRITING_POINTER}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
       project: z.string().describe("Project key owning the document.").optional(),
@@ -1419,13 +1746,13 @@ export const dispatchToolSpecs = [
               find: z
                 .string()
                 .describe(
-                  "Text of the target as rendered, for replace or delete; inline markdown (**bold**, `code`) is tolerated and must be balanced; a leading '# ' matches a heading. A delete of a block's entire text removes the block."
+                  "Text of the target as rendered, for replace or delete; inline markdown (**bold**, `code`) is tolerated and must be balanced; a leading '# ' matches a heading at any level whose whole text is the rest. A delete of a block's entire text removes the block."
                 )
                 .optional(),
               with: z
                 .string()
                 .describe(
-                  "Replacement text for replace: inside a code block, the code's literal text as sent (line breaks at its end do not survive a read); elsewhere parsed as markdown, as insert's markdown is. Text that parses to one paragraph is written inside the matched block, where a backslash escape keeps prose that merely looks like a marker, a leading '[x] ' or '[ ] ' over a task item's text matched from its start sets the item's checkbox, and any non-empty value that renders to no text is refused - only an empty value deletes the match. Text that parses to blocks ('---' over a paragraph, a list, a table, two paragraphs) writes those blocks where the match sits, fitted as the editor fits them, and is refused, with the document unchanged, where the block holding the match cannot hold them: a heading, any cell of a table, and a typed block whose content rule they break. A leading marker of the same kind as the matched block's own is refused either way, since the block renders it already, unless it is a heading rename (where a level named by find is what lets with change it) or an item find's own marker selected. A CR LF or a lone carriage return in it is written as a line feed."
+                  "Replacement text for replace, which every replace names: an empty value deletes the match on purpose. A replace takes op, find, with and occurrence alone, and one without with, or carrying any other key whatever it holds, is refused before it is sent, and by the server with 400 REPLACE_FIELDS, the document unchanged. Inside a code block, with is the code's literal text as sent (line breaks at its end do not survive a read); elsewhere parsed as markdown, as insert's markdown is. Text that parses to one paragraph is written inside the matched block, where a backslash escape keeps prose that merely looks like a marker, a leading '[x] ' or '[ ] ' over a task item's text matched from its start sets the item's checkbox, and any non-empty value that renders to no text is refused - only an empty value deletes the match. Text that parses to blocks ('---' over a paragraph, a list, a table, two paragraphs) writes those blocks where the match sits, fitted as the editor fits them, and is refused, with the document unchanged, where the block holding the match cannot hold them: a heading, any cell of a table, and a typed block whose content rule they break. A leading marker of the same kind as the matched block's own is refused either way, since the block renders it already, unless it is a heading rename (where a level named by find is what lets with change it) or an item find's own marker selected. A CR LF or a lone carriage return in it is written as a line feed."
                 )
                 .optional(),
               occurrence: z
@@ -1474,33 +1801,7 @@ export const dispatchToolSpecs = [
         .describe(
           "Flat tagged edits; an operation takes only the keys below, a misspelled one is refused rather than ignored, and the server validates the fields its op requires."
         ),
-      precondition: z
-        .object({
-          document: z
-            .string({ min: 1 })
-            .describe("Token for the exact canonical document returned by dispatch doc-read.")
-            .optional(),
-          blocks: z
-            .array(
-              z.object({
-                id: z
-                  .string({ min: 1 })
-                  .describe("Stable block id dispatch doc-read --blocks lists."),
-                token: z
-                  .string({ min: 1 })
-                  .describe("That block's full-state token, including inline marks."),
-              }),
-              { min: 1 }
-            )
-            .describe(
-              "Every content block this batch changes, each with the token dispatch doc-read --blocks lists."
-            )
-            .optional(),
-        })
-        .describe(
-          "Optional optimistic-concurrency guard; select exactly one of document or blocks."
-        )
-        .optional(),
+      precondition: preconditionArgument(z),
       summary: z.string().describe("Optional named-version summary.").optional(),
     }),
     validation: documentEditValidation,
@@ -1546,7 +1847,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_request_approval",
     example: { issue: "DSP-1", summary: "A live sync replaces the nightly export." },
     description:
-      "Ask a human to approve a document at its current version. Before calling, have a fresh read-only reader check the spec against the code and the human's words, then resolve every finding; a Legion architect runs `plan-gap-analyst` and `plan-reviewer`. Opens an approval ask (Approve / " +
+      "Ask a human to approve a document at its current version. Where the spec is large, or changed in a way you cannot check alone, a fresh read-only reader can find its gaps and check its factual claims; a Legion architect can use `plan-gap-analyst` and `plan-reviewer`. Opens an approval ask (Approve / " +
       "Request changes) in the human's Inbox whose question names the document and version, " +
       "followed by the summary; the answer pins a review to that version and arrives as " +
       "artifact.approved or artifact.changes_requested. " +
@@ -1599,7 +1900,7 @@ export const dispatchToolSpecs = [
       summary: z
         .string({ min: 1 })
         .describe(
-          `What the human is approving, in one to three sentences, and nothing else: no commentary on itself or the conversation, and no question; after an earlier approval, one sentence naming what changed since it, since the card shows that approval and a diff. A Legion architect adds one last sentence with its two spec reviews' results. Request approval only once ${HUMAN_AGREED_TO_DOCUMENT}.`
+          `What the human is approving, in one to three sentences, and nothing else: no commentary on itself or the conversation, and no question; after an earlier approval, one sentence naming what changed since it, since the card shows that approval and a diff. Request approval only once ${HUMAN_AGREED_TO_DOCUMENT}.`
         ),
       include_verification: z
         .boolean()
@@ -1705,14 +2006,32 @@ export const dispatchToolSpecs = [
       "CHECK_PROVED_BY_CI from every role, which names the check and the run. " +
       "A pass that counts a failed, a skipped or an excluded case contradicts itself, and is " +
       "400 RESULT_CONTRADICTS. " +
-      "Dispatch asks GitHub whether the repository of the check's issue holds the commit. A " +
-      "commit that repository does not hold is 400 RESULT_COMMIT_UNKNOWN, which names the " +
-      "commit and that owner/repo. Record the result after the commit is pushed. A repository " +
-      "Dispatch cannot read records the result as before. " +
+      "Dispatch asks GitHub whether the repository of the check's issue holds the commit. If " +
+      "GitHub does not say that it does, Dispatch reads the external links of the check's issue: " +
+      "a link to a GitHub pull request (https://github.com/<owner>/<repo>/pull/<n>) that is open " +
+      "or merged, in a repository that Dispatch's GitHub App is installed on and can read, adds " +
+      "the repository of that pull request. One record reads at most 10 linked pull requests. A " +
+      "commit that none of these repositories holds is 400 RESULT_COMMIT_UNKNOWN, which names the " +
+      "commit and each owner/repo that Dispatch asked. It also names, with its reason " +
+      "(owner/repo#n (repository_unreadable)), each linked pull request that Dispatch could not " +
+      "read, at most 10 and a count of the rest, and every linked pull request in whose " +
+      "repository it could not read the commit, since each of those spent one of the record's 10 " +
+      "reads, and says to grant Dispatch's GitHub App that repository or to link a readable pull " +
+      "request. It says how many linked pull requests it left unread past that bound. Record the " +
+      "result after the commit is pushed. A linked repository that the App is not installed on " +
+      "or cannot read does " +
+      "not count. Where a read of " +
+      "a linked pull request or of a linked repository does not answer, and no repository is shown " +
+      "to hold the commit, the record is 502 GITHUB_UNREADABLE and nothing is recorded: record the " +
+      "result again, after the wait the refusal names for a rate limit. Where the issue has no " +
+      "repository, the result is recorded as before. Where Dispatch cannot read the repository " +
+      "of the check's issue, the result is recorded as before only when every linked read " +
+      "answers and no linked repository holds the commit: a linked read that does not answer " +
+      "is 502 GITHUB_UNREADABLE and nothing is recorded. " +
       "The result is recorded against the check's own issue, so a child's run of a parent's " +
       "check appears under that check. A closed issue takes a result only for a check whose " +
       "when is after_merge or default_branch, the production check after the merge. It refuses " +
-      "every other record with 409 ISSUE_CLOSED, as it refuses every other write. " +
+      "every other record with 409 ISSUE_CLOSED. " +
       "A check a document version rewords while the result is being written is 409 " +
       "CHECK_CONTENDED, with nothing recorded: run the same command again. " +
       RESULT_RETRACT_RULE +
@@ -1821,6 +2140,9 @@ export const dispatchToolSpecs = [
       "(before_merge): CI run <name> has no result (<case>)`. That is a run that has not " +
       "concluded, one that concluded neutral, skipped or cancelled, one absent at the head, an " +
       "issue with no pull request head, or GitHub not read, with what GitHub answered. " +
+      "A pull-request line writes `CI run <name>` only when it keeps every word of the name, " +
+      "and `the CI run the check names` in its place where it drops one: a word the line drops, " +
+      "such as an issue key or a word holding `_`. " +
       "A push that moves a pull request's head leaves a result at the commit before it, with " +
       "no write of anyone's: record the check again at the new head. A check CI proves is read " +
       "again at the new head by itself. " +
@@ -1848,8 +2170,9 @@ export const dispatchToolSpecs = [
       "Attach a local file or inline text as an issue artifact or project document, or make an empty document from its name alone. Do not use it to edit a live document; use " +
       "dispatch doc-edit instead. Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit. " +
       `${ARTIFACT_SOURCE_RULE} ` +
-      `${ARTIFACT_NAME_EXISTS_RULE} A call that stores nothing - no path, and content absent or blank - is refused under a held name even with force, so a title typed twice never empties the document that holds it. ` +
+      `${ARTIFACT_NAME_EXISTS_RULE} A call that stores nothing - no path, and content absent or blank - is refused under a held name even with force and a token, so a title typed twice never empties the document that holds it; that refusal names no token, since no token makes such a call one Dispatch takes. ` +
       "A markdown document is at most 1 MiB and any other file at most 25 MiB. " +
+      "An upload that replaces a document the owner already holds under that name says which version it replaces: precondition.document takes the document token dispatch doc-read prints as `Document token: sha256:…`, and Dispatch checks it under the write's own lock. An upload that names none is taken for now without a check, since older dispatch commands cannot name one; name the token wherever the command can, because a later release refuses an upload naming none with 400 PRECONDITION_REQUIRED. A token behind the live document is refused with 409 PRECONDITION_FAILED. The refusal tells you to read the document again with dispatch doc-read, which prints the token the document carries now, and to upload again naming that token. A first upload under a name replaces no version, and a file that is not a document holds no token, so neither names one. " +
       `${ARTIFACT_CONTENT_NAME_RULE} ${ARTIFACT_STORED_TEXT_RULE} ` +
       "Markdown is also refused with 413 CAP_EXCEEDED when it makes more than 65,536 elements (a block weighs 3, and an empty list item, quote, footnote definition or typed block 3 more for the empty paragraph it holds; a table cell 4, a hard line break 3, an image 3, a piece of inline HTML 2, an autolink 2, a footnote reference 2; inline syntax, marks, lines of text and backslash escapes or character references 1 each), or when a new version would leave the document's stored markdown (what its text reads back as) longer than 1 MiB or making more than 65,536 elements, and longer or heavier than before; shorten it or split it across documents. " +
       "In a table row, write every | in a cell as \\|, in code too: a | after two backslashes ends the cell, and a row with more cells than its table is refused. " +
@@ -1864,7 +2187,7 @@ export const dispatchToolSpecs = [
       content: z
         .string()
         .describe(
-          "Inline text to store as a Markdown document, under a name ending in .md or .markdown or with no extension. The command refuses a text the store would write under another spelling, a CR LF or a lone carriage return among them, which Dispatch stores as a line feed. A missing line feed at the end is not such a text: Dispatch adds one, and the upload goes on. The refusal prints the text Dispatch stores, which is the text to send."
+          "Inline text to store as a Markdown document, under a name ending in .md or .markdown or with no extension. The command refuses a text the store would write under another spelling, a CR LF or a lone carriage return among them, which Dispatch stores as a line feed. A missing line feed at the end is not such a text: Dispatch adds one, and the upload goes on. Nor is a typed block whose attributes differ only in their order: the upload puts them in Dispatch's order. The refusal names the first difference: a changed line by the attribute or the word that differs, a word of more than 200 characters by a window from its first character that differs, and a line the store adds or drops by a quote cut at 200 characters, each cut named. It prints the text Dispatch stores, which is the text to send."
         )
         .optional(),
       force: z
@@ -1873,6 +2196,7 @@ export const dispatchToolSpecs = [
           "Write the next version of a document the owner already holds under this name; without it the upload of a name that exists is refused."
         )
         .optional(),
+      precondition: uploadPreconditionArgument(z),
       summary: z.string().describe("Optional version summary.").optional(),
     }),
     validation: {
@@ -1905,7 +2229,10 @@ export const dispatchToolSpecs = [
       "`Coverage: the spec marks no requirements`. Nothing is refused for a gap. " +
       `An issue read, and its dispatch://KEY/log, lists the issue's last ${DEFAULT_ISSUE_READ_EVENTS} events, oldest first; ` +
       "--events N lists the last N, and --all-events every one. " +
+      "An issue's dispatch://KEY/comments lists every comment on the issue. " +
       "A comment reply chain names the comment each nested reply answers as `Answers: <comment id>`. " +
+      "An edited post reads with the time of its edit, and a deleted one with who deleted it and when, in place of its body; " +
+      "--history, with a ref naming that comment or message, lists the post's history newest first: each body an edit or the delete replaced, with the actor and the time, and of a deleted post each entry's actor and time with no body. " +
       "Every read ends with `Referenced by:` (what cites or hangs off this node, each with its dispatch:// address, " +
       "an excerpt, and when) and `Links:` (what it cites), so tracing provenance is one call. " +
       "A block read prints `Block:`, `Type:` for a block of a document, `Document:`, every attribute a typed block carries " +
@@ -1930,7 +2257,7 @@ export const dispatchToolSpecs = [
       ref: z
         .string()
         .describe(
-          "Optional dispatch:// reference: dispatch://KEY, dispatch://KEY/spec, " +
+          "Optional dispatch:// reference: dispatch://KEY, dispatch://KEY/spec, dispatch://KEY/comments, " +
             "dispatch://KEY/artifact/<slug>[@vN], dispatch://KEY/ask/<id>, dispatch://KEY/comment/<id>, " +
             "dispatch://KEY/message/<id>, dispatch://PROJECT/artifact/<slug>[@vN], and its " +
             "/ask/<id> and /comment/<id>; or the dashboard URL of one. A block: " +
@@ -1956,6 +2283,16 @@ export const dispatchToolSpecs = [
         .boolean()
         .describe(
           `List every one of the issue's events, oldest first, on an issue read or its dispatch://KEY/log, in place of the last ${DEFAULT_ISSUE_READ_EVENTS}. Name no --events with it.`
+        )
+        .optional(),
+      history: z
+        .boolean()
+        .describe(
+          "With ref naming one comment or issue message, list that post's history in place " +
+            "of the post itself, newest first: each body an edit or the delete replaced, with " +
+            "the actor that replaced it and the time. A post nobody edited or deleted lists " +
+            "nothing; a deleted post is marked deleted, and each of its entries gives its " +
+            "actor and time and no body. Name it with ref alone."
         )
         .optional(),
     }),
@@ -2257,7 +2594,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_whoami",
     example: {},
     description:
-      "Who Dispatch takes this session for: {session, owner, service, project}. session is the session Dispatch records your writes as. It is the session your credential proved, and the tool says so when that is not the session you run in. owner is the lowercase email of the person you act for, and is the first choice of assignee for issues you create. owner is null under the shared token and under a broker token that names a service and no person. With a null owner, a create with no assignee falls back to the parent's assignee and then to the project's default assignee, which every project names, so every issue you create has an assignee. A question on an issue reaches the person it was handed to, else the issue's assignee, else the project's default assignee. service is the subject of the verified service-account token that authenticated you, or the fleet a broker token naming no person belongs to, or null. A broker token that names a service may read and is refused every write with SIGN_IN_REQUIRED, which names the command a person signs in on that machine with. project is the one project key your credential may write, or null when it names none.",
+      "Who Dispatch takes this session for: {session, owner, service, project}. session is the session Dispatch records your writes as. It is the session your credential proved, and the tool says so when that is not the session you run in. owner is the lowercase email of the person you act for, and is the first choice of assignee for issues you create. owner is null under the shared token and under a broker token that names a service and no person. With a null owner, a create with no assignee falls back to the parent's assignee, when the parent is in the issue's own project, and then to the project's default assignee, which every project names, so every issue you create has an assignee. A question on an issue reaches the person it was handed to, else the issue's assignee, else the project's default assignee. service is the subject of the verified service-account token that authenticated you, or, for a broker token naming no person, the fleet its machine belongs to or the Kubernetes account an exchange entry lists, or null. A machine's broker token that names a service may read and is refused every write with SIGN_IN_REQUIRED, which names the command a person signs in on that machine with; an exchange entry's broker token that names its account writes, recorded under that account. project is the one project key your credential may write, or null when it names none.",
     arguments: () => ({}),
     strict: true,
   },
@@ -2274,7 +2611,7 @@ export const dispatchToolSpecs = [
     example: {
       issue: "DSP-1",
       phase: "implement",
-      body: '{"schemaVersion":1,"phase":"implement","issue":"DSP-1"}',
+      body: '{"head":"0123456789abcdef0123456789abcdef01234567","note":"Run the checks with bun test src/x.test.ts in packages/x."}',
     },
     description:
       "Record this session's handoff for one phase of an issue: the body, one JSON object, is " +

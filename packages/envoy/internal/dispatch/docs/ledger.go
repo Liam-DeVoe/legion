@@ -115,7 +115,10 @@ type Ledger struct {
 	rooms map[string]*pendingRoom
 	// numbers is, per document this transaction has numbered a version of, the number it gave the
 	// last one (NextVersion), and latest that version as it will stand once written, which
-	// latestVersion answers for it; now is the transaction's start, read once (Now).
+	// latestVersion answers for it; now is the transaction's start, read once (Now). latest is read
+	// only while the ledger is unsealed (PendingVersionMarkdown, PendingVersionNumber,
+	// PendingMarkdown, queueFor), and Discard drops it: each entry holds its version's whole
+	// markdown.
 	numbers map[string]int
 	latest  map[string]pendingVersion
 	now     *time.Time
@@ -311,8 +314,10 @@ func eventSink(ctx context.Context) func(model.Event) {
 }
 
 // Now is the transaction's now(): the time it started, which Postgres holds fixed for the whole
-// transaction, read once. A row whose column defaults to now() is written with it explicitly by a
-// queued insert, so a reader in the read phase knows the value the row will carry.
+// transaction, read once. A row whose column defaults to now() carries that same value whether a
+// queued insert writes it explicitly or leaves it to the column's default, as the carried
+// approval's review row does (writeCarriedReview, approval_carry.go), so a reader in the read
+// phase knows the value the row will carry either way.
 func (l *Ledger) Now(ctx context.Context) (time.Time, error) {
 	if l.writer == nil {
 		return time.Time{}, errUnjoined
@@ -396,6 +401,20 @@ func (l *Ledger) PendingVersionMarkdown(artifactID string, number int) (string, 
 		return "", false
 	}
 	return pending.markdown, true
+}
+
+// PendingVersionNumber is the number of the version of artifactID this transaction last numbered
+// and queued and has not written yet: the document's newest, since the table holds the row only
+// once Commit has run the queue, so a reader before Commit that answers for the document as this
+// write leaves it - the standing review a question's advice names - takes it from here. False
+// when this transaction queued no version of the document, and once its write phase has begun,
+// when the table holds it.
+func (l *Ledger) PendingVersionNumber(artifactID string) (int, bool) {
+	if l == nil || l.sealed {
+		return 0, false
+	}
+	pending, queued := l.latest[artifactID]
+	return pending.version.Number, queued
 }
 
 // queuedVersion records pending as the latest version of artifactID, which this transaction has
@@ -700,7 +719,7 @@ func (l *Ledger) QueueAskParts(
 	// The parts are the only text of the ask this call holds, so the reader is its own: a route
 	// that reconciles the question too builds one and reconciles through it
 	// (refs.NewReaderInScope).
-	reader := refs.NewReaderInScope(ctx, l.writer, "ask", ask.ID, serverURL, document)
+	reader := refs.NewReaderInScope(ctx, l.writer, ask.Author, "ask", ask.ID, serverURL, document)
 	changes, parts, err := planAskPartsCounted(ctx, l.writer, reader, ask, at, beside)
 	if err != nil {
 		return model.ReferenceChanges{}, err
@@ -749,18 +768,25 @@ func recordPendingApproval(ctx context.Context, tx pgx.Tx, artifactID string, as
 }
 
 // recordPendingReview records review as the newest review of artifactID on the ledger ctx queues
-// tx's writes on: writeCarriedReview, its one caller, has queued the insert that writes it
-// (QueueReview), and a read of artifact_reviews before the write phase still answers the review
-// before this one. What a later carry makes of the entry's presence is on the field (reviews).
-func recordPendingReview(ctx context.Context, tx pgx.Tx, artifactID string, review model.ArtifactReview) {
+// tx's writes on, dated with the transaction's now() (Ledger.Now), the time its row will carry:
+// writeCarriedReview, its one caller, has queued the insert that writes it (QueueReview), and a
+// read of artifact_reviews before the write phase still answers the review before this one. What
+// a later carry makes of the entry's presence is on the field (reviews).
+func recordPendingReview(ctx context.Context, tx pgx.Tx, artifactID string, review model.ArtifactReview) error {
 	ledger := queueFor(ctx, tx)
 	if ledger == nil {
-		return
+		return nil
 	}
+	createdAt, err := ledger.Now(ctx)
+	if err != nil {
+		return err
+	}
+	review.CreatedAt = createdAt
 	if ledger.reviews == nil {
 		ledger.reviews = make(map[string]model.ArtifactReview)
 	}
 	ledger.reviews[artifactID] = review
+	return nil
 }
 
 // PendingReview is the review of artifactID this transaction has queued and not yet written
@@ -1217,8 +1243,8 @@ func (s *Service) commitConsuming(ctx context.Context, tx pgx.Tx, captures []roo
 // Discard drops what a transaction that did not commit left behind: its queued writes, which
 // never ran, its live writes, which no room ever saw, and the rooms its rebuilds held. A version
 // it wrote marked nothing it read, so its authors stay where they were. After Commit only the
-// read-backs are left to drop. Every caller defers it, so it is where the request's use of the
-// ledger ends.
+// read-backs and the queued versions (latest) are left to drop. Every caller defers it, so it is
+// where the request's use of the ledger ends.
 func (l *Ledger) Discard() {
 	l.sealed = true
 	l.queue = nil
@@ -1235,6 +1261,10 @@ func (l *Ledger) Discard() {
 	// wrote whole stayed resident beside the document's room
 	// (TestAnUploadsReadBackTreeGoesWhenItsRequestEnds).
 	l.readBacks = nil
+	// The versions this transaction queued (queuedVersion) are read only until its write phase
+	// seals the ledger, when the table holds them, and each holds its version's whole markdown,
+	// which the same pooled context would keep.
+	l.latest = nil
 	l.endRebuilds()
 }
 

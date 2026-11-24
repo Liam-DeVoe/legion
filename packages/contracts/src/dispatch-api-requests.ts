@@ -27,9 +27,31 @@ export type Advised<T> = T & { readonly advice?: WriteAdvice };
  *  write never sends. */
 export type DocumentAdvised<T> = T & { readonly advice?: DocumentWriteAdvice };
 
+/** The token of the version a whole-document upload is replacing, which `dispatch doc-read`
+ *  prints as `Document token: sha256:…`. It is not an edit's `EditPrecondition`: an upload
+ *  rewrites the whole tree, so a `blocks` guard says nothing about what it replaces and the
+ *  server refuses one (`400 INVALID_PRECONDITION`, `docs.ValidateUploadPrecondition`). */
+export interface UploadPrecondition {
+  readonly document: string;
+}
+
 interface CreateArtifactOptions {
   readonly name: string;
   readonly summary?: string;
+  /** The token of the version this upload is replacing, which `dispatch doc-read` prints. An
+   *  upload over a document the owner already holds names it, and Dispatch checks it under the
+   *  write's own lock. One that names none is taken for now without a check, since older
+   *  `dispatch` commands cannot name one; a later release refuses it `400 PRECONDITION_REQUIRED`
+   *  (INFRA-4980). A token behind the live document is refused
+   *  `409 PRECONDITION_FAILED`, whose `current` carries the live token and `current.version` the
+   *  live version number. A first upload under a name replaces no version, and a file is no
+   *  document, so neither names one. An upload that names a token where the document has none
+   *  for it to name — a first upload under a name its owner holds nothing under, and the repair
+   *  of a document whose live tree is outside the Proof schema — is refused
+   *  `409 PRECONDITION_FAILED` carrying `code` and `error` alone: there is no live token to put
+   *  in a `current`, and no mismatch to report, so the refusal asks for the upload again naming
+   *  no token. */
+  readonly precondition?: UploadPrecondition;
   readonly actor?: Actor;
 }
 
@@ -76,7 +98,10 @@ export const ID_AMBIGUOUS = "ID_AMBIGUOUS";
  * document of an agent's conversation). At most one of `issue_key` and `document` names its
  * owner: the issue that owns it, or the reference of the project document it is written on.
  * `first_line` is the head of what tells two candidates apart, absent for a direct message a
- * caller may not read.
+ * caller may not read. `edited_at` is the time a comment's or a message's author last edited it,
+ * and `deleted_at` with `deleted_by` the mark of one its author deleted, whose `first_line` the
+ * cleared body leaves absent; each is absent on a post that stands unedited, on every other kind,
+ * and from a Dispatch older than the fields.
  */
 export interface IDCandidate {
   readonly kind: "ask" | "comment" | "message" | "artifact" | "block";
@@ -85,6 +110,9 @@ export interface IDCandidate {
   readonly issue_key?: string;
   readonly document?: string;
   readonly first_line?: string;
+  readonly edited_at?: string;
+  readonly deleted_at?: string;
+  readonly deleted_by?: Actor;
 }
 
 export interface DispatchServiceErrorShape {

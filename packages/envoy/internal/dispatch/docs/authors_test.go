@@ -419,7 +419,11 @@ func TestAServiceWriteAndABrowserEditLandTogetherEachAskGoesToItsOwnAuthor(t *te
 	agentAsk := "\n:::ask{#agent-ask urgency=\"high\" multiple=\"false\"}\nWhich database?\n:::\n"
 	release := holdObserver(t, service, artifactID, &service.beforeObserveUpdate, func() error {
 		return joinedWrite(service, func(ctx context.Context) error {
-			_, err := service.ReplaceText(ctx, artifactID, current+agentAsk, session)
+			precondition, err := replacementPrecondition(ctx, service, artifactID)
+			if err != nil {
+				return err
+			}
+			_, err = service.ReplaceText(ctx, artifactID, current+agentAsk, session, precondition)
 			return err
 		})
 	})
@@ -460,7 +464,7 @@ func TestAPublishedAgentWriteAndABrowserEditLandTogetherEachAskGoesToItsOwnAutho
 	defer tx.Rollback(context.Background())
 	joined, ledger := service.Join(context.Background(), tx)
 	defer ledger.Discard()
-	if _, err := service.ReplaceText(joined, artifactID, current+agentAsk, session); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, current+agentAsk, session, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("agent joined edit: %v", err)
 	}
 	release := holdObserver(t, service, artifactID, &service.beforeObserveUpdate, func() error {
@@ -823,12 +827,15 @@ func TestACopiedAskBlocksAuthorIsKeptForTheAskItOpensOnceItsSourceIsRetracted(t 
 	if opener := blockAskOpenedActor(t, service, copied, "shared"); opener != session {
 		t.Errorf("the copy's ask.opened names %#v, want the session", opener)
 	}
-	state.mu.Lock()
-	_, still := state.askAuthors["shared"]
-	state.mu.Unlock()
-	if still {
-		t.Errorf("the copy's room still owes the block's author after its ask opened")
-	}
+	// The settlement forgets the author after the transaction that opened the ask has committed
+	// (consumeAskAuthorsLocked, which runs after commitSettlement), so the open ask above can be
+	// read before the room has let the author go.
+	waitFor(t, 10*time.Second, "the copy's room to forget the block's author once its ask has opened", func() bool {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		_, still := state.askAuthors["shared"]
+		return !still
+	})
 	if author := blockAskAuthor(t, service, original, "shared"); author != sourceAuthor {
 		t.Errorf("the source's ask names %#v, want its own author %#v", author, sourceAuthor)
 	}
