@@ -147,7 +147,7 @@ func TestAClaimRoutePassOnAStandbyAndTheHoldersSweepPassGiveTheNewHolderEachMess
 		t.Fatal("the two passes never both reached a copy, so they did not run over the messages at once")
 	}
 
-	received := rig.watch(t, taker, servingRole, unread...)
+	received := rig.watch(t, taker, servingTaker, servingRole, unread...)
 	servingRequireOnce(t, rig, received, unread)
 }
 
@@ -197,7 +197,7 @@ func TestAClaimRoutePassCutByItsHandoverWindowLeavesTheRestToTheHoldersSweep(t *
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	sweepOnce(ctx, keptSweepConfig(*rig.deps.delivery, rig.relays))
-	received := rig.watch(t, taker, servingRole, unread...)
+	received := rig.watch(t, taker, servingTaker, servingRole, unread...)
 	t.Run("case: the holder's sweep went on from what the pass left, and the new holder received each message exactly once", func(t *testing.T) {
 		servingRequireOnce(t, rig, received, unread)
 	})

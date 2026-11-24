@@ -244,6 +244,17 @@ func (kv KeyValue) GetLatestFromLeader(ctx context.Context, key string) (LatestE
 	return LatestEntry{Entry: entry, Revision: entry.Revision()}, nil
 }
 
+// LeaderReads is a bucket handle that answers a read from the stream's leader itself, in place of
+// the stream: the fault seam for a test whose wrapper of a handle (NewKeyValue, KeyValue.Legacy)
+// plants a fault in every read of the bucket, the leader's included. NewestFromLeader, and so
+// GetFromLeader and ReadFromLeader, asks a handle that implements it after its own refusals and
+// sends nothing to the stream. No nats.go handle implements it, so every production read goes to
+// the stream's leader, and a wrapper that does not implement it leaves the leader's reads to the
+// stream, as a copy that is behind leaves them.
+type LeaderReads interface {
+	NewestFromLeader(ctx context.Context, key string) (nats.KeyValueEntry, error)
+}
+
 // NewestFromLeader is GetFromLeader with the delete and purge markers answered rather than
 // reported as a key that is not there: key's newest message on the bucket's stream, read from the
 // stream's leader, whose Operation is nats.KeyValueDelete or nats.KeyValuePurge for a marker and
@@ -260,6 +271,9 @@ func (kv KeyValue) GetLatestFromLeader(ctx context.Context, key string) (LatestE
 func (kv KeyValue) NewestFromLeader(ctx context.Context, key string) (nats.KeyValueEntry, error) {
 	if err := kv.RefusesRead(key); err != nil {
 		return nil, err
+	}
+	if reads, ok := kv.legacy.(LeaderReads); ok {
+		return reads.NewestFromLeader(ctx, key)
 	}
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc

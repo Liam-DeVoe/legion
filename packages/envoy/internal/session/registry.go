@@ -1432,14 +1432,18 @@ func (r *SessionRegistry) Refresh(ctx context.Context, sessionID string) (Sessio
 // nats.go fails no request its connection drops, so a leader read lost with its connection ends
 // at the loss, with bus.ErrRequestLostWithConnection, rather than holding its caller until ctx ends.
 //
-// It is the read for the caller that cannot afford a stale miss, because a miss makes it take
+// It is the read for the callers that cannot afford a stale miss, because a miss makes them take
 // something away from the session on the strength of the session having no record at all: the
 // listener's delete of a session's JetStream consumer, which re-reads this bucket under the
-// session's lock and deletes only where the session is gone from it (cmd/listener). A copy that
-// has not applied a relaunch's registration would answer that read "not found", and the delete
-// would then remove the consumer of a live relaunch, whose relay stops until it registers again.
-// Every other caller asks Refresh, which costs the server less: a direct get is answered by any
-// copy that is near enough to current, where this read is one more thing for the leader to do.
+// session's lock and deletes only where the session is gone from it; the interest and role claim
+// reapers' test of a session the cache does not hold (cmd/listener's sessionMayBeLive); and a
+// soft role claim's reads of the holder it would take the role from (cmd/listener's
+// roleSupersessionVerdict). A copy that has not applied a relaunch's registration would answer
+// that read "not found", and the delete would then remove the consumer of a live relaunch, whose
+// relay stops until it registers again, the reaper a live session's interest or role, or the soft
+// claim a live holder's role. Every other caller asks Refresh, which costs the server less: a
+// direct get is answered by any copy that is near enough to current, where this read is one more
+// thing for the leader to do.
 func (r *SessionRegistry) RefreshFromLeader(ctx context.Context, sessionID string) (SessionEntry, error) {
 	kv, epoch := r.watcher.Handle()
 	got, answered, err := bus.BoundedOn(ctx, kv, func() (nats.KeyValueEntry, error) { return kv.GetFromLeader(ctx, sessionID) })
