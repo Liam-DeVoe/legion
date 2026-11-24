@@ -163,8 +163,10 @@ type InboxFilterPanel = InboxFilterField | "assignee";
  *  each keeps the row's 44 px line and nothing in the row can grow it. */
 const PAGE_CONTROL_CLASS = `rounded-lg border text-sm font-semibold whitespace-nowrap outline-none focus-visible:ring-2 ${controlPadding.comfortable} ${focusVisibleRing} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`;
 
-/** One action of the selection bar, as the bar's own line draws it. */
-const BAR_ACTION_CLASS = `min-h-11 shrink-0 rounded-lg px-2 py-1 text-xs font-medium md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`;
+/** The chrome of the selection bar's actions - **Select all**, **Clear selection** and the
+ *  thread's **Dismiss** - in the recipe of the size the bar is drawn at: the comfortable one,
+ *  `SelectionBar`'s own where the page passes none, as this page does. */
+const BAR_CONTROL_CLASS = `shrink-0 rounded-lg text-sm font-medium ${controlPadding.comfortable} ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`;
 
 /** The values a field offers, in the order its control lists them: its vocabulary, the one the
  *  address keeps the field's values by (`INBOX_FILTER_VOCABULARY`). Project is the one field
@@ -2342,7 +2344,7 @@ function InboxBody({
       {selectedThreads.length === 0 ? null : (
         <button
           aria-label={`${dismissLabel} selected threads`}
-          className={BAR_ACTION_CLASS}
+          className={BAR_CONTROL_CLASS}
           data-inbox-bulk-dismiss=""
           onClick={dismissPick}
           type="button"
@@ -2352,7 +2354,7 @@ function InboxBody({
       )}
       {allRows ? null : (
         <button
-          className={BAR_ACTION_CLASS}
+          className={BAR_CONTROL_CLASS}
           data-inbox-select-all=""
           onClick={selectAll}
           type="button"
@@ -2360,7 +2362,7 @@ function InboxBody({
           Select all
         </button>
       )}
-      <button className={BAR_ACTION_CLASS} onClick={clearSelection} type="button">
+      <button className={BAR_CONTROL_CLASS} onClick={clearSelection} type="button">
         Clear selection
       </button>
     </SelectionBar>
