@@ -492,6 +492,21 @@ test("the live view's header names the agent with its running state and no link"
   await waitFor(() => expect(document.title).toContain("Planner"));
 });
 
+// The transcript scrolls in a box of its own, which is a Tab stop of its own - Firefox's for any
+// box that scrolls, and every engine's where the turns hold no control - and that stop is how a
+// keyboard reader scrolls turns of prose. Unnamed, the stop read as nothing: it is a region named
+// for what it holds.
+test("the live view's transcript is a region named for what it holds", async () => {
+  renderLiveView({
+    agentState: {},
+    messages: [],
+    putAgentState: spyOn(api, "putAgentState").mockResolvedValue({ unread_replies: 0 }),
+  });
+
+  const thread = await screen.findByTestId("agent-thread");
+  expect(screen.getByRole("region", { name: "Transcript" })).toBe(thread);
+});
+
 // Stored times carry microseconds, so two messages written within one millisecond still have an
 // order, and the view keeps it whatever order the exchanges arrive in.
 test("the live view orders two stored messages in one millisecond by their microseconds", async () => {

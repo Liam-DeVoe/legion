@@ -29,6 +29,7 @@ import type {
   IssueCollaboratorLegionAgent,
 } from "../../api/types";
 import { Chip } from "../../components/Chip";
+import { focusIntoView } from "../../components/focus-place";
 import { heldField } from "../../components/held-press";
 import { AgentListRefilling, QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
@@ -1412,7 +1413,11 @@ export function MentionComposer({
             className="underline"
             onClick={() => {
               setConfirmingDiscard(false);
-              lastFocusedField.current?.focus();
+              // Back to the field the reader was writing in, with no scroll of the browser's own,
+              // which would centre a field not wholly in view: it is brought into view only where
+              // the reader cannot see it whole (`focusIntoView`).
+              const field = lastFocusedField.current;
+              if (field !== null) focusIntoView(field);
             }}
             type="button"
           >
@@ -1720,7 +1725,9 @@ export function MentionComposer({
               onSelect={(reference) => {
                 appendToField([reference]);
                 setReferencePickerOpen(false);
-                textarea.current?.focus();
+                // Back to the box the reference went into, as Keep gives it back
+                // (`focusIntoView`).
+                if (textarea.current !== null) focusIntoView(textarea.current);
               }}
             />
           ) : null}

@@ -1,6 +1,11 @@
 import { afterEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
-import { type MutationKey, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import {
+  type MutationKey,
+  onlineManager,
+  QueryClientProvider,
+  useQuery,
+} from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the two clicks of one same-tick double press, which user-event cannot fire inside a single task
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -8,7 +13,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { type Lists, newQueryClient, stubLists, tab } from "../../__tests__/draft-matrix-fixture";
-import { jump, settle } from "../../__tests__/fake-clock";
+import { jump, realClock, settle, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { pressHeld } from "../../__tests__/held-press";
 import {
@@ -22,10 +27,12 @@ import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { ownReplies } from "../../__tests__/own-replies";
 import { answerIssueStates, answerThreadReads } from "../../__tests__/send-answers";
 import { heldDraftWords, stopReplySend } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
 import type { WriteBounds } from "../../api/client";
-import { ApiError, api } from "../../api/client";
+import { ApiError, api, REQUEST_DEADLINE_MS } from "../../api/client";
 import { userStateQuery } from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
 import type {
   Actor,
   Agent,
@@ -1320,6 +1327,29 @@ test("on a phone, the reader's own Resolve keeps the thread composer's refused r
   }
 });
 
+// A phone's thread view scrolls its card in a list of its own, which Firefox makes a Tab stop of
+// its own, with no name. The card holds its controls from its head to its foot, the Tab stops
+// that bring each part into view, so the list takes no Tab stop.
+test("on a phone, the thread view's list is no Tab stop of its own", async () => {
+  const user = userEvent.setup();
+  const restoreViewport = stubViewport(PHONE_WIDTH);
+  const root = comment("root-comment", { body: "Root comment" });
+  const reply = comment("reply-comment", { body: "Reply comment", reply_to: "root-comment" });
+  const stub = stubLists({ comments: [root, reply] });
+  const view = render(tab({ "CORE-1": issueState() }, true, newQueryClient()));
+
+  try {
+    await screen.findByText("Root comment");
+    await user.click(screen.getByRole("button", { name: "Expand thread" }));
+    const dialog = await screen.findByRole("dialog", { name: "Thread" });
+    expect(within(dialog).getAllByRole("list")[0]).toHaveAttribute("tabindex", "-1");
+  } finally {
+    view.unmount();
+    stub.restore();
+    restoreViewport();
+  }
+});
+
 // The same, with the reply refused while the Resolve is still out: the decision lands on a thread
 // that already shows the refusal.
 test("on a phone, a thread reply refused while the reader's Resolve is out outlives the Resolve", async () => {
@@ -2559,6 +2589,73 @@ test("Conversation restores edit controls and the draft when its owner save reje
     );
   } finally {
     view.unmount();
+    editComment.mockRestore();
+    stub.restore();
+  }
+});
+
+// A save that lands just as the browser goes offline: the comments it changed are asked again,
+// and the network pauses that read until it returns, with no deadline of its own running: the
+// app's client holds a read of an idle query until its paused fetch answers
+// (`DispatchQueryClient`). The save holds the edit - its editor open and every Edit of the card
+// hidden - through that read only up to the request deadline (`REQUEST_DEADLINE_MS`), and lets it
+// go there, as the other holds through a read do (`readWithinBound`).
+test("offline, a comment edit's save holds the edit through the read it made stale only until the request deadline", async () => {
+  const user = userEvent.setup();
+  const root = comment("root-comment", { body: "Root comment" });
+  const reply = comment("reply-comment", { body: "Reply comment", reply_to: "root-comment" });
+  const stub = stubLists({ comments: [root, reply] });
+  const save = Promise.withResolvers<Comment>();
+  const editComment = spyOn(api, "editComment").mockImplementation(() => save.promise);
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const online = onlineManager.isOnline();
+
+  try {
+    const card = await screen.findByTestId("margin-comment-root-comment");
+    await user.click(screen.getByRole("button", { name: "Expand thread" }));
+    await waitFor(() =>
+      expect(within(card).getAllByRole("button", { name: "Edit" })).toHaveLength(2)
+    );
+    await user.click(within(card).getAllByRole("button", { name: "Edit" })[0] as HTMLElement);
+    const editField = screen.getByLabelText("Edit comment");
+    await user.clear(editField);
+    await user.click(editField);
+    await user.paste("Updated root");
+    jest.useFakeTimers();
+    await userOnFakeClock().click(screen.getByRole("button", { name: "Save" }));
+    await settle();
+    expect(editComment).toHaveBeenCalledWith(
+      "root-comment",
+      { body: "Updated root" },
+      keyedAttempt
+    );
+
+    // The save lands with the browser offline, and the comments' read it starts is paused.
+    onlineManager.setOnline(false);
+    await act(async () => {
+      save.resolve({ ...root, body: "Updated root" });
+      await save.promise;
+    });
+
+    // A second short of the request deadline the read is still paused, and the edit held.
+    await tick(REQUEST_DEADLINE_MS - 1_000);
+    expect(within(card).queryAllByRole("button", { name: "Edit" })).toHaveLength(0);
+    expect(screen.getByLabelText("Edit comment")).toBeInTheDocument();
+
+    // At it the save lets the edit go: its editor closes, and each Edit is back.
+    await tick(1_000);
+    expect(screen.queryByLabelText("Edit comment")).not.toBeInTheDocument();
+    expect(within(card).getAllByRole("button", { name: "Edit" })).toHaveLength(2);
+  } finally {
+    save.resolve(root);
+    view.unmount();
+    queryClient.clear();
+    onlineManager.setOnline(online);
+    realClock();
     editComment.mockRestore();
     stub.restore();
   }

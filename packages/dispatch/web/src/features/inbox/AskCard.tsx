@@ -19,6 +19,7 @@ import type {
 } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
+import { focusableIn, focusIntoView } from "../../components/focus-place";
 import { heldField, heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -65,6 +66,7 @@ import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
+import { focusOnDocument } from "../shell/roving";
 import { composerFirst } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { askRepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
@@ -241,6 +243,18 @@ const PAGE_URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
 function handOffFocus(form: HTMLElement): void {
   if (!form.contains(document.activeElement)) return;
   form.parentElement?.closest<HTMLElement>("[tabindex]")?.focus({ preventScroll: true });
+}
+
+/** The control Tab reaches first in `form`: its first control the focus can reach
+ *  (`focusableIn`), save that in a group of options Tab stops on the option that is picked, where
+ *  one is. */
+function firstTabStop(form: HTMLFormElement): HTMLElement | undefined {
+  const first = focusableIn(form)[0];
+  if (!(first instanceof HTMLInputElement) || first.type !== "radio") return first;
+  const picked = [...form.querySelectorAll<HTMLInputElement>('input[type="radio"]:checked')].find(
+    (option) => option.name === first.name
+  );
+  return picked ?? first;
 }
 
 /** The form's callback ref. When the form leaves while a control inside it has focus - the card
@@ -429,6 +443,21 @@ export function AskCard({
       handOffFocus(form);
     }
   });
+  // A card mounted in `change` mode is one the reader's press of Change answer opened in the
+  // place of the button they pressed (the Answers page), which took the focus away with it to the
+  // page's body. The form takes that focus as it opens, on the control Tab reaches first in it
+  // (`firstTabStop`), and shows that control whole with the least scroll (`focusIntoView`): the
+  // form opens under the pressed row, which can stand at the window's foot. A focus the reader has
+  // put elsewhere while the ask was being read stays where they put it.
+  const focusFormOnChange = useRef(mode === "change");
+  useLayoutEffect(() => {
+    if (!changing || !focusFormOnChange.current) return;
+    focusFormOnChange.current = false;
+    const form = formRef.current;
+    if (form === null || !focusOnDocument()) return;
+    const first = firstTabStop(form);
+    if (first !== undefined) focusIntoView(first);
+  }, [changing, formRef]);
   const tooltips = useTooltips();
   // The card holds its form from the press of an answer or a clarification until that write is
   // done with: while it is out, and inside `NoTooltips`, once it lands, until a read of the ask's

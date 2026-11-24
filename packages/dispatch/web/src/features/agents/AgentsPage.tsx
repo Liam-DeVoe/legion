@@ -133,6 +133,14 @@ import { storeAgentState, unreadRepliesLabel, useMarkRepliesRead, useUnreadAtOpe
 const composerLineLayout =
   "mt-2 text-sm narrow-or-short:order-2 narrow-or-short:col-start-2 narrow-or-short:mt-0 narrow-or-short:min-w-0 narrow-or-short:overflow-x-auto narrow-or-short:text-xs narrow-or-short:whitespace-nowrap short:order-3 short:col-span-4 short:col-start-1";
 const composerLine = `${composerLineLayout} ${dangerText}`;
+/** The Tab stop of the notice slot's line where it names an agent: none. In the compact grid the
+ *  line scrolls sideways, and Firefox makes a box that scrolls a Tab stop of its own, with no
+ *  name. Each agent the line names is a link (`AgentName`), the Tab stop that brings that part of
+ *  the line into view, and the arrow keys scroll the line from it. A line of words alone, as the
+ *  recipient limit's is, keeps the stop: it is the one way a keyboard reader scrolls it. */
+function composerLineStop(parts: readonly AgentPart[]): { tabIndex?: number } {
+  return parts.some((part) => typeof part !== "string") ? { tabIndex: -1 } : {};
+}
 
 /**
  * Pinned sessions first, in pin order; then whoever needs the viewer, then the most open asks,
@@ -1341,11 +1349,14 @@ function BroadcastComposer({
         value={body}
       />
       {sendState.notice !== null ? (
-        <p className={composerLine} id={noticeId}>
+        <p className={composerLine} id={noticeId} {...composerLineStop(sendState.notice)}>
           <AgentParts parts={sendState.notice} />
         </p>
       ) : asideOnly.length > 0 ? (
-        <p className={`${composerLineLayout} ${textMutedOnSurface}`}>
+        <p
+          className={`${composerLineLayout} ${textMutedOnSurface}`}
+          {...composerLineStop(asideLine)}
+        >
           <AgentParts parts={asideLine} />
         </p>
       ) : null}

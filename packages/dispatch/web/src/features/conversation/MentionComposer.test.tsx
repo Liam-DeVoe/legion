@@ -2648,6 +2648,59 @@ test("Discard clears the draft to what a mount shows, wherever the host takes fo
   }
 });
 
+// Keep, which takes `Discard draft?` away, and a pick in the reference picker, which closes it,
+// each give the focus back to the box the reader was writing in. The browser's own scroll of a
+// focused box centres one that is not wholly in view in Chromium and Firefox, a scroll the reader
+// asked for nowhere: each gives that focus with no scroll of the browser's own, and brings the
+// box into view only where the reader cannot see it whole (`focusIntoView`).
+test("Keep and a picked reference give the focus back to the box with no scroll of the browser's own", async () => {
+  const user = userEvent.setup();
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue({ project: "CORE" } as never);
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([
+    { key: "CORE-1", title: "Core issue" },
+  ] as never);
+  /** Each focus that moved the focus to the box since the last read: whether it was asked to
+   *  scroll nothing. A focus of the box while it already holds the focus moves nothing and
+   *  scrolls nothing (the focusing steps end at once), as the picker's dialog gives the focus
+   *  back to it as it closes (`useDialog`). */
+  let given: boolean[] = [];
+  const focus = HTMLElement.prototype.focus;
+  const spy = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
+    this: HTMLElement,
+    options?: FocusOptions
+  ) {
+    if (this.getAttribute("aria-label") === "Comment" && document.activeElement !== this) {
+      given.push(options?.preventScroll === true);
+    }
+    focus.call(this, options);
+  });
+  const { view } = renderComposer();
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.paste("Keep me");
+    await user.keyboard("{Escape}");
+    given = [];
+    await user.click(screen.getByRole("button", { name: "Keep" }));
+    expect(field).toHaveFocus();
+    expect(given, "Keep gave the box the focus with the browser's own scroll").toEqual([true]);
+
+    await user.keyboard("{Control>}k{/Control}");
+    await screen.findByRole("dialog", { name: "Reference picker" });
+    given = [];
+    await user.click(screen.getByRole("button", { name: "CORE-1: Core issue" }));
+    await waitFor(() => expect(field.value).toBe("Keep me dispatch://CORE-1"));
+    expect(field).toHaveFocus();
+    expect(given, "the pick gave the box the focus with the browser's own scroll").toEqual([true]);
+  } finally {
+    view.unmount();
+    spy.mockRestore();
+    getIssue.mockRestore();
+    listIssues.mockRestore();
+  }
+});
+
 // A refusal is about the draft it turned down: Retry sends the draft as it stands, so it offers
 // only what Send would, and Discard, which drops the draft, drops the notice with it.
 test("a refused send's Retry asks what Send asks, and Discard takes the notice with the draft", async () => {

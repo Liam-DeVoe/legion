@@ -544,12 +544,19 @@ export function AgentThread({
               `[overflow-anchor:none]` (the sidebar's precedent in `app.tsx`) leaves the hook's
               own compensation the only one there is: the browser's anchoring would adjust a
               rebuild a frame after the hook already had, hiding that compensation and arriving
-              as a scroll event nothing can tell from the reader's own. */}
+              as a scroll event nothing can tell from the reader's own.
+
+              A region named for what it holds, since a box that scrolls is a Tab stop of its own -
+              Firefox's for any such box, and every engine's where the turns hold no control - and
+              that stop is how a keyboard reader scrolls turns of prose with no control among
+              them. Unnamed, the stop read as nothing. */}
           <ThreadPrimitive.Viewport
+            aria-label="Transcript"
             autoScroll={false}
             className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1 pl-1 [overflow-anchor:none]"
             data-testid="agent-thread"
             ref={setViewport}
+            role="region"
             scrollToBottomOnInitialize={false}
             scrollToBottomOnRunStart={false}
             scrollToBottomOnThreadSwitch={false}

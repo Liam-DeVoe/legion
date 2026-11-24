@@ -3132,6 +3132,37 @@ test("a broadcast leaves out a selected agent that does not advertise the chosen
   }
 });
 
+// The notice slot's line scrolls sideways in the compact grid, and Firefox makes a box that
+// scrolls a Tab stop of its own, with no name. A line that names an agent holds that agent's
+// link, the Tab stop that brings it into view, so the line takes no stop of its own.
+test("the broadcast composer's exclusion line is no Tab stop of its own", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents();
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    await user.click(
+      within(region).getByRole("checkbox", { name: "Select Planner for broadcast" })
+    );
+    await user.click(
+      within(region).getByRole("checkbox", { name: "Select Reviewer for broadcast" })
+    );
+    const broadcast = within(region).getByRole("region", { name: "Broadcast" });
+    const mode = within(broadcast).getByRole("button", { name: pickNamed("Delivery mode") });
+    await pickIn(user, () => mode, "BTW");
+    const excludedLine = within(broadcast).getByText(
+      wholeText(
+        "Excluded: Reviewer (does not advertise BTW). Nothing is sent to them, and no other mode is substituted."
+      )
+    );
+    expect(within(excludedLine).getByRole("link", { name: "Reviewer" })).toBeTruthy();
+    expect(excludedLine).toHaveAttribute("tabindex", "-1");
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 test("a broadcast whose selection holds an Aside-only session goes as an Aside until the sender picks a mode, and says so", async () => {
   const user = userEvent.setup();
   const page = renderAgents();

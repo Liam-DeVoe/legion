@@ -1,11 +1,21 @@
 import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
 import { type MutationKey, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link } from "react-router-dom";
 
 import { api, issueStateRequest, type WriteBounds } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
+import { readWithinBound } from "../../api/read-bound";
 import type {
   Agent,
   Artifact,
@@ -750,13 +760,17 @@ function CommentTurn({
   const queryClient = useQueryClient();
   const agentText = useAgentText();
   const [savingCommentEditId, setSavingCommentEditId] = useState<string>();
-  /** One attempt of a comment edit's save, under the composer's key (`sendRequest`). */
+  /** One attempt of a comment edit's save, under the composer's key (`sendRequest`). The attempt
+   *  holds the edit - its editor, and every Edit of the card (`savingCommentEditId`) - until the
+   *  comments are read again with the saved words, or until the request deadline where that read
+   *  has not settled - one the network paused while the browser is offline (`readWithinBound`) -
+   *  so no read holds the edit for good. */
   const editComment = useCallback(
     async (id: string, body: string, carried: CarriedBlockIds | undefined, bounds: WriteBounds) => {
       setSavingCommentEditId(id);
       try {
         const comment = await api.editComment(id, { body, ...carried }, bounds);
-        await queryClient.invalidateQueries({ queryKey: ["comments", issueKey] });
+        await readWithinBound(queryClient.invalidateQueries({ queryKey: ["comments", issueKey] }));
         return comment;
       } finally {
         setSavingCommentEditId(undefined);
@@ -1389,6 +1403,32 @@ export function ConversationTab({
       op: isPinnedConversation(dismissed, id) ? "unpin" : "pin",
     }));
 
+  // The All, Open or Closed button the reader pressed, and its top in viewport pixels as they
+  // pressed it, from the press until the commit that draws the list it asks for. A press of the
+  // bucket already shown changes nothing, and records nothing.
+  const filterPress = useRef<{ readonly button: HTMLElement; readonly top: number } | null>(null);
+  const pickFilter = (value: ConversationFilter, button: HTMLElement) => {
+    if (value === filter) return;
+    filterPress.current = { button, top: button.getBoundingClientRect().top };
+    setFilter(value);
+  };
+  // The buttons stand above the turns, and the list's scroll keeper holds the turn the reader is
+  // on where it stood (`ViewportAnchor`): with no turn under their hand or focus, the turn at the
+  // list's centre. So the turns a press draws or takes away between the buttons and that turn
+  // would move the window, and the pressed button with it: All, drawing the closed conversations
+  // above the open ones, took it off the top of the screen. Once the commit is in - after the
+  // keeper's own move, which its `componentDidUpdate` makes first, as a child's layout effects run
+  // before this one - the window is moved back by however far the button moved, so the pressed
+  // button stays where the reader pressed it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `filter` is the trigger, not a read
+  useLayoutEffect(() => {
+    const press = filterPress.current;
+    filterPress.current = null;
+    if (press === null || !press.button.isConnected) return;
+    const moved = press.button.getBoundingClientRect().top - press.top;
+    if (moved !== 0) window.scrollBy(0, moved);
+  }, [filter]);
+
   if (loading) {
     return <p className={textMutedOnCanvas}>Loading conversation…</p>;
   }
@@ -1452,7 +1492,7 @@ export function ConversationTab({
                     : textSecondaryOnCanvas
                 }`}
                 key={value}
-                onClick={() => setFilter(value)}
+                onClick={(event) => pickFilter(value, event.currentTarget)}
                 type="button"
               >
                 {label}
@@ -1654,7 +1694,10 @@ export function ConversationTab({
               </button>
             </header>
             {phoneThread === undefined ? null : (
-              <ol className="min-h-0 flex-1 overflow-y-auto px-4 pb-32">
+              // No Tab stop of its own, which Firefox gives a box that scrolls, with no name: the
+              // thread's card holds its controls from its head to its foot, the Tab stops that
+              // bring each part into view, and the arrow keys scroll the list from any of them.
+              <ol className="min-h-0 flex-1 overflow-y-auto px-4 pb-32" tabIndex={-1}>
                 <CommentTurn
                   actionFailure={
                     commentActions.actionFailure?.id === phoneThread.root.id
