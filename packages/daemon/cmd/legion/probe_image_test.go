@@ -37,14 +37,14 @@ import (
 // answers like a refusal (`malformed overlay` on stderr, exit 1) once a SIGTERM reaches it, as the
 // probe's deadline sends one; otherwise it says the setting is false, or true under
 // $LEGION_TEST_FALLBACK_ON, or fails with a message on stderr and exit 1 under
-// $LEGION_TEST_FALLBACK_FAIL. With $LEGION_TEST_WAITING set, a read under a `slow` or
-// `refuses-late` overlay appends `config get <overlay>` there once it waits, after its trap is
-// set where it has one. `--version` prints omp/18.18.6 on its first line, or fails under
-// $LEGION_TEST_VERSION_FAIL, or under $LEGION_TEST_VERSION_SLOW appends `omp --version` to
-// $LEGION_TEST_WAITING and sleeps (`exec sleep 30`), so only a stop ends it; `--help` prints a
-// flags table that lists --session-id, or, under $LEGION_TEST_NO_SESSION_ID, one that lists no
-// such flag but mentions it in a description, or fails under $LEGION_TEST_HELP_FAIL, or under
-// $LEGION_TEST_HELP_SLOW appends `omp --help` there and sleeps the same way. With
+// $LEGION_TEST_FALLBACK_FAIL. `--version` prints omp/18.18.6 on its first line, or fails under
+// $LEGION_TEST_VERSION_FAIL, or sleeps (`exec sleep 30`) under $LEGION_TEST_VERSION_SLOW, so only
+// a stop ends it; `--help` prints a flags table that lists --session-id, or, under
+// $LEGION_TEST_NO_SESSION_ID, one that lists no such flag but mentions it in a description, or
+// fails under $LEGION_TEST_HELP_FAIL, or sleeps the same way under $LEGION_TEST_HELP_SLOW. With
+// $LEGION_TEST_WAITING set, each run that waits appends there what it is once it waits, after its
+// trap is set where it has one: `config get <overlay>` for a read under a `slow` or
+// `refuses-late` overlay, `omp --version` and `omp --help` for the slow ones. With
 // $LEGION_TEST_SEEN set, each run appends the environment it saw there: PI_CONFIG_FILES, whether
 // the first overlay it names exists, and OMP_SESSION_STORAGE; with $LEGION_TEST_KEY_SEEN, the
 // provider key TEST_PROVIDER_KEY.
@@ -58,7 +58,7 @@ if [ -n "${LEGION_TEST_SEEN:-}" ]; then
   printf '%s %s %s\n' "${PI_CONFIG_FILES:-none}" "$written" "${OMP_SESSION_STORAGE:-unset}" >>"$LEGION_TEST_SEEN"
 fi
 [ -z "${LEGION_TEST_KEY_SEEN:-}" ] || printf '%s\n' "${TEST_PROVIDER_KEY:-unset}" >>"$LEGION_TEST_KEY_SEEN"
-waiting() { [ -z "${LEGION_TEST_WAITING:-}" ] || printf 'config get %s\n' "$overlay" >>"$LEGION_TEST_WAITING"; }
+waiting() { [ -z "${LEGION_TEST_WAITING:-}" ] || printf '%s\n' "$1" >>"$LEGION_TEST_WAITING"; }
 case "$*" in
 "models --extension "*" --extension "*" --extension "*" --json")
   envoy=$(cd "$3" && pwd -P)
@@ -80,8 +80,8 @@ case "$*" in
     case "$overlay" in
     *malformed*)
       printf '%s\n          ^\nerror: Failed to parse config overlay %s: SyntaxError: YAML Parse error\n' "` + strings.Repeat("x", 400) + `" "$overlay" >&2; exit 1 ;;
-    *refuses-late*) trap 'echo "malformed overlay" >&2; exit 1' TERM; waiting; sleep 30 & wait ;;
-    *slow*) waiting; exec sleep 30 ;;
+    *refuses-late*) trap 'echo "malformed overlay" >&2; exit 1' TERM; waiting "config get $overlay"; sleep 30 & wait ;;
+    *slow*) waiting "config get $overlay"; exec sleep 30 ;;
     esac
   done
   unset IFS
@@ -92,11 +92,11 @@ case "$*" in
   printf '{"key":"retry.modelFallback","value":%s,"type":"boolean"}\n' "$value" ;;
 "--version")
   if [ -n "${LEGION_TEST_VERSION_FAIL:-}" ]; then echo "fake omp: --version failed" >&2; exit 1; fi
-  if [ -n "${LEGION_TEST_VERSION_SLOW:-}" ]; then printf 'omp --version\n' >>"$LEGION_TEST_WAITING"; exec sleep 30; fi
+  if [ -n "${LEGION_TEST_VERSION_SLOW:-}" ]; then waiting 'omp --version'; exec sleep 30; fi
   printf 'omp/18.18.6\nthe fake omp of probe_image_test.go\n' ;;
 "--help")
   if [ -n "${LEGION_TEST_HELP_FAIL:-}" ]; then echo "fake omp: --help failed" >&2; exit 1; fi
-  if [ -n "${LEGION_TEST_HELP_SLOW:-}" ]; then printf 'omp --help\n' >>"$LEGION_TEST_WAITING"; exec sleep 30; fi
+  if [ -n "${LEGION_TEST_HELP_SLOW:-}" ]; then waiting 'omp --help'; exec sleep 30; fi
   printf 'omp v18.18.6\n\nFLAGS\n  -r, --resume=<value>      Resume a session (by ID prefix, path, or picker if omitted)\n'
   if [ -n "${LEGION_TEST_NO_SESSION_ID:-}" ]; then
     printf '      --fork=<value>        Start a session under a new id, as --session-id does\n'

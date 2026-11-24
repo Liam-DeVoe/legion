@@ -50,7 +50,7 @@ func podDisks(t *testing.T, s *Store, issue string) []string {
 }
 
 // keptVolume is the kept volume of a Sandbox made at made, as podDisks renders it.
-func keptVolume(made time.Time) string { return made.UTC().Format("2006-01-02T15:04:05Z") }
+func keptVolume(made time.Time) string { return made.UTC().Format(time.RFC3339) }
 
 // wantPodDisks holds the disks of the pods of issue to want, read whole (podDisks), and holds the
 // read the update round makes of each pod (PodHoldsEarlierWork) to agree with it: true for each
@@ -462,10 +462,12 @@ func TestAPodNotNewerThanTheSaveSpendsTheAttemptAndClosesTheBundleToEveryLaterPo
 // a restore the launcher refuses costs a notice.
 //
 // Every drop whose project records the issue records its pod with its kept volume, whatever it
-// deleted, and marks the pod where it deleted the bundle; a drop of an issue the asking project
-// does not record, or that no project records, records nothing. The pod being released and the
-// pod after the release share the volume the work was taken off, and every other pod here is of a
-// kept volume of its own, so the drop's is the one mark made
+// deleted, and marks the pod where it deleted the bundle or where an earlier pod of the issue
+// recorded the same volume; a drop of an issue the asking project does not record, or that no
+// project records, records nothing. The pod after the release is marked twice over: its drop
+// deleted the bundle, and the pod being released recorded the volume they share first. The pod of
+// the reset is marked by the take that sent it the bundle. The pod being released, the first of
+// its volume, stays unmarked, and so does every other pod here, each of a kept volume of its own
 // (TestEachPodOfAKeptVolumeIsMarkedWhereAnEarlierPodOfTheIssueMountedIt).
 func TestABundleAKeptVolumeHoldsIsDroppedWithoutItsBody(t *testing.T) {
 	ctx := context.Background()
@@ -543,13 +545,12 @@ func TestABundleAKeptVolumeHoldsIsDroppedWithoutItsBody(t *testing.T) {
 	}
 	// The pod whose kept volume holds the work is marked as holding it, as a pod a restore was
 	// sent to is.
-	afterTheDrop := []string{
+	wantPodDisks(t, s, "INFRA-945", "after the drop,", []string{
 		"pod-after-the-release/" + keptVolume(kept) + "/marked",
 		releasedPodUID + "/" + keptVolume(kept) + "/unmarked",
 		"pod-of-a-later-volume/" + keptVolume(at.Add(time.Hour)) + "/unmarked",
 		"pod-of-a-volume-of-the-saves-second/" + keptVolume(at) + "/unmarked",
-	}
-	wantPodDisks(t, s, "INFRA-945", "after the drop,", afterTheDrop, "pod-of-legions-spawn")
+	}, "pod-of-legions-spawn")
 
 	// A bundle whose one attempt is spent stays, whatever volume the next pod mounts.
 	if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 12, saved); err != nil {

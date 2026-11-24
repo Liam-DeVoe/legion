@@ -155,8 +155,10 @@ type podUpdateRig struct {
 	asked map[int64]record.UpdateAsk
 	// keptSince is when the API server made the issue's Sandbox, where that Sandbox owns the
 	// issue's kept volume, as a pod's launcher session reads it (sandbox's keptVolumeSince), and
-	// the zero time while the issue's pods have volumes of their own. Each role's start into a pod
-	// while it is set asks the store what that pod's launcher asks (launcherStarts).
+	// the zero time while the issue's pods have volumes of their own. While it is set, the start of
+	// a role into a pod through startInPod, displacedInto, startsFreshInto, retriesInto or wakesInto
+	// asks the store what that pod's launcher asks (launcherStarts); intoPod,
+	// relaunchedUnregistered and runParkedLaunch ask nothing.
 	keptSince time.Time
 }
 

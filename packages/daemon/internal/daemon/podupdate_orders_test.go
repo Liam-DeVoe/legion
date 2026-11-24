@@ -78,18 +78,19 @@ package daemon
 // pod, and each role's start in a pod of a kept volume records that pod with its volume in the
 // store, as the pod's launcher does (launcherStarts), marked where an earlier pod of the issue
 // recorded the same volume. P0's release saves the work, the tester's wake brings the issue's pod
-// back as A on the volume P0 mounted, which drops the saved copy, and A goes and the tester comes
-// back in P on that volume, which took no release's work itself: the released implementer, whose
-// agents registered in P0 alone, is named. With no release at all, the daemon suspends the
-// implementer after its agent ran in P0, and P0 goes and the tester comes back in P on the volume
-// P0 mounted: the implementer is named. In both, the issue's Sandbox carries a reset mark or a
-// change of its disk's shape by the round's end, so the issue's next launch replaces it with its
-// volume and P's work. And P as the first pod of a new kept volume, recorded at the tester's start
-// in it: the implementer is refused for P with no session and registers in the next pod of that
-// volume, C, which records itself before the round's end reads P, where a launch replaces P or P
-// is recreated; the implementer is named at no end. In the order with no release, an eviction
-// rather than a round of P0's own takes P0, since each row of the table holds one round; the
-// store records the volume's next pod alike whatever took the pod before it.
+// back as the pod between P0 and P, on the volume P0 mounted, which drops the saved copy, and that
+// pod goes and the tester comes back in P on the same volume, which took no release's work itself:
+// the released implementer, whose agents registered in P0 alone, is named. With no release at all,
+// the daemon suspends the implementer after its agent ran in P0, and P0 goes and the tester comes
+// back in P on the volume P0 mounted: the implementer is named. In both, the issue's Sandbox
+// carries a reset mark or a change of its disk's shape by the round's end, so the issue's next
+// launch replaces it with its volume and P's work. And P as the first pod of a new kept volume,
+// recorded at the tester's start in it: the implementer is refused for P with no session and
+// registers in the pod in P's place, the next pod of that volume, which records itself before the
+// round's end reads P, where a launch replaces P or P is recreated; the implementer is named at no
+// end. In the order with no release, an eviction rather than a round of P0's own takes P0, since
+// each row of the table holds one round; the store records the volume's next pod alike whatever
+// took the pod before it.
 //
 // The pairs the table has no row for are of two sorts. These cannot occur, each for the reason
 // given:
@@ -118,16 +119,19 @@ package daemon
 // resumed (daemonStoppedHeld) is held where P goes, on its own or recreated: a daemon's suspension
 // does not hold the round, so the sweep or a launch can replace P over it, and it is named there by
 // the same case of the predicate as the member released once (releasedRestored), whose rows cover
-// every end. A member released through a chain of two releases, or on a kept volume, is held at
-// two ends, the read through the tester's process and P going on its own: it is named by the same
-// case of the predicate as the member released once, whose rows cover every end, and only the way
-// its work came to P's disk differs. A released member whose session is forgotten is held where P
-// goes, on its own or recreated. The sweep's replacement through a waiting claim and a launch's
-// replacement name it on the issue as P's going does (lostClaims), and a launch's line names it
-// too, but the line of the sweep's replacement names a claim the round passed over only where it
-// has a session (notWaitedFor); and the replacement through the tester's process names it
-// nowhere, on its line or on the issue, since it reads only the claims with a session
-// (notWaitedFor, notAskedToPush).
+// every end. A member released through a chain of two releases, or on a kept volume, whether P
+// dropped the saved copy (releasedKeptVolume) or the pod between P0 and P did
+// (releasedKeptLaterPod), and a member the daemon suspended after its agent ran in an earlier pod
+// of the kept volume P mounts, with no release (daemonStoppedKeptVolume), are held at two ends, the
+// read through the tester's process and P going on its own: each is named by the same case of the
+// predicate as the member released once, whose rows cover every end, since the store marks P at P's
+// own start and every end reads that one mark, and only the way its work came to P's disk differs.
+// A released member whose session is forgotten is held where P goes, on its own or recreated. The
+// sweep's replacement through a waiting claim and a launch's replacement name it on the issue as
+// P's going does (lostClaims), and a launch's line names it too, but the line of the sweep's
+// replacement names a claim the round passed over only where it has a session (notWaitedFor); and
+// the replacement through the tester's process names it nowhere, on its line or on the issue, since
+// it reads only the claims with a session (notWaitedFor, notAskedToPush).
 
 import (
 	"cmp"
@@ -482,18 +486,10 @@ func TestPodUpdateNamesWhatTheRoundsPodTookAtEachEndOfEachMember(t *testing.T) {
 		// a pod of a volume an earlier pod of the issue mounted with no release, each over an end
 		// that deletes the volume, and the first pod of a new volume, ended after the next pod of
 		// that volume recorded itself.
-		{endBySweep, releasedKeptLaterPod, suspended},
 		{endThroughAProcess, releasedKeptLaterPod, suspended},
 		{endPodGone, releasedKeptLaterPod, suspended},
-		{endRecreated, releasedKeptLaterPod, suspended},
-		{endRecreatedRefusing, releasedKeptLaterPod, suspended},
-		{endAtALaunch, releasedKeptLaterPod, suspended},
-		{endBySweep, daemonStoppedKeptVolume, suspended},
 		{endThroughAProcess, daemonStoppedKeptVolume, suspended},
 		{endPodGone, daemonStoppedKeptVolume, suspended},
-		{endRecreated, daemonStoppedKeptVolume, suspended},
-		{endRecreatedRefusing, daemonStoppedKeptVolume, suspended},
-		{endAtALaunch, daemonStoppedKeptVolume, suspended},
 		{endRecreated, firstOfVolumeElsewhere, ""},
 		{endAtALaunch, firstOfVolumeElsewhere, ""},
 	} {

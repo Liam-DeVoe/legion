@@ -76,16 +76,14 @@ var digits = regexp.MustCompile(`^[0-9]+$`)
 // failed capability is the probe's message, exit 1, so a broken image never publishes. Each check
 // is judged as it returns, by the deadline --probe-budget sets: what it saw fail before the
 // deadline is exit 1, while a check the deadline cut, a capability row among them
-// (capabilities.StatusUnanswered), has no
-// verdict, which ends nothing, so the later checks still run. Where nothing failed and something
-// has no verdict, it prints bootprobe.NoVerdictLine, naming each, to stderr and exits
-// bootprobe.NoVerdictExit, which asks the daemon's probe Sandbox for another attempt rather than
-// refusing the image. Unlike the
-// TypeScript command, the contract is always checked:
-// with none named, against this binary's own DaemonAPIVersion, which the plugin packed from the
-// same commit must declare. The load probe also holds every task agent the
-// prompts dispatch to its own model; the OK line says so (agent-models=resolved), or that the
-// build's probe, which has no operator model configuration, skipped it (--skip-agent-models).
+// (capabilities.StatusUnanswered), has no verdict, which ends nothing, so the later checks still
+// run. Where nothing failed and something has no verdict, it prints bootprobe.NoVerdictLine, naming
+// each, to stderr and exits bootprobe.NoVerdictExit, which asks the daemon's probe Sandbox for
+// another attempt rather than refusing the image. Unlike the TypeScript command, the contract is
+// always checked: with none named, against this binary's own DaemonAPIVersion, which the plugin
+// packed from the same commit must declare. The load probe also holds every task agent the prompts
+// dispatch to its own model; the OK line says so (agent-models=resolved), or that the build's
+// probe, which has no operator model configuration, skipped it (--skip-agent-models).
 // With --skip-browser, the build of an image for a deployment that turns Oh My Pi's browser off
 // (`browser.enabled: false`), which carries no Chromium, the capability check leaves the browser
 // row unchecked, and the OK line's capabilities mark says so (capabilities=browser-skipped, which
