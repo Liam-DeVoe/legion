@@ -1,7 +1,5 @@
 package api
 
-//ci:reads packages/contracts/fixtures/live/* TestTheLiveFixturesAreWhatTheDiffWrites
-
 import (
 	"bytes"
 	"encoding/json"

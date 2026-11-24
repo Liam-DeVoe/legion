@@ -1,7 +1,5 @@
 package main
 
-//ci:builds packages/envoy ./cmd/listener buildListener builds . in ../../../cmd/listener (root go.work)
-
 import (
 	"bufio"
 	"fmt"

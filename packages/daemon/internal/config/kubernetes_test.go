@@ -1,7 +1,5 @@
 package config
 
-//ci:reads deploy/kubernetes/operator-route/pod.yml TestLoadForValidationRefusesUnderKubernetes
-
 import (
 	"fmt"
 	"os"

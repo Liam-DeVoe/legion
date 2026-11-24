@@ -1,7 +1,5 @@
 package intake
 
-//ci:reads packages/contracts/fixtures/github-envelopes/* TestConsumePreparesAnIssueEventsRepositoryBeforeApplyingIt globs it and reads each file; TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer reads one
-
 import (
 	"bytes"
 	"context"

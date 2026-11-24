@@ -1,7 +1,5 @@
 package daemon
 
-//ci:reads packages/daemon/internal/stream/*.go !**/*_test.go endTurn Glob ../stream/*.go, and streamEventTypes parses each file it finds but the test files
-
 import (
 	"context"
 	"crypto/sha256"

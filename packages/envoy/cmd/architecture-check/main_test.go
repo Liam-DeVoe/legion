@@ -5,8 +5,6 @@
 // one breaks tools that read paths a line at a time.
 package main
 
-//ci:reads packages/envoy/internal/dispatch/architecture/notes/testdata/** testdataDir joins ../../internal/dispatch/architecture/notes/testdata, which TestTheBuiltBinary's built binary reads
-
 import (
 	"bytes"
 	"context"

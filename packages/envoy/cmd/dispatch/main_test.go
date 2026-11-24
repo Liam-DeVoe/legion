@@ -1,7 +1,5 @@
 package main
 
-//ci:reads packages/envoy/internal/dispatch/store/migrations/* TestHealthzReportsAnUnstampedCommitAsNull
-
 import (
 	"bytes"
 	"context"

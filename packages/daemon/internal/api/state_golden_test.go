@@ -1,7 +1,5 @@
 package api
 
-//ci:reads packages/contracts/fixtures/daemon-api/* TestPauseRouteGoldens (path from goldenPath, declared)
-
 import (
 	"bytes"
 	"context"

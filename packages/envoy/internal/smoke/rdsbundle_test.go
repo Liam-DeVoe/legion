@@ -2,9 +2,6 @@
 
 package smoke
 
-//ci:builds packages/envoy ./internal/smoke/systemroots CGO_ENABLED=0 GOOS=linux TestRDSBundle cmdtest.BuildCommand ./systemroots CGO_ENABLED=0 GOOS=linux
-//ci:reads packages/envoy/docker/rds-global-bundle.pem TestRDSBundle
-
 import (
 	"bytes"
 	"context"

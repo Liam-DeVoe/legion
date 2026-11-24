@@ -1,7 +1,5 @@
 package contracts
 
-//ci:reads packages/contracts/fixtures/daemon-api/plan-rating-cases.json TestCheckPlanRatingTakesExactlyTheRatingsTheDaemonTakes
-
 import (
 	"encoding/json"
 	"os"

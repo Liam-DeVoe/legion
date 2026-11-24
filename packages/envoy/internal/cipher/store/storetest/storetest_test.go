@@ -1,7 +1,5 @@
 package storetest
 
-//ci:builds packages/envoy/internal/cipher/store/storetest . TestStoretestLinksNoContainerRuntime go list -deps .
-
 import (
 	"errors"
 	"os/exec"

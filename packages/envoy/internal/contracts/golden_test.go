@@ -1,8 +1,5 @@
 package contracts
 
-//ci:reads packages/envoy/scripts/fixtures/github/* TestGithubEnvelopeGoldens
-//ci:reads packages/contracts/fixtures/github-envelopes/** TestGithubEnvelopeGoldens os.ReadFile each golden, TestGithubEnvelopeGoldens filepath.WalkDir the directory at every depth
-
 import (
 	"encoding/json"
 	"flag"

@@ -1,7 +1,5 @@
 package textcheck
 
-//ci:reads packages/daemon/internal/classify/*.go !**/*_test.go TestClassifyImportsArePure globs ../classify/*.go, and parses each file it finds but the test files
-
 import (
 	"go/parser"
 	"go/token"

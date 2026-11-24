@@ -1,7 +1,5 @@
 package text
 
-//ci:reads packages/contracts/fixtures/go-unicode-isspace.json TestUnicodeIsSpaceReportsTheCommittedScalars os.ReadFile (goSpaceFixturePath, ../../../../contracts/fixtures)
-
 import (
 	"encoding/json"
 	"fmt"

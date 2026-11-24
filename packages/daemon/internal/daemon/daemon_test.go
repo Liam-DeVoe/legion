@@ -1,7 +1,5 @@
 package daemon
 
-//ci:reads packages/daemon/internal/intake/testdata/dispatch/issue-updated.json TestAnIssueMovedWhileBootListsIsStillAdmitted reads the captured event through ../intake/testdata
-
 import (
 	"bufio"
 	"bytes"

@@ -1,7 +1,5 @@
 package api
 
-//ci:reads packages/contracts/fixtures/live/event.json TestAnEventFrameCarriesTheEventsOwnBytes
-
 import (
 	"bytes"
 	"context"

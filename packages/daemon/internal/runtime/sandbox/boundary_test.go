@@ -1,7 +1,5 @@
 package sandbox
 
-//ci:builds packages/daemon ./cmd/legion buildLegion go build .../daemon/cmd/legion
-
 import (
 	"archive/tar"
 	"bytes"

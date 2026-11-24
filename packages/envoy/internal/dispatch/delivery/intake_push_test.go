@@ -1,7 +1,5 @@
 package delivery
 
-//ci:reads packages/envoy/scripts/fixtures/github/push.json pushEnvelope os.ReadFile(pushFixture)
-
 import (
 	"context"
 	"encoding/json"

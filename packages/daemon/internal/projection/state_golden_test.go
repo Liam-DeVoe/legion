@@ -1,7 +1,5 @@
 package projection
 
-//ci:reads packages/contracts/fixtures/daemon-api/* golden
-
 import (
 	"bytes"
 	"context"

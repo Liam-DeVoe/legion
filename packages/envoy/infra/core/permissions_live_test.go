@@ -2,8 +2,6 @@
 
 package core_test
 
-//ci:builds packages/envoy ./cmd/dispatch ./cmd/listener buildEnvoyCommand builds . in ../../cmd/<dispatch|listener> (root go.work)
-
 import (
 	"context"
 	"encoding/json"

@@ -1,7 +1,5 @@
 package contracts
 
-//ci:reads packages/contracts/fixtures/dedupe-keys.json TestDedupeKeyNamesTheUpstreamEvent
-
 import (
 	"encoding/json"
 	"os"

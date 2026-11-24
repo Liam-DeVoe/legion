@@ -1,7 +1,5 @@
 package intake
 
-//ci:reads packages/contracts/fixtures/checks-settlement/* fixtureSettlement
-
 import (
 	"encoding/json"
 	"os"

@@ -1,7 +1,5 @@
 package config
 
-//ci:reads deploy/kubernetes/daemon/controller.yaml.example TestLoadControllerReadsTheShippedExample LoadController reads it (config.ControllerConfigExample, joined)
-
 import (
 	"os"
 	"path/filepath"

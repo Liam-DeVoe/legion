@@ -1,7 +1,5 @@
 package cistore_test
 
-//ci:reads packages/contracts/fixtures/checks-settlement/* readSettlementFixture
-
 import (
 	"context"
 	"encoding/json"

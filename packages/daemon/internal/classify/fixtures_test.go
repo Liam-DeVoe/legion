@@ -1,7 +1,5 @@
 package classify
 
-//ci:reads packages/contracts/fixtures/classification/** fixtureFiles (fixtureDirectory, runtime.Caller sourceDirectory)
-
 import (
 	"bytes"
 	"crypto/sha256"

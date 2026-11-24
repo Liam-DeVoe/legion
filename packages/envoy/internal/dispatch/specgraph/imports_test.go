@@ -1,7 +1,5 @@
 package specgraph
 
-//ci:builds packages/envoy/internal/dispatch/specgraph . TestSpecgraphReachesNoStore go list -deps .
-
 import (
 	"os/exec"
 	"slices"

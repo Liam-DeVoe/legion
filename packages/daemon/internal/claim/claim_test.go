@@ -1,7 +1,5 @@
 package claim
 
-//ci:reads packages/contracts/fixtures/project-tokens.json TestProjectTokenIsTheShippedSpelling
-
 import (
 	"encoding/json"
 	"errors"

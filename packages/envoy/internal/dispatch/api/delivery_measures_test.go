@@ -1,7 +1,5 @@
 package api
 
-//ci:reads packages/envoy/internal/dispatch/delivery/measures/testdata/dora-fixture.json seedMeasuresFixture
-
 import (
 	"encoding/json"
 	"math"

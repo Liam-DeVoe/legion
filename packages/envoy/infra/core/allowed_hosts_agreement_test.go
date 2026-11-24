@@ -1,7 +1,5 @@
 package core_test
 
-//ci:builds packages/envoy/infra/core . imports the listener's internal/config, so this package's own closure (go list -deps .) is what compiling the test reads
-
 import (
 	"testing"
 

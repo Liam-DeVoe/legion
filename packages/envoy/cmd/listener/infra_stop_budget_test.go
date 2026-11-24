@@ -1,7 +1,5 @@
 package main
 
-//ci:reads packages/envoy/infra/gcp/clusteredhub_listener.go TestTheInfraCopyOfTheStopBudgetIsTheStopBudget parses it (infraStopBudgetRead) for the infra module's copy of the stop budget
-
 import (
 	"go/ast"
 	"go/constant"

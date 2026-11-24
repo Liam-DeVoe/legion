@@ -1,7 +1,5 @@
 package textcheck
 
-//ci:reads packages/daemon/**/*.go TestEveryCreatedDatabaseIsAFileCopy walks every .go file under packages/daemon (../..)
-
 import (
 	"go/scanner"
 	"go/token"

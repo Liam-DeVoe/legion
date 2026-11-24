@@ -32,12 +32,6 @@
 
 package api
 
-// main's #3429 put this check in who_waits_test.go, a behaviour file of this package, where
-// the race job was the only one that ran it and the module walk under it was declared by
-// nobody. It is a file of its own under `//go:build !race` now, so the text-check job runs it
-// and the line below is the declaration that holds that job's filter to what it reads.
-//ci:reads packages/envoy/**/*.go !**/*_test.go internal/dispatch/api/module_source_test.go:76 walks packages/envoy (infra, testdata and all) and :83 parses every .go file it finds but the test files (:80), for the tests that ask it for the module's sources: lock_level_test.go:91, event_insert_guard_test.go:46, review_order_guard_test.go:49, review_write_guard_test.go:53, TestOneExpressionDecidesWhoWaitsInOneSpelling, issue_route_writer_guard_test.go:107; issue_route_writer_guard_test.go:126 also walks packages/envoy and reads every non-test file of it as text
-
 import (
 	"fmt"
 	"go/ast"

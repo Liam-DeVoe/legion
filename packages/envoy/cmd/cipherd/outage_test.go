@@ -1,7 +1,5 @@
 package main
 
-//ci:builds packages/envoy ./cmd/cipher cmdtest.BuildCommand . in ../cipher
-
 import (
 	"context"
 	"encoding/json"

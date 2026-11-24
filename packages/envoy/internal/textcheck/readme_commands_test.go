@@ -1,7 +1,5 @@
 package textcheck
 
-//ci:reads packages/envoy/loadtest/README.md TestREADMEBashCommandsRunAsWritten reads packages/envoy/loadtest/README.md under ../../../..
-
 import (
 	"fmt"
 	"os"

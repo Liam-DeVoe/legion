@@ -1,7 +1,5 @@
 package api
 
-//ci:reads packages/envoy/internal/dispatch/delivery/testdata/dev-only-run-jobs.json TestDeliveryReadsWarnOnceForAMainRunWithNoProductionJob
-
 import (
 	"encoding/json"
 	"log/slog"

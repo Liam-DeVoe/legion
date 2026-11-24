@@ -1,7 +1,5 @@
 package admit
 
-//ci:reads packages/daemon/internal/intake/testdata/dispatch/issue-updated.json TestCapturedDispatchTodoEventAdmitsAndProjectsActiveSlot reads the captured event through ../intake/testdata
-
 import (
 	"bytes"
 	"context"

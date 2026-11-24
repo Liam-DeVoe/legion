@@ -1,7 +1,5 @@
 package main
 
-//ci:reads packages/contracts/fixtures/daemon-api/state.json TestStateReadsADaemonSlowerThanTheOldBudget reads the daemon's state golden as the slow daemon's answer
-
 import (
 	"bytes"
 	"net/http"

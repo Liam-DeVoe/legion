@@ -1,7 +1,5 @@
 package textcheck
 
-//ci:builds packages/envoy/infra ./core TestCoreCompilesNoListenerConfigPackage moduleDeps, whose go list -deps ./core runs in ../..
-
 import (
 	"os/exec"
 	"path/filepath"

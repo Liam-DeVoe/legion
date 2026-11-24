@@ -1,8 +1,5 @@
 package contracts
 
-//ci:reads packages/contracts/fixtures/github-envelopes/* TestGithubTopicKindsHoldEveryTokenAfterTheRepository
-//ci:reads packages/envoy/scripts/fixtures/github/* TestEveryPublishedGithubEnvelopeCarriesAJSONObjectPayload and TestAGithubEnvelopeStaysUnderNATSMaxPayloadWhateverItsFieldsHold
-
 import (
 	"encoding/json"
 	"maps"

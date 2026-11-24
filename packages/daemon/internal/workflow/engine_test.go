@@ -1,7 +1,5 @@
 package workflow
 
-//ci:reads skills/legion-worker/references/merge-gate.md TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries reads it under ../../../..
-
 import (
 	"context"
 	"crypto/rand"

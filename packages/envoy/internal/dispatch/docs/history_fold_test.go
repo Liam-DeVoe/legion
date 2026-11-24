@@ -1,7 +1,5 @@
 package docs
 
-//ci:reads packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json readHistoryFixtures
-
 import (
 	"bytes"
 	"context"
