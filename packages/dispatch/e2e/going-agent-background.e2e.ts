@@ -71,10 +71,11 @@ test("Stop beside the box stops a run at once, and its steps stay", async ({ bro
     await expect(newestRun(page)).toHaveAttribute("data-state", "stopped_person", {
       timeout: RUN_STEPS_MS,
     });
-    // The stopped run's steps stay, folded into one line that counts them and opens them.
+    // The stopped run's steps stay above its end, open under the one line that counts them: they
+    // are what it found so far (design v3, state 9: "with what the agent found so far above it").
     const fold = newestRun(page).getByTestId("going-steps-fold");
     await expect(fold).toHaveAccessibleName(/read 1 item$/i);
-    await fold.click();
+    await expect(fold).toHaveAttribute("aria-expanded", "true");
     await expect(newestRun(page).getByTestId("going-step").first()).toBeVisible();
     await expectCallLeft(words);
   });

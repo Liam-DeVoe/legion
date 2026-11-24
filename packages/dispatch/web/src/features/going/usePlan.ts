@@ -24,6 +24,33 @@ export function planTarget(run: string): string {
  *  every surface that approves a plan meets by reading the plan again. */
 export const PLAN_CHANGED: ReadonlySet<string> = new Set(["GOING_PLAN_CHANGED"]);
 
+/**
+ * What an answer to a plan does once it lands, by the plan the page holds for its run by then
+ * (`stored`). The answer is the run's plan as Dispatch stood once it took the press made on
+ * `pressed`, and a read of the plan that landed while the answer was out may be newer:
+ * - `write`: the page holds the plan as pressed, or an earlier plan than the answer's, or none, so
+ *   the answer is the newer and takes its place;
+ * - `keep`: the page holds a later plan of the run than the answer's (`plan`, the number that
+ *   orders a run's plans), which stays;
+ * - `read`: the page holds another read of the answer's own plan. Nothing orders two reads of one
+ *   plan - its `version` is a digest of what it shows, not a count - and that read may have been
+ *   served before Dispatch took the press or after, so it stays and the plan is read again: a read
+ *   that starts once the answer is in is as new as the answer or newer.
+ */
+function answerLanding(
+  stored: GoingPlanAnswer | undefined,
+  pressed: GoingPlanAnswer,
+  answered: GoingPlanAnswer
+): "write" | "keep" | "read" {
+  if (stored === undefined || stored.plan < answered.plan) {
+    return "write";
+  }
+  if (stored.plan > answered.plan) {
+    return "keep";
+  }
+  return stored.plan === pressed.plan && stored.version === pressed.version ? "write" : "read";
+}
+
 /** What a surface answers a plan with, and how that stands. */
 export interface PlanAnswering {
   /** The plan, once read; undefined while it is read, or for a run that proposed none. */
@@ -50,11 +77,11 @@ export interface PlanAnswering {
 /**
  * The latest plan of run `run` (`GET /api/v1/going/runs/{id}/plan`), read once the run's stream
  * has carried a plan frame and again at each frame after that tells it to (`planReads`: each plan
- * frame, and the run's end), and the person's three answers to it: approve, with the ticks and
- * edits the store holds for it, reject, and revise in words. Each answer is the person's write,
- * under the plan's own target, so two surfaces that answer one plan go one at a time. A surface
- * that mounts reads the plan again; each new reading frame reads it again once, however many
- * surfaces draw it (`claimPlanRead`).
+ * frame, the run's end, and the end of a turn that ran its approved rows and waits again), and the
+ * person's three answers to it: approve, with the ticks and edits the store holds for it, reject,
+ * and revise in words. Each answer is the person's write, under the plan's own target, so two
+ * surfaces that answer one plan go one at a time. A surface that mounts reads the plan again;
+ * each new reading frame reads it again once, however many surfaces draw it (`claimPlanRead`).
  */
 export function usePlan(run: string | undefined, planReads: number): PlanAnswering {
   const queryClient = useQueryClient();
@@ -88,11 +115,16 @@ export function usePlan(run: string | undefined, planReads: number): PlanAnsweri
     });
   // An answer settles into the plan of the run it answered, `pressed`, read off the press: the
   // hook stays mounted as the open run changes, and an answer can land after another run opened.
+  // It never takes the place of a newer read of that plan (`answerLanding`).
   const settle = (answered: GoingPlanAnswer | null, pressed: GoingPlanAnswer) => {
     const pressedPlan = goingPlanQuery(pressed.run).queryKey;
-    if (answered !== null) {
+    const landing =
+      answered === null
+        ? "read"
+        : answerLanding(queryClient.getQueryData(pressedPlan), pressed, answered);
+    if (landing === "write" && answered !== null) {
       queryClient.setQueryData(pressedPlan, answered);
-    } else {
+    } else if (landing === "read") {
       void queryClient.invalidateQueries({ exact: true, queryKey: pressedPlan });
     }
     void queryClient.invalidateQueries({ queryKey: goingWaitingPlansQuery().queryKey });

@@ -38,7 +38,18 @@ test("a key gives its hit, and the fake models record no call", async ({ browser
     await openBarOver(page, "/projects/CORE/issues");
     await searchBox(page).fill(key);
     await expect(hitOf(page, key)).toBeVisible();
-    await expect(lineOnTop(page)).toHaveCount(0);
+    // The key's hit ranks above the line on top and holds the highlight, so Enter opens it, and
+    // the line reads Ask, which no model decided (design v3, state 1: "A key or an exact title
+    // ranks above the line on top, so Enter opens it (R2)").
+    const rows = bar(page).getByRole("option");
+    await expect(rows.nth(0)).toHaveId(`search-option-issue-${key}`);
+    await expect(rows.nth(1)).toHaveId("search-option-line");
+    await expect(searchBox(page)).toHaveAttribute(
+      "aria-activedescendant",
+      `search-option-issue-${key}`
+    );
+    await expect(lineOnTop(page)).toHaveAttribute("data-line", "ask");
+    await expect(bar(page).getByTestId("search-line-deciding")).toHaveCount(0);
     // Well past the pause the short answer would be asked on.
     await page.waitForTimeout(1500);
     expect((await chatCalls()).calls).toBe(0);

@@ -789,3 +789,110 @@ test("a run whose plan ran offers Undo once it ends, its plan read again", async
     restore();
   }
 });
+
+// A row whose item another person changed after the plan showed waits again (design v3, state 6):
+// the approval runs the other rows, and the turn that ran them ends waiting. No plan frame says a
+// row ran, so the plan is read again at that end, and the card draws the changed row to be ticked
+// again rather than the approved plan it read before the rows ran.
+test("a turn that ran the approved rows and waits again reads its plan again, and the changed row waits to be ticked again", async () => {
+  const approved: GoingPlanAnswer = {
+    ...plan,
+    rows: (plan.rows ?? []).map((planned) =>
+      planned.row === 1
+        ? { ...planned, changed: true, now: { parent: "CORE-5" } }
+        : { ...planned, state: "approved" }
+    ),
+    state: "approved",
+  };
+  const waitsAgain: GoingPlanAnswer = {
+    ...approved,
+    rows: (approved.rows ?? []).map((planned) =>
+      planned.row === 1 ? planned : { ...planned, state: "done" }
+    ),
+    state: "waiting",
+  };
+  let reads = 0;
+  const { restore, send } = await openPlan("over", async () => {
+    reads += 1;
+    return reads === 1 ? plan : reads === 2 ? approved : waitsAgain;
+  });
+  try {
+    renderWithQueries(<Conversation />);
+    await screen.findByTestId("going-plan-card-rows");
+
+    // Approved: the run takes its plan up again, runs the approved rows, and its turn ends
+    // waiting on the row whose item changed.
+    send("plan", { plan: 1, state: "approved" });
+    await waitFor(() => expect(reads).toBe(2));
+    send("tool", { kind: "write", step: 3, tool: "dispatch_issue" });
+    send("end", { offers: [], reason: "", state: "waiting" });
+
+    const changed = await screen.findByTestId("going-plan-changed");
+    expect(reads).toBe(3);
+    const changedRow = changed.closest<HTMLElement>('[data-testid="going-plan-row"]');
+    expect(changedRow).toHaveAttribute("data-row", "1");
+    expect(changedRow).toHaveAttribute("data-state", "waiting");
+    // Its tick starts off: the person ticks it again to approve the value it shows now.
+    expect(within(changedRow as HTMLElement).getByRole("checkbox")).not.toBeChecked();
+    expect(screen.getByTestId("going-run")).toHaveAttribute("data-state", "waiting");
+  } finally {
+    restore();
+  }
+});
+
+// An answer to the plan never takes the place of a newer read of it: the approval's answer is the
+// plan as Dispatch took the approval, and the read at the end of the turn that ran its rows is
+// newer. Nothing orders two reads of one plan, so that read stays and the plan is read again.
+test("an approval's answer that lands after a newer read of the plan keeps that read, and reads the plan again", async () => {
+  const user = userEvent.setup();
+  const approved: GoingPlanAnswer = {
+    ...plan,
+    rows: (plan.rows ?? []).map((planned) =>
+      planned.row === 1
+        ? { ...planned, changed: true, now: { parent: "CORE-5" } }
+        : { ...planned, state: "approved" }
+    ),
+    state: "approved",
+    version: "a77e10",
+  };
+  const waitsAgain: GoingPlanAnswer = {
+    ...approved,
+    rows: (approved.rows ?? []).map((planned) =>
+      planned.row === 1 ? planned : { ...planned, state: "done" }
+    ),
+    state: "waiting",
+    version: "3a9c2f",
+  };
+  let reads = 0;
+  const { restore, send } = await openPlan("over", async () => {
+    reads += 1;
+    return reads === 1 ? plan : reads === 2 ? approved : waitsAgain;
+  });
+  const answer = Promise.withResolvers<GoingPlanAnswer>();
+  const approve = answerRoute<
+    (run: string, body: unknown, bounds: WriteBounds) => Promise<GoingPlanAnswer>
+  >("POST", "/api/v1/going/runs/*/plan/approve");
+  approve.mockImplementation(() => answer.promise);
+  try {
+    renderWithQueries(<Conversation />);
+    await screen.findByTestId("going-plan-card-rows");
+    await user.click(screen.getByTestId("going-plan-approve"));
+    await waitFor(() => expect(approve).toHaveBeenCalledTimes(1));
+
+    // While the answer is out, the run takes its plan up, runs the approved rows and waits again
+    // on the changed row, which the plan read at that end shows.
+    send("plan", { plan: 1, state: "approved" });
+    await waitFor(() => expect(reads).toBe(2));
+    send("tool", { kind: "write", step: 3, tool: "dispatch_issue" });
+    send("end", { offers: [], reason: "", state: "waiting" });
+    await screen.findByTestId("going-plan-changed");
+
+    // The answer lands last: the read after the rows ran stays, and the plan is read again.
+    answer.resolve(approved);
+    await waitFor(() => expect(reads).toBe(4));
+    expect(screen.getByTestId("going-plan-changed")).toBeInTheDocument();
+    expect(screen.getByTestId("going-plan")).toHaveAttribute("data-state", "waiting");
+  } finally {
+    restore();
+  }
+});

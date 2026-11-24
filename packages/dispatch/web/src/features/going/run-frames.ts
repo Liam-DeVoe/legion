@@ -81,8 +81,10 @@ export interface RunFrames {
   readonly lastEnded: number | undefined;
   /** The plan's number and state as the last plan frame said them. */
   readonly plan: { readonly number: number; readonly state: string } | undefined;
-  /** How many frames told the bar to read the plan again: each plan frame, and the end of a run
-   *  that made a plan, whose rows have run by then (no plan frame says a row ran). */
+  /** How many frames told the bar to read the plan again: each plan frame, the end of a run that
+   *  made a plan, whose rows have run by then, and the end of a turn that ran the rows of its
+   *  approved plan and waits again, for a row whose item changed after the approval (no plan
+   *  frame says a row ran). */
   readonly planReads: number;
   readonly end: RunEnd | undefined;
 }
@@ -339,7 +341,14 @@ export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFr
       // A run whose end comes is no longer running anything: a call no tool frame ended was cut,
       // and draws no line.
       const steps = run.steps.filter((step) => !step.running);
-      const reread = run.plan !== undefined && runEnded(state) && !runEnded(run.state);
+      // No plan frame says a row ran, so the plan is read again once the run's rows have run: at
+      // the run's end, and where a turn that worked ends waiting again - its approved rows ran,
+      // and a row whose item changed after the approval waits to be ticked again (design v3,
+      // state 6). The end of the turn that proposed the plan waits on the plan its plan frame
+      // read, and reads nothing more.
+      const reread =
+        run.plan !== undefined &&
+        (runEnded(state) ? !runEnded(run.state) : state === "waiting" && run.state === "working");
       return {
         ...run,
         end,
