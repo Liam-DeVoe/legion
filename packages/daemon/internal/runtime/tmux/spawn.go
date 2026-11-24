@@ -767,9 +767,10 @@ func (r *Runtime) mintGitHubCredential(ctx context.Context, spec runtime.SpawnSp
 // bundle's default owner, the directory GH_CONFIG_DIR names: "" when the runtime mints no
 // credential or the controller's gh acts as nobody. The pane's role is judged again here, under
 // the launch lock every write of a pane's gh files is made under (writePaneCredential), and where
-// it is no longer the role the mint judged, an owner's step having started or ended in the mint,
-// the bundle is minted again for the role judged now: so the App the pane's files hold is decided
-// with the write, and a step's write of the slot made in the mint is never undone by this one.
+// it is no longer the role the mint judged, an owner's step, retro or merge forward having started
+// or ended in the mint, the bundle is minted again for the role judged now: so the App the pane's
+// files hold is decided with the write, and an act's write of the slot made in the mint is never
+// undone by this one.
 func (r *Runtime) writeGitHubCredential(ctx context.Context, spec runtime.SpawnSpec, credential launchGitHubCredential) (string, error) {
 	switch {
 	case credential.root == "":
@@ -801,7 +802,8 @@ func (r *Runtime) writeGitHubCredential(ctx context.Context, spec runtime.SpawnS
 		return "", fmt.Errorf("spawn %s: write the github credential: %w", spec.Claim, err)
 	}
 	// The line names the role whose App the pane holds, the step's while the architect does a step
-	// of its own, and the claim's own role beside it, so the App it names reads as that role's.
+	// of its own or the retro of one, and the implementer's while a merge forward asked of it has
+	// not ended, and the claim's own role beside it, so the App it names reads as that role's.
 	written := bundle.Dirs[bundle.Default]
 	r.log.Info("tmux runtime: github credential written", "claim", spec.Claim, "role", role, "claimRole", spec.Role, "app", written.App,
 		"expiresAt", written.ExpiresAt, "dirs", bundle.DirNames())

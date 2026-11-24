@@ -60,7 +60,7 @@ const ownersRetroRole = claim.RoleImplementer
 // It is the one statement of who works a place of a task: the workflow's walk (Walk.PlaceRole,
 // AgentAt, OwnerAt and RoleAt), the route complete_step, the sentences of OWNER_STEP_NOT_RUNNING and
 // SIGNOFF_NOT_THE_OWNERS, and the place of a role's phases row (PhaseRowAt) all read it, and the
-// store states it again in SQL (storetext.PlaceRoleColumn), which a test holds to this one.
+// store states it again in SQL (plansql.PlaceRole), which a test holds to this one.
 func PlaceWorker(task string, place TaskPlace, steps []PlanStep) (Worker, bool) {
 	agentOf := func(position int) plan.Agent {
 		step := steps[position-1]

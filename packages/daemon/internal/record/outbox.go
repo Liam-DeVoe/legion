@@ -1126,17 +1126,18 @@ func NoticePerClaim(kind NoticeKind) bool {
 // an idle release's stop does, and is its own op because it is bound to its pause (Pause below)
 // and does nothing once that pause has ended; "slot_credential" writes the slot of the owner of
 // the issue's task back to the App of the owner's own role, which the end of each act the owner
-// did as another role queues: a step whose start named an architect, the owner's retro of its own
-// implementation step, and a merge forward asked of the owner (workflow's ownerSlotCredential and
-// mergeForwardWriteBack). It stops nothing: it
-// writes only where the slot holds that App as the record stands when the row runs
-// (runtime.SlotRole), and nothing where the owner's next act of another App, a step, its retro of
-// its own implementation step or a merge forward asked of it, runs already, whose own row writes
-// the slot for that App (the daemon's slotCredential). The runtime judges the App again as it
-// writes, in the one order of the slot's writes (runtime.SlotCredentials), so a step begun since
-// the row read the record gets its own App. A daemon of a release before it refuses the op, and
-// its way back deletes the rows that wait (docs/kubernetes.md, "Rolling back below the release
-// whose owner does a step").
+// did as a role of another App than its own queues: a step whose start named an architect and
+// whose role acts as an App other than the owner's own (workflow's actsAsOwnApp: on its walk, the
+// end of a step of the owner's own App, its tester or reviewer step among them, queues none), the
+// owner's retro of its own implementation step, and a merge forward asked of the owner (workflow's
+// ownerSlotCredential and mergeForwardWriteBack). It stops nothing: it writes only where the slot
+// holds that App as the record stands when the row runs (runtime.SlotRole), and nothing where the
+// owner's next act of another App, a step, its retro of its own implementation step or a merge
+// forward asked of it, runs already, whose own row writes the slot for that App (the daemon's
+// slotCredential). The runtime judges the App again as it writes, in the one order of the slot's
+// writes (runtime.SlotCredentials), so a step begun since the row read the record gets its own
+// App. A daemon of a release before it refuses the op, and its way back deletes the rows that wait
+// (docs/kubernetes.md, "Rolling back below the release whose owner does a step").
 // There is no plain stop: only a close ends a claim from the workflow, so the op states which.
 type SuperviseOp string
 
@@ -1875,8 +1876,9 @@ const (
 	// MergeForwardAsk asks the agent of the task's step that does its implementation work to merge
 	// the base forward onto the head and push.
 	MergeForwardAsk MergeForwardStep = "ask"
-	// MergeForwardHold tells the worker of the phase the issue stays in, when that is the
-	// tester, the reviewer or the merger, to stop writing the workspace while the merge runs.
+	// MergeForwardHold tells the worker of the step the issue stands at, when that is the tester,
+	// the reviewer, the agent of an acceptance step, the merger or a role the deployment or the
+	// plan defines (MergeForwardReaches), to stop writing the workspace while the merge runs.
 	MergeForwardHold MergeForwardStep = "hold"
 	// MergeForwardLanded tells that same worker that the merge landed, and which head it left.
 	MergeForwardLanded MergeForwardStep = "landed"
@@ -1900,10 +1902,12 @@ var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
 // MergeForwardReaches says whether step of a merge forward goes to role (mergeForwardRoles): the
 // one list the workflow addresses the hold and the landed by (workflow's mergeForward and
 // mergeForwardLanded) and a row is validated against (validateOutboxPayload). The ask, the hold
-// and the landed also go to a role the deployment or the plan defines: the ask to the agent of a
-// step of the type implementation whose role has another name than implementer (workflow's
-// implementationAgent), which a role's name alone does not tell, and the hold and the landed to
-// the worker of a step that runs as step, which reads the head as the tester and the reviewer do.
+// and the landed also go to every role that is none of Legion's six (claim.IsBuiltin): the ask to
+// the agent of a step of the type implementation whose role has another name than implementer
+// (workflow's implementationAgent), which a role's name alone does not tell, and the hold and the
+// landed to the worker of a step that runs as step and to the agent of an acceptance step
+// (claim.RoleAcceptance: a fresh agent of acceptance, or the owner at `acceptance:owner`), each of
+// which reads the head as the tester and the reviewer do.
 func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 	if (step == MergeForwardAsk || step == MergeForwardHold || step == MergeForwardLanded) && claim.IsRole(role) && !claim.IsBuiltin(role) {
 		return true

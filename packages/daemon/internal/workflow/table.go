@@ -94,10 +94,10 @@ var Table = TableOf(phase.Order)
 // fresh agent of acceptance (a step of the type review, whose verdict ends it, so its fail is a
 // request for changes too) and the fail of a step that runs as step, to implementing. A phase the
 // line does not hold carries none of them, and a phase the line holds at two places carries them
-// at each. The retro's two moves on are no step's: TableOf appends them after these rows
-// (retroRows). The return out of accepting is never taken on a line no plan picked: its accepting
-// is the architect's, whose completion moves nothing (ACCEPTANCE_IS_SIGN_OFF), and no review
-// settles a round outside reviewing (reviewRound).
+// at each. The retro's two moves on are no step's: TableOf appends them after these rows. The
+// return out of accepting is never taken on a line no plan picked: its accepting is the
+// architect's, whose completion moves nothing (ACCEPTANCE_IS_SIGN_OFF), and no review settles a
+// round outside reviewing (reviewRound).
 var stepRows = []struct {
 	from    phase.Phase
 	trigger TriggerKind
@@ -174,10 +174,11 @@ var doneEffects = []EffectKind{EffectSuspend, EffectNotice, EffectLinger}
 
 // StoredTableOf is the table of a stored walk's line (Walk.table): TableOf(line), every row with
 // its places, then, for each step of the line whose phase has a return (stepRows: the tester's
-// fail, a review's request for changes, the fail of a step that runs as step), one row of that
-// return to each step before it that TableOf's return to implementing does not reach, in the
-// order of the line. So the work of a failed step goes back to whichever earlier step its report
-// or its plan names (returnTarget, returnStep), the step before an implementer included.
+// fail, a review's request for changes, the fail of the fresh agent of acceptance, and the fail of
+// a step that runs as step), one row of that return to each step before it that TableOf's return
+// to implementing does not reach, in the order of the line. So the work of a failed step goes back
+// to whichever earlier step its report or its plan names (returnTarget, returnStep), the step
+// before an implementer included.
 func StoredTableOf(line []phase.Phase) []Row {
 	table := TableOf(line)
 	type move struct {

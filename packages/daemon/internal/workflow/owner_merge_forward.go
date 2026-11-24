@@ -14,28 +14,31 @@ import (
 // over the issue and its pull request as the record holds them, and each write of either record
 // asks it of the record before the write and after it (ownersMergeForwardWritten):
 //   - a write that ends the ask queues the write of the owner's slot back to its own App, as the end
-//     of each step the owner does as another role does (ownerSlotCredential). That write is made
-//     where the record then answers the owner's own App, and an act of another App that runs by
-//     then keeps its App (internal/daemon's slotCredential), so no path leaves the slot on the
-//     implement App once no act holds it there;
+//     of each step the owner does as a role of another App does (ownerSlotCredential). That write
+//     is made where the record then answers the owner's own App, and an act of another App that
+//     runs by then keeps its App (internal/daemon's slotCredential), so no path leaves the slot on
+//     the implement App once no act holds it there;
 //   - a write that opens the ask again asks the owner again (askOwnerAgain), since that ask's
 //     delivery is what writes the slot for the implement App before it tells the owner.
 //
-// The writes are the pull request's (putPullRequest: the landing, the clear of the ask on a move
-// into the implementation step or a leave, the close or the merge of the pull request), the
-// issue's (writeIssueOn: a hold, a stopped task's among them, its release, and the issue's leave of
-// the workflow) and a new generation's (clearGeneration: a child set back to todo, an adoption into
-// a tree), which drops the ask with the run. The one other writer that ends an ask, the daemon's
-// rename pass deleting a pull request record whose name another issue's holds, writes no issue
-// whose pod may still be live (internal/daemon's renamePass keep), so no slot of the owner's runs
-// then, and the owner's next launch writes the App the record gives it.
+// The writes are the pull request's (putPullRequest: a newer ask, the landing, the clear of the
+// ask on a move into the implementation step or a leave, the close or the merge of the pull
+// request), the issue's (writeIssueOn: a hold, a stopped task's among them, its release, and the
+// issue's leave of the workflow) and a new generation's (clearGeneration: a child set back to
+// todo, an adoption into a tree), which drops the ask with the run. The one other writer that ends
+// an ask, the daemon's rename pass deleting a pull request record whose name another issue's
+// holds, writes no issue whose pod may still be live (internal/daemon's renamePass keep), so no
+// slot of the owner's runs then, and the owner's next launch writes the App the record gives it.
 //
-// A newer ask that replaces the one the record holds (mergeForward) is no end: the head moved, or
-// the move out of the implementation step asks again, and it is asked of the same agent's claim, so
-// the slot stays on the implement App until the new ask ends. A tree whose root lingers has every
-// role suspended (record.TreeLingers), and the daemon's ActsAs answers the owner's own App there,
-// which the owner's next launch writes; no fact of the linger is a write of the slot, and the
-// predicate reads no linger.
+// A newer ask that replaces the one the record holds (mergeForward: the head moved, or the move
+// out of the implementation step asks again) is a write of the pull request as any other is. Where
+// it is asked of the owner too, the predicate stays true, and the slot stays on the implement App
+// until the new ask ends. Where it reaches another claim, the agent of another step of the type
+// implementation, the predicate turns false: the write ends the owner's ask, and the owner's slot
+// is written back to its own App. A tree whose root lingers has every role suspended
+// (record.TreeLingers), and the daemon's ActsAs answers the owner's own App there, which the
+// owner's next launch writes; no fact of the linger is a write of the slot, and the predicate
+// reads no linger.
 
 // ownersMergeForwardWritten acts on what a write of issue's records does to a merge forward asked
 // of its owner, asking the one predicate (record.OwnersMergeForward) of the records before the
