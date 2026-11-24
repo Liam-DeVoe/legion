@@ -530,7 +530,7 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	body, held, err := s.answerIssueChecks(r.Context(), issueKey, at, s.readDisplayTrees(r.Context(), wantsDisplayTrees(r)))
+	body, held, err := s.answerIssueChecks(r.Context(), issueKey, at, s.readDisplayTrees(r.Context(), wantsDisplayTrees(r)), everyCheckWhen)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

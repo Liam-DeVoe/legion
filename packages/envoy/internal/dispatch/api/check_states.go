@@ -30,11 +30,12 @@ import (
 //
 // The settler (checkStatesSettler) is woken on that channel in every process. A settle of one
 // issue runs under the issue's own lease, so one settle at a time computes its states: it reads
-// the marks that are due, computes the states with the computation GET
-// /api/v1/issues/{key}/results answers (answerIssueChecks), compares each with the state it
-// published last (check_states), and in one transaction appends one event for each difference,
-// stores what it published and deletes the marks it read. Changes that land between two computes
-// count as one change, and the event names the state Dispatch computed then.
+// the marks that are due, computes the states of the issue's `before_merge` checks alone with the
+// computation GET /api/v1/issues/{key}/results answers (answerIssueChecks), so it asks GitHub
+// nothing about a check it publishes no state of, compares each with the state it published last
+// (check_states), and in one transaction appends one event for each difference, stores what it
+// published and deletes the marks it read. Changes that land between two computes count as one
+// change, and the event names the state Dispatch computed then.
 //
 // A test handoff waits for the states its results caused before it is recorded: that fence,
 // which the handoff route runs and the settler does not, is check_states_fence.go's.
@@ -229,7 +230,7 @@ func (c *checkStatesSettler) settleRound(ctx context.Context, issue string) (mor
 		if err != nil {
 			return false, err
 		}
-		answer, held, err := c.server.answerIssueChecks(ctx, issue, noCommitNamed, nil)
+		answer, held, err := c.server.answerIssueChecks(ctx, issue, noCommitNamed, nil, docs.CheckWhenBeforeMerge)
 		if err != nil {
 			return false, fmt.Errorf("compute the checks of %s: %w", issue, err)
 		}

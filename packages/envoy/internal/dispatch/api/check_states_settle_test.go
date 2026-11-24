@@ -1,8 +1,9 @@
 // check_states_settle_test.go holds how a settle starts and runs (check_states.go): the trigger of
 // each table a state reads marks the issue owed, whoever wrote the row; the writer's commit wakes
 // the loop and the background pass settles a mark no wake started; two writers and two settlers
-// end with the state Dispatch computes; the lease pool counts the loop; and a held hook ends with
-// its test. The rig is check_states_test.go's.
+// end with the state Dispatch computes; a settle asks GitHub nothing about a check it publishes no
+// state of; the lease pool counts the loop; and a held hook ends with its test. The rig is
+// check_states_test.go's.
 package api
 
 import (
@@ -228,6 +229,44 @@ func TestAWriteOfTheReleaseBeforeIsPublished(t *testing.T) {
 		return err
 	}, "k1", eachHeadH1)
 	wantEvents(t, "a result row of the release before", settleOwed(t, rig), stateWant{"k1", eachHeadH1, "no", "fail"})
+}
+
+// TestASettleAsksNoBranchAboutACheckItPublishesNoStateOf: ACME-1's Verification document holds k1,
+// a `before_merge` check, beside k8, a `default_branch` check, and k9, an `after_merge` check, and
+// #70 is open at H1. The tester records a pass of k1 at H1, and a pass of k8 and of k9 at H2, a
+// commit no branch of the stand-in for GitHub carries. The settles publish k1's state at H1 and ask
+// GitHub nothing about H2 and the default branch, and store no answer of where H2 stands: the
+// settler publishes the states of `before_merge` checks alone, and a "not on the branch" it stored
+// would decide what the results route answers once the repository cannot be read. The results route
+// then compares k8 and k9 as it always did, one compare read of main...H2 whose answer it stores,
+// so this count sees a compare read wherever one is made.
+func TestASettleAsksNoBranchAboutACheckItPublishesNoStateOf(t *testing.T) {
+	rig := newCheckStatesRig(t, checkStatesBlock("k1", ciCheckOrdinary, "The server records a result against a check.")+"\n"+
+		checkStatesBlock("k8", `when="default_branch" `+ciCheckOrdinary, "Production answers on the trunk.")+"\n"+
+		checkStatesBlock("k9", `when="after_merge" `+ciCheckOrdinary, "Production answers at the merged commit."))
+	writeHead(t, rig.database, ciJobRepository, 70, eachHeadH1, "open", rig.issue)
+	eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadH1)
+	eachHeadResult(t, rig.handler, rig.issue, "k8", "tester", "pass", eachHeadH2)
+	eachHeadResult(t, rig.handler, rig.issue, "k9", "tester", "pass", eachHeadH2)
+	stored := func() int {
+		t.Helper()
+		var count int
+		if err := rig.database.Pool.QueryRow(context.Background(),
+			`select count(*) from branch_commits where sha = $1`, eachHeadH2).Scan(&count); err != nil {
+			t.Fatalf("count the stored branch answers of H2: %v", err)
+		}
+		return count
+	}
+
+	wantEvents(t, "the settles of the three results", settleOwed(t, rig), stateWant{"k1", eachHeadH1, "yes", ""})
+	if reads, answers := rig.github.compareReadsOf("main", eachHeadH2), stored(); reads != 0 || answers != 0 {
+		t.Fatalf("the settles read the comparison main...H2 %d times and stored %d answers of where H2 stands, want none: they publish no state of k8 or k9", reads, answers)
+	}
+
+	readResults(t, rig.handler, rig.issue)
+	if reads, answers := rig.github.compareReadsOf("main", eachHeadH2), stored(); reads != 1 || answers != 1 {
+		t.Fatalf("the results route read the comparison main...H2 %d times and stored %d answers of where H2 stands, want one of each", reads, answers)
+	}
 }
 
 // TestEveryTableAStateReadsHasItsTrigger is the inventory of the writes that mark an issue owed:

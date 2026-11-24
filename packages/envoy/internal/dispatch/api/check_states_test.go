@@ -27,6 +27,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -323,11 +324,12 @@ func publishedRow(t *testing.T, database *store.Store, issue, repo, head, check 
 	return row, true
 }
 
-// computedSubject is the state a fresh computation gives check at head of the rig's issue: its
-// subject there in answerIssueChecks's answer.
+// computedSubject is the state a fresh computation of the settler's gives check at head of the
+// rig's issue: its subject there in answerIssueChecks's answer for the issue's `before_merge`
+// checks.
 func computedSubject(t *testing.T, rig *checkStatesRig, check, head string) model.PassStandsSubject {
 	t.Helper()
-	answer, _, err := rig.served.answerIssueChecks(store.WithTransactionTracking(t.Context()), rig.issue, noCommitNamed, nil)
+	answer, _, err := rig.served.answerIssueChecks(store.WithTransactionTracking(t.Context()), rig.issue, noCommitNamed, nil, docs.CheckWhenBeforeMerge)
 	if err != nil {
 		t.Fatalf("compute the checks of %s: %v", rig.issue, err)
 	}

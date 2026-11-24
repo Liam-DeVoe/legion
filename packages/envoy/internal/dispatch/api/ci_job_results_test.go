@@ -68,6 +68,9 @@ type ciJobGitHub struct {
 	branches map[string]ciJobBranchHead
 	// branchReads is how many times GitHub was asked for each branch's head.
 	branchReads map[string]int
+	// compareReads is how many times GitHub was asked for each comparison of two commits or
+	// branches, by "<base>...<head>"; every comparison answers diverged.
+	compareReads map[string]int
 	// hidden has GitHub answer 404 for the repository itself, as it does for a repository the
 	// App cannot see.
 	hidden bool
@@ -110,6 +113,13 @@ func (g *ciJobGitHub) hideRepository() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.hidden = true
+}
+
+// compareReadsOf is how many times GitHub was asked for the comparison of base and head.
+func (g *ciJobGitHub) compareReadsOf(base, head string) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.compareReads[base+"..."+head]
 }
 
 // branchReadsOf is how many times GitHub was asked for the head of branch.
@@ -178,7 +188,10 @@ func (g *ciJobGitHub) serve(t *testing.T) string {
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/pulls", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `[]`)
 	})
-	mux.HandleFunc("GET /repos/{owner}/{repo}/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /repos/{owner}/{repo}/compare/{basehead}", func(w http.ResponseWriter, r *http.Request) {
+		g.mu.Lock()
+		g.compareReads[r.PathValue("basehead")]++
+		g.mu.Unlock()
 		fmt.Fprint(w, `{"status":"diverged"}`)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/check-runs", g.listings.serve)
@@ -213,10 +226,11 @@ type ciJobRig struct {
 func newCIJobRig(t *testing.T) *ciJobRig {
 	t.Helper()
 	github := &ciJobGitHub{
-		checkRuns:   map[int64]specCheckRunAnswer{ciJobCheckRun: {name: ciJobName, headSHA: ciJobCommit}},
-		listings:    newCheckRunsFake(),
-		branches:    map[string]ciJobBranchHead{},
-		branchReads: map[string]int{},
+		checkRuns:    map[int64]specCheckRunAnswer{ciJobCheckRun: {name: ciJobName, headSHA: ciJobCommit}},
+		listings:     newCheckRunsFake(),
+		branches:     map[string]ciJobBranchHead{},
+		branchReads:  map[string]int{},
+		compareReads: map[string]int{},
 	}
 	_, pemText := githubapptest.Key(t)
 	rig := &ciJobRig{
