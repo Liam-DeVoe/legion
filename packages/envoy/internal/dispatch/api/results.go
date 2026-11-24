@@ -246,10 +246,11 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	}
 	// The check may be on an issue of another project, which a parent of another project puts
 	// above the recording issue, and the result is appended to that issue. The pre-handler
-	// check read only the path's issue, so a credential scoped to one project is refused such a
-	// check here, before anything is written.
+	// check read only the path's issue, so a credential scoped to one project is asked about
+	// such a check here, before anything is written: it records on the check of every project
+	// access.CredentialCovers covers.
 	callerProject, _ := s.callerProject(r)
-	if err := refuseCheckOutsideCallerProject(r.Context(), pool, callerProject, check.IssueKey); err != nil {
+	if err := refuseUncoveredCheck(r.Context(), pool, callerProject, check.IssueKey); err != nil {
 		return refused(err)
 	}
 	// A check CI proves takes no result from a role, refused here, before refuseUnknownCommit,

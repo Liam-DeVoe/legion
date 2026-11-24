@@ -774,16 +774,15 @@ func TestAParentWriteTakesTheParentsProjectLock(t *testing.T) {
 }
 
 // TestAProjectScopedCallerIsRefusedAParentOfAnotherProject: a credential that may write one
-// project is refused a parent outside it, as it is refused such a blocked_by target, though the
-// issue it writes is of its own project: 403 PROJECT_SCOPE naming the parent and its project,
-// with nothing written. An unforced create that the near-copy gate would refuse is refused for
-// its parent or blocker first, so the gate writes no near_copy_checks row for a create the
-// credential may not make, and a PATCH that also closes the issue is refused before the close
-// settles its documents, so it writes no version. A parent of its own project is the control,
-// and so is the same near copy under its own project's parent, which the gate refuses. The
-// credential is refused a check of another project's issue too, which the results route reaches
-// through a parent of another project, on the record and on the retraction.
+// project is refused a parent outside it, though the issue it writes is of its own project: 403
+// PROJECT_SCOPE naming the parent and its project, with nothing written. An unforced create that
+// the near-copy gate would refuse is refused for its parent first, so the gate writes no
+// near_copy_checks row for a create the credential may not make, and a PATCH that also closes the
+// issue is refused before the close settles its documents, so it writes no version. A parent of
+// its own project is the control, and so is the same near copy under its own project's parent,
+// which the gate refuses.
 func TestAProjectScopedCallerIsRefusedAParentOfAnotherProject(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{duplicateBound: nearCopyVerdictBound(t), settle: time.Hour})
 	caller := newBrokerCaller(t)
 	for _, project := range []string{"ALPHA", "BETA"} {
@@ -812,7 +811,6 @@ func TestAProjectScopedCallerIsRefusedAParentOfAnotherProject(t *testing.T) {
 		}
 		return count
 	}
-
 	nearCopyChecks := func() int {
 		t.Helper()
 		var count int
@@ -831,16 +829,10 @@ func TestAProjectScopedCallerIsRefusedAParentOfAnotherProject(t *testing.T) {
 		"project": "BETA", "title": "Filed under another project's issue", "spec": "# Spec", "parent": approved, "force": true,
 	}))
 	expectRefusal(t, "a scoped create under a parent of another project", refused, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
-	for _, field := range []string{"parent", "blocked_by"} {
-		var target any = approved
-		if field == "blocked_by" {
-			target = []string{approved}
-		}
-		nearCopy := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
-			"project": "BETA", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe, field: target,
-		}))
-		expectRefusal(t, "an unforced scoped near copy with a "+field+" of another project", nearCopy, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
-	}
+	nearCopy := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": "BETA", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe, "parent": approved,
+	}))
+	expectRefusal(t, "an unforced scoped near copy under a parent of another project", nearCopy, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
 	if after := betaIssues(); after != before {
 		t.Fatalf("the refused creates took BETA from %d issues to %d, want none written", before, after)
 	}
@@ -881,22 +873,16 @@ func TestAProjectScopedCallerIsRefusedAParentOfAnotherProject(t *testing.T) {
 		return versions, asks
 	}
 	versionsBefore, asksBefore := settled()
-	for _, field := range []string{"parent", "blocked_by"} {
-		var target any = approved
-		if field == "blocked_by" {
-			target = []string{approved}
-		}
-		closing := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+closer.Key, token, map[string]any{
-			field: target, "status": "done",
-		}))
-		expectRefusal(t, "a scoped close with a "+field+" of another project", closing, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
-	}
+	closing := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+closer.Key, token, map[string]any{
+		"parent": approved, "status": "done",
+	}))
+	expectRefusal(t, "a scoped close under a parent of another project", closing, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
 	if versions, asks := settled(); versions != versionsBefore || asks != asksBefore {
-		t.Fatalf("the refused closes took %s from %d spec versions and %d asks to %d and %d, want no settlement",
+		t.Fatalf("the refused close took %s from %d spec versions and %d asks to %d and %d, want no settlement",
 			closer.Key, versionsBefore, asksBefore, versions, asks)
 	}
 	if status := decodeBody[model.Issue](t, rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+closer.Key, nil)).Status; status == "done" {
-		t.Fatalf("the refused closes left %s done", closer.Key)
+		t.Fatalf("the refused close left %s done", closer.Key)
 	}
 	// The control: the same close under a parent of the credential's own project is taken, and
 	// the settlement it runs first opens the decision block's ask, which the close withdraws.
@@ -920,18 +906,97 @@ func TestAProjectScopedCallerIsRefusedAParentOfAnotherProject(t *testing.T) {
 	if parent := decodeBody[model.Issue](t, allowed).Parent; parent == nil || *parent != sibling {
 		t.Fatalf("%s's parent = %v, want %s", own, parent, sibling)
 	}
+}
+
+// TestAProjectScopedCallerLinksAndRecordsOnAnotherProject: a credential that names one project
+// links an issue to another project's issue and records on another project's check, as a
+// credential that names no project does (INFRA-4799). A blocked_by target of another project
+// reaches the near-copy gate, which refuses an unforced copy and records the refusal, and a close
+// that names one settles the issue's documents and closes it. The results routes reach a check of
+// another project's issue through a parent of another project (resolveCheck), and a result and
+// its retraction land on that issue's check.
+func TestAProjectScopedCallerLinksAndRecordsOnAnotherProject(t *testing.T) {
+	t.Parallel()
+	rig := newBrokerTokenRigOn(t, testServerOptions{duplicateBound: nearCopyVerdictBound(t), settle: time.Hour})
+	caller := newBrokerCaller(t)
+	for _, project := range []string{"ALPHA", "BETA"} {
+		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", project, created.Code, created.Body.String())
+		}
+	}
+	createIssue := func(project, title string) string {
+		t.Helper()
+		return createdIssue(t, "create "+title, rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": project, "title": title, "spec": "# Spec", "force": true,
+		})).Key
+	}
+	approved := createIssue("ALPHA", "Another project's approved issue")
+	const token = "a-token-scoped-to-beta"
+	answer := liveNamedToken(caller.jkt)
+	answer.Projects = []string{"BETA"}
+	rig.broker.Says(token, answer)
+	nearCopyChecks := func() int {
+		t.Helper()
+		var count int
+		if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from near_copy_checks`).Scan(&count); err != nil {
+			t.Fatalf("count the near-copy checks: %v", err)
+		}
+		return count
+	}
+
+	linked := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": "BETA", "title": "Waits on another project's issue", "spec": "# Spec", "blocked_by": []string{approved}, "force": true,
+	}))
+	if blocked := createdIssue(t, "a scoped create blocked by another project's issue", linked).BlockedBy; !slices.Equal(blocked, []string{approved}) {
+		t.Fatalf("the scoped create's blocked_by = %v, want [%s]", blocked, approved)
+	}
+	// An unforced copy of an open BETA issue that names a blocked_by target of another project
+	// reaches the near-copy gate, which refuses it and records the refusal.
+	createdIssue(t, "the issue a near copy copies", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "BETA", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe,
+	}))
+	checksBefore := nearCopyChecks()
+	nearCopy := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": "BETA", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe, "blocked_by": []string{approved},
+	}))
+	requireDuplicateRefusal(t, nearCopy)
+	if after := nearCopyChecks(); after != checksBefore+1 {
+		t.Fatalf("the gate's refusal took near_copy_checks from %d rows to %d, want one more", checksBefore, after)
+	}
+	// A close that names a blocked_by target of another project settles the issue's documents
+	// first, which opens the spec's decision block's ask, and closes the issue.
+	closer := createdIssue(t, "create the issue a scoped caller closes", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "BETA", "title": "An issue a scoped caller closes", "spec": closeDecision, "force": true,
+	}))
+	asks := func() int {
+		t.Helper()
+		var count int
+		if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from asks where issue_key = $1`, closer.Key).Scan(&count); err != nil {
+			t.Fatalf("count %s's asks: %v", closer.Key, err)
+		}
+		return count
+	}
+	asksBefore := asks()
+	closed := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+closer.Key, token, map[string]any{
+		"blocked_by": []string{approved}, "status": "done",
+	}))
+	if closed.Code != http.StatusOK {
+		t.Fatalf("a scoped close blocked by another project's issue: status=%d body=%s, want 200", closed.Code, closed.Body.String())
+	}
+	if issue := decodeBody[model.Issue](t, closed); issue.Status != "done" || !slices.Equal(issue.BlockedBy, []string{approved}) {
+		t.Fatalf("the close left %s %s blocked by %v, want done blocked by [%s]", closer.Key, issue.Status, issue.BlockedBy, approved)
+	}
+	if after := asks(); after != asksBefore+1 {
+		t.Fatalf("the close left %s with %d asks, want the %d its settlement opens", closer.Key, after, asksBefore+1)
+	}
 
 	// A check of another project's issue. Once a person puts a BETA issue under ALPHA's, the
 	// results route finds a check among the Verification documents of the issue and every issue
 	// above it, across projects, and a result or its retraction is appended to the check's issue.
-	// A credential scoped to BETA is refused a check of ALPHA's on both, with nothing written; it
-	// still records on its own project's check, which is the control.
 	uploadDocument(t, rig.handler, "/api/v1/issues/"+approved, "verification.md", twoChecks)
 	underAlpha := createdIssue(t, "create a BETA issue under ALPHA's", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
 		"project": "BETA", "title": "Records on another project's check", "parent": approved, "force": true,
 	})).Key
-	checked := createIssue("BETA", "A BETA issue with a check of its own")
-	uploadDocument(t, rig.handler, "/api/v1/issues/"+checked, "verification.md", twoChecks)
 	resultsOn := func(issue string) int {
 		t.Helper()
 		var count int
@@ -941,34 +1006,27 @@ func TestAProjectScopedCallerIsRefusedAParentOfAnotherProject(t *testing.T) {
 		}
 		return count
 	}
-	// A result on ALPHA's check through BETA's issue, recorded as the session the scoped token
-	// proves, under a credential that names no project: the scoped token is that result's
-	// recorder, one of the callers a retraction admits.
-	standing := recordResultAsSession(t, rig.handler, underAlpha, brokerTestSession, resultBody("k1", "pass", headCommit, nil))
 	alphaResults := resultsOn(approved)
 	recorded := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues/"+underAlpha+"/results", token,
 		resultBody("k1", "pass", newHeadCommit, nil)))
-	expectRefusal(t, "a scoped result on another project's check", recorded, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
-	if after := resultsOn(approved); after != alphaResults {
-		t.Fatalf("the refused result took %s's checks from %d results to %d, want none written", approved, alphaResults, after)
+	if recorded.Code != http.StatusCreated {
+		t.Fatalf("a scoped result on another project's check: status=%d body=%s, want 201", recorded.Code, recorded.Body.String())
 	}
-	retracted := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/results/"+standing.ID+"/retract", token, map[string]any{
+	result := decodeBody[recordedResult](t, recorded).Result
+	if after := resultsOn(approved); after != alphaResults+1 {
+		t.Fatalf("the scoped result took %s's checks from %d results to %d, want one more", approved, alphaResults, after)
+	}
+	retracted := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/results/"+result.ID+"/retract", token, map[string]any{
 		"reason": "The run was against the wrong commit.",
 	}))
-	expectRefusal(t, "a scoped retraction on another project's check", retracted, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
-	if _, held := storedRetraction(t, rig.database, standing.ID); held {
-		t.Fatalf("the refused retraction left a retraction of %s", standing.ID)
+	if retracted.Code != http.StatusCreated {
+		t.Fatalf("a scoped retraction on another project's check: status=%d body=%s, want 201", retracted.Code, retracted.Body.String())
 	}
-	if events := retractionEventsOn(t, rig.database, approved); events != 0 {
-		t.Fatalf("the refused retraction appended %d result.retracted events on %s, want none", events, approved)
+	if _, held := storedRetraction(t, rig.database, result.ID); !held {
+		t.Fatalf("the scoped retraction left no retraction of %s", result.ID)
 	}
-	ownResult := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues/"+checked+"/results", token,
-		resultBody("k1", "pass", headCommit, nil)))
-	if ownResult.Code != http.StatusCreated {
-		t.Fatalf("a scoped result on its own project's check: status=%d body=%s, want 201", ownResult.Code, ownResult.Body.String())
-	}
-	if after := resultsOn(checked); after != 1 {
-		t.Fatalf("the taken result left %s's checks with %d results, want 1", checked, after)
+	if events := retractionEventsOn(t, rig.database, approved); events != 1 {
+		t.Fatalf("the scoped retraction appended %d result.retracted events on %s, want one", events, approved)
 	}
 }
 

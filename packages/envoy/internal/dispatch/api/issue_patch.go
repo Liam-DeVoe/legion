@@ -180,13 +180,13 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if parent != nil {
 		parentKey = *parent
 	}
-	// A credential that names one project is refused a target or a parent outside it where its
-	// project is read, since this route's own address names neither (project_scope.go). It is read
-	// first here, with no lock held and before a close settles the issue's documents or the
-	// transaction begins, so a write the credential may not make settles nothing; the
-	// pre-handler check already held the issue to the credential's project, which is therefore
-	// the issue's own. The lock step refuses it again before any lock, and writeBlockedBy or
-	// validateIssueParent under them.
+	// A credential that names one project is asked about each target and the parent outside it
+	// where their project is read, since this route's own address names neither
+	// (project_scope.go): a blocked_by target of a project access.CredentialCovers leaves out is
+	// refused, and so is a parent outside the credential's project. They are read first here, with
+	// no lock held and before a close settles the issue's documents or the transaction begins, so
+	// a write the credential may not make settles nothing. The lock step asks again before any
+	// lock, and writeBlockedBy or validateIssueParent under them.
 	callerProject, scoped := s.callerProject(r)
 	if scoped && (parentKey != "" || len(blockers) > 0) {
 		if _, err := foreignDependencyTargets(r.Context(), s.deps.Store.Pool, callerProject, callerProject, blockers, parentKey); err != nil {
