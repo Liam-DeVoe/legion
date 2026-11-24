@@ -39,6 +39,86 @@ func TestProxyRootsTrustedSkipsANamedPipeInACertificateDirectory(t *testing.T) {
 	}
 }
 
+// TestProxyRootsTrustedDoesNotWaitOnAPipeSwappedInAfterTheLook: a trust file that is a regular
+// file when the decision looks, and a named pipe by the time it opens it (whoever may write in its
+// directory can rename one over it), is opened without waiting and refused by what the open file
+// is, so the decision answers, and answers false. The swap is made in the open itself, through the
+// open the readers make (trustSourceOpen).
+func TestProxyRootsTrustedDoesNotWaitOnAPipeSwappedInAfterTheLook(t *testing.T) {
+	root := proxyTestRoot(t, "test proxy root")
+	store := proxyTestPool(t, root)
+	settings := proxyStoreSettings(t, writeLoginFile(t, "system.pem", root))
+	dir := t.TempDir()
+	target := filepath.Join(dir, "corp.pem")
+	if err := os.WriteFile(target, []byte(root), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pipe := filepath.Join(dir, "pipe")
+	if err := syscall.Mkfifo(pipe, 0o600); err != nil {
+		t.Fatalf("make the named pipe: %v", err)
+	}
+	realOpen := trustSourceOpen
+	t.Cleanup(func() { trustSourceOpen = realOpen })
+	swapped := false
+	trustSourceOpen = func(path string, mode int, perm uint32) (int, error) {
+		if path == target && !swapped {
+			swapped = true
+			if err := os.Rename(pipe, target); err != nil {
+				t.Errorf("swap the named pipe in: %v", err)
+			}
+		}
+		return realOpen(path, mode, perm)
+	}
+	environ := withSettings(settings, "CURL_CA_BUNDLE="+target)
+	answered := make(chan bool, 1)
+	go func() { answered <- proxyRootsTrusted(environ, root, store) }()
+	if testwait.Receive(t, "proxyRootsTrusted over a trust file swapped for a named pipe", answered) {
+		t.Errorf("a trust file swapped for a named pipe after the look: proxyRootsTrusted = true, want false")
+	}
+	if !swapped {
+		t.Errorf("the decision opened %s other than through trustSourceOpen, so the swap was never made", target)
+	}
+}
+
+// TestProxyRootsTrustedDoesNotWaitOnAPipeSwappedInForACertificateDirectory: a wgetrc's
+// ca_directory that is a directory when the decision looks and a named pipe by the time it opens
+// it is opened without waiting, and as a directory (openDirNoWait), so the open fails rather than
+// wait, and the decision answers false.
+func TestProxyRootsTrustedDoesNotWaitOnAPipeSwappedInForACertificateDirectory(t *testing.T) {
+	root := proxyTestRoot(t, "test proxy root")
+	store := proxyTestPool(t, root)
+	settings := proxyStoreSettings(t, writeLoginFile(t, "system.pem", root))
+	certs := filepath.Dir(writeLoginFile(t, "root.pem", root))
+	pipe := filepath.Join(t.TempDir(), "pipe")
+	if err := syscall.Mkfifo(pipe, 0o600); err != nil {
+		t.Fatalf("make the named pipe: %v", err)
+	}
+	realOpen := trustSourceOpen
+	t.Cleanup(func() { trustSourceOpen = realOpen })
+	swapped := false
+	trustSourceOpen = func(path string, mode int, perm uint32) (int, error) {
+		if path == certs && !swapped {
+			swapped = true
+			if err := os.RemoveAll(certs); err != nil {
+				t.Errorf("take the directory away: %v", err)
+			}
+			if err := os.Rename(pipe, certs); err != nil {
+				t.Errorf("swap the named pipe in: %v", err)
+			}
+		}
+		return realOpen(path, mode, perm)
+	}
+	environ := withSettings(settings, "WGETRC="+writeLoginFile(t, "wgetrc", "ca_directory = "+certs+"\n"))
+	answered := make(chan bool, 1)
+	go func() { answered <- proxyRootsTrusted(environ, root, store) }()
+	if testwait.Receive(t, "proxyRootsTrusted over a ca_directory swapped for a named pipe", answered) {
+		t.Errorf("a ca_directory swapped for a named pipe after the look: proxyRootsTrusted = true, want false")
+	}
+	if !swapped {
+		t.Errorf("the decision opened %s other than through trustSourceOpen, so the swap was never made", certs)
+	}
+}
+
 // runPrepareAirlock runs prepareAirlock for environ and a release carrying caPEM, bounded by the
 // test's deadline so that a read that waits forever fails the test rather than hanging it, and
 // answers the files it wrote.

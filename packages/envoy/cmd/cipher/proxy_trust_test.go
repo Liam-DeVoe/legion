@@ -43,19 +43,19 @@ func proxyTestPool(t *testing.T, roots ...string) func() *x509.CertPool {
 	return func() *x509.CertPool { return pool }
 }
 
-// proxyStoreFileSettingNames and proxyStoreSettingNames are the eight settings with which a pod
+// proxyStoreFileSettingNames and proxyStoreSettingNames are the nine settings with which a pod
 // image and a launcher session make each client family that does not read the system store by
-// default read it: six that name the system bundle, then Node's switch and uv's. Written out here
-// rather than taken from airlock.go, so a name dropped there fails a row here.
+// default read it: the eight bundle variables, each naming the system bundle, then uv's switch.
+// Written out here rather than taken from airlock.go, so a name dropped there fails a row here.
 var (
 	proxyStoreFileSettingNames = []string{
-		"SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE",
-		"AWS_CA_BUNDLE", "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
+		"SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "GIT_SSL_CAINFO",
+		"CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE", "AWS_CA_BUNDLE", "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
 	}
-	proxyStoreSettingNames = append(slices.Clone(proxyStoreFileSettingNames), "NODE_USE_SYSTEM_CA", "UV_SYSTEM_CERTS")
+	proxyStoreSettingNames = append(slices.Clone(proxyStoreFileSettingNames), "UV_SYSTEM_CERTS")
 )
 
-// proxyStoreSettings is a command environment with the eight settings, each file setting naming
+// proxyStoreSettings is a command environment with the nine settings, each file setting naming
 // file, and a home and a system wgetrc of the test's own that hold no wget setting, so no startup
 // file of the machine running the test is read.
 func proxyStoreSettings(t *testing.T, file string) []string {
@@ -64,7 +64,7 @@ func proxyStoreSettings(t *testing.T, file string) []string {
 	for _, key := range proxyStoreFileSettingNames {
 		environ = append(environ, key+"="+file)
 	}
-	return append(environ, "NODE_USE_SYSTEM_CA=1", "UV_SYSTEM_CERTS=1")
+	return append(environ, "UV_SYSTEM_CERTS=1")
 }
 
 // withoutSetting is environ less every entry for key.
@@ -109,13 +109,15 @@ func TestProxyRootsTrustedOnlyWhenTheStoreHoldsEveryRoot(t *testing.T) {
 }
 
 // TestProxyRootsTrustedOnlyWhereEveryClientReadsTheStore: Node, Python requests and httpx, uv,
-// the AWS CLI, gcloud and gRPC's C core each read their own roots, not the system store, unless a
-// setting points them at it. A command without one of those settings, a shell started before a
-// launcher set them or a runtime that passes on only some variables, keeps the bundle, which
-// reaches each of those clients; with all eight the command needs none. NODE_USE_SYSTEM_CA is on
-// only as "1" (Node v24.22.1 reads "true" and "yes" as off), and NODE_EXTRA_CA_CERTS naming a file
-// that holds every root stands for it. UV_SYSTEM_CERTS is on as uv reads it: 1, t, true, y, yes
-// or on in any case (uv 0.13.5).
+// git, the AWS CLI, gcloud and gRPC's C core each read their own roots, not the system store,
+// unless a setting points them at it. A command without one of those settings, a shell started
+// before a launcher set them or a runtime that passes on only some variables, keeps the bundle,
+// which reaches each of those clients; with all nine the command needs none. Node counts only
+// through NODE_EXTRA_CA_CERTS naming a file that holds every root, which every Node from v7.3
+// reads: NODE_USE_SYSTEM_CA exists only from v24.6.0 and v22.19.0, so it proves nothing about the
+// Node a command runs. An empty GIT_SSL_CAINFO is a setting git reads, as an empty CA file that
+// fails every HTTPS request. UV_SYSTEM_CERTS is on as uv reads it: 1, t, true, y, yes or on in
+// any case (uv 0.13.5).
 func TestProxyRootsTrustedOnlyWhereEveryClientReadsTheStore(t *testing.T) {
 	root, other := proxyTestRoot(t, "test proxy root"), proxyTestRoot(t, "test private authority")
 	store := proxyTestPool(t, root)
@@ -133,17 +135,15 @@ func TestProxyRootsTrustedOnlyWhereEveryClientReadsTheStore(t *testing.T) {
 			t.Errorf("%s set and empty: proxyRootsTrusted = true, want false", key)
 		}
 	}
-	noNodeSwitch := withoutSetting(settings, "NODE_USE_SYSTEM_CA")
+	noNodeFile := withoutSetting(settings, "NODE_EXTRA_CA_CERTS")
 	for _, row := range []struct {
 		name    string
 		environ []string
 		want    bool
 	}{
-		{name: "NODE_USE_SYSTEM_CA=0", environ: withSettings(settings, "NODE_USE_SYSTEM_CA=0")},
-		{name: "NODE_USE_SYSTEM_CA=true", environ: withSettings(settings, "NODE_USE_SYSTEM_CA=true")},
-		{name: "no NODE_USE_SYSTEM_CA, NODE_EXTRA_CA_CERTS naming a file that holds the root", environ: withSettings(noNodeSwitch, "NODE_EXTRA_CA_CERTS="+file), want: true},
-		{name: "no NODE_USE_SYSTEM_CA, NODE_EXTRA_CA_CERTS naming a file without the root", environ: withSettings(noNodeSwitch, "NODE_EXTRA_CA_CERTS="+without)},
-		{name: "NODE_USE_SYSTEM_CA=1 and NODE_EXTRA_CA_CERTS naming a file without the root, which Node adds", environ: withSettings(settings, "NODE_EXTRA_CA_CERTS="+without), want: true},
+		{name: "NODE_USE_SYSTEM_CA=1 and no NODE_EXTRA_CA_CERTS, which a Node before v24.6.0 or v22.19.0 does not read", environ: withSettings(noNodeFile, "NODE_USE_SYSTEM_CA=1")},
+		{name: "NODE_USE_SYSTEM_CA=1 and NODE_EXTRA_CA_CERTS naming a file without the root", environ: withSettings(settings, "NODE_USE_SYSTEM_CA=1", "NODE_EXTRA_CA_CERTS="+without)},
+		{name: "NODE_USE_SYSTEM_CA=0 and NODE_EXTRA_CA_CERTS naming a file that holds the root", environ: withSettings(settings, "NODE_USE_SYSTEM_CA=0"), want: true},
 		{name: "UV_SYSTEM_CERTS=0", environ: withSettings(settings, "UV_SYSTEM_CERTS=0")},
 		{name: "UV_SYSTEM_CERTS=false", environ: withSettings(settings, "UV_SYSTEM_CERTS=false")},
 		{name: "UV_SYSTEM_CERTS=2", environ: withSettings(settings, "UV_SYSTEM_CERTS=2")},
@@ -157,13 +157,96 @@ func TestProxyRootsTrustedOnlyWhereEveryClientReadsTheStore(t *testing.T) {
 	}
 }
 
+// TestProxyRootsTrustedLeavesGitsConfigToGitSSLCAInfo: git reads GIT_SSL_CAINFO after every
+// configuration level, an http.sslCAInfo in a gitconfig or a URL-scoped one included (measured
+// with git 2.47.3: an empty http.sslCAInfo fails every HTTPS request, and GIT_SSL_CAINFO naming
+// the system bundle beside it lets them verify; on Debian's build an http.sslCAInfo that lacks the
+// root still verifies, through the CA directory /etc/ssl/certs curl reads beside it). So the
+// decision needs GIT_SSL_CAINFO and reads no git configuration: with it unset, a gitconfig whose
+// http.sslCAInfo is empty or lacks the root gets the bundle, as any command without it does; with
+// it naming a file that holds the root, git never reads that gitconfig's value, and the bundle is
+// skipped.
+func TestProxyRootsTrustedLeavesGitsConfigToGitSSLCAInfo(t *testing.T) {
+	root, other := proxyTestRoot(t, "test proxy root"), proxyTestRoot(t, "test private authority")
+	store := proxyTestPool(t, root)
+	settings := proxyStoreSettings(t, writeLoginFile(t, "system.pem", root))
+	noGitFile := withoutSetting(settings, "GIT_SSL_CAINFO")
+	empty := writeLoginFile(t, "gitconfig", "[http]\n\tsslCAInfo =\n")
+	lacking := writeLoginFile(t, "gitconfig", "[http]\n\tsslCAInfo = "+writeLoginFile(t, "private.pem", other)+"\n")
+	for _, row := range []struct {
+		name    string
+		environ []string
+		want    bool
+	}{
+		{name: "a gitconfig with an empty http.sslCAInfo, GIT_SSL_CAINFO unset", environ: withSettings(noGitFile, "GIT_CONFIG_GLOBAL="+empty)},
+		{name: "a gitconfig whose http.sslCAInfo lacks the root, GIT_SSL_CAINFO unset", environ: withSettings(noGitFile, "GIT_CONFIG_GLOBAL="+lacking)},
+		{name: "a gitconfig with an empty http.sslCAInfo, GIT_SSL_CAINFO naming a file that holds the root", environ: withSettings(settings, "GIT_CONFIG_GLOBAL="+empty), want: true},
+		{name: "a gitconfig whose http.sslCAInfo lacks the root, GIT_SSL_CAINFO naming a file that holds the root", environ: withSettings(settings, "GIT_CONFIG_GLOBAL="+lacking), want: true},
+	} {
+		if got := proxyRootsTrusted(row.environ, root, store); got != row.want {
+			t.Errorf("%s: proxyRootsTrusted = %v, want %v", row.name, got, row.want)
+		}
+	}
+}
+
+// TestProxyRootsTrustedCountsNoRelativePath: a relative path is resolved from the directory of
+// whoever reads it, and the command may read it from a directory other than the one it starts in
+// (`git -C ../x`, `sh -c 'cd sub && curl'`). So a relative path never counts toward the skip,
+// whatever this process finds under it: a trust variable, WGETRC, SYSTEM_WGETRC, a HOME whose
+// .wgetrc wget would read, or a wgetrc's ca_directory.
+func TestProxyRootsTrustedCountsNoRelativePath(t *testing.T) {
+	root := proxyTestRoot(t, "test proxy root")
+	store := proxyTestPool(t, root)
+	settings := proxyStoreSettings(t, writeLoginFile(t, "system.pem", root))
+	start := t.TempDir()
+	t.Chdir(start)
+	write := func(name, body string) {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(start, name)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(start, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("certs/ca.pem", root)
+	write("certs/root.pem", root)
+	write("wgetrc", "tries = 3\n")
+	write("home/.wgetrc", "tries = 3\n")
+	if !proxyRootsTrusted(withSettings(settings, "CURL_CA_BUNDLE="+filepath.Join(start, "certs/ca.pem")), root, store) {
+		t.Fatalf("control: CURL_CA_BUNDLE naming the same file by its absolute path: proxyRootsTrusted = false, want true")
+	}
+	// A relative SYSTEM_WGETRC or HOME that names nothing here is one wget may find from the
+	// command's own directory, so it counts no more than one that names a file here. The built-in
+	// system wgetrc it would otherwise fall back to is the test's own, with no setting.
+	old := systemWgetrcFile
+	systemWgetrcFile = writeLoginFile(t, "etc-wgetrc", "tries = 3\n")
+	t.Cleanup(func() { systemWgetrcFile = old })
+	rows := map[string][]string{
+		"WGETRC=wgetrc":                       {"WGETRC=wgetrc"},
+		"SYSTEM_WGETRC=wgetrc":                {"SYSTEM_WGETRC=wgetrc"},
+		"SYSTEM_WGETRC=not-here":              {"SYSTEM_WGETRC=not-here"},
+		"HOME=home, WGETRC unset":             {"HOME=home"},
+		"HOME=not-here, WGETRC unset":         {"HOME=not-here"},
+		"a wgetrc's ca_directory = certs":     {"WGETRC=" + writeLoginFile(t, "abs-wgetrc", "ca_directory = certs\n")},
+		"a wgetrc's ca_directory = not-there": {"WGETRC=" + writeLoginFile(t, "abs-wgetrc", "ca_directory = not-there\n")},
+	}
+	for _, key := range airlockBundleVars {
+		rows[key+"=certs/ca.pem"] = []string{key + "=certs/ca.pem"}
+	}
+	for name, environ := range rows {
+		if proxyRootsTrusted(withSettings(settings, environ...), root, store) {
+			t.Errorf("%s, relative: proxyRootsTrusted = true, want false", name)
+		}
+	}
+}
+
 // TestProxyRootsTrustedReadsTheTrustVariablesTheCommandHas: a trust variable the command already
-// has replaces its client's roots, and with no bundle the command keeps it as it is. So a file it
+// has sets its client's roots, and with no bundle the command keeps it as it is. So a file it
 // names that lacks a root takes the proxy away from that client, and the bundle is still written.
-// NODE_EXTRA_CA_CERTS is the exception while NODE_USE_SYSTEM_CA is on: Node adds its file to the
-// store it reads, so a file without the root takes nothing away. A file that cannot be read
-// cannot show that it holds the root. Any SSL_CERT_DIR at all gets the bundle (the rows at the end
-// say why).
+// NODE_EXTRA_CA_CERTS too: it is the one way the root reaches a Node that does not read the
+// system store. A file that cannot be read cannot show that it holds the root, and an empty
+// GIT_SSL_CAINFO is the empty CA file git then reads, which fails every HTTPS request. Any
+// SSL_CERT_DIR at all gets the bundle (the rows at the end say why).
 func TestProxyRootsTrustedReadsTheTrustVariablesTheCommandHas(t *testing.T) {
 	root, other := proxyTestRoot(t, "test proxy root"), proxyTestRoot(t, "test private authority")
 	store := proxyTestPool(t, root)
@@ -173,9 +256,8 @@ func TestProxyRootsTrustedReadsTheTrustVariablesTheCommandHas(t *testing.T) {
 	settings := proxyStoreSettings(t, writeLoginFile(t, "system.pem", root))
 
 	for _, key := range airlockBundleVars {
-		want := key == "NODE_EXTRA_CA_CERTS"
-		if got := proxyRootsTrusted(withSettings(settings, key+"="+without), root, store); got != want {
-			t.Errorf("%s naming a file without the root: proxyRootsTrusted = %v, want %v", key, got, want)
+		if proxyRootsTrusted(withSettings(settings, key+"="+without), root, store) {
+			t.Errorf("%s naming a file without the root: proxyRootsTrusted = true, want false", key)
 		}
 		if got := proxyRootsTrusted(withSettings(settings, key+"="+with), root, store); !got {
 			t.Errorf("%s naming a file that holds the root: proxyRootsTrusted = false, want true", key)
@@ -184,8 +266,8 @@ func TestProxyRootsTrustedReadsTheTrustVariablesTheCommandHas(t *testing.T) {
 	if proxyRootsTrusted(withSettings(settings, "REQUESTS_CA_BUNDLE="+unreadable), root, store) {
 		t.Errorf("REQUESTS_CA_BUNDLE naming a file that cannot be read: proxyRootsTrusted = true, want false")
 	}
-	if !proxyRootsTrusted(withSettings(settings, "GIT_SSL_CAINFO="), root, store) {
-		t.Errorf("an empty GIT_SSL_CAINFO, which names no file and is no setting git needs: proxyRootsTrusted = false, want true")
+	if proxyRootsTrusted(withSettings(settings, "GIT_SSL_CAINFO="), root, store) {
+		t.Errorf("an empty GIT_SSL_CAINFO, which git reads as an empty CA file: proxyRootsTrusted = true, want false")
 	}
 	// The last entry wins, as execve reads it.
 	if proxyRootsTrusted(withSettings(settings, "CURL_CA_BUNDLE="+with, "CURL_CA_BUNDLE="+without), root, store) {
@@ -338,8 +420,9 @@ func TestHomeWgetrcIsTheFileWgetReads(t *testing.T) {
 
 // TestProxyRootsTrustedReadsACertificateDirectoryInBounds: wget's ca_directory is read for its
 // regular files alone, a symbolic link to one among them as Debian's /etc/ssl/certs holds, each up
-// to proxyCertFileMaxBytes, and a directory of more than proxyCertDirMaxFiles entries is one this
-// cannot vouch for. A subdirectory adds nothing, and a file over the bound is skipped.
+// to proxyCertFileMaxBytes, and a directory of more than proxyCertDirMaxFiles entries, or more than
+// proxyCertDirMaxBytes in all, is one this cannot vouch for. A subdirectory adds nothing, and a
+// file over the bound is skipped.
 func TestProxyRootsTrustedReadsACertificateDirectoryInBounds(t *testing.T) {
 	root := proxyTestRoot(t, "test proxy root")
 	store := proxyTestPool(t, root)
@@ -384,6 +467,19 @@ func TestProxyRootsTrustedReadsACertificateDirectoryInBounds(t *testing.T) {
 	if trusted(crowded) {
 		t.Errorf("a directory of more than %d entries, one holding the root: proxyRootsTrusted = true, want false", proxyCertDirMaxFiles)
 	}
+
+	// Under both bounds above, a directory of files just under proxyCertFileMaxBytes each still
+	// adds up: past proxyCertDirMaxBytes in all, the directory is one this cannot vouch for, in
+	// whichever order it lists the file that holds the root.
+	heavy := t.TempDir()
+	write(heavy, "root.pem", root)
+	filler := strings.Repeat("#", proxyCertFileMaxBytes-1) + "\n"
+	for i := range proxyCertDirMaxBytes/proxyCertFileMaxBytes + 1 {
+		write(heavy, "filler-"+strconv.Itoa(i), filler)
+	}
+	if trusted(heavy) {
+		t.Errorf("a directory of more than %d bytes in all, one file holding the root: proxyRootsTrusted = true, want false", proxyCertDirMaxBytes)
+	}
 }
 
 // useSystemTrustFiles points systemTrustFiles, the system bundles prepareAirlock reads the store
@@ -398,7 +494,7 @@ func useSystemTrustFiles(t *testing.T, paths ...string) {
 
 // TestPrepareAirlockLeavesTheTrustAloneWhereTheSystemStoreHoldsTheRoot runs prepareAirlock and
 // airlockVars against a system bundle of the test's own, with and without the release's roots in
-// it, for a command that carries the eight settings naming that bundle unless a row says
+// it, for a command that carries the nine settings naming that bundle unless a row says
 // otherwise. Where the bundle trusts every root, every setting is there, no trust variable or
 // wgetrc of the command names a file or directory that lacks one, and the command has no
 // SSL_CERT_DIR, no file is written and none of the trust variables or WGETRC is set, while the
@@ -433,7 +529,8 @@ func TestPrepareAirlockLeavesTheTrustAloneWhereTheSystemStoreHoldsTheRoot(t *tes
 		{name: "a two-root release and a store that holds both", store: []string{newRoot, oldRoot}, release: oldRoot + newRoot},
 		{name: "the command's CURL_CA_BUNDLE names a file without the root", store: []string{newRoot}, release: newRoot, environ: []string{"CURL_CA_BUNDLE=" + withoutRoot}, wantBundle: true},
 		{name: "the command's CURL_CA_BUNDLE names a file that holds the root", store: []string{newRoot}, release: newRoot, environ: []string{"CURL_CA_BUNDLE=" + withRoot}},
-		{name: "the command's NODE_USE_SYSTEM_CA is 0", store: []string{newRoot}, release: newRoot, environ: []string{"NODE_USE_SYSTEM_CA=0"}, wantBundle: true},
+		{name: "the command has NODE_USE_SYSTEM_CA=1 and no NODE_EXTRA_CA_CERTS", store: []string{newRoot}, release: newRoot, unset: "NODE_EXTRA_CA_CERTS", environ: []string{"NODE_USE_SYSTEM_CA=1"}, wantBundle: true},
+		{name: "the command has an empty GIT_SSL_CAINFO", store: []string{newRoot}, release: newRoot, environ: []string{"GIT_SSL_CAINFO="}, wantBundle: true},
 		{name: "the command's wgetrc names a ca_directory without the root", store: []string{newRoot}, release: newRoot, environ: []string{"WGETRC=" + wgetrcWithoutRoot}, wantBundle: true},
 		{name: "the command's wgetrc has an empty ca_directory", store: []string{newRoot}, release: newRoot, environ: []string{"WGETRC=" + wgetrcEmptyDir}, wantBundle: true},
 		{name: "the command's ~/.wgetrc has an empty ca_directory and WGETRC is unset", store: []string{newRoot}, release: newRoot, environ: []string{"HOME=" + homeEmptyDir}, wantBundle: true},
@@ -476,7 +573,6 @@ func TestPrepareAirlockLeavesTheTrustAloneWhereTheSystemStoreHoldsTheRoot(t *tes
 			if vars["HTTPS_PROXY"] == "" || vars["NO_PROXY"] == "" {
 				t.Errorf("the command's HTTPS_PROXY is %q and NO_PROXY %q, want both set whatever the store holds", vars["HTTPS_PROXY"], vars["NO_PROXY"])
 			}
-			grantDir := filepath.Join(runtimeDir, "agent-secrets", "airlock", "grant-one")
 			if !row.wantBundle {
 				if files.bundle != "" || files.wgetrc != "" {
 					t.Errorf("prepareAirlock answered the files %q and %q, want none", files.bundle, files.wgetrc)
@@ -491,8 +587,9 @@ func TestPrepareAirlockLeavesTheTrustAloneWhereTheSystemStoreHoldsTheRoot(t *tes
 				}
 				return
 			}
-			if want := filepath.Join(grantDir, "ca-bundle.pem"); files.bundle != want {
-				t.Fatalf("the bundle is at %q, want %q", files.bundle, want)
+			grantDir := grantDirOf(t, filepath.Join(runtimeDir, "agent-secrets", "airlock"), "grant-one", files.bundle)
+			if filepath.Base(files.bundle) != "ca-bundle.pem" {
+				t.Fatalf("the bundle is at %q, want the grant directory's ca-bundle.pem", files.bundle)
 			}
 			bundle, err := os.ReadFile(files.bundle)
 			if err != nil {

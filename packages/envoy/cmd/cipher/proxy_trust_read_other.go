@@ -11,3 +11,23 @@ import "os"
 func readTrustSource(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
+
+// openNoWait opens path for reading and answers whether what it opened is a regular file, and
+// its size. Off unix no path names a named pipe an open could wait on.
+func openNoWait(path string) (*os.File, bool, int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false, 0, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, false, 0, err
+	}
+	return f, info.Mode().IsRegular(), info.Size(), nil
+}
+
+// openDirNoWait opens the directory dir for reading its entries.
+func openDirNoWait(dir string) (*os.File, error) {
+	return os.Open(dir)
+}

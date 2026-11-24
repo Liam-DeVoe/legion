@@ -173,23 +173,34 @@ func TestAnAirlockDirectoryThatCannotBePutInPlaceNamesItsPathButNotWGETRCs(t *te
 		t.Fatal(err)
 	}
 	environ := []string{"XDG_RUNTIME_DIR=" + base, wgetrc}
+	// The grant's directory is named for what its files hold (airlockDirName), and the root holds
+	// no part of that, so a run of the same command under another root shows the name.
+	scratch := t.TempDir()
+	learned, err := prepareAirlock([]string{"XDG_RUNTIME_DIR=" + scratch, wgetrc}, testRelease("AIRLOCK_ME", nil, nil), "grant-one", nil)
+	if err != nil {
+		t.Fatalf("prepareAirlock under another root: %v", err)
+	}
+	name := filepath.Base(filepath.Dir(learned.bundle))
 	// A file where the grant's directory goes: the rename of a directory onto it is refused.
-	if err := os.WriteFile(filepath.Join(root, "grant-one"), nil, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, name), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := prepareAirlock(environ, testRelease("AIRLOCK_ME", nil, nil), "grant-one", nil)
+	_, err = prepareAirlock(environ, testRelease("AIRLOCK_ME", nil, nil), "grant-one", nil)
 	if err == nil {
 		t.Fatal("prepareAirlock put its directory in place over a file")
 	}
-	wantNamedNotPrinted(t, "the refusal", err.Error(), []string{"put the airlock directory in place", filepath.Join(root, "grant-one") + ": not a directory"}, secrets...)
+	wantNamedNotPrinted(t, "the refusal", err.Error(), []string{"put the airlock directory in place", filepath.Join(root, name) + ": not a directory"}, secrets...)
 
 	t.Run("control: nothing in the way", func(t *testing.T) {
-		if err := os.Remove(filepath.Join(root, "grant-one")); err != nil {
+		if err := os.Remove(filepath.Join(root, name)); err != nil {
 			t.Fatal(err)
 		}
 		files, err := prepareAirlock(environ, testRelease("AIRLOCK_ME", nil, nil), "grant-one", nil)
 		if err != nil {
 			t.Fatalf("prepareAirlock: %v", err)
+		}
+		if filepath.Dir(files.bundle) != filepath.Join(root, name) {
+			t.Fatalf("the grant's files are at %s, want them under %s", files.bundle, filepath.Join(root, name))
 		}
 		if data, err := os.ReadFile(files.wgetrc); err != nil || !strings.Contains(string(data), "http_password") {
 			t.Fatalf("the grant's wgetrc: %v; want it to carry the inherited lines", err)
