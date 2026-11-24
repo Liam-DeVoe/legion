@@ -10,7 +10,7 @@ import {
   MINTED_DEDUPE_KEY_PATTERN,
 } from "@legion/contracts";
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
-import { mayHaveReachedServer, outage } from "@legion/contracts/http-status";
+import { mayHaveReachedServer } from "@legion/contracts/http-status";
 import { errorClass, requestForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
@@ -1202,15 +1202,17 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         { tokens: redacted, redirectTo: redirectOrigin(response, url, redacted) }
       );
       // An attempt answered with a 5xx or a 408 may have reached the listener, which may have
-      // acted on it (`mayHaveReachedServer`, `onUnanswered`). The listener writes no 408, so one is
-      // a hop's timeout, and a hop can count it after it forwarded the whole request.
-      if (mayHaveReachedServer(response.status)) options.onUnanswered?.();
-      // An outage (`outage`) is sent again, but for a 429: the listener's 429 is
-      // `sender_rate_limited`, its answer to this message, whose sentence the agent reads to decide
-      // when to send it again. Any other 4xx is the listener's answer too.
-      if (outage(response.status) && response.status !== 429 && attempt + 1 < tries) {
-        await waitForRetry(retryDelayMs);
-        continue;
+      // acted on it (`mayHaveReachedServer`, `onUnanswered`), and is sent again. The listener
+      // writes no 408, so one is a hop's timeout, and a hop can count it after it forwarded the
+      // whole request. A 429 is not sent again: the listener's 429 is `sender_rate_limited`, its
+      // answer to this message, whose sentence the agent reads to decide when to send it again.
+      // Any other 4xx is the listener's answer too.
+      if (mayHaveReachedServer(response.status)) {
+        options.onUnanswered?.();
+        if (attempt + 1 < tries) {
+          await waitForRetry(retryDelayMs);
+          continue;
+        }
       }
       throw error;
     }
