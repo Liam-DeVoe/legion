@@ -56,7 +56,8 @@ const poolSizeParam = "pool_max_conns"
 // dispatch-requests in application_name, after the connection string's own name where it names one
 // (applicationName), and the write lock bound in lock_timeout, and its acquires are bounded at
 // requestAcquireBound. Every connection it opens scans timestamptz in UTC
-// (scanTimestampsInUTC), as do the pools Pool.separate copies from its configuration, and is
+// (scanTimestampsInUTC) and gives back a large statement's encoded arguments when it returns to
+// its pool (argumentReleaser), as do the pools Pool.separate copies from its configuration, and is
 // refused where its session does not carry the lock bound its configuration asks for
 // (requireLockBound, connected).
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
@@ -74,6 +75,10 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 		return nil, fmt.Errorf("parse Postgres URL: %w", err)
 	}
 	config.MaxConns = SharedPoolSize
+	// The argument release goes in before configurePool, so it is the tracer the acquire tracer is
+	// composed with (acquireTracer.inner), which every separate pool's configurePool composes its
+	// own acquire tracer with again.
+	config.ConnConfig.Tracer = withArgumentRelease(config.ConnConfig.Tracer)
 	configurePool(config, RequestsPool, requestAcquireBound)
 	config.AfterConnect = connected
 	pool, err := pgxpool.NewWithConfig(ctx, config)

@@ -908,9 +908,11 @@ func (p *Pool) openLocked(name string, size int32) (openedPool, error) {
 // newSeparate opens one separate pool: size connections copied from this pool's configuration and
 // configured as its own (configurePool: its application_name and its acquire bound, acquireBounds'
 // where a test set one, else defaultAcquireBound's), with no lock_timeout startup parameter where
-// a test dropped it (lockTimeoutDropped). Its callers hold mu, which is what keeps two of them
-// from opening two pools under one name and an open from racing this pool's close; pgx opens no
-// connection here, so nothing waits on the database under the lock.
+// a test dropped it (lockTimeoutDropped). The copy keeps the shared pool's tracer, which
+// configurePool composes the pool's own acquire tracer with, so its connections give back a large
+// statement's arguments on release too (argumentReleaser). Its callers hold mu, which is what
+// keeps two of them from opening two pools under one name and an open from racing this pool's
+// close; pgx opens no connection here, so nothing waits on the database under the lock.
 func (p *Pool) newSeparate(ctx context.Context, name string, size int32) (openedPool, error) {
 	config := p.pool.Config()
 	config.MaxConns = size
