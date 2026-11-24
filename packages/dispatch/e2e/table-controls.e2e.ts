@@ -173,8 +173,9 @@ async function seedRealStackSurfaces(): Promise<{
   return { deliveryQuery: DELIVERY_WINDOW, issue, project: "CORE" };
 }
 
-// SLOW(>=2s): two pages opened at each of this project's widths, over two seeded fixtures.
-test("the Agents page and the Delivery page each draw one row of controls, with nothing else between the title and the first row @phone", async ({
+// SLOW(>=2s): two pages opened at each of this project's widths, over two seeded fixtures, and the
+// Inbox drawer opened over an issue page at 1440.
+test("the Agents page and the Delivery page each draw one row of controls, with nothing else between the title and the first row, and the Inbox drawer and its row do not scroll sideways at 1440 @phone", async ({
   page,
 }, testInfo) => {
   const scene = await seedRealStackSurfaces();
@@ -199,6 +200,55 @@ test("the Agents page and the Delivery page each draw one row of controls, with 
         `${where} (control row ${height}px): ${strays.join("; ")} is drawn between the title and the first row and is outside the control row`
       ).toEqual([]);
       if (phone) await assertPageFits(page);
+    }
+  }
+  // The Inbox drawer's row at 1440x900: the drawer is 448 px wide (`md:max-w-md`), so its row is
+  // 415 px wide in a window 1440 px wide. With an ask waiting on the reader and one unread thread,
+  // the row's first line draws Filter, Blocked on you, Mark all read and View. A first line held
+  // to one line by the window's width ran 34 px past the drawer's edge, and the drawer scrolled
+  // sideways (builds Job infra-3135-probe4-k88vm at 968e2b90). The line wraps by the row's own
+  // width (`components/ControlRow.tsx`), so neither scrolls sideways. The case is read at the
+  // desktop width the drawer was measured at; a phone's window is narrower than the row's 40rem,
+  // so its line wraps there already. The ask is a session's on the reader's issue, as
+  // `inbox-drawer.ts`'s `seedAsk` writes one, on the project `seedAgents` has made already.
+  if (!phone) {
+    const where = "the Inbox drawer at 1440x900";
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await createAsk(scene.issue, { question: "Which mirror replays first?" }, asSession());
+    await seedCommentThread(
+      scene.issue,
+      "Is the nightly job still at 02:00?",
+      "It moved to 03:00."
+    );
+    await page.goto(`/issues/${scene.issue}`);
+    await expect(page.getByTestId("issue-header")).toBeVisible();
+    await peekTrigger(page).click();
+    const peek = drawer(page);
+    const row = controlRow(peek);
+    await expect(row, `${where}: not exactly one control row`).toHaveCount(1);
+    // Blocked on you draws its number only once every count it adds up has answered, so the row
+    // is read with the widest words it draws.
+    await expect(
+      row.getByRole("button", { name: /^Blocked on you/ }),
+      `${where}: Blocked on you carries no count`
+    ).toHaveText(/^Blocked on you · \d+$/);
+    await expect(
+      row.getByRole("button", { exact: true, name: "Mark all read" }),
+      `${where}: Mark all read is not drawn`
+    ).toBeVisible();
+    measured.push(`${where}: control row ${Math.round(await heightOf(row))}px`);
+    for (const [box, name] of [
+      [peek, "the drawer"],
+      [row, "the drawer's control row"],
+    ] as const) {
+      const widths = await box.evaluate((node) => ({
+        client: node.clientWidth,
+        scroll: node.scrollWidth,
+      }));
+      expect(
+        widths.scroll,
+        `${where}: ${name} scrolls sideways, ${widths.scroll}px wide in ${widths.client}px`
+      ).toBeLessThanOrEqual(widths.client);
     }
   }
   await testInfo.attach("control row heights", {

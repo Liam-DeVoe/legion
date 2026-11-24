@@ -39,15 +39,15 @@ const MORE_PANEL_CLASS = `${PANEL_FRAME} items-start gap-2 p-2 ${card}`;
  *  the layout's own units, so their sum can miss the laid-out line by a fraction of a pixel. */
 const SLACK_PX = 0.5;
 
-/** One slot of the row's first line: its own single line from `sm` up, which cannot wrap, so
- *  whatever a page puts in it grows sideways and never downward. Every slot but the search box
- *  keeps its width; the search box is the one that gives way where the window is narrow, as it
- *  does on every page today. Below `sm` a slot the page fills itself may wrap inside itself
- *  (`wraps`), because a phone is 390 px wide and a row of the page's own controls - the
- *  Artifacts tab's staged upload, say - runs past that edge otherwise, where the reader cannot
- *  reach it. A wrap that is there before any narrowing adds no height when a narrowing goes on,
- *  which is R1's rule. `data-row-slot` marks it as the container a focused control in it is
- *  counted in, for the row's focus hand-off. */
+/** One slot of the row's first line: its own single line in a row 40rem wide or more (the row's
+ *  own width, not the window's), which cannot wrap, so whatever a page puts in it grows sideways
+ *  and never downward. Every slot but the search box keeps its width; the search box is the one
+ *  that gives way where the row is narrow, as it does on every page today. In a narrower row a
+ *  slot the page fills itself may wrap inside itself (`wraps`), because a phone is 390 px wide
+ *  and a row of the page's own controls - the Artifacts tab's staged upload, say - runs past that
+ *  edge otherwise, where the reader cannot reach it. A wrap that is there before any narrowing
+ *  adds no height when a narrowing goes on, which is R1's rule. `data-row-slot` marks it as the
+ *  container a focused control in it is counted in, for the row's focus hand-off. */
 function Slot({
   children,
   className,
@@ -60,8 +60,12 @@ function Slot({
   wraps?: boolean;
 }): ReactNode {
   if (children === undefined || children === null) return null;
-  const width = gives ? "min-w-0 flex-1 basis-64" : wraps ? "min-w-0 sm:shrink-0" : "shrink-0";
-  const wrap = wraps ? "flex-wrap sm:flex-nowrap" : "flex-nowrap";
+  const width = gives
+    ? "min-w-0 flex-1 basis-64"
+    : wraps
+      ? "min-w-0 @min-[40rem]:shrink-0"
+      : "shrink-0";
+  const wrap = wraps ? "flex-wrap @min-[40rem]:flex-nowrap" : "flex-nowrap";
   const own = `flex items-center gap-2 ${wrap} ${width}`;
   return (
     <div className={className === undefined ? own : `${own} ${className}`} data-row-slot="">
@@ -279,17 +283,25 @@ export interface ControlRowProps {
  * many narrowings are on. The whole arithmetic is these points:
  *
  * - the row is a column of its lines, 8 px apart (`gap-2`);
- * - from `sm` up the first line is one flex line (`flex-nowrap`), so no slot is ever pushed
- *   under another; below `sm` it wraps, and that wrap is there before any narrowing, since no
- *   chip is in that line;
- * - every slot of the first line lays its own nodes out in one line from `sm` up, so a slot
- *   handed more to draw grows sideways, never downward;
+ * - in a row 40rem wide or more (Tailwind's `sm`, 640 px, read off the row's own box by a
+ *   container query rather than off the window) the first line is one flex line
+ *   (`flex-nowrap`), so no slot is ever pushed under another; in a narrower row it wraps, and
+ *   that wrap is there before any narrowing, since no chip is in that line;
+ * - every slot of the first line lays its own nodes out in one line in a row that wide, so a
+ *   slot handed more to draw grows sideways, never downward;
  * - the chips line is drawn only while there is a chip, and it never wraps: its tallest item is
  *   one control, 44 px (32 px from `md` at the compact size), so it adds that line and the
  *   row's 8 px gap - 52 px - and nothing else moves. The line draws the chips that fit it, from
  *   the first, and a chip that does not fit is not drawn in it: one `+N more` chip at the end of
  *   the chips stands for every chip left out. **Clear filters** sits after them, outside the box
  *   the chips and `+N more` share, so no number of chips pushes it out of view.
+ *
+ * The row reads its own width, not the window's: it is a container (`@container`), and its first
+ * line and the slots in it switch at 40rem of the row's own box (`@min-[40rem]:`). The Inbox
+ * drawer's row is 415 px wide in a 1440 px window, and a first line kept to one line by the
+ * window's width ran 34 px past the drawer's edge. A container's width never comes from what it
+ * holds, so a page puts the row where its box takes its width from around it - a block, or a
+ * stretched flex item - as every page does.
  *
  * Nothing in the row scrolls sideways, at any width. What fits is measured, not guessed: the box
  * the chips and `+N more` share, less `+N more`'s own width and its gap, against each chip's own
@@ -449,7 +461,7 @@ export function ControlRow({
         Clear filters
       </button>
     );
-  const own = "flex min-w-0 flex-col gap-2";
+  const own = "@container flex min-w-0 flex-col gap-2";
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the focus handler only notes which control of a slot took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), and the capture handlers only arm that hand-off at a press inside the row (`armOnPress`), so the row needs no role of its own.
     <div
@@ -459,9 +471,10 @@ export function ControlRow({
       onFocus={noteFocus}
       ref={rowRef}
     >
-      {/* One line from `sm` up, which is where R1's two widths are; below it the line wraps,
-          because a search box holding three characters beside a trigger is no search box. */}
-      <div className="flex min-w-0 flex-wrap items-start gap-2 sm:flex-nowrap">
+      {/* One line in a row 40rem wide or more, by the row's own width; in a narrower row - a
+          phone's, or the Inbox drawer's at any window - the line wraps, because a search box
+          holding three characters beside a trigger is no search box. */}
+      <div className="flex min-w-0 flex-wrap items-start gap-2 @min-[40rem]:flex-nowrap">
         <Slot gives>{search}</Slot>
         <Slot>
           {chipsOn || clear === null ? (

@@ -19,11 +19,12 @@ import { ControlRow, type ControlRowProps } from "./ControlRow";
  */
 const HEIGHT_RULE_CSS =
   ".flex{display:flex}.flex-col{flex-direction:column}.flex-wrap{flex-wrap:wrap}.flex-nowrap{flex-wrap:nowrap}.shrink-0{flex-shrink:0}.flex-1{flex:1 1 0%}.min-w-0{min-width:0}.gap-2{gap:0.5rem}.overflow-x-auto{overflow-x:auto}" +
-  String.raw`.\[\&\>\*\]\:shrink-0>*{flex-shrink:0}`;
-/** Tailwind's `sm:` utilities as they apply from 640 px up, which is where R1's two widths
- *  (1440 and 1280) are. Below it the first line and the page's own slot wrap, so that a phone's
- *  search box is a search box and a phone's own controls stay on the screen. */
-const DESKTOP_CSS = String.raw`.sm\:flex-nowrap{flex-wrap:nowrap}.sm\:shrink-0{flex-shrink:0}`;
+  String.raw`.\[\&\>\*\]\:shrink-0>*{flex-shrink:0}.\@container{container-type:inline-size}`;
+/** The row's own container variants (`@min-[40rem]:`) as they apply where the row's box is 40rem
+ *  (640 px) wide or more. In a narrower row - a phone's, or the Inbox drawer's at any window -
+ *  the first line and the page's own slot wrap, so that a search box is a search box and the
+ *  page's own controls stay inside the row. */
+const WIDE_ROW_CSS = String.raw`.\@min-\[40rem\]\:flex-nowrap{flex-wrap:nowrap}.\@min-\[40rem\]\:shrink-0{flex-shrink:0}`;
 
 function Row(props: Partial<ControlRowProps>) {
   return (
@@ -102,14 +103,17 @@ test("the chips line is drawn only while a chip is on, so a row with none is its
   }
 });
 
-test("from the sm breakpoint up the first line is one line, and however many chips are on they take one more", () => {
-  const removeCss = withCss(`${HEIGHT_RULE_CSS}${DESKTOP_CSS}`);
+test("in a row 40rem wide or more the first line is one line, and however many chips are on they take one more", () => {
+  const removeCss = withCss(`${HEIGHT_RULE_CSS}${WIDE_ROW_CSS}`);
   const view = render(<Row />);
   try {
     // The row is a column of its lines, the row's 8 px gap apart.
     expect(getComputedStyle(row()).flexDirection).toBe("column");
     expect(getComputedStyle(row()).gap).toBe("0.5rem");
-    // The first line is one line from `sm` up: no slot of it is ever pushed under another.
+    // The row is the container its first line and slots read, so they switch on the row's own
+    // width and not the window's: the Inbox drawer's row is 415 px wide in a 1440 px window.
+    expect(getComputedStyle(row()).getPropertyValue("container-type")).toBe("inline-size");
+    // The first line is one line in a row that wide: no slot of it is ever pushed under another.
     const [first, chipsLine] = lines();
     expect(getComputedStyle(first).flexWrap).toBe("nowrap");
     expect(getComputedStyle(first).gap).toBe("0.5rem");
@@ -152,15 +156,16 @@ test("from the sm breakpoint up the first line is one line, and however many chi
   }
 });
 
-test("below the phone breakpoint the first line and the page's own controls wrap onto the screen", () => {
-  // The same utilities with no `sm:` rule applied, which is a window narrower than 640 px.
+test("in a row narrower than 40rem the first line and the page's own controls wrap inside it", () => {
+  // The same utilities with no container variant applied, which is a row narrower than 40rem.
   const removeCss = withCss(HEIGHT_RULE_CSS);
   const view = render(<Row />);
   try {
-    // A 390 px phone cannot hold the search box, the trigger, the page's own controls and the
-    // display menu on one line, so the first line wraps rather than running past the right edge
-    // with a control the reader cannot reach (the Artifacts tab's staged upload). That wrap is
-    // there before any narrowing, since no chip is in that line.
+    // A 390 px phone, or the Inbox drawer's 415 px row, cannot hold the search box, the trigger,
+    // the page's own controls and the display menu on one line, so the first line wraps rather
+    // than running past the row's right edge with a control the reader cannot reach (the
+    // Artifacts tab's staged upload). That wrap is there before any narrowing, since no chip is
+    // in that line.
     const [first, chipsLine] = lines();
     expect(getComputedStyle(first).flexWrap).toBe("wrap");
     expect(getComputedStyle(slotOf("own")).flexWrap).toBe("wrap");
