@@ -24,15 +24,7 @@ func runAtAcceptanceStep(t *testing.T, pool *pgxpool.Pool, key string, generatio
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
 		ctx, records := context.Background(), record.NewStore()
-		project, err := claim.ProjectToken(testProject)
-		if err != nil {
-			t.Fatal(err)
-		}
-		architect, err := claim.NewToken(project, key, claim.RoleArchitect)
-		if err != nil {
-			t.Fatal(err)
-		}
-		v := record.PlanVersion{Issue: key, Generation: generation, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner, GivenBy: architect, GivenAt: fixedNow}
+		v := record.PlanVersion{Issue: key, Generation: generation, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner, GivenBy: ownersArchitect(t, key), GivenAt: fixedNow}
 		task := record.PlanTask{Issue: key, Generation: generation, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
 		roles := plan.BuiltinRoles()
 		steps := make([]record.PlanStep, 0, len(words))
@@ -71,14 +63,7 @@ func TestTheEntryRepairResumesAFreshAcceptanceAgentThatLostItsTask(t *testing.T)
 			const root, key = "LEGION-760", "LEGION-761"
 			seedTreeAndMember(t, pool, root, key, phase.Accepting, 1, false)
 			runAtAcceptanceStep(t, pool, key, 1, tc.words...)
-			project, err := claim.ProjectToken(testProject)
-			if err != nil {
-				t.Fatal(err)
-			}
-			token, err := claim.NewToken(project, key, acceptance)
-			if err != nil {
-				t.Fatal(err)
-			}
+			token := keyedToken(t, key, claim.Agent(acceptance))
 			inTx(t, pool, func(tx pgx.Tx) {
 				if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: key, Role: acceptance, Claim: token,
 					Entry: seededEntry, EntryTask: seededEntryTask(key), EntryRaisedAt: fixedNow}); err != nil {

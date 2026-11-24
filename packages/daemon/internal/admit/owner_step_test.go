@@ -24,15 +24,7 @@ func standAtOwnersStep(t *testing.T, pool *pgxpool.Pool, key string) {
 			t.Fatalf("read %s: %v", key, err)
 		}
 		member.Phase, member.Hold, member.Status, member.DispatchStatus = phase.Implementing, nil, "in_progress", "in_progress"
-		project, err := claim.ProjectToken(testProject)
-		if err != nil {
-			t.Fatal(err)
-		}
-		architect, err := claim.NewToken(project, key, claim.RoleArchitect)
-		if err != nil {
-			t.Fatal(err)
-		}
-		v := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner, GivenBy: architect, GivenAt: fixedNow}
+		v := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner, GivenBy: ownersArchitect(t, key), GivenAt: fixedNow}
 		task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
 		steps := record.NameAgents(nil, nil, []record.PlanStep{
 			{Issue: key, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation", AgentKey: "owner"},
