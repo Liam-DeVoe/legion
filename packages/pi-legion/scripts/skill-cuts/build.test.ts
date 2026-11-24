@@ -39,6 +39,7 @@ import {
 import { type Case, listedName, loadCases, pathHash } from "./cases";
 import { GhRetries, MAX_RATE_RETRIES, SECONDARY_WAIT_MS } from "./common";
 import {
+  FORMER_STAGES_COLUMNS,
   type GhResult,
   INSTALLERS_COLUMNS,
   LOADERS_COLUMNS,
@@ -2058,6 +2059,7 @@ beforeAll(() => {
     ])
   );
   writeFileSync(path.join(copiesDir, "loaders.tsv"), tsv(LOADERS_COLUMNS, []));
+  writeFileSync(path.join(copiesDir, "former-stages.tsv"), tsv(FORMER_STAGES_COLUMNS, []));
 
   // The count: each store's reads of alpha, by the copy path the count gives them. store_a's come
   // from acme/skills's user skills, store_b's from the package the image carries, store_c's from
@@ -3941,6 +3943,7 @@ test("a Legion profile installs what its deployment gives each role at its start
   mkdirSync(copies, { recursive: true });
   for (const file of [
     "prefix-table.tsv",
+    "former-stages.tsv",
     "installers.tsv",
     "loaders.tsv",
     "skill-copies.tsv",
@@ -6987,6 +6990,7 @@ function copiesWith(
   mkdirSync(dir, { recursive: true });
   for (const file of [
     "prefix-table.tsv",
+    "former-stages.tsv",
     "installers.tsv",
     "manifests.tsv",
     "loaders.tsv",

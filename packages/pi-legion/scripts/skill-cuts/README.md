@@ -555,7 +555,8 @@ names in two or more repositories, the manifests and installers that install eac
 files outside a skill that name one (found by code search, paced under its limit), and the
 copy-prefix table the read count is attributed by. Its files are listed in `copies.ts`'s header.
 With `--cache-dir`, each owner's listing, each repository's read (its commit, the tree entries it
-keeps and every blob it read) and each finished code search is saved there the moment it ends,
+keeps and every blob it read), each finished code search, each prepack script's history and each
+read of what git did to a directory a prepack script staged from is saved there the moment it ends,
 under a temporary name renamed into place, so a run stopped at any moment and started again with
 the same arguments reads nothing twice; the hit files the searches find are read again. A truncated
 tree is walked a level at a time in GraphQL batches of up to 50 subtrees, at most 4 reads in flight
@@ -641,13 +642,24 @@ since. For each skill an older version staged for a package that the script read
 for that package into that directory, the package's unit gets prefix rows at that path under each
 place the unit is installed (`**/node_modules/<package>/dist/skills/<name>/`, and
 `/opt/legion/<package>/dist/skills/<name>/` for a package the worker image carries), each mapped
-to the copy at the directory that version staged it from, as the tree at `--at` holds it. The rows
-name the package's unit, so `build-cases` and `build-tasks` resolve that unit at a session's
-commit as they resolve any. Under the script's line, `skill-copies.md` names each such path with
-the commits that staged it there (`from <commit> (<date>) until <commit> (<date>)`), and each
-path that gets no row, with why: the tree at `--at` holds no `SKILL.md` at the directory it was
-staged from (a skill renamed or removed since), or the package is no package unit of the script's
-own repository.
+to the copy at the directory that version staged it from, as the tree at `--at` holds it. Where the
+tree at `--at` holds no `SKILL.md` there, git says what became of it: the newest commit of the
+default branch since `windowStart`, up to the commit read, that changed `<dir>/SKILL.md`
+(`repos/<r>/commits?sha=<commit read>&path=<dir>/SKILL.md&since=<windowStart>&per_page=1`), and
+that commit's files (`repos/<r>/commits/<sha>`). When that commit renamed the file (status
+`renamed`, its `previous_filename` the staged one) to a directory the tree at `--at` holds a copy
+at, the rows map the path to that copy, under the name the script staged, its former name: the
+row's `name` is that former name. Each of those reads goes through the run's gh rules and is kept
+in the cache. The rows name the package's unit, so `build-cases` and `build-tasks` resolve that
+unit at a session's commit as they resolve any. Under the script's line, `skill-copies.md` names
+each such path with the commits that staged it there (`from <commit> (<date>) until <commit>
+(<date>)`) and the rename that maps it, and each path that gets no row, with why: the tree at
+`--at` holds no `SKILL.md` at the directory it was staged from and git removed it, renamed it to a
+directory the tree holds no copy at, or names no commit that changed it; or the package is no
+package unit of the script's own repository. `former-stages.tsv` holds each such path at each
+place its package is installed: the script, the package, the skill's name there, the commit from
+which the script stages it there no longer, the directory git renamed it to, the copy its prefix
+row maps it to (empty for none) and why.
 
 ### `attribute`
 
@@ -659,7 +671,16 @@ bun scripts/skill-cuts/cli.ts attribute --config <skill-cuts.json> --count <coun
 
 The read count per skill copy (`attribute.ts`): it maps each read's copy path to a repository
 copy by the prefix table, then by the repository-relative skill directory a checkout's path ends
-with, then by the copies the store's context installs. Copies of several repositories at the
+with, then by the copies the store's context installs. Only the prefix table places reads under
+the worker image's install location (`/opt/legion/`, copies.ts's `IMAGE_ROOT`). Matching rows
+must agree on one copy. If no row matches or the rows disagree, the read stays unattributed
+with any former-stage note for that path. Neither checkout nor context can substitute a copy.
+A read placed by a Git rename's prefix row (a `former-stages.tsv` row with a `renamed_to`) counts
+in the renamed copy's `sessions` and `former_name_sessions`. Outside the worker image, if the
+prefix table does not decide a read that matches a former-name row, the context can choose the
+renamed copy under that name if it installs the row's unit. A copies output with no `former-stages.tsv`
+(made before `copies` wrote it) is refused (exit 1), naming the file, by `attribute` and by
+`build-cases` alike: run `copies` again. Copies of several repositories at the
 skill directory a checkout's path ends with are told apart by how the path names the repository,
 in this order: its owner and its name as two directories in a row; its name as a directory; its
 owner followed by a directory that holds its name; a directory that holds its name (`.dotfiles`

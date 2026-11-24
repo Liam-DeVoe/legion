@@ -599,6 +599,7 @@ describe.skipIf(serverDsn === undefined)(
     const NO_COPIES: R4Tables = {
       copies: [],
       prefixes: [],
+      formerStages: [],
       installers: [],
       loaders: [],
       repositories: [],

@@ -51,9 +51,10 @@
  * text files, written the moment that repository is done, keyed by repository, default branch
  * and `--at`, which name one commit), each level a truncated tree's walk finishes (keyed by
  * repository, root tree, fork flag, KEEP_RULES_VERSION and level: a tree's id fixes its content,
- * so a walk stopped midway goes on from its next level), and each code search run whole, keyed by
- * its query. A cached read makes no GitHub call; a read that failed is not cached, so it is tried
- * again.
+ * so a walk stopped midway goes on from its next level), each code search run whole, keyed by
+ * its query, each prepack script's history, and each read of what git did to a directory a
+ * prepack script staged from (step 6, `readFormerSource`). A cached read makes no GitHub call; a
+ * read that failed is not cached, so it is tried again.
  * Without `--cache-dir` the same files go to a temporary directory, removed when the run ends.
  * stderr gets one line per repository done (`copies: tree <n>/<total> <owner/repo>: <entries>
  * entries, <calls> tree reads, <seconds> s, cached|read`) and one per 25 searches with the calls
@@ -151,12 +152,12 @@
  *    `**\/node_modules/<package>/<dir>/<name>/` (for a `github:` dependency of a plugins
  *    package.json, `<package>` is the dependency's name there), and, for a package the worker
  *    image carries (one the prepack script stages or whose directory holds the Claude Code build
- *    script), at `/opt/legion/<package's last name>/<dir>/<name>/`
+ *    script), at `<IMAGE_ROOT><package's last name>/<dir>/<name>/`, IMAGE_ROOT `/opt/legion/`
  *    (packages/daemon/docker/worker.Dockerfile puts pi-legion and pi-envoy there); a Claude Code
  *    marketplace plugin's skill at `**\/plugins/cache/plugins/<marketplace>___<plugin>___*\/<dir>/`
  *    (Oh My Pi's cache) and `**\/plugins/cache/<marketplace>/<plugin>/*\/<dir>/` (Claude Code's);
  *    the plugin the build script generates, in a directory named as the plugin, at
- *    `/opt/legion/<package directory>/<plugin>/skills/<name>/`. A prepack script stages its own
+ *    `<IMAGE_ROOT><package directory>/<plugin>/skills/<name>/`. A prepack script stages its own
  *    repository's skills into its own repository's package, and a build script generates its
  *    plugin from its own repository's stages: the script of a fork that stages the same package
  *    name gives its parent's package and plugin none of the fork's copies. A skill an installer
@@ -172,7 +173,17 @@
  *    cloned repository's). Then, from the prepack script's versions during the count's window
  *    (one GraphQL history read, `prepackVersions`), each path a version staged a skill at and the
  *    script read stages it at no longer, with the rows of its package's unit
- *    (`formerStagePrefixes`). Each row maps the prefix to its repository copy. A row whose
+ *    (`formerStagePrefixes`). Each row maps the prefix to its repository copy: the copy at the
+ *    directory the script staged from, or, where the tree read holds none, the copy at the
+ *    directory git renamed that directory's SKILL.md to (`readFormerSource`: the newest commit of
+ *    the default branch since the window's start, up to the commit read, that changed
+ *    `<dir>/SKILL.md`, `repos/<r>/commits?sha=<commit read>&path=<dir>/SKILL.md&since=<window
+ *    start>&per_page=1`, and that commit's files, `repos/<r>/commits/<sha>` through gh's jq; the
+ *    file `renamed` with that `previous_filename`). Such a row's `name` is the name the script
+ *    staged, its former name. A skill git removed, or renamed to a directory the tree read holds
+ *    no copy at, gets no row, and its note says so. The cache keeps each of those reads (the
+ *    commit, keyed by repository, commit read, file and window start; the files, keyed by
+ *    repository and commit), so a run started again makes neither again. A row whose
  *    repository the configuration's `targets` do not name is left out of the table and reported
  *    in `skill-copies.md`, so the operator can add that repository to `targets`.
  * 7. Same-job pairs and the follow-the-code sentence are not found here, and no model is called:
@@ -192,8 +203,19 @@
  *                     adds its reads columns after them.
  *   prefix-table.tsv  `PREFIX_TABLE_COLUMNS`: prefix (a pattern: `**\/` at its start is any
  *                     leading directories, `*` is one path segment's text; `prefixMatches` is the
- *                     one matcher), repository, path, name, via (the unit and manifest it comes
- *                     from).
+ *                     one matcher), repository, path, name (the copy's; for a row of a path a
+ *                     prepack script staged a skill at under a name git renamed since, that former
+ *                     name), via (the unit and manifest it comes from).
+ *   former-stages.tsv `FORMER_STAGES_COLUMNS` (`formerStagePrefixes`): each path a prepack script
+ *                     staged a skill at during the count's window and stages no longer, one row
+ *                     per location of its package's unit (a prefix pattern; empty when the package
+ *                     is no unit of the script's repository): prefix, script_repository,
+ *                     script_path, package, skill (the name it staged), until (the commit from
+ *                     which the script stages it there no longer), renamed_to (the directory git
+ *                     renamed the staged directory's SKILL.md to, or empty), repository and path
+ *                     (the copy its prefix-table.tsv row maps it to, empty when no row does), note
+ *                     (why its rows map it there, or why no row maps it). attribute.ts reads it to
+ *                     count a read under a former name and to say why a path has no row.
  *   repositories.tsv  `REPOSITORIES_COLUMNS`: each repository read, its commit, fork and archived
  *                     marks, how its tree was read, its skills, or the error.
  *   loaders.tsv       `LOADERS_COLUMNS`: each file outside a skill that names a skill: repository,
@@ -2926,6 +2948,34 @@ export interface PrefixRow {
   readonly via: string;
 }
 
+/** Where a Legion pod's worker image installs the packages it carries, each in a directory of the
+ *  package's last name (packages/daemon/docker/worker.Dockerfile): the root of the prefix table's
+ *  image rows. It is an install layout, not a checkout: no directory under it names a
+ *  repository. */
+export const IMAGE_ROOT = "/opt/legion/";
+
+/** A row of former-stages.tsv (`formerStagePrefixes`): one location of a path a prepack script
+ *  staged a skill at during the count's window and stages no longer. */
+export interface FormerStageRow {
+  /** The prefix pattern of the path at one location of the package's unit; empty when the
+   *  package is no unit of the script's repository. */
+  readonly prefix: string;
+  readonly scriptRepository: string;
+  readonly scriptPath: string;
+  readonly package: string;
+  /** The name the script staged. */
+  readonly skill: string;
+  /** The commit of the script's version from which it stages the skill there no longer. */
+  readonly until: string;
+  /** The directory git renamed the staged directory's SKILL.md to (`readFormerSource`), or `""`. */
+  readonly renamedTo: string;
+  /** The copy the prefix row of `prefix` maps it to, or `""` when no row maps it. */
+  readonly repository: string;
+  readonly path: string;
+  /** Why the rows map it there, or why no row maps it. */
+  readonly note: string;
+}
+
 /** The copies of every repository read, indexed for the installers' lookups. */
 export class CopyIndex {
   private readonly byDir = new Map<string, SkillCopy>();
@@ -3356,7 +3406,7 @@ export function resolveInstallers(
     builds.some(
       (build) => build.manifest.repository === repository && build.fact.packageRoot === root
     );
-  const imageRoot = (name: string) => `/opt/legion/${name.split("/").pop() ?? name}/`;
+  const imageRoot = (name: string) => `${IMAGE_ROOT}${name.split("/").pop() ?? name}/`;
 
   // Oh My Pi plugin packages: the skills Oh My Pi scans in each (`parsePackage`: the directories
   // its manifest declares, each a skill directory or a directory of them, else the children of
@@ -3456,7 +3506,7 @@ export function resolveInstallers(
       manifest,
       action: "ships",
       members,
-      locations: [`/opt/legion/${path.posix.basename(fact.packageRoot)}/${fact.plugin}/`],
+      locations: [`${IMAGE_ROOT}${path.posix.basename(fact.packageRoot)}/${fact.plugin}/`],
       note: members.length > 0 ? "" : `the prepack script stages nothing for ${fact.package}`,
     });
   }
@@ -3904,27 +3954,68 @@ export interface PrepackVersion {
   readonly text: string;
 }
 
+/** What git did, since the count's window started, to the SKILL.md of a directory a prepack script
+ *  staged a skill from and the tree read holds no copy at (`readFormerSource`): the newest commit
+ *  of the default branch, up to the commit read, that changed it, with the file's status there
+ *  (`""` when the commit's files do not list it) and, for a rename, the directory it moved to
+ *  (`to`, else `""`); that no commit since `since` changed it; or why that could not be read. */
+export type FormerSource =
+  | {
+      readonly kind: "changed";
+      readonly commit: string;
+      readonly date: string;
+      readonly status: string;
+      readonly to: string;
+    }
+  | { readonly kind: "unchanged"; readonly since: string }
+  | { readonly kind: "failed"; readonly error: string };
+
+/** What `source` says git did to the file `file`, after "and ". */
+function sourceSaid(source: FormerSource, file: string): string {
+  if (source.kind === "unchanged") return `no commit since ${source.since} changed ${file}`;
+  if (source.kind === "failed")
+    return `what git did to ${file} could not be read (${source.error})`;
+  const commit = `${source.commit} (${source.date})`;
+  if (source.status === "removed") return `git removed ${file} at ${commit}`;
+  return source.status === ""
+    ? `the newest commit that changed ${file}, ${commit}, does not list it among its files`
+    : `the newest commit that changed ${file}, ${commit}, lists it as ${source.status}`;
+}
+
+/** A prepack script read (`manifest`, at the commit read), with its versions during the count's
+ *  window (`versions`, oldest first, the last the one read) and the reader of what git did to a
+ *  directory of its repository that it staged from (`sourceOf`, `readFormerSource`). */
+export interface PrepackScript {
+  readonly manifest: Manifest;
+  readonly versions: readonly PrepackVersion[];
+  readonly sourceOf: (from: string) => Promise<FormerSource>;
+}
+
 /**
  * The prefix rows of each path a prepack script staged a skill at during the count's window and
  * stages no longer (where the worker image of an older commit, or an older release of the
- * package, holds the skill: `/opt/legion/<package>/dist/skills/<name>/`, or under
- * `node_modules`), and a note on the script for each such path naming the commits that staged it
- * there. `scripts` are the prepack scripts read (`manifest`, at the commit read) with their
- * versions (`versions`, oldest first, the last the one read). A path is staged no longer when the
- * script read stages no skill of that name into that directory for that package. Its rows are
- * those of the package's unit (its locations and its `via`), so a profile build resolves that
- * unit at a session's commit as it resolves any, each mapped to the copy of the skill in the tree
- * read; a path whose package is no unit there, or whose skill no copy there holds, is a note
- * alone.
+ * package, holds the skill: `<IMAGE_ROOT><package>/dist/skills/<name>/`, or under
+ * `node_modules`), a note on the script for each such path naming the commits that staged it
+ * there, and its former-stages.tsv rows, one for each location of the package's unit (one with
+ * no prefix when the package is no unit), for the prepack scripts `scripts`. A path
+ * is staged no longer when the script read stages no skill of that name into that directory for
+ * that package. Its rows are those of the package's unit (its locations and its `via`), so a
+ * profile build resolves that unit at a session's commit as it resolves any, each mapped to the
+ * copy of the skill in the tree read: the copy at the directory the script staged from, or, where
+ * the tree read holds none, the copy at the directory git renamed its SKILL.md to (`sourceOf`,
+ * asked only then), the row then named as the script staged it, its former name. A path whose
+ * package is no unit there, or whose skill no copy there holds (git removed it, or renamed it to
+ * a directory the tree read holds no copy at), is a note alone.
  */
-export function formerStagePrefixes(
-  scripts: readonly { readonly manifest: Manifest; readonly versions: readonly PrepackVersion[] }[],
+export async function formerStagePrefixes(
+  scripts: readonly PrepackScript[],
   resolved: Resolved,
   index: CopyIndex
-): { prefixes: PrefixRow[]; notes: ManifestNote[] } {
+): Promise<{ prefixes: PrefixRow[]; notes: ManifestNote[]; stages: FormerStageRow[] }> {
   const prefixes: PrefixRow[] = [];
   const notes: ManifestNote[] = [];
-  for (const { manifest, versions } of scripts) {
+  const stages: FormerStageRow[] = [];
+  for (const { manifest, versions, sourceOf } of scripts) {
     const note = (text: string) =>
       notes.push({ repository: manifest.repository, path: manifest.path, note: text });
     /** A skill a version stages: its package, and the paths it is copied from and to. */
@@ -3980,28 +4071,77 @@ export function formerStagePrefixes(
           each.id === `package:${staged.package}` &&
           each.manifest.repository === manifest.repository
       );
-      const copy = index.at(manifest.repository, staged.from);
-      if (unit === undefined || copy === undefined) {
-        note(
-          `${said}; no prefix row maps that path: ${unit === undefined ? `${staged.package} is no package unit of ${manifest.repository}` : `the tree read holds no SKILL.md at ${staged.from}`}`
+      /** The note, and the former-stages.tsv row of each of `prefixes`, mapped to `copy`. */
+      const record = (
+        why: string,
+        prefixesOf: readonly string[],
+        renamedTo = "",
+        copy?: SkillCopy
+      ) => {
+        note(`${said}; ${why}`);
+        for (const prefix of prefixesOf) {
+          stages.push({
+            prefix,
+            scriptRepository: manifest.repository,
+            scriptPath: manifest.path,
+            package: staged.package,
+            skill: staged.skill,
+            until: runs.at(-1)?.until.commit ?? "",
+            renamedTo,
+            repository: copy?.repository ?? "",
+            path: copy?.path ?? "",
+            note: why,
+          });
+        }
+      };
+      if (unit === undefined) {
+        record(
+          `no prefix row maps that path: ${staged.package} is no package unit of ${manifest.repository}`,
+          [""]
         );
         continue;
       }
+      const at = unit.locations.map((location) => `${location}${staged.rel}/`);
+      let copy = index.at(manifest.repository, staged.from);
+      let renamed = "";
+      let renamedTo = "";
+      if (copy === undefined) {
+        const file = `${staged.from}/SKILL.md`;
+        const source = await sourceOf(staged.from);
+        if (source.kind !== "changed" || source.status !== "renamed") {
+          record(
+            `no prefix row maps that path: the tree read holds no SKILL.md at ${staged.from}, and ${sourceSaid(source, file)}`,
+            at
+          );
+          continue;
+        }
+        renamedTo = source.to;
+        renamed = `git renamed ${file} to ${source.to}/SKILL.md at ${source.commit} (${source.date})`;
+        copy = index.at(manifest.repository, source.to);
+        if (copy === undefined) {
+          record(
+            `no prefix row maps that path: ${renamed}, and the tree read holds no SKILL.md at ${source.to}`,
+            at,
+            renamedTo
+          );
+          continue;
+        }
+      }
       const via = unitVia(unit);
-      const rows = unit.locations.map((location) => ({
-        prefix: `${location}${staged.rel}/`,
-        repository: copy.repository,
-        path: copy.path,
-        name: copy.name,
-        via,
-      }));
-      prefixes.push(...rows);
-      note(
-        `${said}; the prefix rows ${rows.map((row) => row.prefix).join(", ")} map it to ${copy.repository} ${copy.path}`
+      const name = renamedTo === "" ? copy.name : staged.skill;
+      for (const prefix of at) {
+        prefixes.push({ prefix, repository: copy.repository, path: copy.path, name, via });
+      }
+      const mapped = `the prefix rows ${at.join(", ")} map it to ${copy.repository} ${copy.path}`;
+      record(
+        renamed === "" ? mapped : `${renamed}, so ${mapped} under its former name ${staged.skill}`,
+        at,
+        renamedTo,
+        copy
       );
     }
   }
-  return { prefixes, notes };
+  return { prefixes, notes, stages };
 }
 
 function escapeRegExp(text: string): string {
@@ -4775,6 +4915,18 @@ export const SKILL_COPIES_COLUMNS = [
   "loaded_by",
 ] as const;
 export const PREFIX_TABLE_COLUMNS = ["prefix", "repository", "path", "name", "via"] as const;
+export const FORMER_STAGES_COLUMNS = [
+  "prefix",
+  "script_repository",
+  "script_path",
+  "package",
+  "skill",
+  "until",
+  "renamed_to",
+  "repository",
+  "path",
+  "note",
+] as const;
 export const REPOSITORIES_COLUMNS = [
   "repository",
   "branch",
@@ -4878,6 +5030,9 @@ export interface CopiesResult {
   readonly notes: ManifestNote[];
   readonly prefixes: PrefixRow[];
   readonly offTargets: PrefixRow[];
+  /** former-stages.tsv's rows (`formerStagePrefixes`), each copy held to the targets as the prefix
+   *  table's rows are. */
+  readonly formerStages: FormerStageRow[];
   readonly targetsUnused: string[];
   readonly loaders: LoaderRow[];
   readonly records: QueryRecord[];
@@ -5064,7 +5219,8 @@ function markdown(result: CopiesResult): string {
     "",
     "## Prefix table",
     "",
-    `${result.prefixes.length} rows in prefix-table.tsv, each to a repository the configuration's targets name.`
+    `${result.prefixes.length} rows in prefix-table.tsv, each to a repository the configuration's targets name. ` +
+      `${result.formerStages.length} rows in former-stages.tsv, one for each path a prepack script staged a skill at during the window and stages no longer, at each place its package is installed (each manifest's notes above say why its rows map it where they do, or why no row maps it).`
   );
   if (result.offTargets.length > 0) {
     const repositories = [...new Set(result.offTargets.map((row) => row.repository))].sort();
@@ -5118,6 +5274,25 @@ export function writeOutputs(out: string, result: CopiesResult): string[] {
           shown(row.path),
           row.name,
           row.via,
+        ])
+      ),
+    ],
+    [
+      "former-stages.tsv",
+      tsv(
+        FORMER_STAGES_COLUMNS,
+        result.formerStages.map((row) => [
+          row.prefix,
+          row.scriptRepository,
+          row.scriptPath,
+          row.package,
+          row.skill,
+          row.until,
+          row.renamedTo,
+          row.repository,
+          // An empty repository and path: no prefix row maps it (a root copy's path is `.`).
+          row.repository === "" ? "" : shown(row.path),
+          row.note,
         ])
       ),
     ],
@@ -5463,6 +5638,108 @@ async function prepackVersions(
     );
     return [];
   });
+}
+
+/** The commits of a path as `repos/<r>/commits?sha=<commit>&path=<path>` gives them, newest
+ *  first (`readFormerSource`). */
+const PathCommits = z.array(
+  z.looseObject({
+    sha: z.string(),
+    commit: z.looseObject({ committer: z.looseObject({ date: z.string() }).nullable() }),
+  })
+);
+/** The newest commit that changed a path, as the cache keeps it (null for none). */
+const CachedPathCommit = z.object({ commit: z.string().nullable(), date: z.string() });
+/** The jq filter a commit's files are read through: how many it lists, then one JSON array per
+ *  file, `[filename, status, previous filename]`, so its patches never sit in this process. */
+const COMMIT_FILES_JQ =
+  '(.files // [] | length), ((.files // [])[] | [.filename, .status, (.previous_filename // "")] | @json)';
+/** The most files GitHub lists of a commit on one page, so a list this long may be cut. */
+const COMMIT_PAGE_FILES = 300;
+/** A commit's files as the cache keeps them, each `[filename, status, previous filename]`. */
+const CachedCommitFiles = z.object({ files: z.array(CompareFile) });
+
+/**
+ * What git did to `<from>/SKILL.md` of `repo` since `windowStart` (`FormerSource`): the newest
+ * commit of the default branch up to the commit read that changed it
+ * (`repos/<r>/commits?sha=<commit read>&path=<file>&since=<windowStart>&per_page=1`), then that
+ * commit's files (`repos/<r>/commits/<sha>` through COMMIT_FILES_JQ), the file `renamed` from it
+ * (its `previous_filename`) or listed under its own name. Each read goes through the run's gh
+ * rules (`Github`: a read slot, retries, the memory limit), and the cache keeps each (the commit
+ * keyed by repository, commit read, file and window start; the files by repository and commit),
+ * so a run started again makes neither. A read that fails is not kept, goes to `failures` and
+ * gives `failed`; so does a file list of COMMIT_PAGE_FILES files that does not name the file,
+ * since GitHub lists a commit's files a page at a time.
+ */
+async function readFormerSource(
+  github: Github,
+  cache: ReadCache,
+  repo: Repository,
+  from: string,
+  windowStart: string,
+  failures: string[]
+): Promise<FormerSource> {
+  const file = `${from}/SKILL.md`;
+  const failed = (error: string): FormerSource => {
+    failures.push(
+      `what git did to ${repo.repository}:${file} since ${windowStart} could not be read: ${error}`
+    );
+    return { kind: "failed", error };
+  };
+  const commitKey = `${repo.repository}\0${repo.commit}\0${file}\0${windowStart}`;
+  let newest = cache.get("path-commit", commitKey, CachedPathCommit);
+  if (newest === undefined) {
+    try {
+      const [first] = await github.api(
+        `repos/${repo.repository}/commits?sha=${repo.commit}&path=${encodeURIComponent(file)}&since=${encodeURIComponent(windowStart)}&per_page=1`,
+        PathCommits,
+        repo.repository
+      );
+      newest = { commit: first?.sha ?? null, date: first?.commit.committer?.date ?? "" };
+    } catch (error) {
+      rethrowStop(error);
+      return failed((error as Error).message);
+    }
+    cache.put("path-commit", commitKey, newest);
+  }
+  const commit = newest.commit;
+  if (commit === null) return { kind: "unchanged", since: windowStart };
+  const filesKey = `${repo.repository}\0${commit}`;
+  let listed = cache.get("commit-files", filesKey, CachedCommitFiles);
+  if (listed === undefined) {
+    let lines: string[];
+    try {
+      const text = await github.text(
+        ["api", `repos/${repo.repository}/commits/${commit}`, "--jq", COMMIT_FILES_JQ],
+        repo.repository
+      );
+      lines = text.split("\n").filter((line) => line !== "");
+    } catch (error) {
+      rethrowStop(error);
+      return failed(`the files of ${commit}: ${(error as Error).message}`);
+    }
+    const [count = "", ...rest] = lines;
+    const files = rest.map((line) => CompareFile.safeParse(parseJson(line)));
+    if (!/^\d+$/.test(count) || Number(count) !== rest.length || files.some((f) => !f.success))
+      return failed(`the files of ${commit} are not of their shape`);
+    listed = { files: files.flatMap((parsed) => (parsed.success ? [parsed.data] : [])) };
+    cache.put("commit-files", filesKey, listed);
+  }
+  const found = listed.files.find(([filename, status, previous]) =>
+    status === "renamed" ? previous === file : filename === file
+  );
+  if (found === undefined && listed.files.length >= COMMIT_PAGE_FILES)
+    return failed(
+      `${commit} lists ${listed.files.length} files, the most GitHub lists on one page, so its list may be cut`
+    );
+  const [filename = "", status = ""] = found ?? [];
+  return {
+    kind: "changed",
+    commit,
+    date: newest.date,
+    status,
+    to: status === "renamed" ? path.posix.dirname(filename) : "",
+  };
 }
 
 /** Reads the repositories, skills, manifests and loaders of one run. */
@@ -5902,9 +6179,9 @@ async function readAll(
   }
 
   // 6. The prefix table: the installers' rows, and the rows of each path a prepack script staged a
-  // skill at during the count's window and stages no longer (`formerStagePrefixes`), held to the
-  // configuration's targets.
-  const scripts: { manifest: Manifest; versions: PrepackVersion[] }[] = [];
+  // skill at during the count's window and stages no longer (`formerStagePrefixes`, with git's
+  // renames, `readFormerSource`), held to the configuration's targets.
+  const scripts: PrepackScript[] = [];
   for (const manifest of read) {
     if (manifest.kind !== "prepack-script") continue;
     const repo = repositories.find((each) => each.repository === manifest.repository);
@@ -5917,9 +6194,13 @@ async function readAll(
       config.windowStart,
       failures
     );
-    scripts.push({ manifest, versions });
+    scripts.push({
+      manifest,
+      versions,
+      sourceOf: (from) => readFormerSource(github, cache, repo, from, config.windowStart, failures),
+    });
   }
-  const former = formerStagePrefixes(scripts, resolved, index);
+  const former = await formerStagePrefixes(scripts, resolved, index);
   const known = new Set(resolved.prefixes.map(prefixRowKey));
   const table = [
     ...resolved.prefixes,
@@ -5928,6 +6209,16 @@ async function readAll(
   const targets = new Set(config.targets.map((target) => target.toLowerCase()));
   const prefixes = table.filter((row) => targets.has(row.repository.toLowerCase()));
   const mapped = new Set(prefixes.map((row) => row.repository.toLowerCase()));
+  const formerStages = former.stages.map((row) =>
+    row.repository === "" || targets.has(row.repository.toLowerCase())
+      ? row
+      : {
+          ...row,
+          repository: "",
+          path: "",
+          note: `${row.note}, a repository the configuration's targets do not name, so prefix-table.tsv leaves that row out`,
+        }
+  );
 
   return {
     at: options.at,
@@ -5946,6 +6237,7 @@ async function readAll(
     notes: [...resolved.notes, ...former.notes],
     prefixes,
     offTargets: table.filter((row) => !targets.has(row.repository.toLowerCase())),
+    formerStages,
     targetsUnused: config.targets.filter((target) => !mapped.has(target.toLowerCase())),
     loaders: [...loaders.values()].sort(
       (a, b) =>

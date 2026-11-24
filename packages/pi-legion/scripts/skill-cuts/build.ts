@@ -7165,6 +7165,7 @@ type CasesInputs = z.infer<typeof CasesInputs>;
 /** The files of the copies output that build-cases reads (readCopiesAndPlacer, and attribute.ts's
  *  readR4). */
 const COPIES_READ = [
+  "former-stages.tsv",
   "installers.tsv",
   "loaders.tsv",
   "manifests.tsv",

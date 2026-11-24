@@ -9,6 +9,7 @@ import {
   checkoutRule,
   copyPrefix,
   countOnce,
+  type FormerStagesRow,
   type InstallersRow,
   MODELS_BY_CUT_COLUMNS,
   MODELS_BY_SKILL_COLUMNS,
@@ -27,6 +28,7 @@ import {
   READ_COUNT_COLUMNS,
   rankChanged,
   readCount,
+  readCountTsv,
   type SkillCopiesRow,
   sessionFiles,
   sessionKey,
@@ -36,6 +38,7 @@ import {
 import { loadConfig, parseConfig } from "./config";
 import {
   CopyIndex,
+  FORMER_STAGES_COLUMNS,
   INSTALLERS_COLUMNS,
   LOADERS_COLUMNS,
   MANIFESTS_COLUMNS,
@@ -276,6 +279,7 @@ function f7World(): R4Tables {
       prefixRow("**/profiles/fixture/agent/skills/alpha/", ALPHA, USER_SKILLS),
       prefixRow("**/plugins/cache/acme-market/acme-tools/*/skills/beta/", TOOLS_BETA, ACME_TOOLS),
     ],
+    formerStages: [],
     loaders: [],
     repositories: [repositoryRow("acme/skills"), repositoryRow("acme/tools")],
   };
@@ -508,10 +512,10 @@ test.each([
 });
 
 // A repository and its fork each hold a copy at skills/dispatch, as cybermonklabs/legion and
-// theorem-labs/legion do; the worker image's path /opt/legion/pi-envoy/dist/skills/dispatch/
-// names neither (each repository is named legion), so the checkout rule ties. The parent's
-// package ships its dispatch and its agent-secrets, whose image path a prefix row maps; the
-// fork's marketplace plugin ships the fork's dispatch and brainstorm.
+// theorem-labs/legion do; a workspace path that names `legion` names both (each repository is
+// named legion), so the checkout rule ties. The parent's package ships its dispatch and its
+// agent-secrets, whose image path a prefix row maps; the fork's marketplace plugin ships the
+// fork's dispatch and brainstorm.
 const PARENT_SECRETS = copyRow("org/legion", "skills/agent-secrets", "agent-secrets");
 const PARENT_DISPATCH = copyRow("org/legion", "skills/dispatch", "dispatch");
 const FORK_DISPATCH = copyRow("fork-org/legion", "skills/dispatch", "dispatch", {
@@ -533,8 +537,9 @@ const PARENT_ENVOY: Unit = {
 const FORK_PLUGIN = plugin("claude-envoy", "fork-org/legion");
 
 // Catches: R1 on R4's list of the three owners, where a checkout tie of a fork and its parent
-// was unattributed at once and the installer rule never ran: 49,375 read sessions of
-// /opt/legion/pi-envoy/dist/skills/ and /opt/legion/pi-legion/dist/skills/.
+// was unattributed at once and the installer rule never ran. (That count's 49,375 read sessions
+// of /opt/legion/pi-envoy/dist/skills/ and /opt/legion/pi-legion/dist/skills/ are no checkout at
+// all: the next tests.)
 test("a checkout tie goes to the one tied copy the store's context installs, and stays unattributed when its context installs none or both of them", () => {
   const stores = parseConfig({
     ...(JSON.parse(readFileSync(CONFIG_FILE, "utf8")) as object),
@@ -560,6 +565,7 @@ test("a checkout tie goes to the one tied copy the store's context installs, and
         FORK_PLUGIN
       ),
     ],
+    formerStages: [],
     loaders: [],
     repositories: [
       repositoryRow("org/legion"),
@@ -567,7 +573,7 @@ test("a checkout tie goes to the one tied copy the store's context installs, and
     ],
   };
   const secrets = "/opt/legion/pi-envoy/dist/skills/agent-secrets/SKILL.md";
-  const dispatch = "/opt/legion/pi-envoy/dist/skills/dispatch/SKILL.md";
+  const dispatch = "/legion/workspaces/someone/legion/w-1/skills/dispatch/SKILL.md";
   const outputs = [
     // store_a's context installs the parent's package alone, through its agent-secrets read.
     query("store_a", "2026-11-22", [
@@ -592,7 +598,7 @@ test("a checkout tie goes to the one tied copy the store's context installs, and
   const attribution = attribute(stores, outputs, world);
   const tie =
     "the path ends with skills/dispatch/, the skill directory of 2 repositories (org/legion, fork-org/legion), and no directory of the path names just one of them";
-  expect(outcomesOf(attribution, "/opt/legion/pi-envoy/dist/skills/dispatch/")).toEqual([
+  expect(outcomesOf(attribution, copyPrefix(dispatch, "dispatch"))).toEqual([
     {
       outcome: `store_a: context: to org/legion skills/dispatch: ${tie}, and its context installs that one of them`,
       sessions: 1,
@@ -613,6 +619,211 @@ test("a checkout tie goes to the one tied copy the store's context installs, and
   });
   expect(countOf(attribution, FORK_DISPATCH)).toMatchObject({ sessions: 0, unattributed: 2 });
   expect(attribution.unattributedSessions).toBe(2);
+});
+
+// The worker image's layout (/opt/legion/<package directory>/...), as cybermonklabs/legion's
+// image carries pi-legion: the parent's package ships legion-worker and simplify-settled-diff
+// (both mapped by image rows), and its prepack script staged ce-simplify-code until a commit of
+// the window. The fork holds skills/ce-simplify-code and skills/brainstorm, and another repository
+// skills/ce-simplify-code, as theorem-labs/legion and sjawhar/compound-engineering-plugin do.
+const PARENT_WORKER = copyRow("org/legion", "skills/legion-worker", "legion-worker");
+const PARENT_SIMPLIFY = copyRow(
+  "org/legion",
+  "skills/simplify-settled-diff",
+  "simplify-settled-diff"
+);
+const FORK_SIMPLIFY = copyRow("fork-org/legion", "skills/ce-simplify-code", "ce-simplify-code", {
+  fork: "yes",
+  parent: "org/legion",
+});
+const OTHER_SIMPLIFY = copyRow("other/compound", "skills/ce-simplify-code", "ce-simplify-code");
+const PARENT_LEGION: Unit = {
+  unit: "package:@org/pi-legion",
+  manifest_repository: "org/legion",
+  manifest_path: "packages/pi-legion/package.json",
+  kind: "omp-package",
+  action: "ships",
+  host: "omp",
+};
+const UNTIL = "4c2dc60ce8597f90a5e48aac854f20e907cdc384";
+const IMAGE_SIMPLIFY = "/opt/legion/pi-legion/dist/skills/ce-simplify-code/";
+/** The former-stages.tsv rows copies.ts writes for ce-simplify-code at each location of the
+ *  parent's package, mapped to `copy` (none when undefined) with `note`. */
+const formerSimplify = (note: string, copy?: SkillCopiesRow): FormerStagesRow[] =>
+  ["**/node_modules/@org/pi-legion/dist/skills/ce-simplify-code/", IMAGE_SIMPLIFY].map(
+    (prefix) => ({
+      prefix,
+      script_repository: "org/legion",
+      script_path: "scripts/pi-plugin-prepack.sh",
+      package: "@org/pi-legion",
+      skill: "ce-simplify-code",
+      until: UNTIL,
+      renamed_to: copy === undefined ? "" : copy.path,
+      repository: copy?.repository ?? "",
+      path: copy?.path ?? "",
+      note,
+    })
+  );
+function imageWorld(formerStages: readonly FormerStagesRow[], more: PrefixTableRow[] = []) {
+  return {
+    copies: [PARENT_WORKER, PARENT_SIMPLIFY, FORK_SIMPLIFY, OTHER_SIMPLIFY, FORK_BRAINSTORM],
+    installers: [installs(PARENT_LEGION, PARENT_WORKER), installs(PARENT_LEGION, PARENT_SIMPLIFY)],
+    prefixes: [
+      prefixRow("/opt/legion/pi-legion/dist/skills/legion-worker/", PARENT_WORKER, PARENT_LEGION),
+      prefixRow(
+        "/opt/legion/pi-legion/dist/skills/simplify-settled-diff/",
+        PARENT_SIMPLIFY,
+        PARENT_LEGION
+      ),
+      ...more,
+    ],
+    formerStages,
+    loaders: [],
+    repositories: [
+      repositoryRow("org/legion"),
+      { ...repositoryRow("fork-org/legion"), fork: "yes", parent: "org/legion" },
+      repositoryRow("other/compound"),
+    ],
+  } satisfies R4Tables;
+}
+
+// Catches: R1 on R4's list main13, where /opt/legion/pi-legion/dist/skills/ce-simplify-code/
+// (1,084 read sessions) went to theorem-labs/legion by the checkout rule, the image's `legion`
+// directory taken for the repository's name, and /opt/legion/pi-envoy/dist/skills/
+// dispatch-brainstorming/ (19) went to it as its one skill directory: the image's layout is an
+// install location, not a checkout of any repository.
+test("a read under the worker image's install location that no prefix row maps is no checkout: a skill the parent's package staged only formerly goes to neither the fork nor another repository holding it at skills/<name>, and its outcome names that former stage", () => {
+  const removed = `no prefix row maps that path: the tree read holds no SKILL.md at skills/ce-simplify-code, and git removed skills/ce-simplify-code/SKILL.md at ${UNTIL} (2026-11-07T01:36:22Z)`;
+  const otherPrefix = prefixRow(
+    "**/plugins/cache/m/compound/*/skills/ce-simplify-code/",
+    OTHER_SIMPLIFY,
+    plugin("compound", OTHER_SIMPLIFY.repository)
+  );
+  const unknown = "/opt/legion/pi-unknown/dist/skills/ce-simplify-code/";
+  const reads = query("store_a", "2026-11-22", [
+    {
+      skill: "legion-worker",
+      copy: "/opt/legion/pi-legion/dist/skills/legion-worker/SKILL.md",
+      hashes: ["5555555555555555"],
+    },
+    { skill: "ce-simplify-code", copy: `${IMAGE_SIMPLIFY}SKILL.md`, hashes: ["6666666666666666"] },
+    // This mapped read installs another repository's same-name copy in the store's context.
+    {
+      skill: "ce-simplify-code",
+      copy: "/home/x/.claude/plugins/cache/m/compound/1.0.0/skills/ce-simplify-code/SKILL.md",
+      hashes: ["8888888888888888"],
+    },
+    { skill: "ce-simplify-code", copy: `${unknown}SKILL.md`, hashes: ["9999999999999999"] },
+    {
+      skill: "brainstorm",
+      copy: "/opt/legion/pi-envoy/dist/skills/brainstorm/SKILL.md",
+      hashes: ["7777777777777777"],
+    },
+  ]);
+  const attribution = attribute(
+    CONFIG,
+    [reads],
+    imageWorld(formerSimplify(removed), [otherPrefix])
+  );
+  const image =
+    "only the prefix table places reads under the worker image's install location /opt/legion/";
+  expect(outcomesOf(attribution, IMAGE_SIMPLIFY)).toEqual([
+    {
+      outcome: `store_a: unattributed: org/legion's scripts/pi-plugin-prepack.sh staged ce-simplify-code for @org/pi-legion here until 4c2dc60c, and stages it there no longer; ${removed}; ${image}`,
+      sessions: 1,
+    },
+  ]);
+  // No former stage names this path, so its outcome says no prefix row maps it.
+  expect(outcomesOf(attribution, "/opt/legion/pi-envoy/dist/skills/brainstorm/")).toEqual([
+    {
+      outcome: `store_a: unattributed: no prefix row maps the path; ${image}`,
+      sessions: 1,
+    },
+  ]);
+  // Even without a former-stage note, the image read cannot use the same-name copy in context.
+  expect(outcomesOf(attribution, unknown)).toEqual([
+    {
+      outcome: `store_a: unattributed: no prefix row maps the path; ${image}`,
+      sessions: 1,
+    },
+  ]);
+  expect(countOf(attribution, OTHER_SIMPLIFY).readSessions).toEqual(
+    new Set([sessionKey("store_a", "8888888888888888")])
+  );
+  for (const copy of [FORK_SIMPLIFY, FORK_BRAINSTORM])
+    expect(countOf(attribution, copy).sessions).toBe(0);
+  expect(countOf(attribution, PARENT_WORKER).sessions).toBe(1);
+});
+
+// Catches: a read of /opt/legion/pi-legion/dist/skills/ce-simplify-code/, the path
+// cybermonklabs/legion's prepack staged its skill at until #2896 renamed it simplify-settled-diff
+// (4c2dc60c), counted for no copy, or for the renamed copy with nothing to tell those reads from
+// the reads of its new name.
+test("a unique former-stage image path counts for the renamed copy under its former name, but the store's context cannot resolve a prefix-table tie", () => {
+  const renamed = `git renamed skills/ce-simplify-code/SKILL.md to skills/simplify-settled-diff/SKILL.md at ${UNTIL} (2026-11-07T01:36:22Z), so the prefix rows **/node_modules/@org/pi-legion/dist/skills/ce-simplify-code/, ${IMAGE_SIMPLIFY} map it to org/legion skills/simplify-settled-diff under its former name ce-simplify-code`;
+  const formerRow = {
+    ...prefixRow(IMAGE_SIMPLIFY, PARENT_SIMPLIFY, PARENT_LEGION),
+    name: "ce-simplify-code",
+  };
+  const builtPlugin = "/opt/legion/claude-envoy/legion/skills/ce-simplify-code/";
+  const reads = query("store_a", "2026-11-22", [
+    { skill: "ce-simplify-code", copy: `${IMAGE_SIMPLIFY}SKILL.md`, hashes: ["5555555555555555"] },
+    {
+      skill: "simplify-settled-diff",
+      copy: "/opt/legion/pi-legion/dist/skills/simplify-settled-diff/SKILL.md",
+      hashes: ["6666666666666666"],
+    },
+    // The plugin the build script generated from the same stages: no prefix row maps it.
+    { skill: "ce-simplify-code", copy: `${builtPlugin}SKILL.md`, hashes: ["7777777777777777"] },
+  ]);
+  const world = imageWorld(formerSimplify(renamed, PARENT_SIMPLIFY), [formerRow]);
+  const attribution = attribute(CONFIG, [reads], world);
+  expect(attribution.mappedPrefixes.get(IMAGE_SIMPLIFY)).toEqual(
+    new Set([shownCopy(PARENT_SIMPLIFY)])
+  );
+  // The rename is evidence about the matched path, not an alias for every read of its old name.
+  expect(outcomesOf(attribution, builtPlugin)?.[0]?.outcome).toContain(
+    "unattributed: no prefix row maps the path"
+  );
+  expect(countOf(attribution, PARENT_SIMPLIFY)).toMatchObject({
+    sessions: 2,
+    formerNameSessions: 1,
+    formerNames: ["ce-simplify-code"],
+  });
+  for (const copy of [FORK_SIMPLIFY, OTHER_SIMPLIFY])
+    expect(countOf(attribution, copy).sessions).toBe(0);
+  expect(
+    parseTsv(readCountTsv(attribution))
+      .filter((row) => row.path === PARENT_SIMPLIFY.path)
+      .map((row) => [row.sessions, row.former_name_sessions])
+  ).toEqual([["2", "1"]]);
+  const ambiguous = attribute(
+    CONFIG,
+    [reads],
+    imageWorld(world.formerStages, [
+      formerRow,
+      prefixRow(IMAGE_SIMPLIFY, FORK_SIMPLIFY, FORK_PLUGIN),
+    ])
+  );
+  expect(outcomesOf(ambiguous, IMAGE_SIMPLIFY)?.[0]?.outcome).toContain(
+    "unattributed: prefix rows match 2 copies"
+  );
+  expect(countOf(ambiguous, PARENT_SIMPLIFY)).toMatchObject({
+    sessions: 1,
+    formerNameSessions: 0,
+  });
+  expect(countOf(ambiguous, FORK_SIMPLIFY).sessions).toBe(0);
+  // Without a former-stages.tsv row of a rename, the prefix still maps to the same copy, but
+  // does not mark the read as using a former name.
+  const unmarked = attribute(CONFIG, [reads], imageWorld([], [formerRow]));
+  expect(countOf(unmarked, PARENT_SIMPLIFY)).toMatchObject({
+    sessions: 2,
+    formerNameSessions: 0,
+    formerNames: [],
+  });
+  expect(outcomesOf(unmarked, builtPlugin)?.map((item) => item.outcome)).toEqual([
+    "store_a: unattributed: no prefix row maps the path; only the prefix table places reads under the worker image's install location /opt/legion/",
+  ]);
 });
 
 // The prefix rows copies.ts gives a `github:` dependency of a plugins package.json and a pool an
@@ -697,6 +908,7 @@ test("a read under node_modules/<package>/skills/<name>/ of a github: dependency
     prefixes: resolved.prefixes
       .filter((row) => targets.has(row.repository))
       .map((row) => ({ ...row })),
+    formerStages: [],
     loaders: [],
     repositories: [...targets, "acme/dots"].map(repositoryRow),
   };
@@ -935,6 +1147,7 @@ function hostsWorld(): R4Tables {
       prefixRow("**/plugins/cache/plugins/m___cc3___*/skills/zeta/", ZETA, plugin("cc3")),
       prefixRow("**/plugins/cache/plugins/m___cc5___*/skills/iota/", IOTA, plugin("cc5")),
     ],
+    formerStages: [],
     loaders: [],
     repositories: [repositoryRow("acme/cc"), repositoryRow("acme/skills")],
   };
@@ -992,6 +1205,7 @@ test("a skill that an agent definition, a loader list, code or pi-envoy loads is
   const world: R4Tables = {
     copies,
     prefixes: [],
+    formerStages: [],
     installers: [
       installs(
         {
@@ -1439,6 +1653,7 @@ function r4Dir(root: string, world: R4Tables): string {
   return tree(root, {
     "skill-copies.tsv": rows(SKILL_COPIES_COLUMNS, world.copies),
     "prefix-table.tsv": rows(PREFIX_TABLE_COLUMNS, world.prefixes),
+    "former-stages.tsv": rows(FORMER_STAGES_COLUMNS, world.formerStages),
     "installers.tsv": rows(INSTALLERS_COLUMNS, world.installers),
     "loaders.tsv": rows(LOADERS_COLUMNS, world.loaders),
     "manifests.tsv": rows(MANIFESTS_COLUMNS, []),
@@ -1514,6 +1729,7 @@ test("the command writes the count, its report, each cut's ranking and the model
       path: "src/alpha",
       name: "alpha",
       sessions: "2",
+      former_name_sessions: "0",
       reference_sessions: "1",
       unattributed_sessions: "0",
       tie: "",
@@ -1525,6 +1741,7 @@ test("the command writes the count, its report, each cut's ranking and the model
       path: "src/beta",
       name: "beta",
       sessions: "0",
+      former_name_sessions: "0",
       reference_sessions: "0",
       unattributed_sessions: "1",
       tie: "acme/tools plugins/acme-tools/skills/beta",
@@ -1536,6 +1753,7 @@ test("the command writes the count, its report, each cut's ranking and the model
       path: "plugins/acme-tools/skills/beta",
       name: "beta",
       sessions: "1",
+      former_name_sessions: "0",
       reference_sessions: "0",
       unattributed_sessions: "1",
       tie: "acme/skills src/beta",
@@ -1754,5 +1972,76 @@ test("the command refuses missing flags, an --out inside an input, an unknown cu
   expect(wrongColumns.code).toBe(1);
   expect(wrongColumns.err).toContain(
     "loaders.tsv: its columns are repository, path, skill, not copies.ts's"
+  );
+});
+
+test("the command refuses a copies output made before copies.ts wrote former-stages.tsv, naming the file", () => {
+  const root = path.join(dir, "no-former-stages");
+  const countDir = tree(path.join(root, "count"), { "run.log": "" });
+  const copiesDir = r4Dir(path.join(root, "copies"), f7World());
+  rmSync(path.join(copiesDir, "former-stages.tsv"));
+  const spans = path.join(tree(root, { "spans.jsonl": "" }), "spans.jsonl");
+  const result = run([
+    "--config",
+    CONFIG_FILE,
+    "--count",
+    countDir,
+    "--copies",
+    copiesDir,
+    "--spans",
+    spans,
+    "--out",
+    path.join(root, "out"),
+  ]);
+  expect(result.code).toBe(1);
+  expect(result.err).toContain(
+    `${path.join(copiesDir, "former-stages.tsv")} does not exist: the copies output was made before copies.ts wrote former-stages.tsv, so run copies again`
+  );
+  expect(existsSync(path.join(root, "out", "skill-read-count.tsv"))).toBe(false);
+});
+
+test("the command writes a renamed copy's reads under its former name beside its sessions, in skill-read-count.tsv and in its report", () => {
+  const root = path.join(dir, "former-name");
+  const countDir = tree(path.join(root, "count"), {
+    "store_a/2026-11-20.txt": queryText("store_a", "2026-11-20", [
+      { skill: "ce-simplify-code", copy: `${IMAGE_SIMPLIFY}SKILL.md`, hashes: [H4] },
+      {
+        skill: "simplify-settled-diff",
+        copy: "/opt/legion/pi-legion/dist/skills/simplify-settled-diff/SKILL.md",
+        hashes: ["5555555555555555"],
+      },
+    ]),
+    "run.log": "2026-11-21T20:00:01Z\tstore_a\t2026-11-20\trc=0\tseconds=1.0\t\n",
+  });
+  const formerRow = {
+    ...prefixRow(IMAGE_SIMPLIFY, PARENT_SIMPLIFY, PARENT_LEGION),
+    name: "ce-simplify-code",
+  };
+  const copiesDir = r4Dir(
+    path.join(root, "copies"),
+    imageWorld(formerSimplify("renamed", PARENT_SIMPLIFY), [formerRow])
+  );
+  const spans = path.join(tree(root, { "spans.jsonl": "" }), "spans.jsonl");
+  const out = path.join(root, "out");
+  const result = run([
+    "--config",
+    CONFIG_FILE,
+    "--count",
+    countDir,
+    "--copies",
+    copiesDir,
+    "--spans",
+    spans,
+    "--out",
+    out,
+  ]);
+  expect(result.code).toBe(0);
+  expect(
+    parseTsv(readFileSync(path.join(out, "skill-read-count.tsv"), "utf8"))
+      .filter((row) => row.path === PARENT_SIMPLIFY.path)
+      .map((row) => [row.name, row.sessions, row.former_name_sessions])
+  ).toEqual([["simplify-settled-diff", "2", "1"]]);
+  expect(readFileSync(path.join(out, "skill-read-count.md"), "utf8")).toContain(
+    "| simplify-settled-diff | org/legion skills/simplify-settled-diff | 2 | 1 | ce-simplify-code |"
   );
 });
