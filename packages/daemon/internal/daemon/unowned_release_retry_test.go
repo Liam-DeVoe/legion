@@ -22,12 +22,33 @@ type podEndFaults struct {
 func (s *podEndFaults) EndPausePodHold(ctx context.Context, project, issue string, end store.PausePodHoldEnd, at time.Time) (bool, error) {
 	if !s.refused {
 		s.refused = true
-		if s.fail != nil {
-			s.fail()
-		}
+		s.fail()
 		return false, errors.New("the pause's hold on the pod cannot be read")
 	}
 	return s.outboxTrees.EndPausePodHold(ctx, project, issue, end, at)
+}
+
+// teardownDueAgain makes the issue's teardown row due again, as its backoff leaves it. died
+// leaves the row as a daemon that died in the failed attempt leaves it: with no attempt counted,
+// since only a run's retry counts one (record.QueuedSupervise.Attempts).
+func teardownDueAgain(t *testing.T, rig *idleRig, died bool) {
+	t.Helper()
+	if _, err := rig.pool.Exec(context.Background(), `update outbox set next_at = now() - interval '1 minute',
+		attempts = case when $2 then 0 else attempts end where issue = $1 and kind = 'issue_release'`, rig.issue.Key, died); err != nil {
+		t.Fatalf("make the teardown due again: %v", err)
+	}
+}
+
+// retriedTeardownRecorded checks what the retried teardown left: its mark cleared, so it finished,
+// and want releases recorded.
+func retriedTeardownRecorded(t *testing.T, rig *idleRig, want int) {
+	t.Helper()
+	if rig.marked(t) {
+		t.Fatal("the retried teardown left its mark behind, so it never finished")
+	}
+	if releases := rig.records(t).Releases; len(releases) != want {
+		t.Fatalf("releases recorded after the retry = %+v, want %d", releases, want)
+	}
 }
 
 // A retried teardown of the release of a pod no claim owns records what the release did, as
@@ -93,23 +114,10 @@ func TestARetriedTeardownOfAPodNoClaimOwnsRecordsWhatTheReleaseDid(t *testing.T)
 			if attempts != 1 || store.ReleaseTeardown(note) != tc.note {
 				t.Fatalf("after the failed attempt the teardown has %d attempts and its mark says %q, want 1 and %q", attempts, note, tc.note)
 			}
-			// The row due again, as its backoff leaves it; a daemon that died in the attempt
-			// counted none, since only a run's retry counts one (record.QueuedSupervise.Attempts).
-			if tc.died {
-				attempts = 0
-			}
-			if _, err := rig.pool.Exec(ctx, `update outbox set attempts = $2, next_at = now() - interval '1 minute'
-				where issue = $1 and kind = 'issue_release'`, rig.issue.Key, attempts); err != nil {
-				t.Fatalf("make the teardown due again: %v", err)
-			}
+			teardownDueAgain(t, rig, tc.died)
 			rig.drain(t)
 
-			if rig.marked(t) {
-				t.Fatal("the retried teardown left its mark behind, so it never finished")
-			}
-			if releases := rig.records(t).Releases; len(releases) != tc.records {
-				t.Fatalf("releases recorded = %+v, want %d", releases, tc.records)
-			}
+			retriedTeardownRecorded(t, rig, tc.records)
 			for _, line := range []string{idleRigUnownedTeardown, idleRigUnownedFoundNothing} {
 				want := 0
 				if line == tc.line {
@@ -145,22 +153,26 @@ func (s *clearFaults) ClearIssueRelease(ctx context.Context, project, issue stri
 // second write takes the first one's (store.RecordPodRelease). Both release rules record their
 // release this way, and each records it again on the retry: the idle release whatever the runtime
 // answers, the release of a pod no claim owns because the mark says its teardown reached the
-// runtime.
+// runtime. The release line follows the record, so the retry logs it no second time.
 func TestATeardownRetriedAfterItsRecordRecordsTheReleaseOnce(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	for _, release := range []struct {
 		name  string
 		queue func(t *testing.T, rig *idleRig)
+		// line is the release line the teardown logs once it has recorded the release.
+		line string
 	}{
-		{"the idle release", func(_ *testing.T, rig *idleRig) { rig.w.releaseIdlePod(ctx, rig.issue.Key) }},
+		{"the idle release", func(_ *testing.T, rig *idleRig) { rig.w.releaseIdlePod(ctx, rig.issue.Key) }, idleRigIdleTeardown},
 		{"the release of a pod no claim owns", func(t *testing.T, rig *idleRig) {
 			rig.stoppedImplementer(t, false)
 			rig.w.releaseUnownedPods(ctx)
-		}},
+		}, idleRigUnownedTeardown},
 	} {
 		t.Run(release.name, func(t *testing.T) {
 			rig := newIdleRig(t)
+			var logs syncBuffer
+			rig.runner.log = jsonLogger(&logs)
 			faults := &clearFaults{outboxTrees: rig.st}
 			rig.runner.trees = faults
 			if queued := rig.queuedBy(t, func() { release.queue(t, rig) }); !slices.Contains(queued, "issue_release") {
@@ -170,24 +182,20 @@ func TestATeardownRetriedAfterItsRecordRecordsTheReleaseOnce(t *testing.T) {
 			if !faults.refused {
 				t.Fatal("the teardown never reached the clear of its mark")
 			}
-			if !rig.marked(t) {
-				t.Fatal("the mark is gone though its clear was refused")
+			var mark int64
+			if err := rig.pool.QueryRow(ctx, `select id from issue_releases where issue = $1`, rig.issue.Key).Scan(&mark); err != nil {
+				t.Fatalf("the mark is gone though its clear was refused: %v", err)
 			}
-			if releases := rig.records(t).Releases; len(releases) != 1 {
-				t.Fatalf("releases recorded before the retry = %+v, want the one the first attempt wrote", releases)
+			if releases := rig.records(t).Releases; len(releases) != 1 || releases[0].Release != mark {
+				t.Fatalf("releases recorded before the retry = %+v, want the one the first attempt wrote, naming mark %d", releases, mark)
 			}
 
-			if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() - interval '1 minute'
-				where issue = $1 and kind = 'issue_release'`, rig.issue.Key); err != nil {
-				t.Fatalf("make the teardown due again: %v", err)
-			}
+			teardownDueAgain(t, rig, false)
 			rig.drain(t)
 
-			if rig.marked(t) {
-				t.Fatal("the retried teardown left its mark behind, so it never finished")
-			}
-			if releases := rig.records(t).Releases; len(releases) != 1 {
-				t.Fatalf("releases recorded after the retry = %+v, want the one release", releases)
+			retriedTeardownRecorded(t, rig, 1)
+			if got := loggedMessages(t, logs.String(), release.line); len(got) != 1 {
+				t.Fatalf("the teardown and its retry logged %d lines %q, want the 1 of the first attempt", len(got), release.line)
 			}
 		})
 	}

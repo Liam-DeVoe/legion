@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -611,12 +612,25 @@ func TestIssueSandboxAnswersASandboxThatIsGoingAbsent(t *testing.T) {
 		}
 		took := stored.GetUID()
 
-		// The release calls its writing callback once, before its first write: it took the pod.
+		// The release calls its writing callback once, before its first write: it took the pod. The
+		// callback reads the runtime's writes since the clear below, which must be none yet.
 		var wrote int
-		writing := func(context.Context) error { wrote++; return nil }
+		var before []action
+		writing := func(context.Context) error {
+			wrote++
+			before = g.writes()
+			return nil
+		}
+		g.clearActions()
 		if released, err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized, writing); err != nil || !released || wrote != 1 {
 			t.Fatalf("ReleaseIssue = %t, %v with its writing callback called %d times; want the running pod's Sandbox released and the callback called once",
 				released, err, wrote)
+		}
+		if len(before) != 0 {
+			t.Fatalf("the release had written %v when it called its writing callback, want nothing: the callback comes before the first write", before)
+		}
+		if len(g.writes()) == 0 {
+			t.Fatal("the release wrote nothing after its writing callback, or this case proves nothing")
 		}
 		if s := g.sandbox(name); s != nil {
 			t.Fatalf("after the release the API holds the Sandbox %+v, want it deleted", s)
@@ -734,4 +748,34 @@ func TestIssueSandboxAnswersASandboxThatIsGoingAbsent(t *testing.T) {
 			t.Fatalf("IssueSandbox of the released kept Sandbox = %q, present; want it absent on its record", got)
 		}
 	})
+}
+
+// A release whose writing callback fails ends there, before its first write
+// (runtime.IssueReleaser): it answers the callback's error and false, writes nothing, and leaves
+// the Sandbox and its pod as they were. So the daemon's teardown, which notes its mark from the
+// callback, takes no pod it could not note, and its retry finds the Sandbox to release.
+func TestAReleaseWhoseWritingCallbackFailsWritesNothing(t *testing.T) {
+	g := newRig(t, nil)
+	g.issueLaunchers(workerToken)
+	g.spawn(workerSpec(t))
+	name := SandboxName(workerToken)
+	before := g.sandbox(name)
+	if before == nil {
+		t.Fatalf("the API holds no Sandbox %s before the release, or this case proves nothing", name)
+	}
+	refused := errors.New("the release's mark cannot be noted")
+	g.clearActions()
+	released, err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized, func(context.Context) error { return refused })
+	if !errors.Is(err, refused) || released {
+		t.Fatalf("ReleaseIssue = %t, %v; want false and the callback's error", released, err)
+	}
+	if writes := g.writes(); len(writes) != 0 {
+		t.Fatalf("the release wrote %v after its callback failed, want nothing", writes)
+	}
+	if after := g.sandbox(name); !reflect.DeepEqual(after, before) {
+		t.Fatalf("after the failed release the API holds the Sandbox %+v, want it unchanged, %+v", after, before)
+	}
+	if got, present := g.r.IssueSandbox(testTree); !present || got != name {
+		t.Fatalf("IssueSandbox after the failed release = %q, %t; want %s present: nothing took it", got, present, name)
+	}
 }
