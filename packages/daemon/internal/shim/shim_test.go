@@ -1400,7 +1400,7 @@ func TestFramesFromADroppedConnectionReplayInOrderAfterTheNextAck(t *testing.T) 
 		}
 		p.expect(t, shimwire.AgentEnd{})
 	}
-	if got := sh.log.count("the oldest frames beyond the newest 1000 lines are dropped"); got != 1 {
+	if got := sh.log.count("the oldest frames beyond the newest 1000 lines that wait for the daemon are dropped"); got != 1 {
 		t.Fatalf("the backlog overflow was logged %d times, want once for the shim's life; log:\n%s", got, sh.log)
 	}
 	clock.idle(t)

@@ -263,6 +263,43 @@ func TestTheShimCountsEachCallOfItsLaunchByModel(t *testing.T) {
 				expectTotals(t, result, shimwire.Totals{Read: 1, SetModel: modelA, Counts: []shimwire.ModelCount{}})
 			},
 		},
+		{
+			// The frames of the shim's own that wait on a held sequence count toward the backlog's
+			// 1000 lines. Here 1200 refusals wait, so the oldest 200 are dropped, and once.
+			name: "9_frames_waiting_on_a_held_sequence_keep_the_backlogs_bound",
+			script: slices.Concat(
+				[]string{"end-chunked-half acme model-b 8388608"},
+				slices.Repeat([]string{"await-get-state"}, 16),
+				[]string{"await-go", "end-chunked-rest"},
+				slices.Repeat([]string{"answer-held " + modelA}, 16),
+			),
+			drive: func(t *testing.T, sh *running, p *peer, child *omp) {
+				child.awaitProgress(t, 1)
+				for n := 1; n <= 16+1200; n++ {
+					p.send(t, shimwire.ModelTotals{ID: fmt.Sprintf("read-%04d", n)})
+				}
+				p.sendLine(t, `{"type":"fake_go"}`)
+				if model, size := messageModel(t, p.nextWhole(t)); model != modelB || size != 8<<20 {
+					t.Fatalf("the daemon's reader got a message_end of %d bytes by %s first, want the 8 MiB one by %s", size, model, modelB)
+				}
+				for n := 217; n <= 16+1200; n++ {
+					frame := p.nextWhole(t)
+					if refused, ok := frame.(shimwire.ModelTotalsResult); !ok || refused.ID != fmt.Sprintf("read-%04d", n) || refused.OK {
+						t.Fatalf("the shim sent %#v where the refusal of read-%04d was due: the newest 1000 lines are kept", frame, n)
+					}
+				}
+				for n := 1; n <= 16; n++ {
+					result, before := p.awaitResult(t, fmt.Sprintf("read-%04d", n))
+					if len(before) != 0 {
+						t.Fatalf("frames %#v came before the answer to read %d", before, n)
+					}
+					expectTotals(t, result, shimwire.Totals{Read: uint64(n), Counts: []shimwire.ModelCount{{Model: modelB, Calls: 1}}})
+				}
+				if got := sh.log.count("the oldest frames beyond the newest 1000 lines that wait for the daemon are dropped"); got != 1 {
+					t.Fatalf("the drop was logged %d times, want once; log:\n%s", got, sh.log)
+				}
+			},
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			path := socketPath(t)

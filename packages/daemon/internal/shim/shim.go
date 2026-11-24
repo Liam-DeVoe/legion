@@ -950,19 +950,21 @@ func summarize(frame shimwire.Frame) string {
 //
 // The shim's own frames go between whole frames of the harness. While the pump holds part of a
 // harness sequence (hold), each waits, and the pump writes them after the sequence (release). So
-// none blocks on a harness that stops mid-sequence.
+// none blocks on a harness that stops mid-sequence. The waiting frames count toward the backlog's
+// bound (trim).
 type outbox struct {
-	mu           sync.Mutex
-	conn         net.Conn
-	w            *shimwire.Writer
-	backlog      [][][]byte
-	backlogLines int
-	dropped      bool
-	log          *log.Logger
+	mu      sync.Mutex
+	conn    net.Conn
+	w       *shimwire.Writer
+	backlog [][][]byte
+	dropped bool
+	log     *log.Logger
 	// held is whether the pump holds part of a harness sequence, and waiting is each frame of the
 	// shim's own that came meanwhile, in order.
 	held    bool
 	waiting [][][]byte
+	// kept is how many lines the backlog and the waiting frames hold together.
+	kept int
 }
 
 // send writes a frame of the shim's own, of one line.
@@ -977,6 +979,8 @@ func (o *outbox) sendAll(frame [][]byte) {
 	defer o.mu.Unlock()
 	if o.held {
 		o.waiting = append(o.waiting, frame)
+		o.kept += len(frame)
+		o.trim()
 		return
 	}
 	o.write(frame)
@@ -1000,6 +1004,7 @@ func (o *outbox) release(frames ...[][]byte) {
 	}
 	o.held = false
 	for i, frame := range o.waiting {
+		o.kept -= len(frame)
 		o.write(frame)
 		o.waiting[i] = nil
 	}
@@ -1018,14 +1023,25 @@ func (o *outbox) write(frame [][]byte) {
 		o.conn, o.w = nil, nil
 	}
 	o.backlog = append(o.backlog, frame)
-	o.backlogLines += len(frame)
-	for o.backlogLines > backlogLimit && len(o.backlog) > 1 {
-		o.backlogLines -= len(o.backlog[0])
-		o.backlog[0] = nil
-		o.backlog = o.backlog[1:]
+	o.kept += len(frame)
+	o.trim()
+}
+
+// trim drops the oldest whole frames while the backlog and the waiting frames hold more than
+// backlogLimit lines. The backlog's frames are the older, so they go first. The newest frame
+// stays. The caller holds o.mu.
+func (o *outbox) trim() {
+	for o.kept > backlogLimit && len(o.backlog)+len(o.waiting) > 1 {
+		oldest := &o.backlog
+		if len(o.backlog) == 0 {
+			oldest = &o.waiting
+		}
+		o.kept -= len((*oldest)[0])
+		(*oldest)[0] = nil
+		*oldest = (*oldest)[1:]
 		if !o.dropped {
 			o.dropped = true
-			o.log.Printf("[worker-shim] no daemon client is connected, so the oldest frames beyond the newest %d lines are dropped", backlogLimit)
+			o.log.Printf("[worker-shim] the oldest frames beyond the newest %d lines that wait for the daemon are dropped", backlogLimit)
 		}
 	}
 }
@@ -1049,7 +1065,7 @@ func (o *outbox) attach(conn net.Conn, w *shimwire.Writer) {
 			_ = conn.Close()
 			return
 		}
-		o.backlogLines -= len(o.backlog[0])
+		o.kept -= len(o.backlog[0])
 		o.backlog[0] = nil
 		o.backlog = o.backlog[1:]
 	}
