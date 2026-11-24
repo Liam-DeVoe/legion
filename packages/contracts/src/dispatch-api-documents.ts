@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ActorSchema, InboundWriterSchema } from "./dispatch-api-core";
+import { issueEventChangesFields } from "./dispatch-api-issues";
 import { ASK_TURNS } from "./dispatch-api-limits";
 import { referenceChangesFields } from "./dispatch-api-refs";
 
@@ -144,7 +145,7 @@ export const ArtifactSchema = z.strictObject(artifactFields).readonly();
 const artifactEventAncestorsFields = {
   /** The parent chain of the artifact's issue, parent first up to the root; `[]` for a root's;
    *  absent for an artifact of no issue and from a Dispatch older than the field. */
-  ancestors: z.array(z.string()).optional(),
+  ancestors: issueEventChangesFields.ancestors,
 };
 
 export const WrittenArtifactCreatedEventPayloadSchema = z

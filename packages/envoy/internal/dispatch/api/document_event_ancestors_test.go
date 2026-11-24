@@ -234,13 +234,7 @@ func TestDocumentEventsNameTheirIssueAncestors(t *testing.T) {
 
 	untouched := emptyDocument(t, handler, grandchild.Key, "Launch notes")
 	removedDocument(t, handler, untouched.ID)
-	var removalID int64
-	if err := database.Pool.QueryRow(ctx, `
-		select id from events where type = 'artifact.removed' and payload->'artifact'->>'id' = $1
-	`, untouched.ID).Scan(&removalID); err != nil {
-		t.Fatalf("read the removal's event of %s: %v", untouched.ID, err)
-	}
-	removed := readStoredDocumentEvent(t, database, removalID)
+	removed := readStoredDocumentEvent(t, database, artifactEvent(t, database, "artifact.removed", untouched.ID))
 	t.Run("W7 the removal of an untouched document", func(t *testing.T) {
 		requireIssueAncestors(t, "the removal of Launch notes", removed, grandchild.Key, chain)
 	})

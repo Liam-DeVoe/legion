@@ -1716,8 +1716,8 @@ func (s *Service) retrySettleLocked(room string, state *roomState, generation ui
 // wherever it is appended, and it takes what the write moved in the reference graph, so no
 // producer can stay silent about the batched backlink counts it changed. It takes the chain of
 // the document's issue too (DocumentEventAncestors), so no producer can forget it: a page open on
-// an ancestor of that issue reaches its tree from the event alone. A nil chain, a document of no
-// issue's, writes no `ancestors` member, and a root's [] writes `[]`.
+// an ancestor of that issue reaches its tree from the event alone. NameDocumentEventAncestors
+// names it on the payload.
 func ArtifactVersionEventPayload(
 	artifactID, name string,
 	version model.Version,
@@ -1729,9 +1729,7 @@ func ArtifactVersionEventPayload(
 	if diff != nil {
 		payload["diff"] = *diff
 	}
-	if ancestors != nil {
-		payload["ancestors"] = ancestors
-	}
+	NameDocumentEventAncestors(payload, ancestors)
 	model.NameReferenceChanges(payload, changes)
 	return payload
 }
@@ -1758,6 +1756,15 @@ func DocumentEventAncestors(ctx context.Context, q refs.Queryer, issue *string) 
 		ancestors = []string{}
 	}
 	return ancestors, nil
+}
+
+// NameDocumentEventAncestors names the chain DocumentEventAncestors read on a map-shaped
+// artifact event payload, the one place the three artifact payloads spell it: a nil chain, an
+// artifact of no issue's, writes no `ancestors` member, and a root's [] writes `[]`.
+func NameDocumentEventAncestors(payload map[string]any, ancestors []string) {
+	if ancestors != nil {
+		payload["ancestors"] = ancestors
+	}
 }
 
 // stampBlockIDs stamps the block ids doc's tree lacks or repeats on the tree as it stands

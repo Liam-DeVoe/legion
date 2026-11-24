@@ -871,10 +871,10 @@ function holdsTreeRead(client: QueryClient, key: string): boolean {
  * where the cache holds a query under that issue's tree read (`holdsTreeRead`), so only for a page
  * that holds the issue's tree: a tree read a write of the issue holds from reading
  * (`enabled: false`), or one the reader left for a descendant's page, counts too. Today's issue
- * page reads the same coverage key and holds no tree read, so it refreshes as before. Each issue
- * the event names (`ancestors`) is a target of its own; for an event that names none, one target
- * reaches every read under `["issue"]` and passes the coverage read of each issue the page places
- * above the event's (`issuesAboveFor`). A check handed no client marks nothing.
+ * page reads the same coverage key and holds no tree read, so no ancestor's coverage is marked for
+ * it. Each issue the event names (`ancestors`) is a target of its own; for an event that names
+ * none, one target reaches every read under `["issue"]` and passes the coverage read of each issue
+ * the page places above the event's (`issuesAboveFor`). A check handed no client marks nothing.
  * Each check is identified (`same`) by all it reads - an ancestor's by the ancestor, and the one
  * of an event that names none by the event's issue - so the feed's flush runs it once on each
  * query for the events of a batch that share it.
@@ -952,8 +952,11 @@ function waitForOutline(
   holds: AnswerHolds,
   issues: ReadonlySet<string> | undefined
 ): void {
-  const outlines = outlineWaits.get(client) ?? new Map<Query, Map<AnswerHolds, OutlineWait>>();
-  outlineWaits.set(client, outlines);
+  let outlines = outlineWaits.get(client);
+  if (outlines === undefined) {
+    outlines = new Map<Query, Map<AnswerHolds, OutlineWait>>();
+    outlineWaits.set(client, outlines);
+  }
   const known = outlines.get(outline);
   const waits = known ?? new Map<AnswerHolds, OutlineWait>();
   if (known === undefined) {
@@ -1038,6 +1041,7 @@ function waitForOutline(
 function treesHolding(
   key: string,
   event: DispatchEvent,
+  ancestors: readonly string[] | undefined,
   above: IssuesAbove
 ): RefreshTarget | undefined {
   const moved = treeNodesMoved(event);
@@ -1082,10 +1086,10 @@ function treesHolding(
   };
   // The check's identity (`same`, decision 412's cost 2) is every input it reads: the issue, the
   // kinds it moves, whether the event writes a document, which decides whether an issue above
-  // reaches an answer (`issuesAboveFor`), and the ancestors the event names - none, `[]` or a
-  // chain, each its own. So the events of a batch that agree in all of them run one check on each
-  // query (`dedupeRefreshTargets`). An ask's event is on nodes of its own (`ON_ITS_TARGET`), which
-  // no identity names.
+  // reaches an answer (`issuesAboveFor`), and the ancestors the event names (`ancestors`) - none,
+  // `[]` or a chain, each its own. So the events of a batch that agree in all of them run one check
+  // on each query (`dedupeRefreshTargets`). An ask's event is on nodes of its own (`ON_ITS_TARGET`),
+  // which no identity names.
   const same =
     moved === ON_ITS_TARGET
       ? undefined
@@ -1093,7 +1097,7 @@ function treesHolding(
           key,
           [...moved].sort(),
           DOCUMENT_WRITES[event.type] === true,
-          payloadStrings(event, "ancestors") ?? null,
+          ancestors ?? null,
         ]);
   return {
     queryKey: ["issue-tree"],
@@ -2025,7 +2029,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
         targets.push({ queryKey: issueTreeKey(ancestor) });
       }
     }
-    const holding = treesHolding(key, event, above);
+    const holding = treesHolding(key, event, ancestors, above);
     if (holding !== undefined) {
       targets.push(holding);
     }

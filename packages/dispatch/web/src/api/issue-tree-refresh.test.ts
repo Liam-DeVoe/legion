@@ -2503,6 +2503,11 @@ test("a batch marks the same reads through the feed's dedupe as with every targe
       version("CORE-2", ["CORE-1"]),
       version("CORE-2", []),
     ],
+    "a version of C with none, then one with no chain": [version("CORE-2", []), version("CORE-2")],
+    "a version of C with none, then one with a chain": [
+      version("CORE-2", []),
+      version("CORE-2", ["CORE-1"]),
+    ],
     "versions of a grandchild with different chains": [
       version("CORE-3", []),
       version("CORE-3"),
