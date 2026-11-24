@@ -514,11 +514,12 @@ async function expectNamedShown(shown: readonly NamedElement[], at: string): Pro
 
 /**
  * Fails unless the foot of the issues table on `page` is clear at each of `sizes`, read through
- * the shared probe (`expectFootClear`, e2e/foot-probe.ts) against every foot element
- * (`FOOT_ELEMENTS`), at the real end of every scroller, and each element of `shown` has a box
- * there with each control it names on the page and free at its centre (`expectNamedShown`). Each
- * reading's `FOOT-CELL` line names it `issues-table <WxH> <floats>`. Then scrolls the document and
- * the table's box back to their start, where the rows a row's next press picks are drawn.
+ * the shared probe (`expectFootClear`, e2e/foot-probe.ts) against every foot element that
+ * `readFootElements` lists, at the real end of every scroller, and each element of `shown` has
+ * a box there with each control it names on the page and free at its centre
+ * (`expectNamedShown`). Each reading's `FOOT-CELL` line names it `issues-table <WxH> <floats>`.
+ * Then scrolls the document and the table's box back to their start, where the rows a row's next
+ * press picks are drawn.
  */
 async function expectFootClearAt(
   page: Page,

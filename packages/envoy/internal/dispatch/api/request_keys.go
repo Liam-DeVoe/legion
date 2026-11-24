@@ -80,14 +80,14 @@ import (
 //   - A write made of steps that each commit in a transaction of their own, the status change
 //     (status_change.go), keeps its progress as its recovery point instead: each step adds what it
 //     made in its own transaction - the ids of its events and of the asks it withdrew to the head
-//     on the key's row, and its entry, with its issue as the step answered it, as a row of
-//     request_key_steps - and once the last step has run the write marks the point finished, with
-//     the answer's issue. A repeat that finds the point finished, or beside a stored success, is
-//     answered from it by the route's keyedReplay. A repeat that finds no answer and no mark, its
-//     holder gone, takes the key over as a new attempt, whatever the holder committed, and that
-//     attempt runs only the steps the point does not hold (keyedRoute.resumes). A stored answer
-//     that is not a success is replayed as it was stored. Every reader of a point reads it with
-//     the steps' entries (recoveryPointRead).
+//     on the key's row, and its entry, with its issue as the step answered it, and what a step of
+//     an option changed, as a row of request_key_steps - and once the last step has run the write
+//     marks the point finished, with the answer's issue. A repeat that finds the point finished, or
+//     beside a stored success, is answered from it by the route's keyedReplay. A repeat that finds
+//     no answer and no mark, its holder gone, takes the key over as a new attempt, whatever the
+//     holder committed, and that attempt runs only the steps the point does not hold
+//     (keyedRoute.resumes). A stored answer that is not a success is replayed as it was stored.
+//     Every reader of a point reads it with the steps' entries and their moves (recoveryPointRead).
 //   - Every answer to a keyed request the layer judged carries the key back in the Idempotency-Key
 //     response header, a 5xx included: an earlier Dispatch ignores the header and answers without
 //     it, so a check can tell a Dispatch that judges the key from one that does not. The agents'
@@ -1290,24 +1290,28 @@ func outlivingTheClient(r *http.Request) context.Context {
 // keyedReplay reads the same type back (replayRecovered), so the two cannot disagree about the
 // point's shape. A status change's point is a head on the key's row - the ids of the events and
 // the asks its steps made, then the mark and the answer's issue - and one row per step in
-// request_key_steps holding the step's entry, which every reader reads back under changed
-// (recoveryPointRead); status_change.go names each member once (pointChanged and the others).
-// Each step writes its part in its own transaction, right after its write phase's batch
-// (queueStatusChangeStep, which writeIssue queues through docs.Ledger.AfterWrites), since the
-// step's issue as its write answered it is known only once that batch has run, and the call
-// marks the point finished in a transaction of its own (markStatusChangeFinished).
+// request_key_steps holding the step's entry and what a step of an option changed, which every
+// reader reads back under changed and moved (recoveryPointRead); status_change.go names each
+// member once (pointChanged and the others). Each step writes its part in its own transaction,
+// right after its write phase's batch (queueStatusChangeStep, which writeIssue queues through
+// docs.Ledger.AfterWrites), since the step's issue as its write answered it is known only once
+// that batch has run, and the call marks the point finished in the transaction that ends it, with
+// the comment on the named issue where it owes one (statusChangeRun.finish,
+// markStatusChangeFinished).
 type recoveryPoint interface {
 	messageRecovery | broadcastRecovery | commentRecovery | statusChangeRecovery
 }
 
 // recoveryPointRead is a request_keys row's recovery point as every reader of it reads it: the
 // point the row holds, with, for a status change, the entry of each step that committed under
-// pointChanged, in the order the steps committed (request_key_steps, migration 20261121043859). A
-// row that holds no point reads null, and one no step row names - every other route's - reads as
-// it is stored. It is an expression over request_keys, which a statement that reads it names
-// unaliased.
+// pointChanged and the move of each step that holds one under pointMoved, each in the order the
+// steps committed (request_key_steps, migration 20261121043859). A row that holds no point reads
+// null, and one no step row names - every other route's - reads as it is stored. It is an
+// expression over request_keys, which a statement that reads it names unaliased.
 const recoveryPointRead = `recovery || coalesce((
-		select jsonb_build_object('` + pointChanged + `', jsonb_agg(s.entry order by s.id))
+		select jsonb_build_object(
+			'` + pointChanged + `', jsonb_agg(s.entry order by s.id),
+			'` + pointMoved + `', coalesce(jsonb_agg(s.moved order by s.id) filter (where s.moved is not null), '[]'))
 		from request_key_steps s
 		where s.login = request_keys.login and s.idempotency_key = request_keys.idempotency_key
 		having count(*) > 0), '{}')`

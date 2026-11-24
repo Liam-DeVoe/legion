@@ -68,7 +68,6 @@ import {
 import {
   expectFootClear,
   expectNoEndRoom,
-  FOOT_ELEMENTS,
   FOOT_NAMES,
   footCellLine,
   navigationProblems,
@@ -1397,7 +1396,7 @@ test("a list that scrolls inside Pending changes is not read against the floats,
     }
   }, PENDING_CHANGES);
   await expect
-    .poll(async () => (await page.evaluate(readFootElements, FOOT_ELEMENTS)).problems, {
+    .poll(async () => (await page.evaluate(readFootElements)).problems, {
       message: `pending-list ${at}: each control a fixed box lies over is covered, and no other`,
     })
     .toEqual([
