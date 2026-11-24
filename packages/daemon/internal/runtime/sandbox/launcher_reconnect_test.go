@@ -261,10 +261,11 @@ type redialedLauncher struct {
 // the test when the resolver refuses the hello.
 func redial(t *testing.T, g *rig, token claim.Token, running uint64, hangUp bool) *redialedLauncher {
 	t.Helper()
-	_, role, ok := token.Cut()
+	_, slot, ok := token.Cut()
 	if !ok {
 		t.Fatalf("%s names no role", token)
 	}
+	role := launcherOf(slot)
 	name := SandboxName(token)
 	pod := g.pod(name)
 	if pod == nil || g.secret(roleSecretName(name, role)) == nil {
