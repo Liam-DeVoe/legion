@@ -179,8 +179,8 @@ func (s *supervision) podUpdateWalkTurn() chan struct{} {
 }
 
 // podUpdateGroups is every claim of claims an update round can cover, by issue, each group in
-// token order, and those issues in key order. A claim with no issue (the project controller's) is in no round, and a retired
-// claim runs nothing on any pod (reconcilePodUpdates).
+// token order, and those issues in key order. A claim with no issue (the project controller's) is
+// in no round, and a retired claim runs nothing on any pod (reconcilePodUpdates).
 func podUpdateGroups(claims []supervise.Claim) ([]string, map[string][]supervise.Claim) {
 	byIssue := map[string][]supervise.Claim{}
 	var issues []string
@@ -2867,18 +2867,18 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 // A claim no machine of this daemon holds is asked nothing: its row would find no machine to
 // publish under and end, so every tick would enqueue it again.
 //
-// A claim whose agent has not said it is ready (supervise.SaidReady) is asked at a later tick.
-// Such a claim is queued, launching, registered but not ready, under a suspension that holds (the
+// A claim whose agent has not said it is ready (supervise.SaidReady) is asked at a later tick. Such
+// a claim is queued, launching, registered but not ready, under a suspension that holds (the
 // operator's or the controller's), or records an agent a project's pause stopped and still owes a
-// launch, by the one exception (podHolds.owes; the round asks no other claim the daemon
-// suspended: roundAsks, roundClock.passesOver). No live session of it holds the role's topic, so
-// the publish would end at notify.ErrNoHolder at every sweep, and the machine refuses the ask of an
-// agent the pause stopped before any publish (supervise's UpdateAskSuspended): a row and a log
-// line a minute for a claim that may stay suspended until a resume lifts its hold or the pause's
-// resume launches its agent. The first tick after the agent says it is ready asks it. A ready session
-// claims its topic inside its first turn or at the first-turn bound (supervise.SaidReady), so an
-// ask in that short window can still end at notify.ErrNoHolder, and the claim is then asked again
-// at a later sweep, as above.
+// launch, by the one exception (podHolds.owes; the round asks no other claim the daemon suspended:
+// roundAsks, roundClock.passesOver). No live session of it holds the role's topic, so the publish
+// would end at notify.ErrNoHolder at every sweep, and the machine refuses the ask of an agent the
+// pause stopped before any publish (supervise's UpdateAskSuspended): a row and a log line a minute
+// for a claim that may stay suspended until a resume lifts its hold or the pause's resume launches
+// its agent. The first tick after the agent says it is ready asks it. A ready session claims its
+// topic inside its first turn or at the first-turn bound (supervise.SaidReady), so an ask in that
+// short window can still end at notify.ErrNoHolder, and the claim is then asked again at a later
+// sweep, as above.
 //
 // The ask states the round's bound (roundClock.roundBound), read at the clock's now with the time
 // a project's pause held the pod. A round no claim of group records the opening of has no bound
@@ -3380,8 +3380,8 @@ func awaitsAnswer(c supervise.Claim, round string, clock roundClock) bool {
 //     any group it is given.
 //   - A failed claim's launches or prompts ran out, so it runs no process and no turn of it runs
 //     on the pod. Its machine ignores the round's post, and only a retry of its agent brings that
-//     agent back (supervise's onRetry and onAskedRetry rows), which the round does not make. Holding the
-//     round for its answer held the pod, and every answered worker's next task with it, for an
+//     agent back (supervise's onRetry and onAskedRetry rows), which the round does not make.
+//     Holding the round for its answer held the pod, and every answered worker's next task with it, for an
 //     answer it can never give: on the first contract-46 roll a planner that had failed at
 //     contract 41 recorded no round at all, and held its issue's round open behind the three
 //     workers that had answered. A retry starts it again, and it is asked like any other claim

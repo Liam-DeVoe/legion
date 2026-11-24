@@ -575,8 +575,9 @@ func (r *claimCompactionLive) operatorCompactsAPhaseWorker() {
 // controllerCompactsAndIsToldTwice drives the controller's own door — a controller grant minted
 // from its registration, then `POST /legion/v1/claims/compact` naming the issue and the role —
 // and the one thing only a compaction that ran makes possible: a second notice. The run of
-// provider-error turns reaches six, the project's controller is told once, the compaction puts
-// that run back to zero, and six more such turns tell it again.
+// provider-error turns reaches six, the issue's architect and the project's controller are each
+// told once, the compaction puts that run back to zero, and six more such turns tell them again.
+// This step reads the controller's copies (controllerNotices).
 func (r *claimCompactionLive) controllerCompactsAndIsToldTwice() {
 	t := r.t
 	token := r.token(r.notice, claim.RoleImplementer)

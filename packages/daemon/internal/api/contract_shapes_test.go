@@ -706,8 +706,8 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerProjectResume: {roots: typesOf(ProjectResumeResponse{}), bodies: []any{ProjectResumeResponse{
 			Pause: ended, Released: 3,
 		}}},
-		// The agent actions' answer, one body per state a claim can stand in after one, each naming a
-		// suspension landed and one held, so every value the table declares at the answer's three
+		// The agent actions' answer, one body per state a claim can stand in after one, each naming
+		// a suspension landed and one held, so every value the table declares at the answer's three
 		// enumerated fields is carried by some body (agentActionBodies). The goldens
 		// (`agent-*.json`) pin real answers, which name a suspender only where one holds; a
 		// fixture body is maximal.

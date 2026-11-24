@@ -21,9 +21,9 @@ const (
 	// from [step/2, step] and caps at 32 times its base, which this ladder's exactness forbids.
 	promptRetryFirst = 30 * time.Second
 	promptRetryMax   = 10 * time.Minute
-	// providerErrorRunTold is the run of provider-error turns at which the project's controller
-	// is told, once (Deps.ProviderErrorRunReached). There is no hold and no attempt limit behind
-	// it: a chain's bottom refusing deterministically costs one request every promptRetryMax.
+	// providerErrorRunTold is the run of provider-error turns at which the run is handed, once, to
+	// Deps.ProviderErrorRunReached. There is no hold and no attempt limit behind it: a chain's
+	// bottom refusing deterministically costs one request every promptRetryMax.
 	providerErrorRunTold = 6
 )
 
@@ -60,7 +60,7 @@ func promptRetryDelay(attempt int) time.Duration {
 //
 // The cause is named once here and handed to whoever writes it down, since one failed turn has
 // one cause and the words are the same in the claim's failure, in the prompt the task goes
-// behind and in the controller's notice.
+// behind and in the notice at providerErrorRunTold.
 func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) error {
 	cause, failed, err := m.providerErrorTurnEnded(ctx, providerErrorTurn{
 		status: r.HTTPStatus, model: r.Model,
@@ -163,8 +163,8 @@ func (m *Machine) providerErrorRunOver(line string, attrs ...any) bool {
 //   - 5xx, 408 and 429 are the provider saying "not now", which the ladder waits out;
 //   - 401 and 403 are a credential, which is the fleet's and not this claim's work
 //     (dispatch://INFRA-956/comment/838bf35d-69dd-4fb2-a1b3-4b474b4525b3). Failing every claim
-//     whose turn hits one is worse than sending the task again, and the notice the project's
-//     controller is given at six such turns in a row is what tells a person
+//     whose turn hits one is worse than sending the task again, and the notice at
+//     providerErrorRunTold, given at six such turns in a row, is what tells a person
 //     (tellOfProviderErrors);
 //   - no status at all is a turn that ends with nothing but a message, two kinds among them.
 //     A content-filter refusal clears because the plugin has already moved the session down its
@@ -216,8 +216,8 @@ func promptRetryDue(m *Machine, ctx context.Context, _ Event) error {
 // status the provider answered, else nothing more than that a provider failed. A refusal's
 // own explanation is itself refused when it is sent back
 // (dispatch://INFRA-956/artifact/cause-evidence-md), so the provider's text reaches neither the
-// prompt this is written into nor the controller's notice. A content filter's refusal carries no
-// status, so it is the second of the two.
+// prompt this is written into nor the notice at providerErrorRunTold. A content filter's refusal
+// carries no status, so it is the second of the two.
 func providerErrorCause(status int) string {
 	if status != 0 {
 		return "a provider error (HTTP " + strconv.Itoa(status) + ")"
@@ -242,7 +242,8 @@ func providerErrorTask(cause string) string {
 // turns, and it is a notice rather than a hold: R2 forbids an attempt limit. model is the model
 // the failed request went to, and is empty when the error named none. next is what the daemon does
 // about the turn that reached the count, in the caller's words: a prompt's task is kept and sent
-// again, and a turn that ran no prompt of the daemon's has no task to send (providerErrorTurnEnded).
+// again, and a turn that ran no prompt of the daemon's has no task to send
+// (providerErrorTurnEnded).
 func (m *Machine) tellOfProviderErrors(model, cause, next string) {
 	if m.claim.ProviderErrorRun != providerErrorRunTold || m.deps.ProviderErrorRunReached == nil {
 		return

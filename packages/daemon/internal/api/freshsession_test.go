@@ -201,8 +201,10 @@ func freshSessionCases() []freshSessionCase {
 		{
 			// The controller's suspension, which both doors lift: the operator's lifts every
 			// suspension, and the controller's its own. The operator's own suspension is the
-			// controller door's SUSPENDED_BY_OPERATOR (TestTheControllerCannotGetPastTheOperatorsSuspension),
-			// and the operator's door is held to it in TestTheOperatorLiftsItsOwnSuspensionAndTheControllers.
+			// controller door's SUSPENDED_BY_OPERATOR
+			// (TestTheControllerCannotGetPastTheOperatorsSuspension), and the operator's door is
+			// held to it in
+			// TestTheOperatorLiftsItsOwnSuspensionAndTheControllers.
 			name: "a suspended phase worker", issue: "LEGION-209", role: claim.RoleImplementer, facts: 1, launches: true,
 			start: controllerSuspendedImplementer,
 		},
@@ -267,11 +269,11 @@ func freshSessionCases() []freshSessionCase {
 
 // Every claim of the project that is not in a turn gets a new session through either door: the
 // claim forgets the session it recorded and starts again, and the run of provider errors it
-// carried starts again with it, so the project's controller can be told a second time. A phase
-// worker that comes back owing no task is started through its issue's phase, which is what
-// hands it that phase's task: without it a tester waiting on CI, or a worker an idle release
-// suspended, would come back in a new session with nothing to do. A claim that still owes a
-// task keeps it, and a root architect works no phase at all.
+// carried starts again with it, so the issue's architect and the project's controller can be told
+// a second time. A phase worker that comes back owing no task is started through its issue's
+// phase, which is what hands it that phase's task: without it a tester waiting on CI, or a worker
+// an idle release suspended, would come back in a new session with nothing to do. A claim that
+// still owes a task keeps it, and a root architect works no phase at all.
 func TestAFreshSessionStartsEveryClaimThatIsNotInATurn(t *testing.T) {
 	for _, door := range freshSessionDoors() {
 		for _, tc := range freshSessionCases() {

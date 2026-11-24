@@ -28,8 +28,9 @@ const nonEmptyString = z.string().min(1);
  * The controller's door gives `SUSPENDED_BY_OPERATOR` (409) to every request that would get past
  * a suspension the operator holds, held for the agent's turn or landed, before it reads anything
  * else of the claim: a resume of an agent that suspension holds, a suspension of such an agent,
- * and a stop, a retry or a `fresh_session` of one. Only the operator lifts the operator's suspension.
- * The request leaves the agent as it was, but where `fresh_session` went further before that
+ * and a stop, a retry or a `fresh_session` of one. Only the operator lifts the operator's
+ * suspension. The request leaves the agent as it was, but where `fresh_session` went further before
+ * that
  * suspension took the agent over: its own suspension of the agent ran, which that suspension then
  * took over, and the agent keeps the session its claim recorded; or it left behind the session its
  * claim recorded, so the agent starts in a new session once it is started. `compact` alone is let

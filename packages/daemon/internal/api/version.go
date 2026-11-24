@@ -3745,7 +3745,9 @@ package api
 // declares it (read at the head of each of the 483 open pull requests, 2026-11-24T11:35:13Z to
 // 11:37:36Z). The merge of main `3dbaa2b2`, which declares 232 (#5271, the entry above), keeps 234:
 // 229 to 233 are other open pull requests', and no open head but this one declares 234 (read at the
-// head of each of the 478 open pull requests, 2026-11-24T12:32:36Z to 12:35:22Z).
+// head of each of the 478 open pull requests, 2026-11-24T12:32:36Z to 12:35:22Z). The merge of main
+// `9a4e7a14`, which still declares 232, keeps 234: no open head but this one declares it (read at
+// the head of each of the 482 open pull requests, 2026-11-24T13:41:35Z to 13:44:24Z).
 // Read the base's own number and every open head again at the next merge rather than from
 // this line.)
 const DaemonAPIVersion = 234

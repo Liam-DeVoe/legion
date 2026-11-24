@@ -74,8 +74,9 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 	pool := store.NewPool(raw)
 	t.Cleanup(pool.Close)
 	// Each issue's tree is admitted: its record, the slot its work holds and its open lifecycle are
-	// written in one transaction, as promotion writes them. The lifecycle is what says the tree runs
-	// now that a slot counts one issue at work, so a pass that saw the slot without it would take
+	// written in one transaction, as promotion writes them. The lifecycle is what says the tree
+	// runs now that a slot counts one issue at work, so a pass that saw the slot without it would
+	// take
 	// the tree out of the workflow and its architect would be told nothing. A tree whose architect
 	// the operator starts here holds its lifecycle under the operator's authority, which that start
 	// asks for; every other tree holds it under the workflow's. Slot indexes are unique across the
@@ -189,7 +190,8 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 		t.Fatalf("decode the controller's payload %q: %v", taken.Payload, err)
 	}
 	// The tree architect's own worker-died carries no failure record, so its reason carries the
-	// launch failure's sentence instead, quoted as workflow's deathReason quotes it (strconv.Quote).
+	// launch failure's sentence instead, quoted as workflow's deathReason quotes it
+	// (strconv.Quote).
 	if want := (record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning,
 		Reason: strconv.Quote("launch failures ran out: pane launch failed")}); !reflect.DeepEqual(payload, want) {
 		t.Fatalf("the controller's payload = %+v, want the architect's own notice %+v", payload, want)

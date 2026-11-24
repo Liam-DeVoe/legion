@@ -375,9 +375,9 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 // compaction ran, and the task the claim owes, which goes again whether the compaction ran or was
 // refused (dispatch://INFRA-956 R3). A claim that owes none is sent nothing.
 //
-// A compaction that ran puts the claim's run of provider-error turns back to zero, so the
-// project's controller can be told a second time if the compacted session's turns go the same
-// way; without it the controller would be told once and never again until a turn ended with no
+// A compaction that ran puts the claim's run of provider-error turns back to zero, so the notice
+// at providerErrorRunTold can go a second time if the compacted session's turns go the same way;
+// without it the notice would go once and never again until a turn ended with no provider
 // error at all. It is this action's own reset and this action's own write: forgetSession's reset
 // belongs to a claim that is losing its session, and a compaction keeps it. A compaction that
 // was refused or skipped resets nothing — the session is as it was, so the run of refused turns

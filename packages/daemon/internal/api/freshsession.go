@@ -301,8 +301,8 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	// (refuseHold), moved forward at each step that acts on the agent: nothing yet; its own
 	// suspension of the agent, once it ran (itsSuspensionTakenOver); the agent's recorded session
 	// left behind, once the forget dropped it (sessionLeftBehind). Only an agent this request found
-	// suspended reads it after the forget, since a refusal of the resume of an agent it stopped is a
-	// sentence of the answer.
+	// suspended reads it after the forget, since a refusal of the resume of an agent it stopped is
+	// a sentence of the answer.
 	outcome := nothingChanged
 	hold := c.HeldAgainst(by)
 	switch {

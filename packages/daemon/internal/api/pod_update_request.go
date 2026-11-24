@@ -50,8 +50,9 @@ const (
 	PodUpdateNoClaim PodUpdateRefusal = iota + 1
 	// PodUpdateNoPod: the issue's claims run no worker in a pod a round could ask, in either of two
 	// ways: no claim records a process in a pod (each is suspended or between launches, or the
-	// runtime runs no pods), or the claims record a pod and none of them is a worker the round could
-	// ask (none has a session, or each one that has one has failed), so no claim would record the
+	// runtime runs no pods), or the claims record a pod and none of them is a worker the round
+	// could ask (none has a session, or each one that has one has failed), so no claim would record
+	// the
 	// round. 404 NO_POD: the claims are there, and a worker in the pod the round is opened over is
 	// what is missing.
 	PodUpdateNoPod
@@ -65,8 +66,9 @@ const (
 	PodUpdateLimited
 	// PodUpdateNotRecorded: the daemon posted the round, and no claim of the issue recorded it
 	// within the request's bound — a claim's machine is held in a long decision, a relaunch, or
-	// the claim's agent stopped — so it is no round the sweeps carry yet, and none a restart would find.
-	// 503 POD_UPDATE_NOT_RECORDED: the post may still land, and a later request answers the round
+	// the claim's agent stopped — so it is no round the sweeps carry yet, and none a restart would
+	// find. 503 POD_UPDATE_NOT_RECORDED: the post may still land, and a later request answers the
+	// round
 	// once a claim records it. A 200 is only ever a round a claim records.
 	PodUpdateNotRecorded
 	// PodUpdateBusy: a sweep's walk over the project's issues held the turn the request waits for

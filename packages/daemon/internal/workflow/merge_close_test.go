@@ -81,8 +81,9 @@ func TestATesterProjectsMergedChildCloseOpensItsCheckAndSparesTheTester(t *testi
 		"A pending report also carries wake_at", "Wait for nothing in this session",
 		// A defect with a clear fix goes to its owner as a Dispatch comment that mentions the
 		// architect of the tree whose code it is, or the controller, which files it, only when no
-		// tree owns that code; one that needs a decision is a finding ask on the report issue, whose
-		// reference the checking agent publishes to the controller, which files only on a person's
+		// tree owns that code; one that needs a decision is a finding ask on the report issue,
+		// whose reference the checking agent publishes to the controller, which files only on a
+		// person's
 		// answer.
 		"a defect with a clear fix goes to its owner", "--mention role:", "the architect of the tree whose code it is",
 		"dispatch ask", "skill://legion-worker/references/findings.md", "report issue", "controller topic"} {

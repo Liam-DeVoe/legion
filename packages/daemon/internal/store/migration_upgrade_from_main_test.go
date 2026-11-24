@@ -148,8 +148,9 @@ import (
 // design_changes.
 // This change's kind list with the merge holds change (20261119211852) stands above every other
 // version of this list but main's 20261120012547, 20261120042902, 20261120055717, 20261120144241,
-// 20261121170714, 20261123165139 and 20261123212127, and it is the last of them to rewrite outbox_kind_check: it is now that
-// constraint's last word, and it names every kind the design news's list names, step_record,
+// 20261121170714, 20261123165139 and 20261123212127, and it is the last of them to rewrite
+// outbox_kind_check: it is now that constraint's last word, and it names every kind the design
+// news's list names, step_record,
 // plan_record, conflict_confirm, merge_forward, phase_ended and design_changes among them, and
 // merge_holds_changed. A list there that left out a kind of main's newest lists would fail the
 // upgrade of a database main migrated over the rows of that kind it holds
@@ -350,7 +351,7 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 // 20261120055717 among them, is one main's run applied. One rewrites claims_suspended_by_check,
 // one deletes the controller notices of two kinds the daemon no longer writes, and 20261119211852
 // rewrites outbox_kind_check over the rows main's daemon left. All three stand below main's
-// newest, 20261121170714, and the upgrade applies them all the same: Store.apply asks each
+// newest, 20261123212127, and the upgrade applies them all the same: Store.apply asks each
 // migration whether its own version is recorded.
 var thisBranchsMigrationsMainLacks = map[int]bool{
 	20261115060739: true, 20261115121838: true, 20261119211852: true,
@@ -370,8 +371,9 @@ var thisBranchsMigrationsMainLacks = map[int]bool{
 // boot. After the upgrade the outbox takes a merge_holds_changed row, the kind 20261119211852
 // adds: its list stands above 20261119003157's, which does not name the kind, and is the last word
 // of the check. The negative controls are each of step_record, plan_record, conflict_confirm,
-// merge_forward and design_changes taken out of 20261119211852's list, where the Migrate below then fails on that
-// pending row, and merge_holds_changed taken out of it, where the row queued after the upgrade is
+// merge_forward and design_changes taken out of 20261119211852's list, where the Migrate below then
+// fails on that pending row, and merge_holds_changed taken out of it, where the row queued after
+// the upgrade is
 // refused.
 func TestADatabaseMainMigratedWithRowsOfItsNewestKindsUpgrades(t *testing.T) {
 	ctx := context.Background()
