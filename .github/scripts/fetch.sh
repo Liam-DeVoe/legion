@@ -37,10 +37,11 @@
 #     pauses, and a job limit counts each fetch at 3 × <seconds> + 3 s.
 #   * The script holds the result itself rather than curl's exit status alone: the fetch succeeded
 #     only when curl exited 0, the last answer's HTTP status (`-w '%{http_code}'`, after any
-#     redirect `-L` followed) is a 2xx, and the file -o names is there. curl 8.14.1, Debian
-#     trixie's and so the worker image's toolchain and runtime-base stages', exits 0 after a 429 or
-#     a 503 whose Retry-After waits past --retry-max-time, having printed its error 22 and written
-#     no file; 7.88.1 and 8.5.0 exit 22 there.
+#     redirect `-L` followed) is a 2xx, and the file -o names is there and not empty. curl 8.14.1,
+#     Debian trixie's and so the worker image's toolchain and runtime-base stages', exits 0 after a
+#     429 or a 503 whose Retry-After waits past --retry-max-time, having printed its error 22 and
+#     written no file; 7.88.1 and 8.5.0 exit 22 there. A 200 with an empty body would otherwise
+#     leave a 0-byte file, which the notices stage, whose files have no checksum, would ship.
 #   * A file -o names is removed before the fetch, and a retry truncates it and fetches it whole,
 #     so the file a checksum then reads holds what this call fetched and no partial body.
 #   * When the fetch did not succeed, curl's own error comes first, then one line names the stage,
@@ -102,9 +103,14 @@ case $code in
   2[0-9][0-9]) answered=true ;;
   *) answered=false ;;
 esac
-if [ "$status" -ne 0 ] || [ "$answered" = false ] || [ ! -e "$out" ]; then
+# A file of 0 bytes is no fetch either: no caller asks for an empty file (each -o file is an archive,
+# a key or a notices text; a check that the address answers writes to /dev/null, a device).
+empty=false
+if [ "$out" != /dev/null ] && [ -f "$out" ] && [ ! -s "$out" ]; then empty=true; fi
+if [ "$status" -ne 0 ] || [ "$answered" = false ] || [ ! -e "$out" ] || [ "$empty" = true ]; then
   why="curl exit $status, HTTP ${code:-000}"
-  if [ "$status" -eq 0 ] && [ "$answered" = true ]; then why="$why, and nothing at $out"; fi
+  if [ "$status" -eq 0 ] && [ "$answered" = true ] && [ ! -e "$out" ]; then why="$why, and nothing at $out"; fi
+  if [ "$status" -eq 0 ] && [ "$answered" = true ] && [ "$empty" = true ]; then why="$why, and $out is empty"; rm -f -- "$out"; fi
   echo "$stage: $url failed after up to 3 attempts of $bound s, or 2 where the first two each ran to the bound ($why)" >&2
   exit 1
 fi

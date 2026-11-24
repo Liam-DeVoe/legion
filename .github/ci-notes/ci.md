@@ -2752,7 +2752,8 @@ Each job whose limit this rests on derives it in its own note (`ci-job-daemon-go
 `ci-job-pi-envoy.md`, `ci-job-pi-legion.md`, `ci-job-pi-shared.md`, `ci-job-plugin-pack.md`,
 `ci-job-claude-envoy.md`, `ci-job-dispatch-ui.md`, `ci-job-envoy-client.md`,
 `ci-job-envoy-smoke.md`, `ci-job-envoy-go-checks.md`, `ci-job-envoy-go-race.md`,
-`ci-job-ci-images.md`, `dispatch-browser.md`, `browser-image.md`, `worker-image.md`).
+`ci-job-ci-images.md`, `ci-job-conflicts-script.md`, `dispatch-browser.md`, `browser-image.md`,
+`worker-image.md`).
 
 ## The worst case of the tool installs that read .github/scripts/ci-tools.sh
 

@@ -5,7 +5,8 @@
 # bound has passed; a stall is cut 30 s in when the bound is longer, while a body that keeps moving
 # above the floor is not; a Retry-After that would wait past twice the bound ends the retries and
 # fails by name whatever curl exits; a curl that exits 0 with a 2xx and writes no file fails by
-# name; and a call without a stage, a bound, an address or an -o file is refused.
+# name; a 200 with an empty body fails by name and leaves no file; and a call without a stage, a
+# bound, an address or an -o file is refused.
 #
 # The cases run the real script against a stand-in server on 127.0.0.1, a small Python script in
 # this harness's own temporary directory. The path of each request says what the stand-in answers,
@@ -19,7 +20,8 @@
 #   /stall-always/<case>       that stall every time;
 #   /slow/<case>               200 and SLOW_BYTES bytes at 20,000 bytes a second, twice the stall
 #                              cut's floor, for 32 s, past its 30 s window;
-#   /retry-after-long/<case>   503 with `Retry-After: 100`.
+#   /retry-after-long/<case>   503 with `Retry-After: 100`;
+#   /empty/<case>              200 with an empty body.
 # A case whose server ends each attempt by itself runs with a bound of ENDS (30 s), far above the
 # time it takes, so a slow runner cannot cut it; a case whose server stalls runs with STALLS (2 s),
 # so it costs seconds; the stall cut's two cases run with CUTS (120 s), a bound the case's
@@ -78,6 +80,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             seen[self.path] = earlier + 1
         if mode == "ok" or (mode in ("503-once", "stall-once") and earlier):
             status = 200
+        elif mode == "empty":
+            status = "empty"
         elif mode == "slow":
             status = "slow"
         elif mode in ("stall-once", "stall-always"):
@@ -95,6 +99,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(BODY[:5])
                 self.wfile.flush()
             time.sleep(120)
+            return
+        if status == "empty":
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
             return
         if status == "slow":
             # 2,000 bytes every tenth of a second: 20,000 bytes a second, until SLOW_BYTES are sent.
@@ -251,6 +260,17 @@ PATH="$work/fake-curl:$PATH" run_fetch "no file written" test "$ENDS" "$base/ok/
 check "exits 1 on the 200 with no file" "$(is "$status" 1)"
 check "names the file that is not there" \
   "$(contains "$out" "^test: $base/ok/no-file-written $(failed_after "$ENDS") (curl exit 0, HTTP 200, and nothing at $work/no-file-written)$")"
+
+echo "case: a 200 with an empty body fails by name, so no caller ships a 0-byte file"
+# The worker image's notices stage keeps what fetch.sh writes with no checksum after it, so an
+# empty answer would otherwise become an empty licence file in the image.
+run_fetch "empty" test "$ENDS" "$base/empty/download" -o "$work/empty"
+check "exits 1" "$(is "$status" 1)"
+check "names the empty file" \
+  "$(contains "$out" "^test: $base/empty/download $(failed_after "$ENDS") (curl exit 0, HTTP 200, and $work/empty is empty)$")"
+check "leaves no file at the -o path" "$(is "$([ -e "$work/empty" ] && echo there || echo gone)" gone)"
+run_fetch "empty, HEAD" test "$ENDS" "$base/empty/head" -I -o /dev/null
+check "a check that the address answers (-I -o /dev/null) still exits 0" "$(is "$status" 0)"
 
 echo "case: a call without a stage, a bound and an address, or an -o file, or with a bound that is no number of seconds"
 run_fetch "no address" test "$ENDS"

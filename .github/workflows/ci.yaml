@@ -108,8 +108,8 @@ jobs:
     # base's fetch at 65 s and its install at 125 s, so it ends within 505 s), Bun's install's 8
     # (network-install.sh's bun bound, three attempts of 120 s with their kills and pauses, 425 s),
     # 3 each for the checkout, setup-go, Bun's setup, the upload and the paths filter, and 1 for the
-    # ref. A merge group's longest chain is this job's 34 and daemon-go's 135 before ci-ok, 169,
-    # which leaves ci-ok's judging step its 10 under the queue's 180-minute check timeout.
+    # ref. Over all ci-ok needs, a merge group's longest chain is this job's 34 and daemon-go's
+    # 135, 169 minutes, which leaves ci-ok's judging step its 10 under the queue's 180.
     timeout-minutes: 34
     outputs:
       # why, for each output below with a `lane:` term: .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
@@ -1095,8 +1095,8 @@ jobs:
     if: ${{ always() }}
     # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
-    # The verdict step's 10 and the hold step's 175 (the reconcile step's 10 runs only when the
-    # hold does not), with three over for the checkout and the two refusals.
+    # The checkout's 3, the verdict step's 10 and the hold step's 175 (the reconcile step's 10
+    # runs only when the hold does not); the two refusals only print.
     timeout-minutes: 188
     env:
       JOB_TIMEOUT_MINUTES: 188 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
@@ -1106,6 +1106,7 @@ jobs:
     steps:
       # why: .github/ci-notes/ci.md#the-job-reads-nothing-of-the-tree-but-ci-oksh-ci-okjq-ci-ok-reconcilesh-and
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 3
         with:
           sparse-checkout: .github
           persist-credentials: false
