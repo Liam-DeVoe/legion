@@ -266,8 +266,10 @@ a credential that names one project may not create another or change a setting t
 — before the ref is resolved to an issue already imported, and before anything is written.
 `POST /api/v1/going/requests` takes its project from the body too, and its handler makes the same check before it records the question.
 A credential that names one project may ask of any project, and of every project at once.
-A `blocked_by` target may be an issue of any project.
-The issue create and `PATCH /api/v1/issues/{key}` make the same check for each target of another project, before any lock is taken and again under the locks.
+A `blocked_by` target and a parent may each be an issue of any project.
+The issue create and `PATCH /api/v1/issues/{key}` make the same check for each `blocked_by` target and for a parent of another project, before any lock is taken (`foreignDependencyTargets`) and again under the locks (`writeBlockedBy` for a target, and `validateIssueParent` or the create's own read of its parent for the parent).
+A result and its retraction are appended to the check's issue, which a parent of another project can put in another project, and which the path does not name.
+`POST /api/v1/issues/{key}/results` and its dry run (`POST /api/v1/issues/{key}/results/dry-run`) make the same check for that issue once, before anything is written, and `POST /api/v1/results/{id}/retract` makes it once, before it takes that issue's owner lock.
 
 The session check holds the rows classed *the calling session's* whose path names a session
 — the `agents/{session_id}` writes and `PUT /api/v1/me/agents/{session_id}/state` — to the session the caller's credential proved:

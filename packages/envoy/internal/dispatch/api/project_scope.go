@@ -233,7 +233,7 @@ func (s *server) projectOfMessage(ctx context.Context, q queryer, r *http.Reques
 // check_issue_key: a result recorded on a child against a parent's check belongs to the child.
 // The two issues can be of different projects, since an issue's parent may be of another
 // project, so a retraction asks access.CredentialCovers about a check of another project itself
-// (checkIssueProject), as the record route does.
+// (retractCheckResult), as the record route does (readResultRequest).
 func (s *server) projectOfCheckResult(ctx context.Context, q queryer, r *http.Request) (string, error) {
 	return scanProjectKey(q.QueryRow(ctx, `
 		select coalesce(i.project_key, '')
@@ -244,12 +244,8 @@ func (s *server) projectOfCheckResult(ctx context.Context, q queryer, r *http.Re
 }
 
 // checkIssueProject reads the project of a check's issue, checkIssue, for a caller whose
-// credential names one project, caller. The results routes reach a check of another project
-// through a parent of another project (resolveCheck reads the Verification documents of every
-// issue above the recording one), and a result and its retraction are appended to the check's
-// issue, which the pre-handler check, reading only the path's object, never judged. Each route
-// then asks access.CredentialCovers about that project itself. An issue with no row resolves to
-// no project and is refused, failing closed as the pre-handler check does.
+// credential names one project, caller. An issue with no row resolves to no project and is
+// refused, failing closed as the pre-handler check does.
 func checkIssueProject(ctx context.Context, q queryer, caller, checkIssue string) (string, error) {
 	project, err := scanProjectKey(q.QueryRow(ctx, `select project_key from issues where key = $1`, checkIssue))
 	if err != nil {

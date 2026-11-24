@@ -412,7 +412,7 @@ type AccountEntry struct {
 	// Account is the subject a pod's projected token carries,
 	// system:serviceaccount:<namespace>:<name>, named exactly: there is no wildcard.
 	Account string
-	// Project is the one project key the minted token may write, or empty for an entry that names
+	// Project is the one project key the minted token names, or empty for an entry that names
 	// none: the shared public-session account, whose named tokens act for Person and name no
 	// project. Only an account entry may leave it empty.
 	Project string
@@ -459,7 +459,7 @@ type WorkflowEntry struct {
 	Workflow string
 	// Ref is the git ref the run is on, such as refs/heads/main, compared exactly.
 	Ref string
-	// Project is the one project key the minted token may write.
+	// Project is the one project key the minted token names.
 	Project string
 	// Person is who the run acts for.
 	Person string
@@ -478,7 +478,7 @@ type WorkflowEntry struct {
 // minted through a workload identity pool and a token a pod's metadata server answers both carry.
 //
 // Project and Person go together too: an entry that names them mints a token that acts for that
-// person and writes that one project, exactly as an AccountEntry does for a pod, and an entry
+// person and names that one project, exactly as an AccountEntry does for a pod, and an entry
 // that names neither mints a token that names its service and no person at all.
 type GoogleEntry struct {
 	// Account is the service account's email address, the `email` claim of its identity tokens,
@@ -493,7 +493,7 @@ type GoogleEntry struct {
 	// Instance, when set, is the pattern the machine's instance name must match, in path.Match's
 	// syntax, such as example-vm-*.
 	Instance string
-	// Project, when set, is the one Dispatch project key the minted token may write. It is set
+	// Project, when set, is the one Dispatch project key the minted token names. It is set
 	// with Person and with nothing else.
 	Project string
 	// Person, when set, is who the machine's token acts for. An entry that names none mints a

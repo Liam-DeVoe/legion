@@ -374,12 +374,13 @@ func setOnce(nodes map[string]map[string]any, key, id string, write map[string]a
 // STEP_WRITER for any other writer), a plan names at least one task, each with at least one step
 // (400 PLAN_INPUT otherwise, before the node of its id is found, as the store checks a write's
 // fields first), an id whose plan is another issue's is refused 409 PLAN_OTHER_ISSUE and nothing
-// of the write is kept, each field is set once, and the answer is 200 with the plan as it stands
-// after the write. It does not refuse a plan for its generation, its source or its document, as
-// Dispatch does: dispatch.PlanWrite names the generation and the source on every write, the
-// default plan names no document (workflow's defaultPlan), and no test sends the board a plan
-// Dispatch refuses for those values, so a second copy of Dispatch's rules here would refuse
-// nothing that reaches it.
+// of the write is kept, and the answer is 200 with the plan as it stands after the write. It keeps
+// the first value written to each field (setOnce), where Dispatch replaces the plan on a write
+// whose version is above the one it holds (dispatch.HTTPClient.PutPlan). It does not refuse a plan
+// for its generation, its source or its document, as Dispatch does: dispatch.PlanWrite names the
+// generation and the source on every write, the default plan names no document (workflow's
+// defaultPlan), and no test sends the board a plan Dispatch refuses for those values, so a second
+// copy of Dispatch's rules here would refuse nothing that reaches it.
 func (b *liveDispatch) putPlan(key, id string, req *http.Request, w http.ResponseWriter) {
 	write, ok := b.daemonWrite(key, "a plan", req, w)
 	if !ok {

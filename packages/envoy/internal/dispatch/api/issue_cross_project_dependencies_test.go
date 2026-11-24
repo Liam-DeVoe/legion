@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -773,176 +774,111 @@ func TestAParentWriteTakesTheParentsProjectLock(t *testing.T) {
 	}
 }
 
-// TestAProjectScopedCallerPutsAnIssueUnderAnotherProjectsIssue: a credential that names one
-// project names a parent of another project as a credential that names no project does
-// (INFRA-4799): a create under it is made, an unforced near copy under it reaches the near-copy
-// gate, which refuses the copy and records the refusal, a move under it is taken, and a close
-// that also moves the issue under it settles the issue's documents first and closes the issue.
-func TestAProjectScopedCallerPutsAnIssueUnderAnotherProjectsIssue(t *testing.T) {
+// TestAProjectScopedCallerNamesAParentOrABlockedByTargetOfAnotherProject: a credential that names
+// one project names a parent or a blocked_by target of another project as a credential that names
+// no project does (INFRA-4799). For each field, a create that names it is made, an unforced near
+// copy that names it reaches the near-copy gate, which refuses the copy and records the refusal, a
+// PATCH that sets it is taken, and a close that also sets it settles the issue's documents first
+// and closes the issue.
+func TestAProjectScopedCallerNamesAParentOrABlockedByTargetOfAnotherProject(t *testing.T) {
 	t.Parallel()
-	rig := newBrokerTokenRigOn(t, testServerOptions{duplicateBound: nearCopyVerdictBound(t), settle: time.Hour})
-	caller := newBrokerCaller(t)
-	for _, project := range []string{"ALPHA", "BETA"} {
-		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {
-			t.Fatalf("create project %s: status=%d body=%s", project, created.Code, created.Body.String())
-		}
-	}
-	createIssue := func(project, title string) string {
-		t.Helper()
-		return createdIssue(t, "create "+title, rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
-			"project": project, "title": title, "spec": "# Spec", "force": true,
-		})).Key
-	}
-	approved := createIssue("ALPHA", "Another project's approved issue")
-	own := createIssue("BETA", "Its own project's issue")
-	const token = "a-token-scoped-to-beta"
-	answer := liveNamedToken(caller.jkt)
-	answer.Projects = []string{"BETA"}
-	rig.broker.Says(token, answer)
-	nearCopyChecks := func() int {
-		t.Helper()
-		var count int
-		if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from near_copy_checks`).Scan(&count); err != nil {
-			t.Fatalf("count the near-copy checks: %v", err)
-		}
-		return count
-	}
+	for _, field := range []string{"parent", "blocked_by"} {
+		t.Run(field, func(t *testing.T) {
+			t.Parallel()
+			rig := newBrokerTokenRigOn(t, testServerOptions{duplicateBound: nearCopyVerdictBound(t), settle: time.Hour})
+			caller := newBrokerCaller(t)
+			for _, project := range []string{"ALPHA", "BETA"} {
+				if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {
+					t.Fatalf("create project %s: status=%d body=%s", project, created.Code, created.Body.String())
+				}
+			}
+			createIssue := func(project, title string) string {
+				t.Helper()
+				return createdIssue(t, "create "+title, rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+					"project": project, "title": title, "spec": "# Spec", "force": true,
+				})).Key
+			}
+			approved := createIssue("ALPHA", "Another project's approved issue")
+			own := createIssue("BETA", "Its own project's issue")
+			const token = "a-token-scoped-to-beta"
+			answer := liveNamedToken(caller.jkt)
+			answer.Projects = []string{"BETA"}
+			rig.broker.Says(token, answer)
+			// value is what a write sends in field, and want is what an issue that names approved
+			// there reads as in named: the key itself for a parent, a list of it for blocked_by.
+			var value any = approved
+			want := approved
+			named := func(issue model.Issue) string { return valueOrNone(issue.Parent) }
+			if field == "blocked_by" {
+				value = []string{approved}
+				want = "[" + approved + "]"
+				named = func(issue model.Issue) string { return fmt.Sprint(issue.BlockedBy) }
+			}
+			nearCopyChecks := func() int {
+				t.Helper()
+				var count int
+				if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from near_copy_checks`).Scan(&count); err != nil {
+					t.Fatalf("count the near-copy checks: %v", err)
+				}
+				return count
+			}
 
-	filed := createdIssue(t, "a scoped create under a parent of another project", rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
-		"project": "BETA", "title": "Filed under another project's issue", "spec": "# Spec", "parent": approved, "force": true,
-	})))
-	if filed.Project != "BETA" || filed.Parent == nil || *filed.Parent != approved {
-		t.Fatalf("the scoped create made %s of project %s under %s, want an issue of BETA under %s", filed.Key, filed.Project, valueOrNone(filed.Parent), approved)
-	}
-	// An unforced copy of an open BETA issue under a parent of another project reaches the
-	// near-copy gate, which refuses it and records the refusal.
-	createdIssue(t, "the issue a near copy copies", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
-		"project": "BETA", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe,
-	}))
-	checksBefore := nearCopyChecks()
-	nearCopy := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
-		"project": "BETA", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe, "parent": approved,
-	}))
-	requireDuplicateRefusal(t, nearCopy)
-	if after := nearCopyChecks(); after != checksBefore+1 {
-		t.Fatalf("the gate's refusal took near_copy_checks from %d rows to %d, want one more", checksBefore, after)
-	}
+			filed := createdIssue(t, "a scoped create that names "+field+" "+want, rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+				"project": "BETA", "title": "Filed against another project's issue", "spec": "# Spec", field: value, "force": true,
+			})))
+			if filed.Project != "BETA" || named(filed) != want {
+				t.Fatalf("the scoped create made %s of project %s with %s %s, want an issue of BETA with %s %s", filed.Key, filed.Project, field, named(filed), field, want)
+			}
+			// An unforced copy of an open BETA issue that names a parent or a blocked_by target of
+			// another project reaches the near-copy gate, which refuses it and records the refusal.
+			createdIssue(t, "the issue a near copy copies", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+				"project": "BETA", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe,
+			}))
+			checksBefore := nearCopyChecks()
+			nearCopy := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+				"project": "BETA", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe, field: value,
+			}))
+			requireDuplicateRefusal(t, nearCopy)
+			if after := nearCopyChecks(); after != checksBefore+1 {
+				t.Fatalf("the gate's refusal took near_copy_checks from %d rows to %d, want one more", checksBefore, after)
+			}
 
-	moved := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{"parent": approved}))
-	if moved.Code != http.StatusOK {
-		t.Fatalf("a scoped move under a parent of another project: status=%d body=%s, want 200", moved.Code, moved.Body.String())
-	}
-	if parent := decodeBody[model.Issue](t, rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+own, nil)).Parent; parent == nil || *parent != approved {
-		t.Fatalf("the scoped move left %s under %s, want %s", own, valueOrNone(parent), approved)
-	}
-	// A close that also moves the issue under another project's issue settles the issue's
-	// documents first (settleIssueBeforeClose), which opens the spec's decision block's ask, and
-	// closes the issue. The rig settles a document only after an hour, so the spec still owes that
-	// settlement when the close arrives.
-	closer := createdIssue(t, "create the issue a scoped caller closes", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
-		"project": "BETA", "title": "An issue a scoped caller closes", "spec": closeDecision, "force": true,
-	}))
-	asks := func() int {
-		t.Helper()
-		var count int
-		if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from asks where issue_key = $1`, closer.Key).Scan(&count); err != nil {
-			t.Fatalf("count %s's asks: %v", closer.Key, err)
-		}
-		return count
-	}
-	asksBefore := asks()
-	closed := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+closer.Key, token, map[string]any{
-		"parent": approved, "status": "done",
-	}))
-	if closed.Code != http.StatusOK {
-		t.Fatalf("a scoped close under a parent of another project: status=%d body=%s, want 200", closed.Code, closed.Body.String())
-	}
-	if issue := decodeBody[model.Issue](t, closed); issue.Status != "done" || issue.Parent == nil || *issue.Parent != approved {
-		t.Fatalf("the close left %s %s under %s, want done under %s", closer.Key, issue.Status, valueOrNone(issue.Parent), approved)
-	}
-	if after := asks(); after != asksBefore+1 {
-		t.Fatalf("the close left %s with %d asks, want the %d its settlement opens", closer.Key, after, asksBefore+1)
-	}
-}
-
-// TestAProjectScopedCallerLinksAnIssueToAnotherProjectsIssue: a credential that names one project
-// links an issue to another project's issue as a credential that names no project does
-// (INFRA-4799). A blocked_by target of another project reaches the near-copy gate, which refuses
-// an unforced copy and records the refusal, and a close that names one settles the issue's
-// documents and closes it.
-func TestAProjectScopedCallerLinksAnIssueToAnotherProjectsIssue(t *testing.T) {
-	t.Parallel()
-	rig := newBrokerTokenRigOn(t, testServerOptions{duplicateBound: nearCopyVerdictBound(t), settle: time.Hour})
-	caller := newBrokerCaller(t)
-	for _, project := range []string{"ALPHA", "BETA"} {
-		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {
-			t.Fatalf("create project %s: status=%d body=%s", project, created.Code, created.Body.String())
-		}
-	}
-	createIssue := func(project, title string) string {
-		t.Helper()
-		return createdIssue(t, "create "+title, rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
-			"project": project, "title": title, "spec": "# Spec", "force": true,
-		})).Key
-	}
-	approved := createIssue("ALPHA", "Another project's approved issue")
-	const token = "a-token-scoped-to-beta"
-	answer := liveNamedToken(caller.jkt)
-	answer.Projects = []string{"BETA"}
-	rig.broker.Says(token, answer)
-	nearCopyChecks := func() int {
-		t.Helper()
-		var count int
-		if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from near_copy_checks`).Scan(&count); err != nil {
-			t.Fatalf("count the near-copy checks: %v", err)
-		}
-		return count
-	}
-
-	linked := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
-		"project": "BETA", "title": "Waits on another project's issue", "spec": "# Spec", "blocked_by": []string{approved}, "force": true,
-	}))
-	if blocked := createdIssue(t, "a scoped create blocked by another project's issue", linked).BlockedBy; !slices.Equal(blocked, []string{approved}) {
-		t.Fatalf("the scoped create's blocked_by = %v, want [%s]", blocked, approved)
-	}
-	// An unforced copy of an open BETA issue that names a blocked_by target of another project
-	// reaches the near-copy gate, which refuses it and records the refusal.
-	createdIssue(t, "the issue a near copy copies", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
-		"project": "BETA", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe,
-	}))
-	checksBefore := nearCopyChecks()
-	nearCopy := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
-		"project": "BETA", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe, "blocked_by": []string{approved},
-	}))
-	requireDuplicateRefusal(t, nearCopy)
-	if after := nearCopyChecks(); after != checksBefore+1 {
-		t.Fatalf("the gate's refusal took near_copy_checks from %d rows to %d, want one more", checksBefore, after)
-	}
-	// A close that names a blocked_by target of another project settles the issue's documents
-	// first, which opens the spec's decision block's ask, and closes the issue.
-	closer := createdIssue(t, "create the issue a scoped caller closes", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
-		"project": "BETA", "title": "An issue a scoped caller closes", "spec": closeDecision, "force": true,
-	}))
-	asks := func() int {
-		t.Helper()
-		var count int
-		if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from asks where issue_key = $1`, closer.Key).Scan(&count); err != nil {
-			t.Fatalf("count %s's asks: %v", closer.Key, err)
-		}
-		return count
-	}
-	asksBefore := asks()
-	closed := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+closer.Key, token, map[string]any{
-		"blocked_by": []string{approved}, "status": "done",
-	}))
-	if closed.Code != http.StatusOK {
-		t.Fatalf("a scoped close blocked by another project's issue: status=%d body=%s, want 200", closed.Code, closed.Body.String())
-	}
-	if issue := decodeBody[model.Issue](t, closed); issue.Status != "done" || !slices.Equal(issue.BlockedBy, []string{approved}) {
-		t.Fatalf("the close left %s %s blocked by %v, want done blocked by [%s]", closer.Key, issue.Status, issue.BlockedBy, approved)
-	}
-	if after := asks(); after != asksBefore+1 {
-		t.Fatalf("the close left %s with %d asks, want the %d its settlement opens", closer.Key, after, asksBefore+1)
+			set := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{field: value}))
+			if set.Code != http.StatusOK {
+				t.Fatalf("a scoped PATCH that sets %s %s: status=%d body=%s, want 200", field, want, set.Code, set.Body.String())
+			}
+			if got := named(decodeBody[model.Issue](t, rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+own, nil))); got != want {
+				t.Fatalf("the scoped PATCH left %s with %s %s, want %s", own, field, got, want)
+			}
+			// A close that also sets the field settles the issue's documents first
+			// (settleIssueBeforeClose), which opens the spec's decision block's ask, and closes the
+			// issue. The rig settles a document only after an hour, so the spec still owes that
+			// settlement when the close arrives.
+			closer := createdIssue(t, "create the issue a scoped caller closes", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+				"project": "BETA", "title": "An issue a scoped caller closes", "spec": closeDecision, "force": true,
+			}))
+			asks := func() int {
+				t.Helper()
+				var count int
+				if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from asks where issue_key = $1`, closer.Key).Scan(&count); err != nil {
+					t.Fatalf("count %s's asks: %v", closer.Key, err)
+				}
+				return count
+			}
+			asksBefore := asks()
+			closed := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+closer.Key, token, map[string]any{
+				field: value, "status": "done",
+			}))
+			if closed.Code != http.StatusOK {
+				t.Fatalf("a scoped close that sets %s %s: status=%d body=%s, want 200", field, want, closed.Code, closed.Body.String())
+			}
+			if issue := decodeBody[model.Issue](t, closed); issue.Status != "done" || named(issue) != want {
+				t.Fatalf("the close left %s %s with %s %s, want done with %s %s", closer.Key, issue.Status, field, named(issue), field, want)
+			}
+			if after := asks(); after != asksBefore+1 {
+				t.Fatalf("the close left %s with %d asks, want the %d its settlement opens", closer.Key, after, asksBefore+1)
+			}
+		})
 	}
 }
 
