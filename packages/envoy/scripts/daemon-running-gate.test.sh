@@ -116,12 +116,12 @@ base="$root/base"
 mkdir -p "$base/repo/legion/projects" "$base/repo/shared/legion/privateprojects"
 printf 'name: legion\n' >"$base/repo/legion/Pulumi.yaml"
 printf 'config: {}\n' >"$base/repo/legion/Pulumi.prod.yaml"
-for entry in 10:LINUX 20:BET 30:INFRA 40:OSSV; do
+for entry in 10:INITECH 20:ACME 30:GLOBEX 40:OSCORP; do
   printf 'key: %s\nimage: %s@%s\n' "${entry#*:}" "$repo" "$new_digest" >"$base/repo/legion/projects/${entry%%:*}-${entry#*:}.yaml"
 done
 printf 'key: SMOKE\nreplicas: 0\n' >"$base/repo/legion/projects/90-SMOKE.yaml"
 printf 'package privateprojects\n\nvar projects = []Project{}\n' >"$base/repo/shared/legion/privateprojects/lists.go"
-for key in LINUX BET INFRA OSSV; do daemon_fixture "$key" legion "$new_digest"; done
+for key in INITECH ACME GLOBEX OSCORP; do daemon_fixture "$key" legion "$new_digest"; done
 jq -s '{items: .}' "$base/rs-legion.items" >"$base/rs-legion.json"
 for digest in "$new_digest" "$old_digest"; do
   revision=$new_rev
@@ -163,21 +163,21 @@ run
 expect_status 0
 expect_last "GATE OPEN"
 expect_line "SKIPPED: SMOKE runs no daemon (replicas: 0)"
-for key in LINUX BET INFRA OSSV; do expect_line "CURRENT: ${key} (legion/legion-$(tr 'A-Z' 'a-z' <<<"$key")-daemon)"; done
-grep -qF -- "-n legion exec legion-infra-daemon-pod -c legion -- legion version" "$FAKE/calls" || fail "the daemon's own version was not read"
+for key in INITECH ACME GLOBEX OSCORP; do expect_line "CURRENT: ${key} (legion/legion-$(tr 'A-Z' 'a-z' <<<"$key")-daemon)"; done
+grep -qF -- "-n legion exec legion-globex-daemon-pod -c legion -- legion version" "$FAKE/calls" || fail "the daemon's own version was not read"
 done_case
 
 new_case "one pod on an older digest shuts, naming it"
-jq --arg image "$repo@$old_digest" '.items[0].status.containerStatuses[0].imageID = $image' "$base/pods-legion-legion-bet-daemon.json" >"$FAKE/pods-legion-legion-bet-daemon.json"
-printf 'legion v1.2.2 commit %s\n' "$old_rev" >"$FAKE/version-legion-bet-daemon-pod"
+jq --arg image "$repo@$old_digest" '.items[0].status.containerStatuses[0].imageID = $image' "$base/pods-legion-legion-acme-daemon.json" >"$FAKE/pods-legion-legion-acme-daemon.json"
+printf 'legion v1.2.2 commit %s\n' "$old_rev" >"$FAKE/version-legion-acme-daemon-pod"
 run
 expect_status 1
-expect_line "GATE SHUT: BET (legion/legion-bet-daemon): pod legion-bet-daemon-pod container legion runs $repo@$old_digest at revision $old_rev, which is not at or after $commit"
+expect_line "GATE SHUT: ACME (legion/legion-acme-daemon): pod legion-acme-daemon-pod container legion runs $repo@$old_digest at revision $old_rev, which is not at or after $commit"
 expect_last "GATE SHUT"
 done_case
 
 new_case "control: a gate reading the pod template's pin passes the stale pod"
-jq --arg image "$repo@$old_digest" '.items[0].status.containerStatuses[0].imageID = $image' "$base/pods-legion-legion-bet-daemon.json" >"$FAKE/pods-legion-legion-bet-daemon.json"
+jq --arg image "$repo@$old_digest" '.items[0].status.containerStatuses[0].imageID = $image' "$base/pods-legion-legion-acme-daemon.json" >"$FAKE/pods-legion-legion-acme-daemon.json"
 mutant="$root/mutant/daemon-running-gate.sh"
 mkdir -p "$root/mutant/lib"
 cp "$here/lib/legion-deployment-projects.sh" "$root/mutant/lib/"
@@ -193,35 +193,35 @@ run "$mutant"
 done_case
 
 new_case "an updated count below the replicas shuts"
-jq '.status.updatedReplicas = 0' "$base/deploy-legion-legion-ossv-daemon.json" >"$FAKE/deploy-legion-legion-ossv-daemon.json"
+jq '.status.updatedReplicas = 0' "$base/deploy-legion-legion-oscorp-daemon.json" >"$FAKE/deploy-legion-legion-oscorp-daemon.json"
 run
 expect_status 1
-expect_line "GATE SHUT: OSSV (legion/legion-ossv-daemon): the rollout is not complete: status.updatedReplicas 0, spec.replicas 1"
+expect_line "GATE SHUT: OSCORP (legion/legion-oscorp-daemon): the rollout is not complete: status.updatedReplicas 0, spec.replicas 1"
 done_case
 
 new_case "an old ReplicaSet still holding a pod shuts"
-jq '.items += [{metadata: {name: "legion-linux-daemon-6e", annotations: {"deployment.kubernetes.io/revision": "6"}, ownerReferences: [{uid: "uid-linux"}]}, status: {replicas: 1}}]' "$base/rs-legion.json" >"$FAKE/rs-legion.json"
+jq '.items += [{metadata: {name: "legion-initech-daemon-6e", annotations: {"deployment.kubernetes.io/revision": "6"}, ownerReferences: [{uid: "uid-initech"}]}, status: {replicas: 1}}]' "$base/rs-legion.json" >"$FAKE/rs-legion.json"
 run
 expect_status 1
-expect_line "GATE SHUT: LINUX (legion/legion-linux-daemon): an old ReplicaSet still holds a pod: legion-linux-daemon-6e (revision 6) holds 1 pod(s)"
+expect_line "GATE SHUT: INITECH (legion/legion-initech-daemon): an old ReplicaSet still holds a pod: legion-initech-daemon-6e (revision 6) holds 1 pod(s)"
 done_case
 
 new_case "legion version naming another commit than the image label shuts"
-printf 'legion v1.2.3 commit %s\n' "$old_rev" >"$FAKE/version-legion-infra-daemon-pod"
+printf 'legion v1.2.3 commit %s\n' "$old_rev" >"$FAKE/version-legion-globex-daemon-pod"
 run
 expect_status 1
-expect_line "GATE SHUT: INFRA (legion/legion-infra-daemon): legion version in pod legion-infra-daemon-pod names commit $old_rev, not its image's revision $new_rev"
+expect_line "GATE SHUT: GLOBEX (legion/legion-globex-daemon): legion version in pod legion-globex-daemon-pod names commit $old_rev, not its image's revision $new_rev"
 done_case
 
 for failure in "deploy:the Deployment" "pods:the pods" "crane:the image config" "git:which this clone does not hold" "exec:was refused or failed" "version:names no commit" "rs:the ReplicaSets"; do
   new_case "an unreadable read is UNKNOWN: ${failure#*:}"
   case "${failure%%:*}" in
-    deploy) rm "$FAKE/deploy-legion-legion-bet-daemon.json" ;;
-    pods) rm "$FAKE/pods-legion-legion-bet-daemon.json" ;;
+    deploy) rm "$FAKE/deploy-legion-legion-acme-daemon.json" ;;
+    pods) rm "$FAKE/pods-legion-legion-acme-daemon.json" ;;
     crane) rm "$FAKE/config-${new_digest#sha256:}" ;;
     git) echo "$new_rev" >"$FAKE/git-missing" ;;
-    exec) rm "$FAKE/version-legion-bet-daemon-pod" ;;
-    version) echo "legion (devel)" >"$FAKE/version-legion-bet-daemon-pod" ;;
+    exec) rm "$FAKE/version-legion-acme-daemon-pod" ;;
+    version) echo "legion (devel)" >"$FAKE/version-legion-acme-daemon-pod" ;;
     rs) rm "$FAKE/rs-legion.json" ;;
   esac
   run
@@ -239,13 +239,13 @@ expect_line "UNKNOWN: cannot read example/deployment shared/legion/privateprojec
 done_case
 
 new_case "a private project's daemon is read in its own namespace"
-printf 'package privateprojects\n\nvar projects = []Project{\n\t{Key: "BET", Person: "someone"},\n}\n' >"$FAKE/repo/shared/legion/privateprojects/lists.go"
-mv "$FAKE/deploy-legion-legion-bet-daemon.json" "$FAKE/deploy-legion-bet-legion-bet-daemon.json"
-mv "$FAKE/pods-legion-legion-bet-daemon.json" "$FAKE/pods-legion-bet-legion-bet-daemon.json"
-jq '{items: [.items[] | select(.metadata.name | startswith("legion-bet"))]}' "$base/rs-legion.json" >"$FAKE/rs-legion-bet.json"
+printf 'package privateprojects\n\nvar projects = []Project{\n\t{Key: "ACME", Person: "someone"},\n}\n' >"$FAKE/repo/shared/legion/privateprojects/lists.go"
+mv "$FAKE/deploy-legion-legion-acme-daemon.json" "$FAKE/deploy-legion-acme-legion-acme-daemon.json"
+mv "$FAKE/pods-legion-legion-acme-daemon.json" "$FAKE/pods-legion-acme-legion-acme-daemon.json"
+jq '{items: [.items[] | select(.metadata.name | startswith("legion-acme"))]}' "$base/rs-legion.json" >"$FAKE/rs-legion-acme.json"
 run
 expect_status 0
-expect_line "CURRENT: BET (legion-bet/legion-bet-daemon)"
+expect_line "CURRENT: ACME (legion-acme/legion-acme-daemon)"
 done_case
 
 new_case "a usage error reads nothing"

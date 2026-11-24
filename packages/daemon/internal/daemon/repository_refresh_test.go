@@ -1730,7 +1730,7 @@ func TestTheBootHearsTheRecordsRepositoriesAndCachesTheLiveOnes(t *testing.T) {
 
 // Each of the refresher's five jobs (refreshRepositories) runs on its own cause, with nothing in
 // the sub-test standing in for it: each sub-test fails with its job deleted from the refresher and
-// nothing in its place (dispatch://INFRA-4401 check a-go, item 7).
+// nothing in its place (the deployment's issue's check a-go, item 7).
 func TestEachRefresherJobRunsOnItsOwnCause(t *testing.T) {
 	t.Run("job 1 prepares the repositories the records name as the refresher starts", func(t *testing.T) {
 		// prepareAtStart: with no admission, launch or other read, each anchor's repository has

@@ -56,7 +56,7 @@ jq -n '{spec: {template: {spec: {
   volumes: [{name: "nats-seed", csi: {driver: "secrets-store-gke.csi.k8s.io", readOnly: true,
     volumeAttributes: {secretProviderClass: "envoy-listener-nats-seed"}}}]}}}}' >"$base/deployment.json"
 echo '{"status":{"succeeded":1}}' >"$base/job-status.json"
-printf 'DRAINED INFRA: 3 listener_ready past legion-go-INFRA-wake'"'"'s ack floor 40, to the stream'"'"'s last sequence 99\nGATE OPEN\n' >"$base/job.log"
+printf 'DRAINED GLOBEX: 3 listener_ready past legion-go-GLOBEX-wake'"'"'s ack floor 40, to the stream'"'"'s last sequence 99\nGATE OPEN\n' >"$base/job.log"
 
 new_case() {
   case_name=$1
@@ -72,7 +72,7 @@ run() {
   status=$?
   set -e
 }
-read_drain() { run --context example-cluster --image "$image" drain --projects INFRA,BET; }
+read_drain() { run --context example-cluster --image "$image" drain --projects GLOBEX,ACME; }
 expect_status() { [ "$status" = "$1" ] || fail "exit status $status, want $1; output:"$'\n'"$output"; }
 expect_line() { grep -qF -- "$1" <<<"$output" || fail "no line holds '$1'; output:"$'\n'"$output"; }
 expect_last() { [ "$(tail -n 1 <<<"$output")" = "$1" ] || fail "the last line is '$(tail -n 1 <<<"$output")', want '$1'"; }
@@ -87,12 +87,12 @@ new_case "a drain read that opens passes its verdict through, from a Job with th
 read_drain
 expect_status 0
 expect_last "GATE OPEN"
-expect_line "DRAINED INFRA"
+expect_line "DRAINED GLOBEX"
 jq -e --arg image "$image" '.metadata.namespace == "envoy" and .metadata.labels["created-by"] == "cutover-read"
   and .spec.backoffLimit == 0 and .spec.template.spec.serviceAccountName == "envoy-listener"
   and .spec.template.spec.securityContext.runAsUser == 65534
   and .spec.template.spec.containers[0].image == $image
-  and .spec.template.spec.containers[0].command == ["legion", "cutover-read", "drain", "--projects", "INFRA,BET"]
+  and .spec.template.spec.containers[0].command == ["legion", "cutover-read", "drain", "--projects", "GLOBEX,ACME"]
   and .spec.template.spec.containers[0].env == [{name: "NATS_URLS", value: "nats://envoy-hub.envoy.svc.cluster.local:4222"}, {name: "NATS_NKEY_SEED_FILE", value: "/var/run/secrets/nats-seed/nats-seed"}]
   and .spec.template.spec.containers[0].securityContext.capabilities.drop == ["ALL"]
   and .spec.template.spec.volumes[0].csi.volumeAttributes.secretProviderClass == "envoy-listener-nats-seed"' "$FAKE/created-job.json" >/dev/null ||
@@ -102,17 +102,17 @@ done_case
 
 new_case "a filter read that shuts exits 1 with the command's lines"
 echo '{"status":{"failed":1}}' >"$FAKE/job-status.json"
-printf 'GATE SHUT INFRA: legion-go-INFRA-dispatch on notifications.dispatch.issue.>, want notifications.dispatch.issue.INFRA.>\nGATE SHUT\n' >"$FAKE/job.log"
-run --context example-cluster --image "$image" filters --projects INFRA
+printf 'GATE SHUT GLOBEX: legion-go-GLOBEX-dispatch on notifications.dispatch.issue.>, want notifications.dispatch.issue.GLOBEX.>\nGATE SHUT\n' >"$FAKE/job.log"
+run --context example-cluster --image "$image" filters --projects GLOBEX
 expect_status 1
-expect_line "GATE SHUT INFRA: legion-go-INFRA-dispatch"
+expect_line "GATE SHUT GLOBEX: legion-go-GLOBEX-dispatch"
 expect_last "GATE SHUT"
-[ "$(jq -c '.spec.template.spec.containers[0].command' "$FAKE/created-job.json")" = '["legion","cutover-read","filters","--projects","INFRA"]' ] || fail "the Job does not run the filter read"
+[ "$(jq -c '.spec.template.spec.containers[0].command' "$FAKE/created-job.json")" = '["legion","cutover-read","filters","--projects","GLOBEX"]' ] || fail "the Job does not run the filter read"
 done_case
 
 new_case "a read that is UNKNOWN exits 3"
 echo '{"status":{"failed":1}}' >"$FAKE/job-status.json"
-printf 'UNKNOWN INFRA: the stream holds no wake durable legion-go-INFRA-wake\nUNKNOWN\n' >"$FAKE/job.log"
+printf 'UNKNOWN GLOBEX: the stream holds no wake durable legion-go-GLOBEX-wake\nUNKNOWN\n' >"$FAKE/job.log"
 read_drain
 expect_status 3
 expect_last "UNKNOWN"
@@ -154,7 +154,7 @@ expect_line "lacks a NATS seed file"
 ! grep -qF -- "create -f" "$FAKE/calls" || fail "a Job was created"
 done_case
 
-for bad in "--image ghcr.io/cybermonklabs/legion/worker:latest drain --projects INFRA" "--image $image --projects INFRA" "--image $image drain --projects infra"; do
+for bad in "--image ghcr.io/cybermonklabs/legion/worker:latest drain --projects GLOBEX" "--image $image --projects GLOBEX" "--image $image drain --projects globex"; do
   new_case "a usage error reads nothing: ${bad}"
   # shellcheck disable=SC2086
   run --context example-cluster $bad
