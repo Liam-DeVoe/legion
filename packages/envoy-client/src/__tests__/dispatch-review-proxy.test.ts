@@ -347,7 +347,9 @@ test("after an answer that may have reached Dispatch, an unreachable proxy on th
   expect(fetchImpl.sent).toHaveLength(DISPATCH_WRITE_RETRY.pausesMs.length + 1);
   expect(ended).toBeInstanceOf(DispatchWriteUnsettledError);
   const message = (ended as DispatchWriteUnsettledError).message;
-  expect(message).toContain("Cipher's proxy");
+  expect(message).toContain("Cipher's proxy at http://proxy.example:3128");
+  expect(message).toContain("The proxy is the secrets broker's.");
+  expect(message).not.toContain("restart this agent process");
   expect(message).not.toContain("sent again");
   expect(message).not.toContain("a new `dispatch review`");
   expect(message).toContain("read the write back");

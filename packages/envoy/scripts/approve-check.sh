@@ -337,7 +337,7 @@ if [ "$(jq '(.hash_matches // []) + (.key_matches // []) | length' <<<"$scan")" 
 elif [ "$scan_exit" = 0 ] && [ "$(jq -r .result <<<"$scan")" = clean ]; then
   result "1e scan" PASS "$(jq -c '{result, files_read, files_skipped, dangling_links, candidates, base64url, token68, dpop_answers, private_keys, logged_hashes, logged_bindings, hash_matches, key_matches, diagnostic, diagnostic_presented, environment_variables: (.environment_names | length), environment_matches}' <<<"$scan")"
 elif [ "$scan_exit" = 3 ]; then
-  result "1e scan" UNKNOWN "$(jq -c '{unknown, files_read, files_skipped, logged_hashes, logged_bindings}' <<<"$scan")"
+  result "1e scan" UNKNOWN "$(jq -c '{unknown, files_read, files_skipped, dangling_links, logged_hashes, logged_bindings}' <<<"$scan")"
 else
   result "1e scan" FAIL "the scan exited $scan_exit with $(jq -c . <<<"$scan"): $(tail -n 3 "$STACK_DIR/session.err" | tr '\n' ' ')"
 fi

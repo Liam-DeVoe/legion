@@ -361,28 +361,30 @@ test("a file over 16 MiB is read whole: a token at its end and one across a chun
   ]);
 });
 
-test("a file the scan could not read makes it UNKNOWN, exit 3, naming the file, though other files were read", async () => {
-  // Root reads a file of mode 000, so this case has nothing to show there.
-  if (process.getuid?.() === 0) return;
-  const dir = join(work, "box-unreadable");
-  mkdirSync(join(dir, "box"), { recursive: true });
-  const locked = join(dir, "box", "locked.log");
-  writeFileSync(locked, "a file the scan cannot open\n");
-  chmodSync(locked, 0o000);
-  try {
-    const { answer, exitCode } = await scanCase("unreadable", "box", {
-      log: LOGGED,
-      paths: ["box"],
-      pids: READABLE,
-    });
-    expect(exitCode).toBe(3);
-    expect(answer["result"]).toBe("UNKNOWN");
-    expect(answer["files_read"]).toBe(1);
-    expect(answer["files_skipped"]).toEqual([locked]);
-  } finally {
-    chmodSync(locked, 0o600);
+// Root reads a file of mode 000, so this case has nothing to show there and is skipped.
+test.skipIf(process.getuid?.() === 0)(
+  "a file the scan could not read makes it UNKNOWN, exit 3, naming the file, though other files were read",
+  async () => {
+    const dir = join(work, "box-unreadable");
+    mkdirSync(join(dir, "box"), { recursive: true });
+    const locked = join(dir, "box", "locked.log");
+    writeFileSync(locked, "a file the scan cannot open\n");
+    chmodSync(locked, 0o000);
+    try {
+      const { answer, exitCode } = await scanCase("unreadable", "box", {
+        log: LOGGED,
+        paths: ["box"],
+        pids: READABLE,
+      });
+      expect(exitCode).toBe(3);
+      expect(answer["result"]).toBe("UNKNOWN");
+      expect(answer["files_read"]).toBe(1);
+      expect(answer["files_skipped"]).toEqual([locked]);
+    } finally {
+      chmodSync(locked, 0o600);
+    }
   }
-});
+);
 
 /** A private EC key as a JWK, and the RFC 7638 thumbprint of its public half, as the broker logs
  *  a binding. */

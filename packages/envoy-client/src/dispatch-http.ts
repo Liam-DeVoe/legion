@@ -2809,17 +2809,6 @@ export class DispatchClient {
       // rather than returning it. No tunnel opened, so nothing of the write left the proxy.
       const refused = transport === undefined ? undefined : proxyTunnelAnswer(error);
       if (refused !== undefined) return refused;
-      // A write through Cipher's proxy that got no answer failed at the proxy, which is the
-      // secrets broker's, or past it: its text names the proxy, never a restart of this process,
-      // which no setting of this process would mend. What to do next depends on whether an
-      // attempt may have landed, which only `#endWrite` knows.
-      if (transport !== undefined && error instanceof DispatchUnreachableError) {
-        throw new DispatchUnreachableError(
-          `Dispatch at ${urlForText(this.#baseUrl, DISPATCH_URL_SETTING)}, through Cipher's proxy at ${originOf(transport.proxy)}, is unreachable: ${error.failure}. The proxy is the secrets broker's.`,
-          error.reachedNothing,
-          error.failure
-        );
-      }
       throw error;
     } finally {
       answered = true;
@@ -2839,8 +2828,9 @@ export class DispatchClient {
    * carrying its key, with that reading as `last`, and, for a write that ended with no answer,
    * what ended it. On a write sent through Cipher's proxy (`via`), every text is made here, from
    * `state` and `event`: an answer the proxy wrote itself is `DispatchProxyRefusalError`
-   * (`#proxyRefusal`), never Dispatch's or a gateway's, and only a write no attempt of which may
-   * have reached Dispatch is told it can be sent again.
+   * (`#proxyRefusal`), never Dispatch's or a gateway's; a write that got no answer names the proxy
+   * (`#proxyUnreachable`); and only a write no attempt of which may have reached Dispatch is told
+   * it can be sent again.
    */
   async #endWrite(
     method: string,
@@ -2858,17 +2848,8 @@ export class DispatchClient {
     const proxyCode = via === undefined ? null : answer?.response.headers.get(PROXY_CODE_HEADER);
     if (via !== undefined && answer !== undefined && typeof proxyCode === "string") {
       own = this.#proxyRefusal(request, via, answer, proxyCode, state, event);
-    } else if (
-      via !== undefined &&
-      state === "nothing-sent" &&
-      failure instanceof DispatchUnreachableError
-    ) {
-      // No attempt reached Dispatch, so the review can be sent again.
-      own = new DispatchUnreachableError(
-        `${failure.message} The review can be sent again once the broker answers.`,
-        failure.reachedNothing,
-        failure.failure
-      );
+    } else if (via !== undefined && failure instanceof DispatchUnreachableError) {
+      own = this.#proxyUnreachable(via, failure, state);
     } else if (answer?.response.ok === true) {
       const { status } = answer.response;
       own = new Error(
@@ -2912,6 +2893,27 @@ export class DispatchClient {
       }
     }
     return new DispatchWriteUnsettledError(last, progress.sent, write.key, unanswered);
+  }
+
+  /**
+   * A write through Cipher's proxy on `via` that got no answer, `failure`: it failed at the proxy,
+   * which is the secrets broker's, or past it, so its text names the proxy by its origin, never a
+   * restart of this process, which no setting of this process would mend. In `nothing-sent` no
+   * attempt reached Dispatch, so the review can be sent again; once one may have, this is the
+   * unsettled write's `last`, whose own advice is to read the write back first.
+   */
+  #proxyUnreachable(
+    via: ProxyTransport,
+    failure: DispatchUnreachableError,
+    state: WriteState
+  ): DispatchUnreachableError {
+    const again =
+      state === "nothing-sent" ? " The review can be sent again once the broker answers." : "";
+    return new DispatchUnreachableError(
+      `Dispatch at ${urlForText(this.#baseUrl, DISPATCH_URL_SETTING)}, through Cipher's proxy at ${originOf(via.init.proxy)}, is unreachable: ${failure.failure}. The proxy is the secrets broker's.${again}`,
+      failure.reachedNothing,
+      failure.failure
+    );
   }
 
   /**

@@ -34,9 +34,9 @@
 +	}
  	return token, nil
  }
---- a/packages/envoy/internal/cipher/proxy/dpop.go	2026-11-23 20:50:35.063955878 +0000
-+++ b/packages/envoy/internal/cipher/proxy/dpop.go	2026-11-23 20:50:35.078381155 +0000
-@@ -2,14 +2,30 @@
+--- a/packages/envoy/internal/cipher/proxy/dpop.go	2026-11-24 18:06:09.994264229 +0000
++++ b/packages/envoy/internal/cipher/proxy/dpop.go	2026-11-24 18:06:10.178851947 +0000
+@@ -2,8 +2,12 @@
  
  import (
  	"crypto/ecdsa"
@@ -49,8 +49,9 @@
  	"strings"
  
  	"github.com/sjawhar/envoy/internal/cipher/placeholder"
- 	"github.com/sjawhar/envoy/internal/dpopproof"
- )
+@@ -42,6 +46,18 @@
+ 	return "", ""
+ }
  
 +// plantBindingKey is approve-check's control build: the pod's DPoP key, which every minted token
 +// is bound to, written once as PEM beside the fake secrets file, a file the session reads.
@@ -67,7 +68,7 @@
  // mintedTransport is what a request to a host whose rules entry is of kind dpop leaves the proxy
  // through: a capability the broker mints for a grant and holds (requests.MintedKind), so that no
  // process of the command ever holds the access token or the key it is bound to. serveBound has
-@@ -59,6 +75,7 @@
+@@ -91,6 +107,7 @@
  		closeBody(r)
  		return nil, errNoDPoPKey
  	}

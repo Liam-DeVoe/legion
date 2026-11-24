@@ -1360,8 +1360,8 @@ build took but whose answer was lost, and was then sent again to an older build,
 recorded the review, at the version named: `dispatch doc-read` shows the document's approval.
 A review records an approval or a request for changes in the person's name, so it works only with
 a token that names a person who holds `approve`. A session whose Dispatch credential is the
-person's `agent-secrets login` sign-in (no `DISPATCH_TOKEN`, `DISPATCH_TOKEN_FILE`, `ENVOY_TOKEN`,
-`ENVOY_TOKEN_FILE` or envoy.json token, which are read first) sends the review through Cipher's
+person's `agent-secrets login` sign-in (no `DISPATCH_TOKEN_FILE`, `DISPATCH_TOKEN` or envoy.json
+`dispatch.token`, which are read first unless `DISPATCH_TOKEN_BROKER=1`) sends the review through Cipher's
 proxy: it trades the sign-in for the approve capability's placeholder and sends the review with
 it, and the secrets broker spends an approve-only token that never reaches the box. A broker that
 serves no approve capability refuses that trade `400 invalid_request`, saying so, and nothing
