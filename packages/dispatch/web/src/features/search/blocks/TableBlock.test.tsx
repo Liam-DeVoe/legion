@@ -66,6 +66,57 @@ test("a table of issues by priority shows each priority as Dispatch writes it", 
   ).toEqual(["Priority", "Bugs"]);
 });
 
+// A table of a run's saved results may name any field of their rows (going/blocks.go
+// `RunBlock.Draw`), and an issue's labels and the issues that block it are lists of words. The
+// person reads each list as its items, never as JSON, and an empty list as an empty cell.
+test("a table shows a list of words as its items, joined by commas", () => {
+  const block: BlockOf<"table"> = {
+    kind: "table",
+    title: "Dome work",
+    spec: {
+      source: "run",
+      params: {},
+      table: "the chain's answer",
+      columns: ["title", "labels", "blocked_by"],
+    },
+    rows: [
+      { title: "Fit a motor to the dome", labels: ["dome", "motor"], blocked_by: ["DEMO-2"] },
+      { title: "Polish the eyepiece", labels: [], blocked_by: null },
+    ],
+  };
+  render(<TableBlock block={block} />);
+  expect(cellWords()).toEqual([
+    ["Fit a motor to the dome", "dome, motor", "DEMO-2"],
+    ["Polish the eyepiece", "", ""],
+  ]);
+});
+
+// A search hit's owner is an object: an issue, a project or a person. The person reads it by the
+// field that names it - its title, its name, its login or its key, in that order - and reads its
+// JSON only where it has none of them, as an actor, which names itself by kind and id.
+test("a table shows an object by the field that names it, and its JSON only where none does", () => {
+  const block: BlockOf<"table"> = {
+    kind: "table",
+    title: "Hits",
+    spec: { source: "run", params: {}, table: "the chain's answer", columns: ["snippet", "owner"] },
+    rows: [
+      { snippet: "a", owner: { key: "DEMO-1", kind: "issue", title: "Fit a motor to the dome" } },
+      { snippet: "b", owner: { key: "OPS", kind: "project", name: "Operations" } },
+      { snippet: "c", owner: { kind: "user", login: "alice" } },
+      { snippet: "d", owner: { key: "DEMO-2" } },
+      { snippet: "e", owner: { id: "alice", kind: "user" } },
+    ],
+  };
+  render(<TableBlock block={block} />);
+  expect(cellWords()).toEqual([
+    ["a", "Fit a motor to the dome"],
+    ["b", "Operations"],
+    ["c", "alice"],
+    ["d", "DEMO-2"],
+    ["e", '{"id":"alice","kind":"user"}'],
+  ]);
+});
+
 // Design v2, state 5: a status by its word, at most 8 rows with "Show all 42 ›" under them, and
 // the first cell of a row that is an issue drawn as that issue's chip, a link to it.
 const statuses = ["todo", "in_progress", "needs_review", "done"];

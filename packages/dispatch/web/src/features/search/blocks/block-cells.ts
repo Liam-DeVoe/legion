@@ -7,17 +7,40 @@ import { laneLabel } from "../../project/board-model";
 /** One kind's block frame, as `GoingBlockData` carries it. */
 export type BlockOf<K extends GoingBlockData["kind"]> = Extract<GoingBlockData, { kind: K }>;
 
+/** The fields that name an object to a person, in the order a cell reads them: an issue's or a
+ *  document's title, a project's or a person's name, a person's login, an item's key. */
+const NAMING_FIELDS = ["title", "name", "login", "key"] as const;
+
+/** Whether `value` is a string, a number or a boolean, which a cell writes as itself. */
+function isScalar(value: unknown): value is string | number | boolean {
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+}
+
 /**
- * A row's value as a block draws it: a number, a string or a boolean as itself, and nothing for a
- * value the read left empty. A block shows exactly what the server's read returned, so a number
- * is written in full as the read wrote it, never rounded or grouped into another number.
+ * A row's value as a block draws it: a number, a string or a boolean as itself; a list of them as
+ * its items joined by commas ("dome, motor"), so an empty list is an empty cell; an object by the
+ * first field of it that names it to a person (`NAMING_FIELDS`); and nothing for a value the read
+ * left empty. A table of a run's saved results may name any field of their rows, an issue's labels
+ * or a search hit's owner among them (going/blocks.go `RunBlock.Draw`), so a cell can hold a list
+ * or an object; only a value none of these fits, such as an issue's claim, is written as its JSON.
+ * A block shows exactly what the server's read returned, so a number is written in full as the
+ * read wrote it, never rounded or grouped into another number.
  */
 export function cellText(value: unknown): string {
   if (value === null || value === undefined) {
     return "";
   }
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+  if (isScalar(value)) {
     return String(value);
+  }
+  if (Array.isArray(value) && value.every(isScalar)) {
+    return value.map(String).join(", ");
+  }
+  if (typeof value === "object" && !Array.isArray(value)) {
+    for (const field of NAMING_FIELDS) {
+      const words = (value as Readonly<Record<string, unknown>>)[field];
+      if (typeof words === "string" && words !== "") return words;
+    }
   }
   return JSON.stringify(value);
 }
