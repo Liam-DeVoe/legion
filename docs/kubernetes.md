@@ -5227,10 +5227,11 @@ architect, planner, implementer, tester, reviewer, merger):
      no symlink anywhere, its owner directory included;
      no gitfile; no hook but git's samples; a configuration holding only the keys git's bare init and clone and the fetch write, each line in git's own form (a `[section]` header alone on its line, or a tab-indented `key = value` with no quote, escape or comment), since git also reads a key written on its header's line;
      Git's `gc.pid`, `gc.log`, packed refs and reflogs;
-     `info/exclude`, `info/refs`, and the temporary files `update-server-info` leaves; and `objects/info/packs` plus commit-graph files.
+     `info/exclude`, `info/refs`, and the temporary files `update-server-info` leaves; `objects/info/packs` plus commit-graph files;
+     and a stale `<file>.lock` anywhere, which git reads nothing of.
      An alternate object store is refused.
-     A feed in any other shape is removed, logged, and filled from the repository cache:
-     within one pod the feed is written by `workspace-fetch` alone and every other container mounts it read-only, so this check holds the fetch's own retry to what the fetch left, and a disk from before this release, which any role of its issue could write, no longer reaches a pod at all.
+     A feed in any other shape fails the fetch, which names why, runs no git and keeps the feed as it stands, its stale locks and partial packs with it, since a clone may read its objects: the pod dies as at any `workspace-fetch` failure, and the locks and partial packs go only from a feed the fetch takes.
+     Within one pod the feed is written by `workspace-fetch` alone and every other container mounts it read-only, so this check holds the fetch's own retry to what the fetch left, and a disk from before this release, which any role of its issue could write, no longer reaches a pod at all.
      Every fetch from GitHub then points the feed's `HEAD` at the branch GitHub names as the default now (`git
      ls-remote --symref`, under the same credential and bound), since a fetch never moves `HEAD`; a move is logged (`the default branch of
      <owner>/<repo> is now <name> (HEAD named <ref>)`).

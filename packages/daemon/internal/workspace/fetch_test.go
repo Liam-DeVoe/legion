@@ -1202,21 +1202,18 @@ func TestFetchKeepsAFeedHoldingAKilledRepacksServerInfoFiles(t *testing.T) {
 
 // A feed can be garbage-collected between pod starts. A completed gc and one killed while its
 // repack is running leave only files Git owns, so the next fetch keeps the feed instead of replacing
-// it. A gc killed earlier, while it packs refs, also leaves packed-refs.lock: Fetch removes that
-// stale lock before it judges the feed, so it keeps that feed too, and only Fetch judges it.
+// it. A gc killed earlier, while it packs refs, also leaves packed-refs.lock: a lock makes no feed
+// foreign, and Fetch removes it once it takes the feed, so it keeps that feed too.
 func TestFetchKeepsAFeedAfterGitGC(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		gc   func(t *testing.T, feed string)
-		// leftLock is set when the gc leaves a lock only Fetch's stale-lock sweep removes, so the
-		// feed is judged through Fetch alone and never by foreignFeed first.
-		leftLock bool
 	}{
 		{name: "completed", gc: func(t *testing.T, feed string) {
 			runSetup(t, feed, "git", "--git-dir="+feed, "gc", "--prune=now")
 		}},
 		{name: "killed during repack", gc: killGitGC},
-		{name: "killed during pack-refs", leftLock: true, gc: func(t *testing.T, feed string) {
+		{name: "killed during pack-refs", gc: func(t *testing.T, feed string) {
 			// git gc writes gc.pid, then packs refs under packed-refs.lock before it repacks; a pod
 			// that ends there leaves both behind.
 			if err := os.WriteFile(filepath.Join(feed, "gc.pid"), []byte("4242 killed-pod"), 0o644); err != nil {
@@ -1237,10 +1234,8 @@ func TestFetchKeepsAFeedAfterGitGC(t *testing.T) {
 				t.Fatalf("first Fetch: %v", err)
 			}
 			tc.gc(t, first.Feed)
-			if !tc.leftLock {
-				if why, err := foreignFeed(first.Feed); err != nil || why != "" {
-					t.Fatalf("foreignFeed after git gc = %q, %v; want the feed trusted", why, err)
-				}
+			if why, err := foreignFeed(first.Feed); err != nil || why != "" {
+				t.Fatalf("foreignFeed after git gc = %q, %v; want the feed trusted", why, err)
 			}
 			before := len(run.Calls())
 
