@@ -7,7 +7,7 @@
 -- controller's parked-decision notice. Each text carries the person's words as the act's Dispatch
 -- event carried them. The texts are written later than the event arrives, so the words are kept
 -- with the record the text is built from: record.ActWords, as JSON with the keys text, options,
--- by, at and more.
+-- by, at, more and rest.
 --
 -- root_asks.person_answer_words is the words of the person's answer at person_answer_seq, and
 -- root_asks.person_words the words of the person's other act at person_seq (a reply, or a
@@ -20,7 +20,7 @@
 -- an answer's text and the options it chose, a reply's body, a resolution's note, a changes
 -- request's reason. The send-time rewrite of a start task builds the task again from what the
 -- rows named (record.DecisionMark, which carries the same words in its answer, options,
--- answer_at and more keys), so the words are on the row and not only on the fact. A newer
+-- answer_at, more and rest keys), so the words are on the row and not only on the fact. A newer
 -- decision that replaces a row replaces its words.
 --
 -- design_gates.told_changes_by is who made the changes request a gate records as told

@@ -2996,20 +2996,27 @@ Its writes also do not clear the columns.
 When it records a newer act on a `root_asks` row, or replaces a `parked_decisions` row with a newer decision, the row keeps the words of the older act.
 When it records a newer changes request as told on a `design_gates` row, it writes the version and the reason of that request, and the row keeps the author of the older request.
 After a roll forward, this release can then give those older words, or that older author, beside the newer act.
-To prevent this, run these statements with the daemon stopped, before the roll forward:
+To prevent this, run these statements before the roll forward, with the daemon of the project that ran the earlier image stopped, and with `<PROJECT>` replaced by the project's key: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`:
 
 ```sql
--- The words that an earlier daemon's writes can leave on a row of a newer act.
-update root_asks set person_answer_words = null, person_words = null;
-update parked_decisions set words = null;
--- The author that an earlier daemon's writes can leave beside a newer changes request.
-update design_gates set told_changes_by = null;
+-- The words that an earlier daemon's writes can leave on a row of a newer act, of one project.
+update root_asks set person_answer_words = null, person_words = null where split_part(issue, '-', 1) = '<PROJECT>';
+update parked_decisions set words = null where split_part(issue, '-', 1) = '<PROJECT>';
+-- The author that an earlier daemon's writes can leave beside a newer changes request, of one project.
+update design_gates set told_changes_by = null where split_part(issue, '-', 1) = '<PROJECT>';
 ```
 
 A row whose words are cleared costs one thing: a text about that act gives the act and its reference with no words, as the earlier release did.
 The reader then reads the words in Dispatch.
 A gate row whose author is cleared costs the author of its changes request.
 The resume then takes the author from the person's answer of the gate's approval request where that answer holds the same reason, and otherwise it gives the reason with no author.
+
+**Each project clears its own rows.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `root_asks`, `parked_decisions`, `production_checks` and `design_gates` are one table each for all of them.
+Each statement of this section takes the rows of one project alone (`split_part(issue, '-', 1)` is a row's project, since a project key holds no hyphen).
+An earlier daemon writes only the rows of its own project.
+So run the statements once for each project whose daemon ran the earlier image.
+A project whose daemon stayed on this release keeps its words, its authors and its times.
 
 **The update round's drift items need no statement.**
 The migration `20261118101218_update_drift_items` adds one `jsonb` column, `claims.update_drift`.
@@ -3032,11 +3039,11 @@ An earlier image names the column in none of its reads or writes, so it reads ev
 Its writes also do not clear the column.
 When it records a pending report, or ends a look that nobody reported, the check keeps the time of the earlier report.
 After a roll forward, this release can then give that earlier time on the summary of a later report.
-To prevent this, run this statement with the daemon stopped, before the roll forward:
+To prevent this, run this statement before the roll forward, with the daemon of the project that ran the earlier image stopped, and with `<PROJECT>` replaced as above:
 
 ```sql
--- The time that an earlier daemon's writes can leave beside the summary of a later report.
-update production_checks set reported_at = null;
+-- The time that an earlier daemon's writes can leave beside the summary of a later report, of one project.
+update production_checks set reported_at = null where split_part(issue, '-', 1) = '<PROJECT>';
 ```
 
 A check whose time is cleared costs one thing: the look that its standing wake starts gives the summary and its author with no time.
@@ -3068,17 +3075,26 @@ An earlier image names the column in none of its reads or writes, so it reads ev
 Its writes also do not clear the column.
 When it registers a root's own document on a row that a carried copy held, the row keeps the old root.
 After a roll forward, this release can then name the old root's document for the root's own document.
-To prevent this, run this statement with the daemon stopped, before the roll forward:
+To prevent this, run this statement before the roll forward, with the daemon of the project that ran the earlier image stopped, and with `<PROJECT>` replaced as above:
 
 ```sql
 -- The old root that an earlier daemon's registration can leave on a row of the root's own document:
--- a row whose named issue holds no row on the same document.
+-- a row of one project whose named issue holds no row on the same document.
 update design_gates g set document_issue = null
-where not exists (select 1 from design_gates old where old.issue = g.document_issue and old.artifact_id = g.artifact_id);
+where split_part(g.issue, '-', 1) = '<PROJECT>'
+  and not exists (select 1 from design_gates old where old.issue = g.document_issue and old.artifact_id = g.artifact_id);
 ```
 
 The statement also clears a carried row whose named issue no longer holds a row on that document, and that costs one thing: until an approval of its document fills the column again, the daemon names such a row's document as it names that of every row that names no issue, from the store's rows on the document, else from Dispatch when the outbox runs the text's row, else by the bare artifact reference.
 This migration adds no key to an outbox payload.
+
+**The earlier release drops the new keys of a review decision.**
+This release adds five keys to the review decision of a `phases` row (`phases.decision`, `record.ReviewDecision`): `author`, `person`, `submittedAt`, `bodyCut` and `id`.
+They are the facts of the review that the next implementer's task names beside the review's body.
+The earlier release decodes that column with no refusal of a key that it does not know (`scanPhase` in `record/store.go`), so it reads every such row.
+But when it writes such a row again, it writes only the keys that it knows, so the row loses the five keys.
+After a roll forward, the task gives the body of that review whole and with no author, as it does for a decision that an earlier release wrote.
+The earlier release writes the whole decision each time, so no older key stays beside a newer review, and the rollback needs no statement for the column.
 
 **The earlier release refuses the outbox rows that this release writes.**
 An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`).
@@ -3118,6 +3134,12 @@ This release adds fields to the payloads that its outbox queues:
 - A catch-up notice whose `relaunch` names a turn cut off carries `relaunch.in_flight_tool_calls` and `relaunch.turn_background_work`, which say what that turn lost.
   A catch-up notice whose `relaunch` names no report of the process's last turn carries `relaunch.process_background_work`, which says that every subagent and background job of that process is gone, where the process was in no turn or the turn cut off names no work that stopped.
 
+- A catch-up notice carries `catch_up.done`, the key of each issue that its architect owns and that is done, `catch_up.unreleased`, each child that the architect filed and did not release, and `catch_up.accepting`, the key of each issue that waits in accepting for the architect's acceptance.
+  Each step of its `catch_up.gates` carries `document`, the step's document as a `dispatch://` link, and its kept approval carries its document in `catch_up.kept.document`.
+
+- An update-stalled notice carries `holds`, a word for what holds the round past its bound, and `refusal`, the runtime's refusal to replace the round's pod.
+  It names the drift that the round was opened for as items: each changed image by its short digest in `update.images`, and the key of each changed setting in `update.settings`.
+
 - An update-stalled notice names who suspended each suspended claim that it lists (`update.waiting[].suspended_by`), `pause` for a claim that a project's pause stopped, whether or not that pause still owes the claim a launch, and whether a claim that it lists left the round's pod (`update.waiting[].left_round`).
   A claim that the pause stopped owing it no launch is named `pause` until the claim is ready again or a release of the pod suspends the claim's role (`pod_releases.roles` names it); a release that suspended other roles alone leaves it `pause`.
 
@@ -3139,16 +3161,27 @@ This release adds fields to the payloads that its outbox queues:
 
 - Each kept decision that a start task or a catch-up names (`record.DecisionMark`) carries the person's words in `options`, `answer`, `answer_at` and `more`, and the count of what a notice cut off them in `rest`.
 
+This list is not complete.
+The payload types of this release declare more keys that the earlier release does not know: `record.Notice` and the other types in `record/outbox.go`, and the records in `texts/records_*.go`.
+
 The earlier release knows none of these fields.
 So each such row that is still queued at the rollback fails and is retried on its backoff for ever.
 A notice row also fails every state read that passes it (`WaitingNotices`, `pacedCatchUps`), which is `GET /legion/v1/state` for the whole project.
-A start row also fails every admission pass of its issue, because `record.Postgres.RoleRuns` decodes every supervise row of the issue.
+The earlier release's `releaseWaiting` (`daemon/notice_exceptions.go`) also decodes each notice row of the project that waits for a later attempt.
+So while such a row waits on its backoff, the ready of each architect of the project releases none of the notices that wait for that architect, and the daemon only logs the failure (`release the notices waiting for ready architects`).
+Those notices then wait out their own delay.
+A start row of a root's architect that names a kept decision with the person's words also fails every admission pass of the project, not only of its issue.
+The earlier release's `record.Postgres.RoleRuns` decodes the queued supervise rows of each role and generation that its caller reads, and each admission pass reads the architect of every root that holds a slot (`readSlotHolders` in `admit/admit.go`).
+So one such row of a root that holds a slot fails the whole pass.
 No statement removes all of these fields from all of these rows.
 
 **So a rollback past this release is a roll forward.**
 Do not pin an earlier image over a database that this release used.
 To undo a part of this release, release a later version that reverts that part, and deploy that version.
-This is the same rule as for each change that adds an outbox field.
+This release departs from the rule of the sections above for a change that adds an outbox field.
+Each of those sections gives a statement that strips the new field, and then allows the rollback, for example [Rolling back the release that names what nothing starts](#rolling-back-the-release-that-names-what-nothing-starts).
+This release adds fields to the payloads of many kinds of row, at the top of a payload and inside its nested objects and lists.
+Since no statement removes all of them from all of these rows (above), no statement makes these rows ones that the earlier release decodes.
 The migration acts on every project's rows of the database, and each project's daemon decodes only the outbox rows of its own project.
 So a daemon of another project that stays on the earlier image reads and writes its own rows, and it ignores the words.
 
