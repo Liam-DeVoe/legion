@@ -175,6 +175,18 @@ var goingToolRoutes = map[string][]goingToolRoute{
 			Relations: []string{"owned_by", "anchored_to", "mentions"},
 		},
 	},
+	// The four corrections of a post. Each names its own post, so the one placeholder binds to
+	// the tool's own argument. An edit re-indexes the new body, which is the one edge family a
+	// body writes; a delete clears the body, so it writes no edge at all and removes the ones
+	// the post had.
+	"dispatch_edit_comment": {{
+		Method: http.MethodPatch, Pattern: "/api/v1/comments/{id}",
+		Path: map[string]string{"id": "comment"}, Relations: []string{"mentions"},
+	}},
+	"dispatch_delete_comment": {{
+		Method: http.MethodDelete, Pattern: "/api/v1/comments/{id}",
+		Path: map[string]string{"id": "comment"},
+	}},
 	"dispatch_message": {
 		{
 			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/messages",
@@ -187,6 +199,14 @@ var goingToolRoutes = map[string][]goingToolRoute{
 			Relations: []string{"replies_to", "mentions"},
 		},
 	},
+	"dispatch_edit_message": {{
+		Method: http.MethodPatch, Pattern: "/api/v1/messages/{id}",
+		Path: map[string]string{"id": "message"}, Relations: []string{"mentions"},
+	}},
+	"dispatch_delete_message": {{
+		Method: http.MethodDelete, Pattern: "/api/v1/messages/{id}",
+		Path: map[string]string{"id": "message"},
+	}},
 	// The issue-less send to one session. Its path names the session the tool was asked to
 	// reach, not the calling session, so the placeholder binds to the tool's own argument. The
 	// body is indexed without its references counted (createStoredMessage: a message with no

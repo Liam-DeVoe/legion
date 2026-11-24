@@ -121,7 +121,9 @@ var idRoutes = map[string]idRoute{
 	// NOT_FOUND; the two delivery routes answer COMMENT_NOT_FOUND of their own.
 	"GET /api/v1/comments/{id}":             {Kind: "comment", NotFound: "NOT_FOUND"},
 	"PATCH /api/v1/comments/{id}":           {Kind: "comment", NotFound: "NOT_FOUND"},
+	"DELETE /api/v1/comments/{id}":          {Kind: "comment", NotFound: "NOT_FOUND"},
 	"GET /api/v1/comments/{id}/blocks":      {Kind: "comment", NotFound: "NOT_FOUND"},
+	"GET /api/v1/comments/{id}/history":     {Kind: "comment", NotFound: "NOT_FOUND"},
 	"POST /api/v1/comments/{id}/accept":     {Kind: "comment", NotFound: "NOT_FOUND"},
 	"POST /api/v1/comments/{id}/reject":     {Kind: "comment", NotFound: "NOT_FOUND"},
 	"POST /api/v1/comments/{id}/reopen":     {Kind: "comment", NotFound: "NOT_FOUND"},
@@ -135,6 +137,9 @@ var idRoutes = map[string]idRoute{
 	// three delivery routes MESSAGE_NOT_FOUND.
 	"GET /api/v1/messages/{id}":                              {Kind: "message", NotFound: "NOT_FOUND"},
 	"GET /api/v1/messages/{id}/blocks":                       {Kind: "message", NotFound: "NOT_FOUND"},
+	"GET /api/v1/messages/{id}/history":                      {Kind: "message", NotFound: "NOT_FOUND"},
+	"PATCH /api/v1/messages/{id}":                            {Kind: "message", NotFound: "NOT_FOUND"},
+	"DELETE /api/v1/messages/{id}":                           {Kind: "message", NotFound: "NOT_FOUND"},
 	"POST /api/v1/messages/{id}/deliveries":                  {Kind: "message", NotFound: "MESSAGE_NOT_FOUND"},
 	"POST /api/v1/messages/{id}/deliveries/{attempt}/accept": {Kind: "message", NotFound: "MESSAGE_NOT_FOUND"},
 	"POST /api/v1/messages/{id}/reply":                       {Kind: "message", NotFound: "MESSAGE_NOT_FOUND"},
