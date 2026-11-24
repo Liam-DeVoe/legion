@@ -63,6 +63,7 @@ import {
   type StallWatchdogProcesses,
 } from "@legion/pi-shared/stall-watchdog";
 import { heldTakeNote, taskWaitingNote } from "@legion/pi-shared/task-notes";
+import type { TaskValue } from "@legion/pi-shared/task-take";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { deliveryFor } from "@legion/pi-shared/test/omp-harness";
 import { taskStandIn } from "@legion/pi-shared/test/task-stand-in";
@@ -2356,6 +2357,71 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(envoyPluginInterface().taskTurnPending).toEqual({ session: "ses_stall" });
       await hook(worker.handlers, "agent_start")({}, worker.context);
       expect(envoyPluginInterface().taskTurnPending).toBeUndefined();
+    });
+
+    // R5 of dispatch://INFRA-4130, at the pane: a card waits for the resume's turn, or for its
+    // take's refusal or drop, and no longer. The ready decision writes the claim's value, as it
+    // writes the phase's resume task, and the daemon refuses the take of it for a hold: another
+    // role's turn holds the issue. A card that reaches the pane at the ready, at the read after it
+    // or at the role claim starts no turn, as above. Once the refusal has answered, the take holds
+    // no task, so the task-turn mark is down, a card starts its own turn, and no text is sent.
+    test("a take of the task the ready decision wrote that the daemon refuses for a hold frees a card waiting at the ready at once: the card starts its turn, and the task's text starts none", async () => {
+      const text = "Implement REPO-43 on its branch.";
+      const tasks = taskStandIn();
+      const cardWake = new CardWake({
+        now: () => Date.now(),
+        sendMessage: () => undefined,
+        startupTurn: () => envoyPluginInterface().startupTurn,
+        taskTurnPending: () => envoyPluginInterface().taskTurnPending,
+        isOwnSession: (session) => session === "ses_stall",
+      });
+      const idleHost = { isIdle: () => true, setTimeout: () => undefined, sessionManager: {} };
+      const handOvers: { readonly at: string; readonly triggerTurn: boolean }[] = [];
+      const cardAt = (at: string) => {
+        handOvers.push({ at, triggerTurn: cardWake.deliveryFor(false, idleHost).triggerTurn });
+      };
+      let written: TaskValue | undefined;
+      const takes: unknown[] = [];
+      const worker = await bootStalling({
+        idle: () => true,
+        routes: (url, body) => {
+          if (url.pathname === "/legion/v1/claims/ready") {
+            cardAt("ready");
+            written = tasks.give(text);
+            return undefined;
+          }
+          if (url.pathname === "/legion/v1/claims/task") cardAt("the read after the ready");
+          if (url.pathname === "/v1/roles/set") cardAt("role claim");
+          // Another role's turn holds the issue.
+          if (url.pathname === "/legion/v1/claims/take") {
+            takes.push(body);
+            return Response.json({ outcome: "refused", hold: "issue-in-turn" });
+          }
+          return tasks.answer(url.pathname, body as Record<string, unknown>);
+        },
+      });
+
+      await turns(() => takes.length > 0);
+      // The refusal's answer is read over the stub's fetch.
+      await turns(() => false);
+      expect(takes).toEqual([
+        {
+          claimToken: worker.claimToken,
+          sessionId: "ses_stall",
+          secret: worker.registration.secret,
+          generation: 2,
+          ...written,
+        },
+      ]);
+      expect(envoyPluginInterface().taskTurnPending).toBeUndefined();
+      cardAt("the take's refusal");
+      expect(handOvers).toEqual([
+        { at: "ready", triggerTurn: false },
+        { at: "the read after the ready", triggerTurn: false },
+        { at: "role claim", triggerTurn: false },
+        { at: "the take's refusal", triggerTurn: true },
+      ]);
+      expect(worker.sentUserMessages).toEqual([]);
     });
 
     // The same window when the read answers that the claim is owed nothing: the hold ends with the
