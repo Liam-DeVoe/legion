@@ -79,25 +79,44 @@ func (g *closingGitHub) calls() []string {
 	return slices.Clone(g.called)
 }
 
-// The merge of the pull request of the task that merges closes each other open pull request of the
-// issue, as the implement App, each with the comment `Merged in #<n>.`: b needs a, c and d, so b is
-// the task that merges. a's pull request #1 is on the issue's branch, b's #2, c's #3 and d's #4 on
-// their own. #4 merges first, which queues no close: d is no task that merges. Then #2 merges: the
-// merge queues one row that closes #1 and #3, which comments `Merged in #2.` on each and then closes
-// it, and leaves #2 and the merged #4 alone. The row run again finds both closed and does nothing
-// more.
+// The merge of a task's pull request closes the open pull request of each task whose work it
+// holds, as the implement App, each with the comment `Merged in #<n>.`: b needs a, c and d, so its
+// merge holds their work. a's pull request #1 is on the issue's branch, b's #2, c's #3 and d's #4 on
+// their own; a and c are done at their step, b stands at its merge, and d still works its step. #4
+// merges first, which queues no close: d stands at no merge. Then #2 merges: the merge queues one
+// row that closes #1 and #3, which comments `Merged in #2.` on each and then closes it, and leaves
+// #2 and the merged #4 alone. The row run again finds both closed and does nothing more.
 //
 // The fault it catches is the pull requests of the other tasks left open after the issue merged,
 // which GitHub leaves open (its control: merged without the row).
 func TestTheMergeClosesEachOtherPullRequestOfTheIssue(t *testing.T) {
 	rig := newTaskBranchRig(t, plannedTask{id: "a"}, plannedTask{id: "b", needs: []string{"a", "c", "d"}}, plannedTask{id: "c"}, plannedTask{id: "d"})
+	ctx := context.Background()
+	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+		for _, move := range []struct {
+			task  string
+			place record.TaskPlace
+			state record.TaskState
+		}{
+			{"a", record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskDone},
+			{"c", record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskDone},
+			{"b", record.TaskPlace{Kind: record.PlaceMerge}, record.TaskRunning},
+		} {
+			if err := rig.records.MoveTask(ctx, tx, taskBranchIssue.Key, taskBranchIssue.Generation, move.task, move.place, move.state); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("move a and c to done and b to its merge: %v", err)
+	}
 	closing := &closingGitHub{state: map[int]string{1: "open", 3: "open"}}
 	rig.runner.githubAPI = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		if !closing.handle(w, r) && !rig.github.Handler(w, r) {
 			githubtest.Unexpected(t, w, r)
 		}
 	}})
-	ctx := context.Background()
+
 	for _, seed := range []struct {
 		number int
 		task   string
@@ -136,7 +155,7 @@ func TestTheMergeClosesEachOtherPullRequestOfTheIssue(t *testing.T) {
 
 	merge(4)
 	if closes := closeRows(); len(closes) != 0 {
-		t.Fatalf("the rows that close pull requests after d's merge = %+v, want none: d is no task that merges", closes)
+		t.Fatalf("the rows that close pull requests after d's merge = %+v, want none: d stands at no merge", closes)
 	}
 
 	merge(2)
