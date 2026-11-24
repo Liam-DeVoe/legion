@@ -49,14 +49,17 @@ func mergeForwardRunnerIn(t *testing.T, publisher notify.Publisher, state record
 	return runner, sup, pool, logs
 }
 
-// The merge forward is a message, not a phase start (dispatch://INFRA-4374 R1), so nothing else
-// brings the implementer to the merge: its row wakes a released implementer, waits while no
-// session holds the role, and publishes once one does, on the role's own topic under the row's
-// key. A message about an ask the record no longer holds at that head (a newer ask replaced it,
-// or the workflow dropped it), an ask or a hold still queued once the merge landed, and a message
-// of a pull request that is not open end with nothing published (workflow.MergeForwardAt); an ask
-// to another agent's claim that has retired ends with nothing published to it, and its architect
-// is told (mergeForwardLost); a landed still queued once the merge landed is delivered.
+// The merge forward is a message, not a phase start, so no start brings the agent asked to the
+// merge. Its row wakes a released implementer, waits while no session holds the role, and
+// publishes once one does, on the role's own topic under the row's key. For an implementer the
+// message is the only way to the merge. An owner asked to merge also hears of an open ask from the
+// catch-up of a fresh session's launch, where its claim was not told the ask (workflow's
+// untoldMergeForward). A message about an ask the record no longer holds at that head (a newer ask
+// replaced it, or the workflow dropped it), an ask or a hold still queued once the merge landed,
+// and a message of a pull request that is not open end with nothing published
+// (workflow.MergeForwardAt); an ask to another agent's claim that has retired ends with nothing
+// published to it, and its architect is told (mergeForwardLost); a landed still queued once the
+// merge landed is delivered.
 func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 	ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: "sha-1", Base: "main",
 		Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen}

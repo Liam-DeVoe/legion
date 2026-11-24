@@ -408,12 +408,11 @@ func (r *ownerHoldRig) stepTwoRaised(t *testing.T, role claim.Role) {
 
 // The landed of a merge forward that another agent pushed reaches the owner at its own step, by the
 // step's role and the owner's claim (record.Issue.StepWorker), as a fresh worker of that step is
-// told, and it asks the owner to go on with that step at the new head, so it waits for the owner's
-// slot to hold the App of
-// that step's role. On `implementer reviewer:owner` at the owner's review step, the ask went to the
-// fresh implementer; the merge lands through the workflow, which queues the landed to the owner's
-// claim as the reviewer and no write-back of the owner's slot. While the slot's gh files do not hold
-// the review App the landed waits; once they do, it is told.
+// told. It asks the owner to go on with that step at the new head, so it waits for the owner's slot
+// to hold the App of that step's role. On `implementer reviewer:owner` at the owner's review step,
+// the ask went to the fresh implementer; the merge lands through the workflow, which queues the
+// landed to the owner's claim as the reviewer and no write-back of the owner's slot. While the
+// slot's gh files do not hold the review App the landed waits; once they do, it is told.
 func TestTheLandedReachesTheOwnerAtItsOwnStepOnceItsSlotHoldsTheStepsApp(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

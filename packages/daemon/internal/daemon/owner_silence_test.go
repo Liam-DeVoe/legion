@@ -24,6 +24,7 @@ import (
 // The control: the sweep before the owner's silence skipped every architect's claim and minted
 // the tester's fact alone.
 func TestTheSweepMintsAnOwnersSilenceOverAnOpenRunPastTheBound(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
 	bound := 30 * time.Minute
 	idle := func(issue string, role claim.Role) supervise.Claim {
