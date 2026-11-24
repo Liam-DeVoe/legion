@@ -4,7 +4,13 @@ import type {
   SessionAnswersResponse,
   WhoamiResponse,
 } from "@legion/contracts";
-import { awaitsDecision, inboxThreadRow, serviceSubjectLabel } from "@legion/contracts";
+import {
+  awaitsDecision,
+  inboxThreadRow,
+  JOB_PROJECT_SCOPES,
+  PROJECT_SCOPE_PUBLIC,
+  serviceSubjectLabel,
+} from "@legion/contracts";
 import { actorText } from "../actor-text";
 import { textHead } from "../ask-answer";
 import { type CredentialPendingRow, DispatchServiceError } from "../dispatch-http";
@@ -73,16 +79,17 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
     "no owner, so an issue you create without an assignee takes its parent's assignee when the parent is in the same project, else the project's default assignee, which every project names, so the issue always has one.";
   // A broker token is the one credential that proves a session of its own, so a caller that
   // names a service and proves a session holds one that names no person. Dispatch takes the
-  // writes of a job's token, whose project scope is named or public, as its service, and refuses
-  // every other such token every write with SIGN_IN_REQUIRED: a machine's, under the project
-  // scope person. A Dispatch older than project_scope names none and refuses a job's token
-  // outright, so a caller with no project scope keeps the sign-in sentence. whoami is where a
-  // person asks what their credential may do, so for a refused caller it says that rather than
-  // describing the issue creation the server would refuse, and names the command that gets them
-  // a write. A verified service-account token names a service and proves no session; it writes
-  // as before, and keeps the sentence it had.
+  // writes of a job's token, whose project scope is one of JOB_PROJECT_SCOPES (named or public),
+  // as its service, and refuses every other such token every write with SIGN_IN_REQUIRED: a
+  // machine's, under the project scope person, and one under a scope the list does not name yet.
+  // A Dispatch older than project_scope names none and refuses a job's token outright, so a
+  // caller with no project scope keeps the sign-in sentence. whoami is where a person asks what
+  // their credential may do, so for a refused caller it says that rather than describing the
+  // issue creation the server would refuse, and names the command that gets them a write. A
+  // verified service-account token names a service and proves no session; it writes as before,
+  // and keeps the sentence it had.
   const brokerService = owner === null && service !== null && proved !== null;
-  const job = brokerService && (projectScope === "named" || projectScope === "public");
+  const job = brokerService && projectScope !== null && JOB_PROJECT_SCOPES.includes(projectScope);
   const signInNeeded = brokerService && !job;
   let acting: string;
   if (owner !== null) {
@@ -102,13 +109,13 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
     proved !== null && proved !== sessionId
       ? ` Your credential names session ${proved}, which is not this host session (${sessionId}): Dispatch records every write you make as ${proved}.`
       : "";
-  // A job's public token names no one project: it reaches every public project and the private
-  // projects its job entry lists.
+  // A job's public token names no one project, and Dispatch holds it to none: its job entry's
+  // list of private projects limits none of its writes at this release.
   const writable =
     project !== null
       ? ` It may write project ${project} and no other.`
-      : job && projectScope === "public"
-        ? " It may write every public project and the private projects its job entry lists."
+      : job && projectScope === PROJECT_SCOPE_PUBLIC
+        ? " It names no one project, so it may write wherever a token that names no project may."
         : "";
   return {
     text: acting + elsewhere + writable,

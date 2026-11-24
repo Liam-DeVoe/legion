@@ -18,7 +18,6 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { writeDeviceLoginFile } from "../../test/device-logins";
 import { DeviceLoginIdentity } from "../device-login";
 import { newDpopKey } from "../dpop";
-import { MACHINE_AUDIENCE_VAR } from "../environment";
 import { githubActionsIdentity } from "../github-actions-identity";
 import { metadataIdentity } from "../metadata-identity";
 import { projectedToken } from "../projected-token";
@@ -195,7 +194,6 @@ function githubActionsSource(token: string): TokenSource {
     requestUrl: `http://127.0.0.1:${server.port}/idtoken`,
     requestToken,
     audience,
-    audienceSetting: MACHINE_AUDIENCE_VAR,
   });
 }
 

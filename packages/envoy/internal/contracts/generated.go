@@ -536,6 +536,17 @@ const IDAmbiguous = "ID_AMBIGUOUS"
 // every client's reading of it cannot drift apart.
 const DispatchSignInRequired = "SIGN_IN_REQUIRED"
 
+// JobProjectScopes is every project scope of a job's broker-issued token, which names a service
+// and no person: Dispatch takes the writes of such a token under one of these as that service's,
+// and refuses every other such token every write with DispatchSignInRequired, a project scope the
+// broker answers later among them until this list names it. Generated from JOB_PROJECT_SCOPES in
+// packages/contracts, which `dispatch whoami` reads to say which of those tokens may write, so
+// the server's rule and what a client says of it cannot drift apart.
+var JobProjectScopes = []string{
+	"named",
+	"public",
+}
+
 // DispatchReadOnlyToken is the code of the 403 for a request by a broker-issued access token
 // that holds only the scope read, to a route the read list does not name: the route ran nothing,
 // and the request wrote only the row of its spent DPoP proof. Generated from

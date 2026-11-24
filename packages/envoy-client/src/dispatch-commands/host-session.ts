@@ -15,6 +15,21 @@ import {
 
 const HOSTS = ["omp", "claude", "codex"] as const satisfies readonly DispatchHost[];
 
+/**
+ * The variables a `dispatch` command reads a session's id from, in the order the refusal ledger
+ * takes the first one set under any host but Codex (`runDispatchCli`): claude-envoy's QA override
+ * and then Claude Code's own id (`claudeSessionId` in claude-envoy), the id an Oh My Pi plugin
+ * sets or a person names, and Codex's thread id, which alone is read under Codex. `dispatch api`
+ * reads the AskGate record of each one set before a write, so every session the ledger can be
+ * written for is one whose gate it reads.
+ */
+export const SESSION_VARIABLES = [
+  "ENVOY_SESSION_ID",
+  "CLAUDE_CODE_SESSION_ID",
+  "DISPATCH_SESSION_ID",
+  "CODEX_THREAD_ID",
+] as const;
+
 /** The host a command runs under and the session it acts as there, with the envoy.json that
  *  host's plugin chose, or the usage error a command refuses the absence of either with. */
 export type HostSession =

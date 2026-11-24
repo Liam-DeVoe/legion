@@ -19,7 +19,7 @@ import {
 import { apiCommand } from "./dispatch-commands/api";
 import { defined } from "./dispatch-commands/context";
 import { OK, REFUSED, USAGE } from "./dispatch-commands/exit-codes";
-import { hostedDispatch, hostSession } from "./dispatch-commands/host-session";
+import { hostedDispatch, hostSession, SESSION_VARIABLES } from "./dispatch-commands/host-session";
 import { loginCommand } from "./dispatch-commands/login";
 import {
   checkDispatchCall,
@@ -264,12 +264,13 @@ export async function runDispatchCli(
     return resolvedHost.name;
   };
   /** Appends `text`, a refusal made before the call reached Dispatch, to the ledger of the
-   *  session this call knows, if any. */
+   *  session this call knows, if any: Codex's thread under Codex, else the first id of
+   *  `SESSION_VARIABLES` that is set. */
   const ledgerRefusal = (text: string, tool?: string, askgate?: ResultInput["askgate"]): void => {
     const sessionId =
       ledgerHost() === "codex"
         ? env.CODEX_THREAD_ID
-        : (claudeSession ?? env.DISPATCH_SESSION_ID ?? env.CODEX_THREAD_ID);
+        : SESSION_VARIABLES.map((variable) => env[variable]).find((id) => id !== undefined);
     if (sessionId === undefined) return;
     try {
       appendResult(sessionDirectory(env, sessionId), {
@@ -284,12 +285,13 @@ export async function runDispatchCli(
   // `dispatch api` sends one request of Dispatch's HTTP API (`dispatch-commands/api.ts`). Like
   // `dispatch login` it runs where no host is found, as in a GitHub Actions job, reading Dispatch
   // from the environment alone; under a host it acts as that host's session. Its refusals before
-  // a request is sent go to the ledger as every other command's do.
+  // a request is sent go to the ledger as every other command's do, an AskGate refusal with
+  // AskGate's mark.
   if (argv[0] === "api") {
     const hostName = ledgerHost();
     return await apiCommand(argv.slice(1), env, io, {
       hosted: hostName === undefined ? undefined : hostSession(hostName, env, claudeSession),
-      ledger: ledgerRefusal,
+      ledger: (text, askgate) => ledgerRefusal(text, undefined, askgate),
     });
   }
   const refuse = (

@@ -209,9 +209,12 @@ function bodyFile(text: string): string {
 /** A comment's body, as a script posts one. */
 const COMMENT = JSON.stringify({ body: "Looks good." });
 
+/** Why the gate refuses a write, as the refusal and its ledger line's AskGate mark say it. */
+const GATED_WHY =
+  "this session's AskGate reviews Dispatch writes, so dispatch api sends only GET here";
+
 /** How the gate refuses a write: before the command it names. */
-const GATED =
-  "dispatch api was not called: this session's AskGate reviews Dispatch writes, so dispatch api sends only GET here; make this write with ";
+const GATED = `dispatch api was not called: ${GATED_WHY}; make this write with `;
 
 describe("a request", () => {
   test("GET /api/v1/whoami trades a token, sends one request with a new DPoP proof, prints the body and exits 0", async () => {
@@ -519,7 +522,7 @@ describe("the host and the session", () => {
 });
 
 describe("the session's ledger", () => {
-  test("a gated POST's refusal is recorded in the session's ledger, and an answer Dispatch sent is not", async () => {
+  test("a gated POST's refusal is recorded in the session's ledger with AskGate's mark, and an answer Dispatch sent is not", async () => {
     const broker = stubBroker(300);
     const server = stubDispatch();
     const stateDir = tempDir();
@@ -531,8 +534,15 @@ describe("the session's ledger", () => {
     );
     expect(refused.code).toBe(1);
     const logged = ledgerOf(stateDir, SESSION);
+    // The mark is what pi-envoy counts an AskGate refusal by, as it counts the CLI's own refusal
+    // of a gated write that carries no marker.
     expect(logged).toEqual([
-      { at: expect.any(String), tool: "dispatch", error: refused.stderr.trimEnd() },
+      {
+        at: expect.any(String),
+        tool: "dispatch",
+        error: refused.stderr.trimEnd(),
+        askgate: { mode: "block", why: GATED_WHY },
+      },
     ]);
     expect(cliRefusals(`${logged[0]?.error}\n`)).toHaveLength(1);
     // Requests that were sent, whatever Dispatch answered, add nothing.
@@ -540,6 +550,28 @@ describe("the session's ledger", () => {
     expect((await dispatch(["api", "GET", "/api/v1/whoami"], env)).code).toBe(0);
     expect(server.sent).toHaveLength(2);
     expect(ledgerOf(stateDir, SESSION)).toHaveLength(1);
+  });
+
+  test("a write a broken AskGate record refuses is recorded with AskGate's mark naming the record's problem", async () => {
+    const broker = stubBroker(300);
+    const server = stubDispatch();
+    const stateDir = tempDir();
+    const file = writeRecord(stateDir, SESSION);
+    writeFileSync(file, "{not json");
+    const refused = await dispatch(
+      ["api", "POST", "/api/v1/issues/ACME-1/claim"],
+      sessionEnvironment(broker.url, server.url, stateDir)
+    );
+    expect(refused.code).toBe(1);
+    expect(server.sent).toHaveLength(0);
+    expect(ledgerOf(stateDir, SESSION)).toEqual([
+      {
+        at: expect.any(String),
+        tool: "dispatch",
+        error: refused.stderr.trimEnd(),
+        askgate: { mode: "block", why: expect.stringContaining(file) },
+      },
+    ]);
   });
 
   test.each([

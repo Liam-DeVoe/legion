@@ -14,7 +14,6 @@ import { readFileSync } from "node:fs";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { generateKeyPair, SignJWT } from "jose";
 import { newDpopKey } from "../dpop";
-import { MACHINE_AUDIENCE_VAR } from "../environment";
 import {
   ACTIONS_ID_TOKEN_REQUEST_URL_VAR,
   githubActionsIdentity,
@@ -170,7 +169,6 @@ function actionsIdentity(
     requestUrl,
     requestToken,
     audience: FIXTURE.audience,
-    audienceSetting: MACHINE_AUDIENCE_VAR,
     fetch: fetchImpl,
   });
 }

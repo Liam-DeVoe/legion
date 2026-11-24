@@ -30,6 +30,7 @@ import {
   IDEMPOTENCY_REPLAYED_HEADER,
   ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
   ISSUE_TITLE_MAX,
+  JOB_PROJECT_SCOPES,
   LIVE_SOCKET_MAX_AGE_CLOSE,
   LIVE_SOCKET_MAX_AGE_MS,
   LIVE_SOCKET_MAX_SUBSCRIPTIONS,
@@ -714,6 +715,16 @@ const IDAmbiguous = ${JSON.stringify(ID_AMBIGUOUS)}
 // Generated from DISPATCH_SIGN_IN_REQUIRED in packages/contracts so the server's refusal and
 // every client's reading of it cannot drift apart.
 const DispatchSignInRequired = ${JSON.stringify(DISPATCH_SIGN_IN_REQUIRED)}
+
+// JobProjectScopes is every project scope of a job's broker-issued token, which names a service
+// and no person: Dispatch takes the writes of such a token under one of these as that service's,
+// and refuses every other such token every write with DispatchSignInRequired, a project scope the
+// broker answers later among them until this list names it. Generated from JOB_PROJECT_SCOPES in
+// packages/contracts, which \`dispatch whoami\` reads to say which of those tokens may write, so
+// the server's rule and what a client says of it cannot drift apart.
+var JobProjectScopes = []string{
+${JOB_PROJECT_SCOPES.map((scope) => `\t${JSON.stringify(scope)},`).join("\n")}
+}
 
 // DispatchReadOnlyToken is the code of the 403 for a request by a broker-issued access token
 // that holds only the scope read, to a route the read list does not name: the route ran nothing,

@@ -278,7 +278,7 @@ export class DispatchWriteLandedError extends Error {
 
 /** `value`, a parsed body, as Dispatch's error shape: its members where it is an object, and none
  *  where it is not. A body is Dispatch's own refusal where its `error` is a string. */
-export function asErrorShape(value: unknown): DispatchServiceErrorShape {
+function asErrorShape(value: unknown): DispatchServiceErrorShape {
   return typeof value === "object" && value !== null ? (value as DispatchServiceErrorShape) : {};
 }
 
@@ -287,7 +287,7 @@ export function asErrorShape(value: unknown): DispatchServiceErrorShape {
  * `+json`, its parameters left out and letter case aside, as Dispatch's own rule reads it
  * (`compressibleAnswer`, packages/envoy/internal/dispatch/api/response_compression.go).
  */
-export function isJson(response: Response): boolean {
+function isJson(response: Response): boolean {
   const [type = ""] = (response.headers.get("content-type") ?? "").split(";");
   const mediaType = type.trim().toLowerCase();
   return (
@@ -638,6 +638,22 @@ function parsedJson(response: Response, text: string): ParsedJson {
   }
 }
 
+/** Dispatch's own refusal, as an answer carries it: its code, where it names one, and its text. */
+export interface DispatchRefusal {
+  readonly code: string | undefined;
+  readonly error: string;
+}
+
+/**
+ * Dispatch's own refusal in `response`, whose body is `text`, or undefined where the answer is
+ * none: its body is typed JSON (`isJson`) that parses to an object whose `error` is a string, as
+ * Dispatch writes every refusal. The one rule every reader of a refusal reads it by.
+ */
+export function dispatchRefusal(response: Response, text: string): DispatchRefusal | undefined {
+  const shape = asErrorShape(parsedJson(response, text)?.value);
+  return typeof shape.error === "string" ? { code: shape.code, error: shape.error } : undefined;
+}
+
 /**
  * One attempt of a write as the loop reads it (`#write`): the table's event, and what its ending,
  * its resend and the loop's own state are read from. A wait the deadline or the caller's stop
@@ -693,16 +709,15 @@ async function writeAnswer(response: Response): Promise<WriteAnswer> {
   const text = await response.text();
   const typed = isJson(response);
   const json = parsedJson(response, text);
-  const shape = response.ok ? {} : asErrorShape(json?.value);
-  const own = typeof shape.error === "string";
+  const refusal = response.ok ? undefined : dispatchRefusal(response, text);
   return {
     response,
     malformed: text !== "" && typed && json === undefined,
     notJson: text === "" || !typed,
     text,
     json,
-    code: own ? shape.code : undefined,
-    error: own ? (shape.error as string) : undefined,
+    code: refusal?.code,
+    error: refusal?.error,
     replayed: response.headers.get(IDEMPOTENCY_REPLAYED_HEADER)?.trim() === "?1",
     keyEcho: response.headers.get(IDEMPOTENCY_KEY_HEADER) ?? undefined,
   };

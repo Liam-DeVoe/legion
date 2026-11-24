@@ -8,6 +8,7 @@ import { holdSecret, holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, isCleanUrl } from "@legion/contracts/log-text";
 import { answerText } from "./answer-text";
 import { LOOPBACK_HOST } from "./loopback";
+import { MACHINE_AUDIENCE_VAR } from "./machine-audience";
 import type { SubjectToken, TokenSource } from "./source";
 import { SUBJECT_TOKEN_TYPE_GITHUB } from "./wire";
 
@@ -28,18 +29,15 @@ const ASKING = `ask GitHub for this run's OIDC token at the URL ${ACTIONS_ID_TOK
 /** The refusal of a request URL the request token may not be sent to. */
 const NOT_HTTPS = `${ACTIONS_ID_TOKEN_REQUEST_URL_VAR} is not an https URL: the request token is sent there, so it takes https, or http to 127.0.0.1, ::1 or localhost`;
 
-/** What {@link githubActionsIdentity} takes: Go's `GitHubActionsIdentity`'s members, and
- *  `audienceSetting`, which Go has no member for, since its `Describe` names `MachineAudienceVar`
- *  itself. */
+/** What {@link githubActionsIdentity} takes: Go's `GitHubActionsIdentity`'s members. */
 export interface GitHubActionsIdentityOptions {
   /** Where the job asks for its token: {@link ACTIONS_ID_TOKEN_REQUEST_URL_VAR}'s value. */
   readonly requestUrl: string;
   /** The bearer the job asks with: {@link ACTIONS_ID_TOKEN_REQUEST_TOKEN_VAR}'s value. */
   readonly requestToken: string;
-  /** The `aud` GitHub mints the token for: the broker's exchange audience. */
+  /** The `aud` GitHub mints the token for, the broker's exchange audience:
+   *  {@link MACHINE_AUDIENCE_VAR}'s value, which `describe` names. */
   readonly audience: string;
-  /** The variable that names {@link audience}, which `describe` names. */
-  readonly audienceSetting: string;
   /** The fetch the request goes through; the global one by default (Go's `HTTP`). Only a test
    *  replaces it. */
   readonly fetch?: typeof fetch | undefined;
@@ -125,8 +123,8 @@ export function githubActionsIdentity(options: GitHubActionsIdentityOptions): To
     },
     describe: () => {
       const audience = isCleanUrl(options.audience)
-        ? `${options.audience} (${options.audienceSetting})`
-        : `the audience ${options.audienceSetting} names`;
+        ? `${options.audience} (${MACHINE_AUDIENCE_VAR})`
+        : `the audience ${MACHINE_AUDIENCE_VAR} names`;
       return `this GitHub Actions run's OIDC token for ${audience}, asked for at the URL ${ACTIONS_ID_TOKEN_REQUEST_URL_VAR} names with the token ${ACTIONS_ID_TOKEN_REQUEST_TOKEN_VAR} names`;
     },
   };

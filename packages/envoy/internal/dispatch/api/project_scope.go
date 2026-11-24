@@ -79,6 +79,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -476,18 +477,11 @@ func (s *server) writeNeedsASignedInPerson(handler http.HandlerFunc) http.Handle
 	}
 }
 
-// jobCredential answers whether a broker-issued credential carries one of the two project scopes
-// a job's token carries, `named` or `public`. A nil credential, an empty scope and every other
-// word answer false.
+// jobCredential answers whether a broker-issued credential carries one of the project scopes a
+// job's token carries, contracts.JobProjectScopes (`named` or `public`), the list `dispatch whoami`
+// reads too. A nil credential, an empty scope and every other word answer false.
 func jobCredential(credential *model.Credential) bool {
-	if credential == nil {
-		return false
-	}
-	switch credential.ProjectScope {
-	case ciphertoken.ProjectScopeNamed, ciphertoken.ProjectScopePublic:
-		return true
-	}
-	return false
+	return credential != nil && slices.Contains(contracts.JobProjectScopes, credential.ProjectScope)
 }
 
 // undecidableWrites names every mutating row the project check cannot decide: one writeClasses

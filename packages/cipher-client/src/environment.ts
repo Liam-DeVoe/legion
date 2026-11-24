@@ -14,6 +14,7 @@ import {
   ACTIONS_ID_TOKEN_REQUEST_URL_VAR,
   githubActionsIdentity,
 } from "./github-actions-identity";
+import { MACHINE_AUDIENCE_VAR } from "./machine-audience";
 import { metadataIdentity } from "./metadata-identity";
 import { personIdentity } from "./person-identity";
 import { poolIdentity } from "./pool-identity";
@@ -42,10 +43,9 @@ export const IDENTITY_VAR = "AGENT_SECRETS_MACHINE_IDENTITY";
 /** The projected Kubernetes service-account token file, which {@link IDENTITY_KUBERNETES} reads
  *  and {@link IDENTITY_POOL} federates. */
 export const MACHINE_TOKEN_FILE_VAR = "AGENT_SECRETS_MACHINE_TOKEN_FILE";
-/** The audience of this machine's identity token: the metadata server mints it for that
- *  audience, a pool mint names it as the minted token's own, and GitHub mints a GitHub Actions
- *  run's for it. */
-export const MACHINE_AUDIENCE_VAR = "AGENT_SECRETS_MACHINE_AUDIENCE";
+/** The audience of this machine's identity token, held in `machine-audience.ts`, which imports
+ *  nothing, so the identities this module builds read it too. */
+export { MACHINE_AUDIENCE_VAR };
 /** The session a trade writes under for a caller that acts as no session of its own, which a
  *  daemon, a command and a helper are ({@link tradeSession}). */
 export const SESSION_VAR = "AGENT_SECRETS_SESSION";
@@ -167,12 +167,7 @@ export function machineIdentity(env: BrokerEnvironment): TokenSource | undefined
       const requestUrl = required(env, ACTIONS_ID_TOKEN_REQUEST_URL_VAR, kind);
       const requestToken = required(env, ACTIONS_ID_TOKEN_REQUEST_TOKEN_VAR, kind);
       const audience = required(env, MACHINE_AUDIENCE_VAR, kind);
-      return githubActionsIdentity({
-        requestUrl,
-        requestToken,
-        audience,
-        audienceSetting: MACHINE_AUDIENCE_VAR,
-      });
+      return githubActionsIdentity({ requestUrl, requestToken, audience });
     }
     case IDENTITY_DEVICE_LOGIN: {
       const brokerUrl = required(env, BROKER_URL_VAR, kind);

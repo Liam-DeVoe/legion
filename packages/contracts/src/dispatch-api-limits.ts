@@ -212,6 +212,25 @@ export const DISPATCH_LOGIN_CHANGED = "LOGIN_CHANGED";
  */
 export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
 
+/** The project scope of a broker-issued token an operator's or a job's entry mapped. A job's
+ *  names one project, which the token writes alone. */
+export const PROJECT_SCOPE_NAMED = "named";
+
+/** The project scope of a job's broker-issued token whose entry names `public`. Dispatch holds
+ *  such a token to no one project: it writes wherever a token that names no project may, and its
+ *  entry's list of private projects limits none of its writes. */
+export const PROJECT_SCOPE_PUBLIC = "public";
+
+/**
+ * The project scopes of a job's broker-issued token, which names a service and no person:
+ * Dispatch takes the writes of such a token under one of these as that service's, and refuses
+ * every other such token every write with `DISPATCH_SIGN_IN_REQUIRED`, a project scope the broker
+ * answers later among them until this list names it. Generated into Go as
+ * `contracts.JobProjectScopes`, which the server's rule reads, and `dispatch whoami` reads it to
+ * say which of those tokens may write, so the two cannot disagree.
+ */
+export const JOB_PROJECT_SCOPES: readonly string[] = [PROJECT_SCOPE_NAMED, PROJECT_SCOPE_PUBLIC];
+
 /**
  * The code of the `403` for a request by an access token the secrets broker issued that holds
  * only the OAuth scope `read`, to a route the read list does not name. Such a token names a

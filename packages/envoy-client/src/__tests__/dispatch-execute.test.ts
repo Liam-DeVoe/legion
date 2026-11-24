@@ -4867,7 +4867,8 @@ describe("executeDispatchTool", () => {
   // A job's token, which the secrets broker mints from a job entry, names a service and no person
   // as a machine's does, and Dispatch takes its writes as that service. whoami tells the two apart
   // by the token's project scope: `named` or `public` for a job's, `person` for a machine nobody
-  // signed in on, which is refused every write and keeps the sentence naming `agent-secrets login`.
+  // signed in on, which is refused every write and keeps the sentence naming `agent-secrets login`,
+  // as does any scope Dispatch's list of job scopes does not name (`JOB_PROJECT_SCOPES`).
   test.each([
     [
       "a job's named token writes as its service in its one project",
@@ -4883,7 +4884,7 @@ describe("executeDispatchTool", () => {
       ["agent-secrets login", "refuses every write", "every public project"],
     ],
     [
-      "a job's public token writes as its service in every public project and its listed private ones",
+      "a job's public token writes as its service wherever a token that names no project may",
       {
         service: "example-org/example-repo/.github/workflows/release.yaml@refs/heads/main",
         project: null,
@@ -4891,13 +4892,22 @@ describe("executeDispatchTool", () => {
       },
       [
         "Session session-1 runs as service example-org/example-repo/.github/workflows/release.yaml@refs/heads/main and no person, and writes as that service",
-        "It may write every public project and the private projects its job entry lists.",
+        "It names no one project, so it may write wherever a token that names no project may.",
       ],
-      ["agent-secrets login", "refuses every write", "may write project"],
+      ["agent-secrets login", "refuses every write", "may write project", "private projects"],
     ],
     [
       "a machine's person-scoped token is refused every write and names the sign-in",
       { service: "example-fleet", project: null, project_scope: "person" },
+      [
+        "Session session-1 runs as service example-fleet and no person, so it may read but Dispatch refuses every write it makes",
+        "agent-secrets login",
+      ],
+      ["writes as that service", "may write"],
+    ],
+    [
+      "a token under a project scope Dispatch adds later is refused every write, as Dispatch refuses it",
+      { service: "example-fleet", project: null, project_scope: "elsewhere" },
       [
         "Session session-1 runs as service example-fleet and no person, so it may read but Dispatch refuses every write it makes",
         "agent-secrets login",

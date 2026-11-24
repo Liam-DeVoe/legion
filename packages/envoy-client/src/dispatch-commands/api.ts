@@ -23,12 +23,13 @@ import {
   type DispatchEnvironment,
   dispatchSettings,
 } from "../dispatch-config";
-import { asErrorShape, DISPATCH_TOOL_DEADLINE_MS, isJson } from "../dispatch-http";
+import { DISPATCH_TOOL_DEADLINE_MS, dispatchRefusal } from "../dispatch-http";
 import { sessionDirectory } from "../dispatch-session-directory";
+import type { ResultInput } from "../dispatch-session-state";
 import type { EnvoyConfig } from "../envoy-config";
 import { messageFor } from "../errors";
 import { OK, REFUSED, USAGE } from "./exit-codes";
-import { type HostSession, hostedDispatch } from "./host-session";
+import { type HostSession, hostedDispatch, SESSION_VARIABLES } from "./host-session";
 
 /** The methods it sends. */
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
@@ -37,14 +38,10 @@ type Method = (typeof METHODS)[number];
 /** The one route it takes whole, which lists every route; it takes each path under it too. */
 const API_ROOT = "/api/v1";
 
-/** The variables a session's id is read from, by host: the ids `runDispatchCli`'s refusal ledger
- *  reads. For a write, the gate is read for each one set, whatever host the command finds. */
-const SESSION_VARIABLES = [
-  "ENVOY_SESSION_ID",
-  "CLAUDE_CODE_SESSION_ID",
-  "DISPATCH_SESSION_ID",
-  "CODEX_THREAD_ID",
-] as const;
+/** Why the gate refuses a write here, as the refusal and its ledger line's AskGate mark say it:
+ *  AskGate reviews the `dispatch` commands, and no `dispatch api` call. */
+const GATED_WHY =
+  "this session's AskGate reviews Dispatch writes, so dispatch api sends only GET here";
 
 /** `dispatch api --help`. */
 const API_HELP = [
@@ -259,23 +256,11 @@ function namesNoCredential(env: DispatchEnvironment): boolean {
 }
 
 /** The answer's `code` where its body is Dispatch's own JSON refusal, by the rule `DispatchClient`
- *  reads one by (`writeAnswer`, dispatch-http.ts): typed JSON (`isJson`) whose `error` is a
- *  string. Any other body, and a code that is no word of Dispatch's codes, is `with no code`. */
+ *  reads one by (`dispatchRefusal`, dispatch-http.ts). Any other body, and a code that is no word
+ *  of Dispatch's codes, is `with no code`. */
 function codeOf(answer: Response, text: string): string {
-  if (!isJson(answer)) return "with no code";
-  try {
-    const shape = asErrorShape(JSON.parse(text));
-    if (
-      typeof shape.error === "string" &&
-      typeof shape.code === "string" &&
-      /^[A-Z][A-Z0-9_]*$/.test(shape.code)
-    ) {
-      return shape.code;
-    }
-  } catch {
-    // Typed as JSON and not JSON: no refusal of Dispatch's.
-  }
-  return "with no code";
+  const code = dispatchRefusal(answer, text)?.code;
+  return typeof code === "string" && /^[A-Z][A-Z0-9_]*$/.test(code) ? code : "with no code";
 }
 
 /**
@@ -287,9 +272,11 @@ function codeOf(answer: Response, text: string): string {
  * environment alone. The answer's body goes to `io.stdout`, every line of its own to `io.stderr`.
  *
  * Each refusal made before the request is sent, a usage error or not, also goes to `ledger`, the
- * session's ledger as `runDispatchCli` writes every refusal before a call reaches Dispatch. A
- * request that was sent records nothing there, whatever Dispatch answered: a call's outcome is
- * recorded for the agent tools the tool specs describe, and `dispatch api` is none of them.
+ * session's ledger as `runDispatchCli` writes every refusal before a call reaches Dispatch, an
+ * AskGate refusal with AskGate's mark (`askgate`), as the CLI's own refusal of a gated write
+ * carries it, so pi-envoy counts it. A request that was sent records nothing there, whatever
+ * Dispatch answered: a call's outcome is recorded for the agent tools the tool specs describe, and
+ * `dispatch api` is none of them.
  */
 export async function apiCommand(
   argv: readonly string[],
@@ -297,19 +284,19 @@ export async function apiCommand(
   io: Pick<DispatchCliIo, "stdout" | "stderr" | "readText" | "cwd" | "fetchImpl">,
   options: {
     readonly hosted: HostSession | undefined;
-    readonly ledger: (refusal: string) => void;
+    readonly ledger: (refusal: string, askgate?: ResultInput["askgate"]) => void;
   }
 ): Promise<number> {
   const { hosted, ledger } = options;
   const say = (text: string): void => io.stderr(`${text}\n`);
   /** Prints `text`, a refusal before anything is sent, and puts it in the session's ledger. */
-  const stop = (text: string, code: number): number => {
+  const stop = (text: string, code: number, askgate?: ResultInput["askgate"]): number => {
     say(text);
-    ledger(text);
+    ledger(text, askgate);
     return code;
   };
-  const refuse = (problem: string, code: number): number =>
-    stop(`dispatch api was not called: ${problem}`, code);
+  const refuse = (problem: string, code: number, askgate?: ResultInput["askgate"]): number =>
+    stop(`dispatch api was not called: ${problem}`, code, askgate);
   const parsed = parseApi(argv);
   if (parsed.kind === "help") {
     io.stdout(API_HELP);
@@ -322,7 +309,8 @@ export async function apiCommand(
   // The directory of every session the environment names, host or none: an Oh My Pi session's
   // shell with DISPATCH_HOST emptied still names its session. An id that names no directory fails
   // closed, a GET too, naming the variable to unset rather than the value it holds. Each one's
-  // AskGate record is read for a write alone (below).
+  // AskGate record is read for a write alone (below), whatever host the command finds: every
+  // session the refusal ledger can be written for (`SESSION_VARIABLES`).
   const sessions: string[] = [];
   for (const variable of SESSION_VARIABLES) {
     const id = env[variable];
@@ -390,12 +378,16 @@ export async function apiCommand(
       const row = writeRoute(method, target.pathname);
       const command =
         row === undefined ? NO_ROW : row.commands.map((name) => `dispatch ${name}`).join(" or ");
-      return refuse(
-        gated || broken === undefined
-          ? `this session's AskGate reviews Dispatch writes, so dispatch api sends only GET here; make this write with ${command}`
-          : `AskGate's record for this session, ${broken.problem}, so whether AskGate reviews this session's Dispatch writes cannot be told, and dispatch api sends only GET here; make this write with ${command}`,
-        REFUSED
-      );
+      return gated || broken === undefined
+        ? refuse(`${GATED_WHY}; make this write with ${command}`, REFUSED, {
+            mode: "block",
+            why: GATED_WHY,
+          })
+        : refuse(
+            `AskGate's record for this session, ${broken.problem}, so whether AskGate reviews this session's Dispatch writes cannot be told, and dispatch api sends only GET here; make this write with ${command}`,
+            REFUSED,
+            { mode: "block", why: broken.problem }
+          );
     }
   }
 
