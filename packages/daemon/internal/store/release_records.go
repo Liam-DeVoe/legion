@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -31,8 +32,8 @@ type PodRelease struct {
 	BundleBytes int
 	// WakeTask is the workflow's rule for the task of a wake taken under the release's mark
 	// (workflow.ReleasedWakeTask), which RecordPodRelease uses and no read fills: it answers, from
-	// the kind of the wake's resume and the detail and the task its start carries, the task that
-	// start carries from now on. The store does not restate the wake's words. nil rewrites no task.
+	// the wake kind, the detail and the task the wake's start carries, the task that start carries
+	// from now on. The store does not restate the wake's words. nil rewrites no task.
 	WakeTask func(kind, detail, task string) string
 }
 
@@ -227,23 +228,101 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, er
 // with no first turn and not closed. Their starts are the starts of that role above the mark's
 // last_row that have a wake's own shape (wakeStartRow). A root architect's entry start and a
 // production check's look are no wake's start, and keep their task. retell answers the task a
-// start carries from now on, from the kind of the role's newest such resume and the detail and
-// the task the start carries now (PodRelease.WakeTask). A start of a role with no such resume is
-// no such wake's, and keeps its task, and so does a start an earlier daemon queued with no detail
-// (retellStarts). With no mark or a nil retell, it writes nothing.
+// start carries from now on, from the wake kind and the detail the start carries
+// (record.SuperviseRequest.WakeKind and WakeDetail), which its task was rendered with, and from
+// the task it carries now (PodRelease.WakeTask). The role's resume shows only that such a wake was
+// taken: its kind can be another wake's. A start of a role with no such resume is no such wake's,
+// and keeps its task, and so does a start an earlier daemon queued with no detail (retellStarts).
+// With no mark or a nil retell, it writes nothing.
 func retellWakesUnderRelease(ctx context.Context, tx pgx.Tx, project, issue string, retell func(kind, detail, task string) string) error {
 	if retell == nil {
 		return nil
 	}
 	return retellStarts(ctx, tx, issue, retell, `select outbox.id, outbox.payload->>'role', coalesce(outbox.payload->>'task', ''),
-		woken.kind, outbox.payload->>'wakeDetail'
+		outbox.payload->>'wakeKind', outbox.payload->>'wakeDetail'
 		from issue_releases m join outbox on outbox.issue = m.issue and outbox.id > m.last_row and `+wakeStartRow+`
 			and outbox.payload->>'role' = any(m.suspended)
-		join lateral (select r.kind from pod_resumes r where r.project = m.project and r.issue = m.issue
+		join lateral (select 1 from pod_resumes r where r.project = m.project and r.issue = m.issue
 			and r.id > m.wake_row and r.role = outbox.payload->>'role' and r.first_turn_at is null and r.closed_at is null
-			order by r.id desc limit 1) woken on true
+			limit 1) woken on true
 		where m.project = $1 and m.issue = $2
 		order by outbox.id`, project, issue)
+}
+
+// retellStarts rewrites, through tx, the task of each start that query reads of the wakes taken
+// while the release of issue stood: a cancel's (retellWakesOf) and the release's record's
+// (retellWakesUnderRelease). query reads, for each start, its outbox id, its role, its task (""
+// for none), the wake kind it carries (record.SuperviseRequest.WakeKind), and the wake's detail
+// (record.SuperviseRequest.WakeDetail), NULL where the payload carries none. That kind and that
+// detail are what WakeTask rendered the start's task with. retell answers the task the start
+// carries from now on: WakeTask of that kind and detail in other words, rendered again
+// (workflow's retellWakeTask). Only the task changes: the start keeps its role, generation, wake
+// kind, detail, pause and the rest of its payload. A start whose task retell answers unchanged is
+// not written.
+//
+// A start that carries no detail and a task is a start an earlier daemon queued, before the start
+// carried the detail. Its task cannot be rendered again, and no words are cut out of it either. So
+// it keeps its task as it is, and the transaction logs why, once it commits (logStartWithoutDetail).
+// Its words are the words the earlier daemon chose for the state it saw. A start with no task, such
+// as a pause's owed launch, has nothing to retell. Each query reads only a wake's own start
+// (wakeStartRow), which carries a wake kind. A start with a detail and no wake kind is no wake's
+// start: record's validateOutboxPayload refuses one when it is written and when it is read, and
+// no query here reads one, so its task is not rendered again either.
+func retellStarts(ctx context.Context, tx pgx.Tx, issue string, retell func(kind, detail, task string) string, query string, args ...any) error {
+	rows, err := tx.Query(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("read the starts of the wakes taken while the release of %s stood: %w", issue, err)
+	}
+	type retold struct {
+		id   int64
+		task string
+	}
+	var writes []retold
+	for rows.Next() {
+		var id int64
+		var role, task, kind string
+		var detail *string
+		if err := rows.Scan(&id, &role, &task, &kind, &detail); err != nil {
+			rows.Close()
+			return fmt.Errorf("read the starts of the wakes taken while the release of %s stood: %w", issue, err)
+		}
+		if task == "" {
+			continue
+		}
+		if detail == nil {
+			logStartWithoutDetail(ctx, issue, id, role, kind, task, "its task is kept as it is")
+			continue
+		}
+		if told := retell(kind, *detail, task); told != task {
+			writes = append(writes, retold{id: id, task: told})
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read the starts of the wakes taken while the release of %s stood: %w", issue, err)
+	}
+	for _, w := range writes {
+		if _, err := tx.Exec(ctx, `update outbox set payload = jsonb_set(payload, '{task}', to_jsonb($2::text)) where id = $1`,
+			w.id, w.task); err != nil {
+			return fmt.Errorf("rewrite the task of outbox row %d, the start of a wake taken while the release of %s stood: %w", w.id, issue, err)
+		}
+	}
+	return nil
+}
+
+// logStartWithoutDetail logs, once the caller's transaction commits, that outbox row id, the start
+// of issue's role for a wake of kind, carries no detail (record.SuperviseRequest.WakeDetail), and
+// what the transaction did with it instead of rendering its task again: what. Only a start an
+// earlier daemon queued is such a start, so the line is rare. The line carries task, the task of
+// that start, as one value, which slog writes on the same line. A retell keeps the start in the
+// outbox (retellStarts), and the line's task is the task the role reads. A cancel deletes the
+// start in the same transaction (dropWakesUnderRelease), and the line is then the one record of
+// that task, such as the text of a CI settlement that the cancel's resume does not carry.
+func logStartWithoutDetail(ctx context.Context, issue string, id int64, role, kind, task, what string) {
+	OnCommit(ctx, func() {
+		slog.Warn("store: the start of a wake that an earlier daemon queued carries no detail, so its task cannot be told again; "+what,
+			"issue", issue, "row", id, "role", role, "kind", kind, "task", task)
+	})
 }
 
 // MarkPodResumeReady stamps when the replacement pod was Ready. It is written once, by the first

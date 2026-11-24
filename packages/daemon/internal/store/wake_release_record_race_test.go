@@ -408,7 +408,7 @@ func TestARecordedReleaseKeepsAHeldWakeTakenUnderItsMarkPairedWithNoRelease(t *t
 // reads that pause as what stopped the role (PauseOfWake). So its start carries the pause's
 // words, which say that the pod was kept. The record is the moment the release takes that pod, so
 // it rewrites the task of that start through the workflow's rule (PodRelease.WakeTask), told the
-// kind of the wake's resume. Only that task changes: the start keeps the rest of its payload, and
+// wake kind the start carries. Only that task changes: the start keeps the rest of its payload, and
 // the wake stays held by its pause at release 0. A start below the release's last row, a phase's
 // start, and the start of a role whose one wake came before the mark (below its wake_row) are no
 // such start, and keep their task. The store does not import the workflow, so the rule here is a

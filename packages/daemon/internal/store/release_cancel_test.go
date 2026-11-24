@@ -355,3 +355,72 @@ func TestACancelPairsTheKeptWakeOfARoleItsMarkDoesNotRecordWithNoRelease(t *test
 		})
 	}
 }
+
+// The reviewer's read-ahead of dispatch://INFRA-3589 at 9e3e6d92, minor 2. The release's stop
+// suspends the implementer as `released`, and its record of that on the mark fails, so the mark
+// does not record the role (unrecordedStops). A wake of the implementer takes a resume and queues
+// its start. Then an operator suspends the claim. That start now waits for the operator's resume,
+// so the role takes no first turn from it. A kept resume would be warned and recorded stuck, and it
+// would refuse the role's next wake. So the cancel deletes that resume, by the rule it keeps for a
+// role of the mark's set that another path took over (dropTakenOverWakes), whether the project
+// runs or is paused. The wake's start stays, for the operator's resume to run, and the role's next
+// wake is taken. The control is the same trace with the claim still `released`: the cancel keeps
+// the resume and pairs it with release 0 (pairUnrecordedWakesWithNoRelease), and that resume
+// refuses the next wake, since the start brings the role back.
+func TestACancelDeletesTheWakeOfARoleItsMarkDoesNotRecordThatAnotherPathTookOver(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		takenOver, paused bool
+	}{
+		{name: "an operator took the claim over while the project runs", takenOver: true},
+		{name: "an operator took the claim over while the project is paused", takenOver: true, paused: true},
+		{name: "the claim is still released while the project runs"},
+		{name: "the claim is still released while the project is paused", paused: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := migratedStore(t)
+			ctx := context.Background()
+			openRunningTree(t, st)
+			rootClaim(t, st, claim.RoleImplementer, supervise.StateIdle, "")
+			rootClaim(t, st, claim.RoleArchitect, supervise.StateIdle, "")
+			at := time.Now().UTC()
+			_, stop, _ := releaseTwoRolesThroughTheStore(t, st)
+			stoppedByTheRelease(t, st, claim.RoleArchitect, stop)
+			// The implementer's stop suspended its claim and did not record the role on the mark,
+			// so its row stays queued.
+			releasedClaim(t, st, claim.RoleImplementer)
+			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, pods.WakeChecks, at, 0); err != nil || !taken {
+				t.Fatalf("take the implementer's wake = %t, %v; want it taken", taken, err)
+			}
+			queueWakeStart(t, st, claim.RoleImplementer, pods.WakeChecks)
+			if tc.takenOver {
+				rootClaim(t, st, claim.RoleImplementer, supervise.StateSuspended, supervise.SuspendedByOperator)
+			}
+			if tc.paused {
+				pauseLegion(t, st, at)
+			}
+
+			if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow,
+				ReleaseCancelPause{At: at.Add(time.Minute)}); err != nil {
+				t.Fatalf("CancelIssueRelease: %v", err)
+			}
+			kept := 1
+			if tc.takenOver {
+				kept = 0
+			}
+			resumes := pauseCount(t, st, `select count(*)::int from pod_resumes where issue = $1 and role = 'implementer'`, rootIssue)
+			paired := pauseCount(t, st, `select count(*)::int from pod_resumes where issue = $1 and role = 'implementer'
+				and release_id = 0 and pause_id is null`, rootIssue)
+			if resumes != kept || paired != kept {
+				t.Errorf("the implementer's resumes after the cancel = %d, %d of them paired with release 0; want %d of each", resumes, paired, kept)
+			}
+			if starts := startsOfTheRoot(t, st); !slices.Contains(starts, "implementer||the wake's task|"+pods.WakeChecks+"||") {
+				t.Errorf("queued starts after the cancel = %q, want the implementer's wake start among them", starts)
+			}
+			next, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, pods.WakeRoleMessage, at.Add(2*time.Minute), 0)
+			if err != nil || next != tc.takenOver {
+				t.Errorf("the implementer's next wake taken = %t, %v; want %t", next, err, tc.takenOver)
+			}
+		})
+	}
+}

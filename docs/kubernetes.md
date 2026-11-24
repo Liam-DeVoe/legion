@@ -8195,7 +8195,7 @@ SQL
 
 It prints `UPDATE <n>`, and `UPDATE 0` on a rerun.
 Each start keeps its task, its wake kind and the rest of its payload, which the earlier release reads.
-A later upgrade back needs no step: this release reads a start with no detail too, and keeps that start's task as it is where a cancel or a release's record would tell it again (`retellStarts`, `internal/store/release_cancel.go`).
+A later upgrade back needs no step: this release reads a start with no detail too, and keeps that start's task as it is where a cancel or a release's record would tell it again (`retellStarts`, `internal/store/release_records.go`).
 
 ### Pausing a project
 

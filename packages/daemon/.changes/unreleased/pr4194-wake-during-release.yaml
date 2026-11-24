@@ -41,11 +41,14 @@ body: |-
   resume. The wake's start, which the role reads when an operator resumes it, says that the
   release did not finish and the role goes on in the same pod; a start in the pause's words keeps
   them. A role whose stop did not record it on the release's mark is told the same words by a
-  cancel, and a role that an earlier release left released keeps its start's words. A cancel or a
-  release's record that tells a wake's start again renders the task from the wake's kind and the
-  detail the start now carries (`wakeDetail`); a start an earlier daemon queued with no detail
-  keeps its task, with one warning, and a cancel that drops such a start queues the role's resume
-  without that wake's words, with one warning too. A rollback to a release before this one strips
+  cancel, and when a close, a linger or an operator took its claim over too, its wake's resume is
+  not recorded either; a role that an earlier release left released keeps its start's words. A
+  cancel or a release's record that tells a wake's start again renders the task from the wake kind
+  and the detail the start carries (`wakeKind` and `wakeDetail`), which its task was written with,
+  also where a later wake of the role is of another kind; a start an earlier daemon queued with no
+  detail keeps its task, with one warning, and a cancel that drops such a start queues the role's
+  resume without that wake's words, with one warning too, which carries the dropped task. A
+  rollback to a release before this one strips
   `wakeDetail` from each queued start after the daemon stops and before the earlier image starts
   (docs: Rolling back idle release). A release is no longer cancelled once the runtime has read a
   Sandbox of the issue, or found it gone, under the pod's launch turn and the store has then
