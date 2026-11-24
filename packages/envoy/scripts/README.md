@@ -54,8 +54,9 @@ it is used as given, and one already in use fails the run with `address already
 in use`. The session opens no port: it registers with none, which a listener
 now refuses above 0, and takes its messages from its own NATS consumer. The
 NATS server is a process of this checkout's own build, stopped on exit with the
-listener and the two fake clients. CI runs it as the `envoy-e2e-local` job of
-`.github/workflows/ci.yaml` on every change its `envoy_e2e_local` filter matches.
+listener and the two fake clients. CI runs it in the `envoy-e2e-local` leg of
+`.github/workflows/ci.yaml`'s `go-envoy` job on every change its `go-envoy` area matches
+(`.github/ci-areas.yaml`).
 
 ## e2e-refill.sh
 
@@ -132,7 +133,8 @@ run that saw its window and failed runs no more. It exits 0 when every check pas
 negative control. The evidence (each scenario's listener and NATS logs and every poll, one JSON
 line each) goes to `--out` (default
 `$TMPDIR/envoy-e2e-refill`). `E2E_REFILL_NATS_PORT` (14232) and `E2E_REFILL_PORT` (19030) move the
-ports. A full run takes about ten minutes; the `envoy-e2e-local` job of `ci.yaml` runs it.
+ports. A full run takes about ten minutes; the `envoy-e2e-refill` leg of `ci.yaml`'s `envoy-held`
+job runs it.
 
 ## dev-airlock.sh
 
@@ -183,8 +185,8 @@ work directories under `TMPDIR`, two brokers with the whole airlock block on one
 database, one front over each pair of ports, the options reaching the brokers, the
 enrolment written beside the session key, the session's renewer, the usage error,
 and the cleanup stopping everything it started — with no real Postgres, no network
-and no Go build; CI runs it in the `envoy-go-checks` job's second leg
-(`.github/actions/go-envoy/envoy-go-checks-scripts`).
+and no Go build; CI runs it in the `envoy-go-checks` leg of `ci.yaml`'s `envoy-held` job
+(`.github/actions/go-envoy/envoy-go-checks`).
 
 `dev-airlock-lease.test.sh` proves the renewer works on the real stack: it starts
 the stack with one broker and `BROKER_LEASE_SECONDS=91`, the shortest lease the
@@ -194,7 +196,8 @@ leases later. Both calls must reach S with the real value, and the session must 
 be the one enrolled, with a later lease. It prints a `PASS:` or `FAIL:` line for each
 and ends `dev-airlock-lease: passed` or `dev-airlock-lease: failed (<n> of <m>)`. It
 needs what `dev-airlock.sh` needs, takes the stack's start plus about five minutes,
-and is not part of CI. Without the renewer, the second call is refused 407 "grant is
+and the `lease` leg of `ci.yaml`'s `airlock-arm` job runs it, when that job runs `airlock-check.sh`
+(below). Without the renewer, the second call is refused 407 "grant is
 expired, revoked, or its session ended".
 
 ## airlock-check.sh
@@ -210,8 +213,9 @@ prints a result block — what the check expected, what this run observed and wh
 control did — then one `CHECK k9-<property>: PASS` or
 `CHECK k9-<property>: FAIL: <what was seen>` line for each property the check's
 outcome sentence names and one for its control, and last `check k9: passed` or
-`check k9: failed (<n> of <m>)`. The `broker-multiprocess` job of `ci.yaml` runs it
-in merge groups and on a pull request that carries the `full-ci` label.
+`check k9: failed (<n> of <m>)`. The `k9` leg of `ci.yaml`'s `airlock-arm` job runs it in merge
+groups, in a dispatched run and on a pull request that carries the `full-ci` or the
+`lane:airlock_arm` label.
 
 ```bash
 DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/airlock-check.sh k9
@@ -244,7 +248,7 @@ The document's other checks are Go tests. `k3`, `k4`, `k5` and `k8a` are
 `TestAMethodOrPathTheEntryDoesNotAllowIsRefused` and
 `TestTheProxyRefusesTheAddressesItMustNeverDial` (`internal/cipher/proxy`),
 `TestARereadOfASecretReachesTheAirlocksProxy` and
-`TestAirlockCheckRefusesAFileTheBrokerWouldNotServe` (`cmd/cipherd`); `k1`'s memory
+`TestProfilesCheckRefusesAFileTheBrokerWouldNotServe` (`cmd/cipherd`); `k1`'s memory
 and file scan is a row of `TestExecFormRunsACommandForANameBehindTheAirlock`
 (`cmd/cipher`); the swaps `k6` and `k7` drove real clients through are
 the proxy's Azure, AWS, GitHub App and gRPC tests; and `k15` is the
@@ -394,10 +398,10 @@ counts only the tests it names, so the `aws` and
 `gcp` subtests of other tests cannot stand in for a new test's.
 `GO_TEST_SKIP` is go test's `-skip` pattern: the negative control
 `GO_TEST_SKIP='^(TestA|TestB)$/^aws$'` makes both lines read `aws=0` and the run exit 1.
-`GO_TEST_TIMEOUT` replaces the 5-minute `-timeout`, which `ci.yaml`'s `envoy-go` job counts
-in its time budget; the job runs it as "Count the store-form rows on each backend", over
-`./cmd/cipher/` and `./internal/cipher/api/`, as those tests' one run: the job's unit
-step skips them by name (`BACKEND_COUNT_TESTS` in
+`GO_TEST_TIMEOUT` replaces the 5-minute `-timeout`, which the `envoy-go (2/3)` leg of
+`ci.yaml`'s `go-envoy-held` job counts in its time budget; the leg runs it as "Count the
+store-form rows on each backend", over `./cmd/cipher/` and `./internal/cipher/api/`, as those
+tests' one run: the `envoy-go` legs' unit step skips them by name (`BACKEND_COUNT_TESTS` in
 `.github/scripts/go_test_steps.py` lists them for the step reader).
 
 ## database-skips.sh
@@ -434,9 +438,11 @@ run nor counted as a skip. `--run PATTERN` is one leg's share of the packages' t
 `EXPECTED_SKIPS` line whose test the share gives another leg is not looked for, and a listed
 package the share holds no test of is not read as one whose tests did not run. `--jsonfile NAME`
 names the jsonfile go-test.sh leaves for the step that uploads it,
-`${GITHUB_JOB:-local}-database-skips.json` unless given. `--report` reads a `go test -json`
-report or a gotestsum jsonfile instead and runs nothing, and refuses the five options that shape
-a run alone.
+`${GITHUB_JOB:-local}-database-skips.json` unless given. `--module-except PATTERN` adds to that
+one go test every other package of the module that `go list ./... | grep -Ev PATTERN` keeps;
+their skips are not counted and they are not held to showing a run, but a failure of theirs
+fails go test and so the count. `--report` reads a `go test -json` report or a gotestsum jsonfile
+instead and runs nothing, and refuses the six options that shape a run alone.
 
 It names the packages as `go list` does under the run's own flags, so a pattern spelled
 `./cmd/./cipherd/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
@@ -460,23 +466,59 @@ package's `pass|fail PACKAGE <seconds>s` on stderr.
 
 `ci.yaml`'s `go-envoy-held` job runs the module through it in each `envoy-go` leg as "Unit
 test envoy Go package", with `--timeout 15m`, `--skip` of the web display fixture's two tests,
-of the five the job's "Count the store-form rows on each backend" runs (`backend-count.sh`,
-above), of pmdoc's six corpus tests and of `TestStatementTimings`, `--module-except` of the
-packages other jobs run, `--run` of the leg's share of the packages that pattern keeps, and a
-step limit of its own (`timeout-minutes: 45`); one go test lets the broker's packages share its
-`-p` slots with the rest of the module, where a step of their own after the unit step waited on
-`cmd/cipherd` alone.
-`envoy-go-race-api` runs the Dispatch API through it as the second line above.
-`database-skips.test.sh` holds it to six controls, which `envoy-go` runs as "Test the database
-skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`, `./cmd/cipherd/`
-and `./internal/dispatch/api/` is counted; either variable unset or empty is UNKNOWN; a report
-that shows no run (no test ran, only expected skips ran, or one package ran none) is UNKNOWN,
-a failed test fails, a race report filed under a passed subtest is printed, a skip in a
-package spelled other than canonically is counted, a test that failed once and passed on its
-rerun passes, and a leg's `--run` share holds only the expected skips it names;
-`--timeout 1s` ends a package's binary; and a copy with
-one `EXPECTED_SKIPS` line deleted, in a temporary checkout, counts that test's skip. It needs
-a scratch Postgres named by both `BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_DATABASE_URL`.
+of the five the `envoy-go (2/3)` leg's "Count the store-form rows on each backend" runs
+(`backend-count.sh`, above), of pmdoc's six corpus tests and of `TestStatementTimings`,
+`--module-except` of the packages other jobs run, `--run` of the leg's share of the packages that
+pattern keeps, and a step limit of its own (`timeout-minutes: 45`); one go test lets the broker's
+packages share its `-p` slots with the rest of the module, where a step of their own after the
+unit step waited on `cmd/cipherd` alone.
+The job's two `envoy-go-race-api` legs run the Dispatch API through it as the second line above
+does, each with `--timeout 26m` and `--run` of its share.
+`database-skips.test.sh` holds it to six controls, which the `envoy-go (2/3)` leg runs as "Test
+the database skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`,
+`./cmd/cipherd/` and `./internal/dispatch/api/` is counted; either variable unset or empty is
+UNKNOWN; a report that shows no run (no test ran, only expected skips ran, or one package ran
+none) is UNKNOWN, a failed test fails, a race report filed under a passed subtest is printed, a
+skip in a package spelled other than canonically is counted, a test that failed once and passed
+on its rerun passes, and a leg's `--run` share holds only the expected skips it names;
+`--timeout 1s` ends a package's binary; a copy with one `EXPECTED_SKIPS` line deleted, in a
+temporary checkout, counts that test's skip; and a skip planted in a package `--module-except`
+adds is not counted, where a failure planted there fails the count, and the option is refused
+beside `--report`. It needs a scratch Postgres named by both `BROKER_TEST_DATABASE_URL` and
+`DISPATCH_TEST_DATABASE_URL`.
+
+## forced-order.sh
+
+Runs the forced-order tests of each package named, every `TestForcedOrder…` test, on a nats-server whose own code carries hold points: places where a test parks the server's goroutine (`internal/testnats/hooks.go`, `testnats.Hook`) to force an order its scheduling would only sometimes produce — a consumer's state write held while a consumer of the same name is deleted and created again, a JetStream API request held while its server shuts down, released before `Stop` returns, a committed stream entry held before one server stores it.
+
+```bash
+packages/envoy/scripts/forced-order.sh ./internal/testnats/hooktest/
+packages/envoy/scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/
+packages/envoy/scripts/forced-order.sh -C packages/daemon ./internal/testnats/
+packages/envoy/scripts/forced-order.sh -drop write.preIO ./internal/testnats/hooktest/
+```
+
+It copies nats-server's module at the version it runs out of the module cache, applies `internal/testnats/testdata/hooked/v<version>/server.patch` to the copy, and adds the shared `testdata/hooked/zz_measure.go` (the event, the hook and the reporting helpers) and that version's `zz_measure_write.go` (its consumer state writer).
+The copy stands at `${TMPDIR:-/tmp}/forced-order-nats-server/v<version>-hooked`, or at `v<version>-drop-<point>+<point>` for a run with `-drop`, a path that depends on nothing else, so a second run of the same build reads the hooked server's packages from go's build cache rather than compiling them again under `-race`; the run holds that path under `flock` until it ends, and then removes the copy.
+It then runs `go test -tags odatrace -race -v -run '^TestForcedOrder'` with nats-server replaced by the copy: for a module of the workspace, in a copy of `go.work` with absolute `use` paths, so every other module version is the one CI's own build links; for a module with no workspace, on a copy of the module's `go.mod`.
+A workspace that does not use the module, or that holds a replace, is refused, and so is a module whose `go.mod` replaces nats-server, since the hooked copy would take the replacement's place.
+It reads go's JSON with `jq`.
+Nothing else of nats-server changes, the repository's own files are never written, and no other build sees a hook.
+The hold points are `write.preIO`, `write.preRename` (2.15.1 alone: 2.10.29 writes `o.dat` in place), `flush.encoded`, `store.create`, `api.worker`, `client.publish`, `meta.apply` and `stream.apply`; `hooks.go` says where each one is.
+A server's shutdown, and its lame duck, report `server.shutdown` before they stop anything and `server.down` once the shutdown has waited for its goroutines: the hook releases every hold on that server at the first and parks none of its goroutines until the second, so a `Stop` or a `LameDuck` with an operation held returns, and the held operation lands or fails.
+
+`-C` names the module, relative to the caller's directory, as `go -C` does (`packages/envoy` by default), and the packages are relative to it; an empty `-C` is refused.
+`-server` is the nats-server version, by default the one the build links; 2.15.1 and 2.10.29 are hooked, and any other version is refused, so a module that moves to a new nats-server fails here until its hooks are ported; an empty value is refused too.
+`-drop <point>` removes the hook calls that pass that point, exactly, before the build, which is each test's control: a test holding at a dropped point fails waiting for its hold, and with `-drop server.shutdown` the test that stops a held server fails at its own deadline, since the stop then waits for the parked goroutine.
+A name no hook of that version reports is refused before anything is built, so a mistyped point cannot fail a test on a compile error.
+`-jsonfile <name>` runs the tests through `.github/scripts/go-test.sh`, under gotestsum with that jsonfile, as every go test of a CI job runs; without it they run under a plain `go test -v`, and an empty `-jsonfile` is refused.
+It fails, naming the package, when a package declares no `TestForcedOrder` test, or runs none because every one skipped (that package's `ok` line is printed as a `FAIL` line).
+`GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`.
+`forced-order.test.sh` holds it to six of those refusals (a package whose tests all skip, a `-drop` name that is no point, an empty `-server`, an empty `-C`, an empty `-jsonfile`, a module that replaces nats-server), with the fixture package `internal/testnats/hooktest/testdata/skiponly`.
+The `envoy-go-race` leg of `ci.yaml`'s `go-envoy-held` job runs that test, then the script on `./internal/testnats/hooktest/` twice: with no `-server`, so on the version the workspace links, and with `-server 2.10.29`.
+The last plain leg of its `daemon-go` job runs it with `-C packages/daemon` and no `-server`.
+So when `go.mod` moves to a nats-server with no hooks, both unversioned steps fail until the hooks are ported.
+Each leg counts the 10 minutes in its time budget.
 
 ## airlock-lean-axioms.sh
 
@@ -705,8 +747,8 @@ runs each group in a process of its own (`lib/daemon-release-gate-group.sh`), up
 core at a time, and prints the groups in reading order once they have all ended, each with the
 seconds it took; `GATE_TEST_GROUP_SLOTS=1` runs them one at a time, to read a group's output as it
 runs, and `bash lib/daemon-release-gate-group.sh <group> /dev/null` runs one group alone. CI runs
-the test in the `envoy-go-checks` job of `.github/workflows/ci.yaml`. Two controls run
-with it: a copy of the gate whose VM leg reads an absent `listenerImage` as no hub, and one that
+the test in the `envoy-go-checks` leg of `.github/workflows/ci.yaml`'s `envoy-held` job. Two
+controls run with it: a copy of the gate whose VM leg reads an absent `listenerImage` as no hub, and one that
 reads pi-envoy alone in an image, must each open on the fixture that exists to catch it.
 
 ## legacy-subjects-gate.sh
@@ -1074,7 +1116,7 @@ with `--broker` read of that Deployment in its namespace, and what `daemon-relea
 `legacy-subjects-gate.test.sh` proves every verdict behind a fake `kubectl`, a fake `curl`, a fake
 `gh` and a fake `daemon-release-gate.sh`, with each Job's log written in its own format, runs the
 Job's own script under `sh` behind a fake `nats`, and holds the old-form rule row by row; CI runs
-it in the `envoy-go-checks` job of `.github/workflows/ci.yaml`.
+it in the `envoy-go-checks` leg of `.github/workflows/ci.yaml`'s `envoy-held` job.
 
 ## Measuring search on a copy of the corpus
 
@@ -1219,12 +1261,13 @@ These are INFRA-325's own measurements: every changed statement's plan and time 
 Both run against the seeded measurement database `cmd/dispatch-seed` fills, never against a test database and never against production.
 `DISPATCH_BENCH_DATABASE_URL` is the one gate, and CI sets it in one step: `ci.yaml`'s `go-envoy-held` job, in "Time the statements on the seeded measurement database", creates a database on the job's Postgres, seeds it with `cmd/dispatch-seed` at the scale 0.01, and runs the `TestStatementTimings` of `internal/dispatch/docs` and `internal/dispatch/refs` by name.
 `internal/dispatch/api`'s two measurements, below, are tools, run by the author of a change to those statements on a seed of 0.03 or more: at the largest scale that job's time allows, their bounds do not hold.
+So is `internal/dispatch/refs`' `BenchmarkStatementTimings`, which measures every pair of that package on a seed of 1, the scale the references read's, the loaders', the index pairs and the probe fixture's were sized at; its `TestStatementTimings` measures the backlink counts' and the edges reads' pairs alone, which hold at 0.01.
 No CI step runs the write routes' measurement.
 
 ### The statement timings
 
 `internal/dispatch/benchtime` is the runner, and each package that owns statement texts carries its own `statement_timing_test.go`.
-`internal/dispatch/refs` and `internal/dispatch/docs` hold theirs as tests, `TestStatementTimings`, and `internal/dispatch/api` holds its own as a benchmark, `BenchmarkStatementTimings`, a tool its file's tool line names.
+`internal/dispatch/docs` holds its own as a test, `TestStatementTimings`; `internal/dispatch/refs` holds the pairs that hold at 0.01 as a test, `TestStatementTimings`, and every pair as a benchmark, `BenchmarkStatementTimings`, in `statement_timing_bench_test.go`; `internal/dispatch/api` holds its own as a benchmark, `BenchmarkStatementTimings`; each benchmark is a tool its file's tool line names.
 `Pair` takes a named pair of statement texts with their arguments, runs `EXPLAIN (ANALYZE, BUFFERS)` of each alternately on one connection, reports planning plus execution as the median of runs 2 to 12, prints both plans and fails when the after text's median is not below the before text's.
 `Report` is that same two-sided reading with no bound, for a statement whose gain is real but smaller than the run-to-run spread of the parts it shares a statement with: the gate then sits on the piece whose text differs, as a pair of its own.
 The runner records the server settings it found and the subjects it bound (the largest project, its most heavily linked issue, the most anchored document, five sessions, an embedding and three words), each read from the database at run time, so a re-seed moves them with it.
@@ -1233,6 +1276,9 @@ The runner records the server settings it found and the subjects it bound (the l
 cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database> \
   go test -run TestStatementTimings -v -count=1 -timeout 90m \
   ./internal/dispatch/refs ./internal/dispatch/docs
+cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database at 1> \
+  go test -count=1 -run '^$' -bench '^BenchmarkStatementTimings$' -benchtime 1x -timeout 60m \
+  ./internal/dispatch/refs
 cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database at 0.03 or more> \
   go test -count=1 -run '^$' -bench '^BenchmarkStatementTimings$' -benchtime 1x -timeout 90m \
   ./internal/dispatch/api
