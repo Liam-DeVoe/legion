@@ -2687,13 +2687,13 @@ delete from outbox where kind = 'merge_forward' and split_part(issue, '-', 1) = 
 ```
 
 A deleted withdrawal leaves the implementer with the ask it was told is no longer its work; a deleted row to the planner is a hold or a new head the planner does not read.
-The ask sent again at a role's next launch is an `ask` row with the payload of the first one, which the release before decodes and delivers as it does every ask, so the statement leaves it.
+The ask sent again to a role's later launch, at that launch's ready or at the end of a row of the ask that did not reach it, is an `ask` row like the first one, naming the phase the issue stands in when it is sent, which the release before decodes and delivers as it does every ask, so the statement leaves it.
 `pull_requests.merge_forward` can hold the keys `withdrawn` and `sentLaunch`.
 The release before decodes that column without them (`json.Unmarshal` in `record/store.go`), and its next write of the pull request's record drops both.
 Without `withdrawn` it reads a withdrawn ask as one its role still holds.
 Without `sentLaunch` it does what it always did: it asks once for each head, so an ask whose role's claim failed, was stopped or exited is not sent to that role's next launch, and the workers held for it wait for a landing.
 For such an issue, have its architect move it back to `implementing`, which drops the ask.
-A roll forward reads an ask with no `sentLaunch` as sent at no launch's ready, so the ready of the asked role's next launch sends it once more while it is owed.
+A roll forward reads an ask with no `sentLaunch` as told to no launch, so the ready of the asked role's next launch sends it once more while it is owed, unless a row of it is still queued; the end of that row, delivered or not, then sends it to that launch if the row did not reach it.
 The statement takes the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project), so one project can roll back while another stays on this release.
 
 #### Rolling back the release whose owner's plan picks the steps

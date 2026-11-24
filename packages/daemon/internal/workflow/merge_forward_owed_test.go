@@ -106,8 +106,8 @@ func implementerReady(launch uint64) intake.ClaimReady {
 
 // asksDelivered is the daemon's executor delivering the record's ask of conflictHead to the
 // asked role's launch: the ask's rows leave the outbox, as a delivered row does, and the record's
-// ask keeps that launch (record.MergeForward.SentLaunch), as the executor records it at the
-// delivery (MergeForwardAskDelivered).
+// ask keeps that launch (record.MergeForward.SentLaunch), as the row's end records it
+// (MergeForwardAskEnded).
 func asksDelivered(t *testing.T, pool *pgxpool.Pool, launch uint64) {
 	t.Helper()
 	if _, err := pool.Exec(t.Context(), `delete from outbox where kind = $1 and issue = 'LEGION-208' and payload->>'step' = $2`,

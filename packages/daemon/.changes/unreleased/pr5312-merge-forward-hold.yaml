@@ -14,10 +14,13 @@ body: |-
   role of the phase it enters, with its hold. Each launch of an asked role is told an owed ask
   once: an ask whose role's claim ended - it failed, an operator stopped it, or its agent reported
   its own exit - keeps its held workers held and is sent again at the ready of that role's next
-  launch, unless a row of it is still queued for that role, which reaches the launch by its own
-  delivery; the record's ask keeps the launch it was delivered or sent to (`sentLaunch`), and a
-  failed claim's notice tells the owning architect. A launch that resumes the session an earlier
-  launch was told the ask in is told it again. The news of an approved design to the architect
+  launch, unless a row of it is still queued for that role; that row's end, delivered or not, reads
+  the role's claim again and sends the ask to a later launch the row did not reach, so a launch that
+  comes ready while the row ends is told too. The record's ask keeps the launch it was delivered or
+  sent to (`sentLaunch`), and a failed claim's notice tells the owning architect. A launch that
+  resumes the session an earlier launch was told the ask in is told it again, and so is a launch
+  whose session takes a row's publish in the moment between the daemon's read of the launch and the
+  publish. The news of an approved design to the architect
   that holds an issue in `accepting` names, as its move-back targets, the phases of the task's steps
   before the acceptance.
 
