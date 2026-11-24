@@ -14,8 +14,7 @@ import (
 // readVersion is the version in force of the plan of issue at generation.
 func readVersion(t *testing.T, tx pgx.Tx, issue string, generation uint64) PlanVersion {
 	t.Helper()
-	plan, err := NewStore().Plan(context.Background(), tx, issue, generation)
-	must(t, err)
+	plan := readPlan(t, tx, issue, generation)
 	if plan == nil {
 		t.Fatalf("%s holds no plan at generation %d", issue, generation)
 	}

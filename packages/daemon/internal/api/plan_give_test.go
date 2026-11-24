@@ -79,18 +79,13 @@ func planAnswer(version int) string {
 	return `{"plan":{"version":` + strconv.Itoa(version) + `,"tasks":[{"id":"a","steps":["implementer","reviewer"]}]}}`
 }
 
-// give is register_plan's answer to version of childDoc, given for LEGION-209 by giver.
-func (w planWorld) give(t *testing.T, giver liveClaim, version int) (int, string) {
-	t.Helper()
-	answer := registerPlan(w.h, giver.grant(t), "LEGION-209", childDoc, version)
-	return answer.Code, strings.TrimSpace(answer.Body.String())
-}
-
-// taken fails unless giver's give of version is answered 200 with the plan.
+// taken fails unless giver's give of version of childDoc for LEGION-209 is answered 200 with the
+// plan.
 func (w planWorld) taken(t *testing.T, giver liveClaim, version int, why string) {
 	t.Helper()
-	if code, body := w.give(t, giver, version); code != http.StatusOK || body != planAnswer(version) {
-		t.Fatalf("version %d given by %s = %d %s, want 200 with the plan: %s", version, giver.token, code, body, why)
+	answer := registerPlan(w.h, giver.grant(t), "LEGION-209", childDoc, version)
+	if body := strings.TrimSpace(answer.Body.String()); answer.Code != http.StatusOK || body != planAnswer(version) {
+		t.Fatalf("version %d given by %s = %d %s, want 200 with the plan: %s", version, giver.token, answer.Code, body, why)
 	}
 }
 
