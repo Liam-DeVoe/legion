@@ -115,7 +115,17 @@ skill's cases (`cases.ts`), one JSON object per line.
 - In every stage, a case one of whose captures needs a directory no read can give (the commit
   holds no such directory, or GitHub cuts a level of its tree short even read alone) is dropped
   as `unreadable-directory`, its drop naming the repository, the commit and the path; a run
-  started again skips it. Each drop records the stage that made it (`droppedAt`; a result written
+  started again skips it. A stage left unscreened (an arm lacks its judged runs after its 5 extra
+  runs) counts for nothing in the score, unless its runs show it can never be judged: an arm's runs
+  that read skill files past the last answered round drop its case as `reads-past-last-round`
+  (below); else a stage in which every run got no verdict because the provider refused the replay on
+  a content policy (a stream error whose type ends in `_policy`, such as `cyber_policy`) drops its
+  case as `provider-refused: provider refused every replay (<policy>): <n> refusals (old <a>, new
+  <b>, none <c>)`, the policies in the order first seen and the counts by the stage's arms (the
+  architect, 2026-11-24). A stage saved unscreened in that shape with no drop, from before this
+  rule, is dropped when `screen`, `confirm` or `control` reaches its case again, from its saved runs
+  and with no model call. A stage with a judged run, or a run with no verdict for another reason,
+  stays unscreened. Each drop records the stage that made it (`droppedAt`; a result written
   before that field is read as dropped at screen when its screen runs are not counted, else at
   confirm when its screen flagged it and it has no confirm runs, else at control). No dropped case
   leaves the score (the architect, 2026-11-22): a case dropped at screen is not informative; a case
@@ -142,9 +152,9 @@ skill's cases (`cases.ts`), one JSON object per line.
   screened cases have a listing that could not be measured (no listing measure, or one that says
   so); the drops per judge control and the drops counted as `model-not-served`, as
   `unreadable-directory`, as `listing-misses`, as `injection-unrebuildable`, the last by kind (a
-  case under each kind it holds), as `path-form`, by the arm whose text holds the file, and as
-  `reads-past-last-round`; the verdict line also counts the screened cases whose
-  profile took names from their recorded listing (`fromRecorded`, below); an estimate of
+  case under each kind it holds), as `path-form`, by the arm whose text holds the file, as
+  `reads-past-last-round` and as `provider-refused`; the verdict line also counts the screened
+  cases whose profile took names from their recorded listing (`fromRecorded`, below); an estimate of
   the procedure's false-loss
   chance at the cases run (exact binomial under identical old and new texts, the pass rates taken
   from each case's own screen; its assumptions are printed with it),
@@ -198,7 +208,10 @@ say `kept: false`, give the
 reply, and say why. Oh My Pi asks for temperature 0, but sends no temperature to Opus 4.7 on,
 Sonnet, Fable and Mythos 5 on or Haiku 5.5 on, which take none, so their hints run at the API's
 default of 1. `gateway.ts` sends each body to its API's route (the key as `x-api-key`, or as
-`authorization: Bearer` on the Responses route),
+`authorization: Bearer` on the Responses route), tries a call again on a 429 or a 5xx, a failed
+connection, a timeout or a reply it cannot read (8 tries in all, 91 s of back-off), but never a
+stream the provider refuses on a content policy (its error event's type ends in `_policy`, as
+`cyber_policy`), which fails at once, since the provider refuses the same content on each try. It
 reads the stream whole, and prices each reply at its model's list price (`PRICES`, from
 Anthropic's and OpenAI's pricing pages; gpt-6.1-sol at $2 input, $10 output, $0.10 a cache read
 and $2.50 a 30-minute cache write per million tokens, more above 272,000 input tokens), counting a

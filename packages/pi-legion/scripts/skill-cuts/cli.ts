@@ -125,12 +125,12 @@
  *   the stage that dropped it, why, and the passes of each stage it ran; each confirm of a case
  *   with more than one, and the pooled passes of a case whose three confirms are pooled; the drops
  *   by the judge controls (and by each control), by `model-not-served`, `unreadable-directory`,
- *   `listing-misses`, `injection-unrebuildable` (by kind), `path-form` (by arm) and
- *   `reads-past-last-round`; the control case, and each dropped case it replaced; the skill's
- *   verdict and its reason (score.ts; `keeps` is printed "no loss detected by the registered
- *   rule"), with how many of its screened cases have a listing that could not be measured, how
- *   many installed names their recorded listing gave them (`fromRecorded`), and how many rest on
- *   the assumption that their session had Dispatch; the rule's
+ *   `listing-misses`, `injection-unrebuildable` (by kind), `path-form` (by arm),
+ *   `reads-past-last-round` and `provider-refused`; the control case, and each dropped case it
+ *   replaced; the skill's verdict and its reason (score.ts; `keeps` is printed "no loss detected
+ *   by the registered rule"), with how many of its screened cases have a listing that could not be
+ *   measured, how many installed names their recorded listing gave them (`fromRecorded`), and how
+ *   many rest on the assumption that their session had Dispatch; the rule's
  *   sensitivity (`lossChance` at an old pass rate of 0.9 and 0.7 and drops of 0.1 to 0.4), the
  *   estimated false-loss rate at the cases run (`falseLossChance`),
  *   the spend, the peak memory, how many captures' system-prompt digests differ from their
@@ -160,9 +160,16 @@
  * and the reply after them. A run whose reply after the last answered round still only reads skill
  * files gets no verdict and is run again, its reason beginning `reads-past-last-round`; each case's
  * line and `report` count such runs by arm, and a stage left unscreened by an arm with such runs
- * drops its case under that reason, with the counts. A capture made for a stage shows the case's
- * session (capture.ts, "The harness strings"), whose head the capture reads once from its store
- * through the configuration's `psqlCommand` and saves under `<out>/sessions/`.
+ * drops its case under that reason, with the counts. A stage left unscreened in which every run
+ * got no verdict because the provider refused the replay on a content policy (a stream error whose
+ * type ends in `_policy`, as `cyber_policy`) can never be judged, and drops its case as
+ * `provider-refused: provider refused every replay (<policy>): <n> refusals (<arm> <count>, ...)`;
+ * a stage saved unscreened in that shape before this rule, with no drop, is dropped so when a
+ * stage command reaches its case again, from its saved runs and with no model call. A stage with
+ * a judged run, or a run with no verdict for another reason, stays unscreened. A capture made for
+ * a stage shows the case's session (capture.ts, "The harness strings"), whose head the capture
+ * reads once from its store through the configuration's `psqlCommand` and saves under
+ * `<out>/sessions/`.
  *
  * Captures are saved under `<out>/captures/<arm>-<digest of the arm's skill directory>/`, so a new
  * text, or another planted line, is captured again. Making one runs Oh My Pi (`--omp`, else
@@ -883,7 +890,8 @@ const PATH_FORM_ARMS = ["old", "new"] as const;
  *  dropped it (`droppedAt`: `screen` for a drop by the judge controls, the model, the listing, a
  *  block its arms cannot rebuild or a file read by path an arm's text holds in a form the arms do
  *  not rebuild (`path-form`), else the stage whose capture needed a directory no read gives
- *  or found such a block; absent when it was not dropped, and in a result written before the
+ *  or found such a block, or whose runs left it unscreened (`reads-past-last-round`,
+ *  `provider-refused`); absent when it was not dropped, and in a result written before the
  *  stage was recorded, `dropStage`); for an `injection-unrebuildable` drop, the kind of each fault
  *  (`injectionKinds`); its judge controls; each stage it ran, `confirm` its latest confirm and
  *  `earlierConfirms` the finished ones before it, oldest first; and the peak resident memory at
@@ -1498,11 +1506,12 @@ async function judgeTheControls(r: Runner, c: Case, result: CaseResult): Promise
  *  `seed` (replay.ts's `replayInterleaved`; the gateway bounds the calls in flight), each run with
  *  a session id of its own and its arm's installed copies of the profile's other skills, from its
  *  capture's record and the cache (context.ts's `installedCopies`); then every reply judged blind
- *  under `seed`. A replay that fails is a run with no verdict, and so is one whose reply after the
- *  last answered round still only reads skill files (replay.ts's ReadsPastLastRound: its reason
- *  begins READS_PAST_LAST_ROUND, and it keeps that run's reads, reply and spend); one the budget
- *  refused, or whose judgement the budget refused, is no run. The runs are numbered, within their
- *  arm, in the order they were sent. */
+ *  under `seed`. A replay that fails is a run with no verdict, its reason `the replay failed:
+ *  <why>` (POLICY_REFUSAL reads a content-policy refusal there), and so is one whose reply after
+ *  the last answered round still only reads skill files (replay.ts's ReadsPastLastRound: its
+ *  reason begins READS_PAST_LAST_ROUND, and it keeps that run's reads, reply and spend); one the
+ *  budget refused, or whose judgement the budget refused, is no run. The runs are numbered, within
+ *  their arm, in the order they were sent. */
 async function runRound(
   r: Runner,
   c: Case,
@@ -1600,10 +1609,11 @@ async function runRound(
  * UnreadableDirectory: the commit holds no such directory, or GitHub cuts a level of it short
  * even read alone) is returned dropped, with that reason and `stage`, before any run, so a run
  * started again skips it. A stage left unscreened by an arm whose runs read skill files past the
- * last answered round is returned dropped under READS_PAST_LAST_ROUND (`readsPastDrop`). A stage
- * it starts records this runner (`r.runner`), and a confirm it runs or goes on with under
- * `--confirm-flagged` records that (`confirmFlagged`). Throws Stopped, after saving, when the
- * budget refused a call.
+ * last answered round is returned dropped under READS_PAST_LAST_ROUND (`readsPastDrop`); else one
+ * whose every run the provider refused on a content policy, under PROVIDER_REFUSED
+ * (`refusedDrop`). A stage it starts records this runner (`r.runner`), and a confirm it runs or
+ * goes on with under `--confirm-flagged` records that (`confirmFlagged`). Throws Stopped, after
+ * saving, when the budget refused a call.
  */
 async function runStage(
   r: Runner,
@@ -1699,8 +1709,13 @@ async function runStage(
     const outcome = stageOutcome(state.runs, c.id, stage);
     if (outcome.state !== "running") {
       update({ ...state, state: outcome.state });
-      const past = outcome.state === "unscreened" ? readsPastDrop(state.runs, stage) : undefined;
-      return past === undefined ? current : { ...current, dropped: past, droppedAt: stage };
+      // An arm's reads past the last round drop the stage first; a stage whose every run the
+      // provider refused cannot be run again to a verdict.
+      const dropped =
+        outcome.state === "unscreened"
+          ? (readsPastDrop(state.runs, stage) ?? refusedDrop(state.runs, stage))
+          : undefined;
+      return dropped === undefined ? current : { ...current, dropped, droppedAt: stage };
     }
     const seed = newSeed();
     const round = await runRound(
@@ -1806,7 +1821,10 @@ async function screenCommand(r: Runner): Promise<void> {
       continue;
     }
     if (stageDone(r, result, "screen")) {
-      say(r, `case ${c.id}: screened before, skipped`);
+      // A screen saved unscreened before the provider-refused rule is dropped now, from its runs.
+      const refused = result === undefined ? undefined : savedRefusal(result, "screen");
+      if (refused === undefined) say(r, `case ${c.id}: screened before, skipped`);
+      else await finished(refused, phases);
       continue;
     }
     if (result === undefined) {
@@ -1930,6 +1948,11 @@ async function confirmCommand(r: Runner): Promise<void> {
     let result = results.get(id);
     if (c === undefined || result === undefined) throw new Error(`no case ${id} in ${r.casesFile}`);
     if (stageDone(r, result, "confirm")) {
+      const refused = savedRefusal(result, "confirm");
+      if (refused !== undefined) {
+        await finishCase(r, refused, "confirm", phases);
+        continue;
+      }
       const third = confirm?.state === "running" && confirm.third;
       if (!third && !r.again.includes(id)) {
         say(r, `case ${id}: confirmed before, skipped`);
@@ -1978,7 +2001,9 @@ async function controlStageCommand(r: Runner): Promise<void> {
     `the control case is ${c.id}${replacedWords(score)}; minus leaves out ${planted === undefined ? "the case's line" : `the planted line ${JSON.stringify(planted)}`}, and twin is the old text again (the false-loss control); old, minus and twin are sent in one order each round`
   );
   if (stageDone(r, result, "control")) {
-    say(r, `case ${c.id}: control runs made before, skipped`);
+    const refused = savedRefusal(result, "control");
+    if (refused === undefined) say(r, `case ${c.id}: control runs made before, skipped`);
+    else await finishCase(r, refused, "control", phases);
     return;
   }
   await finishCase(r, await runStage(r, c, "control", result, phases), "control", phases);
@@ -2034,6 +2059,48 @@ function readsPastDrop(runs: readonly Run[], stage: Stage): string | undefined {
   });
   if (short.length === 0) return undefined;
   return `${READS_PAST_LAST_ROUND}: ${short.join("; ")} (runs that read past the last round: ${armCounts(past)})`;
+}
+
+/** How the drop of a case begins whose stage the provider refused on every replay, on a content
+ *  policy (`refusedDrop`). */
+const PROVIDER_REFUSED = "provider-refused";
+
+/** A run's reason when the provider refused its replay on a content policy: runRound's replay
+ *  failure (`the replay failed: `) of the stream error gateway.ts throws (`the stream ended in an
+ *  error: <type>: <message>`), whose type ends in `_policy`, as the provider's `cyber_policy`
+ *  does; the type is group 1. gateway.ts throws it at once; a run saved before it did holds
+ *  `, on each of <n> tries` after the message, which this reads alike. */
+const POLICY_REFUSAL = /^the replay failed: the stream ended in an error: ([^\s:]*_policy): /;
+
+/** Why a case whose `stage` is unscreened is dropped because the provider refused every replay of
+ *  it on a content policy, from the stage's `runs`: each policy (POLICY_REFUSAL) in the order first
+ *  seen, and how many runs each arm of the stage made, every one of them a refusal. Undefined when
+ *  the stage has no run, or a run that was judged or got no verdict for another reason: the stage
+ *  then stays unscreened. */
+function refusedDrop(runs: readonly Run[], stage: Stage): string | undefined {
+  const policies = new Set<string>();
+  for (const run of runs) {
+    const policy = run.verdict === null ? POLICY_REFUSAL.exec(run.reason)?.[1] : undefined;
+    if (policy === undefined) return undefined;
+    policies.add(policy);
+  }
+  if (policies.size === 0) return undefined;
+  const byArm = STAGE_ARMS[stage].map((arm) => ({
+    arm,
+    count: runs.filter((run) => run.arm === arm).length,
+  }));
+  return `${PROVIDER_REFUSED}: provider refused every replay (${[...policies].join(", ")}): ${runs.length} refusals (${armCounts(byArm)})`;
+}
+
+/** Case `result` dropped at `stage` from its saved runs, where that stage is recorded unscreened
+ *  with no drop and the provider refused every replay of it (`refusedDrop`): a stage saved before
+ *  that rule, which a stage command that reaches the case again drops with no model call.
+ *  Undefined for any other result. */
+function savedRefusal(result: CaseResult, stage: Stage): CaseResult | undefined {
+  const saved = result.stages[stage];
+  if (result.dropped !== null || saved?.state !== "unscreened") return undefined;
+  const dropped = refusedDrop(saved.runs, stage);
+  return dropped === undefined ? undefined : { ...result, dropped, droppedAt: stage };
 }
 
 /** Case `caseId`'s stage `state` of `stage` as one line, under `label`: each arm's passes and what
@@ -2359,7 +2426,7 @@ function reportCommand(b: Behaviour): void {
       `${arm} ${formed.filter((reason) => reason.startsWith(`${PATH_FORM}: ${arm}: `)).length}`
   ).join(", ");
   lines.push(
-    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${drops.length} dropped (${byControls} by the judge controls, ${droppedAs(MODEL_NOT_SERVED)}, ${droppedAs(UNREADABLE_DIRECTORY)}, ${droppedAs(LISTING_MISSES)}, ${injected.length} ${INJECTION_UNREBUILDABLE} (${byKind}), ${formed.length} ${PATH_FORM} (${byArm}), ${droppedAs(READS_PAST_LAST_ROUND)}), ${unscreened} unscreened, ${notRun} not run`
+    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${drops.length} dropped (${byControls} by the judge controls, ${droppedAs(MODEL_NOT_SERVED)}, ${droppedAs(UNREADABLE_DIRECTORY)}, ${droppedAs(LISTING_MISSES)}, ${injected.length} ${INJECTION_UNREBUILDABLE} (${byKind}), ${formed.length} ${PATH_FORM} (${byArm}), ${droppedAs(READS_PAST_LAST_ROUND)}, ${droppedAs(PROVIDER_REFUSED)}), ${unscreened} unscreened, ${notRun} not run`
   );
   // Each arm's runs of each stage, the earlier confirms too, whose reply after the last answered
   // round still only read skill files: an arm that keeps the agent reading acts differently.

@@ -320,8 +320,8 @@ export function skillVerdict(counts: {
 /** A case dropped at `stage`, and why. cli.ts writes why: a judge control failed, the gateway
  *  serves its model no more, a directory of its context could not be read, its listing misses
  *  too many names, a block of its skill its arms cannot each rebuild, a file it reads by path an
- *  arm's text holds in a form the arms do not rebuild, or an arm's runs read skill files past the
- *  last answered round. */
+ *  arm's text holds in a form the arms do not rebuild, an arm's runs read skill files past the
+ *  last answered round, or the provider refused every replay of a stage on a content policy. */
 export interface CaseDrop {
   readonly stage: Stage;
   readonly reason: string;

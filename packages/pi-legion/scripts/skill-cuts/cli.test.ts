@@ -34,6 +34,7 @@ import {
 import { loadConfig } from "./config";
 import { cacheKey } from "./context";
 import { countSql } from "./countsql";
+import { GATEWAY_TRIES } from "./gateway";
 import { NOTHING_REPLY } from "./judge";
 import { ATTACK_PLANTED_LINE, loadPrompt, READER_TRIES } from "./readers";
 import {
@@ -948,7 +949,7 @@ describe("behaviour", () => {
     );
     expect(lines).toContain("case c09: not run");
     expect(lines).toContain(
-      `cases: 6 screened, 6 informative, 6 flagged, 6 confirmed losses; 2 dropped (2 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}), 1 unscreened, 1 not run`
+      `cases: 6 screened, 6 informative, 6 flagged, 6 confirmed losses; 2 dropped (2 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 1 unscreened, 1 not run`
     );
     expect(lines).toContain(
       `judge controls failed, by control (a case can fail more than one): the real step not judged pass 1, the violating step not judged fail 1, the reply "${NOTHING_REPLY}" not judged fail 0`
@@ -1339,7 +1340,7 @@ describe("behaviour", () => {
       "case c-unserved: dropped at screen: model-not-served: its model anthropic/claude-opus-5-5 is none the gateway serves"
     );
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 1 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}), `
+      `; 1 dropped (0 by the judge controls, 1 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
     );
   }, 300_000);
 
@@ -1392,7 +1393,7 @@ describe("behaviour", () => {
     expect(reported.code).toBe(0);
     expect(reported.stdout).toContain(`case c04: dropped at screen: ${dropped}; screen: not run\n`);
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}), `
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
     );
   }, 120_000);
 
@@ -1669,6 +1670,8 @@ const NO_INJECTION =
 const NO_PATH_FORM = "0 path-form (old 0, new 0)";
 /** The report's count of `reads-past-last-round` drops when there is none. */
 const NO_READS_PAST = `0 ${READS_PAST_LAST_ROUND}`;
+/** The report's count of `provider-refused` drops when there is none. */
+const NO_REFUSED = "0 provider-refused";
 
 /** A finished stage of case `caseId`, made with the texts of `s` (and by `runner`, when given),
  *  each arm of `passes` passing that many of the stage's judged runs. */
@@ -1820,7 +1823,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
       `case c07: dropped at confirm: ${UNREADABLE}; screen: old 10/10, new 0/10, none 0/10: informative, flagged`
     );
     expect(lines).toContain(
-      `cases: 7 screened, 7 informative, 1 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}), 0 unscreened, 0 not run`
+      `cases: 7 screened, 7 informative, 1 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
     );
     expect(lines).toContain(
       `verdict: none: flagged case c07 could not be confirmed (${UNREADABLE})${unmeasured(7, 7)}`
@@ -1934,7 +1937,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
       `case c07: dropped at screen: ${misses}; screen: old 10/10, new 10/10, none 0/10: informative, not flagged`
     );
     expect(lines).toContain(
-      `cases: 6 screened, 6 informative, 0 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 1 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}), 0 unscreened, 0 not run`
+      `cases: 6 screened, 6 informative, 0 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 1 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
     );
     expect(lines).toContain(
       `verdict: no loss detected by the registered rule: no confirmed case is a loss (0 flagged of 6 informative), and the planted-loss control (case c01) is a loss and its false-loss control is no loss${unmeasured(1, 6, 0, 1)}`
@@ -2146,7 +2149,7 @@ describe("behaviour: confirm --confirm-flagged", () => {
       "case c07: screen: old 10/10, new 0/10, none 0/10: informative, flagged; confirm: old 40/40, new 0/40: a loss"
     );
     expect(lines).toContain(
-      `cases: 7 screened, 7 informative, 1 flagged, 1 confirmed losses; 0 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}), 0 unscreened, 0 not run`
+      `cases: 7 screened, 7 informative, 1 flagged, 1 confirmed losses; 0 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
     );
     expect(lines.filter((line) => line.startsWith("verdict: "))).toEqual([CASE_RESULT_ONLY]);
 
@@ -2360,7 +2363,7 @@ describe("behaviour: a case whose block of its skill the arms cannot each rebuil
       `case c-invoked: dropped at screen: ${fault}`
     );
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 1 injection-unrebuildable (user-invoked 1, other-shape 0, plugin-block-misplaced 0, autoload-no-block 0), ${NO_PATH_FORM}, ${NO_READS_PAST}), `
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 1 injection-unrebuildable (user-invoked 1, other-shape 0, plugin-block-misplaced 0, autoload-no-block 0), ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
     );
     // The other stages read the file too, and do not refuse it.
     const confirm = await cli(behaviour("confirm", s));
@@ -2430,7 +2433,7 @@ describe("behaviour: a case whose block of its skill the arms cannot each rebuil
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
     expect(reported.stdout).toContain(`case c-autoload: dropped at screen: ${fault}`);
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 1 injection-unrebuildable (user-invoked 0, other-shape 0, plugin-block-misplaced 0, autoload-no-block 1), ${NO_PATH_FORM}, ${NO_READS_PAST}), `
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 1 injection-unrebuildable (user-invoked 0, other-shape 0, plugin-block-misplaced 0, autoload-no-block 1), ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
     );
   }, 60_000);
 });
@@ -2495,7 +2498,7 @@ describe("behaviour: a case whose new text holds a file it reads by path in a fo
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
     expect(reported.stdout).toContain(`case c-wide: dropped at screen: ${fault}`);
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, 1 path-form (old 0, new 1), ${NO_READS_PAST}), `
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, 1 path-form (old 0, new 1), ${NO_READS_PAST}, ${NO_REFUSED}), `
     );
   }, 60_000);
 });
@@ -2683,8 +2686,226 @@ describe("behaviour: a replay's reads of skill files", () => {
     expect(reported.stdout).toContain(
       `case c04: dropped at screen: ${reason}; screen: unscreened: an arm lacks its ${SCREEN_RUNS} judged runs after ${MAX_EXTRA_RUNS} extra runs (${all} runs with no verdict, run again; ${READS_PAST_LAST_ROUND}: old 0, new 0, none ${all})\n`
     );
-    expect(reported.stdout).toContain(`, 1 ${READS_PAST_LAST_ROUND}), 0 unscreened, 0 not run`);
+    expect(reported.stdout).toContain(
+      `, 1 ${READS_PAST_LAST_ROUND}, ${NO_REFUSED}), 0 unscreened, 0 not run`
+    );
   }, 120_000);
+});
+
+// The provider's content policy (the architect, 2026-11-24): a case whose every replay the provider
+// refuses with a stream error of a `*_policy` type can never be judged, so its stage drops it as
+// provider-refused, where it was left unscreened as if a later run could judge it.
+describe("behaviour: a case the provider refuses on every replay", () => {
+  /** What the stand-in provider says of the content it refuses. */
+  const POLICY_TEXT = "This content was flagged for possible cybersecurity risk.";
+  /** The reason of a refused replay as a run saved before the gateway stopped trying a policy
+   *  refusal again holds it (3ca1eb87e539's 45 runs): GATEWAY_TRIES tries, named at its end. */
+  const REFUSED_RUN = `the replay failed: the stream ended in an error: cyber_policy: ${POLICY_TEXT}, on each of ${GATEWAY_TRIES} tries`;
+  /** The reason of another failure that names a policy outside a stream error's type. */
+  const OTHER_FAILURE =
+    "the replay failed: the model answered 400 invalid_request_error: the body names cyber_policy, which is no stream error";
+
+  /** Case `caseId`'s `stage` as a run saved it unscreened with the texts of `s`, and no drop: each
+   *  arm of `byArm` holding one run per reason, a judged pass for "pass", else a run with no
+   *  verdict and that reason. */
+  const unscreenedStage = (
+    s: Scenario,
+    caseId: string,
+    stage: Stage,
+    byArm: Record<string, readonly string[]>
+  ): Record<string, unknown> => ({
+    ...plantedStage(s, caseId, stage, {}),
+    state: "unscreened",
+    runs: Object.entries(byArm).flatMap(([arm, reasons]) =>
+      reasons.map((reason, n) => ({
+        caseId,
+        arm,
+        stage,
+        verdict: reason === "pass" ? "pass" : null,
+        reason: reason === "pass" ? "planted" : reason,
+        run: n + 1,
+        round: 1,
+        sendPlace: n,
+        userId: null,
+        id: null,
+        skillRounds: null,
+        reply: null,
+        replaySpent: [],
+        judgeSpent: [],
+      }))
+    ),
+  });
+
+  /** Each arm's runs when every one is a refusal: the stage's runs and its extra runs. */
+  const allRefused = (stage: Stage) => Array(STAGE_RUNS[stage] + MAX_EXTRA_RUNS).fill(REFUSED_RUN);
+
+  // Catches: a case whose every replay the provider refuses left unscreened, as if a later run
+  // could judge it, and counted as unscreened by the report.
+  test("a case whose every replay the provider refuses on a content policy is dropped at screen as provider-refused with its refusals by arm, the report counts it, and the screen goes on to the next case", async () => {
+    const s = scenario("provider-refused", LOSS_SKILL(), [
+      { id: "c04", marker: "REFUSED" },
+      { id: "c05" },
+    ]);
+    recordCaptures(s, ["old", "new", "none"]);
+    // The provider refuses each replay of c04 with a Messages stream of one error event of type
+    // cyber_policy, which gateway.ts throws at once as `the stream ended in an error: <type>:
+    // <message>`, and does not try again.
+    answer = (body) =>
+      !isJudgement(body) && JSON.stringify(body.messages).includes("REFUSED")
+        ? sseResponse(
+            `event: error\ndata: ${JSON.stringify({
+              type: "error",
+              error: { type: "cyber_policy", message: POLICY_TEXT },
+            })}\n\n`
+          )
+        : behaviourStandIn(body);
+    const ran = await cli(behaviour("screen", s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const all = SCREEN_RUNS + MAX_EXTRA_RUNS;
+    const reason = `provider-refused: provider refused every replay (cyber_policy): ${3 * all} refusals (old ${all}, new ${all}, none ${all})`;
+    const c = result(s.out, "c04");
+    expect({ dropped: c.dropped, at: c.droppedAt, state: c.stages.screen?.state }).toEqual({
+      dropped: reason,
+      at: "screen",
+      state: "unscreened",
+    });
+    const runs = c.stages.screen?.runs ?? [];
+    expect(runs).toHaveLength(3 * all);
+    for (const run of runs) {
+      expect({ verdict: run.verdict, reason: run.reason }).toEqual({
+        verdict: null,
+        reason: `the replay failed: the stream ended in an error: cyber_policy: ${POLICY_TEXT}`,
+      });
+    }
+    expect(ran.stdout).toContain(`case c04: dropped: ${reason}; `);
+    // The screen goes on to the next case.
+    expect(result(s.out, "c05").stages.screen?.state).toBe("counted");
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(reported.stdout).toContain(
+      `case c04: dropped at screen: ${reason}; screen: unscreened: an arm lacks its ${SCREEN_RUNS} judged runs after ${MAX_EXTRA_RUNS} extra runs (${3 * all} runs with no verdict, run again)\n`
+    );
+    expect(reported.stdout).toContain(
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 0 unscreened, 0 not run`
+    );
+  }, 120_000);
+
+  // Catches: a screen saved unscreened before the rule, every replay refused, skipped as
+  // "screened before" and left unscreened for good; or dropped by calling the model again.
+  test("a screen saved unscreened with every replay refused and no drop is dropped as provider-refused by a later screen, from its saved runs, with no model call", async () => {
+    const s = scenario("provider-refused-saved", LOSS_SKILL(), [{ id: "c04" }]);
+    plantResult(s, "c04", {
+      stages: {
+        screen: unscreenedStage(s, "c04", "screen", {
+          old: allRefused("screen"),
+          new: allRefused("screen"),
+          none: allRefused("screen"),
+        }),
+      },
+    });
+    const all = SCREEN_RUNS + MAX_EXTRA_RUNS;
+    const reason = `provider-refused: provider refused every replay (cyber_policy): ${3 * all} refusals (old ${all}, new ${all}, none ${all})`;
+    const from = recorder.requests.length;
+    const ran = await cli(behaviour("screen", s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(requestsSince(from)).toHaveLength(0);
+    expect(ran.stdout).not.toContain("case c04: screened before, skipped");
+    expect(ran.stdout).toContain(`case c04: dropped: ${reason}; `);
+    const c = result(s.out, "c04");
+    expect({ dropped: c.dropped, at: c.droppedAt, runs: c.stages.screen?.runs.length }).toEqual({
+      dropped: reason,
+      at: "screen",
+      runs: 3 * all,
+    });
+    // A screen started again skips the dropped case.
+    const again = await cli(behaviour("screen", s));
+    expect(again.stdout).toContain(`case c04: dropped before, skipped: ${reason}`);
+    const reported = await cli(report(s));
+    expect(reported.stdout).toContain(
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 0 unscreened, 0 not run`
+    );
+  }, 60_000);
+
+  // Catches: a control case whose saved control runs the provider refused every time kept as the
+  // control case for good, so the skill could never get its controls.
+  test("a control stage saved unscreened with every replay refused is dropped at control as provider-refused by a later control, with no model call, and the next case of the control rule's order takes its place", async () => {
+    const SIX = ["c01", "c02", "c03", "c04", "c05", "c06"];
+    const s = scenario(
+      "provider-refused-control",
+      LOSS_SKILL(),
+      SIX.map((id) => ({ id }))
+    );
+    // Six informative cases, the control rule's first of them (c01) with its control saved so.
+    for (const id of SIX) {
+      const screen = plantedStage(s, id, "screen", KEPT);
+      const control = unscreenedStage(s, id, "control", {
+        old: allRefused("control"),
+        minus: allRefused("control"),
+        twin: allRefused("control"),
+      });
+      plantResult(s, id, { stages: id === "c01" ? { screen, control } : { screen } });
+    }
+    const all = STAGE_RUNS.control + MAX_EXTRA_RUNS;
+    const reason = `provider-refused: provider refused every replay (cyber_policy): ${3 * all} refusals (old ${all}, minus ${all}, twin ${all})`;
+    const from = recorder.requests.length;
+    const ran = await cli(behaviour("control", s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(requestsSince(from)).toHaveLength(0);
+    expect(ran.stdout).not.toContain("case c01: control runs made before, skipped");
+    expect(ran.stdout).toContain(`case c01: dropped: ${reason}; `);
+    expect({ dropped: result(s.out, "c01").dropped, at: result(s.out, "c01").droppedAt }).toEqual({
+      dropped: reason,
+      at: "control",
+    });
+    const reported = await cli(report(s));
+    expect(reported.stdout.split("\n")).toContain(
+      "control case: c02, in place of c01 (dropped at control), which the control rule chose before it"
+    );
+    expect(reported.stdout).toContain(`, ${NO_READS_PAST}, 1 provider-refused), `);
+  }, 60_000);
+
+  // Catches: a stage dropped as provider-refused though one of its runs was judged, or though a
+  // run failed for another reason (a policy named outside a stream error's type among them), which
+  // a later run could get past.
+  test("an unscreened stage whose refusals sit beside judged runs, or beside a run that failed for another reason, stays unscreened, and the report counts it unscreened and none as provider-refused", async () => {
+    const s = scenario("provider-refused-mixed", LOSS_SKILL(), [{ id: "c01" }, { id: "c02" }]);
+    const passed = Array(SCREEN_RUNS).fill("pass");
+    plantResult(s, "c01", {
+      stages: {
+        screen: unscreenedStage(s, "c01", "screen", {
+          old: passed,
+          new: passed,
+          none: allRefused("screen"),
+        }),
+      },
+    });
+    plantResult(s, "c02", {
+      stages: {
+        screen: unscreenedStage(s, "c02", "screen", {
+          old: allRefused("screen"),
+          new: allRefused("screen"),
+          none: [...allRefused("screen").slice(1), OTHER_FAILURE],
+        }),
+      },
+    });
+    const from = recorder.requests.length;
+    const ran = await cli(behaviour("screen", s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(requestsSince(from)).toHaveLength(0);
+    for (const id of ["c01", "c02"]) {
+      expect(ran.stdout).toContain(`case ${id}: screened before, skipped`);
+      const c = result(s.out, id);
+      expect({ id, dropped: c.dropped, state: c.stages.screen?.state }).toEqual({
+        id,
+        dropped: null,
+        state: "unscreened",
+      });
+    }
+    const reported = await cli(report(s));
+    expect(reported.stdout).toContain(
+      `; 0 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 2 unscreened, 0 not run`
+    );
+  }, 60_000);
 });
 
 // Catches: the --after-case command run with no limit, so one that never exits held the

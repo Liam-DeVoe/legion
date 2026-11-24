@@ -21,7 +21,10 @@
  *   longer of the `retry-after` wait and the back-off (1 s, 2 s, 4 s, ... at most 30 s), up to
  *   GATEWAY_TRIES tries in all, whose waits add up to 91 s at least: more than the 60 s a
  *   gateway's rate guard looks back over, so a refusal that names a 1 s `retry-after` but holds a
- *   team back for a minute is outlasted. Any other status, a 400 among them, throws at once.
+ *   team back for a minute is outlasted. Any other status, a 400 among them, throws at once, and
+ *   so does a streamed reply whose error event's type ends in `_policy` (the provider's content
+ *   policy, as `cyber_policy`; POLICY_REFUSAL), as `the stream ended in an error: <type>:
+ *   <message>`: the provider refuses the same content on each try, and each try is paid for.
  * - At most `concurrency` calls are in flight; the others wait their turn, in the order sent. A
  *   reply says when its call got its place and was sent and how many calls were in flight then
  *   (`sentAt`, `inFlight`; `onSent` is told the same as the call goes), and carries the
@@ -737,6 +740,23 @@ const StreamError = z.looseObject({
   error: z.looseObject({ type: z.string().optional(), message: z.string().optional() }),
 });
 
+/** What a streamed reply's reader throws on the stream's `error` event (a Responses stream's
+ *  `response.failed` too): `the stream ended in an error: <type>: <message>`, its error's type
+ *  (`error` where the event names none) kept as `type`. */
+class StreamFailed extends Error {
+  constructor(
+    readonly type: string,
+    said: string
+  ) {
+    super(`the stream ended in an error: ${type}: ${said}`);
+  }
+}
+
+/** A stream error's type that the provider's content policy gives (`cyber_policy`): the provider
+ *  refuses the same content on each try, so `send` throws such an error at once and tries no
+ *  more. */
+const POLICY_REFUSAL = /_policy$/;
+
 /** The block at `index` of `blocks`, or a throw naming the event that names a block not started. */
 function blockAt(blocks: Record<string, unknown>[], index: number, event: string) {
   const block = blocks[index];
@@ -814,9 +834,7 @@ export function streamedMessage(text: string): unknown {
         break;
       case "error": {
         const { error } = StreamError.parse(event);
-        throw new Error(
-          `the stream ended in an error: ${error.type ?? "error"}: ${error.message ?? ""}`
-        );
+        throw new StreamFailed(error.type ?? "error", error.message ?? "");
       }
     }
   }
@@ -847,11 +865,11 @@ const StreamFailure = ErrorFields.extend({
 });
 
 /** What an `error` event (its own `code` and `message`, or its `error`'s) or a `response.failed`
- *  event (its response's `error`) of a Responses stream says. */
-function streamError(event: unknown): string {
+ *  event (its response's `error`) of a Responses stream says, as StreamFailed. */
+function streamError(event: unknown): StreamFailed {
   const failure: z.infer<typeof StreamFailure> = StreamFailure.safeParse(event).data ?? {};
   const said = failure.response?.error ?? failure.error ?? failure;
-  return `${said.code ?? "error"}: ${said.message ?? ""}`;
+  return new StreamFailed(said.code ?? "error", said.message ?? "");
 }
 
 /**
@@ -867,7 +885,7 @@ export function streamedResponse(text: string): unknown {
     const { type, response } = ResponseEvent.parse(event);
     if (type === "response.completed" || type === "response.incomplete") done = response;
     else if (type === "error" || type === "response.failed") {
-      throw new Error(`the stream ended in an error: ${streamError(event)}`);
+      throw streamError(event);
     }
   }
   if (done === undefined) throw new Error("the stream ended before response.completed");
@@ -1015,7 +1033,7 @@ export function createGateway(options: GatewayOptions): Gateway {
       const inFlight = running;
       onSent?.({ at: sentAt, inFlight });
       const started = performance.now();
-      const { message, usage, requestId, gatewayHeaders } = await postMessages({
+      const answer = await postMessages({
         url: baseUrl,
         ...(responses ? { path: "/v1/responses", auth: "bearer" as const } : {}),
         key,
@@ -1025,19 +1043,34 @@ export function createGateway(options: GatewayOptions): Gateway {
         sleep,
         tries: GATEWAY_TRIES,
         timeoutMs,
-        accept: (reply, response) => ({
-          ...(responses
-            ? responseReply(streamed ? streamedResponse(reply) : JSON.parse(reply))
-            : { message: replyMessage(reply, streamed), usage: undefined }),
-          requestId: response.headers.get("request-id") ?? undefined,
-          gatewayHeaders: Object.fromEntries(
-            GATEWAY_HEADERS.flatMap((name): [string, string][] => {
-              const value = response.headers.get(name);
-              return value === null ? [] : [[name, value]];
-            })
-          ),
-        }),
+        accept: (reply, response) => {
+          let read: { message: ReplyMessage; usage: ResponsesUsage | undefined };
+          try {
+            read = responses
+              ? responseReply(streamed ? streamedResponse(reply) : JSON.parse(reply))
+              : { message: replyMessage(reply, streamed), usage: undefined };
+          } catch (error) {
+            // A content-policy refusal is given back, not thrown: postMessages tries again on a
+            // throw, and the provider refuses the same content on each try.
+            if (error instanceof StreamFailed && POLICY_REFUSAL.test(error.type)) {
+              return { refused: error };
+            }
+            throw error;
+          }
+          return {
+            ...read,
+            requestId: response.headers.get("request-id") ?? undefined,
+            gatewayHeaders: Object.fromEntries(
+              GATEWAY_HEADERS.flatMap((name): [string, string][] => {
+                const value = response.headers.get(name);
+                return value === null ? [] : [[name, value]];
+              })
+            ),
+          };
+        },
       });
+      if ("refused" in answer) throw answer.refused;
+      const { message, usage, requestId, gatewayHeaders } = answer;
       const durationMs = Math.round(performance.now() - started);
       const spent = count(message, bodyPrice, usage);
       const providerRequestId =
