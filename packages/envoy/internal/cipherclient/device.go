@@ -141,7 +141,10 @@ func (d *DeviceFlow) Start(ctx context.Context) (*oauth2.DeviceAuthResponse, err
 
 // Wait polls the issuer until the person has typed the code in, and answers the sign-in that
 // leaves. x/oauth2 polls a copy of authorization held to the device grant's bounds
-// (BoundDeviceAuth).
+// (BoundDeviceAuth). A code that lapses no later than its first poll, the issuer's interval on, is
+// never polled: x/oauth2's ticker does not fire before the code's end, its context's deadline, so
+// Wait answers that deadline (context.DeadlineExceeded), which prints as "timed out", the class
+// `agent-secrets login` prints for its own 15-minute limit too.
 func (d *DeviceFlow) Wait(ctx context.Context, authorization *oauth2.DeviceAuthResponse) (*SignIn, error) {
 	config, err := d.discover(ctx)
 	if err != nil {
@@ -160,17 +163,19 @@ func (d *DeviceFlow) Wait(ctx context.Context, authorization *oauth2.DeviceAuthR
 // poll starts at defaultDeviceInterval seconds where the server names no interval, RFC 8628 section
 // 3.2's 5 s, and at leastDeviceInterval seconds at least where it names one, so no poll goes out
 // with no wait; and a code is polled for mostDeviceLifetime at most, one that names no lifetime
-// included, so no poll goes on past any use (BoundDeviceAuth). The most interval is that lifetime,
-// mostDeviceInterval: RFC 8628 section 3.5 has a client wait at least the interval the server
-// names, and every wait ends at the code's end, so a longer interval only waits the code out. Both
-// of this module's device grants keep them: a person's sign-in (DeviceFlow.Wait) and the broker
-// helper's machine login (internal/cipher/helper, Broker.Login). They are the TypeScript device
-// login's DEFAULT_POLL_SECONDS, LEAST_POLL_SECONDS and MOST_LIFETIME_SECONDS
-// (packages/cipher-client/src/device-login.ts). x/oauth2's own DeviceAccessToken takes any
-// lifetime, and a positive interval a time.Duration holds, as sent. It reads any other interval as
-// 5 s in v0.38.0, the version this repository's workspace builds; v0.37.0, which this module's
-// go.mod names on its own, reads 0 as 5 s and panics its ticker on a negative interval, or on one
-// whose seconds wrap negative as a time.Duration.
+// included, so no poll goes on past any use (BoundDeviceAuth). The interval is held to that
+// lifetime too, mostDeviceInterval, so its seconds always hold in a time.Duration: RFC 8628 section
+// 3.5 has a client wait at least the interval the server names, and an interval as long as the
+// code's life leaves no poll before the code lapses (the helper's Broker.Login refuses such a code
+// at once, and Wait times out on it). Both of this module's device grants keep these bounds: a
+// person's sign-in (DeviceFlow.Wait) and the broker helper's machine login. defaultDeviceInterval,
+// leastDeviceInterval and mostDeviceLifetime are the TypeScript device login's
+// DEFAULT_POLL_SECONDS, LEAST_POLL_SECONDS and MOST_LIFETIME_SECONDS
+// (packages/cipher-client/src/device-login.ts), which needs no most interval of its own. x/oauth2's
+// own DeviceAccessToken takes any lifetime, and a positive interval a time.Duration holds, as sent.
+// It reads any other interval as 5 s in v0.38.0, the version this repository's workspace builds;
+// v0.37.0, which this module's go.mod names on its own, reads 0 as 5 s and panics its ticker on a
+// negative interval, or on one whose seconds wrap negative as a time.Duration.
 const (
 	defaultDeviceInterval = 5
 	leastDeviceInterval   = 1
@@ -183,19 +188,17 @@ const (
 // now carries one (time.Now does): x/oauth2 dates the end from time.Now().UTC(), which drops that
 // reading, so a comparison with it reads the wall clock while a context's deadline and its timer
 // run on the monotonic one, and a step of the wall clock would set the two apart. Time.Add drops
-// the reading for an end before the year 1885 too; such a code has lapsed on either clock.
+// the reading for an end before the year 1885 too; such a code has lapsed on either clock. The
+// monotonic clock does not count a time the machine is suspended (CLOCK_MONOTONIC on Linux), so a
+// machine that sleeps past the code's end polls on after it resumes, and the server answers
+// expired_token, an expiry too.
 //
 // The edge values of a device authorization, as x/oauth2 reads them (oauth2.DeviceAuthResponse,
 // whole seconds, 0 or null as none) and then the bounds: an interval of 0, none or null is 5 s,
 // and a negative one the least; a lifetime of 0 or none is the hour, a negative one lapses the code
 // before its first poll, and one past what a time.Duration holds (292 years) but inside an int64
 // wraps, to a time that has passed or that the hour bounds; a fraction of either, a count past an
-// int64, or a value sent as a string fails the device authorization. The TypeScript device login's
-// library, oauth4webapi 3.8.8 (build/index.js:2185-2197), reads some of them apart: an interval
-// that is null, 0 or negative, and a lifetime that is missing or negative, fail its login; a
-// lifetime of 0 lapses its code at once; and a fraction of either, a count past an int64, or a
-// lifetime sent as a string is kept and held to the bounds. These are among the differences the
-// helper's pollLogin lists.
+// int64, or a value sent as a string fails the device authorization.
 func BoundDeviceAuth(da *oauth2.DeviceAuthResponse, now time.Time) {
 	da.Interval = min(max(cmp.Or(da.Interval, defaultDeviceInterval), leastDeviceInterval), mostDeviceInterval)
 	left := mostDeviceLifetime

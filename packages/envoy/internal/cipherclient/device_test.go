@@ -235,11 +235,40 @@ func TestASignInHoldsTheIssuersIntervalAndLifetime(t *testing.T) {
 	}
 }
 
+// TestASignInWhoseCodeLapsesBeforeItsFirstPollTimesOut: a code that lapses no later than its first
+// poll, the issuer's interval on, is never polled. x/oauth2's ticker does not fire before the
+// code's end, its context's deadline, so Wait answers that deadline, which prints as "timed out".
+// x/oauth2 keeps its own time here, so the code lives 200 ms against an interval of 60 s.
+func TestASignInWhoseCodeLapsesBeforeItsFirstPollTimesOut(t *testing.T) {
+	const (
+		clientID     = "example-device-client.apps.googleusercontent.example"
+		clientSecret = "ex" + "ample-device-client-secret"
+	)
+	issuer := oidctest.New(t)
+	key := issuer.PublishKey(t, "google-key")
+	issuer.EnableDeviceFlow(key, clientID, clientSecret)
+	polls := &deadlineTransport{}
+	flow := &DeviceFlow{Issuer: issuer.URL(), ClientID: clientID, ClientSecret: clientSecret, HTTP: &http.Client{Transport: polls}}
+	ctx := context.Background()
+	authorization, err := flow.Start(ctx)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	authorization.Interval, authorization.Expiry = 60, time.Now().Add(200*time.Millisecond)
+	signIn, err := flow.Wait(ctx, authorization)
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) || !strings.HasSuffix(err.Error(), ": timed out") {
+		t.Fatalf("Wait answered %+v, %v, want the code's deadline, printed as timed out", signIn, err)
+	}
+	if len(polls.deadlines) != 0 {
+		t.Fatalf("the sign-in polled %d times, want none", len(polls.deadlines))
+	}
+}
+
 // TestTheDeviceGrantsBoundsHoldTheIntervalAndTheLifetime: BoundDeviceAuth holds the interval to 1 s
 // at least, 5 s where none is named, and the lifetime to an hour from now, one that names none
 // included, as the TypeScript device login holds them. An interval past a minute is kept, as RFC
-// 8628 section 3.5 has a client wait at least the interval named, up to the hour, past which it
-// would only wait out the code. A lifetime inside the hour, or one already past, is kept.
+// 8628 section 3.5 has a client wait at least the interval named, up to the hour, past which no
+// code could be polled before it lapses. A lifetime inside the hour, or one already past, is kept.
 func TestTheDeviceGrantsBoundsHoldTheIntervalAndTheLifetime(t *testing.T) {
 	now := time.Date(2026, 11, 23, 18, 0, 0, 0, time.UTC)
 	for _, c := range []struct {

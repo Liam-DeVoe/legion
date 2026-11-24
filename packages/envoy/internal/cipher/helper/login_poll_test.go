@@ -10,7 +10,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -334,9 +336,8 @@ func TestALoginPollsWaitEndsAtTheCodesLifetime(t *testing.T) {
 // interval, 1 s at least and 5 s where it names none, and the code lives at most an hour, so long
 // where the broker names no lifetime, as the TypeScript device login holds them. A negative
 // interval would poll as fast as the broker answers authorization_pending. A longer interval is
-// waited whole, as RFC 8628 section 3.5 has it, and one past the code's lifetime, one past what a
-// time.Duration holds included, waits only what is left of the code. x/oauth2 reads an interval or
-// a lifetime of 0 as none.
+// waited whole, as RFC 8628 section 3.5 has it. x/oauth2 reads an interval or a lifetime of 0 as
+// none.
 func TestALoginPollHoldsTheBrokersIntervalAndTheCodesLifetime(t *testing.T) {
 	const s = time.Second
 	for _, c := range []struct {
@@ -346,34 +347,18 @@ func TestALoginPollHoldsTheBrokersIntervalAndTheCodesLifetime(t *testing.T) {
 	}{
 		{"a negative interval", -3, s},
 		{"an interval of 90 s", 90, 90 * s},
-		// Controls: 0, none and an interval of a few seconds.
+		// Controls: 0, none, an interval of a few seconds, and one just inside the fake's 900 s
+		// code, which Login still starts (the hook passes no time, so both waits are whole).
 		{"an interval of 0", 0, 5 * s},
 		{"no interval", nil, 5 * s},
 		{"an interval of 30 s", 30, 30 * s},
+		{"an interval of 890 s", 890, 890 * s},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newPollRigNaming(t, map[string]any{"interval": c.interval}, 0, answering(http.StatusBadRequest, "authorization_pending"))
 			waitFor(t, func() bool { return r.b.LoginStatus().State == "issued" })
 			if got, _ := r.seen(); !slices.Equal(got, []time.Duration{c.want, c.want}) {
 				t.Fatalf("the polls waited %v, want %v twice", got, c.want)
-			}
-		})
-	}
-	for _, c := range []struct {
-		name     string
-		interval any
-	}{
-		{"an interval of a day", 86400},
-		{"an interval past what a time.Duration holds", int64(1e12)},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			r := newPollRigNaming(t, map[string]any{"interval": c.interval}, 0, answering(http.StatusBadRequest, "authorization_pending"))
-			waitFor(t, func() bool { return r.b.LoginStatus().State == "issued" })
-			// Each wait is what was left of the fake's 900 s code, read just before it was handed
-			// over, so no later than the time left the hook read.
-			got, until := r.seen()
-			if len(got) != 2 || got[0] > 900*s || got[0] < until[0] || got[1] > 900*s || got[1] < until[1] {
-				t.Fatalf("the polls waited %v with %v of the code left, want what was left each time", got, until)
 			}
 		})
 	}
@@ -392,6 +377,50 @@ func TestALoginPollHoldsTheBrokersIntervalAndTheCodesLifetime(t *testing.T) {
 			// of it at that wait is at most the hour, and at least the hour less the time since.
 			if _, until := r.seen(); len(until) != 1 || until[0] > time.Hour || until[0] < time.Hour-time.Since(r.started) {
 				t.Fatalf("the first wait had %v of the code left, want an hour less the time since the login started", until)
+			}
+		})
+	}
+}
+
+// TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused: a code that lapses no later than its first
+// poll, the broker's interval on, could never be polled, so Login refuses it at once, naming the
+// time left of the code and the interval, starts no poll and records no login, rather than wait the
+// code out and record it expired. The interval named is the broker's where it is past the bounds,
+// and the bounds' default where the broker names none.
+func TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused(t *testing.T) {
+	lapse := regexp.MustCompile(`^the broker's code lapses in (\d+) s, and its interval puts the first poll (\d+) s on, so no poll could reach it$`)
+	for _, c := range []struct {
+		name                string
+		fields              map[string]any
+		leastLeft, mostLeft int // the seconds of the code the line may name as left
+		interval            string
+	}{
+		{"an interval as long as the code", map[string]any{"interval": 900}, 890, 900, "900"},
+		{"an interval of a day", map[string]any{"interval": 86400}, 890, 900, "86400"},
+		{"an interval past what a time.Duration holds", map[string]any{"interval": int64(1e12)}, 890, 900, "1000000000000"},
+		{"no interval and a code of 3 s", map[string]any{"interval": nil, "expires_in": 3}, 1, 3, "5"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFakeBroker(t)
+			f.mu.Lock()
+			f.deviceAuthFields = c.fields
+			f.mu.Unlock()
+			b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+			t.Cleanup(b.Close)
+			code, err := b.Login(context.Background(), "host-a")
+			if err == nil {
+				t.Fatalf("Login answered the code %q, want a refusal", code)
+			}
+			said := lapse.FindStringSubmatch(err.Error())
+			if said == nil {
+				t.Fatalf("Login refused with %q, want the code's time left and the interval named", err)
+			}
+			if left, _ := strconv.Atoi(said[1]); left < c.leastLeft || left > c.mostLeft || said[2] != c.interval {
+				t.Fatalf("Login named %s s left and an interval of %s s, want %d to %d s and %s s", said[1], said[2], c.leastLeft, c.mostLeft, c.interval)
+			}
+			// Login records the login's state before it starts a poll, so no state is no poll.
+			if state := b.LoginStatus().State; state != "" {
+				t.Fatalf("the refused login recorded the state %q, want none", state)
 			}
 		})
 	}
