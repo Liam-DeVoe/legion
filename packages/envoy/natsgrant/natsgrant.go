@@ -559,10 +559,13 @@ func Host(machineID string) Permissions {
 // reads the account's JetStream state and the listener's lease keys in KV_envoy_listener, and
 // publishes on its own cutover inbox, <inbox prefix>.cutover.>, under which a probe sends a
 // numbered sequence and reads it back to count what a restart of the hub's servers loses. It makes,
-// changes and removes no stream. The grant before this change held stream creates and updates, and
-// a create or an update carries a configuration of the caller's choosing: a source or a republish
-// in it would read every stream of the account, and the same grant wrote any KV bucket of the
-// account, since a RePublish whose destination is a KV subject (Source envoy-measure.>, Destination
+// changes and removes no stream. Its direct get of the lease keys needs nats-server 2.15.3 or
+// newer: on 2.15.1 a direct get of a missing key whose reply subject is
+// $JS.API.STREAM.DELETE.<stream> deletes that stream, and 2.15.3 refuses that request. The grant
+// before this change held stream creates and updates, and a create or an update carries a
+// configuration of the caller's choosing: a source or a republish in it would read every stream of
+// the account, and the same grant wrote any KV bucket of the account, since a RePublish whose
+// destination is a KV subject (Source envoy-measure.>, Destination
 // $KV.envoy_session_consumers.>) is accepted: nats-server checks only that the destination does not
 // loop into the stream itself (v2.15.1 stream.go:2479-2514, checkStreamCfgLocked; measured on
 // 2.15.1 and 2.10.29), so its publishes became chosen self-keyed records and the bucket's sentinel.
