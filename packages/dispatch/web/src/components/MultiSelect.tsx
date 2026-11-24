@@ -911,6 +911,12 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
       }
       return;
     }
+    // A held Enter acts once (R8): its repeats would toggle a multi-select's option again, once
+    // for each repeat, or create a second time.
+    if (event.key === "Enter" && event.repeat) {
+      event.preventDefault();
+      return;
+    }
     if (event.key === "Enter" && activeRow !== undefined) {
       event.preventDefault();
       if (activeRow === createValue) {

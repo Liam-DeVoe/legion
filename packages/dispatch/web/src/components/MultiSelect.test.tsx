@@ -193,6 +193,25 @@ test("the search narrows the rows and arrows, Enter and Escape drive them from t
   }
 });
 
+// A key held down acts once (R8, the class of the tester's defect 3): a held Enter in a
+// multi-select toggles its option once, where each repeat would toggle it again, and the list ends
+// with the option picked or not by the press alone.
+test("a held Enter toggles the active option once", async () => {
+  const user = userEvent.setup();
+  const view = render(<Host options={["api", "docs", "frontend"]} />);
+  try {
+    await user.click(screen.getByRole("button", { name: "Labels" }));
+    await user.keyboard("{Enter>4}");
+    expect(screen.getByTestId("selected").textContent, "a held Enter picks api once").toBe("api");
+    await user.keyboard("{Enter>5}");
+    expect(screen.getByTestId("selected").textContent, "a held Enter takes api back once").toBe(
+      ""
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 /**
  * Lays the open list out as a browser would, which happy-dom does not: its panel, the box that
  * scrolls, is 288 px tall at 100 px down the window inside a 1 px border, so it shows 286 px of
