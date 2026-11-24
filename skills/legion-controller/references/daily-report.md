@@ -69,7 +69,7 @@ A day with nothing finished says so in one sentence; when the lists do not fit, 
 - **Asks resolved with no answer.**
   For each root in `admission.active` or `admission.waiting`, the newest `Asked whether to park:` and `Asked whether to defer:` comment of each key (step 1 of `skill://legion-controller/references/park-asks.md`, once with each prefix) whose ask was resolved with no answer, unless its wait has ended.
 
-- **Free slots**, counted in issues, as the skill's "Free slots" says.
+- **Free slots**, counted in issues, as `skill://legion-controller/references/admission.md#free-slots` says.
 
 - **The priorities.**
   Each plan line the reconciliation before this report moved for the deployment's priorities, and this project's count of work in flight under no priority, both from step 2 of `skill://legion-controller/references/backlog-stewardship.md#reconcile-the-weekly-plan`.

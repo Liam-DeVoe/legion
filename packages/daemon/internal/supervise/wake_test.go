@@ -627,7 +627,7 @@ func TestAnOperatorsResumeRefusedByTheParkedClaimLeavesItsWakeItsTurn(t *testing
 	h.clock.Advance(wakeInterval / 4)
 	second.Wait()
 
-	err := h.postTo(second, RequestResume{Claim: secondToken})
+	err := h.postTo(second, RequestResume{Claim: secondToken, By: SuspendedByOperator})
 
 	var refused *RefusedError
 	if !errors.As(err, &refused) || refused.State != StateQueued {
