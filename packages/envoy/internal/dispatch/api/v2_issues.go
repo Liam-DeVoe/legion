@@ -177,10 +177,13 @@ func (s *server) v2IssueRows() []routeRow {
 			Method: http.MethodGet, Pattern: "/issues/{key}", Auth: authAny, Versions: onlyV2,
 			Description: "Read one issue: its own fields, and artifacts, each of its documents, files and images in " +
 				"creation order as GET /api/v2/issues/{key}/artifacts lists them. include= adds, each as a member of its " +
-				"name: progress {tasks, children}, its spec's task-list items and its direct children as {done, total}, " +
-				"each null when it has none; open_asks, its open asks, oldest first, each as GET /api/v2/asks answers it; " +
-				"children, its direct children, each with a rollup of its subtree; design_gates, the document each design-gate " +
-				"step records and whether the deployment's gate holds the issue's tree on it, null where the daemon said " +
+				"name: blocks, the keys of the issues whose blocked_by names it, sorted, [] when none, which no row of GET " +
+				"/api/v2/issues carries; comment_count, how many comments GET /api/v2/issues/{key}/comments lists with no " +
+				"artifact=, 0 when it holds none; progress {tasks, children}, its spec's task-list items and its direct " +
+				"children as {done, total}, each null when it has none; open_asks, its open asks, oldest first, each as GET " +
+				"/api/v2/asks answers it; children, its direct children, each with a rollup of its subtree; design_gates, the " +
+				"document each design-gate step records and whether the deployment's gate holds the issue's tree on it, null " +
+				"where the daemon said " +
 				"nothing, [{step, artifact_id, holds}] in step order; reach {route_status, route_holder, route_status_reason, " +
 				"holder_state, last_seen, takeable_at}, where its route reaches now and what state the session holding its " +
 				"claim is in, read from the Envoy listener, each null where there is none or the listener did not answer; " +
@@ -633,7 +636,7 @@ type projectIssuesV2Query struct {
 
 // issueReadV2Query is GET /api/v2/issues/{key}'s query.
 type issueReadV2Query struct {
-	Include []string `query:"include,comma" enum:"open_asks,children,progress,design_gates,reach,referenced_by_count,legion"`
+	Include []string `query:"include,comma" enum:"blocks,comment_count,open_asks,children,progress,design_gates,reach,referenced_by_count,legion"`
 }
 
 // issueReadV2 is GET /api/v2/issues/{key}'s answer (the route map's J3): the issue's own fields
@@ -643,7 +646,16 @@ type issueReadV2Query struct {
 // change (dispatch://INFRA-4071/spec R3).
 type issueReadV2 struct {
 	model.Issue
-	Artifacts []artifactV2 `json:"artifacts"`
+	// Blocks is the keys of the issues whose blocked_by names this one, sorted, [] when none, with
+	// include=blocks: the issue_links rows blocked_by reads, read by their target
+	// (issueBlocksStatement). It comes before the lists below, so a reader that keeps only the start
+	// of a long read still has it.
+	Blocks *[]string `json:"blocks,omitempty"`
+	// CommentCount is how many comments GET /api/v2/issues/{key}/comments lists with no artifact=,
+	// with include=comment_count (issueCommentCountStatement). It comes before the lists below, as
+	// Blocks does.
+	CommentCount *int         `json:"comment_count,omitempty"`
+	Artifacts    []artifactV2 `json:"artifacts"`
 	// Progress is the spec's task-list items and the direct children, with include=progress.
 	Progress *model.IssueProgress `json:"progress,omitempty"`
 	// OpenAsks are the issue's open asks, oldest first, with include=open_asks.
@@ -1028,7 +1040,8 @@ func (s *server) getIssueV2(w http.ResponseWriter, r *http.Request) {
 	include := v2Query[issueReadV2Query](r).Include
 	wants := func(member string) bool { return slices.Contains(include, member) }
 	parts, err := s.readIssueParts(r.Context(), s.requestReader(r), key, issueReadParts{
-		children: wants("children"), designGates: wants("design_gates"), referencedByCount: wants("referenced_by_count"),
+		blocks: wants("blocks"), children: wants("children"), commentCount: wants("comment_count"),
+		designGates: wants("design_gates"), referencedByCount: wants("referenced_by_count"),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		s.writeHandlerError(w, r, errorf(apicode.IssueNotFound, "no issue %s", key))
@@ -1044,6 +1057,12 @@ func (s *server) getIssueV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	answer := issueReadV2{Issue: parts.issue, Artifacts: artifacts}
+	if wants("blocks") {
+		answer.Blocks = &parts.blocks
+	}
+	if wants("comment_count") {
+		answer.CommentCount = &parts.commentCount
+	}
 	if wants("progress") {
 		answer.Progress = &parts.progress
 	}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -398,8 +399,6 @@ func issueSummaryJoins(readAdvances bool) string {
 }
 
 const (
-	maxIssueLabels  = 20
-	maxIssueLabel16 = 40
 	// maxRepoLabel16 bounds a `label` filter value that names a repository (repoLabelPrefix):
 	// the prefix, an owner of up to 39 characters, a slash and a name of up to 100, GitHub's own
 	// limits.
@@ -567,13 +566,14 @@ func normalizeIssueLabels(values []string) ([]string, error) {
 }
 
 // labelLimit is what one label is held to, by its lower-cased key: the most UTF-16 units it may
-// run to, with no bound where that is 0, and whether it counts toward maxIssueLabels. Every limit
-// bounds the empty key, the blank label every write and filter refuses.
+// run to, with no bound where that is 0, and whether it counts toward contracts.MaxIssueLabels.
+// Every limit bounds the empty key, the blank label every write and filter refuses.
 type labelLimit func(key string) (units int, counted bool)
 
-// callerLabelLimit is a caller's limits: every label counts, and runs to maxIssueLabel16 units.
+// callerLabelLimit is a caller's limits: every label counts, and runs to contracts.IssueLabelMax
+// units.
 func callerLabelLimit(string) (int, bool) {
-	return maxIssueLabel16, true
+	return contracts.IssueLabelMax, true
 }
 
 // labelFilterLimit holds a `label` filter value to a caller's limits, except one that names a
@@ -584,12 +584,13 @@ func labelFilterLimit(key string) (int, bool) {
 	if strings.HasPrefix(key, repoLabelPrefix) {
 		return maxRepoLabel16, true
 	}
-	return maxIssueLabel16, true
+	return contracts.IssueLabelMax, true
 }
 
 // normalizeLabels trims values and folds them case-insensitively, keeping each label's first
 // spelling. It refuses a blank label, one past the units its limit gives it, and more than
-// maxIssueLabels values that their limits count, counted before the fold as they always were.
+// contracts.MaxIssueLabels values that their limits count, counted before the fold as they always
+// were.
 func normalizeLabels(values []string, limit labelLimit) ([]string, error) {
 	counted := 0
 	for _, value := range values {
@@ -597,8 +598,8 @@ func normalizeLabels(values []string, limit labelLimit) ([]string, error) {
 			counted++
 		}
 	}
-	if counted > maxIssueLabels {
-		return nil, countExceededError(apicode.LabelsInput, "labels", counted, maxIssueLabels)
+	if counted > contracts.MaxIssueLabels {
+		return nil, countExceededError(apicode.LabelsInput, "labels", counted, contracts.MaxIssueLabels)
 	}
 	labels := make([]string, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
@@ -909,14 +910,15 @@ func (s *server) scanIssuePage(ctx context.Context, listQuery string, arguments 
 // counts, its children and its own backlink count, every one of them a connection taken and
 // given back in turn (store.sharedPoolSize says what that costs a loaded server).
 //
-// Batch 1 is everything keyed on the issue key alone: the issue row, its external links, its
-// artifacts, its open asks, its children and its backlink count. A key no issue carries is what
-// the issue row's callback records, answered as that row's pgx.ErrNoRows - 404 NOT_FOUND - once
-// the batch has closed: a callback that returned the error would close the batch on it, and pgx
-// invalidates every statement of a batch whose Close answers an error in the connection's
-// statement and description caches (invalidateCachesOnBatchResultsError), so one 404 would cost
-// that connection the whole read's prepared statements. The other callbacks run against an issue
-// with no row, answer empty lists, and readIssue drops them with the rest of the read.
+// Batch 1 is everything keyed on the issue key alone: the issue row, its external links, the
+// issues it blocks, its artifacts, its open asks, its children, its comment count and its backlink
+// count. A key no issue carries is what the issue row's callback records, answered as that row's
+// pgx.ErrNoRows - 404 NOT_FOUND - once the batch has closed: a callback that returned the error
+// would close the batch on it, and pgx invalidates every statement of a batch whose Close answers
+// an error in the connection's statement and description caches
+// (invalidateCachesOnBatchResultsError), so one 404 would cost that connection the whole read's
+// prepared statements. The other callbacks run against an issue with no row, answer empty lists,
+// and readIssue drops them with the rest of the read.
 //
 // Batch 2 is what only batch 1's answers name: every artifact's versions in one statement, the
 // documents' latest reviews and open approval requests, and the open asks' identity events and
@@ -956,15 +958,29 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 // encoding all three answer.
 type issueDetail struct {
 	model.Issue
+	// Blocks is the keys of the issues whose blocked_by names this one, sorted, [] when none: the
+	// issue_links rows blocked_by reads, read by their target (issueBlocksStatement). It is this
+	// read's alone. model.Issue is also an issue event's payload and a write's answer, which a
+	// write of another issue never updates, and a listing row (model.IssueSummary) carries none.
+	// It comes before the lists below, so a reader that keeps only the start of a long read - an
+	// agent whose context cuts the rest, say - still has it. readIssue always sets it, so the read
+	// always writes it; omitzero leaves out only a nil list, and makes the field optional in the
+	// generated types, so a value typed before the field still type-checks.
+	Blocks []string `json:"blocks,omitzero"`
 	model.IssueRouteReach
 	// IssueClaimLiveness sits beside the issue rather than inside its claim: model.IssueClaim
 	// is the payload of issue.claimed and issue.released, and a state read at this moment
 	// must never be stored in one (model.IssueClaimLiveness carries the rest of the reason).
 	model.IssueClaimLiveness
-	Progress  model.IssueProgress `json:"progress"`
-	Artifacts []artifactRead      `json:"artifacts"`
-	OpenAsks  []issueOpenAsk      `json:"open_asks"`
-	Children  []model.IssueChild  `json:"children"`
+	Progress model.IssueProgress `json:"progress"`
+	// CommentCount is how many comments the issue holds, each one its comment list (GET
+	// /api/v1/issues/{key}/comments) answers, so a reader of the issue alone knows it has comments
+	// to read. An issue with none leaves it out. It comes before the lists below, so a reader that
+	// keeps only the start of a long read still has it.
+	CommentCount int                `json:"comment_count,omitempty"`
+	Artifacts    []artifactRead     `json:"artifacts"`
+	OpenAsks     []issueOpenAsk     `json:"open_asks"`
+	Children     []model.IssueChild `json:"children"`
 	// DesignGates is the document each of this issue's Legion design-gate steps records
 	// (design_gates, PUT /api/v1/issues/{key}/design-gates), with whether the deployment's gate
 	// holds the issue's tree on that step (null where the daemon that published it said nothing
@@ -981,13 +997,16 @@ type issueDetail struct {
 // issueReadParts are the parts of an issue's read beyond its row, its progress, its external
 // links and its artifacts: GET /api/v1/issues/{key} reads every one of them
 // (everyIssueReadPart), and GET /api/v2/issues/{key} only those its include= names (the route
-// map's J3), so a read that names none costs no ask, child, gate or backlink statement.
+// map's J3), so a read that names none costs no blocks, ask, child, comment count, gate or
+// backlink statement.
 type issueReadParts struct {
-	openAsks, children, designGates, referencedByCount bool
+	blocks, openAsks, children, commentCount, designGates, referencedByCount bool
 }
 
 // everyIssueReadPart is every part of an issue's read, GET /api/v1/issues/{key}'s.
-var everyIssueReadPart = issueReadParts{openAsks: true, children: true, designGates: true, referencedByCount: true}
+var everyIssueReadPart = issueReadParts{
+	blocks: true, openAsks: true, children: true, commentCount: true, designGates: true, referencedByCount: true,
+}
 
 // issueRead is what readIssueParts read of one issue: its row with its external links, its
 // progress, its artifacts with every version, review and approval request, and each part parts
@@ -995,27 +1014,30 @@ var everyIssueReadPart = issueReadParts{openAsks: true, children: true, designGa
 type issueRead struct {
 	issue             model.Issue
 	progress          model.IssueProgress
+	blocks            []string
 	artifacts         []model.Artifact
 	asks              []model.Ask
 	replies           map[string]model.AskLastReply
 	children          []model.IssueChild
+	commentCount      int
 	designGates       []issueDesignGate
 	referencedByCount int
 }
 
 // readIssue runs getIssue's two batches, whose statements and scans are the ones the sequential
-// loaders run - loadIssueWithProgress, loadArtifacts, queryOwnerAsks with issueOpenAsksOf,
-// issueChildrenStatement with scanIssueChildren and refs.BacklinkCounts - so the two paths answer
-// the same bytes. trees is what the request asked for (wantsDisplayTrees): the display trees of
-// the documents' approval reasons and of the open asks' texts, which only the dashboard reads.
+// loaders run - loadIssueWithProgress, issueBlocksStatement, loadArtifacts, queryOwnerAsks with
+// issueOpenAsksOf, issueChildrenStatement with scanIssueChildren, issueCommentCountStatement and
+// refs.BacklinkCounts - so the two paths answer the same bytes. trees is what the request asked
+// for (wantsDisplayTrees): the display trees of the documents' approval reasons and of the open
+// asks' texts, which only the dashboard reads.
 func (s *server) readIssue(ctx context.Context, who model.Actor, key string, trees bool) (issueDetail, error) {
 	parts, err := s.readIssueParts(ctx, who, key, everyIssueReadPart)
 	if err != nil {
 		return issueDetail{}, err
 	}
 	read := issueDetail{
-		Issue: parts.issue, Progress: parts.progress, Children: parts.children, DesignGates: parts.designGates,
-		ReferencedByCount: parts.referencedByCount,
+		Issue: parts.issue, Blocks: parts.blocks, Progress: parts.progress, CommentCount: parts.commentCount,
+		Children: parts.children, DesignGates: parts.designGates, ReferencedByCount: parts.referencedByCount,
 	}
 	// The approvals are read by the second batch, so their reasons are registered after it,
 	// where the sequential loader read them after loadArtifacts. The reasons and the open asks'
@@ -1052,6 +1074,11 @@ func (s *server) readIssueParts(ctx context.Context, who model.Actor, key string
 		links = scanned
 		return err
 	})
+	if parts.blocks {
+		first.Queue(issueBlocksStatement, key).QueryRow(func(row pgx.Row) error {
+			return row.Scan(&read.blocks)
+		})
+	}
 	first.Queue(issueArtifactsStatement, key).Query(func(rows pgx.Rows) error {
 		scanned, err := collectArtifacts(rows)
 		read.artifacts = scanned
@@ -1076,6 +1103,11 @@ func (s *server) readIssueParts(ctx context.Context, who model.Actor, key string
 			scanned, err := scanIssueDesignGates(rows)
 			read.designGates = scanned
 			return err
+		})
+	}
+	if parts.commentCount {
+		first.Queue(issueCommentCountStatement, key).QueryRow(func(row pgx.Row) error {
+			return row.Scan(&read.commentCount)
 		})
 	}
 	if parts.referencedByCount {
@@ -1178,6 +1210,19 @@ var issueRowStatement = `
 // issueExternalLinksStatement reads an issue's external links, $1 its key, in the order the
 // response lists them; scanExternalLinks decodes them.
 const issueExternalLinksStatement = `select url, kind from issue_external_links where issue_key = $1 order by url`
+
+// issueBlocksStatement reads the keys of the issues an issue blocks, $1 its key: those whose
+// blocked_by names it, sorted as blocked_by is. It answers one row for any key, '{}' for none. Its
+// filter is the one issue_links_target (target_key, kind) indexes.
+const issueBlocksStatement = `
+		select coalesce(array_agg(issue_key order by issue_key), '{}')
+		from issue_links where target_key = $1 and kind = 'blocked_by'
+	`
+
+// issueCommentCountStatement counts an issue's comments, $1 its key: every comment its comment
+// list answers (loadOwnerComments with no ?artifact=), a reply to an ask and a comment on one of
+// its documents among them. It answers one row for any key, 0 for a key no issue carries.
+const issueCommentCountStatement = `select count(*) from comments where issue_key = $1`
 
 // scanIssueRow decodes one issueRowStatement row into the issue and the progress the read
 // carries beside it. ExternalLinks is left nil: issueExternalLinksStatement carries them, run

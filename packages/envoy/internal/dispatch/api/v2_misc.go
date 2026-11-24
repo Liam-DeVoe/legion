@@ -214,7 +214,9 @@ func (s *server) v2MiscRows() []routeRow {
 			Method: http.MethodGet, Pattern: "/going-actions", Auth: authAny, Versions: onlyV2,
 			Description: fmt.Sprintf("The catalogue of operations an agent may propose on Dispatch's graph, at their /api/v2 "+
 				"routes: %d of the %d tool specs agents operate Dispatch with, every one that writes but dispatch_review, "+
-				"each carried whole - its own name (action), its own description, the arguments it takes (request) with "+
+				"each carried whole - its own name (action), its own description, the arguments it takes (request), each "+
+				"with the bounds its spec states, min and max (a text's length in UTF-16 units, a list's count of items or a "+
+				"number's value, both left out where it states none), with "+
 				"an example call, the /api/v2 rows it writes in the order a call is matched against them (routes, each "+
 				"{method, pattern, body?}), and the graph relations its verbs write. A route's body is the fixed part of "+
 				"the body a call of it sends beside the action's arguments, such as {\"state\": \"resolved\"} on PUT "+
@@ -568,7 +570,8 @@ func referenceTargetsV2ETag(answer page[model.ReferenceTarget]) string {
 var searchResultsV2Description = fmt.Sprintf("Full-text search q= across issues, documents, asks, comments and "+
 	"messages: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised "+
 	"rank and the meaning leg's cosine weighted onto one scale and summed, with total, every match, and reachable, "+
-	"how many the pages can reach (each leg's best %d). A q that is one issue key in any form a person writes it - "+
+	"how many the pages can reach (each leg's best %d). A comment's, a message's and an ask's hit carries author, "+
+	"the actor that wrote it. A q that is one issue key in any form a person writes it - "+
 	"INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is "+
 	"read in, or of every project at once, all of them then heading the list in project order - puts that issue "+
 	"first. The number is read in the project the search is narrowed to where it names one, and otherwise in "+

@@ -128,7 +128,7 @@ func issuesTourSteps() []tourStep {
 				tour.ask(t, issue)
 				return tourRequest{
 					Path:  map[string]string{"key": issue.Key},
-					Query: url.Values{"include": {"open_asks,children,progress,design_gates,reach,referenced_by_count,legion"}}, As: alice,
+					Query: url.Values{"include": {"blocks,comment_count,open_asks,children,progress,design_gates,reach,referenced_by_count,legion"}}, As: alice,
 				}
 			},
 			Missing: issueMissing,

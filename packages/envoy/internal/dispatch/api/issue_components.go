@@ -8,12 +8,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
-
-const maxIssueComponents = 50
 
 // componentsInput is the decoded `components` field of an issue write. Mode "inherit" deletes
 // the issue's own row (the default state); "explicit" replaces it with IDs; "none" records a
@@ -56,8 +55,8 @@ func parseIssueComponents(raw json.RawMessage) (*componentsInput, bool, error) {
 		if input.IDs == nil || len(*input.IDs) == 0 {
 			return nil, true, errorf(apicode.ComponentsInput, "components.ids must name at least one component for mode explicit")
 		}
-		if len(*input.IDs) > maxIssueComponents {
-			return nil, true, countExceededError(apicode.ComponentsInput, "components.ids", len(*input.IDs), maxIssueComponents)
+		if len(*input.IDs) > contracts.MaxIssueComponents {
+			return nil, true, countExceededError(apicode.ComponentsInput, "components.ids", len(*input.IDs), contracts.MaxIssueComponents)
 		}
 		seen := make(map[string]struct{}, len(*input.IDs))
 		for _, raw := range *input.IDs {

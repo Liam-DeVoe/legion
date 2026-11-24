@@ -1009,7 +1009,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The catalogue of operations an agent may propose on Dispatch's graph, at their /api/v2 routes: 24 of the 41 tool specs agents operate Dispatch with, every one that writes but dispatch_review, each carried whole - its own name (action), its own description, the arguments it takes (request) with an example call, the /api/v2 rows it writes in the order a call is matched against them (routes, each {method, pattern, body?}), and the graph relations its verbs write. A route's body is the fixed part of the body a call of it sends beside the action's arguments, such as {"state": "resolved"} on PUT /api/v2/asks/{id}/state; an argument that picks between two routes of one action (dispatch_claim's release, dispatch_follow's action, dispatch_resolve_ask's kind) is sent to neither. It leaves dispatch_review out on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Every action is on one page unless the request names a limit (any of 1 or more) and an offset; {items, total, limit, offset}. */
+    /** @description The catalogue of operations an agent may propose on Dispatch's graph, at their /api/v2 routes: 24 of the 41 tool specs agents operate Dispatch with, every one that writes but dispatch_review, each carried whole - its own name (action), its own description, the arguments it takes (request), each with the bounds its spec states, min and max (a text's length in UTF-16 units, a list's count of items or a number's value, both left out where it states none), with an example call, the /api/v2 rows it writes in the order a call is matched against them (routes, each {method, pattern, body?}), and the graph relations its verbs write. A route's body is the fixed part of the body a call of it sends beside the action's arguments, such as {"state": "resolved"} on PUT /api/v2/asks/{id}/state; an argument that picks between two routes of one action (dispatch_claim's release, dispatch_follow's action, dispatch_resolve_ask's kind) is sent to neither. It leaves dispatch_review out on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Every action is on one page unless the request names a limit (any of 1 or more) and an offset; {items, total, limit, offset}. */
     get: operations["getApiV2GoingActions"];
     put?: never;
     post?: never;
@@ -1095,7 +1095,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read one issue: its own fields, and artifacts, each of its documents, files and images in creation order as GET /api/v2/issues/{key}/artifacts lists them. include= adds, each as a member of its name: progress {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none; open_asks, its open asks, oldest first, each as GET /api/v2/asks answers it; children, its direct children, each with a rollup of its subtree; design_gates, the document each design-gate step records and whether the deployment's gate holds the issue's tree on it, null where the daemon said nothing, [{step, artifact_id, holds}] in step order; reach {route_status, route_holder, route_status_reason, holder_state, last_seen, takeable_at}, where its route reaches now and what state the session holding its claim is in, read from the Envoy listener, each null where there is none or the listener did not answer; referenced_by_count, how many references to it stand; and legion {issue, project, configured, state, read, runs_revision}, its Legion state from what the sampler recorded of the daemon of its project, the body a /ws/live legion_issue view of it carries. In legion, configured is whether that project names a Legion daemon, state is null where the daemon does not record the issue and otherwise {phase, phase_since, phase_start_seen, roles, slot, waiting_line, blocked_by, waiting_on}, waiting_on in the shape GET /api/v1/issues/{key}/legion answers it, read is the newest read of the daemon {at, ok, error} or null where none was recorded, and runs_revision counts the tuples of its runs, 0 with no run, and grows with each write of a run that stores something new. A project that names no daemon is not refused: its issue answers configured false, state null and read null. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
+    /** @description Read one issue: its own fields, and artifacts, each of its documents, files and images in creation order as GET /api/v2/issues/{key}/artifacts lists them. include= adds, each as a member of its name: blocks, the keys of the issues whose blocked_by names it, sorted, [] when none, which no row of GET /api/v2/issues carries; comment_count, how many comments GET /api/v2/issues/{key}/comments lists with no artifact=, 0 when it holds none; progress {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none; open_asks, its open asks, oldest first, each as GET /api/v2/asks answers it; children, its direct children, each with a rollup of its subtree; design_gates, the document each design-gate step records and whether the deployment's gate holds the issue's tree on it, null where the daemon said nothing, [{step, artifact_id, holds}] in step order; reach {route_status, route_holder, route_status_reason, holder_state, last_seen, takeable_at}, where its route reaches now and what state the session holding its claim is in, read from the Envoy listener, each null where there is none or the listener did not answer; referenced_by_count, how many references to it stand; and legion {issue, project, configured, state, read, runs_revision}, its Legion state from what the sampler recorded of the daemon of its project, the body a /ws/live legion_issue view of it carries. In legion, configured is whether that project names a Legion daemon, state is null where the daemon does not record the issue and otherwise {phase, phase_since, phase_start_seen, roles, slot, waiting_line, blocked_by, waiting_on}, waiting_on in the shape GET /api/v1/issues/{key}/legion answers it, read is the newest read of the daemon {at, ok, error} or null where none was recorded, and runs_revision counts the tuples of its runs, 0 with no run, and grows with each write of a run that stores something new. A project that names no daemon is not refused: its issue answers configured false, state null and read null. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
     get: operations["getApiV2IssuesByKey"];
     put?: never;
     post?: never;
@@ -2255,7 +2255,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Full-text search q= across issues, documents, asks, comments and messages: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, with total, every match, and reachable, how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in the project the search is narrowed to where it names one, and otherwise in number_project, the project of the page the search was made from, which narrows nothing. A q is searched as typed, websearch_to_tsquery's AND of its words; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, and the answer's query {operators, broadened} names the forms it read and whether that second search answered. project=<key>, repeatable, narrows every leg to those projects, with no default project; status= the status of the issue a row belongs to (a row with no issue matches none); author= the actor id that wrote the item a row names; from and to, RFC3339, from inclusive and to exclusive, when that item was last written. filters echoes {project, status, author, from, to}, project [] for none. keywords_only=true runs the keyword leg alone and makes no embedding call, and its answer is not stamped degraded; degraded names why a search that wanted meaning answered by keywords alone. Ordered by score, then recency, then id. limit 1 to 50 (default 20) and offset; {items, total, limit, offset, reachable, took_ms, degraded?, query, filters}. A q under 2 characters and a from not before to are 400 INVALID_QUERY, and a q over 1000 characters 400 CAP_EXCEEDED; a project or number_project that is not a project key is 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, and a status or an author that is none is 400 INVALID_STATUS or INVALID_AUTHOR. */
+    /** @description Full-text search q= across issues, documents, asks, comments and messages: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, with total, every match, and reachable, how many the pages can reach (each leg's best 100). A comment's, a message's and an ask's hit carries author, the actor that wrote it. A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in the project the search is narrowed to where it names one, and otherwise in number_project, the project of the page the search was made from, which narrows nothing. A q is searched as typed, websearch_to_tsquery's AND of its words; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, and the answer's query {operators, broadened} names the forms it read and whether that second search answered. project=<key>, repeatable, narrows every leg to those projects, with no default project; status= the status of the issue a row belongs to (a row with no issue matches none); author= the actor id that wrote the item a row names; from and to, RFC3339, from inclusive and to exclusive, when that item was last written. filters echoes {project, status, author, from, to}, project [] for none. keywords_only=true runs the keyword leg alone and makes no embedding call, and its answer is not stamped degraded; degraded names why a search that wanted meaning answered by keywords alone. Ordered by score, then recency, then id. limit 1 to 50 (default 20) and offset; {items, total, limit, offset, reachable, took_ms, degraded?, query, filters}. A q under 2 characters and a from not before to are 400 INVALID_QUERY, and a q over 1000 characters 400 CAP_EXCEEDED; a project or number_project that is not a project key is 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, and a status or an author that is none is 400 INVALID_STATUS or INVALID_AUTHOR. */
     get: operations["getApiV2SearchResults"];
     put?: never;
     post?: never;
@@ -4754,10 +4754,12 @@ export interface components {
       artifacts: components["schemas"]["ArtifactV2"][] | null;
       assignee: null | string;
       blocked_by: string[] | null;
+      blocks?: string[];
       children?: components["schemas"]["IssueChild"][];
       claim: components["schemas"]["IssueClaim"] | null;
       /** Format: date-time */
       closed_at: null | string;
+      comment_count?: number;
       components: components["schemas"]["IssueComponents"];
       /** Format: date-time */
       created_at: string;
@@ -6314,6 +6316,7 @@ export interface components {
     SearchResult: {
       artifact?: components["schemas"]["SearchArtifactRef"];
       ask?: components["schemas"]["SearchAsk"];
+      author?: components["schemas"]["Actor"];
       block_id?: string;
       /** Format: date-time */
       deleted_at?: string;
@@ -6552,6 +6555,8 @@ export interface components {
       fields?: components["schemas"]["ToolField"][];
       item?: components["schemas"]["ToolField"];
       kind: string;
+      max?: number;
+      min?: number;
       name?: string;
       nullable?: boolean;
       required?: boolean;
@@ -10272,6 +10277,8 @@ export interface operations {
     parameters: {
       query?: {
         include?: (
+          | "blocks"
+          | "comment_count"
           | "open_asks"
           | "children"
           | "progress"

@@ -1313,9 +1313,9 @@ func searchTextProblem(searchText string) *apiError {
 }
 
 // searchAnswer is what both versions of the search route answer for parameters, once each has
-// read its own query into them: the ranked page (runSearch), what search made of the words, and
-// where each ask hit stands. Each version writes it in its own shape, with the filters it
-// narrowed by as that version names them.
+// read its own query into them: the ranked page (runSearch), what search made of the words, where
+// each ask hit stands and who wrote each comment, message and ask hit. Each version writes it in
+// its own shape, with the filters it narrowed by as that version names them.
 func (s *server) searchAnswer(r *http.Request, parameters searchParameters) (model.SearchResponse, error) {
 	response, err := s.runSearch(r.Context(), parameters)
 	if err != nil {
@@ -1326,11 +1326,15 @@ func (s *server) searchAnswer(r *http.Request, parameters searchParameters) (mod
 	// search broadened the query is no reading of the text: runSearch stamps that on the
 	// response itself, true only where the fallback ran.
 	response.Query.Operators = parameters.queryReading().operators()
-	// Where each ask hit stands is read for this route alone: the write-time suggestions
-	// (relatedSearch) rank the same bodies but never show it. TookMS counts the read.
+	// Where each ask hit stands, and who wrote each comment, message and ask hit, is read for the
+	// search routes alone: the write-time suggestions (relatedSearch) rank the same bodies but never
+	// show either. TookMS counts the reads.
 	started := time.Now()
 	reader := s.readDisplayTrees(r.Context(), parameters.trees)
 	if err := s.attachAskStates(r.Context(), s.deps.Store.Pool, response.Results, reader); err != nil {
+		return model.SearchResponse{}, err
+	}
+	if err := attachItemAuthors(r.Context(), s.deps.Store.Pool, response.Results); err != nil {
 		return model.SearchResponse{}, err
 	}
 	reader.resolve()
