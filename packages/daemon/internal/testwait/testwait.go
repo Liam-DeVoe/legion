@@ -3,10 +3,11 @@
 // own — a delivery, the transaction that answers it — and the wait is bounded by the test
 // binary's own deadline rather than a fixed span: on a loaded machine a step that is merely slow
 // is not a failure, and a condition that never holds still fails, naming what it waited for.
-// Eventually is the wait a test usually wants; WithinPolling takes a bound and a pace of its
-// own; Holds answers rather than fails, for a caller whose failure text is its own; Bounded
-// is the clamp alone, for a wait that holds the rest itself; and BinaryDeadline is the deadline
-// itself, for a TestMain, which has no test to ask.
+// Eventually is the wait a test usually wants, and Until is Eventually for a caller that keeps
+// what it read; WithinPolling takes a bound and a pace of its own; Holds answers rather than
+// fails, for a caller whose failure text is its own; Bounded is the clamp alone, for a wait that
+// holds the rest itself; and BinaryDeadline is the deadline itself, for a TestMain, which has no
+// test to ask.
 package testwait
 
 import (
@@ -24,6 +25,22 @@ const Poll = 10 * time.Millisecond
 func Eventually(t *testing.T, what string, condition func() bool) {
 	t.Helper()
 	WithinPolling(t, Bounded(t, time.Minute, time.Second), Poll, what, condition)
+}
+
+// Until waits until read reports true, and returns what it read then. The failure prints the last
+// value read. Its deadline is Eventually's.
+func Until[T any](t *testing.T, what string, read func() (T, bool)) T {
+	t.Helper()
+	var value T
+	if waitUntil(time.Now().Add(Bounded(t, time.Minute, time.Second)), Poll, func() bool {
+		var holds bool
+		value, holds = read()
+		return holds
+	}) {
+		return value
+	}
+	t.Fatalf("timed out waiting for %s; it last read %+v", what, value)
+	return value
 }
 
 // Bounded is bound, or what is left of the test binary's own deadline less margin when that is
