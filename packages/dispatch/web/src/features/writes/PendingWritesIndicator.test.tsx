@@ -744,7 +744,7 @@ for (const press of ["Stop trying", "Retry", "Discard"] as const) {
                 .getByText(/CORE-3/)
                 .closest("li") as HTMLElement
             ).getByRole("button", { name: "Retry" })
-          : document.getElementById("main-content");
+          : (document.getElementById("main-content") as HTMLElement);
         expect(landed).toHaveFocus();
         expect(moves.focused.slice(asked)).toEqual([
           { options: { preventScroll: true }, target: landed },
