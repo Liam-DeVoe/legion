@@ -263,8 +263,9 @@ func (r *Runner) Report(t testing.TB, name string, before, after Statement) {
 }
 
 // run runs f under name as a subtest of t, with go test's own Run for either kind of caller: the
-// statement timings of internal/dispatch/docs and refs are tests, and internal/dispatch/api's are
-// a benchmark, a tool. Either way -v prints each measurement by name.
+// TestStatementTimings of internal/dispatch/docs and refs are tests, and the
+// BenchmarkStatementTimings of internal/dispatch/api and refs are benchmarks, tools. Either way -v
+// prints each measurement by name.
 func run(t testing.TB, name string, f func(testing.TB)) {
 	t.Helper()
 	switch caller := t.(type) {

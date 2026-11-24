@@ -22,9 +22,14 @@ import (
 
 // TestStatementTimings measures this package's changed statements on the seeded measurement
 // database (benchtime), which DISPATCH_BENCH_DATABASE_URL names. CI sets that variable in one
-// step, envoy-go's statement-timing step, which seeds the database and runs this test by name;
-// envoy-go's unit step, which runs this package, skips it by name. api/search_bench_test.go and
-// api/related_recall_test.go are gated the same way.
+// step, envoy-go's statement-timing step, which seeds the database at --scale 0.01 and runs this
+// test by name; envoy-go's unit step, which runs this package, skips it by name.
+// api/search_bench_test.go and api/related_recall_test.go are gated the same way. The test
+// measures the pairs that hold at that scale, the two backlink counts and refs.Edges' in reads,
+// and stops there; every pair below, the references read's, the loaders', the index pairs and the
+// probe fixture's among them, is measured by BenchmarkStatementTimings, a tool, on a seed of
+// --scale 1, where the rest were sized (statement_timing_bench_test.go says why they do not hold
+// at 0.01).
 //
 // A pair of one text with itself measures no change and passes or fails by chance, so a read whose
 // text is main's is no pair of main's text against the head's: refs.Edges' out reads and
@@ -141,6 +146,13 @@ import (
 // a connection of its own, since the runner's connection is for reading (benchtime.Runner.Conn);
 // it is committed and analyzed for its pairs, and t.Cleanup deletes it.
 func TestStatementTimings(t *testing.T) {
+	statementTimings(t, false)
+}
+
+// statementTimings measures the pairs TestStatementTimings describes: with scaleOne false, the
+// ones that hold on the seed CI writes, TestStatementTimings' share, and with it true every pair,
+// BenchmarkStatementTimings' share.
+func statementTimings(t testing.TB, scaleOne bool) {
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	subjects := runner.Subjects()
 
@@ -220,6 +232,10 @@ func TestStatementTimings(t *testing.T) {
 		runner.Pair(t, read.name, strictSides[index][0], strictSides[index][1])
 	}
 	runner.PairWithin(t, referencedBy.name, []benchtime.Statement{referencedByBefore}, []benchtime.Statement{referencedByAfter})
+	if !scaleOne {
+		// Every pair past this one holds only at --scale 1 (BenchmarkStatementTimings).
+		return
+	}
 
 	// The references read over its two subjects, and the four loaders it keys over the lists the
 	// graph read passes them. Every read is recorded, its subject or its list logged, before the
@@ -289,7 +305,7 @@ func TestStatementTimings(t *testing.T) {
 // backlinks for in one call. The issue is read from the database so the measurement follows a
 // re-seed, and a database with no ask at all fails the run rather than measuring a count over an
 // empty array, which answers no row whatever the statement reads.
-func askPageSubject(t *testing.T, runner *benchtime.Runner) []string {
+func askPageSubject(t testing.TB, runner *benchtime.Runner) []string {
 	t.Helper()
 	var issueKey string
 	if err := runner.Conn().QueryRow(context.Background(), `
@@ -318,7 +334,7 @@ func askPageSubject(t *testing.T, runner *benchtime.Runner) []string {
 // the count is 0 or the statement answers no row: a read of a node nothing of that kind ends at
 // measures reads that answer nothing, and the seed then holds no subject of the kind the pair is
 // about.
-func timingSubject(t *testing.T, runner *benchtime.Runner, what, counted, statement string, args ...any) string {
+func timingSubject(t testing.TB, runner *benchtime.Runner, what, counted, statement string, args ...any) string {
 	t.Helper()
 	var id string
 	var count int64
@@ -329,7 +345,7 @@ func timingSubject(t *testing.T, runner *benchtime.Runner, what, counted, statem
 	if count == 0 {
 		t.Fatalf("%s: 0 %s, so a pair over it measures reads that answer nothing", what, counted)
 	}
-	t.Logf("timing subject, %s: %s, %d %s", what, id, count, counted)
+	benchtime.Logf(t, "timing subject, %s: %s, %d %s", what, id, count, counted)
 	return id
 }
 
@@ -341,7 +357,7 @@ func timingSubject(t *testing.T, runner *benchtime.Runner, what, counted, statem
 // current, and the replies whose replies_to_block names the block (comments for a comment's
 // block or an ask's part, told apart by the prefix). Those are the rows the keyed arm reads, so
 // the subject is the item that arm reads most of.
-func itemBlocksSubject(t *testing.T, runner *benchtime.Runner, kind ItemKind) string {
+func itemBlocksSubject(t testing.TB, runner *benchtime.Runner, kind ItemKind) string {
 	t.Helper()
 	tables, err := kind.tables()
 	if err != nil {
@@ -376,7 +392,7 @@ type timedEdgesRead struct {
 // readEdgeRows sends for read.query at the head, as somebody who proves no author, recorded as it
 // sent it, text and arguments. The run fails unless the head's statement binds read.headArgs,
 // since sides that read different nodes measure no change of text.
-func (read timedEdgesRead) sides(t *testing.T, runner *benchtime.Runner) (benchtime.Statement, benchtime.Statement) {
+func (read timedEdgesRead) sides(t testing.TB, runner *benchtime.Runner) (benchtime.Statement, benchtime.Statement) {
 	t.Helper()
 	recorder := &statementRecorder{Queryer: runner.Conn()}
 	if _, err := readEdgeRows(context.Background(), recorder, model.Actor{}, read.query); err != nil {
@@ -448,7 +464,7 @@ type closureRead struct {
 // in (linksIntoIssue), the links out and in the read answers, and the rows mainClosureQuery
 // answers for it. It fails unless the read sent its out statement and then its in statement
 // first, which the out and the in measurements read alone.
-func readClosure(t *testing.T, runner *benchtime.Runner, name, issue string) closureRead {
+func readClosure(t testing.TB, runner *benchtime.Runner, name, issue string) closureRead {
 	t.Helper()
 	ctx := context.Background()
 	var linksIn int64
@@ -469,7 +485,7 @@ func readClosure(t *testing.T, runner *benchtime.Runner, name, issue string) clo
 		`select count(*), count(*) filter (where m.depth = 1) from (`+mainClosureQuery+`) m`, issue).Scan(&mainRows, &depthOne); err != nil {
 		t.Fatalf("%s: count the rows mainClosureQuery answers for %s: %v", name, issue, err)
 	}
-	t.Logf("closure subject, %s: %s, %d link rows into it and its own content; refs.Closure sent %d statements and answered %d links out and %d linked from; mainClosureQuery answers %d rows, %d of them at depth 1",
+	benchtime.Logf(t, "closure subject, %s: %s, %d link rows into it and its own content; refs.Closure sent %d statements and answered %d links out and %d linked from; mainClosureQuery answers %d rows, %d of them at depth 1",
 		name, issue, linksIn, len(sent), len(references.Links), len(references.LinkedFrom), mainRows, depthOne)
 	return closureRead{name: name, issue: issue, sent: sent}
 }
@@ -478,7 +494,7 @@ func readClosure(t *testing.T, runner *benchtime.Runner, name, issue string) clo
 // protocol): the whole read against main's statement for the same issue, every statement Closure
 // sent each after closureBudgetStatement, as the route sends them; the out statement alone
 // against the same; and the in statement alone, one side with no bound.
-func (read closureRead) measure(t *testing.T, runner *benchtime.Runner) {
+func (read closureRead) measure(t testing.TB, runner *benchtime.Runner) {
 	t.Helper()
 	main := benchtime.Statement{SQL: mainClosureQuery, Args: []any{read.issue}}
 	whole := make([]benchtime.Statement, 0, 2*len(read.sent))
@@ -502,7 +518,7 @@ type timedGraphRead struct {
 
 // recordGraphRead reads query's edges through a statementRecorder on the runner's connection, as
 // a graph read of the seed reads them, for somebody who proves no author.
-func recordGraphRead(t *testing.T, runner *benchtime.Runner, name string, query Query) timedGraphRead {
+func recordGraphRead(t testing.TB, runner *benchtime.Runner, name string, query Query) timedGraphRead {
 	t.Helper()
 	recorder := &statementRecorder{Queryer: runner.Conn()}
 	if _, err := Edges(context.Background(), recorder, model.Actor{}, query); err != nil {
@@ -546,7 +562,7 @@ var (
 // statement is the one statement loader sends for ids, read as somebody who proves no author,
 // recorded as it sent it. It fails unless the loader sends one statement that binds the ids and
 // the acting credential as loader.bound names them.
-func (loader timedLoader) statement(t *testing.T, runner *benchtime.Runner, ids []string) recordedStatement {
+func (loader timedLoader) statement(t testing.TB, runner *benchtime.Runner, ids []string) recordedStatement {
 	t.Helper()
 	recorder := &statementRecorder{Queryer: runner.Conn()}
 	if err := loader.load(context.Background(), recorder, model.Actor{}, loader.kind, false, ids, map[[2]string]resolvedNode{}); err != nil {
@@ -574,7 +590,7 @@ type loaderList struct {
 // statements read sent by the text loader sends, as the one list of ids among its arguments. It
 // logs how many, and fails naming the read and the loader when the read passed the loader no id,
 // since the seed then holds no list a graph read passes it.
-func (loader timedLoader) passedBy(t *testing.T, runner *benchtime.Runner, read timedGraphRead) loaderList {
+func (loader timedLoader) passedBy(t testing.TB, runner *benchtime.Runner, read timedGraphRead) loaderList {
 	t.Helper()
 	text := loader.statement(t, runner, nil).sql
 	for _, statement := range read.sent {
@@ -583,7 +599,7 @@ func (loader timedLoader) passedBy(t *testing.T, runner *benchtime.Runner, read 
 		}
 		for _, arg := range statement.args {
 			if ids, _ := arg.([]string); len(ids) > 0 {
-				t.Logf("loader list, %s (refs.Edges' %s read of %s %s): %s passed %s",
+				benchtime.Logf(t, "loader list, %s (refs.Edges' %s read of %s %s): %s passed %s",
 					read.name, read.query.Direction, read.query.Kind, read.query.ID, loader.name, idCount(len(ids)))
 				return loaderList{loader: loader, read: read.name, ids: ids}
 			}
@@ -597,7 +613,7 @@ func (loader timedLoader) passedBy(t *testing.T, runner *benchtime.Runner, read 
 // measure runs list's three pairs: the loader at 1 id, the first of the list, as refs.Node passes
 // one; at the most ids refs.TargetNames passes, the list first and then the rows of the loader's
 // table in md5 order of their ids (filled); and at the whole list.
-func (list loaderList) measure(t *testing.T, runner *benchtime.Runner) {
+func (list loaderList) measure(t testing.TB, runner *benchtime.Runner) {
 	t.Helper()
 	list.pair(t, runner, "the first of "+list.read, list.ids[:1])
 	list.pair(t, runner, list.read+" first, then "+list.loader.table+" in md5 order",
@@ -608,7 +624,7 @@ func (list loaderList) measure(t *testing.T, runner *benchtime.Runner) {
 // filled is the first size ids of list, and where the list holds fewer, the rows of the loader's
 // table after them that the list does not hold, in md5 order of their ids, as the earlier
 // measurement filled its lists. It fails when the table holds too few such rows to reach size.
-func (list loaderList) filled(t *testing.T, runner *benchtime.Runner, size int) []string {
+func (list loaderList) filled(t testing.TB, runner *benchtime.Runner, size int) []string {
 	t.Helper()
 	if len(list.ids) >= size {
 		return list.ids[:size]
@@ -635,7 +651,7 @@ func (list loaderList) filled(t *testing.T, runner *benchtime.Runner, size int) 
 // recorded for the same ids, named by the loader, the count and what, which says which list ids
 // is. An empty list fails it, naming the loader: a loader over no id reads nothing whatever its
 // text, the fastest reading there is.
-func (list loaderList) pair(t *testing.T, runner *benchtime.Runner, what string, ids []string) {
+func (list loaderList) pair(t testing.TB, runner *benchtime.Runner, what string, ids []string) {
 	t.Helper()
 	name := list.loader.name + " over " + idCount(len(ids)) + ": " + what
 	if len(ids) == 0 {
@@ -704,7 +720,7 @@ var headsTargetIndex = []string{
 // planner may then not use it in that transaction: a side under that Setup would time a
 // sequential read, or another index, in its place, and read as targetIndex when it is not. The
 // failure names targetIndex's indcheckxmin and its value, which says whether that is why.
-func requireTargetIndexRead(t *testing.T, runner *benchtime.Runner, setup []string, targetIndex, issue string, probe bool) {
+func requireTargetIndexRead(t testing.TB, runner *benchtime.Runner, setup []string, targetIndex, issue string, probe bool) {
 	t.Helper()
 	ctx := context.Background()
 	under := "the Setup `" + strings.Join(setup, "; ") + "`"
@@ -771,7 +787,7 @@ func requireTargetIndexRead(t *testing.T, runner *benchtime.Runner, setup []stri
 		t.Fatalf("under %s, the in read of %s: %s; %s's indcheckxmin is %t, and a pair under that Setup would time another read in its place. The analyzed plan's scans of block_refs:\n%s",
 			under, issue, failure, targetIndex, checkXmin, strings.Join(described, "\n"))
 	}
-	t.Logf("under %s, the in read of %s: %s (%s's indcheckxmin is %t). The analyzed plan's scans of block_refs:\n%s",
+	benchtime.Logf(t, "under %s, the in read of %s: %s (%s's indcheckxmin is %t). The analyzed plan's scans of block_refs:\n%s",
 		under, issue, judged, targetIndex, checkXmin, strings.Join(described, "\n"))
 }
 
@@ -807,7 +823,7 @@ func (scan blockRefsScan) String() string {
 // of it with its Index Cond and Filter (explaintest.Nodes, since an IndexScan carries no Filter,
 // and block_refs_to's probe names artifact_id in its Filter alone), and each Bitmap Heap Scan of
 // it with its bitmap (explaintest.BitmapHeapScans).
-func blockRefsScans(t *testing.T, plan json.RawMessage) []blockRefsScan {
+func blockRefsScans(t testing.TB, plan json.RawMessage) []blockRefsScan {
 	t.Helper()
 	var scans []blockRefsScan
 	for _, node := range explaintest.Nodes(t, plan) {
@@ -886,7 +902,7 @@ const probeFixtureAnalyze = `analyze projects, issues, artifacts, refs, block_re
 // it first removes what an interrupted run left, commits the fixture in one transaction, analyzes
 // the tables it wrote, and holds them to the rows round 12 wrote. t.Cleanup removes it
 // (removeProbeFixture) and then analyzes the tables again (probeFixtureAnalyze).
-func writeProbeFixture(t *testing.T) probeFixture {
+func writeProbeFixture(t testing.TB) probeFixture {
 	t.Helper()
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, os.Getenv(benchtime.DatabaseURLEnv))
@@ -931,7 +947,7 @@ func writeProbeFixture(t *testing.T) probeFixture {
 		t.Fatalf("the probe fixture holds %d mentions of %s in refs and %d in block_refs; want %d and %d",
 			mentions, fixture.issue, blockLinks, probeFixtureDocuments, 2*probeFixtureDocuments)
 	}
-	t.Logf("probe fixture: %s, which %d documents mention in refs and %d of their blocks in block_refs; the first of them is %s (%s)",
+	benchtime.Logf(t, "probe fixture: %s, which %d documents mention in refs and %d of their blocks in block_refs; the first of them is %s (%s)",
 		fixture.issue, mentions, blockLinks, fixture.documentRefKey, fixture.documentID)
 	return fixture
 }
@@ -941,7 +957,7 @@ func writeProbeFixture(t *testing.T) probeFixture {
 // analyzes after the removal. It reports each statement that fails and goes on with the rest,
 // since it also runs as a cleanup, where a removal that stopped at its first error would leave
 // the others behind.
-func removeProbeFixture(t *testing.T, conn *pgx.Conn) {
+func removeProbeFixture(t testing.TB, conn *pgx.Conn) {
 	t.Helper()
 	for _, statement := range probeFixtureRemovals {
 		if _, err := conn.Exec(context.Background(), statement); err != nil {
