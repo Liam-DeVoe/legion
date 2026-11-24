@@ -151,6 +151,48 @@ const dispatchFrameSchemaJSON = `{
         "thread_target": {
           "type": "string"
         },
+        "edited_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deleted_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deleted_by": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "author": {
           "type": "object",
           "properties": {
@@ -185,6 +227,81 @@ const dispatchFrameSchemaJSON = `{
                 },
                 "removed": {
                   "type": "boolean"
+                },
+                "edited_at": {
+                  "type": "string"
+                },
+                "deleted_at": {
+                  "type": "string"
+                },
+                "deleted_by": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "act": {
+                      "type": "object",
+                      "properties": {
+                        "session": {
+                          "type": "string"
+                        },
+                        "token_id": {
+                          "type": "string"
+                        },
+                        "token_name": {
+                          "type": "string"
+                        },
+                        "scopes": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "origin": {
+                      "readOnly": true,
+                      "type": "object",
+                      "properties": {
+                        "host": {
+                          "type": "string"
+                        },
+                        "machine": {
+                          "type": "string"
+                        },
+                        "cwd": {
+                          "type": "string"
+                        },
+                        "tmux": {
+                          "type": "string"
+                        },
+                        "pane": {
+                          "type": "string"
+                        },
+                        "session_title": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "owner": {
+                      "type": "string"
+                    },
+                    "service": {
+                      "type": "string"
+                    },
+                    "project": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ]
                 }
               },
               "required": [
@@ -410,6 +527,38 @@ const dispatchFrameSchemaJSON = `{
         "created_at": {
           "type": "string"
         },
+        "deleted_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deleted_by": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "mentions": {
           "type": "array",
           "items": {
@@ -568,6 +717,81 @@ const dispatchFrameSchemaJSON = `{
                 },
                 "removed": {
                   "type": "boolean"
+                },
+                "edited_at": {
+                  "type": "string"
+                },
+                "deleted_at": {
+                  "type": "string"
+                },
+                "deleted_by": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "act": {
+                      "type": "object",
+                      "properties": {
+                        "session": {
+                          "type": "string"
+                        },
+                        "token_id": {
+                          "type": "string"
+                        },
+                        "token_name": {
+                          "type": "string"
+                        },
+                        "scopes": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "origin": {
+                      "readOnly": true,
+                      "type": "object",
+                      "properties": {
+                        "host": {
+                          "type": "string"
+                        },
+                        "machine": {
+                          "type": "string"
+                        },
+                        "cwd": {
+                          "type": "string"
+                        },
+                        "tmux": {
+                          "type": "string"
+                        },
+                        "pane": {
+                          "type": "string"
+                        },
+                        "session_title": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "owner": {
+                      "type": "string"
+                    },
+                    "service": {
+                      "type": "string"
+                    },
+                    "project": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ]
                 }
               },
               "required": [

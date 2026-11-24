@@ -74,8 +74,10 @@ func readShape(raw json.RawMessage) (*jsonShape, error) {
 	for keyword, value := range node {
 		var err error
 		switch keyword {
-		case "$schema", "$comment", "description", "title", "format":
-			// format is checked by the pattern zod writes beside it; one without a pattern is refused below.
+		case "$schema", "$comment", "description", "title", "readOnly", "format":
+			// Annotations, which JSON Schema validates nothing by (main's #3512 marks a deleted
+			// item's origin readOnly); format is checked by the pattern zod writes beside it, and
+			// one without a pattern is refused below.
 		case "type":
 			var one string
 			if json.Unmarshal(value, &one) == nil {

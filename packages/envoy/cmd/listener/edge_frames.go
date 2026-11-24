@@ -431,14 +431,15 @@ func dispatchEventProject(event map[string]json.RawMessage) (project string, nam
 // directMessageEventKeys and directMessageKeys are the keys a direct message's delivery frame may
 // hold in its event and in the event's payload (dispatchDirectMessage): the event's header, and the
 // message - its id, its sender, its body, its target, the thread it answers in the same
-// conversation, the broadcast it is a copy of, its time and its attempts - which is all a person's
-// message to a session in its own conversation carries (message_delivery.go builds the frame from
-// messageEvent and messageReplyThread.payload). A key of neither list, such as an issue, a document,
-// a project, references or thread logins, makes a frame no direct message.
+// conversation, the broadcast it is a copy of, its times, its edit and delete marks (main's #3512)
+// and its attempts - which is all a person's message to a session in its own conversation carries
+// (message_delivery.go builds the frame from messageEvent and messageReplyThread.payload). A key of
+// neither list, such as an issue, a document, a project, references or thread logins, makes a
+// frame no direct message.
 var (
 	directMessageEventKeys = []string{"id", "issue_key", "artifact_id", "project", "seq", "type", "actor", "notify", "created_at", "payload"}
 	directMessageKeys      = []string{"id", "issue_key", "author", "body", "target", "in_reply_to", "broadcast_id",
-		"created_at", "deliveries", "reply_block", "body_truncated", "reply_body", "thread_target"}
+		"created_at", "edited_at", "deleted_at", "deleted_by", "deliveries", "reply_block", "body_truncated", "reply_body", "thread_target"}
 )
 
 // dispatchDirectMessage reports whether event, the event of a targeted Dispatch payload whose
