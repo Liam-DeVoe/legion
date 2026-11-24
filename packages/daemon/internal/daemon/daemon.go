@@ -554,12 +554,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		st.Close()
 		return err
 	}
-	// The Sandbox runtime's launches read the update round over a pod they would keep, and tell
-	// what a launch's own replacement of an issue pod took, through the supervision, which exists
-	// only now; the runtime was built inside openSupervision before it (launchRounds). No machine
-	// exists yet, so no launch has asked.
+	// The Sandbox runtime's launches read the update round over a pod they would keep, record what
+	// a launch's own replacement of an issue pod is about to take, and tell what it took, through
+	// the supervision, which exists only now; the runtime was built inside openSupervision before
+	// it (launchRounds). No machine exists yet, so no launch has asked.
 	if plan.launchRounds != nil {
-		plan.launchRounds.bind(s.roundPodEndsAtLaunch, s.tellLaunchTook)
+		plan.launchRounds.bind(s.roundPodEndsAtLaunch, s.recordLaunchTakes, s.tellLaunchTook)
 	}
 	if plan.probe != nil {
 		report, err := plan.probe(ctx, s.runtime)

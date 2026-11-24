@@ -2,11 +2,14 @@ package daemon
 
 // R7 of dispatch://INFRA-3271 (verification v15's c-forced-replacement-told), the daemon's side of a
 // launch's own replacement of an issue pod: the Sandbox runtime hands the daemon what the
-// replacement took (sandbox.Options.LaunchTook, runtime.TakenPod; internal/runtime/sandbox's
+// replacement is about to take before it acts (sandbox.Options.LaunchTakes) and what it took once
+// it has acted (sandbox.Options.LaunchTook, runtime.TakenPod; internal/runtime/sandbox's
 // launch_took_test.go holds each kind of replacement to the hand-off), and the daemon tells the
 // issue's architect once, by a workspace-taken notice that names each commit the read found, or
-// says that no read could be made. A read that found nothing tells nobody. The hand-off goes
-// through the holder the boot binds (launchRounds), as the runtime's does.
+// says that no read could be made. A read that found nothing tells nobody and records nothing. The
+// hand-off here goes through a holder bound as the boot binds plan.launchRounds (daemon.run), to
+// the same hooks of the supervision; the record between the two hooks is the replacement's row
+// (pod_replacements), gone once the notice is queued.
 
 import (
 	"errors"
@@ -36,9 +39,19 @@ func TestALaunchsOwnReplacementTellsTheArchitectWhatItTook(t *testing.T) {
 			t.Parallel()
 			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 			holder := &launchRounds{}
-			holder.bind(rig.s.roundPodEndsAtLaunch, rig.s.tellLaunchTook)
-			holder.took(rig.ctx, runtime.TakenPod{Claim: rig.tokens[claim.RoleImplementer], Issue: podUpdateIssue, PodUID: podUpdatePod,
-				Why: "a facet of the pod that is fixed for its life moved, so the launching role cannot start in that pod", Work: tc.work, Err: tc.err})
+			holder.bind(rig.s.roundPodEndsAtLaunch, rig.s.recordLaunchTakes, rig.s.tellLaunchTook)
+			taken := runtime.TakenPod{Claim: rig.tokens[claim.RoleImplementer], Issue: podUpdateIssue, PodUID: podUpdatePod,
+				Why: "a facet of the pod that is fixed for its life moved, so the launching role cannot start in that pod", Work: tc.work, Err: tc.err}
+			if err := holder.takes(rig.ctx, taken); err != nil {
+				t.Fatalf("the record of what the launch takes: %v", err)
+			}
+			if records := rig.replacementRecords(); records != tc.notes {
+				t.Fatalf("the daemon holds %d records of the launch's replacement before it acts, want %d", records, tc.notes)
+			}
+			holder.took(rig.ctx, taken)
+			if records := rig.replacementRecords(); records != 0 {
+				t.Fatalf("the daemon holds %d records of the launch's replacement once its notice is queued, want none", records)
+			}
 			told := rig.architectNotices(record.WorkspaceTakenNotice)
 			if len(told) != tc.notes {
 				t.Fatalf("the architect was told %+v, want %d workspace-taken notice(s)", told, tc.notes)
@@ -48,4 +61,15 @@ func TestALaunchsOwnReplacementTellsTheArchitectWhatItTook(t *testing.T) {
 			}
 		})
 	}
+}
+
+// replacementRecords is how many records of a replacement of an issue pod the store holds
+// (pod_replacements).
+func (r *podUpdateRig) replacementRecords() int {
+	r.t.Helper()
+	var n int
+	if err := r.pool.QueryRow(r.ctx, `select count(*) from pod_replacements`).Scan(&n); err != nil {
+		r.t.Fatalf("count the records of pod replacements: %v", err)
+	}
+	return n
 }

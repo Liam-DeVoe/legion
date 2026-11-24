@@ -208,6 +208,7 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	p.launchRounds = &launchRounds{}
 	opts := reads.opts
 	opts.RoundPodEnds = p.launchRounds.ends
+	opts.LaunchTakes = p.launchRounds.takes
 	opts.LaunchTook = p.launchRounds.took
 	p.newRuntime = sandboxRuntime(reads.client, opts, p.repositories.servesRepository, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left, o.githubAPI,
 		p.memoryGuardKills, p.volumeReports)
@@ -875,24 +876,27 @@ func volumeMissing(missing []shimwire.LauncherVolumeMissing) []record.VolumeMiss
 }
 
 // launchRounds is the seam between the Kubernetes runtime, which openSupervision builds before the
-// supervision exists, and two readings of the supervision's that a launch asks under the pod's
-// launch turn: the update round over a pod a launch would keep (supervision.roundPodEndsAtLaunch,
-// dispatch://INFRA-4109 R7), and the telling of what a launch's own replacement of an issue pod
-// took (supervision.tellLaunchTook, R7 of dispatch://INFRA-3271). prepareSandbox makes one and
-// hands its ends and its took to the runtime (sandbox.Options.RoundPodEnds, LaunchTook), and the
-// boot fills it the moment the supervision is open (plan.launchRounds, daemon.run).
+// supervision exists, and three hooks of the supervision's that a launch calls under the pod's
+// launch turn: the reading of the update round over a pod a launch would keep
+// (supervision.roundPodEndsAtLaunch, dispatch://INFRA-4109 R7), the record of what a launch's own
+// replacement of an issue pod is about to take (supervision.recordLaunchTakes), and the telling of
+// what it took (supervision.tellLaunchTook, R7 of dispatch://INFRA-3271). prepareSandbox makes one
+// and hands its ends, its takes and its took to the runtime (sandbox.Options.RoundPodEnds,
+// LaunchTakes, LaunchTook), and the boot fills it the moment the supervision is open
+// (plan.launchRounds, daemon.run).
 //
 // It is filled once, in the boot's own goroutine, before any claim's machine exists and so before
 // any launch can ask: there is nothing to lock, and nothing ever replaces what was filled.
 type launchRounds struct {
-	read runtime.RoundPodEnds
-	tell runtime.LaunchTook
+	read   runtime.RoundPodEnds
+	record runtime.LaunchTakes
+	tell   runtime.LaunchTook
 }
 
-// bind gives the holder the supervision's reading of the round and its telling of what a launch
-// took.
-func (l *launchRounds) bind(read runtime.RoundPodEnds, tell runtime.LaunchTook) {
-	l.read, l.tell = read, tell
+// bind gives the holder the supervision's reading of the round, its record of what a launch is
+// about to take, and its telling of what a launch took.
+func (l *launchRounds) bind(read runtime.RoundPodEnds, record runtime.LaunchTakes, tell runtime.LaunchTook) {
+	l.read, l.record, l.tell = read, record, tell
 }
 
 // ends is the runtime's RoundPodEnds: the supervision's reading of the round over podUID. A holder
@@ -904,6 +908,15 @@ func (l *launchRounds) ends(ctx context.Context, token claim.Token, podUID strin
 		return false, nil
 	}
 	return l.read(ctx, token, podUID)
+}
+
+// takes is the runtime's LaunchTakes: the supervision's record of what a launch's own replacement
+// is about to take. A holder nothing filled records nothing and refuses nothing.
+func (l *launchRounds) takes(ctx context.Context, taken runtime.TakenPod) error {
+	if l.record == nil {
+		return nil
+	}
+	return l.record(ctx, taken)
 }
 
 // took is the runtime's LaunchTook: the supervision's telling of what a launch's own replacement

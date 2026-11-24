@@ -137,12 +137,29 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 		}
 		return
 	}
+	// The records of replacements a call or a daemon left standing are finished first, from the
+	// read made before each, so the walk reads each round as that finish leaves it (podreplace.go).
+	// An issue whose round's record still stands is decided nothing of at this sweep, and a store
+	// that cannot be read decides nothing at all: a reading nobody took may not delete a disk.
+	unfinished, err := s.finishReplacements(ctx, claims)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Error("supervise: read the records of the replacements of issue pods; no update round is decided this sweep",
+				"error", err)
+		}
+		return
+	}
 	sweep := s.beginPodUpdateSweep(now, byIssue)
 	s.forgetLaunchRounds(byIssue)
 	var replacements []podReplacement
 	for _, issue := range issues {
 		if ctx.Err() != nil {
 			return
+		}
+		if unfinished[issue] {
+			s.log.Info("supervise: the record of a replacement of this issue's pod stands unfinished; no update round of the issue is decided this sweep",
+				"issue", issue)
+			continue
 		}
 		if replace := s.reconcileIssuePodUpdate(ctx, issue, byIssue[issue], &sweep, s.roundClockAt(now, holds[issue])); replace != nil {
 			replacements = append(replacements, *replace)
@@ -1135,6 +1152,14 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 		s.keepPodForRound(ctx, issue, round, pod, reasons, read, live)
 		return
 	}
+	// The replacement's record, written in its last word before the suspension (recordedDue) and
+	// finished with the architect's notice once the replacement is made (roundReplaced).
+	recorded, err := roundRecordOf(read, reasons)
+	if err != nil {
+		s.log.Error("supervise: encode the record of this update round's replacement; nothing was replaced and the round stays open",
+			"issue", issue, "round", round, "pod", pod, "error", err)
+		return
+	}
 	limited, done := context.WithTimeout(ctx, s.plan.orphanSweep)
 	defer done()
 	// ended is what the last word read of the round's end under the launch turn, which is the
@@ -1143,29 +1168,35 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 	// Sandbox that is absent or suspended, or whose pod is no longer the locator's, and replaces
 	// nothing there.
 	var ended roundEnd
-	if err := s.runtime.ReplacePod(limited, reading.process, s.replacementDue(issue, round, read.at, &ended)); err != nil {
+	if err := s.runtime.ReplacePod(limited, reading.process, s.recordedDue(issue, pod, recorded, s.replacementDue(issue, round, read.at, &ended))); err != nil {
 		if errors.Is(err, errReplacementNotDue) {
 			s.log.Info("supervise: this update round's replacement was no longer due when its pod's launch turn came; nothing was replaced and the round stays open",
 				"issue", issue, "round", round, "pod", pod, "reason", err)
 			return
 		}
 		if ctx.Err() == nil {
-			s.log.Error("supervise: replace the pod of a finished update round; retrying at the next sweep",
+			// The suspension may have landed before the call failed: the record written in the
+			// last word stands, and the next sweep finishes the replacement from it where the
+			// runtime shows the pod taken, or forgets it (finishReplacements).
+			s.log.Error("supervise: replace the pod of a finished update round; retrying at the next sweep, which finishes the replacement from its record where its suspension landed",
 				"issue", issue, "round", round, "pod", pod, "error", err)
 			s.tellLateRound(ctx, issue, live, round, pod, reasons, refusedReason(err), clock)
 		}
 		return
 	}
-	s.roundReplaced(ctx, issue, round, pod, reasons, ended, notWaitedFor(live, round, clock), read, live)
+	s.roundReplaced(ctx, issue, round, pod, reasons, ended, notWaitedFor(live, round, clock), read, live, recorded)
 }
 
 // roundReplaced is what each of a round's own replacements owes once it is made: through a process
-// (replacePodForRound), by issue (replaceIssuePodForRound) or at a launch (endRoundALaunchReplaced).
+// (replacePodForRound), by issue (replaceIssuePodForRound), at a launch (endRoundALaunchReplaced),
+// or one whose call failed or whose daemon stopped once its suspension landed (finishReplacements).
 // It logs the replacement's line, and the bound's own line where the bound let the replacement
 // through (ended, what the last word or the launch read of the round's end under the pod's launch
-// turn), tells the issue's architect what the replacement took where the read before it found
-// work or failed (tellWorkspaceTaken), and ends the round on the claims of members
-// (endPodUpdates).
+// turn), finishes the replacement's record, recorded, telling the issue's architect what the
+// replacement took where the read before it found work or failed (finishReplacement), and ends the
+// round on the claims of members (endPodUpdates). The round ends whether or not the store took the
+// notice: the record stands until it does, and a later sweep finishes it (GPT-6.1 Sol's point 2).
+// It answers whether the record is finished.
 //
 // read is what the read of the workspace before the replacement found (workspaceRead), and read.by
 // is who made the replacement (roundReplacer). The line of a replacement of a pod no role process
@@ -1178,7 +1209,7 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 // once the replacement is made, which may have marked the volume for a reset), the line carries
 // keptVolume and the notice says the work is on that volume.
 func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reasons string, ended roundEnd,
-	named []supervise.Claim, read workspaceRead, members []supervise.Claim) {
+	named []supervise.Claim, read workspaceRead, members []supervise.Claim, recorded []byte) bool {
 	bounded := ended.bounded()
 	kept := s.roundKeptVolume(issue, members, round)
 	line := []any{"issue", issue, "round", round, "pod", pod, "atTheBound", bounded}
@@ -1197,10 +1228,13 @@ func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reas
 				"answered", namesOf(ended.answered), "unanswered", namesOf(ended.unanswered), "working", ended.working},
 				ended.background.attributes()...)...)
 	}
+	var reason string
 	if !read.clean() {
-		s.tellWorkspaceTaken(ctx, issue, round, pod, reasons, named, read, kept)
+		reason = workspaceTakenMessage(issue, round, pod, reasons, named, read.work, read.err, kept)
 	}
+	finished := s.finishReplacement(ctx, issue, pod, recorded, reason, "round", round)
 	s.endPodUpdates(issue, members, round)
+	return finished
 }
 
 // tellIssueOfRound writes body, a message round owes the issue, on the issue, and logs what came of
@@ -1753,13 +1787,20 @@ func (s *supervision) replaceIssuePodForRound(ctx context.Context, replace podRe
 		s.keepPodForRound(ctx, issue, round, pod, reasons, read, told)
 		return
 	}
+	recorded, err := roundRecordOf(read, reasons)
+	if err != nil {
+		s.log.Error("supervise: encode the record of this update round's replacement by issue; nothing was replaced and the round stays open",
+			"issue", issue, "round", round, "pod", pod, "error", err)
+		return
+	}
 	limited, done := context.WithTimeout(ctx, s.plan.orphanSweep)
 	defer done()
 	// ended is what the last word read of the round's end under the launch turn. It stays the
 	// zero roundEnd, which no bound made, where the runtime returns nil without asking the last
-	// word.
+	// word. The last word writes the replacement's record (recordedDue), which a failed call
+	// leaves for the next sweep to finish or forget (finishReplacements).
 	var ended roundEnd
-	if err := replacer.ReplaceIssuePod(limited, issue, pod, s.issueReplacementDue(issue, round, read.at, &ended)); err != nil {
+	if err := replacer.ReplaceIssuePod(limited, issue, pod, s.recordedDue(issue, pod, recorded, s.issueReplacementDue(issue, round, read.at, &ended))); err != nil {
 		if errors.Is(err, errReplacementNotDue) {
 			s.log.Info("supervise: this update round's replacement by issue was no longer due when its pod's launch turn came; nothing was replaced and the round stays open",
 				"issue", issue, "round", round, "pod", pod, "reason", err)
@@ -1772,7 +1813,7 @@ func (s *supervision) replaceIssuePodForRound(ctx context.Context, replace podRe
 		}
 		return
 	}
-	s.roundReplaced(ctx, issue, round, pod, reasons, ended, lost, read, told)
+	s.roundReplaced(ctx, issue, round, pod, reasons, ended, lost, read, told, recorded)
 }
 
 // issueReplacementDue is the daemon's last word on a replacement by issue, which the runtime asks
@@ -1948,7 +1989,20 @@ func (s *supervision) roundPodEndsAtLaunch(ctx context.Context, token claim.Toke
 		s.keepPodForRound(ctx, issue, round, podUID, reasons, read, group)
 		return s.keepAtLaunch(issue, round, token, "the read of the pod's workspace found work that no branch or tag on origin holds, or could not be made")
 	}
-	s.replacedAtLaunch(issue, round, readRoundEnd(group, round, clock), read)
+	// The replacement's record, written before the answer that has the launch suspend the pod, and
+	// kept for the sweep that ends the round as this replacement (endRoundALaunchReplaced, or
+	// finishReplacements after a restart). A record that cannot be written keeps the pod: a
+	// reading nobody recorded may not delete a disk.
+	recorded, err := roundRecordOf(read, reasons)
+	if err == nil {
+		err = s.supervisor.store.RecordPodReplacement(ctx, s.plan.project, issue, podUID, recorded)
+	}
+	if err != nil {
+		s.log.Error("supervise: write the record of a launch's replacement of an update round's pod; the launch keeps the pod",
+			"issue", issue, "round", round, "claim", token, "error", err)
+		return s.keepAtLaunch(issue, round, token, "the record of the replacement cannot be written")
+	}
+	s.replacedAtLaunch(issue, round, readRoundEnd(group, round, clock), read, recorded)
 	s.log.Info("supervise: no role process runs in the pod of this update round, and nothing holds the pod; the launch replaces the pod and starts its role in a new pod",
 		append([]any{"issue", issue, "round", round, "pod", podUID, "claim", token}, read.attrs()...)...)
 	return true, nil
@@ -1980,14 +2034,15 @@ func (s *supervision) keepAtLaunch(issue, round string, token claim.Token, why s
 
 // launchRound is what the launches into one issue's pod decided of the update round open over that
 // pod (roundPodEndsAtLaunch), as podUpdateLaunchReplaced keeps it for the issue: the round, whether
-// a launch replaced its pod, what the launch read of the round's end and what the pod's launcher
-// read of the workspace when it did, and each claim whose launch into the pod the hook kept the
-// pod for.
+// a launch replaced its pod, what the launch read of the round's end, what the pod's launcher read
+// of the workspace when it did and the record of that replacement (roundRecordOf), and each claim
+// whose launch into the pod the hook kept the pod for.
 type launchRound struct {
 	round    string
 	replaced bool
 	ended    roundEnd
 	read     workspaceRead
+	record   []byte
 	kept     map[claim.Token]bool
 }
 
@@ -2008,10 +2063,12 @@ func (s *supervision) launchRecord(issue, round string, write func(*launchRound)
 }
 
 // replacedAtLaunch keeps that a launch replaced round's pod as the round's own replacement, with
-// ended, what the launch read of the round's end, and read, what the pod's launcher read of the
-// workspace before it (podUpdateLaunchReplaced).
-func (s *supervision) replacedAtLaunch(issue, round string, ended roundEnd, read workspaceRead) {
-	s.launchRecord(issue, round, func(at *launchRound) { at.replaced, at.ended, at.read = true, ended, read })
+// ended, what the launch read of the round's end, read, what the pod's launcher read of the
+// workspace before it, and recorded, the replacement's record (podUpdateLaunchReplaced).
+func (s *supervision) replacedAtLaunch(issue, round string, ended roundEnd, read workspaceRead, recorded []byte) {
+	s.launchRecord(issue, round, func(at *launchRound) {
+		at.replaced, at.ended, at.read, at.record = true, ended, read, recorded
+	})
 }
 
 // launchKept is whether roundPodEndsAtLaunch kept round's pod for token's launch into it.
@@ -2023,16 +2080,16 @@ func (s *supervision) launchKept(issue, round string, token claim.Token) bool {
 }
 
 // launchReplaced is whether a launch replaced round's pod as the round's own replacement, what
-// that launch read of the round's end, and what the pod's launcher read of the workspace before it
-// (podUpdateLaunchReplaced).
-func (s *supervision) launchReplaced(issue, round string) (roundEnd, workspaceRead, bool) {
+// that launch read of the round's end, what the pod's launcher read of the workspace before it, and
+// the replacement's record (podUpdateLaunchReplaced).
+func (s *supervision) launchReplaced(issue, round string) (roundEnd, workspaceRead, []byte, bool) {
 	s.podUpdateLaunchMu.Lock()
 	defer s.podUpdateLaunchMu.Unlock()
 	at := s.podUpdateLaunchReplaced[issue]
 	if at == nil || at.round != round || !at.replaced {
-		return roundEnd{}, workspaceRead{}, false
+		return roundEnd{}, workspaceRead{}, nil, false
 	}
-	return at.ended, at.read, true
+	return at.ended, at.read, at.record, true
 }
 
 // forgetLaunchRound drops what podUpdateLaunchReplaced keeps of round for the issue: the sweep has
@@ -2074,13 +2131,13 @@ func (s *supervision) forgetLaunchRounds(byIssue map[string][]supervise.Claim) {
 // went before its round was over: this round was over, and its own replacement took the pod. The
 // record goes with the end (endPodUpdates).
 //
-// The record is in memory alone. A daemon that restarts between the launch and the sweep reads the
-// same end as a pod gone (podWentWithoutItsRound), whose message names the same members as having
-// lost what they had not pushed.
-func (s *supervision) endRoundALaunchReplaced(ctx context.Context, issue string, group []supervise.Claim, round string, ended roundEnd, read workspaceRead) {
+// The read and the record are kept in memory, and the record in the store too: a daemon that
+// restarts between the launch and the sweep finishes the replacement from the store's record
+// (finishReplacements), as the round's own, from the read the launcher made before it.
+func (s *supervision) endRoundALaunchReplaced(ctx context.Context, issue string, group []supervise.Claim, round string, ended roundEnd, read workspaceRead, recorded []byte) {
 	told := s.noticeGroup(group)
 	s.roundReplaced(ctx, issue, round, strings.TrimPrefix(round, supervise.PodRoundPrefix), roundReasons(told, round), ended,
-		lostClaims(told, round), read, told)
+		lostClaims(told, round), read, told, recorded)
 }
 
 // viewedGroup is every claim of the issue a round weighs, as the store names them and as each
@@ -2409,8 +2466,8 @@ func (s *supervision) podWentWithoutItsRound(ctx context.Context, issue string, 
 // of the last end, which each caller words for the reading that found the pod gone, with the
 // issue, the round and the pod.
 func (s *supervision) endRoundWhosePodWent(ctx context.Context, issue string, group []supervise.Claim, round, pod, over string) {
-	if ended, read, replaced := s.launchReplaced(issue, round); replaced {
-		s.endRoundALaunchReplaced(ctx, issue, group, round, ended, read)
+	if ended, read, recorded, replaced := s.launchReplaced(issue, round); replaced {
+		s.endRoundALaunchReplaced(ctx, issue, group, round, ended, read, recorded)
 		return
 	}
 	if len(lostClaims(group, round)) > 0 {

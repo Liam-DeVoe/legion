@@ -28,6 +28,7 @@ var (
 	_ runtime.WorkspaceWorkReader = (*Runtime)(nil)
 	_ runtime.PodWorkspaceReader  = (*Runtime)(nil)
 	_ runtime.IssueVolumeReader   = (*Runtime)(nil)
+	_ runtime.PodTakenReader      = (*Runtime)(nil)
 )
 
 // Call is one method the caller called, with the arguments it called it with. A method that does
@@ -137,6 +138,11 @@ type Runtime struct {
 	// onRead runs at the start of every WorkspaceWork and PodWorkspaceWork, with no lock of the
 	// fake held (OnWorkspaceWork).
 	onRead func()
+	// took is every pod a ReplacePod replaced, which PodTaken answers taken from then on, as the
+	// Sandbox runtime answers a pod its replacement's suspension took. ReplacePod and
+	// ReplaceIssuePod read nothing of it, so a test that replaces the same pod again is answered
+	// as before.
+	took map[string]bool
 	// replaced is every pod a replacement by issue (ReplaceIssuePod) or a launch (RoundPodEnds)
 	// replaced, by uid, with the uid of the pod a launch built in its place, "" while none has:
 	// the issue's Sandbox no longer holds it, as IssuePod then answers, and a launch scripted into
@@ -167,8 +173,9 @@ func NewRuntime() *Runtime {
 		sessions:    map[claim.Token]string{},
 		work:        map[string]runtime.WorkspaceWork{},
 		replaced:    map[string]string{},
-		// suspendedOver starts empty: no replacement has landed on any pod.
+		// suspendedOver and took start empty: no replacement has landed on any pod.
 		suspendedOver: map[string]bool{},
+		took:          map[string]bool{},
 	}
 	fake.pending = sync.NewCond(&fake.mu)
 	return fake
@@ -877,7 +884,26 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 		return err
 	}
 	delete(r.drift, k.Claim)
+	r.took[pod] = true
 	return nil
+}
+
+// PodTaken is the Sandbox runtime's answer of whether a replacement took the issue's pod podUID:
+// taken where a ReplacePod replaced it (took), where its Sandbox stands suspended over it
+// (suspendedOver), where a replacement by issue or a launch replaced it (replaced), and where
+// IssuePod answers another pod or none for the issue (ScriptIssuePod); not taken otherwise, an
+// issue no ScriptIssuePod named included. It records no call.
+func (r *Runtime) PodTaken(issue, podUID string) (bool, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, gone := r.replaced[podUID]; gone || r.took[podUID] || r.suspendedOver[podUID] {
+		return true, true
+	}
+	if pod, read := r.issuePods[issue]; read {
+		now, live := r.podNow(pod)
+		return !live || now != podUID, true
+	}
+	return false, true
 }
 
 // ReplaceIssuePod plays the Sandbox runtime's own order, as ReplacePod does: it waits where that

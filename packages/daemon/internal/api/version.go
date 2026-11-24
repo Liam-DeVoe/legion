@@ -3304,6 +3304,15 @@ package api
 // (`record.DecodeOutboxPayload`). An upgrade from that head alone, such as a test deployment of
 // it, lets its outbox run dry of them first: `select count(*) from outbox where kind =
 // 'issue_bundle' and payload ? 'launcher'` prints 0.
+//
+// R7's review fixes (GPT-6.1 Sol's and INFRA-341's reviewer's reads of #5285 at 0259f8af, and
+// spec v23) ride this entry too, and move no contract: none of them changes a shape a plugin,
+// a pane, a pod's init or launcher container, or the launcher wire reads. They add the store
+// table `pod_replacements` (migration 20261124041455), a record that only this daemon reads and
+// writes, which is no wire or answer shape; the reason a pod's account drift gives
+// (`runtime.BreakingDrift` in front of it), which is a round's recorded reasons and an update
+// ask's text, both free text to every reader; and the words of `supervise.UpdateTask` and of
+// the update-stalled notice's reason, which no reader parses.
 // (This entry takes 238, above main's 219 at 7cb1f229367c: a reading of `const DaemonAPIVersion`
 // at refs/pull/<n>/head for each of the 493 open pull requests of this repository, made between
 // 2026-11-23T19:54:14Z and 19:54:42Z, found every number from 220 to 237 declared (220 by #4930 and

@@ -15,7 +15,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-var _ runtime.IssuePodReplacer = (*Runtime)(nil)
+var (
+	_ runtime.IssuePodReplacer = (*Runtime)(nil)
+	_ runtime.PodTakenReader   = (*Runtime)(nil)
+)
 
 // A running issue pod whose configuration has drifted is not replaced where it is found: every
 // role of the issue runs in that one pod, and ending it ends each of their processes mid-turn and
@@ -545,6 +548,34 @@ func (r *Runtime) ReplaceIssuePod(ctx context.Context, issue, podUID string, due
 		return fmt.Errorf("sandbox runtime: replace the pod of %s: %w", issue, err)
 	}
 	return r.replaceRoundPod(ctx, name, podUID, due, "issue", issue)
+}
+
+// PodTaken satisfies runtime.PodTakenReader: whether issue's pod podUID has been taken, read from
+// the runtime's stores without the pod's launch turn. It is taken where the issue has no Sandbox,
+// where its Sandbox is Suspended — a replacement's suspension landed, whether or not the pod is
+// still there to see — and where the Sandbox's own pod is another or none; it is not taken where
+// the Sandbox runs podUID as its own pod. A Sandbox name no issue key builds, or a store that
+// cannot be read, answers nothing (read false). The daemon asks it of a replacement it recorded
+// before the runtime acted, whose call failed or whose daemon stopped (internal/daemon's
+// finishReplacements): ReplacePod writes its suspension before it waits for the pod to go
+// (replaceRoundPod), so a call whose wait ran out has taken the pod all the same.
+func (r *Runtime) PodTaken(issue, podUID string) (bool, bool) {
+	name, err := issueSandboxName(r.project, issue)
+	if err != nil {
+		return false, false
+	}
+	u, err := r.storedObject(name)
+	if err != nil {
+		return false, false
+	}
+	if u == nil {
+		return true, true
+	}
+	if mode, _, _ := unstructured.NestedString(u.Object, "spec", "operatingMode"); mode == modeSuspended {
+		return true, true
+	}
+	pod := r.storedPod(name)
+	return !ownedBy(pod, u.GetUID()) || string(pod.UID) != podUID, true
 }
 
 // replaceRoundPod is the act ReplacePod and ReplaceIssuePod share: under the launch turn of the
