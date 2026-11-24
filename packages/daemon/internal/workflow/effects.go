@@ -1046,8 +1046,8 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // what the role's one row carried from one phase to the next, the record it last named among it,
 // and leaves the earlier step's report standing for the task text that names it (reportsBefore).
 // The commit a review read it takes from the step's agent alone (stepRunRow), whichever agent's
-// runs wrote the step's row: its agent's newest on the task, held by its own earlier row of the
-// role, and none where that agent ran no earlier step of the role there. An issue with no plan
+// runs wrote the step's row: its agent's newest on the task, held by its own rows of the role at
+// any of its steps, and none where that agent has no such row there. An issue with no plan
 // rows keeps no task and place 0, one row for each role, as it always did, and the architect's
 // entry is no step of the issue's task. w is the walk of issue's run as the caller read it, which
 // only a phase worker's raise reads; EnterArchitect gives none.
@@ -1163,14 +1163,14 @@ type entered struct {
 // now, with no handoff (phaseHandoff) and stamped with the step, so the new row carries the record
 // the role named last and the counts of its rounds, and the row of the role's earlier step keeps its
 // report. The commit a review read (record.PhaseRow.ReviewedHead) is the agent's own, never now's
-// and never another agent's: a first run takes the commit of agent's own nearest earlier row of the
-// role on the task, which holds agent's newest (record.ReviewedBefore), and none where agent ran no
-// earlier step of the role there, so that agent reads the whole change and its task names another
-// agent's commit beside it (record.AnotherAgentsReview, namingTheReviewRound). A row of the step
-// that names another agent's claim takes its commit the same way: a later version of the plan,
-// given after stop_task over the same task, can give a step another key's agent, and the step's
-// row, which the earlier agent's runs wrote, would otherwise name that agent's commit to the new
-// one as its own.
+// and never another agent's: a first run takes the commit of agent's own rows of the role on the
+// task, at any of its steps, which hold agent's newest (record.ReviewedBefore), and none where agent
+// has no such row there, so that agent reads the whole change and its task names another agent's
+// commit beside it (record.AnotherAgentsReview, namingTheReviewRound). A row of the step that names
+// another agent's claim takes its commit the same way: a later version of the plan, given after
+// stop_task over the same task, can give a step another key's agent, and the step's row, which the
+// earlier agent's runs wrote, would otherwise name that agent's commit to the new one as its own,
+// while the new agent's own row of a later step of the earlier version can hold its newest.
 func stepRunRow(rows []record.PhaseRow, now record.PhaseRow, role claim.Role, task string, place int, agent claim.Token) (record.PhaseRow, bool) {
 	row, found := record.StepRowOf(rows, role, task, place)
 	switch found {

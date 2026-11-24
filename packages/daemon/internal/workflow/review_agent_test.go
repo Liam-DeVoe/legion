@@ -49,16 +49,16 @@ func reviewerStepFour(t *testing.T, pool *pgxpool.Pool, engine *Engine, tester c
 	return rolesRows(t, pool, engine, key, claim.RoleReviewer)[4]
 }
 
-// A reviewer step's first round is named the commit of its agent's own nearest earlier reviewer
-// row of the task, else none, so a step whose agent ran no earlier reviewer step reads the whole
-// change at its first round. In each plan below, step 4 is key s's first reviewer step, and step
-// 2's review, another agent's, read a commit: step 4's first task names no commit of its own, `Last
-// reviewed commit: none.`, and names step 2's commit as another agent's before it. Its row holds no
-// commit. After a review of key s's own read a commit, a return to step 1 and the walk back to step
-// 4, its task names that commit, its own, and no other agent's. Step 2's agent is the reviewer's
-// own in the first plan, and in the second agent a, which runs step 5 too. Before, step 4's first
-// round was named step 2's commit as its own, so key s read only the change past a commit another
-// agent approved.
+// A reviewer step's first round is named the commit of its agent's own reviewer row of the task,
+// at any of its steps, else none, so a step whose agent has no reviewer row of its own there reads
+// the whole change at its first round. In each plan below, step 4 is key s's first reviewer step,
+// and step 2's review, another agent's, read a commit: step 4's first task names no commit of its
+// own, `Last reviewed commit: none.`, and names step 2's commit as another agent's before it. Its
+// row holds no commit. After a review of key s's own read a commit, a return to step 1 and the walk
+// back to step 4, its task names that commit, its own, and no other agent's. Step 2's agent is the
+// reviewer's own in the first plan, and in the second agent a, which runs step 5 too. Before, step
+// 4's first round was named step 2's commit as its own, so key s read only the change past a commit
+// another agent approved.
 func TestAnAgentsFirstReviewerStepReadsTheWholeChangeAtItsFirstRound(t *testing.T) {
 	for _, steps := range [][]string{
 		{"implementer:a", "reviewer", "tester:s", "reviewer:s"},
@@ -91,12 +91,12 @@ func TestAnAgentsFirstReviewerStepReadsTheWholeChangeAtItsFirstRound(t *testing.
 	}
 }
 
-// A reviewer step's first round is named the commit of its agent's own nearest earlier reviewer
-// row of the task: in `implementer:a reviewer:r tester reviewer:r`, steps 2 and 4 are key r's, the
-// reviewer's claim, so step 4's first round is named step 2's commit as its own, and no other
+// A reviewer step's first round is named the commit of its agent's own reviewer row of the task,
+// at any of its steps: in `implementer:a reviewer:r tester reviewer:r`, steps 2 and 4 are key r's,
+// the reviewer's claim, so step 4's first round is named step 2's commit as its own, and no other
 // agent's. (Two steps of one role with no key are two agents, which this release refuses as a
 // plan.)
-func TestAReviewerStepsFirstRoundIsNamedItsAgentsOwnEarlierStepsCommit(t *testing.T) {
+func TestAReviewerStepsFirstRoundIsNamedItsAgentsOwnCommit(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -143,11 +143,30 @@ func TestALaterReviewerStepIsNamedItsAgentsOwnCommitPastAnotherAgentsStep(t *tes
 	}
 }
 
+// givesVersion gives version of the plan of root, as its owner does, with task a's steps, and fails
+// the test unless it is taken.
+func givesVersion(t *testing.T, pool *pgxpool.Pool, engine *Engine, root record.Issue, version int, steps ...string) {
+	t.Helper()
+	mustTake(t, fmt.Sprintf("version %d", version), applyFacts(t, pool, engine)(planID(root.Key, root.Generation, version),
+		ownersPlan(t, root.Key, root.Generation, version, givenTask(t, "Build the widget.", steps...))))
+}
+
+// stopsAndGivesVersionTwo stops root's task a and gives version 2 of the plan with steps, which
+// starts the same task again at its step 1.
+func stopsAndGivesVersionTwo(t *testing.T, pool *pgxpool.Pool, engine *Engine, root record.Issue, steps ...string) {
+	t.Helper()
+	if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, "a")); result.Refusal != nil {
+		t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
+	}
+	givesVersion(t, pool, engine, root, 2, steps...)
+	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(1))
+}
+
 // A reviewer step that a later version of the plan gives to another agent is named that agent's
 // own commit, never the commit of the agent that ran the step before: in version 1,
 // `implementer:a reviewer:r tester:s reviewer:s`, key s's review at step 4 reads stepFourRead. The
 // owner stops task a and gives version 2, `implementer:a reviewer:r tester:s reviewer:a`, which
-// starts the same task again at step 1. At step 4, agent a ran no earlier reviewer step, so its
+// starts the same task again at step 1. At step 4, agent a has no reviewer row on the task, so its
 // first task names no commit of its own, `Last reviewed commit: none.`, and key r's commit of step
 // 2 as another agent's before it, and its row holds no commit. Before, step 4's row kept key s's
 // commit when its entry wrote agent a's claim on it, so agent a read only the change past
@@ -155,27 +174,51 @@ func TestALaterReviewerStepIsNamedItsAgentsOwnCommitPastAnotherAgentsStep(t *tes
 func TestAReviewerStepALaterVersionGivesToAnotherAgentIsNamedThatAgentsOwnCommit(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
-	apply := applyFacts(t, pool, engine)
 	root := stepRoot(t, pool, phase.Admitted)
-	mustTake(t, "version 1", apply(planID(root.Key, root.Generation, 1), ownersPlan(t, root.Key, root.Generation, 1,
-		givenTask(t, "Build the widget.", "implementer:a", "reviewer:r", "tester:s", "reviewer:s"))))
+	givesVersion(t, pool, engine, root, 1, "implementer:a", "reviewer:r", "tester:s", "reviewer:s")
 	keyS := agentToken(t, "tester")
 	if four := reviewerStepFour(t, pool, engine, keyS, 1); four.Claim != keyS {
 		t.Fatalf("step 4 of version 1 runs under %s, want key s's claim %s", four.Claim, keyS)
 	}
 	recordReviewRead(t, pool, root.Key, 4, stepFourRead)
-	if result := apply("stop", ownersStop(t, root, "a")); result.Refusal != nil {
-		t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
-	}
-	mustTake(t, "version 2", apply(planID(root.Key, root.Generation, 2), ownersPlan(t, root.Key, root.Generation, 2,
-		givenTask(t, "Build the widget.", "implementer:a", "reviewer:r", "tester:s", "reviewer:a"))))
-	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(1))
+	stopsAndGivesVersionTwo(t, pool, engine, root, "implementer:a", "reviewer:r", "tester:s", "reviewer:a")
 
 	four := reviewerStepFour(t, pool, engine, keyS, 2)
 	want := reviewround.AnotherAgentsSentence(stepTwoRead) + reviewround.Sentences("", four.Entry)
 	if four.Claim != agentToken(t, "implementer") || four.ReviewedHead != "" || !strings.HasSuffix(four.EntryTask, want) {
 		t.Fatalf("step 4 of version 2 = claim %s, commit %q, task %q; want agent a's, no commit of its own, and a task ending %q",
 			four.Claim, four.ReviewedHead, four.EntryTask, want)
+	}
+}
+
+// A reviewer step that a later version of the plan gives to an agent is named that agent's own
+// commit on the task, at any of its steps, a later one of the earlier version among them: in
+// version 1, `implementer:a reviewer:s tester:s reviewer:a`, agent a's review at step 4 reads
+// stepFourRead. The owner stops task a and gives version 2, `implementer:a reviewer:a tester:s
+// reviewer:s`, and step 2, whose row key s's runs wrote, passes to agent a: its task names
+// stepFourRead as agent a's own and no other agent's commit, and its row holds it. Before, the
+// commit was read from agent a's rows at earlier places alone, so step 2 named `none` and key s's
+// commit, though agent a's own review on the task had read stepFourRead.
+func TestAReviewerStepALaterVersionGivesToAnAgentIsNamedItsCommitOfALaterStep(t *testing.T) {
+	pool := migratedPool(t)
+	engine := textEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	givesVersion(t, pool, engine, root, 1, "implementer:a", "reviewer:s", "tester:s", "reviewer:a")
+	keyA, keyS := agentToken(t, "implementer"), agentToken(t, "reviewer")
+	if four := reviewerStepFour(t, pool, engine, keyS, 1); four.Claim != keyA {
+		t.Fatalf("step 4 of version 1 runs under %s, want agent a's claim %s", four.Claim, keyA)
+	}
+	recordReviewRead(t, pool, root.Key, 4, stepFourRead)
+	stopsAndGivesVersionTwo(t, pool, engine, root, "implementer:a", "reviewer:a", "tester:s", "reviewer:s")
+
+	completesAs(t, pool, engine, claim.RoleImplementer, keyA, "implement", 2, "head")
+	assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(2))
+	two := rolesRows(t, pool, engine, root.Key, claim.RoleReviewer)[2]
+	if two.Claim != keyA || two.ReviewedHead != stepFourRead ||
+		!strings.HasSuffix(two.EntryTask, reviewround.Sentences(stepFourRead, two.Entry)) ||
+		strings.Contains(two.EntryTask, reviewround.AnotherAgentLabel) {
+		t.Fatalf("step 2 of version 2 = claim %s, commit %q, task %q; want agent a's, its commit of step 4, and a task ending %q with no other agent's commit",
+			two.Claim, two.ReviewedHead, two.EntryTask, reviewround.Sentences(stepFourRead, two.Entry))
 	}
 }
 
