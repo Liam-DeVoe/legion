@@ -24,9 +24,9 @@ import (
 
 // goingConditionFixtures are the items the condition tests write: an issue with its notes, an ask
 // on it, a project document, a file of the planner session's, an issue alice holds, one nobody
-// holds and a thread alice resolved.
+// holds, a thread alice resolved and an issue message of hers.
 type goingConditionFixtures struct {
-	issue, ask, claimed, unclaimed, comment string
+	issue, ask, claimed, unclaimed, comment, message string
 }
 
 func newGoingConditionFixtures(t *testing.T, rig goingWritesRig) goingConditionFixtures {
@@ -45,6 +45,7 @@ func newGoingConditionFixtures(t *testing.T, rig goingWritesRig) goingConditionF
 	f.unclaimed = rig.issue(t, "An issue nobody holds")
 	f.comment = decodeBody[model.Comment](t, rig.fixture(t, "alice", http.MethodPost, owner+"/comments", map[string]any{"body": "A thread to resolve."})).ID
 	rig.fixture(t, "alice", http.MethodPost, "/api/v1/comments/"+f.comment+"/resolve", nil)
+	f.message = createIssueMessage(t, rig.mux, f.issue, map[string]any{"body": "A message to edit."}, "alice").ID
 	return f
 }
 
@@ -90,7 +91,8 @@ func goingAnswerCode(t *testing.T, answer string) string {
 
 // goingConditionState is what the items the condition tests write hold, read off the store: the
 // issue's title, the ask's question, the number of versions of each document and file, who holds
-// each of the two issues and whether the thread is resolved. A refused write leaves it as it was.
+// each of the two issues, whether the thread is resolved, and the thread's and the message's
+// bodies. A refused write leaves it as it was.
 func goingConditionState(t *testing.T, rig goingWritesRig, f goingConditionFixtures) string {
 	t.Helper()
 	var state string
@@ -101,8 +103,10 @@ func goingConditionState(t *testing.T, rig goingWritesRig, f goingConditionFixtu
 			(select string_agg(a.name || '=' || (select count(*) from artifact_versions v where v.artifact_id = a.id), ',' order by a.name) from artifacts a),
 			(select coalesce(claimed_by::text, 'unclaimed') from issues where key = $3),
 			(select coalesce(claimed_by::text, 'unclaimed') from issues where key = $4),
-			(select resolved::text from comments where id = $5::uuid))`,
-		f.issue, f.ask, f.claimed, f.unclaimed, f.comment).Scan(&state); err != nil {
+			(select resolved::text from comments where id = $5::uuid),
+			(select body from comments where id = $5::uuid),
+			(select body from messages where id = $6::uuid))`,
+		f.issue, f.ask, f.claimed, f.unclaimed, f.comment, f.message).Scan(&state); err != nil {
 		t.Fatalf("read what the items hold: %v", err)
 	}
 	return state
@@ -110,10 +114,10 @@ func goingConditionState(t *testing.T, rig goingWritesRig, f goingConditionFixtu
 
 // goingConditionWrites is one write of each route that takes a condition, by name: the issue
 // update, the ask edit, the issue's, the project's and a session's upload, the claim of an issue
-// nobody holds and of one alice holds, the release, the reopen and the resolve. The issue's and
-// the project's uploads replace a document, so each names the token of the version it replaces,
-// read off handler when it is sent, as the command bar's upload names it (main's upload
-// precondition).
+// nobody holds and of one alice holds, the release, the reopen, the resolve, and the edits of a
+// comment and of an issue message. The issue's and the project's uploads replace a document, so
+// each names the token of the version it replaces, read off handler when it is sent, as the
+// command bar's upload names it (main's upload precondition).
 var goingConditionWrites = map[string]func(t *testing.T, handler http.Handler, f goingConditionFixtures) goingSend{
 	"issue update": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
 		return goingJSONSend(t, http.MethodPatch, "/api/v1/issues/"+f.issue, map[string]any{"title": "Written in process"})
@@ -149,6 +153,12 @@ var goingConditionWrites = map[string]func(t *testing.T, handler http.Handler, f
 	"resolve": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
 		return goingSend{method: http.MethodPost, path: "/api/v1/comments/" + f.comment + "/resolve"}
 	},
+	"comment edit": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
+		return goingJSONSend(t, http.MethodPatch, "/api/v1/comments/"+f.comment, map[string]any{"body": "Written in process."})
+	},
+	"message edit": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
+		return goingJSONSend(t, http.MethodPatch, "/api/v1/messages/"+f.message, map[string]any{"body": "Written in process."})
+	},
 }
 
 // TestGoingConditionOnTheRequestsContextIsDecidedByItsRoute (deep review round 5, finding C): each
@@ -161,7 +171,7 @@ func TestGoingConditionOnTheRequestsContextIsDecidedByItsRoute(t *testing.T) {
 	t.Parallel()
 	rig := newGoingWritesRig(t)
 	f := newGoingConditionFixtures(t, rig)
-	never, bob := "2000-01-01T00:00:00Z", &model.Actor{Kind: "user", ID: "bob"}
+	never, bob, other := "2000-01-01T00:00:00Z", &model.Actor{Kind: "user", ID: "bob"}, "Not the body"
 	for _, tc := range []struct {
 		write, code string
 		condition   goingCondition
@@ -176,6 +186,8 @@ func TestGoingConditionOnTheRequestsContextIsDecidedByItsRoute(t *testing.T) {
 		{"release", codeClaimHolderChanged, goingCondition{ExpectHolder: bob}},
 		{"reopen", codeCommentChanged, goingCondition{ExpectResolvedAt: &never}},
 		{"resolve", codeCommentChanged, goingCondition{ExpectOpen: true}},
+		{"comment edit", codeCommentChanged, goingCondition{ExpectBody: &other}},
+		{"message edit", codeMessageChanged, goingCondition{ExpectBody: &other}},
 	} {
 		t.Run(tc.write+" "+tc.code, func(t *testing.T) {
 			before := goingConditionState(t, rig, f)
@@ -437,6 +449,8 @@ func TestGoingWriteBackWithoutItsConditionIsRefusedWithNothingWritten(t *testing
 		{"a reopen with no condition", "reopen", goingCondition{WriteBack: true}},
 		{"a reopen expecting an empty moment", "reopen", goingCondition{WriteBack: true, ExpectResolvedAt: &empty}},
 		{"a resolve with no condition", "resolve", goingCondition{WriteBack: true}},
+		{"a comment edit with no condition", "comment edit", goingCondition{WriteBack: true}},
+		{"a message edit with no condition", "message edit", goingCondition{WriteBack: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := goingConditionState(t, rig, f)
@@ -450,7 +464,8 @@ func TestGoingWriteBackWithoutItsConditionIsRefusedWithNothingWritten(t *testing
 		})
 	}
 	// Unmarked, each of the same writes is made: the refusal is the mark's.
-	for _, write := range []string{"issue update", "ask edit", "issue upload", "project upload", "session upload", "claim", "release", "reopen", "resolve"} {
+	for _, write := range []string{"issue update", "ask edit", "issue upload", "project upload", "session upload", "claim", "release", "reopen", "resolve",
+		"comment edit", "message edit"} {
 		t.Run("unmarked "+write, func(t *testing.T) {
 			before := goingConditionState(t, rig, f)
 			status, answer := goingConditioned(t, rig.mux, "alice", goingConditionWrites[write](t, rig.mux, f), goingCondition{})

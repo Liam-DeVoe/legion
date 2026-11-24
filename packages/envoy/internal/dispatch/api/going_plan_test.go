@@ -303,6 +303,38 @@ func TestWhatWaitsInEachMode(t *testing.T) {
 		}
 	})
 
+	// The ruling of 12:50Z on R5: a post's body is text, so an edit and a delete of a comment or an
+	// issue message each wait for the person in Ask and in Auto-review, never run unseen.
+	for _, mode := range []string{goingModeAsk, goingModeAutoReview} {
+		t.Run("an edit and a delete of a comment or an issue message wait in "+mode, func(t *testing.T) {
+			var changes []map[string]any
+			var tools []string
+			for _, c := range goingPostCases {
+				edited, _ := c.make(t, rig, "The ferry leaves at noon.")
+				deleted, _ := c.make(t, rig, "The ferry leaves at one.")
+				changes = append(changes, c.editing(edited, "The ferry leaves at two."), c.deleting(deleted))
+				tools = append(tools, c.edit, c.delete)
+			}
+			words := "correct the ferry's posts in " + mode
+			rig.loop.script.set(words, func(n int) agenttest.Reply {
+				if n == 1 {
+					return proposing(changes...)
+				}
+				return toolCall(toolReviewPlanName, map[string]any{"asked": everyRow(len(changes))})
+			})
+			plan := rig.waiting(t, rig.begin(t, goingLoopRun{login: "alice", words: words, mode: mode}))
+			if len(plan.Rows) != len(tools) {
+				t.Fatalf("the plan holds %d rows, want %d", len(plan.Rows), len(tools))
+			}
+			for index, row := range plan.Rows {
+				if row.Tool != tools[index] || row.State != "waiting" || row.Class != string(goingClassText) {
+					t.Errorf("in %s the row of %s is a %s row of class %s, %s; want %s waiting, of class %s",
+						mode, tools[index], row.Tool, row.Class, row.State, tools[index], goingClassText)
+				}
+			}
+		})
+	}
+
 	t.Run("a claim a session takes before the write makes the row wait again", func(t *testing.T) {
 		issue := rig.issue(t, "Claimed meanwhile")
 		const words = "rename Claimed meanwhile"
@@ -1741,4 +1773,68 @@ func TestAReopenBesideOtherFieldsIsProposedAsTwoChanges(t *testing.T) {
 			t.Errorf("%s is %s (closed at %v) with priority %v, want todo, open, at P0", issue, read.Status, read.ClosedAt, read.Priority)
 		}
 	})
+}
+
+// TestAPlanRowOfAPostShowsItsAuthorAndBodyUntilItIsDeleted: a plan's row of an edit or a delete of
+// a comment or an issue message is a row of the post - its item the post, its issue the post's, its
+// one field body - whose value now is the post's author and body. Once the author deletes the post
+// before the approval, its row reads deleted: its value now is the delete's mark, the author and
+// who deleted it when, with no word of the body, the plan holds no word of it, and an approval that
+// ticks the row is refused, 409 POST_DELETED, with nothing written - every row still waits, and
+// the other post stands (INFRA-1523 R3).
+func TestAPlanRowOfAPostShowsItsAuthorAndBodyUntilItIsDeleted(t *testing.T) {
+	t.Parallel()
+	rig := newGoingPlanRig(t)
+	alice := goingHolder{Kind: "user", ID: "alice"}
+	for _, c := range goingPostCases {
+		t.Run("a "+c.kind, func(t *testing.T) {
+			const word = "bollardword"
+			edited, issue := c.make(t, rig, "The "+word+" holds the ferry.")
+			deleted, _ := c.make(t, rig, "The ferry leaves at noon.")
+			words := "correct the two " + c.kind + "s about the ferry"
+			rig.loop.script.set(words, func(n int) agenttest.Reply {
+				if n == 1 {
+					return proposing(c.editing(edited, "The bollard holds the ferry fast."), c.deleting(deleted))
+				}
+				return answered("Both wait for you.")
+			})
+			run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+			plan := rig.waiting(t, run)
+			for index, want := range []struct{ id, body string }{{edited, "The " + word + " holds the ferry."}, {deleted, "The ferry leaves at noon."}} {
+				row := plan.Rows[index]
+				var now goingPostNow
+				if err := json.Unmarshal(row.Now, &now); err != nil || row.Item != want.id || row.Issue == "" || !slices.Equal(row.Fields, []string{"body"}) ||
+					now.Author != alice || now.Body == nil || *now.Body != want.body || now.DeletedAt != nil || row.Deleted {
+					t.Fatalf("the row of %s reads item %s of %s, fields %v, now %s, deleted %v; want the %s %s, field body, alice's body %q",
+						row.Tool, row.Item, row.Issue, row.Fields, row.Now, row.Deleted, c.kind, want.id, want.body)
+				}
+			}
+			if plan.Rows[0].Issue != issue {
+				t.Fatalf("the edit's row names the issue %s, want the %s's own %s", plan.Rows[0].Issue, c.kind, issue)
+			}
+
+			c.remove(t, rig, edited)
+			response := dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/going/runs/"+run+"/plan", nil, "alice")
+			if response.Code != http.StatusOK || strings.Contains(response.Body.String(), word) {
+				t.Fatalf("after the delete the plan answered %d %s, want 200 with no word of the deleted %s", response.Code, response.Body.String(), c.kind)
+			}
+			row := decodeBody[goingPlanAnswer](t, response).Rows[0]
+			var now goingPostNow
+			if err := json.Unmarshal(row.Now, &now); err != nil || !row.Deleted || row.State != "waiting" || now.Author != alice || now.Body != nil ||
+				now.DeletedAt == nil || now.DeletedBy == nil || *now.DeletedBy != alice {
+				t.Fatalf("after the delete the edit's row reads %s, now %s, deleted %v; want it waiting, deleted, alice's delete's mark and no body", row.State, row.Now, row.Deleted)
+			}
+
+			approval := dispatchRequest(t, rig.mux, http.MethodPost, "/api/v1/going/runs/"+run+"/plan/approve", map[string]any{"plan": 1}, "alice")
+			if refusal := decodeBody[refusalAnswer](t, approval); approval.Code != http.StatusConflict || refusal.Code != codePostDeleted || strings.Contains(approval.Body.String(), word) {
+				t.Fatalf("the approval of the deleted %s's row answered %d %s, want 409 %s with no word of it", c.kind, approval.Code, approval.Body.String(), codePostDeleted)
+			}
+			if states := rowStates(rig.plan(t, run)); !slices.Equal(states, []string{"waiting", "waiting"}) {
+				t.Fatalf("after the refused approval the plan's rows are %v, want both waiting", states)
+			}
+			if standing := rig.textOf(t, `select (deleted_at is null)::text from `+c.kind+`s where id = $1::uuid`, deleted); standing != "true" {
+				t.Fatalf("after the refused approval the other %s stands %s, want nothing written", c.kind, standing)
+			}
+		})
+	}
 }

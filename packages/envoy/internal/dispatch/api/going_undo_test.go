@@ -1212,6 +1212,178 @@ var goingUndoRuns = map[string]func(t *testing.T, rig goingPlanRig){
 			t.Fatalf("the approval request's ask is %s after Undo, want it retracted", state)
 		}
 	},
+	"dispatch_edit_comment": goingPostCases[0].undoneEdit,
+	"dispatch_edit_message": goingPostCases[1].undoneEdit,
+}
+
+// goingPostCase is one kind of post the bar's four correction tools edit and delete: its kind, the
+// one argument that names it, its route's path, its edit and delete tools, the read tool that reads
+// it by that argument, the refusal its route answers an edit whose condition it no longer meets,
+// and how the rig makes one of alice's on a new issue, answering its id and the issue.
+type goingPostCase struct {
+	kind, path, edit, delete, read, changed string
+	make                                    func(t *testing.T, rig goingPlanRig, body string) (string, string)
+}
+
+// goingPostCases are a comment and an issue message, in that order.
+var goingPostCases = []goingPostCase{
+	{kind: "comment", path: "/api/v1/comments/", edit: "dispatch_edit_comment", delete: "dispatch_delete_comment", read: "dispatch_read_comment",
+		changed: codeCommentChanged, make: func(t *testing.T, rig goingPlanRig, body string) (string, string) {
+			issue := rig.issue(t, "Holds a comment of alice's")
+			return rig.thread(t, issue, body, false), issue
+		}},
+	{kind: "message", path: "/api/v1/messages/", edit: "dispatch_edit_message", delete: "dispatch_delete_message", read: "dispatch_read",
+		changed: codeMessageChanged, make: func(t *testing.T, rig goingPlanRig, body string) (string, string) {
+			issue := rig.issue(t, "Holds a message of alice's")
+			return createIssueMessage(t, rig.mux, issue, map[string]any{"body": body}, "alice").ID, issue
+		}},
+}
+
+// body is the body the post id holds now, off the store.
+func (c goingPostCase) body(t *testing.T, rig goingPlanRig, id string) string {
+	t.Helper()
+	return rig.textOf(t, `select body from `+c.kind+`s where id = $1::uuid`, id)
+}
+
+// editing is the change of a plan that edits the post id to body.
+func (c goingPostCase) editing(id, body string) map[string]any {
+	return goingChange(c.edit, map[string]any{c.kind: id, "body": body})
+}
+
+// deleting is the change of a plan that deletes the post id.
+func (c goingPostCase) deleting(id string) map[string]any {
+	return goingChange(c.delete, map[string]any{c.kind: id})
+}
+
+// remove deletes the post id as alice, off the bar.
+func (c goingPostCase) remove(t *testing.T, rig goingPlanRig, id string) {
+	t.Helper()
+	rig.fixture(t, "alice", http.MethodDelete, c.path+id, nil)
+}
+
+// undoneEdit is goingUndoRuns' case of the post's edit: Undo writes back the body the edit
+// replaced.
+func (c goingPostCase) undoneEdit(t *testing.T, rig goingPlanRig) {
+	id, _ := c.make(t, rig, "The ferry leaves at noon.")
+	rig.undoneOnce(t, "move the ferry in the "+c.kind+" to one", c.editing(id, "The ferry leaves at one."))
+	if body := c.body(t, rig, id); body != "The ferry leaves at noon." {
+		t.Fatalf("the %s reads %q after Undo, want the body the edit replaced", c.kind, body)
+	}
+}
+
+// TestAnEditOfAPostIsUndoneUnlessItChangedSince (R6, the architect's ruling of 12:50Z): Undo of a
+// run's edit of a comment or an issue message writes the body it replaced back while the post holds
+// the body the run wrote. A body its author wrote after the run is kept, and the line names the
+// author as its writer and holds that body; a body written between Undo's read and its write is
+// kept too, the route refusing the write back with its own code (COMMENT_CHANGED or
+// MESSAGE_CHANGED); and a post its author deleted after the run is named deleted, by them, and no
+// word of its body is in Undo's answer. Each kept change stands in the run's counts.
+func TestAnEditOfAPostIsUndoneUnlessItChangedSince(t *testing.T) {
+	t.Parallel()
+	rig := newGoingPlanRig(t)
+	alice := goingHolder{Kind: "user", ID: "alice"}
+	standing := func(t *testing.T, run string) {
+		t.Helper()
+		response := dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/going/runs/"+run, nil, "alice")
+		if got := decodeBody[goingRun](t, response); got.Undoable || goingUndoCountsOf(got) != (goingUndoCounts{standing: 1}) {
+			t.Fatalf("after Undo the run reads undoable %v, counts %+v; want it not undoable, its one change standing", got.Undoable, goingUndoCountsOf(got))
+		}
+	}
+	for _, c := range goingPostCases {
+		t.Run("a "+c.kind+" its author edited again keeps that body and names them", func(t *testing.T) {
+			id, _ := c.make(t, rig, "The ferry leaves at noon.")
+			run := rig.ran(t, "move the ferry in the "+c.kind+" to one", c.editing(id, "The ferry leaves at one."))
+			rig.fixture(t, "alice", http.MethodPatch, c.path+id, map[string]any{"body": "The ferry leaves at two."})
+			line := rig.undone(t, run, c.edit)[0]
+			if line.Outcome.OK || line.Outcome.Code != codeGoingUndoChanged || len(line.Fields) != 1 {
+				t.Fatalf("Undo answered %+v, want the body kept, %s", line, codeGoingUndoChanged)
+			}
+			field := line.Fields[0]
+			if field.Field != "body" || field.OK || string(field.Now) != `"The ferry leaves at two."` || field.By == nil || *field.By != alice ||
+				!strings.Contains(field.Message, "user alice wrote after this run") {
+				t.Fatalf("the body answered %+v, want it kept holding the body alice wrote since, naming her", field)
+			}
+			if body := c.body(t, rig, id); body != "The ferry leaves at two." {
+				t.Fatalf("after Undo the %s reads %q, want alice's later body kept", c.kind, body)
+			}
+			standing(t, run)
+		})
+
+		t.Run("a "+c.kind+" edited between Undo's read and its write is kept by its route", func(t *testing.T) {
+			id, _ := c.make(t, rig, "The ferry leaves at noon.")
+			run := rig.ran(t, "move the ferry in the raced "+c.kind+" to one", c.editing(id, "The ferry leaves at one."))
+			var writes atomic.Int32
+			rig.hooks.set(t, http.MethodPatch, c.path+id, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+				// alice edits the post after the undo's read and before its write back.
+				if writes.Add(1) == 1 {
+					if response := dispatchRequest(t, rig.mux, http.MethodPatch, c.path+id, map[string]any{"body": "The ferry leaves at three."}, "alice"); response.Code >= http.StatusMultipleChoices {
+						t.Errorf("alice's own edit answered %d %s", response.Code, response.Body.String())
+					}
+				}
+				inner.ServeHTTP(w, r)
+			})
+			line := rig.undone(t, run, c.edit)[0]
+			if line.Outcome.OK || line.Outcome.Code != codeGoingUndoChanged || !strings.Contains(line.Outcome.Message, "holds other words now") {
+				t.Fatalf("Undo answered %+v, want the body kept on the route's %s", line, c.changed)
+			}
+			if body := c.body(t, rig, id); body != "The ferry leaves at three." {
+				t.Fatalf("after Undo the %s reads %q, want the body alice wrote mid-undo kept", c.kind, body)
+			}
+			standing(t, run)
+		})
+
+		t.Run("a "+c.kind+" its author deleted is named deleted with no word of it", func(t *testing.T) {
+			const word = "capstanword"
+			id, _ := c.make(t, rig, "The "+word+" turns at noon.")
+			run := rig.ran(t, "move the "+word+" in the "+c.kind+" to one", c.editing(id, "The "+word+" turns at one."))
+			c.remove(t, rig, id)
+			response := dispatchRequest(t, rig.mux, http.MethodPost, "/api/v1/going/runs/"+run+"/undo", nil, "alice")
+			if response.Code != http.StatusOK || strings.Contains(response.Body.String(), word) {
+				t.Fatalf("Undo answered %d %s, want 200 with no word of the deleted %s", response.Code, response.Body.String(), c.kind)
+			}
+			lines := decodeBody[goingUndoAnswer](t, response).Lines
+			if len(lines) != 1 || lines[0].Outcome.Code != codeGoingUndoChanged ||
+				!strings.Contains(lines[0].Outcome.Message, "the "+c.kind+" was deleted after this run, by user alice, so no words were put back") ||
+				len(lines[0].Fields) != 1 || lines[0].Fields[0].OK || lines[0].Fields[0].Now != nil {
+				t.Fatalf("Undo answered %+v, want the %s named deleted by alice, nothing put back", lines, c.kind)
+			}
+			if deleted := rig.textOf(t, `select (deleted_at is not null)::text from `+c.kind+`s where id = $1::uuid`, id); deleted != "true" {
+				t.Fatalf("after Undo the %s is deleted %s, want it left deleted", c.kind, deleted)
+			}
+			standing(t, run)
+		})
+	}
+}
+
+// TestADeleteOfAPostIsNotUndone (R6, the architect's ruling of 12:50Z): a run's delete of a comment
+// or an issue message is undone by nothing - nothing restores a deleted post - so Undo's line names
+// it "deleted, not undone", sends nothing, and the run counts it in no count, before Undo and
+// after it, and is never undoable.
+func TestADeleteOfAPostIsNotUndone(t *testing.T) {
+	t.Parallel()
+	rig := newGoingPlanRig(t)
+	never := func(t *testing.T, run, when string) {
+		t.Helper()
+		got := decodeBody[goingRun](t, dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/going/runs/"+run, nil, "alice"))
+		if got.Undoable || got.UndoneAt != nil || goingUndoCountsOf(got) != (goingUndoCounts{}) {
+			t.Fatalf("%s the run reads undoable %v, undone at %v, counts %+v; want it never undoable and in no count", when, got.Undoable, got.UndoneAt, goingUndoCountsOf(got))
+		}
+	}
+	for _, c := range goingPostCases {
+		t.Run("a "+c.kind, func(t *testing.T) {
+			id, _ := c.make(t, rig, "The ferry leaves at noon.")
+			run := rig.ran(t, "delete the "+c.kind+" of the ferry", c.deleting(id))
+			never(t, run, "before Undo")
+			line := rig.undone(t, run, c.delete)[0]
+			if line.Undo != goingUndoNotUndone || line.Outcome != (goingWriteOutcome{OK: true, Status: http.StatusOK, Message: goingDeletedNotUndone}) {
+				t.Fatalf("Undo answered %+v, want %q", line, goingDeletedNotUndone)
+			}
+			if landed := rig.count(t, `select count(*) from going_landings where run_id = $1::uuid and phase = 'undo'`, run); landed != 0 {
+				t.Fatalf("Undo landed %d requests, want none", landed)
+			}
+			never(t, run, "after Undo")
+		})
+	}
 }
 
 // goingTakesTheCallingSession reports whether every row of the write tool name fills a

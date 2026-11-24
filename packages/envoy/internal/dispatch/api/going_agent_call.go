@@ -323,19 +323,19 @@ func (a *goingHeldAnswer) WriteHeader(status int)      { a.status = status }
 func (a *goingHeldAnswer) Write(p []byte) (int, error) { return a.body.Write(p) }
 
 // callRun reads the call's run and refuses a call whose lease token is not the run's, or whose
-// run no longer works. A withdrawn run (goingRunWithdrawnOf) is stopped with
-// goingRunWithdrawnReason and refused as one that no longer works, so it reads nothing more, and
-// writes nothing more of what it may quote.
+// run no longer works. A withdrawn run (goingRunWithdrawerOf) is stopped with its withdrawer's
+// reason and refused as one that no longer works, so it reads nothing more, and writes nothing
+// more of what it may quote.
 func (a *AgentListener) callRun(ctx context.Context, request agentwire.CallRequest) (goingCallRun, *agentwire.Error) {
 	run := goingCallRun{id: request.Run}
 	var token *string
 	var state *string
 	var used []byte
-	var withdrawn bool
+	var withdrawer goingRunWithdrawer
 	err := a.s.deps.Store.Pool.QueryRow(ctx, `
-		select author_login, coalesce(kind, ''), coalesce(level, ''), budget_used, lease_token::text, state, `+goingRunWithdrawnOf("r.id")+`
+		select author_login, coalesce(kind, ''), coalesce(level, ''), budget_used, lease_token::text, state, `+goingRunWithdrawerOf("r.id")+`
 		from going_runs r where id = $1::uuid
-	`, request.Run).Scan(&run.login, &run.kind, &run.level, &used, &token, &state, &withdrawn)
+	`, request.Run).Scan(&run.login, &run.kind, &run.level, &used, &token, &state, &withdrawer)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return goingCallRun{}, goingStaleLease(request.Run)
 	}
@@ -345,8 +345,8 @@ func (a *AgentListener) callRun(ctx context.Context, request agentwire.CallReque
 	if token == nil || *token != request.LeaseToken || state == nil || *state != "working" {
 		return goingCallRun{}, goingStaleLease(request.Run)
 	}
-	if withdrawn {
-		if _, err := a.s.stopGoingRun(ctx, request.Run, goingRunWithdrawnReason); err != nil {
+	if withdrawer != goingRunNotWithdrawn {
+		if _, err := a.s.stopGoingRun(ctx, request.Run, withdrawer.reason()); err != nil {
 			return goingCallRun{}, goingAgentFailed(agentwire.CallCall, err)
 		}
 		return goingCallRun{}, goingStaleLease(request.Run)

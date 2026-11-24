@@ -1753,7 +1753,9 @@ export const dispatchToolSpecs = [
     },
     description:
       "Replace the body of a comment or a suggestion you wrote, to correct it. The author alone " +
-      "may edit a comment: every other caller is refused 403 NOT_AUTHOR. The comment keeps its " +
+      "may edit a comment: every other caller is refused 403 NOT_AUTHOR. Undo in the command bar " +
+      "writes the replaced body back, unless the comment changed after the edit: then Undo keeps " +
+      "the newer body and names who wrote it. The comment keeps its " +
       "id, its place in its thread and its anchor, and every read of it carries the time of the " +
       "edit. A Dispatch of this release keeps the body you replace: " +
       "dispatch read --ref dispatch://KEY/comment/<id> --history lists each earlier body with the " +
@@ -1780,7 +1782,9 @@ export const dispatchToolSpecs = [
     example: { comment: "01234567-0000-4000-8000-000000000001" },
     description:
       "Withdraw a comment or a suggestion you wrote, where the text itself should not stand. The " +
-      "author alone may delete a comment: every other caller is refused 403 NOT_AUTHOR. The " +
+      "author alone may delete a comment: every other caller is refused 403 NOT_AUTHOR. A delete " +
+      "cannot be undone: nothing restores a deleted comment, and Undo in the command bar leaves " +
+      "it deleted. The " +
       "comment keeps its id and its place in its thread, and no read of it gives any part of its " +
       "body again: each read of it marks it deleted and names who deleted it and when. The " +
       "events of a reply's creation and of each edit of the reply written before the delete keep " +
@@ -1868,7 +1872,9 @@ export const dispatchToolSpecs = [
     },
     description:
       "Replace the body of an issue message you wrote, to correct it. The author alone may edit a " +
-      "message: every other caller is refused 403 NOT_AUTHOR. Only a message on an issue is " +
+      "message: every other caller is refused 403 NOT_AUTHOR. Undo in the command bar writes the " +
+      "replaced body back, unless the message changed after the edit: then Undo keeps the newer " +
+      "body and names who wrote it. Only a message on an issue is " +
       "edited; a message of a direct conversation, which names no issue, is refused 409 " +
       "NOT_AN_ISSUE_MESSAGE. The message keeps its id and its place in its thread, and every read " +
       "of it carries the time of the edit. A Dispatch of this release keeps the body you replace: " +
@@ -1896,7 +1902,9 @@ export const dispatchToolSpecs = [
     example: { message: "01234567-0000-4000-8000-000000000001" },
     description:
       "Withdraw an issue message you wrote, where the text itself should not stand. The author " +
-      "alone may delete a message: every other caller is refused 403 NOT_AUTHOR. Only a message on " +
+      "alone may delete a message: every other caller is refused 403 NOT_AUTHOR. A delete cannot " +
+      "be undone: nothing restores a deleted message, and Undo in the command bar leaves it " +
+      "deleted. Only a message on " +
       "an issue is deleted; a message of a direct conversation, which names no issue, is refused " +
       "409 NOT_AN_ISSUE_MESSAGE. The message keeps its id and its place in its thread, and no read " +
       "of it gives any part of its body again: each read of it marks it deleted and names who " +

@@ -826,7 +826,7 @@ export interface paths {
     delete: operations["deleteApiV1CommentsById"];
     options?: never;
     head?: never;
-    /** @description Edit a comment's body: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing. The body it replaces is kept and GET /api/v1/comments/{id}/history reads it. The dashboard editor also sends blocks ([{id, from}], from in UTF-16 code units into the new body) and base_revision, the revision GET /api/v1/comments/{id}/blocks gave, so each block keeps its id; without them the ids follow the text. A comment of a closed issue is edited too, and a deleted one is 409 POST_DELETED. */
+    /** @description Edit a comment's body: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing. The body it replaces is kept and GET /api/v1/comments/{id}/history reads it. The dashboard editor also sends blocks ([{id, from}], from in UTF-16 code units into the new body) and base_revision, the revision GET /api/v1/comments/{id}/blocks gave, so each block keeps its id; without them the ids follow the text. A comment of a closed issue is edited too, and a deleted one is 409 POST_DELETED. Answers the comment as the edit left it, with previous {body}, the body the edit replaced, as the comment held it when the edit took its owner's lock. The command bar's Undo of an edit sends that body back here under an in-process condition it carries on the request's context, never in the body: the comment must still hold the body the edit left, decided under that lock, or the write back is refused 409 COMMENT_CHANGED with nothing written; a write back carrying no condition is refused 500 GOING_CONDITION_MISSING. */
     patch: operations["patchApiV1CommentsById"];
     trace?: never;
   };
@@ -1365,7 +1365,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's own command-bar run: {id, conversation, continues, words, context, level, mode, line (ask, do or file: the line on top the run was started from; null for a run not started from the line), state (queued, working, waiting, done, stopped or failed), stop_reason, issues, used {calls, working_ms, tokens, model_ms?, pace_ms?, tool_ms?, queued_ms? (the milliseconds its model calls took, of those the milliseconds the agent's pacer held them before they were sent, the milliseconds its tool calls took and those it waited in the queue before its first claim, each left out while 0)}, created_at, finished_at, undoable (true while a call of the run landed a change Undo would still try to take back, decided from the call's record as the undo decides it: its undo has not landed, its tool's undo is not not_undone, the request of it that landed last is its own, not a close's reason sent before it, and its record says what it found and left and that it changed something - not a claim its route answered claim_changed false, a create answered 200 for an issue Dispatch already held, or a call whose record cannot be read; false for a run that changed nothing), undone_at (when the run's Undo landed, its newest undo landing; null for a run never undone), undoable_count (how many of the run's calls Undo can still take back now: those undoable is true for, a call whose undo's request failed among them), undone_count (how many an Undo took back: the calls whose undo landed a change), standing_count (how many Undo tried and could not take back, so their change stands: a call whose undo its record refuses with nothing sent - GOING_UNDO_AFTER_UNREAD, GOING_UNDO_BEFORE_UNREAD, GOING_UNDO_UNKNOWN, GOING_UNDO_UNSERVED, GOING_UNDO_NOT_CALLERS_CLAIM, or a record it cannot use - and one whose undo kept what another writer changed since the run, GOING_UNDO_CHANGED)}. A call Undo takes back nothing of by design - sent, not undone, as a message, a broadcast, a review and every write Dispatch does not undo - is in none of the three counts, and so is a call that changed nothing and one whose undo's request changed nothing. A withdrawn run - one given the words of a comment or an issue message that is deleted since, by an answer of one of its calls or by the notes of an earlier run of its conversation its claim handed it - reads state stopped with a stop_reason that starts ANSWER_WITHDRAWN, whatever it stored, with its words and its Undo as they stand; one that has not ended is stopped so first, and stores nothing more. A run of anyone else's, one the record does not hold, one whose conversation History no longer lists and an id that is no uuid are one answer, 404 GOING_RUN_NOT_FOUND. */
+    /** @description The caller's own command-bar run: {id, conversation, continues, words, context, level, mode, line (ask, do or file: the line on top the run was started from; null for a run not started from the line), state (queued, working, waiting, done, stopped or failed), stop_reason, issues, used {calls, working_ms, tokens, model_ms?, pace_ms?, tool_ms?, queued_ms? (the milliseconds its model calls took, of those the milliseconds the agent's pacer held them before they were sent, the milliseconds its tool calls took and those it waited in the queue before its first claim, each left out while 0)}, created_at, finished_at, undoable (true while a call of the run landed a change Undo would still try to take back, decided from the call's record as the undo decides it: its undo has not landed, its tool's undo is not not_undone, the request of it that landed last is its own, not a close's reason sent before it, and its record says what it found and left and that it changed something - not a claim its route answered claim_changed false, a create answered 200 for an issue Dispatch already held, or a call whose record cannot be read; false for a run that changed nothing), undone_at (when the run's Undo landed, its newest undo landing; null for a run never undone), undoable_count (how many of the run's calls Undo can still take back now: those undoable is true for, a call whose undo's request failed among them), undone_count (how many an Undo took back: the calls whose undo landed a change), standing_count (how many Undo tried and could not take back, so their change stands: a call whose undo its record refuses with nothing sent - GOING_UNDO_AFTER_UNREAD, GOING_UNDO_BEFORE_UNREAD, GOING_UNDO_UNKNOWN, GOING_UNDO_UNSERVED, GOING_UNDO_NOT_CALLERS_CLAIM, or a record it cannot use - and one whose undo kept what another writer changed since the run, GOING_UNDO_CHANGED)}. A call Undo takes back nothing of by design - sent, not undone, as a message, a broadcast, a review and every write Dispatch does not undo, and a delete of a comment or an issue message, deleted, not undone - is in none of the three counts, and so is a call that changed nothing and one whose undo's request changed nothing. A withdrawn run - one given the words of a comment or an issue message that is deleted since, by an answer of one of its calls or by the notes of an earlier run of its conversation its claim handed it - reads state stopped with a stop_reason that starts ANSWER_WITHDRAWN, whatever it stored, with its words and its Undo as they stand; one that has not ended is stopped so first, and stores nothing more. A run each of whose posts that no longer stands was deleted by a delete call of its own that landed (dispatch_delete_comment, dispatch_delete_message) is withdrawn by its own deletes alone, and its stop_reason starts ANSWER_WITHDRAWN_BY_RUN instead. A run of anyone else's, one the record does not hold, one whose conversation History no longer lists and an id that is no uuid are one answer, 404 GOING_RUN_NOT_FOUND. */
     get: operations["getApiV1GoingRunsById"];
     put?: never;
     post?: never;
@@ -1382,7 +1382,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's own command-bar run's frames as server-sent events: each frame is `id:` its sequence, `event:` its name (the agent's frames, plan for each plan made or answered, and end, the run's end {state, reason, offers, issue?}, where issue is the key of the issue a new-issue run filed, whose offers then hold undo) and `data:` its JSON, written as the run stores it. Last-Event-ID resumes after that sequence. The stream ends once the run has ended and every frame it stored is written; a stream with no frame to write for 5m0s writes keepalive and ends, and the reader opens it again from its last sequence. A withdrawn run (GET /api/v1/going/runs/{id}) streams none of its frames: each read of the frames reads whether the run is withdrawn beside them, and once it is, the stream writes one end {state: stopped, reason starting ANSWER_WITHDRAWN, offers: []} under the id of the run's last end, stopping a run that has not ended first, and ends; a stream resumed at or past that id is written nothing. So a run still working when the post is deleted writes no frame past the delete. One process serves at most 4 streams of one run and 20 of one person's runs, and refuses the next 429 GOING_RUN_READERS_FULL. 404 GOING_RUN_NOT_FOUND as GET /api/v1/going/runs/{id} answers it. */
+    /** @description The caller's own command-bar run's frames as server-sent events: each frame is `id:` its sequence, `event:` its name (the agent's frames, plan for each plan made or answered, and end, the run's end {state, reason, offers, issue?}, where issue is the key of the issue a new-issue run filed, whose offers then hold undo) and `data:` its JSON, written as the run stores it. Last-Event-ID resumes after that sequence. The stream ends once the run has ended and every frame it stored is written; a stream with no frame to write for 5m0s writes keepalive and ends, and the reader opens it again from its last sequence. A withdrawn run (GET /api/v1/going/runs/{id}) streams none of its frames: each read of the frames reads whether the run is withdrawn beside them, and once it is, the stream writes one end {state: stopped, reason starting ANSWER_WITHDRAWN, offers: []} under the id of the run's last end, stopping a run that has not ended first, and ends; a stream resumed at or past that id is written nothing. So a run still working when the post is deleted writes no frame past the delete. A run its own deletes alone withdrew is written its plan frames before that end, which carry a plan's number and state and no word, and none of its other frames, and its end's reason starts ANSWER_WITHDRAWN_BY_RUN. One process serves at most 4 streams of one run and 20 of one person's runs, and refuses the next 429 GOING_RUN_READERS_FULL. 404 GOING_RUN_NOT_FOUND as GET /api/v1/going/runs/{id} answers it. */
     get: operations["getApiV1GoingRunsByIdEvents"];
     put?: never;
     post?: never;
@@ -1399,7 +1399,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's own command-bar run's latest plan: {run, plan, state (waiting, approved, running, done or rejected), summary, mode (ask or auto_review), rows: [{row, tool, class, arguments, needs, state (waiting, approved, unticked, running, done, failed or skipped), item, issue, fields, now, claim, waits, changed, result {status, code, message, delivery}}], version, withdrawn?}. Each row is one change the run's model proposed: the write tool and the arguments it runs with, the rows before it that it needs, the item it changes, the fields it writes and their value now, the holder of its issue's claim, why it waits for the person in every mode (its class, delivers_to_session, claimed_by_session), and changed for a row that waits again because its item changed after the person saw it. result is null until the row's write answered, and its delivery is whether a row that sends a message or a broadcast was sent, queued (a delivery not yet confirmed included) or refused, null for any other row. version names the plan as this answer shows it, and moves whenever what it shows moves; an approval names it. While the run waits, each waiting row's item is read again as the caller, and the plan shows that read from then on. withdrawn, true, is on the plan of a withdrawn run alone (GET /api/v1/going/runs/{id}), which may quote the deleted post, so its summary is empty, each row's arguments {} and its now null, no item is read again, and it is approved and revised by nobody (409 GOING_RUN_WITHDRAWN). 404 GOING_RUN_NOT_FOUND for a run that is not the caller's or that the record does not hold, 404 GOING_PLAN_NOT_FOUND for a run that proposed no plan. */
+    /** @description The caller's own command-bar run's latest plan: {run, plan, state (waiting, approved, running, done or rejected), summary, mode (ask or auto_review), rows: [{row, tool, class, arguments, needs, state (waiting, approved, unticked, running, done, failed or skipped), item, issue, fields, now, claim, waits, changed, deleted?, result {status, code, message, delivery}}], version, withdrawn?}. Each row is one change the run's model proposed: the write tool and the arguments it runs with, the rows before it that it needs, the item it changes, the fields it writes and their value now, the holder of its issue's claim, why it waits for the person in every mode (its class, delivers_to_session, claimed_by_session), and changed for a row that waits again because its item changed after the person saw it. result is null until the row's write answered, and its delivery is whether a row that sends a message or a broadcast was sent, queued (a delivery not yet confirmed included) or refused, null for any other row. A row of an edit or a delete of a comment or an issue message is a row of the post: item is the post, issue its issue, fields [body] and now {author, body}; once its author deletes the post, whatever the row's state, now is the delete's mark {author, deleted_at, deleted_by} with no part of the body, and deleted, true, is on the row alone. version names the plan as this answer shows it, and moves whenever what it shows moves; an approval names it. While the run waits, each waiting row's item is read again as the caller, and the plan shows that read from then on. withdrawn, true, is on the plan of a run another writer's delete withdrew alone (GET /api/v1/going/runs/{id}), which may quote the deleted post, so its summary is empty, each row's arguments {} and its now null, no item is read again, and it is approved and revised by nobody (409 GOING_RUN_WITHDRAWN). The plan of a run its own deletes alone withdrew (a stop_reason starting ANSWER_WITHDRAWN_BY_RUN) is answered as an ended run's, its rows and their results as they stand, with an empty summary, which its model wrote. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's or that the record does not hold, 404 GOING_PLAN_NOT_FOUND for a run that proposed no plan. */
     get: operations["getApiV1GoingRunsByIdPlan"];
     put?: never;
     post?: never;
@@ -1418,7 +1418,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Approve the caller's own run's waiting plan {plan, rows?: [{row, tick, values?}], version?}: each named row's tick, where false leaves the row out and every row that needs it, and values, arguments of the row's tool put over the arguments the plan shows; a waiting row the body does not name is approved as shown. version is the plan's version as the approving page read it: 409 GOING_PLAN_CHANGED, nothing written, where the plan's version moved since, as when another page read the plan again and its rows show another value. Each ticked row is read again as the caller with its values: one whose item changed after the plan showed - another value now, or another holder of its issue's claim - shows the new value and waits for approval again, changed; every other is approved over that read. The approval moves the run's grant to the caller's own sign-in or personal token (403 RUN_NEEDS_PERSON_CREDENTIAL for any other credential), is saved as a step of the run, and makes the run ready, whose agent runs the approved rows in order, each read again before its write: a row whose item changed since waits again, and one whose needed row failed is skipped. Answers the plan as GET answers it. 409 GOING_RUN_WITHDRAWN, nothing written, for the plan of a withdrawn run (GET /api/v1/going/runs/{id}), 409 GOING_PLAN_NOT_CURRENT for a plan that is not the run's latest, 409 GOING_PLAN_NOT_WAITING for a run or a plan that does not wait, 400 GOING_PLAN_VALUES for a row that is no waiting row of the plan, values its tool's schema refuses, or a value of "$N" the row may not hold - one that names no new issue of the plan the row waits for, one in the argument that names the row's own item, or one inside an object - in words that name the rows as the plan does and say which values the field takes, 400 GOING_PLAN_INPUT for a row with no tick. */
+    /** @description Approve the caller's own run's waiting plan {plan, rows?: [{row, tick, values?}], version?}: each named row's tick, where false leaves the row out and every row that needs it, and values, arguments of the row's tool put over the arguments the plan shows; a waiting row the body does not name is approved as shown. version is the plan's version as the approving page read it: 409 GOING_PLAN_CHANGED, nothing written, where the plan's version moved since, as when another page read the plan again and its rows show another value. Each ticked row is read again as the caller with its values: one whose item changed after the plan showed - another value now, or another holder of its issue's claim - shows the new value and waits for approval again, changed; every other is approved over that read. The approval moves the run's grant to the caller's own sign-in or personal token (403 RUN_NEEDS_PERSON_CREDENTIAL for any other credential), is saved as a step of the run, and makes the run ready, whose agent runs the approved rows in order, each read again before its write: a row whose item changed since waits again, and one whose needed row failed is skipped. Answers the plan as GET answers it. 409 GOING_RUN_WITHDRAWN, nothing written, for the plan of a run another writer's delete withdrew (GET /api/v1/going/runs/{id}), 409 GOING_PLAN_NOT_CURRENT for a plan that is not the run's latest, 409 GOING_PLAN_NOT_WAITING for a run or a plan that does not wait - a run its own deletes alone withdrew reads stopped, so its plan among them - 409 POST_DELETED, nothing written, for a ticked row whose comment or issue message its author deleted after the plan read it, which the person unticks to approve the rest, 400 GOING_PLAN_VALUES for a row that is no waiting row of the plan, values its tool's schema refuses, or a value of "$N" the row may not hold - one that names no new issue of the plan the row waits for, one in the argument that names the row's own item, or one inside an object - in words that name the rows as the plan does and say which values the field takes, 400 GOING_PLAN_INPUT for a row with no tick. */
     post: operations["postApiV1GoingRunsByIdPlanApprove"];
     delete?: never;
     options?: never;
@@ -1452,7 +1452,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Ask, in words, for another plan in place of the caller's own run's waiting plan {plan, words}: the plan is rejected and nothing of it runs, and the words, at most 4000 characters (400 GOING_PLAN_INPUT), are saved as a step of the run beside the plan's rows, which the run's model reads when it proposes the next plan. Like an approval it moves the run's grant to the caller's credential, and makes the run ready. Answers the rejected plan. 409 GOING_RUN_WITHDRAWN, nothing written, for the plan of a withdrawn run (GET /api/v1/going/runs/{id}), 409 GOING_PLAN_NOT_CURRENT for a plan that is not the run's latest, 409 GOING_PLAN_NOT_WAITING for a run or a plan that does not wait. */
+    /** @description Ask, in words, for another plan in place of the caller's own run's waiting plan {plan, words}: the plan is rejected and nothing of it runs, and the words, at most 4000 characters (400 GOING_PLAN_INPUT), are saved as a step of the run beside the plan's rows, which the run's model reads when it proposes the next plan. Like an approval it moves the run's grant to the caller's credential, and makes the run ready. Answers the rejected plan. 409 GOING_RUN_WITHDRAWN, nothing written, for the plan of a run another writer's delete withdrew (GET /api/v1/going/runs/{id}), 409 GOING_PLAN_NOT_CURRENT for a plan that is not the run's latest, 409 GOING_PLAN_NOT_WAITING for a run or a plan that does not wait, a run its own deletes alone withdrew among them. */
     post: operations["postApiV1GoingRunsByIdPlanRevise"];
     delete?: never;
     options?: never;
@@ -1486,7 +1486,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Undo the caller's own command-bar run, as the credential that sends this and in-process: every call of the run that landed a request (each row of its plan that ran), newest first, each by the undo its tool states. write_back reads the item's value now and writes back the value the call found, field by field, only where the value now is the one the call left (an issue's fields and rank, an ask's text, a document's content as a further version); a later value another writer left is kept, its field refused 409 GOING_UNDO_CHANGED naming what it holds and who changed that field after the call landed - read from what came after the call's landing, never from the item's newest event, and named as another writer where no event after the landing names one - and the rest is written back. reverse runs the call's reverse: a claim released - none where the claim route answered claim_changed false - a release taken back only where the holder it released is the one the undo's own claim is recorded as, the session the caller's credential proved or else the person (409 GOING_UNDO_NOT_CALLERS_CLAIM otherwise, with nothing written), a follow unfollowed, a resolved comment reopened, an opened ask or approval request retracted - none where the approval route answered opened false - and a suggestion of the run rejected while it is still open. close_created closes the issue the call created, posting nothing on it, only while its status is the one the create left it in - none for a create its route answered 200 with the issue Dispatch already held for the external reference it named. not_undone names the call sent, not undone: a message, a broadcast, a review. What a call found and left is read off what its route answered of its own transaction, recorded beside its landing, never off a read since, so a run whose process ended after a write landed is undone all the same; a call whose record does not say what it left is refused 409 GOING_UNDO_AFTER_UNREAD, one whose route found a value the read its row was approved over did not see 409 GOING_UNDO_BEFORE_UNREAD, a call that names no write tool 409 GOING_UNDO_UNKNOWN, and one whose tool states an undo this server has no way to run 501 GOING_UNDO_UNSERVED, each with nothing undone. Every undo that puts a value back has the route it writes through decide, under that write's own lock, that the item still holds what the call left, by an in-process condition the undo carries on the request's context, never a body member, so a change another writer makes between the undo's read and its write is kept. An undo sends one request at the most, which records its landing in its route's own transaction under the key of the call it undoes, with the line this answers, so a second undo of the run, after a crash or beside the first, answers each call whose undo landed from that landing and sends nothing twice. Whether an undo landed is read from that landing, not from its route's status: a request its route answered below 300 that committed nothing - the item already stood as the undo asked, as a follow of a session that follows the ask already answers 204 - is answered ok, saying it changed nothing and there is nothing to undo; that answer, and a call kept whole because another writer changed it since the run (409 GOING_UNDO_CHANGED, found by the undo's read with nothing sent, or by its route's refusal), is recorded as the call's undo landing in a statement of its own, so a later undo answers it from there and sends nothing again. A press under an Idempotency-Key binds the run as its key's recovery point before it sends anything, so a repeat under the key, however the first press ended - its process gone mid-walk included - walks the run again and answers its lines, Idempotency-Replayed: ?1, rather than 409 KEY_COMMITTED. Answers 200 {lines: [{plan, row, tool, item, undo, outcome, fields: [{field, ok, message, now?, by?}]}]}, one line per landed call, fields one per field of the item the call changed, a field's message never naming its own field; a field kept because another writer changed it after the run also carries now, the value it holds as the item's read answers it, and by {kind, id}, who changed it after the call landed, absent where no event after the landing names one. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's, that the store does not hold, or whose conversation History no longer lists: its newest run is older than seven days. */
+    /** @description Undo the caller's own command-bar run, as the credential that sends this and in-process: every call of the run that landed a request (each row of its plan that ran), newest first, each by the undo its tool states. write_back reads the item's value now and writes back the value the call found, field by field, only where the value now is the one the call left (an issue's fields and rank, an ask's text, a comment's or an issue message's body, a document's content as a further version); a later value another writer left is kept, its field refused 409 GOING_UNDO_CHANGED naming what it holds and who changed that field after the call landed - read from what came after the call's landing, never from the item's newest event, and named as another writer where no event after the landing names one - and the rest is written back. A post's body is written back through its PATCH route, which answered the body the edit replaced as previous; a post its author deleted after the run is kept, named deleted and by whom, with no part of its body, and the route's 409 COMMENT_CHANGED, MESSAGE_CHANGED or POST_DELETED is kept as another writer's change. reverse runs the call's reverse: a claim released - none where the claim route answered claim_changed false - a release taken back only where the holder it released is the one the undo's own claim is recorded as, the session the caller's credential proved or else the person (409 GOING_UNDO_NOT_CALLERS_CLAIM otherwise, with nothing written), a follow unfollowed, a resolved comment reopened, an opened ask or approval request retracted - none where the approval route answered opened false - and a suggestion of the run rejected while it is still open. close_created closes the issue the call created, posting nothing on it, only while its status is the one the create left it in - none for a create its route answered 200 with the issue Dispatch already held for the external reference it named. not_undone names the call sent, not undone: a message, a broadcast, a review; and a delete of a comment or an issue message "deleted, not undone", since nothing restores a deleted post. What a call found and left is read off what its route answered of its own transaction, recorded beside its landing, never off a read since, so a run whose process ended after a write landed is undone all the same; a call whose record does not say what it left is refused 409 GOING_UNDO_AFTER_UNREAD, one whose route found a value the read its row was approved over did not see 409 GOING_UNDO_BEFORE_UNREAD, a call that names no write tool 409 GOING_UNDO_UNKNOWN, and one whose tool states an undo this server has no way to run 501 GOING_UNDO_UNSERVED, each with nothing undone. Every undo that puts a value back has the route it writes through decide, under that write's own lock, that the item still holds what the call left, by an in-process condition the undo carries on the request's context, never a body member, so a change another writer makes between the undo's read and its write is kept. An undo sends one request at the most, which records its landing in its route's own transaction under the key of the call it undoes, with the line this answers, so a second undo of the run, after a crash or beside the first, answers each call whose undo landed from that landing and sends nothing twice. Whether an undo landed is read from that landing, not from its route's status: a request its route answered below 300 that committed nothing - the item already stood as the undo asked, as a follow of a session that follows the ask already answers 204 - is answered ok, saying it changed nothing and there is nothing to undo; that answer, and a call kept whole because another writer changed it since the run (409 GOING_UNDO_CHANGED, found by the undo's read with nothing sent, or by its route's refusal), is recorded as the call's undo landing in a statement of its own, so a later undo answers it from there and sends nothing again. A press under an Idempotency-Key binds the run as its key's recovery point before it sends anything, so a repeat under the key, however the first press ended - its process gone mid-walk included - walks the run again and answers its lines, Idempotency-Replayed: ?1, rather than 409 KEY_COMMITTED. Answers 200 {lines: [{plan, row, tool, item, undo, outcome, fields: [{field, ok, message, now?, by?}]}]}, one line per landed call, fields one per field of the item the call changed, a field's message never naming its own field; a field kept because another writer changed it after the run also carries now, the value it holds as the item's read answers it, and by {kind, id}, who changed it after the call landed, absent where no event after the landing names one. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's, that the store does not hold, or whose conversation History no longer lists: its newest run is older than seven days. */
     post: operations["postApiV1GoingRunsByIdUndo"];
     delete?: never;
     options?: never;
@@ -2364,7 +2364,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's own command-bar runs whose latest plan waits for them, while History lists their conversation, newest plan first, and nobody else's, which the Inbox shows: each row is {run, conversation, words, plan, summary, waiting (how many of its rows wait), created_at, version}, version the plan's as GET /api/v1/going/runs/{id}/plan answers it, which an approval of the plan names (409 GOING_PLAN_CHANGED once the plan has moved on from it); the plan itself is GET /api/v1/going/runs/{id}/plan, where the person answers it. A withdrawn run (GET /api/v1/going/runs/{id}) is not listed: nobody may approve its plan, and its summary may quote the deleted post. Each change of what it lists appends going_plan.updated {login}, which wakes nobody. Pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}. */
+    /** @description The caller's own command-bar runs whose latest plan waits for them, while History lists their conversation, newest plan first, and nobody else's, which the Inbox shows: each row is {run, conversation, words, plan, summary, waiting (how many of its rows wait), created_at, version}, version the plan's as GET /api/v1/going/runs/{id}/plan answers it, which an approval of the plan names (409 GOING_PLAN_CHANGED once the plan has moved on from it); the plan itself is GET /api/v1/going/runs/{id}/plan, where the person answers it. A withdrawn run (GET /api/v1/going/runs/{id}) is not listed, whoever withdrew it: nobody may approve its plan, and its summary may quote the deleted post; a run its own deletes alone withdrew reads stopped, and no ended run is listed. Each change of what it lists appends going_plan.updated {login}, which wakes nobody. Pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}. */
     get: operations["getApiV1MeGoingPlans"];
     put?: never;
     post?: never;
@@ -2381,7 +2381,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description History: the caller's own command-bar conversations, and nobody else's, each listed until its newest run is seven days old, the one whose newest run started last first: each row is {id (its first run's id), newest_at, runs}, its runs newest first, each as GET /api/v1/going/runs/{id} answers it, with undoable, whether Undo can still take back a change of it, undone_at, when its Undo landed (null for a run never undone), and undoable_count, undone_count and standing_count, how many of its changes Undo can still take back, took back, and tried and could not take back. A withdrawn run, one given the words of a comment or an issue message deleted since, reads stopped with its stop_reason starting ANSWER_WITHDRAWN, as GET /api/v1/going/runs/{id} reads it, its words kept. A short answer of a pause in typing is no run and is in none. ?issue= keeps the conversations with a run whose landed requests touched that issue and ?q= those with a run whose words hold that text (any case); pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}. */
+    /** @description History: the caller's own command-bar conversations, and nobody else's, each listed until its newest run is seven days old, the one whose newest run started last first: each row is {id (its first run's id), newest_at, runs}, its runs newest first, each as GET /api/v1/going/runs/{id} answers it, with undoable, whether Undo can still take back a change of it, undone_at, when its Undo landed (null for a run never undone), and undoable_count, undone_count and standing_count, how many of its changes Undo can still take back, took back, and tried and could not take back. A withdrawn run, one given the words of a comment or an issue message deleted since, reads stopped with its stop_reason starting ANSWER_WITHDRAWN, or ANSWER_WITHDRAWN_BY_RUN where its own deletes alone withdrew it, as GET /api/v1/going/runs/{id} reads it, its words kept. A short answer of a pause in typing is no run and is in none. ?issue= keeps the conversations with a run whose landed requests touched that issue and ?q= those with a run whose words hold that text (any case); pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}. */
     get: operations["getApiV1MeGoingRuns"];
     put?: never;
     post?: never;
@@ -2543,7 +2543,7 @@ export interface paths {
     delete: operations["deleteApiV1MessagesById"];
     options?: never;
     head?: never;
-    /** @description Edit an issue message's body: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing, as the comment edit reads it. The body it replaces is kept and GET /api/v1/messages/{id}/history reads it; the block ids follow the text, since no editor carries them through the edit. A message of a closed issue is edited too. A message of a conversation with no issue is 409 NOT_AN_ISSUE_MESSAGE, and a deleted message 409 POST_DELETED. */
+    /** @description Edit an issue message's body: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing, as the comment edit reads it. The body it replaces is kept and GET /api/v1/messages/{id}/history reads it; the block ids follow the text, since no editor carries them through the edit. A message of a closed issue is edited too. A message of a conversation with no issue is 409 NOT_AN_ISSUE_MESSAGE, and a deleted message 409 POST_DELETED. Answers the message as the edit left it, with previous {body}, the body the edit replaced, as the message held it when the edit took its issue's lock. The command bar's Undo of an edit sends that body back here under an in-process condition it carries on the request's context, never in the body: the message must still hold the body the edit left, decided under that lock, or the write back is refused 409 MESSAGE_CHANGED with nothing written; a write back carrying no condition is refused 500 GOING_CONDITION_MISSING. */
     patch: operations["patchApiV1MessagesById"];
     trace?: never;
   };
@@ -4556,6 +4556,40 @@ export interface components {
       state: string;
       target: string;
     };
+    CommentEdited: {
+      anchor: components["schemas"]["Anchor"] | null;
+      anchor_block?: components["schemas"]["BlockPath"];
+      anchor_block_error?: string;
+      answers: null | string;
+      artifact_id: null | string;
+      ask_id: null | string;
+      author: components["schemas"]["Actor"];
+      body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
+      deliveries: components["schemas"]["CommentDelivery"][] | null;
+      edited_at: null | string;
+      id: string;
+      issue_key: null | string;
+      mentions: components["schemas"]["CommentMention"][] | null;
+      previous: components["schemas"]["EditedPostBody"];
+      reply_block: components["schemas"]["ReplyBlockWithTrees"] | null;
+      reply_to: null | string;
+      resolved: boolean;
+      resolved_at: null | string;
+      resolved_by: components["schemas"]["Actor"] | null;
+      suggestion: components["schemas"]["Suggestion"] | null;
+      turn: null | string;
+    };
     CommentMention: {
       delivery: string;
       session_id: null | string;
@@ -5346,6 +5380,9 @@ export interface components {
       expected: string;
       scope: string;
     };
+    EditedPostBody: {
+      body: string;
+    };
     ErrorBody: {
       code: string;
       error: string;
@@ -5487,6 +5524,7 @@ export interface components {
       changed: boolean;
       claim: components["schemas"]["GoingHolder"] | null;
       class: string;
+      deleted?: boolean;
       fields: string[] | null;
       issue: string;
       item: string;
@@ -6473,6 +6511,25 @@ export interface components {
       requested_by: components["schemas"]["Actor"] | null;
       session_id: string;
       state: string;
+    };
+    MessageEdited: {
+      author: components["schemas"]["Actor"];
+      body: string;
+      broadcast_id: null | string;
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
+      deliveries: components["schemas"]["MessageDelivery"][] | null;
+      /** Format: date-time */
+      edited_at: null | string;
+      id: string;
+      in_reply_to: null | string;
+      issue_key: null | string;
+      previous: components["schemas"]["EditedPostBody"];
+      reply_block: components["schemas"]["ReplyBlock"] | null;
+      target: null | string;
     };
     MessageRead: {
       message: components["schemas"]["MessageWithTrees"];
@@ -9944,7 +10001,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["CommentWithTrees"];
+          "application/json": components["schemas"]["CommentEdited"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -14249,7 +14306,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Message"];
+          "application/json": components["schemas"]["MessageEdited"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -16681,6 +16738,7 @@ export type ClaimIssueInput = components["schemas"]["ClaimIssueInput"];
 export type ClaimedIssue = components["schemas"]["ClaimedIssue"];
 export type Comment = components["schemas"]["Comment"];
 export type CommentDelivery = components["schemas"]["CommentDelivery"];
+export type CommentEdited = components["schemas"]["CommentEdited"];
 export type CommentMention = components["schemas"]["CommentMention"];
 export type CommentRead = components["schemas"]["CommentRead"];
 export type CommentReplyInput = components["schemas"]["CommentReplyInput"];
@@ -16775,6 +16833,7 @@ export type EditPrecondition = components["schemas"]["EditPrecondition"];
 export type EditPreconditionCurrent = components["schemas"]["EditPreconditionCurrent"];
 export type EditPreconditionError = components["schemas"]["EditPreconditionError"];
 export type EditPreconditionMismatch = components["schemas"]["EditPreconditionMismatch"];
+export type EditedPostBody = components["schemas"]["EditedPostBody"];
 export type ErrorBody = components["schemas"]["ErrorBody"];
 export type Event = components["schemas"]["Event"];
 export type FinishedIssue = components["schemas"]["FinishedIssue"];
@@ -16891,6 +16950,7 @@ export type MarkdownRoundTripInput = components["schemas"]["MarkdownRoundTripInp
 export type MarkdownRoundTripResponse = components["schemas"]["MarkdownRoundTripResponse"];
 export type Message = components["schemas"]["Message"];
 export type MessageDelivery = components["schemas"]["MessageDelivery"];
+export type MessageEdited = components["schemas"]["MessageEdited"];
 export type MessageRead = components["schemas"]["MessageRead"];
 export type MessageReplyInput = components["schemas"]["MessageReplyInput"];
 export type MessageReplyResult = components["schemas"]["MessageReplyResult"];

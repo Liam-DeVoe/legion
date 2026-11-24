@@ -352,7 +352,7 @@ func goingRunEnded(state string) bool {
 // readCallersGoingRun is the caller's own run the path's {id} names, with the caller's canonical
 // login, or false once it has answered the request: the run's 404 for an id that is no uuid, a run
 // of anyone else's, one the record does not hold and one History no longer lists. A withdrawn run
-// that has not ended is stopped first with goingRunWithdrawnReason (stopGoingRun), so every route
+// that has not ended is stopped first with its withdrawer's reason (stopGoingRun), so every route
 // that reads it reads it stopped, and it stores nothing more.
 func (s *server) readCallersGoingRun(w http.ResponseWriter, r *http.Request) (goingRun, string, bool) {
 	caller, ok := s.actingPerson(w, r)
@@ -366,8 +366,8 @@ func (s *server) readCallersGoingRun(w http.ResponseWriter, r *http.Request) (go
 		return goingRun{}, "", false
 	}
 	run, err := readGoingRun(r.Context(), s.deps.Store.Pool, id.String(), login)
-	if err == nil && run.withdrawn && run.FinishedAt == nil {
-		if _, err = s.stopGoingRun(r.Context(), run.ID, goingRunWithdrawnReason); err == nil {
+	if err == nil && run.withdrawnBy != goingRunNotWithdrawn && run.FinishedAt == nil {
+		if _, err = s.stopGoingRun(r.Context(), run.ID, run.withdrawnBy.reason()); err == nil {
 			run, err = readGoingRun(r.Context(), s.deps.Store.Pool, run.ID, login)
 		}
 	}
@@ -425,16 +425,16 @@ type goingRunFrame struct {
 	data     []byte
 }
 
-// readGoingRunFrames is the run's state, whether it is withdrawn (goingRunWithdrawnOf), and the
-// frames it stored after sequence after, at most goingRunStreamBatch of them, in one statement, so
-// a state that has ended is read with every frame the transaction that ended it stored, and the
-// verdict with the very frames it is read beside: frames read after a delete committed are read
+// readGoingRunFrames is the run's state, who withdrew it (goingRunWithdrawerOf), and the frames it
+// stored after sequence after, at most goingRunStreamBatch of them, in one statement, so a state
+// that has ended is read with every frame the transaction that ended it stored, and the verdict
+// with the very frames it is read beside: frames read after a delete committed are read
 // withdrawn. pgx.ErrNoRows is a run the record no longer holds.
-func (s *server) readGoingRunFrames(ctx context.Context, run string, after int64) (string, bool, []goingRunFrame, error) {
+func (s *server) readGoingRunFrames(ctx context.Context, run string, after int64) (string, goingRunWithdrawer, []goingRunFrame, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select r.state, w.withdrawn, e.sequence, e.name, e.data
+		select r.state, w.withdrawn_by, e.sequence, e.name, e.data
 		from going_runs r
-		cross join lateral (select `+goingRunWithdrawnOf("r.id")+` as withdrawn) w
+		cross join lateral (select `+goingRunWithdrawerOf("r.id")+` as withdrawn_by) w
 		left join lateral (
 			select sequence, name, data from going_run_events
 			where run_id = r.id and sequence > $2
@@ -445,19 +445,19 @@ func (s *server) readGoingRunFrames(ctx context.Context, run string, after int64
 		order by e.sequence
 	`, run, after, goingRunStreamBatch)
 	if err != nil {
-		return "", false, nil, err
+		return "", goingRunNotWithdrawn, nil, err
 	}
 	defer rows.Close()
 	var state string
-	var withdrawn bool
+	var withdrawnBy goingRunWithdrawer
 	var frames []goingRunFrame
 	read := false
 	for rows.Next() {
 		var sequence *int64
 		var name *string
 		var data []byte
-		if err := rows.Scan(&state, &withdrawn, &sequence, &name, &data); err != nil {
-			return "", false, nil, err
+		if err := rows.Scan(&state, &withdrawnBy, &sequence, &name, &data); err != nil {
+			return "", goingRunNotWithdrawn, nil, err
 		}
 		read = true
 		if sequence != nil {
@@ -465,12 +465,12 @@ func (s *server) readGoingRunFrames(ctx context.Context, run string, after int64
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return "", false, nil, err
+		return "", goingRunNotWithdrawn, nil, err
 	}
 	if !read {
-		return "", false, nil, pgx.ErrNoRows
+		return "", goingRunNotWithdrawn, nil, pgx.ErrNoRows
 	}
-	return state, withdrawn, frames, nil
+	return state, withdrawnBy, frames, nil
 }
 
 // streamGoingRunEvents is GET /api/v1/going/runs/{id}/events: the frames of the caller's own run
@@ -487,7 +487,10 @@ func (s *server) readGoingRunFrames(ctx context.Context, run string, after int64
 // one end frame (goingRunWithdrawnFrame) under the id of the run's ending, stopping the run first
 // where it has not ended (goingRunWithdrawal), and then ends. So a run still working at the delete
 // slips no frame past it, a reader that resumes before the ending is written the withdrawal alone,
-// and one that resumes at or past it, which was written the run's ending, is written nothing.
+// and one that resumes at or past it, which was written the run's ending, is written nothing. A
+// run its own deletes alone withdrew (goingRunWithdrawnByRun) is written its plan frames before
+// that ending as well, which carry a plan's number and state and no word, so the bar reads its
+// plan, and its end frame says so (goingRunWithdrawnByRunFrame).
 func (s *server) streamGoingRunEvents(w http.ResponseWriter, r *http.Request) {
 	run, login, ok := s.readCallersGoingRun(w, r)
 	if !ok {
@@ -519,18 +522,38 @@ func (s *server) streamGoingRunEvents(w http.ResponseWriter, r *http.Request) {
 	pass := func() bool {
 		woken, done := s.goingRunEvents.wait(run.ID)
 		defer done()
-		state, withdrawn, frames, err := s.readGoingRunFrames(r.Context(), run.ID, after)
+		state, withdrawnBy, frames, err := s.readGoingRunFrames(r.Context(), run.ID, after)
 		if err != nil {
 			// pgx.ErrNoRows is the sweep having deleted the run's conversation under this
 			// reader; either way there is nothing left to read.
 			return false
 		}
-		if withdrawn {
-			ending, err := s.goingRunWithdrawal(r.Context(), run.ID, state)
-			if err == nil && ending > after {
-				if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", ending, agentwire.FrameEnd, goingRunWithdrawnFrame); err == nil {
-					_ = stream.Flush()
+		if withdrawnBy != goingRunNotWithdrawn {
+			ending, err := s.goingRunWithdrawal(r.Context(), run.ID, state, withdrawnBy)
+			if err != nil || ending <= after {
+				return false
+			}
+			if withdrawnBy == goingRunWithdrawnByRun {
+				for _, frame := range frames {
+					if frame.sequence >= ending {
+						break
+					}
+					if frame.name == goingFramePlan {
+						if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", frame.sequence, frame.name, frame.data); err != nil {
+							return false
+						}
+					}
+					after = frame.sequence
 				}
+				// A batch cut short of the ending leaves plan frames to read: the next pass reads
+				// them, and the verdict again beside them.
+				if len(frames) == goingRunStreamBatch && after < ending-1 {
+					_ = stream.Flush()
+					return true
+				}
+			}
+			if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", ending, agentwire.FrameEnd, withdrawnBy.frame()); err == nil {
+				_ = stream.Flush()
 			}
 			return false
 		}
@@ -601,7 +624,8 @@ type goingWaitingPlansPage struct {
 // and every listed plan's rows in one read (readGoingPlanRows), from which each row counts the
 // plan's waiting rows and names its version as the plan's own answer does, the version POST
 // /api/v1/going/runs/{id}/plan/approve compares. A withdrawn run (goingRunWithdrawnOf) is not
-// listed: nobody may approve its plan, and the page would print its summary.
+// listed, whoever withdrew it: nobody may approve its plan, and the page would print its summary.
+// A run its own deletes alone withdrew reads stopped, and an ended run's plan is never listed.
 func (s *server) listMyGoingPlans(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {

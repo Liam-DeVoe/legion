@@ -19,6 +19,15 @@ package api
 // stream, its record's read, its plan's routes, its next call and its next claim, so it stores
 // nothing more. What the run stored stays as it is: what Dispatch wrote keeps its words, and every
 // read masks them.
+//
+// A run withdrawn by its own deletes alone - each post recorded for it that no longer stands was
+// deleted by a delete call of that run, which landed (goingRunWithdrawnByRun) - is withdrawn with
+// goingRunWithdrawnByRunReason, and its person still reads what the run did, which is no word of
+// the post: its stream writes its plan frames, which carry plan numbers and states, before the
+// end frame, and its plan reads as an ended run's, its rows and their results, each deleted
+// post's value as the delete's mark (maskDeletedPosts), and no summary, which the run's model
+// wrote and may quote the post (goingPlanStored.withdrawnByRunAnswer). Everything else is as for
+// any withdrawn run: no other frame, its record stopped, its notes handed on to no follow-up.
 
 import (
 	"bytes"
@@ -41,6 +50,37 @@ import (
 const goingRunWithdrawnReason = contracts.GoingErrorAnswerWithdrawn +
 	": a comment or an issue message this run read was deleted, so nothing the run wrote is shown"
 
+// goingRunWithdrawnByRunReason is goingRunWithdrawnReason for a run withdrawn by its own deletes
+// alone (goingRunWithdrawnByRun).
+const goingRunWithdrawnByRunReason = contracts.GoingErrorAnswerWithdrawnByRun +
+	": Dispatch withdrew this answer because this run deleted a comment or message it read."
+
+// goingRunWithdrawer is who withdrew a run, as goingRunWithdrawerOf reads it: nobody, the run
+// itself by its own deletes alone, or another writer.
+type goingRunWithdrawer string
+
+const (
+	goingRunNotWithdrawn     goingRunWithdrawer = ""
+	goingRunWithdrawnByRun   goingRunWithdrawer = "run"
+	goingRunWithdrawnByOther goingRunWithdrawer = "other"
+)
+
+// reason is the stop reason of a run w withdrew.
+func (w goingRunWithdrawer) reason() string {
+	if w == goingRunWithdrawnByRun {
+		return goingRunWithdrawnByRunReason
+	}
+	return goingRunWithdrawnReason
+}
+
+// frame is the end frame the stream of a run w withdrew writes.
+func (w goingRunWithdrawer) frame() []byte {
+	if w == goingRunWithdrawnByRun {
+		return goingRunWithdrawnByRunFrame
+	}
+	return goingRunWithdrawnFrame
+}
+
 // codeGoingRunWithdrawn refuses an approval or a revision of the plan of a withdrawn run.
 const codeGoingRunWithdrawn = "GOING_RUN_WITHDRAWN"
 
@@ -53,10 +93,11 @@ func writeGoingRunWithdrawn(w http.ResponseWriter) {
 }
 
 // goingRunWithdrawnOf is the condition that holds of the run whose id is run, a column or a
-// parameter of the statement it is put in, while it is withdrawn: a post recorded for it that no
-// row answers with deleted_at unset, which is a deleted post and a post whose row is gone alike,
-// as the short answer's verdict reads it (goingRunStateOf). going_run_posts_post leads with the
-// run, so it is one probe of that index for each post the run read.
+// parameter of the statement it is put in, while it is withdrawn, by whoever withdrew it
+// (goingRunWithdrawerOf names who): a post recorded for it that no row answers with deleted_at
+// unset, which is a deleted post and a post whose row is gone alike, as the short answer's verdict
+// reads it (goingRunStateOf). going_run_posts_post leads with the run, so it is one probe of that
+// index for each post the run read.
 func goingRunWithdrawnOf(run string) string {
 	return `exists (
 		select 1
@@ -67,25 +108,55 @@ func goingRunWithdrawnOf(run string) string {
 	)`
 }
 
+// goingRunWithdrawerOf is the expression that reads who withdrew the run whose id is run, a
+// column or a parameter of the statement it is put in (goingRunWithdrawer): the empty string
+// while every post recorded for it stands; 'run' where each that no longer stands was deleted by
+// the run's own delete call, a landing of it that sent DELETE to that post's own path; 'other'
+// where any was deleted by another writer, or its row is gone. It reads the posts
+// goingRunWithdrawnOf reads, and for each that no longer stands the run's own landings, which
+// going_landings' key leads with.
+func goingRunWithdrawerOf(run string) string {
+	return `(
+		select case when count(*) = 0 then '` + string(goingRunNotWithdrawn) + `'
+		  when bool_and(exists (
+		    select 1 from going_landings l
+		    where l.run_id = p.run_id and l.phase = 'do' and l.method = 'DELETE'
+		      and lower(l.path) = coalesce('/api/v1/comments/' || p.comment_id::text, '/api/v1/messages/' || p.message_id::text)
+		  )) then '` + string(goingRunWithdrawnByRun) + `'
+		  else '` + string(goingRunWithdrawnByOther) + `' end
+		from going_run_posts p
+		left join comments c on c.id = p.comment_id and c.deleted_at is null
+		left join messages m on m.id = p.message_id and m.deleted_at is null
+		where p.run_id = ` + run + ` and c.id is null and m.id is null
+	)`
+}
+
 // goingRunWithdrawnFrame is the data of the one frame the stream of a withdrawn run writes: the
 // run stopped with goingRunWithdrawnReason, offering nothing, whatever end the run stored.
-var goingRunWithdrawnFrame = func() []byte {
-	frame, err := json.Marshal(agentwire.EndFrame{State: agentwire.StateStopped, Reason: goingRunWithdrawnReason, Offers: []string{}})
+var goingRunWithdrawnFrame = goingRunEndFrame(goingRunWithdrawnReason)
+
+// goingRunWithdrawnByRunFrame is goingRunWithdrawnFrame for a run withdrawn by its own deletes
+// alone, which its stream writes after the run's plan frames.
+var goingRunWithdrawnByRunFrame = goingRunEndFrame(goingRunWithdrawnByRunReason)
+
+// goingRunEndFrame is the data of an end frame of a run stopped with reason, offering nothing.
+func goingRunEndFrame(reason string) []byte {
+	frame, err := json.Marshal(agentwire.EndFrame{State: agentwire.StateStopped, Reason: reason, Offers: []string{}})
 	if err != nil {
 		panic(err)
 	}
 	return frame
-}()
+}
 
-// goingRunWithdrawal is the sequence of the ending of run, withdrawn, in state as a read found it,
-// which goingRunWithdrawnFrame takes on its stream: a run that had not ended is stopped with
-// goingRunWithdrawnReason first, through the stop its person's Stop takes (stopGoingRun), so it
+// goingRunWithdrawal is the sequence of the ending of run, withdrawn by withdrawer, in state as a
+// read found it, which withdrawer's frame takes on its stream: a run that had not ended is stopped
+// with withdrawer's reason first, through the stop its person's Stop takes (stopGoingRun), so it
 // stores nothing more, and its ending is that stop's end frame; a run another writer ended
 // meanwhile keeps its own. The ending is the run's last end frame, after which an ended run stores
 // nothing, and 0 for a run that stored none.
-func (s *server) goingRunWithdrawal(ctx context.Context, run, state string) (int64, error) {
+func (s *server) goingRunWithdrawal(ctx context.Context, run, state string, withdrawer goingRunWithdrawer) (int64, error) {
 	if !goingRunEnded(state) {
-		if _, err := s.stopGoingRun(ctx, run, goingRunWithdrawnReason); err != nil {
+		if _, err := s.stopGoingRun(ctx, run, withdrawer.reason()); err != nil {
 			return 0, err
 		}
 	}

@@ -96,6 +96,15 @@ export const GOING_ERROR_ANSWER_FAILED = "ANSWER_FAILED";
  *  the run. Generated into Go as `contracts.GoingErrorAnswerWithdrawn`. */
 export const GOING_ERROR_ANSWER_WITHDRAWN = "ANSWER_WITHDRAWN";
 
+/** The error code of a run withdrawn only by its own deletes: every comment or issue message it
+ *  was given that no longer stands was deleted by a `dispatch_delete_comment` or
+ *  `dispatch_delete_message` call of this same run. Its answer may quote that post, so every read
+ *  of the run's stream gives its plan frames and this end alone, and its plan reads as an ended
+ *  run's, with no summary and each deleted post's value marked deleted with no part of its body.
+ *  A run another writer's delete withdrew ends with `GOING_ERROR_ANSWER_WITHDRAWN`. Generated
+ *  into Go as `contracts.GoingErrorAnswerWithdrawnByRun`. */
+export const GOING_ERROR_ANSWER_WITHDRAWN_BY_RUN = "ANSWER_WITHDRAWN_BY_RUN";
+
 /** The name of the one tool the model is given: another search of Dispatch.
  *  Generated into Go as `contracts.GoingSearchTool`. */
 export const GOING_SEARCH_TOOL = "search_dispatch";

@@ -419,3 +419,47 @@ func TestSetIssueStateAddsItsItemsToTheStoredList(t *testing.T) {
 		t.Errorf("the write sent %v, want the stored pin and dismissal with the new item, under seq 8: %v", sent, want)
 	}
 }
+
+// TestAReadWithHistoryReadsThePostsHistory: dispatch_read with history reads the history of the
+// comment or the issue message its ref names, each body the post's edits and its delete replaced,
+// through GET /api/v1/comments/{id}/history or GET /api/v1/messages/{id}/history, as `dispatch
+// read --history` reads it; the same ref without history reads the post itself. History beside
+// anything else - no ref, or a ref to an issue, its comments or a document - is refused, saying
+// what it needs, with nothing read.
+func TestAReadWithHistoryReadsThePostsHistory(t *testing.T) {
+	t.Parallel()
+	routes, err := goingReadToolRoutes("dispatch_read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const comment, message = "00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"
+	for _, c := range []struct {
+		name      string
+		arguments map[string]any
+		row, id   string
+	}{
+		{"a comment's history", map[string]any{"ref": "dispatch://DEMO-1/comment/" + comment, "history": true}, "GET /api/v1/comments/{id}/history", comment},
+		{"an issue message's history", map[string]any{"ref": "dispatch://DEMO-1/message/" + message, "history": true}, "GET /api/v1/messages/{id}/history", message},
+		{"a comment", map[string]any{"ref": "dispatch://DEMO-1/comment/" + comment}, "GET /api/v1/comments/{id}", comment},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			route, call, _, err := goingReadRow("dispatch_read", routes, c.arguments, testServerURL)
+			if err != nil || goingRouteKey(route) != c.row || call.path["id"] != c.id {
+				t.Fatalf("dispatch_read %v reads %s of %v (%v), want %s of %s", c.arguments, goingRouteKey(route), call.path, err, c.row, c.id)
+			}
+		})
+	}
+	for name, arguments := range map[string]map[string]any{
+		"no ref":              {"message": message, "history": true},
+		"an issue":            {"ref": "dispatch://DEMO-1", "history": true},
+		"an issue's comments": {"ref": "dispatch://DEMO-1/comments", "history": true},
+		"a document":          {"ref": "dispatch://DEMO-1/spec", "history": true},
+	} {
+		t.Run("history of "+name, func(t *testing.T) {
+			route, _, _, err := goingReadRow("dispatch_read", routes, arguments, testServerURL)
+			if err == nil || !strings.Contains(err.Error(), goingReadHistoryRule) {
+				t.Fatalf("dispatch_read %v reads %s (%v), want it refused: %s", arguments, goingRouteKey(route), err, goingReadHistoryRule)
+			}
+		})
+	}
+}

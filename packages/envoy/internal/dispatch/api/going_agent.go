@@ -705,17 +705,17 @@ func (a *AgentListener) claimOne(ctx context.Context, instance string, only []st
 // run's first claim writes how long it waited in the queue into its budget_used, as queued_ms:
 // from its created_at to the claim. A later claim of the run leaves it.
 //
-// A withdrawn run (goingRunWithdrawnOf) is stopped with goingRunWithdrawnReason and answers nil,
-// so no agent works it again. The turns hand on no note of a withdrawn earlier run, and the run
-// records as its own each post of the earlier runs whose notes they hand on (going_run_posts), in
-// the claim's own transaction, so the delete of a post an earlier run read withdraws the follow-up
-// that was given what that run read.
+// A withdrawn run (goingRunWithdrawerOf) is stopped with its withdrawer's reason and answers nil,
+// so no agent works it again. The turns hand on no note of a withdrawn earlier run, whoever
+// withdrew it, and the run records as its own each post of the earlier runs whose notes they hand
+// on (going_run_posts), in the claim's own transaction, so the delete of a post an earlier run read
+// withdraws the follow-up that was given what that run read.
 func claimGoingRun(ctx context.Context, tx pgx.Tx, run, instance string) (*agentwire.ClaimedRun, error) {
 	claimed := agentwire.ClaimedRun{ID: run}
 	var continues *string
 	var chip []byte
 	var budget []byte
-	var withdrawn bool
+	var withdrawer goingRunWithdrawer
 	if err := tx.QueryRow(ctx, `
 		update going_runs r set state = 'working', lease_token = gen_random_uuid(), lease_owner = $2,
 		  lease_ends_at = now() + make_interval(secs => $3),
@@ -724,13 +724,13 @@ func claimGoingRun(ctx context.Context, tx pgx.Tx, run, instance string) (*agent
 		      greatest(floor(extract(epoch from clock_timestamp() - created_at) * 1000), 0)::bigint) end
 		where id = $1::uuid
 		returning coalesce(conversation_id, id)::text, continues::text, words, context, coalesce(kind, ''), coalesce(line, ''), coalesce(level, ''), coalesce(mode, ''),
-		  shape, budget_used, lease_token::text, lease_ends_at, `+goingRunWithdrawnOf("r.id")+`
+		  shape, budget_used, lease_token::text, lease_ends_at, `+goingRunWithdrawerOf("r.id")+`
 	`, run, instance, goingLeaseTerm.Seconds()).Scan(&claimed.Conversation, &continues, &claimed.Words, &chip, &claimed.Kind, &claimed.Line,
-		&claimed.Level, &claimed.Mode, &claimed.Shape, &budget, &claimed.LeaseToken, &claimed.LeaseEndsAt, &withdrawn); err != nil {
+		&claimed.Level, &claimed.Mode, &claimed.Shape, &budget, &claimed.LeaseToken, &claimed.LeaseEndsAt, &withdrawer); err != nil {
 		return nil, fmt.Errorf("lease run %s: %w", run, err)
 	}
-	if withdrawn {
-		if err := stopGoingRunIn(ctx, tx, run, goingRunWithdrawnReason, []string{}); err != nil {
+	if withdrawer != goingRunNotWithdrawn {
+		if err := stopGoingRunIn(ctx, tx, run, withdrawer.reason(), []string{}); err != nil {
 			return nil, fmt.Errorf("stop run %s, which is withdrawn: %w", run, err)
 		}
 		return nil, nil

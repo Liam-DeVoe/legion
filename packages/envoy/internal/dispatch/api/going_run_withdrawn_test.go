@@ -27,6 +27,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -483,6 +484,194 @@ func TestARunStillWorkingAtTheDeleteSlipsNoFramePastIt(t *testing.T) {
 	}
 }
 
+// alicesRunStream is the whole stream of run's events as alice reads it from handler: the run has
+// ended, or is withdrawn, so the stream ends.
+func alicesRunStream(t *testing.T, handler http.Handler, run string) string {
+	t.Helper()
+	response := goingRequestTo(t, handler, http.MethodGet, "/api/v1/going/runs/"+run+"/events", nil, map[string]string{"X-Dispatch-User": "alice"}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("the stream of %s answered %d %s", run, response.Code, response.Body.String())
+	}
+	return response.Body.String()
+}
+
+// planFramesThenEnd is what the stream of run writes once its own deletes alone withdrew it: each
+// plan frame it stored before its ending, read off the store, then the end frame of that
+// withdrawal under the ending's id. It fails t where run stored no plan frame, which would leave
+// the stream nothing to show of the plan.
+func (rig goingPlanRig) planFramesThenEnd(t *testing.T, run string) string {
+	t.Helper()
+	ctx := context.Background()
+	var ending int64
+	if err := rig.database.Pool.QueryRow(ctx, `
+		select coalesce(max(sequence), 0) from going_run_events where run_id = $1::uuid and name = $2
+	`, run, agentwire.FrameEnd).Scan(&ending); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := rig.database.Pool.Query(ctx, `
+		select sequence, data from going_run_events where run_id = $1::uuid and name = $2 and sequence < $3 order by sequence
+	`, run, goingFramePlan, ending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var stream strings.Builder
+	plans := 0
+	for rows.Next() {
+		var sequence int64
+		var data []byte
+		if err := rows.Scan(&sequence, &data); err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(&stream, "id: %d\nevent: %s\ndata: %s\n\n", sequence, goingFramePlan, data)
+		plans++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if plans == 0 || ending == 0 {
+		t.Fatalf("run %s stored %d plan frames and its ending at %d, want both", run, plans, ending)
+	}
+	fmt.Fprintf(&stream, "id: %d\nevent: %s\ndata: %s\n\n", ending, agentwire.FrameEnd, goingRunWithdrawnByRunFrame)
+	return stream.String()
+}
+
+// readAndDelete scripts words as a run that reads each of the posts c names by ids, then proposes
+// the delete of the first, and answers quoting word; it begins the run as alice, approves its plan
+// and answers the run once it ended, failing t unless the run recorded every post it read.
+func (rig goingPlanRig) readAndDelete(t *testing.T, c goingPostCase, words, word string, ids ...string) string {
+	t.Helper()
+	reads := make([]agenttest.Call, 0, len(ids))
+	for _, id := range ids {
+		reads = append(reads, agenttest.Call{Name: "call_tool", Arguments: map[string]any{"tool": c.read, "arguments": map[string]any{c.kind: id}}})
+	}
+	rig.loop.script.set(words, func(n int) agenttest.Reply {
+		switch n {
+		case 1:
+			return agenttest.Reply{Calls: reads}
+		case 2:
+			return proposing(c.deleting(ids[0]))
+		}
+		return answered("I deleted the " + c.kind + " that said the " + word + " was raised at dawn.")
+	})
+	run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+	rig.waiting(t, run)
+	if posts := rig.count(t, `select count(*) from going_run_posts where run_id = $1::uuid`, run); posts != len(ids) {
+		t.Fatalf("the run recorded %d posts, want the %d it read", posts, len(ids))
+	}
+	rig.answer(t, run, "approve", map[string]any{"plan": 1})
+	rig.ended(t, run, time.Minute)
+	return run
+}
+
+// requireRunReads fails t unless run, as GET /api/v1/going/runs/{id} and History read it to alice,
+// reads stopped with reason and keeps words.
+func (rig goingPlanRig) requireRunReads(t *testing.T, run, words, reason string) {
+	t.Helper()
+	read := decodeBody[goingRun](t, dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/going/runs/"+run, nil, "alice"))
+	for what, got := range map[string]goingRun{"GET /api/v1/going/runs/{id}": read, "History": goingListed(t, rig.mux, run)} {
+		if got.State != agentwire.StateStopped || got.StopReason == nil || *got.StopReason != reason || got.Words != words {
+			t.Fatalf("%s reads the run %s, %v, %q; want stopped, %q, with its words %q", what, got.State, got.StopReason, got.Words, reason, words)
+		}
+	}
+}
+
+// goingListed is run as History lists it to alice.
+func goingListed(t *testing.T, handler http.Handler, run string) goingRun {
+	t.Helper()
+	for _, conversation := range goingHistory(t, handler, "alice", "").Rows {
+		for _, listed := range conversation.Runs {
+			if listed.ID == run {
+				return listed
+			}
+		}
+	}
+	t.Fatalf("History does not list run %s", run)
+	return goingRun{}
+}
+
+// TestARunWithdrawnOnlyByItsOwnDeleteShowsItsPlan (the architect's ruling of 15:53Z): a run read a
+// comment, or an issue message, and deleted it through its approved plan, then answered quoting it,
+// so it is withdrawn by its own delete alone. Its record and History read it stopped with
+// ANSWER_WITHDRAWN_BY_RUN, keeping its words; its stream writes its plan frames, which carry no
+// word, then the end frame with that reason, and none of its other frames; its plan reads as an
+// ended run's and not withdrawn - its row, done, with what its write answered, and the deleted
+// post's value the delete's mark with no body - with no summary; an approval is refused as an ended
+// run's is; and the Inbox does not list it. What it stored keeps its words.
+func TestARunWithdrawnOnlyByItsOwnDeleteShowsItsPlan(t *testing.T) {
+	t.Parallel()
+	rig := newGoingPlanRig(t)
+	for _, c := range goingPostCases {
+		t.Run("an issue "+c.kind, func(t *testing.T) {
+			const word = "gangplankword"
+			id, _ := c.make(t, rig, "The "+word+" was raised at dawn.")
+			words := "read the " + c.kind + " about the gangplank and delete it"
+			run := rig.readAndDelete(t, c, words, word, id)
+			rig.requireRunReads(t, run, words, goingRunWithdrawnByRunReason)
+
+			if stream, want := alicesRunStream(t, rig.mux, run), rig.planFramesThenEnd(t, run); stream != want || strings.Contains(stream, word) {
+				t.Fatalf("the stream wrote\n%q\nwant the run's plan frames, then its withdrawal by its own delete\n%q", stream, want)
+			}
+
+			response := dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/going/runs/"+run+"/plan", nil, "alice")
+			plan := decodeBody[goingPlanAnswer](t, response)
+			var now goingPostNow
+			if response.Code != http.StatusOK || strings.Contains(response.Body.String(), word) || plan.Withdrawn || plan.Summary != "" || len(plan.Rows) != 1 {
+				t.Fatalf("the plan answered %d %s, want the plan of an ended run, not withdrawn, with no summary and no word of the post", response.Code, response.Body.String())
+			}
+			row := plan.Rows[0]
+			if row.Tool != c.delete || row.State != "done" || row.Result == nil || row.Result.Status != http.StatusOK || !row.Deleted ||
+				!strings.Contains(string(row.Arguments), id) || json.Unmarshal(row.Now, &now) != nil || now.Body != nil || now.DeletedAt == nil {
+				t.Fatalf("the plan's row reads %+v (now %s), want the delete done, answered 200, its arguments, the post deleted with no body", row, row.Now)
+			}
+
+			approval := dispatchRequest(t, rig.mux, http.MethodPost, "/api/v1/going/runs/"+run+"/plan/approve", map[string]any{"plan": 1}, "alice")
+			if refusal := decodeBody[refusalAnswer](t, approval); approval.Code != http.StatusConflict || refusal.Code != codeGoingPlanNotWaiting {
+				t.Fatalf("an approval of the plan answered %d %s, want 409 %s, as for any ended run", approval.Code, refusal.Code, codeGoingPlanNotWaiting)
+			}
+			if plans := dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/me/going-plans", nil, "alice").Body.String(); strings.Contains(plans, run) {
+				t.Fatalf("the Inbox lists %s, which holds the run", plans)
+			}
+			if stored := rig.count(t, `select count(*) from going_run_events where run_id = $1::uuid and data::text like '%' || $2 || '%'`, run, word); stored == 0 {
+				t.Fatalf("the run's stored frames hold no %q: what Dispatch wrote keeps its words, and the reads mask them", word)
+			}
+		})
+	}
+}
+
+// TestARunWithdrawnByAnotherWritersDeleteTooIsWithdrawn (the architect's ruling of 15:53Z): a run
+// read two comments and deleted the first through its plan, so it is withdrawn by its own delete
+// alone, ANSWER_WITHDRAWN_BY_RUN. Once alice deletes the second, off the bar, a post it read was
+// deleted by another writer than the run, and it is withdrawn as before: stopped with
+// ANSWER_WITHDRAWN, its stream the withdrawal alone, its plan withdrawn with no summary, no
+// arguments and no value now.
+func TestARunWithdrawnByAnotherWritersDeleteTooIsWithdrawn(t *testing.T) {
+	t.Parallel()
+	rig := newGoingPlanRig(t)
+	c := goingPostCases[0]
+	const word = "gangplankword"
+	deleted, _ := c.make(t, rig, "The "+word+" was raised at dawn.")
+	kept, _ := c.make(t, rig, "The lanyardword was coiled by the mast.")
+	const words = "read the two comments and delete the first"
+	run := rig.readAndDelete(t, c, words, word, deleted, kept)
+	rig.requireRunReads(t, run, words, goingRunWithdrawnByRunReason)
+
+	c.remove(t, rig, kept)
+	rig.requireRunReads(t, run, words, goingRunWithdrawnReason)
+	var ending int64
+	if err := rig.database.Pool.QueryRow(context.Background(), `
+		select coalesce(max(sequence), 0) from going_run_events where run_id = $1::uuid and name = $2
+	`, run, agentwire.FrameEnd).Scan(&ending); err != nil {
+		t.Fatal(err)
+	}
+	if stream := alicesRunStream(t, rig.mux, run); stream != withdrawnRunStream(ending) {
+		t.Fatalf("the stream wrote\n%q\nwant the withdrawal alone\n%q", stream, withdrawnRunStream(ending))
+	}
+	if plan := rig.plan(t, run); !plan.Withdrawn || plan.Summary != "" || string(plan.Rows[0].Arguments) != "{}" || string(plan.Rows[0].Now) != "null" {
+		t.Fatalf("the plan reads %+v, want it withdrawn with no summary, no arguments and no value now", plan)
+	}
+}
+
 // The words of the route fixture's other posts, each held by one post alone.
 const (
 	withdrawnReplyWord      = "gullwingword"
@@ -569,9 +758,9 @@ func newWithdrawnRouteFixture(t *testing.T) withdrawnRouteFixture {
 	return fixture
 }
 
-// goingPostRead is a read row whose answer carries posts: the tool call that reads it over the
-// fixture, and the fixture's posts its answer carries, by name.
-type goingPostRead struct {
+// goingPostCarryingRead is a read row whose answer carries posts: the tool call that reads it over
+// the fixture, and the fixture's posts its answer carries, by name.
+type goingPostCarryingRead struct {
 	tool      string
 	arguments func(f withdrawnRouteFixture) map[string]any
 	carries   []string
@@ -579,7 +768,7 @@ type goingPostRead struct {
 
 // goingPostReads is, by "<METHOD> <pattern>", every read row of goingReadTools whose answer can
 // carry a comment's or an issue message's words.
-var goingPostReads = map[string]goingPostRead{
+var goingPostReads = map[string]goingPostCarryingRead{
 	"GET /api/v1/comments/{id}": {tool: "dispatch_read_comment", carries: []string{"comment"},
 		arguments: func(f withdrawnRouteFixture) map[string]any { return map[string]any{"comment": f.ids["comment"]} }},
 	"GET /api/v1/comments/{id}/history": {tool: "dispatch_read", carries: []string{"comment"},

@@ -180,8 +180,8 @@ type goingPlanStored struct {
 
 // goingPlanAnswer is a run's plan as its person reads it: its number within the run, its state,
 // what it does, the run's mode, each row, its version, which an approval names
-// (goingPlanApproveInput.Version), and, only on the plan of a withdrawn run, withdrawn
-// (withdrawnAnswer), so the plan of every other run reads as it did.
+// (goingPlanApproveInput.Version), and, only on the plan of a run another writer's delete
+// withdrew, withdrawn (withdrawnAnswer), so the plan of every other run reads as it did.
 type goingPlanAnswer struct {
 	Run       string         `json:"run"`
 	Plan      int            `json:"plan"`
@@ -197,7 +197,9 @@ type goingPlanAnswer struct {
 // it runs with, the person's edits included), the rows it needs, its state, its class, the item
 // it changes with the fields it writes and their value now, the holder of the item's issue's
 // claim, why it waits in every mode, whether it waits again because its item changed after the
-// person saw it, and what its write answered.
+// person saw it, and what its write answered. Deleted, only on a row of a comment or an issue
+// message its author deleted, says so: its value now is the delete's mark, {author, deleted_at,
+// deleted_by}, with no body (goingPostNow), and nobody approves it.
 type goingPlanRow struct {
 	Row       int             `json:"row"`
 	Tool      string          `json:"tool"`
@@ -212,6 +214,7 @@ type goingPlanRow struct {
 	Claim     *goingHolder    `json:"claim"`
 	Waits     []string        `json:"waits"`
 	Changed   bool            `json:"changed"`
+	Deleted   bool            `json:"deleted,omitempty"`
 	Result    *goingRowResult `json:"result"`
 }
 
@@ -234,7 +237,7 @@ func (p goingPlanStored) answer(run, mode string) goingPlanAnswer {
 			Row: row.row, Tool: row.tool, Class: string(row.class()), Arguments: row.arguments,
 			Needs: append([]int{}, row.needs...), State: row.state, Item: row.shown.Item, Issue: row.shown.Issue,
 			Fields: append([]string{}, row.shown.Fields...), Now: row.shown.Now, Claim: row.shown.Claim,
-			Waits: append([]string{}, row.shown.Waits...), Changed: row.shown.Changed,
+			Waits: append([]string{}, row.shown.Waits...), Changed: row.shown.Changed, Deleted: row.shown.Deleted,
 		}
 		if len(read.Now) == 0 {
 			read.Now = json.RawMessage("null")
@@ -251,16 +254,29 @@ func (p goingPlanStored) answer(run, mode string) goingPlanAnswer {
 	return answer
 }
 
-// withdrawnAnswer is the plan of run, in mode, as its person reads it once the run is withdrawn
-// (goingRunWithdrawnOf): what its run's model wrote and what its read of each item found may quote
-// the deleted post, so it gives no summary, no row's arguments and no row's value now; each row's
-// tool, item, fields and state still say what the plan was and what of it ran.
+// withdrawnAnswer is the plan of run, in mode, as its person reads it once another writer's delete
+// withdrew the run (goingRunWithdrawnByOther): what its run's model wrote and what its read of each
+// item found may quote the deleted post, so it gives no summary, no row's arguments and no row's
+// value now; each row's tool, item, fields and state still say what the plan was and what of it
+// ran.
 func (p goingPlanStored) withdrawnAnswer(run, mode string) goingPlanAnswer {
 	answer := p.answer(run, mode)
 	answer.Summary, answer.Withdrawn = "", true
 	for index := range answer.Rows {
 		answer.Rows[index].Arguments, answer.Rows[index].Now = json.RawMessage("{}"), json.RawMessage("null")
 	}
+	answer.Version = goingPlanVersion(answer)
+	return answer
+}
+
+// withdrawnByRunAnswer is the plan of run, in mode, as its person reads it once the run's own
+// deletes alone withdrew it (goingRunWithdrawnByRun): as the plan of any ended run, its rows and
+// what each write answered, each deleted post's value already the delete's mark with no body
+// (maskDeletedPosts), and not withdrawn - but with no summary, which its model wrote and may quote
+// a post it read.
+func (p goingPlanStored) withdrawnByRunAnswer(run, mode string) goingPlanAnswer {
+	answer := p.answer(run, mode)
+	answer.Summary = ""
 	answer.Version = goingPlanVersion(answer)
 	return answer
 }
@@ -1168,16 +1184,16 @@ func goingPendingRows(ctx context.Context, q goingQuerier, run string) ([]agentw
 	return pending, nil
 }
 
-// goingOwnRun is the caller's run a plan route names: its id, its state, its mode and whether it
-// is withdrawn (goingRunWithdrawnOf).
+// goingOwnRun is the caller's run a plan route names: its id, its state, its mode and who
+// withdrew it (goingRunWithdrawerOf).
 type goingOwnRun struct {
 	id, state, mode string
-	withdrawn       bool
+	withdrawnBy     goingRunWithdrawer
 }
 
 // readOwnGoingRun is the run the path names, where it is login's own, or the run's 404 written: an
 // id that is no uuid, a run of anyone else's and one the record does not hold are one answer. A
-// withdrawn run that has not ended is stopped first with goingRunWithdrawnReason (stopGoingRun),
+// withdrawn run that has not ended is stopped first with its withdrawer's reason (stopGoingRun),
 // and read stopped, so it stores nothing more.
 func (s *server) readOwnGoingRun(w http.ResponseWriter, r *http.Request, login string) (goingOwnRun, bool) {
 	id, err := uuid.Parse(r.PathValue("id"))
@@ -1187,12 +1203,12 @@ func (s *server) readOwnGoingRun(w http.ResponseWriter, r *http.Request, login s
 	}
 	run := goingOwnRun{id: id.String()}
 	err = s.deps.Store.Pool.QueryRow(r.Context(), `
-		select state, coalesce(mode, $3), `+goingRunWithdrawnOf("r.id")+`
+		select state, coalesce(mode, $3), `+goingRunWithdrawerOf("r.id")+`
 		from going_runs r where id = $1::uuid and author_login = $2 and state is not null
-	`, run.id, login, goingModeAsk).Scan(&run.state, &run.mode, &run.withdrawn)
-	if err == nil && run.withdrawn && !goingRunEnded(run.state) {
+	`, run.id, login, goingModeAsk).Scan(&run.state, &run.mode, &run.withdrawnBy)
+	if err == nil && run.withdrawnBy != goingRunNotWithdrawn && !goingRunEnded(run.state) {
 		var stopped bool
-		if stopped, err = s.stopGoingRun(r.Context(), run.id, goingRunWithdrawnReason); stopped {
+		if stopped, err = s.stopGoingRun(r.Context(), run.id, run.withdrawnBy.reason()); stopped {
 			run.state = agentwire.StateStopped
 		} else if err == nil {
 			err = s.deps.Store.Pool.QueryRow(r.Context(), `select state from going_runs where id = $1::uuid`, run.id).Scan(&run.state)
@@ -1237,14 +1253,19 @@ func (s *server) planRoute(w http.ResponseWriter, r *http.Request) (string, goin
 // getGoingPlan is GET /api/v1/going/runs/{id}/plan: the run's latest plan. While the run waits for
 // its person, each waiting row's item is read again as the caller, and its value now, its claim
 // and why it waits are what the plan shows from then on. A withdrawn run's plan is read as
-// withdrawnAnswer gives it, and none of its items is read again.
+// withdrawnAnswer gives it, or withdrawnByRunAnswer for a run its own deletes alone withdrew, and
+// none of its items is read again.
 func (s *server) getGoingPlan(w http.ResponseWriter, r *http.Request) {
 	login, run, plan, ok := s.planRoute(w, r)
 	if !ok {
 		return
 	}
-	if run.withdrawn {
+	switch run.withdrawnBy {
+	case goingRunWithdrawnByOther:
 		WriteJSON(w, http.StatusOK, plan.withdrawnAnswer(run.id, run.mode))
+		return
+	case goingRunWithdrawnByRun:
+		WriteJSON(w, http.StatusOK, plan.withdrawnByRunAnswer(run.id, run.mode))
 		return
 	}
 	if run.state == "waiting" {
@@ -1362,14 +1383,16 @@ type goingPlanRejectInput struct {
 // 400 GOING_PLAN_VALUES; the last in the person's words (goingNewIssueApprovalRefusal), which
 // name rows and new issues as the page does. A ticked row whose comment or issue message its
 // author deleted after the plan read it is 409 POST_DELETED, with nothing written: it shows no word
-// of the post, and nothing changes a deleted one. The plan of a withdrawn run (goingRunWithdrawnOf)
-// is 409 GOING_RUN_WITHDRAWN, with nothing written (writeGoingRunWithdrawn).
+// of the post, and nothing changes a deleted one. The plan of a run another writer's delete
+// withdrew (goingRunWithdrawnByOther) is 409 GOING_RUN_WITHDRAWN, with nothing written
+// (writeGoingRunWithdrawn); a run its own deletes alone withdrew is stopped (readOwnGoingRun), so
+// its plan is refused as any ended run's is, 409 GOING_PLAN_NOT_WAITING.
 func (s *server) approveGoingPlan(w http.ResponseWriter, r *http.Request) {
 	login, run, plan, ok := s.planRoute(w, r)
 	if !ok {
 		return
 	}
-	if run.withdrawn {
+	if run.withdrawnBy == goingRunWithdrawnByOther {
 		writeGoingRunWithdrawn(w)
 		return
 	}
@@ -1669,14 +1692,16 @@ func (s *server) writePlanAnswered(w http.ResponseWriter, r *http.Request, run g
 // another plan in place of the run's waiting plan. The plan is rejected, nothing of it runs, and
 // the words are saved as a step of the run (agentwire.PersonStep), which the run's model reads
 // beside the plan's rows when it proposes the next. The revision moves the run's grant to the
-// caller's credential, as an approval does, and makes the run ready again. The plan of a withdrawn
-// run is 409 GOING_RUN_WITHDRAWN, with nothing written (writeGoingRunWithdrawn).
+// caller's credential, as an approval does, and makes the run ready again. The plan of a run
+// another writer's delete withdrew is 409 GOING_RUN_WITHDRAWN, with nothing written
+// (writeGoingRunWithdrawn), and that of a run its own deletes alone withdrew is refused as any
+// ended run's is.
 func (s *server) reviseGoingPlan(w http.ResponseWriter, r *http.Request) {
 	_, run, plan, ok := s.planRoute(w, r)
 	if !ok {
 		return
 	}
-	if run.withdrawn {
+	if run.withdrawnBy == goingRunWithdrawnByOther {
 		writeGoingRunWithdrawn(w)
 		return
 	}
