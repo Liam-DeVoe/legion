@@ -94,7 +94,7 @@ func TestAReleaseIsMarkedNothingWhileTheProjectIsPaused(t *testing.T) {
 	}
 }
 
-// Decision 12 and departure 4 of dispatch://INFRA-3759: a release whose workspace check has not run
+// Under a project pause, a release whose workspace check has not run
 // when the pause begins is cancelled at its check, for the pause; a check that ran before the
 // pause acts, and the release's role stop after the pause still acts, since only the check reads
 // the pause.
@@ -133,7 +133,7 @@ const otherIssue = "OTHER-5"
 // role stop.
 const otherFirst, otherBoundary = 18, 20
 
-// Decision 12 of dispatch://INFRA-3759, for the pod of another project's issue: the check of its
+// For the pod of another project's issue, the check of its
 // release reads the pause of the project whose release it is, never the pause of the issue key's
 // project, so it is cancelled while LEGION is paused.
 func TestACheckOfAReleaseOfAnotherProjectsIssueIsCancelledWhileThisProjectIsPaused(t *testing.T) {

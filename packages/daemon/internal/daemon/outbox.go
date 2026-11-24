@@ -3444,10 +3444,10 @@ func (r *outbox) checkIssueWorkspace(ctx context.Context, row record.OutboxRow, 
 		return nil
 	case store.ReleaseCancel:
 		// The project is paused (ReleaseCausePaused): the pause deletes no pod, so the release
-		// is cancelled before any role stops, whatever reached its roles first (decision 12 and
-		// departure 4 of dispatch://INFRA-3759). Or the pod was given work since the mark
-		// (ReleaseCauseOvertaken): a read beside that work could miss what it makes, so the
-		// release is cancelled before the read, and the pass decides the pod again.
+		// is cancelled before any role stops, whatever reached its roles first. Or the pod was
+		// given work since the mark (ReleaseCauseOvertaken): a read beside that work could miss
+		// what it makes, so the release is cancelled before the read, and the pass decides the
+		// pod again.
 		hold, why := releaseHold(decision.Cause)
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
 	}

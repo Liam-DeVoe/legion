@@ -582,7 +582,7 @@ func (r *outbox) recordPodRelease(ctx context.Context, issue string, generation 
 // the delivery arrives, and at the teardown, where the same read runs again. The store names a
 // cause on every cancel it decides, and those three are all it names: the pod was given work, the
 // store no longer authorizes the release, or the project was paused before the release's
-// workspace check ran (store.ReleaseCausePaused, decision 12 of dispatch://INFRA-3759). A check
+// workspace check ran (store.ReleaseCausePaused: #4115's project pause starts no release). A check
 // that declines the release names its own hold (declineRelease).
 func releaseHold(cause store.ReleaseCause) (workflow.IdleHold, string) {
 	switch cause {

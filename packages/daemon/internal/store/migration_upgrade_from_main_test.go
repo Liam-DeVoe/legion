@@ -151,18 +151,18 @@ import (
 // is applied after all of these but five, the design news among them, and touches no
 // outbox_kind_check: it adds columns to dispatch_issues at their defaults, an index on its parent,
 // and a refill mark for each project the copy holds rows of.
-// dispatch://INFRA-1575's intake failures (20261120144241) are applied after all of these but four:
+// #4590's intake failures (20261120144241) are applied after all of these but four:
 // they create intake_failures, cleared_pull_requests and pull_request_settled_heads, all three
 // empty, and touch no dispatch_issues column and no outbox_kind_check.
 // The applied sequence of the copy of Dispatch's issues (20261121170714) is applied after all of
 // these but the release that keeps no saved workspace (20261123050533), the plan of an
-// experiment's draw (20261123165139) and dispatch://INFRA-5463's 20261123212127 and touches no
-// outbox_kind_check: it adds dispatch_issues.applied_seq at its default, 0, on every row it finds.
+// experiment's draw (20261123165139) and 20261123212127, and touches no outbox_kind_check: it
+// adds dispatch_issues.applied_seq at its default, 0, on every row it finds.
 // The release that keeps no saved workspace (20261123050533) is applied after all of these but
-// the plan of an experiment's draw (20261123165139), and before dispatch://INFRA-5463's
-// 20261123212127, and touches no outbox_kind_check: it drops workspace_bundles, which main's own
-// 20261101222725 made, with whatever rows main's releases saved in it, and makes
-// idle_release_declines, empty. So the design news stays the last word of that check.
+// the plan of an experiment's draw (20261123165139), and before 20261123212127, and touches no
+// outbox_kind_check: it drops workspace_bundles, which main's own 20261101222725 made, with
+// whatever rows main's releases saved in it, and makes idle_release_declines, empty. So the design
+// news stays the last word of that check.
 // dispatch://INFRA-5463's clear of the start failure of a claim whose agent is up
 // (20261123212127) is applied after all of these and touches no outbox_kind_check: it empties
 // claims.last_start_failure on every claim stored ready, working or idle, a column this list's
@@ -199,9 +199,9 @@ var thisBranchsMigrations = []int{
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241, the copy's
 // applied sequence, 20261121170714, the release that keeps no saved workspace's 20261123050533,
-// the plan of an experiment's draw (20261123165139) and dispatch://INFRA-5463's 20261123212127.
-// That is why the loop below holds the list rather than counting it, so that a version added
-// above any of them is named here rather than read as main's.
+// the plan of an experiment's draw (20261123165139) and
+// dispatch://INFRA-5463's 20261123212127. That is why the loop below holds the list rather than
+// counting it, so that a version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

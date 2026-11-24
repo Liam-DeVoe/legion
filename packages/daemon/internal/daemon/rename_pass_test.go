@@ -401,7 +401,7 @@ func TestAnIssueWithALivePodKeepsItsNamesUntilItsPodEnds(t *testing.T) {
 	}
 }
 
-// The next pod after a rename works the new name (dispatch://INFRA-4401 A10). An issue's idle
+// The next pod after a rename works the new name. An issue's idle
 // release reads its workspace while its record names the pair's `from`, finds nothing origin does
 // not hold, and the end of that release's pod (outbox.releaseIssue, after its teardown) writes the
 // pair's `to` over it. The read of the live records the pass wakes (wakeLive,
