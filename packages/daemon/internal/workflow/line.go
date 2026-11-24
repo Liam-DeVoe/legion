@@ -264,14 +264,15 @@ func issuePhaseOf(w Walk, place record.TaskPlace, state record.TaskState) phase.
 	if state == record.TaskDone || state == record.TaskLeft {
 		return phase.Done
 	}
-	switch {
-	case place.Kind == record.PlaceRetro:
-		return phase.Retro
-	case place.Kind == record.PlaceMerge:
-		return phase.Merging
-	case place.SubOwnerActs():
+	if place.SubOwnerActs() {
 		return phase.Planning
-	case place.Kind == record.PlaceStep:
+	}
+	switch place.Kind {
+	case record.PlaceRetro:
+		return phase.Retro
+	case record.PlaceMerge:
+		return phase.Merging
+	case record.PlaceStep:
 		if at := slices.Index(w.Places, place); at >= 0 {
 			return w.Line[at]
 		}
