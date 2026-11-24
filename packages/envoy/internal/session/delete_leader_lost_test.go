@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -156,11 +157,12 @@ func TestAConditionalDeleteLostWithItsConnectionAtItsFirstReadFailsAtTheReconnec
 // entry is another client instance's, so the stop's first read, a direct get, answers a keep, and
 // the stop reads the entry again from the leader before it answers that keep: a stream message
 // get, `$JS.API.STREAM.MSG.GET.KV_<session bucket>`, which the relay drops before the cut. That
-// read follows the direct get within the one bus.BoundedOn wait, so a relay armed on the direct
-// get loses a read of this same wait and the row passes as well. The reconnect takes at most a
-// quarter of the bound, and the stop fails before half of it; the stop made again on the
-// connection that came back reads the entry and keeps it for its instance. Control: with
-// DeleteIf's read made without bus.BoundedOn, it waits out its bound and the row fails.
+// read is a bus.BoundedOn wait of its own, the second the stop makes: the keep runs DeleteIf's
+// loop again (`continue`) with fromLeader set, and the loop's read is bounded anew, as the direct
+// get's was. The reconnect takes at most a quarter of the bound, and the stop fails before half of
+// it; the stop made again on the connection that came back reads the entry and keeps it for its
+// instance. Control: with DeleteIf's read made without bus.BoundedOn, it waits out its bound and
+// the row fails.
 func TestAConditionalDeleteLostWithItsConnectionAtItsLeaderReadFailsAtTheReconnectNotAtItsBound(t *testing.T) {
 	const sessionID = "ses_delete_if_leader_read_lost"
 	relay, conn, registry := relayedDeletes(t, "$JS.API.STREAM.MSG.GET.KV_"+bus.SessionBucket, sessionID,
@@ -177,4 +179,50 @@ func TestAConditionalDeleteLostWithItsConnectionAtItsLeaderReadFailsAtTheReconne
 	if outcome, err := registry.DeleteIf(again, sessionID, stop); err != nil || outcome != EntryKeptForAnotherInstance {
 		t.Fatalf("the conditional delete of %s again after the reconnect = %s, %v; want %s", sessionID, outcome, err, EntryKeptForAnotherInstance)
 	}
+}
+
+// A conditional delete whose fenced delete lost its compare-and-swap, and whose read of the entry
+// from the bucket stream's leader after that loss (bus.KeyValue.DeleteAt's ReadFromLeader) reached
+// the socket and died with it, fails with bus.ErrRequestLostWithConnection at the reconnect,
+// rather than waiting out its bound. That read is the fenced delete's, inside the bus.BoundedOn
+// wait DeleteIf makes for kv.DeleteAt, the second of the stop after the one its read of the entry
+// answered in. The entry is the stopping instance's, so the stop's first read, a direct get,
+// admits it, and the stop deletes it fenced on that read's revision; a heartbeat of the same
+// instance lands between the read and the delete (heartbeatBeforeDeletes, the loss
+// TestSessionRegistryDeleteIf_RetriesOnceAfterALostCompareAndSwap arranges), so the bucket refuses
+// the delete and DeleteAt reads the entry from the leader: a stream message get,
+// `$JS.API.STREAM.MSG.GET.KV_<session bucket>`, the first the stop sends, which the relay drops
+// before the cut. The reconnect takes at most a quarter of the bound, and the stop fails before
+// half of it; the stop made again on the connection that came back reads the heartbeat and deletes
+// it. Control: with DeleteIf's fenced delete made without bus.BoundedOn, it waits out its bound and
+// the row fails.
+func TestAConditionalDeleteLostWithItsConnectionAtItsFencedDeletesLeaderReadFailsAtTheReconnectNotAtItsBound(t *testing.T) {
+	const (
+		sessionID = "ses_delete_if_fenced_read_lost"
+		instance  = "instance-stopping"
+	)
+	entry := SessionEntry{Port: 13381, MachineID: "test-machine", ClientInstanceID: instance}
+	relay, conn, registry := relayedDeletes(t, "$JS.API.STREAM.MSG.GET.KV_"+bus.SessionBucket, sessionID, entry)
+	entry.UpdatedAt = time.Now().UnixMilli()
+	heartbeat, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("encode the interleaved heartbeat: %v", err)
+	}
+	deletes := heartbeatBeforeDeletes(t, registry, sessionID, heartbeat, 1)
+	stop := DeleteConditions{ClientInstanceID: instance}
+
+	requireDeleteLostBeforeHalfItsBound(t, relay, conn, "the conditional delete of "+sessionID, func(ctx context.Context) error {
+		_, err := registry.DeleteIf(ctx, sessionID, stop)
+		return err
+	})
+	if got := deletes(); got != 1 {
+		t.Fatalf("the stop cut under its fenced delete's leader read made %d fenced deletes, want the one the heartbeat beat (1)", got)
+	}
+
+	again, cancel := context.WithTimeout(context.Background(), leaderReadLostBound)
+	defer cancel()
+	if outcome, err := registry.DeleteIf(again, sessionID, stop); err != nil || outcome != EntryDeleted {
+		t.Fatalf("the conditional delete of %s again after the reconnect = %s, %v; want %s", sessionID, outcome, err, EntryDeleted)
+	}
+	requireDeleted(t, registry, sessionID)
 }

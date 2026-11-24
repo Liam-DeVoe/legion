@@ -296,7 +296,7 @@ func TestAReceiveTermsEndForgetsTheGapMarksItsRelaysNoted(t *testing.T) {
 	}
 	rig.repositories.failWith(0)
 	// The relay's restart at the ack floor when the term begins again recreates this consumer.
-	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
+	awaitConsumerSettled(t, rig, sessionID)
 	rig.relays.setOwned(endlessTerm())
 	if again := noted(); again != "" {
 		t.Fatalf("the receive term that began after the end notes the gap mark %q for %s", again, sessionID)

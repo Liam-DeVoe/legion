@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"slices"
 	"testing"
+	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
@@ -11,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -204,6 +207,127 @@ func TestADeliveryExceptionOnALaneAddedSinceTheLastReadIsStoredOnce(t *testing.T
 	if got, want := stored.Header.Get(natsgo.MsgIdHdr), "exception."+reason+"."+origin; got != want {
 		t.Fatalf("stored message id = %q, want %q", got, want)
 	}
+}
+
+// A delivery exception about a stored message is published on the one judgement of its lane that
+// publishDeliveryException makes (exceptionTakesJetStream): a judgement that answers core NATS has
+// it sent over core NATS (bus.Client.PublishAckOn), even where the client's subjects come to
+// capture the lane between that judgement and the publish. Here a newer build's subject that
+// captures the lane is added after the client read the stream's subjects, and the client's read of
+// them again is in flight past 2 s: another publish of the lane started it while the client's own
+// lock was held (its CoreSubOK waits for nats.go's connection lock, which
+// testnats.HandshakeHold.HoldWriteLock holds), and the read waits for that lock before its request
+// goes out, so its own 2 s bound has not begun. The exception's judgement joins that read and,
+// when exceptionLaneJudgement (2 s) ends, answers core on the subjects the client holds. The locks
+// are let go after that, and the read lands and is kept: the client's subjects capture the lane. The
+// stream stores the exception, which it captures, under no Nats-Msg-Id, as it stores every core
+// publish.
+//
+// Control: with client.Publish(exception) in place of the core publish, Publish judges the lane
+// again (bus.Client.PublishTakesJetStream), joins the same read, takes JetStream once it lands, and
+// the stream stores the exception under a message id of its own dedupe key
+// (bus.DeliveryExceptionDedupePrefix): neither the core publish the one judgement chose nor the
+// one-copy exception.<reason>.<origin> another listener's JetStream judgement stores it under.
+func TestADeliveryExceptionIsPublishedOnTheOneJudgementOfItsLane(t *testing.T) {
+	const (
+		topic  = "notifications.x.judged"
+		lane   = bus.ExceptionTopicPrefix + topic
+		added  = bus.ExceptionTopicPrefix + "notifications.x.>"
+		reason = "delivery_failed"
+		origin = "origin-judged"
+	)
+	if bus.StreamCaptures(lane) {
+		t.Fatalf("this build compiles a subject capturing %s; the test needs one it does not", lane)
+	}
+	url := testnats.URL(t)
+	deployNewerBuildsStream(t, url)
+	hold := testnats.StartHandshakeHold(t, url)
+	client, err := bus.ConnectOwningStream([]string{hold.URL()}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect the listener through the handshake hold: %v", err)
+	}
+	t.Cleanup(client.Close)
+	conn := testnats.Connect(t, url)
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("open the row's JetStream: %v", err)
+	}
+	addStreamSubject(t, js, added)
+	if client.DeployedStreamCaptures(lane) {
+		t.Fatalf("the listener judged %s captured before reading the stream's subjects again; the row needs a stale read", lane)
+	}
+
+	release := hold.HoldWriteLock(t, client.Connection())
+	go client.CoreSubOK()
+	awaitClientLockHeld(t, client)
+	// waits is the transport of a publish of the lane under a 50 ms deadline
+	// (bus.Client.PublishTakesJetStream), and whether it waited that deadline out: it reads the
+	// subjects again when no read is in flight, joins a read in flight once the read has outlasted
+	// 2 s, and answers at once on the subjects held while the read is younger.
+	waits := func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		client.PublishTakesJetStream(ctx, lane)
+		return ctx.Err() != nil
+	}
+	// Another publish of the lane reads the subjects again, and that read waits for the client's
+	// lock; the transports after it answer at once until the read has outlasted 2 s.
+	read := time.Now()
+	if !waits() {
+		t.Fatal("the first publish's transport answered within its 50 ms deadline: it started no read of the subjects, or the read it started was answered under the held locks")
+	}
+	testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "the read of the stream's subjects in flight to outlast 2 s", func() bool {
+		return time.Since(read) > exceptionLaneJudgement && waits()
+	})
+
+	item := listenerTestEnvelope(topic, "exception-judged-lane")
+	published := make(chan error, 1)
+	began := time.Now()
+	go func() { published <- publishDeliveryException(client, item, reason, "ses_judged_exception", origin) }()
+	// The judgement's 2 s end first; then the locks are let go, and the read lands.
+	time.Sleep(time.Until(began.Add(exceptionLaneJudgement + time.Second)))
+	release()
+	select {
+	case err := <-published:
+		if err != nil {
+			t.Fatalf("publish the delivery exception: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the delivery exception was not published within 10 s of the locks' release")
+	}
+	testwait.Eventually(t, "the listener to keep the read of the subjects that landed after the judgement, capturing "+lane, func() bool {
+		return client.DeployedStreamCaptures(lane)
+	})
+	requireStored(t, js, lane)
+	stored, err := js.GetLastMsg(bus.Stream, lane)
+	if err != nil {
+		t.Fatalf("read the exception on %s: %v", lane, err)
+	}
+	if got := stored.Header.Get(natsgo.MsgIdHdr); got != "" {
+		t.Fatalf("the stream stored the exception on %s under Nats-Msg-Id %q, want none: the publish took JetStream, not the core NATS its lane's one judgement answered (exception.%s.%s is that judgement's JetStream id, %s<id>:%s a second judgement's in Publish)",
+			lane, got, reason, origin, bus.DeliveryExceptionDedupePrefix, lane)
+	}
+}
+
+// awaitClientLockHeld waits until client's own lock stays held: a read of its connection
+// (bus.Client.Connection, which takes that lock) still waits 200 ms after it began, where every
+// other hold of the lock lasts microseconds. A read left waiting ends once the lock is let go.
+func awaitClientLockHeld(t *testing.T, client *bus.Client) {
+	t.Helper()
+	testwait.WithinPolling(t, 30*time.Second, testwait.Poll, "the client's lock to stay held", func() bool {
+		read := make(chan struct{})
+		go func() {
+			client.Connection()
+			close(read)
+		}()
+		select {
+		case <-read:
+			return false
+		case <-time.After(200 * time.Millisecond):
+			return true
+		}
+	})
 }
 
 // connectToNewerBuildsStream starts a server, creates on it the stream a newer build carrying
