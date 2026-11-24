@@ -29,10 +29,13 @@
  * lists, not with the blobs it reads.
  *
  * A gh call that fails for a transient reason (gh's error is a TLS handshake failure or timeout, a
- * connection reset or refused, an unexpected EOF, an i/o timeout, an HTTP 5xx, a name that did
- * not resolve, a broken pipe, or any other text that names a timeout) is sent again after 5, 15,
- * 45 and 135 s, at most 4 times more, by the rule build.ts's and context.ts's GitHub reads share
- * (common.ts's `GhRetries`): a REST read, a GraphQL batch and a code search alike. But a GraphQL
+ * connection reset or refused, an unexpected EOF, a body cut short (`unexpected end of JSON input`:
+ * gh read a large answer cut short), an i/o timeout, an HTTP 5xx, a name that did not resolve, a
+ * broken pipe, or any other text that names a timeout) is sent again after 5, 15, 45 and 135 s, at
+ * most 4 times more, by the rule build.ts's and context.ts's GitHub reads share (common.ts's
+ * `GhRetries`): a REST read, a GraphQL batch and a code search alike. So a whole-tree read whose
+ * answer gh gets cut short is sent again after those waits, and only one that is cut short on every
+ * try, 200 s of waits later, is walked directory by directory (`readTree`). But a GraphQL
  * batch of more than one item that GitHub answers as a batch too large (a 502, a 504, or its
  * refusal of a query too costly, "This may be the result of a timeout") is split at once as
  * before (a batch of subtrees halved, of blobs or files each read alone), with no wait. A call

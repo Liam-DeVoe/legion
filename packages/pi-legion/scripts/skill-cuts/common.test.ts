@@ -230,6 +230,34 @@ describe("GhRetries", () => {
     expect(transientReason(refused)).toBeUndefined();
     expect(transientReason("HTTP 429 (too many requests)")).toBe("HTTP 429");
   });
+
+  // Catches: a gh read whose answer gh got cut short (`unexpected end of JSON input`, gh's own
+  // stderr: a recursive tree of 17,568,329 bytes, 2026-11-24, whose same call gave it whole on
+  // each of 3 later tries) failed on its first try, as no transient failure, and stopped a screen.
+  test("a gh call whose answer gh got cut short, unexpected end of JSON input, is sent again as a transient failure, body cut short, and its next try's answer is taken", async () => {
+    const cut = "unexpected end of JSON input";
+    const slept: number[] = [];
+    const said: string[] = [];
+    const retries = new GhRetries(
+      { sleep: async (ms) => void slept.push(ms), err: (line) => void said.push(line) },
+      "behaviour screen"
+    );
+    let tries = 0;
+    const result = await retries.send(async () => {
+      tries += 1;
+      return tries === 1 ? { code: 1, stderr: `${cut}\n` } : { code: 0, stderr: "" };
+    });
+    expect({ tries, code: result.code, slept, record: retries.record() }).toEqual({
+      tries: 2,
+      code: 0,
+      slept: [5_000],
+      record: { "body cut short": 1 },
+    });
+    expect(said).toEqual([
+      `behaviour screen: a gh call failed (${cut}); sending it again in 5 s, retry 1 of 4`,
+    ]);
+    expect(transientReason(cut)).toBe("body cut short");
+  });
 });
 
 describe("eachChunk", () => {

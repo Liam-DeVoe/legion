@@ -107,19 +107,22 @@ export const RATE_LIMITED = /rate limit|HTTP 429/i;
 export const MAX_RATE_RETRIES = 5;
 /** gh's error text for a failure the same call may not meet again, with its reason: the union of
  *  the two lists the runner had before it shared one rule, copies.ts's and context.ts's. The
- *  connection timed out, was reset or refused, or ended early; GitHub's front end answered a 5xx,
- *  or the npm registry a 429 (`HTTP 429 (too many requests)`, the words of build.ts's registry
- *  read alone: GitHub's 429 is a rate limit, RATE_LIMITED, waited out at most MAX_RATE_RETRIES
- *  times and then not sent again); the gh process ran past the time limit its caller gave it and
- *  was ended (context.ts's reads have one); a name did not resolve, or did not resolve yet; a pipe
- *  broke; or the text names a timeout in any other words. The first pattern that matches gives
- *  the reason, so a more particular reason comes before a more general one. A call that fails so
- *  is sent again (`GhRetries.waitToRetry`); no other failure is. */
+ *  connection timed out, was reset or refused, or ended early; gh's answer ended early, so gh
+ *  could not parse it (`unexpected end of JSON input`: gh read a large body, such as a recursive
+ *  tree of 17 MB, cut short, and the same call gives it whole again); GitHub's front end answered
+ *  a 5xx, or the npm registry a 429 (`HTTP 429 (too many requests)`, the words of build.ts's
+ *  registry read alone: GitHub's 429 is a rate limit, RATE_LIMITED, waited out at most
+ *  MAX_RATE_RETRIES times and then not sent again); the gh process ran past the time limit its
+ *  caller gave it and was ended (context.ts's reads have one); a name did not resolve, or did not
+ *  resolve yet; a pipe broke; or the text names a timeout in any other words. The first pattern
+ *  that matches gives the reason, so a more particular reason comes before a more general one. A
+ *  call that fails so is sent again (`GhRetries.waitToRetry`); no other failure is. */
 const TRANSIENT_FAILURES: readonly (readonly [reason: string, pattern: RegExp])[] = [
   ["TLS handshake timeout", /TLS handshake timeout/i],
   ["connection reset", /connection reset|reset by peer|ECONNRESET/i],
   ["connection refused", /connection refused|ECONNREFUSED/i],
   ["unexpected EOF", /unexpected EOF/i],
+  ["body cut short", /unexpected end of JSON input/i],
   ["i/o timeout", /i\/o timeout/i],
   ["HTTP 502", /HTTP 502\b/],
   ["HTTP 503", /HTTP 503\b/],
