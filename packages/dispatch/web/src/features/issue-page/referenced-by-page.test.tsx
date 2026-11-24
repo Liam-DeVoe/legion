@@ -235,9 +235,9 @@ function renderDetails(drawer: MarginDrawer) {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
   });
-  // The outline's tree read, as the page holds it by the time Details draws, here with no run in
-  // it: Details' run rows only observe it (`useRunRows`), so Details drawn alone would wait on a
-  // read nothing sends.
+  // The tree read with no view, as the page holds it once Graph has read it, here with no run in
+  // it: Details' run rows read it at the list's opening only where the page holds none
+  // (`useRunRows`), so the list's cases here stub no tree read.
   queryClient.setQueryData<TreeAnswer>(issueTreeQuery("CORE-1").queryKey, treeAnswer([]));
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>

@@ -365,10 +365,12 @@ export function IssueMarginPanel({
   // leaves out (`listedEdges`).
   const referencesRead = useQuery({ ...referencesQuery(issueReference), enabled: false });
   const referencesListed = listedEdges(referencesRead.data?.edges, issueReference, true)?.length;
-  // The command bar runs the reader asked that changed the issue, from the outline's tree read:
-  // this observes that read and sends no request of its own (`useRunRows`). The list draws them
-  // after its own rows, and the control counts them with those.
-  const runs = useRunRows(issue);
+  // The command bar runs the reader asked that changed the issue, from the tree read with no
+  // view: this reads that read only while the list is drawn, open in an open References of an open
+  // Details, so the page's load sends none for runs, and the list's first opening sends it once
+  // where the page does not hold it (`useRunRows`). The list draws them after its own rows, and
+  // the control counts them with those.
+  const runs = useRunRows(issue, referencesOpen && readingReferences);
   const waitingRead = referenceTargetsQuery(
     waiting.map((key) => buildDispatchReference({ key, kind: "issue" }))
   );

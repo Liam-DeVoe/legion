@@ -567,3 +567,36 @@ test("an extra row with no time draws its edge with no separator and no time", a
   expect(edgeLine).toHaveTextContent(/^extra edge$/);
   expect(extraList?.querySelector("time")).toBeNull();
 });
+
+// The host's rows are drawn whole: the list clamps only an edge's excerpt of its own.
+test("an extra row draws its excerpt whole, with no Show more", async () => {
+  const node = {
+    ...graphNodeFields(),
+    id: "CORE-1",
+    issue_key: "CORE-1",
+    kind: "issue",
+    ref: "dispatch://CORE-1",
+  } satisfies GraphReferences["node"];
+  // Five lines and 339 characters: past both bounds beyond which the list clamps an edge's
+  // excerpt and offers to expand it (`CLAMP_LINES`, 3, and `CLAMP_CHARACTERS`, 240).
+  const words = Array.from(
+    { length: 5 },
+    (_, line) => `Line ${line + 1} of the question asks when the release ships and who owns it.`
+  ).join("\n");
+  const { getReferences, view } = renderPanelWithExtraRows({ edges: [], node }, [
+    { edge: "extra edge", excerpt: words, href: "/somewhere/r1", key: "r1", kind: "Extra kind" },
+  ]);
+  restore = () => {
+    getReferences.mockRestore();
+    view.unmount();
+  };
+  const panel = await screen.findByRole("region", { name: "Referenced by" });
+  await within(panel).findByRole("heading", { name: "Referenced by (0)" });
+  const extraList = panel.querySelector<HTMLElement>("[data-extra-references]");
+  if (extraList === null) throw new Error("the list draws no extra row");
+  const excerpt = extraList.querySelector("p");
+  if (excerpt === null) throw new Error("the extra row draws no excerpt");
+  expect(excerpt).toHaveTextContent(words, { normalizeWhitespace: false });
+  expect(excerpt).not.toHaveClass("line-clamp-3");
+  expect(within(extraList).queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
+});

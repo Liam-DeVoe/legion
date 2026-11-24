@@ -36,9 +36,9 @@ import { asUser } from "./users";
  *
  * Both rows seed the run through the server (`seedRunIssue`, `e2e/issue-page-z.ts`) and read it
  * on the real stack. The run's writes carry its header (`GOING_RUN_HEADER`), which links the
- * issue to the run. The outline's tree read (`GET /api/v1/issues/{key}/tree`) answers the run to
- * its asker alone, and Details draws it from that read as a row of the asker's Referenced by. The
- * run's page reads the run by its address
+ * issue to the run. The tree read with no view (`GET /api/v1/issues/{key}/tree`) answers the run
+ * to its asker alone, and Details draws it from that read as a row of the asker's Referenced by.
+ * The run's page reads the run by its address
  * (`GET /api/v1/references?to=dispatch://interaction/<id>&kind=changed_by_run`), which the server
  * answers to the asker alone.
  */
@@ -47,8 +47,8 @@ import { asUser } from "./users";
 // alice's, hers again with the tree read refused until its retries run out, and bob's in a
 // context of his own.
 // The run alice asked that changed the issue is a row of her Referenced by, after the list's own
-// rows, in the page's words and none of the graph's, read from the outline's tree read with no
-// request of its own and counted in the control with the list's own rows; a tree read that fails
+// rows, in the page's words and none of the graph's, its question whole, read from the tree read
+// with no view and counted in the control with the list's own rows; a tree read that fails
 // leaves the list's own rows drawn with the failure and its Retry under them; and bob, who asked
 // no run, reads the list's own rows alone. Which rows the list's own read holds is the server's
 // and the list's to say (`listedEdgesOf`): the row reads that the citing issue's comment is one
@@ -83,6 +83,10 @@ test("a command bar run that changed the issue is a reference for the person who
     ).toBe(true);
     // The run's row's "Only you" mark is drawn by later work, so no assertion reads it yet.
     await expect(runRow).toContainText(RUN_QUESTION);
+    await expect(
+      runRow.getByRole("button", { name: "Show more" }),
+      "the run's row clamps its question behind Show more"
+    ).toHaveCount(0);
     await expect(runRow).toContainText(NODE_REFERENCES_WORDS.edges.changed_by_run);
     const time = runRow.locator("time");
     await expect(time).toHaveCount(1);

@@ -61,25 +61,37 @@ function runRow(run: TreeAnswerNode): ExtraReferenceRow {
   };
 }
 
-/** One row for each run of `tree` that a `changed_by_run` tuple names (`tuple.to`), once however
- *  many nodes it changed, newest first. A run no such tuple names draws no row, and nor does a
- *  tree not read yet. */
-export function runRows(tree: TreeAnswer | undefined): readonly ExtraReferenceRow[] {
-  if (tree === undefined) return NO_ROWS;
+/** One row for each run whose node some page holds and that a `changed_by_run` tuple of some page
+ *  names (`tuple.to`), once however many nodes it changed and however many pages name it, newest
+ *  first. The pages are those of the tree read that the page holds. A page of older comments,
+ *  read with `comments_before`, answers those comments and their tuples and no other node, so a
+ *  run that changed only an older comment has its tuple there and its node in no page, and draws
+ *  no row. A run no such tuple names draws no row, and nor does a read that holds no page. */
+export function runRows(pages: readonly TreeAnswer[]): readonly ExtraReferenceRow[] {
   const changed = new Set<string>();
-  for (const tuple of tree.tuples ?? []) {
-    if (tuple.kind === CHANGED_BY_RUN && tuple.to.kind === RUN) changed.add(tuple.to.id);
+  for (const page of pages) {
+    for (const tuple of page.tuples ?? []) {
+      if (tuple.kind === CHANGED_BY_RUN && tuple.to.kind === RUN) changed.add(tuple.to.id);
+    }
   }
   if (changed.size === 0) return NO_ROWS;
   const runs: DatedRun[] = [];
-  for (const node of tree.nodes ?? []) {
-    // Taking the id out of the set as its node is taken keeps one run to one row.
-    if (node.supertag === RUN && changed.delete(node.id)) {
-      runs.push({ run: node, time: madeAt(node) });
+  for (const page of pages) {
+    for (const node of page.nodes ?? []) {
+      // Taking the id out of the set as its node is taken keeps one run to one row.
+      if (node.supertag === RUN && changed.delete(node.id)) {
+        runs.push({ run: node, time: madeAt(node) });
+      }
     }
   }
   if (runs.length === 0) return NO_ROWS;
   return runs.sort(newestFirst).map(({ run }) => runRow(run));
+}
+
+/** The rows of the tree read's one answer, which holds every page its walk read (`readTree`):
+ *  one function, so the rows keep their identity until the answer changes. */
+function answerRows(answer: TreeAnswer): readonly ExtraReferenceRow[] {
+  return runRows([answer]);
 }
 
 /** The run rows of the issue's tree read, and how that read stands, as Details says a read of
@@ -104,13 +116,23 @@ export interface RunRowsRead {
 }
 
 /**
- * The rows of the runs that changed `issue` or a node of it, from the tree read the outline made.
- * It observes that read without enabling it, so it sends no request of its own: the page's first
- * load and the reader opening Referenced by send none for runs, and only `retry` reads the tree
- * again. Only the asker's tree read holds a run, so another reader's rows are none.
+ * The rows of the runs that changed `issue` or a node of it, from the issue's tree read with no
+ * view, through two observers of that read. The first is never enabled: it draws the rows, says
+ * whether they are known and whether the read stands failed, and its `retry` reads the tree
+ * again. The second reads the tree: it is subscribed only while the list is `open`, so the page's
+ * load sends no read for runs, and the list's first opening sends the tree read once where the
+ * page does not hold it, and none where it does. It is an observer of its own, mounted afresh at
+ * each opening as a view's is (`view-read.tsx`), rather than the first enabled at it, since
+ * TanStack reads a query that holds no answer whenever an observer's `enabled` turns on, so a read
+ * Dispatch refused would be sent again at each opening; a new observer reads it only as
+ * `TREE_FRESH` says, not while a write of the issue holds it, and a refused read only where
+ * something asked for it again since its refusal. Only the asker's tree read holds a run, so
+ * another reader's rows are none.
  */
-export function useRunRows(issue: IssueDetails): RunRowsRead {
-  const read = useQuery({ ...issueTreeQuery(issue.key), enabled: false, select: runRows });
+export function useRunRows(issue: IssueDetails, open: boolean): RunRowsRead {
+  const tree = issueTreeQuery(issue.key);
+  const read = useQuery({ ...tree, enabled: false, select: answerRows });
+  useQuery({ ...tree, subscribed: open });
   const { data: rows, errorUpdateCount, refetch } = read;
   const failed = standsFailed(read);
   // `isFetching` is read only while the read stands failed, the one time its Retry is drawn.

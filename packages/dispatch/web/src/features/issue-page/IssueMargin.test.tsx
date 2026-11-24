@@ -98,7 +98,7 @@ import {
 import { architecture, offPageColours } from "./shared-controls-fixture";
 import { DetailsSlot } from "./slots/details";
 import { treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
-import { issueTreeQuery, type TreeAnswer } from "./tree-read/tree-read";
+import { issueTreeQuery, subscribeTreeFreshness, type TreeAnswer } from "./tree-read/tree-read";
 import { firstUsableIn, usableControl } from "./usable-control";
 import { blockedByRefusal } from "./useIssueBlockedBy";
 import { type IssueHeaderWrites, useIssueHeaderWrites } from "./useIssueHeaderWrites";
@@ -238,16 +238,19 @@ function detailsQueryClient(): QueryClient {
  *  the Details drawer it is drawn in; with none, Details makes none of the reads it makes only
  *  while open. `redraw` draws the same Details in the drawer it is handed, as a drawer that
  *  opens or closes does. `queryClient` is the client every read goes through, by default a new
- *  `detailsQueryClient()`. */
+ *  `detailsQueryClient()`. `heldTree` is the tree read's answer the page holds as Details draws,
+ *  by default `EMPTY_TREE`; with null the page holds none. */
 function renderDetails(
   beside?: (issue: IssueDetails) => ReactNode,
   drawer?: MarginDrawer,
-  queryClient = detailsQueryClient()
+  queryClient = detailsQueryClient(),
+  heldTree: TreeAnswer | null = EMPTY_TREE
 ) {
-  // The outline's tree read, as the page holds it by the time Details draws: Details' run rows
-  // only observe it (`useRunRows`), so Details drawn alone would wait on a read nothing sends. A
-  // case that needs another answer puts it in the client this returns.
-  queryClient.setQueryData(issueTreeKey(issue.key), EMPTY_TREE);
+  // The tree read with no view, as the page holds it once Graph has read it: Details' run rows
+  // read it at the list's opening only where the page holds none (`useRunRows`), so a case that
+  // opens the list over this answer stubs no tree read. A case that needs another answer puts it
+  // in the client this returns.
+  if (heldTree !== null) queryClient.setQueryData(issueTreeKey(issue.key), heldTree);
   const tree = (inDrawer: MarginDrawer | undefined) => (
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
       <QueryClientProvider client={queryClient}>
@@ -3050,6 +3053,102 @@ test("Referenced by counts the reader's runs once both reads answer, and is a co
     ).toBe(holding);
   } finally {
     view.unmount();
+    getIssueTree.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// The list's runs come from the tree read with no view, which the page reads for Graph alone: the
+// page's load sends none of it for runs, and the list's first opening sends it once where the
+// page does not hold it, and none where it does. A read Dispatch refused is not sent again at the
+// list's next opening, only by its Retry.
+test("the list's first opening reads the tree with no view where the page does not hold it, and the load reads none", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
+  const getIssueTree = spyOn(api, "getIssueTree").mockResolvedValue(treeWithRun(RUN, RUN_QUESTION));
+  const treeReads = () => getIssueTree.mock.calls.length;
+  const runKind = sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction);
+  // The page holds no tree read: the load, with Details and References open and the list shut.
+  let view = renderDetails(undefined, OPEN_DRAWER, detailsQueryClient(), null);
+  let stopFreshness: (() => void) | undefined;
+
+  try {
+    const control = await screen.findByRole("button", {
+      name: referencedByControlName(undefined),
+    });
+    await waitFor(() =>
+      expect(getReferences).toHaveBeenCalledWith(reference, { kind: "blocked_by" })
+    );
+    expect(treeReads(), "the page's load read the tree for runs").toBe(0);
+    await user.click(control);
+    const list = await screen.findByRole("region", { name: "Referenced by" });
+    expect(await within(list).findByRole("link", { name: runKind })).toHaveAttribute(
+      "href",
+      `/runs/${RUN}`
+    );
+    expect(
+      getIssueTree.mock.calls.map(([key, query]) => [key, query]),
+      "the list's first opening did not read the tree once, with no view and no kind"
+    ).toEqual([["CORE-1", {}]]);
+    // Shut and opened again, the list draws the answer the page now holds.
+    await user.click(control);
+    await user.click(control);
+    const reopened = await screen.findByRole("region", { name: "Referenced by" });
+    await within(reopened).findByRole("link", { name: runKind });
+    expect(treeReads(), "the list's second opening read the tree again").toBe(1);
+    view.unmount();
+
+    // The page holds the tree read, as it does once Graph has read it.
+    getIssueTree.mockClear();
+    view = renderDetails(
+      undefined,
+      OPEN_DRAWER,
+      detailsQueryClient(),
+      treeWithRun(RUN, RUN_QUESTION)
+    );
+    await user.click(
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
+    );
+    const held = await screen.findByRole("region", { name: "Referenced by" });
+    expect(await within(held).findByRole("link", { name: runKind })).toHaveAttribute(
+      "href",
+      `/runs/${RUN}`
+    );
+    expect(treeReads(), "the list's opening read a tree the page holds").toBe(0);
+    view.unmount();
+
+    // The page holds no tree read, and Dispatch refuses it. The page's subscription to the tree's
+    // freshness, which its stage holds (`ViewReadProvider`), marks a refused read valid, so only
+    // a new ask of it - its Retry, an event of the issue - lets a new observer read it again.
+    getIssueTree.mockClear();
+    getIssueTree.mockRejectedValue(readFailure());
+    const refusing = detailsQueryClient();
+    const release = subscribeTreeFreshness(refusing, issue.key);
+    // The subscription ends once released and once the client holds the tree no more.
+    stopFreshness = () => {
+      release();
+      refusing.clear();
+    };
+    view = renderDetails(undefined, OPEN_DRAWER, refusing, null);
+    const refused = await screen.findByRole("button", {
+      name: referencedByControlName(undefined),
+    });
+    await user.click(refused);
+    await screen.findByText(ANSWER_LINES.references_unreadable);
+    expect(treeReads(), "the list's first opening did not read the tree once").toBe(1);
+    await user.click(refused);
+    await user.click(refused);
+    const line = (await screen.findByText(ANSWER_LINES.references_unreadable)).parentElement;
+    if (line === null) throw new Error("the tree read's failure stands in no line");
+    expect(treeReads(), "the list's next opening read the refused tree again").toBe(1);
+    await user.click(within(line).getByRole("button", { name: CONTROL_LABELS.retry }));
+    await waitFor(() => expect(treeReads(), "Retry did not read the tree again").toBe(2));
+  } finally {
+    view.unmount();
+    stopFreshness?.();
     getIssueTree.mockRestore();
     getReferences.mockRestore();
     restore();

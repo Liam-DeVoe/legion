@@ -1,16 +1,10 @@
-import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, waitFor } from "@testing-library/react";
-import { createElement } from "react";
+import { expect, test } from "bun:test";
 
-import { api } from "../../../api/client";
-import { issueTreeKey } from "../../../api/queries";
-import { issueDetails } from "../decisions-filter/decisions-fixtures";
 import { NODE_REFERENCES_WORDS, sentenceCase } from "../page-words";
 import { plainWords } from "../tree-drafts";
 import { treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
-import { type RunRowsRead, runRows, useRunRows } from "./run-references";
+import { runRows } from "./run-references";
 
 /** The issue the tree read answers, as `treeAnswer` answers it. */
 const KEY = "CORE-1";
@@ -48,15 +42,15 @@ function changedBy(from: string, run: string): TreeTuple {
   return { ...treeTuple("changed_by_run", from, run), to: { id: run, kind: "interaction" } };
 }
 
-/** The whole tree read, one page. */
+/** One page of the tree read, which holds the whole tree where it is the read's one page. */
 function treeOf(nodes: readonly TreeAnswerNode[], tuples: readonly TreeTuple[]): TreeAnswer {
   return treeAnswer(nodes, tuples, { converted: true, tree: "tree-core-1" });
 }
 
 test("an interaction of the tree read is a row with the page's words and the run's words", () => {
-  const rows = runRows(
-    treeOf([ISSUE_NODE, commentNode(COMMENT), runNode(RUN)], [changedBy(COMMENT, RUN)])
-  );
+  const rows = runRows([
+    treeOf([ISSUE_NODE, commentNode(COMMENT), runNode(RUN)], [changedBy(COMMENT, RUN)]),
+  ]);
   expect(rows).toHaveLength(1);
   const [row] = rows;
   expect(row.key).toBe(RUN);
@@ -73,38 +67,38 @@ test("an interaction of the tree read is a row with the page's words and the run
 });
 
 test("one run is one row however many writes it made", () => {
-  const rows = runRows(
+  const rows = runRows([
     treeOf(
       [ISSUE_NODE, commentNode(COMMENT), commentNode(SECOND_COMMENT), runNode(RUN)],
       [changedBy(KEY, RUN), changedBy(COMMENT, RUN), changedBy(SECOND_COMMENT, RUN)]
-    )
-  );
+    ),
+  ]);
   expect(rows.map((row) => row.key)).toEqual([RUN]);
 });
 
 test("rows stand newest first by made_at", () => {
-  const newestFirst = runRows(
+  const newestFirst = runRows([
     treeOf(
       [ISSUE_NODE, runNode(OTHER_RUN, "2026-11-16T09:00:00Z"), runNode(RUN, ASKED_AT)],
       [changedBy(KEY, OTHER_RUN), changedBy(KEY, RUN)]
-    )
-  );
+    ),
+  ]);
   expect(newestFirst.map((row) => row.key)).toEqual([RUN, OTHER_RUN]);
 
   // `RUN` sorts before `OTHER_RUN` by id, and stands after it in the read.
-  const sameTime = runRows(
+  const sameTime = runRows([
     treeOf(
       [ISSUE_NODE, runNode(OTHER_RUN, ASKED_AT), runNode(RUN, ASKED_AT)],
       [changedBy(KEY, OTHER_RUN), changedBy(KEY, RUN)]
-    )
-  );
+    ),
+  ]);
   expect(sameTime.map((row) => row.key)).toEqual([RUN, OTHER_RUN]);
 });
 
 test("a run the read answers no made_at for stands after the runs it answers one for", () => {
   // `FIRST_RUN` sorts before `RUN`, and `RUN` before `OTHER_RUN`, by id: by id alone the run with
   // no time would stand second.
-  const rows = runRows(
+  const rows = runRows([
     treeOf(
       [
         ISSUE_NODE,
@@ -113,70 +107,57 @@ test("a run the read answers no made_at for stands after the runs it answers one
         runNode(FIRST_RUN, ASKED_AT),
       ],
       [changedBy(KEY, RUN), changedBy(KEY, OTHER_RUN), changedBy(KEY, FIRST_RUN)]
-    )
-  );
-  expect(rows.map((row) => row.key)).toEqual([FIRST_RUN, OTHER_RUN, RUN]);
+    ),
+  ]);
   expect(rows[2]?.at, "the run with no time reads a time").toBeUndefined();
 });
 
 test("a tree read with no run draws no row", () => {
   // Another reader's tree: the tuple a run wrote, and no run, since only its asker reads it.
   expect(
-    runRows(treeOf([ISSUE_NODE, commentNode(COMMENT)], [changedBy(COMMENT, RUN)]))
+    runRows([treeOf([ISSUE_NODE, commentNode(COMMENT)], [changedBy(COMMENT, RUN)])])
   ).toHaveLength(0);
   // A run that changed nothing of this issue.
   expect(
-    runRows(
+    runRows([
       treeOf(
         [ISSUE_NODE, commentNode(COMMENT), runNode(RUN)],
         [treeTuple("replies_to", COMMENT, KEY)]
-      )
-    )
+      ),
+    ])
   ).toHaveLength(0);
   // A tuple of the run's kind whose far end is no run, though a run's node holds its id: the
   // tuples are set after `treeAnswer`, which would name a held end by its node's kind.
   expect(
-    runRows({
-      ...treeOf([ISSUE_NODE, commentNode(COMMENT), runNode(RUN)], []),
-      tuples: [
-        {
-          from: { id: COMMENT, kind: "comment" },
-          kind: "changed_by_run",
-          to: { id: RUN, kind: "comment" },
-        },
-      ],
-    })
+    runRows([
+      {
+        ...treeOf([ISSUE_NODE, commentNode(COMMENT), runNode(RUN)], []),
+        tuples: [
+          {
+            from: { id: COMMENT, kind: "comment" },
+            kind: "changed_by_run",
+            to: { id: RUN, kind: "comment" },
+          },
+        ],
+      },
+    ])
   ).toHaveLength(0);
-  expect(runRows(undefined)).toHaveLength(0);
+  // A read that holds no page yet.
+  expect(runRows([])).toHaveLength(0);
 });
 
-test("the hook reads the cached tree and sends no request", async () => {
-  const getIssueTree = spyOn(api, "getIssueTree").mockResolvedValue(treeOf([ISSUE_NODE], []));
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const issue = issueDetails();
-  let read: RunRowsRead | undefined;
-  function Rows() {
-    read = useRunRows(issue);
-    return null;
-  }
-  const view = render(createElement(QueryClientProvider, { client }, createElement(Rows)));
-  try {
-    expect(read?.settled).toBe(false);
-    expect(read?.rows).toHaveLength(0);
-
-    act(() => {
-      client.setQueryData(
-        issueTreeKey(issue.key),
-        treeOf([ISSUE_NODE, commentNode(COMMENT), runNode(RUN)], [changedBy(COMMENT, RUN)])
-      );
-    });
-    await waitFor(() => expect(read?.settled).toBe(true));
-    expect(read?.rows.map((row) => row.key)).toEqual([RUN]);
-    expect(read?.failed).toBe(false);
-    expect(getIssueTree).toHaveBeenCalledTimes(0);
-  } finally {
-    view.unmount();
-    client.clear();
-    getIssueTree.mockRestore();
-  }
+test("the runs of the tree read's pages are rows, one per run, and a page of older comments adds none", () => {
+  // The first page: the issue, and the two runs that changed it, `RUN` the newer.
+  const first = treeOf(
+    [ISSUE_NODE, runNode(OTHER_RUN, "2026-11-16T09:00:00Z"), runNode(RUN, ASKED_AT)],
+    [changedBy(KEY, OTHER_RUN), changedBy(KEY, RUN)]
+  );
+  // A page of older comments (`comments_before`): a comment and its tuples and no other node.
+  // `RUN` changed the comment too, and `FIRST_RUN` changed that comment and nothing else, so no
+  // page holds its node.
+  const olderComments = treeOf(
+    [commentNode(COMMENT)],
+    [changedBy(COMMENT, RUN), changedBy(COMMENT, FIRST_RUN)]
+  );
+  expect(runRows([first, olderComments]).map((row) => row.key)).toEqual([RUN, OTHER_RUN]);
 });

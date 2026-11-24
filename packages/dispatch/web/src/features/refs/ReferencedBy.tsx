@@ -358,7 +358,7 @@ export interface ExtraReferenceRow {
   readonly at?: string;
   /** The relation the row's item stands in to the node, in the host's words. */
   readonly edge: string;
-  /** The item's own words, drawn as the list draws an edge's excerpt. */
+  /** The item's own words, drawn whole under its edge, with no clamp and no "Show more". */
   readonly excerpt?: string;
   /** Where the row's link goes. */
   readonly href: string;
@@ -565,7 +565,11 @@ export function ReferencedBy({
                   </>
                 )}
               </div>
-              {row.excerpt === undefined ? null : <Excerpt text={row.excerpt} tokens={tokens} />}
+              {row.excerpt === undefined ? null : (
+                <p className={`mt-1 whitespace-pre-wrap text-sm ${tokens.excerpt}`}>
+                  {row.excerpt}
+                </p>
+              )}
             </li>
           ))}
         </ul>
