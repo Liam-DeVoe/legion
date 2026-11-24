@@ -26,7 +26,7 @@ import (
 // are read the same way (placeOnWalk).
 //
 // Line, Places and Steps are read only: an unstored walk's Line is phase.Order itself, its Places
-// todaysPlaces and its Steps todaysSteps itself.
+// record.TodaysPlaces and its Steps todaysSteps itself.
 type Walk struct {
 	// Stored says whether the run has plan rows.
 	Stored bool
@@ -47,9 +47,9 @@ type Walk struct {
 	// Line is the phases the task walks: one for each step, then retro and merging where the task
 	// merges; a task with a sub-owner's starts with planning.
 	Line []phase.Phase
-	// Places is the place of each phase of Line, in its order (linePlaces): the one reading of
-	// where a position of the line stands, which every reader of the line's places reads (PlaceOf,
-	// startPlace, backwardPlace, issuePhaseOf, phaseAt and the walk's table).
+	// Places is the place of each phase of Line, in its order (record.LinePlaces): the one reading
+	// of where a position of the line stands, which every reader of the line's places reads
+	// (PlaceOf, startPlace, backwardPlace, issuePhaseOf, phaseAt and the walk's table).
 	Places []record.TaskPlace
 	// Merges says whether the task's work merges by itself under the plan in force
 	// (record.StoredPlan.Merging: its block says merges, or it is a task of the top level that no
@@ -91,15 +91,11 @@ type Walk struct {
 // They are read once.
 var todaysSteps = planSteps(plan.Deployment{Roles: plan.BuiltinRoles()}, "", 0, defaultTask, config.Project{}.RunsByDefault())
 
-// todaysPlaces is the place of each phase of today's line, phase.Order, as a run with no plan rows
-// walks it (linePlaces): each phase before the retro a step at its place from 1, then the retro and
-// the merge, where the release before put them. They are read once.
-var todaysPlaces = linePlaces(phase.Order, false)
-
 // todaysWalk is the walk of a run with no plan rows: the task default walking todaysSteps on
-// today's line, phase.Order, at today's places, which merges, with Stored false.
+// today's line, phase.Order, at today's places (record.TodaysPlaces), which merges, with Stored
+// false.
 func todaysWalk() Walk {
-	return Walk{Task: defaultTask, Steps: todaysSteps, Line: phase.Order, Places: todaysPlaces, Merges: true}
+	return Walk{Task: defaultTask, Steps: todaysSteps, Line: phase.Order, Places: record.TodaysPlaces, Merges: true}
 }
 
 // walks is the walk of each task of issue's run, in task id order (record.StoredPlan.Tasks), read
@@ -132,7 +128,7 @@ func walkOfTask(key string, stored *record.StoredPlan, task record.PlanTask, mer
 	steps, merges, subOwned := stored.Steps[task.Task], slices.Contains(merging, task.Task), task.OwnerRole != ""
 	line := lineOf(subOwned, steps, merges)
 	return Walk{Stored: true, Task: task.Task, Branch: task.BranchOf(key), Text: task.BlockText, Steps: steps, Needs: task.Needs,
-		Line: line, Places: linePlaces(line, subOwned), Merges: merges, State: task.State, Place: task.Place,
+		Line: line, Places: record.LinePlaces(line, subOwned), Merges: merges, State: task.State, Place: task.Place,
 		StoppedReason: task.StoppedReason, HoldReason: task.HoldReason, Wait: task.StepWait, WaitSince: task.StepWaitSince,
 		StartReason: task.StartReason, Version: stored.Version}
 }
@@ -140,7 +136,7 @@ func walkOfTask(key string, stored *record.StoredPlan, task record.PlanTask, mer
 // lineOf is the line of a task whose steps are steps, as its walk reads it: the phase each step
 // runs as, then Legion's own retro and merge where merges says the task merges (plan.Line). The
 // line of a task with a sub-owner (subOwned, its block names `owner`) starts with planning, which
-// no plan names: the phase of its sub-owner's act at its parts (linePlaces).
+// no plan names: the phase of its sub-owner's act at its parts (record.LinePlaces).
 func lineOf(subOwned bool, steps []record.PlanStep, merges bool) []phase.Phase {
 	line := plan.Line(namedSteps(steps), merges)
 	if !subOwned {

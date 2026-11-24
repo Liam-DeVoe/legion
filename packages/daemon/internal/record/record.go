@@ -621,18 +621,42 @@ func stepOfRow(row pods.RunningRow, held bool) RunningStep {
 	return step
 }
 
-// todaysPlace is the place of p on today's line, phase.Order, as the walk of a run with no plan
-// rows reads it: each phase before the retro a step at its place from 1, the retro and the merge
-// their own, and no act for a phase off the line (admitted).
-func todaysPlace(p phase.Phase) TaskPlace {
-	switch p {
-	case phase.Retro:
-		return TaskPlace{Kind: PlaceRetro}
-	case phase.Merging:
-		return TaskPlace{Kind: PlaceMerge}
+// LinePlaces is the place of each phase of line, the line of a task's walk, in its order: the one
+// map of a position of a line to a place. The workflow's walk reads it once for its line and builds
+// each table on it, and a run with no plan rows reads today's line through it (TodaysPlaces). The
+// planning that a task with a sub-owner's line starts with (subOwned) is its parts, at place 0,
+// which is no step; the retro and the merge are at place 0; and each other phase is a step, at its
+// place from 1 among the task's steps alone.
+func LinePlaces(line []phase.Phase, subOwned bool) []TaskPlace {
+	places := make([]TaskPlace, len(line))
+	step := 0
+	for at, p := range line {
+		switch {
+		case at == 0 && subOwned:
+			places[at] = TaskPlace{Kind: PlaceParts}
+		case p == phase.Retro:
+			places[at] = TaskPlace{Kind: PlaceRetro}
+		case p == phase.Merging:
+			places[at] = TaskPlace{Kind: PlaceMerge}
+		default:
+			step++
+			places[at] = TaskPlace{Kind: PlaceStep, Position: step}
+		}
 	}
+	return places
+}
+
+// TodaysPlaces is the place of each phase of today's line, phase.Order, which has no sub-owner
+// (LinePlaces): each phase before the retro a step at its place from 1, then the retro and the
+// merge, where the release before put them. It is read only, as phase.Order is: the walk of a run
+// with no plan rows and its table read it, and so does todaysPlace.
+var TodaysPlaces = LinePlaces(phase.Order, false)
+
+// todaysPlace is the place of p on today's line (TodaysPlaces), as the walk of a run with no plan
+// rows reads it, and no act for a phase off the line (admitted).
+func todaysPlace(p phase.Phase) TaskPlace {
 	if at := slices.Index(phase.Order, p); at >= 0 {
-		return TaskPlace{Kind: PlaceStep, Position: at + 1}
+		return TodaysPlaces[at]
 	}
 	return TaskPlace{}
 }

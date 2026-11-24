@@ -130,3 +130,26 @@ func TestEachReaderGivesAPositionOfALineOnePlace(t *testing.T) {
 		})
 	}
 }
+
+// A run with no plan rows has the place of each phase of today's line read in two packages: by its
+// walk (todaysWalk, Walk.PlaceOf) and by the record's reading of its running step
+// (record.RunningOf), which the issue's own read, the idle view and the served state go through.
+// For each phase of phase.Order the running step stands where the walk puts that phase.
+//
+// The fault it catches is a second rule of today's places that drifts from the walk's (its
+// controls: while the record had a rule of its own, that rule with the retro at step 6; once the
+// record reads the one function of a line's places, the record's reading given a rule of its own
+// again, which puts each phase one step on).
+func TestTheRecordReadsTodaysPlacesAsTheWalkDoes(t *testing.T) {
+	today := todaysWalk()
+	for _, p := range phase.Order {
+		want, ok := today.PlaceOf(p)
+		if !ok {
+			t.Fatalf("the walk of a run with no plan rows gives %s no place", p)
+		}
+		steps := record.RunningOf(record.Issue{Key: "LEGION-208", Phase: p}, false, nil)
+		if len(steps) != 1 || steps[0].Place != want || steps[0].Phase != p {
+			t.Errorf("the running steps of an issue with no plan rows in %s = %+v, want one at %+v, where its walk puts %s", p, steps, want, p)
+		}
+	}
+}

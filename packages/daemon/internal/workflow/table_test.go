@@ -103,7 +103,7 @@ func TestTheLastStepOfALineThatDoesNotMergeMovesToDone(t *testing.T) {
 		last := len(tc.line)
 		place := record.TaskPlace{Kind: record.PlaceStep, Position: last}
 		var done []Row
-		for _, row := range TableOf(tc.line, linePlaces(tc.line, false)) {
+		for _, row := range TableOf(tc.line, record.LinePlaces(tc.line, false)) {
 			if row.From == phase.Retro || row.From == phase.Merging {
 				t.Fatalf("the table of %v holds the row %s/%s -> %s, out of a phase the line does not walk", tc.line, row.From, row.Trigger, row.To)
 			}
@@ -116,7 +116,7 @@ func TestTheLastStepOfALineThatDoesNotMergeMovesToDone(t *testing.T) {
 		}
 	}
 	mergingLine := []phase.Phase{phase.Implementing, phase.Retro, phase.Merging}
-	merges := TableOf(mergingLine, linePlaces(mergingLine, false))
+	merges := TableOf(mergingLine, record.LinePlaces(mergingLine, false))
 	var into []phase.Phase
 	for _, row := range merges {
 		if row.Trigger == TriggerRetroCompleted || row.Trigger == TriggerPullRequestMerged {
@@ -130,7 +130,7 @@ func TestTheLastStepOfALineThatDoesNotMergeMovesToDone(t *testing.T) {
 
 func TestEveryLineHasARowForEachPhaseAndTrigger(t *testing.T) {
 	for _, line := range testLines {
-		if err := validateTable(line, TableOf(line, linePlaces(line, false))); err != nil {
+		if err := validateTable(line, TableOf(line, record.LinePlaces(line, false))); err != nil {
 			t.Errorf("line %v: %v", line, err)
 		}
 	}
@@ -138,7 +138,7 @@ func TestEveryLineHasARowForEachPhaseAndTrigger(t *testing.T) {
 
 func TestDeletingAnyTransitionRowBreaksCoverage(t *testing.T) {
 	for _, line := range testLines {
-		table := TableOf(line, linePlaces(line, false))
+		table := TableOf(line, record.LinePlaces(line, false))
 		if len(table) == 0 {
 			t.Fatalf("line %v has no rows", line)
 		}
@@ -184,7 +184,7 @@ func TestBackwardRowsOfEachLineAreItsOwnPairs(t *testing.T) {
 		}
 		var fromTrigger []string
 		fromTable := map[string]bool{}
-		for _, row := range TableOf(line, linePlaces(line, false)) {
+		for _, row := range TableOf(line, record.LinePlaces(line, false)) {
 			if row.Trigger == TriggerBackward {
 				fromTrigger = append(fromTrigger, phase.Pair(row.From, row.To))
 			}
@@ -234,7 +234,7 @@ func setOf(pairs []string) map[string]bool {
 func TestTheTableOfALineInAnyOrderGoesBackByTheLine(t *testing.T) {
 	rowsOf := func(line []phase.Phase, trigger TriggerKind) []string {
 		var pairs []string
-		for _, row := range TableOf(line, linePlaces(line, false)) {
+		for _, row := range TableOf(line, record.LinePlaces(line, false)) {
 			if row.Trigger == trigger {
 				pairs = append(pairs, phase.Pair(row.From, row.To))
 			}
@@ -282,7 +282,7 @@ func TestTwoPlacesThatRunAsStepAreTwoRows(t *testing.T) {
 		}
 		return to
 	}
-	places := linePlaces(line, false)
+	places := record.LinePlaces(line, false)
 	stored, plain := StoredTableOf(line, places), TableOf(line, places)
 	for _, tc := range []struct {
 		name    string

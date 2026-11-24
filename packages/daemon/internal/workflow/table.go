@@ -75,10 +75,10 @@ func allow(Snapshot) bool { return true }
 // a pull request that is open or merged (Snapshot).
 func hasOpenOrMergedPR(s Snapshot) bool { return s.HasOpenOrMergedPR }
 
-// Table is the table of today's line, phase.Order, at today's places (todaysPlaces): every row an
-// issue with no plan rows walks (Walk), built once. It is the table the workflow had before a plan
-// picked an issue's line, row for row (TestAWalkWithNoPlanRowsMovesByTodaysTable).
-var Table = TableOf(phase.Order, todaysPlaces)
+// Table is the table of today's line, phase.Order, at today's places (record.TodaysPlaces): every
+// row an issue with no plan rows walks (Walk), built once. It is the table the workflow had before
+// a plan picked an issue's line, row for row (TestAWalkWithNoPlanRowsMovesByTodaysTable).
+var Table = TableOf(phase.Order, record.TodaysPlaces)
 
 // stepRows are the rows each phase of a line carries on its own role's trigger, in the table's
 // order: the step's move on to the next phase of the line (to ""), whichever phase the line puts
@@ -105,22 +105,22 @@ var stepRows = []struct {
 }
 
 // TableOf is the complete transition table of an issue whose task walks line at places, the place
-// of each of its phases (linePlaces): the phases of its steps in the task's order, which holds
-// implementing, then retro and merging where the task merges (plan.Line of a plan plan.Validate
-// took). Rows, not switch-case scheduling, define every phase change. Its rows, in this order: the
-// gate's opening, out of admitted into the first phase of the line; each phase's rows on its role's
-// trigger (stepRows), at each position of the line that phase stands at, the last step of a line
-// with no retro moving to done at its own place, since its task is done there; the merge, out of
-// merging into done, where the line holds it; and a backward row from each position of the line to
-// each position before it (backwardRows). A head that conflicts with its base moves no phase
-// (merge_forward.go). A return goes back to implementing where implementing stands before the step
-// that fails, and a step with no implementing before it has none. Each row carries the places of
-// its two positions, read from places, so a line that holds a phase at two places, two steps of
-// roles the deployment defines, has a row for each, and the planning of a task with a sub-owner is
-// its parts. A row into accepting starts nobody, because accepting's role is the tree's architect;
-// every other row into a phase of the line starts its role, and a row into done starts nobody. No
-// row carries a status of its own: every status a row writes is its target phase's, which
-// PhaseStatus holds.
+// of each of its phases (record.LinePlaces): the phases of its steps in the task's order, which
+// holds implementing, then retro and merging where the task merges (plan.Line of a plan
+// plan.Validate took). Rows, not switch-case scheduling, define every phase change. Its rows, in
+// this order: the gate's opening, out of admitted into the first phase of the line; each phase's
+// rows on its role's trigger (stepRows), at each position of the line that phase stands at, the
+// last step of a line with no retro moving to done at its own place, since its task is done there;
+// the merge, out of merging into done, where the line holds it; and a backward row from each
+// position of the line to each position before it (backwardRows). A head that conflicts with its
+// base moves no phase (merge_forward.go). A return goes back to implementing where implementing
+// stands before the step that fails, and a step with no implementing before it has none. Each row
+// carries the places of its two positions, read from places, so a line that holds a phase at two
+// places, two steps of roles the deployment defines, has a row for each, and the planning of a
+// task with a sub-owner is its parts. A row into accepting starts nobody, because accepting's role
+// is the tree's architect; every other row into a phase of the line starts its role, and a row
+// into done starts nobody. No row carries a status of its own: every status a row writes is its
+// target phase's, which PhaseStatus holds.
 func TableOf(line []phase.Phase, places []record.TaskPlace) []Row {
 	rows := []Row{{From: phase.Admitted, Trigger: TriggerGateOpened, Guard: allow, To: line[0], ToPlace: places[0],
 		Effects: effectsInto(line[0])}}
@@ -195,31 +195,6 @@ func StoredTableOf(line []phase.Phase, places []record.TaskPlace) []Row {
 		}
 	}
 	return rows
-}
-
-// linePlaces is the place of each phase of line, the line of a task (lineOf), in its order: the one
-// map of a position of a line to a place, which a walk reads once (Walk.Places) and each table is
-// built on. The planning a task with a sub-owner's line starts with (subOwned) is its parts, at
-// place 0, which is no step; the retro and the merge are at place 0; and each other phase is a step,
-// at its place from 1 among the task's steps alone. A run with no plan rows walks phase.Order with
-// no sub-owner, so its places are today's (todaysPlaces).
-func linePlaces(line []phase.Phase, subOwned bool) []record.TaskPlace {
-	places := make([]record.TaskPlace, len(line))
-	step := 0
-	for at, p := range line {
-		switch {
-		case at == 0 && subOwned:
-			places[at] = record.TaskPlace{Kind: record.PlaceParts}
-		case p == phase.Retro:
-			places[at] = record.TaskPlace{Kind: record.PlaceRetro}
-		case p == phase.Merging:
-			places[at] = record.TaskPlace{Kind: record.PlaceMerge}
-		default:
-			step++
-			places[at] = record.TaskPlace{Kind: record.PlaceStep, Position: step}
-		}
-	}
-	return places
 }
 
 // placeRank orders the places of one line: no place first, then each step by its place, then the
