@@ -1046,7 +1046,7 @@ const cachesSourceContract = 213
 const assignmentPlanContract = 220
 
 // gateBasisContract is the daemon contract that let a root's gated step stand open on an
-// ancestor's approval or wait on an ancestor's approval request (version.go's 240,
+// ancestor's approval or wait on an ancestor's approval request (version.go's 239,
 // dispatch://INFRA-3320, R1 and R2), served each root whether its tree runs, and added the phase
 // awaiting_children and the held word of that name (R11 to R13). It added two keys to an issue:
 // the gated step's `basis`, which rides only on a step of the two status words it added, and each
@@ -1096,7 +1096,7 @@ const assignmentPlanContract = 220
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is.
-const gateBasisContract = 240
+const gateBasisContract = 239
 
 // withoutGateBasis is the issue with no `treeRuns`, and with no `gatedSteps` where a step of them
 // carries `basis`: the two keys gateBasisContract added to an issue. `basis` rides only on a step
