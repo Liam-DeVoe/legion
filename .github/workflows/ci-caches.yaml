@@ -16,33 +16,21 @@ name: CI caches
 #
 # Six Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
 # architecture and on the Go version the family's own module installs (go-envoy-infra on the hash
-# of its module files too, for the reason its job gives): go-notices (the notices job), go-daemon
-# (lint's typecheck leg, go-daemon's daemon-go and daemon-go-race legs, plugin-pack, pi-held's
-# pi-legion and daemon-live, the pane-drivers, tmux-scripts, session-scripts and
-# nats-callout-sessions legs of ci.yaml's agent-harness job (.github/actions/agent-harness), and
-# the legion_build job of release.yaml), go-envoy (go-envoy's envoy-go-build, envoy-session-stall,
-# envoy-e2e-local and listener-server-change legs, envoy-held's envoy-go-checks,
-# envoy-session-proofs and envoy-e2e-refill legs, go-envoy-held's envoy-go-race-docs and
-# envoy-go-docs-finalizers legs, the session-settings and plugin-smokes legs of agent-harness, and
-# the embedder job of .github/workflows/dispatch-browser.yaml), go-envoy-test (go-envoy-held's
-# envoy-go legs and its envoy-go-claim-model leg, which builds the API's test binary of that set,
-# the nats-callout-sessions leg of agent-harness, and the binaries, multiprocess and visual jobs of
-# .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser job calls: those four
-# build the Dispatch server and the real broker's commands, whose packages the go-envoy entry's
-# build of the listener and natsd alone does not hold), go-envoy-darwin-vet (envoy-go-build's
+# of its module files too, for the reason its job gives): go-notices, go-daemon, go-envoy,
+# go-envoy-test (the envoy test binaries, and the Dispatch server and the real broker's commands
+# that dispatch-browser.yaml's binaries, multiprocess and visual jobs build, which the go-envoy
+# entry's build of the listener and natsd alone does not hold), go-envoy-darwin-vet (envoy-go-build's
 # darwin vet, whose build cache is a directory of its own, the GOCACHE of that step's env) and
-# go-envoy-infra (go-envoy's envoy-infra-build leg, envoy-held's envoy-infra-go leg, and the build
-# job of release-envoy-infra.yaml).
+# go-envoy-infra. A family's readers are the restore steps that name its key, under
+# .github/actions and .github/workflows (`grep -rn 'key: go-<family>-'` lists them); the legion_build
+# job of release.yaml reads go-daemon and the build job of release-envoy-infra.yaml go-envoy-infra.
 # The key carries `runner.arch` because Go's build cache holds the objects of the architecture
 # that compiled them: an entry an x86_64 runner filled gives an arm64 job its modules and none of
 # its objects. So each family is filled on every architecture one of its readers runs on, one
 # matrix leg per runner: go-notices on ubuntu-24.04-arm alone, where the notices job runs, and
 # go-daemon, go-envoy, go-envoy-test and go-envoy-infra on ubuntu-24.04-arm and on ubuntu-24.04
-# both, since each has a reader on each (typecheck, the arm64 legs of go-envoy, envoy-held and
-# go-envoy-held, envoy-infra-build and envoy-infra-go on the first; go-daemon, plugin-pack,
-# pi-legion, daemon-live, agent-harness, envoy-go-build, envoy-go-checks, envoy-go-claim-model, the
-# browser lane and the release builds on the second), and go-envoy-darwin-vet on ubuntu-24.04
-# alone, where envoy-go-build runs. A leg builds
+# both, since each has a reader on each, and go-envoy-darwin-vet on ubuntu-24.04 alone, where
+# envoy-go-build runs. A leg builds
 # what that runner's readers build and no more: go-daemon's arm64 reader is typecheck alone, so its
 # arm64 leg runs typecheck's vet and leaves the test and race builds to the x86_64 leg.
 # go-notices carries the architecture before the OS (go-notices-<arch>-<os>-go<version>) and the
