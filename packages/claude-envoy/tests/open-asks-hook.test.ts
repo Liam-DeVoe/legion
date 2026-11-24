@@ -2018,8 +2018,21 @@ const REVIEWED_WAIT_SITES: readonly {
     text: 'fetchImpl(input, { ...init, redirect: "manual" })',
     count: 1,
     bound:
-      "the fetch behind the client's #fetch, whose every request is made at :2181 or :2508 with a " +
-      "signal this scan traces to AbortSignal.timeout; `init` is that request's own",
+      "the fetch behind the client's #fetch, whose every request is made at :2300 with a signal " +
+      "this scan traces to AbortSignal.timeout, or at :2705, the attempt the next entry names the " +
+      "bound of; `init` is that request's own",
+  },
+  {
+    file: "packages/envoy-client/src/dispatch-http.ts",
+    text: "signal: AbortSignal.any([limit, cut.signal])",
+    kind: "fetch",
+    count: 1,
+    bound:
+      "a write's attempt (#attempt, :2686), called only at :2450: `limit` is the call's signal " +
+      "with the client's deadline (#signal, AbortSignal.timeout(deadlineMs), :484) from the " +
+      "write's start (:2358), and a write Dispatch may still be running takes the maker's stop " +
+      "and the run window's AbortSignal.timeout in its place (:2555-2560); the scan follows no " +
+      "`let` it is reassigned through, and the open-asks mode writes nothing",
   },
   {
     file: "packages/envoy-client/src/envoy-config.ts",
@@ -2077,7 +2090,7 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 1,
     bound:
-      "the fetch handed to the open-asks read's DispatchClient (:319), whose every request is made at dispatch-http.ts:2181 or :2508 under a signal this scan traces to AbortSignal.timeout",
+      "the fetch handed to the open-asks read's DispatchClient (:379), whose every request is made at dispatch-http.ts:2300 under a signal this scan traces to AbortSignal.timeout",
   },
   {
     file: "packages/envoy-client/src/dispatch-http.ts",
@@ -2085,7 +2098,7 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 1,
     bound:
-      "DispatchClient's default fetchImpl (:963), called only at :992 for the requests of :2181 and :2508",
+      "DispatchClient's default fetchImpl (:1070), called only at :1108 for the requests of :2300 and :2705",
   },
   {
     file: "packages/envoy-client/src/session-answers.ts",
@@ -2093,7 +2106,15 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 1,
     bound:
-      "the answers mode's DispatchClient (:578), whose requests are made at dispatch-http.ts:2181 and :2508 under the client's own deadline; the open-asks mode does not reach it",
+      "the answers mode's DispatchClient (:594), whose requests are made at dispatch-http.ts:2300 and :2705 under the client's own deadline; the open-asks mode does not reach it",
+  },
+  {
+    file: "packages/envoy-client/src/delivery.ts",
+    text: "fetch",
+    kind: "fetch handed on as a value",
+    count: 1,
+    bound:
+      "the delivery reply's DispatchClient (postDeliveryReply, :172), whose requests are made at dispatch-http.ts:2300 and :2705 under its own deadline, DISPATCH_IN_PROCESS_DEADLINE_MS (60 s); the open-asks mode posts no delivery reply",
   },
   {
     file: "packages/envoy-client/src/dispatch-commands/context.ts",
