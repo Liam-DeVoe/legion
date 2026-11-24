@@ -38,7 +38,7 @@ The daemon ended a stalled turn of the tree's architect, took the turn off its c
 
 ## `provider-errors`
 
-Six turns of `role` in a row ended in a provider error; the daemon keeps prompting. Name the run and its model in the day's report, and `envoy_publish` the key, role and reason to the architect that owns the issue (for a child's own architect, the one above it). When one claim stays stuck, `compact` it; `fresh_session` it only when a later notice says it is still refused. A dead role (`CLAIM_NOT_RUNNING`) takes `fresh_session`.
+Six turns of `role` in a row ended in a provider error; the daemon keeps giving it the task. Name the run and its model in the day's report, and `envoy_publish` the key, role and reason to the architect that owns the issue (for a child's own architect, the one above it). When one claim stays stuck, `compact` it; `fresh_session` it only when a later notice says it is still refused. A dead role (`CLAIM_NOT_RUNNING`) takes `fresh_session`.
 
 ## `intake-gave-up`
 
