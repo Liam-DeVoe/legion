@@ -938,9 +938,10 @@ func (s Spelling) writes(mark Mark, from, to int) (markup, own bool) {
 
 // quoteCascade is the matcher cascade a plain quote runs through, in its order: exact text first,
 // then whitespace-normalized text, then the quote read as markdown against inline markup. A quote
-// takes the matches of the first matcher that has any (quoteMatches), and a list item's quote the
-// first that has any at a start of an item it selects (listItemQuoteMatches). writtenCascade is
-// its first two, which read the quote as written (FindWritten).
+// takes the matches of the first matcher that has any (quoteMatches), a list item's quote the
+// first that has any at a start of an item it selects (listItemQuoteMatches), and a heading
+// quote's title the first that has any that are a heading's whole text (headingQuoteMatches).
+// writtenCascade is its first two, which read the quote as written (FindWritten).
 var (
 	quoteCascade   = [...]func(flattenedText, string) []quoteMatch{exactQuoteMatches, normalizedQuoteMatches, markdownQuoteMatches}
 	writtenCascade = quoteCascade[:2]
@@ -1124,27 +1125,70 @@ func nearestBlocks(doc *Node, quote string, limit int) []string {
 	return nearest
 }
 
-// headingQuoteMatches returns the text range of every heading whose rendered text equals
-// title, so a quote written with its ATX marker (`## Title`) selects headings only, each as the
-// matcher cascade matched title.
+// headingQuoteMatches is every match of title that is the whole rendered text of a heading, at any
+// level, so a quote written with its ATX marker (`## Title`) selects headings only, and a title
+// that is only part of a longer heading's text selects nothing there. Whitespace at a heading's
+// edges is not part of the text compared. A match is the title's text range inside the heading,
+// which an edit that renames the heading replaces, as the step of the matcher cascade
+// (quoteCascade) that matched title made it. Each step is kept to whole headings before the next
+// is tried, so part of a longer heading that the title matches exactly does not hide a heading the
+// title matches with its whitespace normalized.
 func headingQuoteMatches(doc *Node, text flattenedText, title string) []quoteMatch {
-	if title == "" {
+	// A title of white space alone is no heading's text. Every match of any other title holds a
+	// character that is not white space, so wholeText's walks over the white space beside each
+	// match read each run of it at most twice in all.
+	if strings.TrimSpace(title) == "" {
 		return nil
 	}
-	candidates := quoteMatches(text, title)
-	var matches []quoteMatch
+	// Each heading's text lies between its opening and closing tokens. Headings never nest, so
+	// in document order these ranges are disjoint and ascending.
+	var headings []Range
 	walk(doc, func(node *Node, _ []int, pos, end int) bool {
-		if node.Type != "heading" {
-			return true
-		}
-		for _, match := range candidates {
-			if pos+1 <= match.From && match.To <= end-1 {
-				matches = append(matches, match)
-			}
+		if node.Type == "heading" {
+			headings = append(headings, Range{From: pos + 1, To: end - 1})
 		}
 		return true
 	})
-	return matches
+	if len(headings) == 0 {
+		return nil
+	}
+	wholeHeadings := func(candidates []quoteMatch) []quoteMatch {
+		var matches []quoteMatch
+		for _, match := range candidates {
+			// The only heading that can hold the match is the first one ending after it starts.
+			index := sort.Search(len(headings), func(index int) bool { return headings[index].To > match.From })
+			if index < len(headings) && wholeText(text, match, headings[index]) {
+				matches = append(matches, match)
+			}
+		}
+		return matches
+	}
+	for _, step := range quoteCascade {
+		if matches := wholeHeadings(step(text, title)); len(matches) > 0 {
+			return matches
+		}
+	}
+	return nil
+}
+
+// wholeText reports whether match lies inside block, the range of a textblock's text, and covers
+// all of the text there but whitespace at its edges.
+func wholeText(text flattenedText, match quoteMatch, block Range) bool {
+	if match.From < block.From || match.To > block.To {
+		return false
+	}
+	units := text.units16()
+	for index := match.textFrom - 1; index >= 0 && text.positions[index] >= block.From; index-- {
+		if !unicode.IsSpace(rune(units[index])) {
+			return false
+		}
+	}
+	for index := match.textTo; index < len(units) && text.positions[index] < block.To; index++ {
+		if !unicode.IsSpace(rune(units[index])) {
+			return false
+		}
+	}
+	return true
 }
 
 // TextContent is node's text, hard breaks as line feeds, as a read serves it: each U+0000 a browser
