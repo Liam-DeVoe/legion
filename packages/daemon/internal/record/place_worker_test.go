@@ -125,7 +125,6 @@ func TestAFailedStepReturnsToTheFirstImplementationStepBeforeIt(t *testing.T) {
 func TestTheOwnersStepRunsOnlyWhereTheOwnerDoesThePlaceTheTaskRunsAt(t *testing.T) {
 	owned := planSteps(t, "implementer:owner tester", plan.TypeImplementation, plan.TypeTesting)
 	checked := planSteps(t, "checker", plan.TypeTesting)
-	at := func(n int) TaskPlace { return ReportedPlace(n) }
 	for _, tc := range []struct {
 		name   string
 		phase  phase.Phase
@@ -137,13 +136,13 @@ func TestTheOwnersStepRunsOnlyWhereTheOwnerDoesThePlaceTheTaskRunsAt(t *testing.
 		runs   bool
 		says   string
 	}{
-		{"the owner's step that runs", phase.Implementing, true, TaskRunning, 1, at(1), owned, true, ""},
-		{"a step of another agent", phase.Testing, true, TaskRunning, 2, at(2), owned, false, "whose agent is tester"},
-		{"another step than the task's", phase.Testing, true, TaskRunning, 1, at(2), owned, false, "stands at step 2 (tester), whose agent is tester"},
-		{"a held issue", phase.Held, true, TaskRunning, 1, at(1), owned, false, "so that step does not run"},
-		{"a stopped task", phase.Implementing, true, TaskStopped, 1, at(1), owned, false, "so that step does not run"},
+		{"the owner's step that runs", phase.Implementing, true, TaskRunning, 1, ReportedPlace(1), owned, true, ""},
+		{"a step of another agent", phase.Testing, true, TaskRunning, 2, ReportedPlace(2), owned, false, "whose agent is tester"},
+		{"another step than the task's", phase.Testing, true, TaskRunning, 1, ReportedPlace(2), owned, false, "stands at step 2 (tester), whose agent is tester"},
+		{"a held issue", phase.Held, true, TaskRunning, 1, ReportedPlace(1), owned, false, "so that step does not run"},
+		{"a stopped task", phase.Implementing, true, TaskStopped, 1, ReportedPlace(1), owned, false, "so that step does not run"},
 		{"no plan rows", phase.Implementing, false, "", 1, TaskPlace{}, nil, false, "runs with no plan rows"},
-		{"the owner's retro", phase.Retro, true, TaskRunning, 0, at(0), checked, true, ""},
+		{"the owner's retro", phase.Retro, true, TaskRunning, 0, ReportedPlace(0), checked, true, ""},
 		{"the merge", phase.Merging, true, TaskRunning, 0, TaskPlace{Kind: PlaceMerge}, checked, false, "which no agent works"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
