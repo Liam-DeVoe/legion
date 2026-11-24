@@ -31,14 +31,18 @@ var helperReads = []string{"Open", "Optional"}
 
 // TestCorpusVariablesAreReadThroughTheHelper lists every _test.go file of the module that names a
 // corpus variable and what each does with it, and fails for a file that reads one with os.Getenv
-// or os.LookupEnv rather than through corpustest.Open or corpustest.Optional: such a test would
-// pick its own documents and leave out what it likes. A Benchmark in a file whose first 15 lines
-// carry the tool line (`legion: tool - `) reads the variable its runner hands it and is listed as
-// a tool. It also fails when a corpus variable reaches no test through the helper.
+// or os.LookupEnv rather than through corpustest.Open or corpustest.Optional, in a function or at
+// the package scope, under whatever name the file imports os as: such a test would pick its own
+// documents and leave out what it likes. A Benchmark in a file whose first 15 lines carry the tool
+// line (`legion: tool - `) reads the variable its runner hands it and is listed as a tool. It also
+// fails when a corpus variable reaches no test through the helper.
 func TestCorpusVariablesAreReadThroughTheHelper(t *testing.T) {
 	root := moduleRoot(t)
 	files := 0
 	throughHelper := map[string]bool{}
+	// constants holds each directory's string constants (packageConstants), read once for the
+	// first of its files that names a corpus variable.
+	constants := map[string]map[string]string{}
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -65,7 +69,11 @@ func TestCorpusVariablesAreReadThroughTheHelper(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		for _, use := range corpusUses(t, path, source) {
+		directory := filepath.Dir(path)
+		if _, ok := constants[directory]; !ok {
+			constants[directory] = packageConstants(t, directory)
+		}
+		for _, use := range corpusUses(t, path, source, constants[directory]) {
 			if use.via == "helper" {
 				throughHelper[use.variable] = true
 			}
@@ -107,23 +115,31 @@ func (use corpusUse) describe() string {
 	return fmt.Sprintf("%s named, never read", use.variable)
 }
 
-// corpusUses parses one test file and lists what it does with each corpus variable it names.
-func corpusUses(t *testing.T, path string, source []byte) []corpusUse {
+// corpusUses parses one test file and lists what it does with each corpus variable it names;
+// constants are the string constants of its package (packageConstants).
+func corpusUses(t *testing.T, path string, source []byte, constants map[string]string) []corpusUse {
 	t.Helper()
 	fileSet := token.NewFileSet()
 	file, err := parser.ParseFile(fileSet, path, source, parser.SkipObjectResolution)
 	if err != nil {
 		t.Fatalf("parse %s: %v", path, err)
 	}
-	constants := packageConstants(t, filepath.Dir(path))
-	helper := ""
+	// The names the file imports corpustest and os under: the package's own name, or the name
+	// the import gives it, "." for a dot import, whose functions are called by their bare names.
+	helper, osName := "", ""
 	for _, spec := range file.Imports {
 		importPath, _ := strconv.Unquote(spec.Path.Value)
-		if strings.HasSuffix(importPath, "/internal/dispatch/corpustest") {
-			helper = "corpustest"
+		local := func(own string) string {
 			if spec.Name != nil {
-				helper = spec.Name.Name
+				return spec.Name.Name
 			}
+			return own
+		}
+		switch {
+		case strings.HasSuffix(importPath, "/internal/dispatch/corpustest"):
+			helper = local("corpustest")
+		case importPath == "os":
+			osName = local("os")
 		}
 	}
 	tool := toolFile(source)
@@ -140,49 +156,63 @@ func corpusUses(t *testing.T, path string, source []byte) []corpusUse {
 		}
 		return "", false
 	}
+	// called is the package name and the function a call names: the selector's receiver and
+	// name, or "." and the name of a bare call, which is a dot-imported function's call.
+	called := func(call *ast.CallExpr) (pkg, function string) {
+		switch fun := call.Fun.(type) {
+		case *ast.SelectorExpr:
+			if receiver, ok := fun.X.(*ast.Ident); ok {
+				return receiver.Name, fun.Sel.Name
+			}
+		case *ast.Ident:
+			return ".", fun.Name
+		}
+		return "", ""
+	}
 	var uses []corpusUse
 	read := map[string]bool{}
 	for _, declaration := range file.Decls {
-		function, ok := declaration.(*ast.FuncDecl)
-		if !ok || function.Body == nil {
-			continue
+		// A function's body, under its name, or a declaration at the package scope, whose
+		// initializers run as the package loads.
+		scope, root := "the package scope", ast.Node(declaration)
+		if function, ok := declaration.(*ast.FuncDecl); ok {
+			if function.Body == nil {
+				continue
+			}
+			scope, root = function.Name.Name, function.Body
 		}
-		ast.Inspect(function.Body, func(node ast.Node) bool {
+		ast.Inspect(root, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
 			if !ok {
 				return true
 			}
-			selector, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			receiver, ok := selector.X.(*ast.Ident)
-			if !ok {
+			pkg, function := called(call)
+			if pkg == "" {
 				return true
 			}
 			at := fileSet.Position(call.Pos()).Line
 			switch {
-			case receiver.Name == "os" && (selector.Sel.Name == "Getenv" || selector.Sel.Name == "LookupEnv") && len(call.Args) == 1:
+			case osName != "" && pkg == osName && (function == "Getenv" || function == "LookupEnv") && len(call.Args) == 1:
 				variable, known := name(call.Args[0])
 				switch {
 				case !known:
-					uses = append(uses, corpusUse{function: function.Name.Name, problem: fmt.Sprintf(
+					uses = append(uses, corpusUse{function: scope, problem: fmt.Sprintf(
 						"line %d: %s reads os.%s of a variable it does not spell, in a file that names a corpus variable",
-						at, function.Name.Name, selector.Sel.Name)})
+						at, scope, function)})
 				case !slices.Contains(corpusVariables, variable):
-				case tool && strings.HasPrefix(function.Name.Name, "Benchmark"):
+				case tool && strings.HasPrefix(scope, "Benchmark"):
 					read[variable] = true
-					uses = append(uses, corpusUse{variable: variable, via: "tool", function: function.Name.Name})
+					uses = append(uses, corpusUse{variable: variable, via: "tool", function: scope})
 				default:
 					read[variable] = true
-					uses = append(uses, corpusUse{variable: variable, function: function.Name.Name, problem: fmt.Sprintf(
+					uses = append(uses, corpusUse{variable: variable, function: scope, problem: fmt.Sprintf(
 						"line %d: %s reads %s with os.%s, not through corpustest.Open or corpustest.Optional",
-						at, function.Name.Name, variable, selector.Sel.Name)})
+						at, scope, variable, function)})
 				}
-			case helper != "" && receiver.Name == helper && slices.Contains(helperReads, selector.Sel.Name) && len(call.Args) >= 2:
+			case helper != "" && pkg == helper && slices.Contains(helperReads, function) && len(call.Args) >= 2:
 				if variable, known := name(call.Args[1]); known && slices.Contains(corpusVariables, variable) {
 					read[variable] = true
-					uses = append(uses, corpusUse{variable: variable, via: "helper", function: function.Name.Name})
+					uses = append(uses, corpusUse{variable: variable, via: "helper", function: scope})
 				}
 			}
 			return true
