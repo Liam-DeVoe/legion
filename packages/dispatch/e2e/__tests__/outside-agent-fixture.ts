@@ -81,8 +81,7 @@ export function textToolPath(scratch: Scratch, more: readonly string[] = []): st
 }
 
 /** A copy of `leg` in a directory of its own, with the support files it sources beside it, each
- *  through `change`; nothing else it runs beside it (the probe, the sweep, the reach check) is
- *  there. */
+ *  through `change`; nothing else it runs beside it (the probe, the sweep) is there. */
 export function copyLeg(
   scratch: Scratch,
   leg: string,

@@ -1702,7 +1702,7 @@ EOF
 }
 if [ "$outside_gate" = browser ]; then
   check_row refusals outside-edge-refusals "the workflow's HTTPS refusal check (outside-edge-refusals.sh), with dispatch-healthz its one routed control, exits 0: that control shows its marker, and every refusal line is answered the edge's own 404"
-  check_row reach outside-path-reach "the workflow's TCP reach check (outside-path-reach.sh) exits 0: no internal address, and no port of the edge address but 443, answers the runner"
+  check_row reach outside-path-reach "the workflow's TCP reach check (the deployment's outside-path-reach.sh, whose copy is legion/checks/outside-path-reach.sh in theorem-labs/agent-infra) exits 0: no internal address, and no port of the edge address but 443, answers the runner"
   driver_row sign-in "the driver's row sign-in PASS: the owner's link enrolls one passkey and signs ${person:-<OUTSIDE_PERSON>} in at the edge's Dispatch origin, and GET /auth/whoami names them"
   driver_row projects "the driver's row projects PASS: GET /api/v1/projects lists exactly [$project]"
   limits_row "every limit row of the driver PASS, at least one: the run's peak stays under half of each rule of the edge's Dispatch origin"

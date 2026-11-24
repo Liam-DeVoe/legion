@@ -4,7 +4,8 @@
  *  command, a `tmux` that names the Oh My Pi session's directory and runs nothing, and an
  *  `outside-agent-probe.ts` beside the leg that answers each command as a scenario file says. The
  *  stand-in edge finds the session but answers its send to the peer 503, so P4 reads UNKNOWN at
- *  once and P8 does not run; no reach check, revoke or browser command is given.
+ *  once and P8 does not run; no revoke command is given, and a browser command and a reach check
+ *  only where a scenario names them.
  *
  *  Each row reads the leg's own judgments PASS where the stand-in edge refuses as it should, and,
  *  in the same row, not PASS where the stand-in crosses the rule the judgment reads. */
@@ -48,6 +49,10 @@ interface PublicScenario {
   /** The rows the workflow's browser (OUTSIDE_T5_COMMAND) writes, in order, each
    *  `[row, got, verdict]`; with none, OUTSIDE_T5_COMMAND is unset. */
   readonly browserRows?: readonly (readonly [string, string, string])[];
+  /** Row P9's inputs: with this field the leg is given a target list, and with an exit status
+   *  also a stand-in reach check (OUTSIDE_PATH_REACH) that prints `line`, then the origin and the
+   *  target list it was given, and exits with that status. "unset" gives the list alone. */
+  readonly reach?: "unset" | { readonly status: number; readonly line: string };
 }
 
 /** The stand-in probe: answers each command the public leg runs, from scenario.json beside it. */
@@ -174,6 +179,17 @@ exit 0
     `#!/bin/sh\ncat '${rowsFile}' >"$OUTSIDE_T5_TSV"\n`
   );
   const origin = `http://127.0.0.1:${await closedPort()}`;
+  const reach: Record<string, string> = {};
+  if (scenario.reach !== undefined) {
+    reach.OUTSIDE_PATH_TARGETS = join(state, "targets.txt");
+    await Bun.write(reach.OUTSIDE_PATH_TARGETS, `hub 127.0.0.1 ${await closedPort()}\n`);
+  }
+  if (scenario.reach !== undefined && scenario.reach !== "unset") {
+    reach.OUTSIDE_PATH_REACH = script(
+      join(scratch("reach"), "outside-path-reach.sh"),
+      `#!/usr/bin/env bash\necho '${scenario.reach.line}' "origin=$OUTSIDE_ORIGIN targets=$OUTSIDE_PATH_TARGETS"\nexit ${scenario.reach.status}\n`
+    );
+  }
   const { code, stdout, stderr } = await runBounded({
     argv: ["bash", leg],
     bound: "short",
@@ -193,6 +209,7 @@ exit 0
       OUTSIDE_PI_ENVOY_VERSION: "0.0.0",
       OUTSIDE_REPOSITORY: "example-owner/example-repo",
       ...(browserRows.length === 0 ? {} : { OUTSIDE_T5_COMMAND: browser }),
+      ...reach,
     },
     from: import.meta.url,
   });
@@ -295,6 +312,41 @@ describe.skipIf(skipWithout(["bash", "bun"], "dispatch-ui"))(
       },
       // The run, a bounded child under the short bound.
       rowLimit("short")
+    );
+
+    // P9 runs the reach check OUTSIDE_PATH_REACH names, which this repository does not hold, with
+    // the Dispatch edge origin and the target list. Unset, P9 reads UNKNOWN and names it; the
+    // check's exit 0 reads PASS, and its control, the same check's exit 1, reads FAIL.
+    test(
+      "P9 reads the exit of the reach check OUTSIDE_PATH_REACH names, and UNKNOWN naming the variable when it is unset",
+      async () => {
+        const [unset, passes, fails] = await Promise.all([
+          publicStandInRun({ trades: [false], reach: "unset" }),
+          publicStandInRun({
+            trades: [false],
+            reach: { status: 0, line: "PASS: every target is unreachable from this device" },
+          }),
+          publicStandInRun({
+            trades: [false],
+            reach: { status: 1, line: "FAIL: hub answered on 127.0.0.1" },
+          }),
+        ]);
+        expect({ p9: rowsOf(unset.stdout).get("P9"), stdout: unset.stdout }).toMatchObject({
+          p9: { got: "OUTSIDE_PATH_REACH is unset", verdict: "UNKNOWN" },
+        });
+        expect({ p9: rowsOf(passes.stdout).get("P9"), stdout: passes.stdout }).toMatchObject({
+          p9: { verdict: "PASS" },
+        });
+        expect(rowsOf(passes.stdout).get("P9")?.got).toMatch(
+          /^PASS: every target is unreachable from this device origin=http:\/\/127\.0\.0\.1:\d+ targets=\/\S+\/targets\.txt$/
+        );
+        expect({ p9: rowsOf(fails.stdout).get("P9"), stdout: fails.stdout }).toMatchObject({
+          p9: { verdict: "FAIL" },
+        });
+        expect(rowsOf(fails.stdout).get("P9")?.got).toStartWith("FAIL: hub answered on 127.0.0.1");
+      },
+      // The three runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short"] })
     );
   }
 );

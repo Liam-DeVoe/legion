@@ -4,9 +4,10 @@
 # took the request. What it measures is the answer each request gets through that address: its
 # status, and the response header X-Outside-Edge-Backend, which every route of the edge sets to
 # the backend it reached, so an answer without it came through none of them. A TCP check such as
-# outside-path-reach.sh sees which ports answer and cannot see this: an address that answers on
-# 443 forwards by path and by Host there, and a request it refuses connects as well as one it
-# forwards.
+# the deployment's outside-path-reach.sh (its copy is legion/checks/outside-path-reach.sh in
+# theorem-labs/agent-infra; this repository holds none) sees which ports answer and cannot see
+# this: an address that answers on 443 forwards by path and by Host there, and a request it
+# refuses connects as well as one it forwards.
 #
 # It is one file that sources nothing, and needs bash (3.2, as macOS ships it, or later), curl
 # 8.4.0 or later (from October 2023), mktemp, and sha256sum or shasum to hash each answer's body.

@@ -236,6 +236,7 @@ describe.skipIf(withoutTools)("the outside agent's acceptance legs", () => {
         "OUTSIDE_DISPATCH_URL",
         "OUTSIDE_PI_ENVOY_VERSION",
         "OUTSIDE_PATH_TARGETS",
+        "OUTSIDE_PATH_REACH",
       ]) {
         expect(run.stdout).toContain(name);
       }
@@ -254,7 +255,8 @@ describe.skipIf(withoutTools)("the outside agent's acceptance legs", () => {
       // The TSV it writes for the workflow's artifact is the one it prints.
       expect(readFileSync(env.OUTSIDE_AGENT_PUBLIC_TSV as string, "utf8")).toBe(run.stdout);
     },
-    // The leg, a bounded child under the short bound; its P9 runs outside-path-reach.sh inside it.
+    // The leg, a bounded child under the short bound; its P9 reads UNKNOWN, since no reach check
+    // (OUTSIDE_PATH_REACH) is given.
     rowLimit("short")
   );
 

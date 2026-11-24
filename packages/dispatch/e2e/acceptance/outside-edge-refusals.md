@@ -3,11 +3,13 @@
 `outside-edge-refusals.sh` is the HTTPS refusal check of an outside edge: a public load balancer
 with one IPv4 address, whose routes forward a few paths of a few hosts to their backends. It asks
 that address, on 443, for each path and Host the edge must not forward, and reads whether one of the
-edge's routes took the request. `outside-path-reach.sh` cannot see this: it measures TCP connects,
-and an address that answers on 443 forwards by path and by Host there. Every route of the edge sets
-the response header `X-Outside-Edge-Backend` to the backend it reached, so an answer without it came
-through none of them, and that marker is what the check reads. The script's own header has every
-rule; this page says what a person running it or changing it needs.
+edge's routes took the request. The deployment's TCP reach check, `outside-path-reach.sh` (its copy
+is `legion/checks/outside-path-reach.sh` in theorem-labs/agent-infra; this repository holds none),
+cannot see this: it measures TCP connects, and an address that answers on 443 forwards by path and
+by Host there. Every route of the edge sets the response header `X-Outside-Edge-Backend` to the
+backend it reached, so an answer without it came through none of them, and that marker is what the
+check reads. The script's own header has every rule; this page says what a person running it or
+changing it needs.
 
 ## What it needs
 

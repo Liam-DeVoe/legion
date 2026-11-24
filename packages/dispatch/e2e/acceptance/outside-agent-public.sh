@@ -40,7 +40,10 @@
 #                             names a package path or tarball instead, for a local stack.
 #   OUTSIDE_REPOSITORY        owner/name of the repository the scratch project's issue resolves
 #                             to, whose events P5 must be admitted to.
-#   OUTSIDE_PATH_TARGETS      the target list outside-path-reach.sh reads (P9).
+#   OUTSIDE_PATH_TARGETS      the target list the reach check reads (P9).
+#   OUTSIDE_PATH_REACH        the deployment's own TCP reach check, outside-path-reach.sh, which
+#                             P9 runs; its copy is legion/checks/outside-path-reach.sh in
+#                             theorem-labs/agent-infra, and this repository holds none.
 #   OUTSIDE_REVOKE_COMMAND    the workflow's revoke step (row revocations), and OUTSIDE_T5_COMMAND
 #                             its browser in the T5 window (rows T5-cookie and T5-passkey).
 #   OUTSIDE_INSIDE_DISPATCH_URL
@@ -777,16 +780,17 @@ else
   fi
 fi
 
-# --- P9: the TCP reach check finds every internal address unreachable. ---
-want9="outside-path-reach.sh from ${dispatch:-<OUTSIDE_DISPATCH_URL>}: PASS, every target unreachable"
-problem=$(lacking OUTSIDE_DISPATCH_URL OUTSIDE_PATH_TARGETS)
+# --- P9: the TCP reach check finds every internal address unreachable. The check is the
+# deployment's (OUTSIDE_PATH_REACH names it, above). ---
+want9="outside-path-reach.sh (OUTSIDE_PATH_REACH) from ${dispatch:-<OUTSIDE_DISPATCH_URL>}: PASS, every target unreachable"
+problem=$(lacking OUTSIDE_DISPATCH_URL OUTSIDE_PATH_TARGETS OUTSIDE_PATH_REACH)
 if [ -n "$problem" ]; then
   row P9 "$want9" "$problem" UNKNOWN
-elif [ ! -f "$here/outside-path-reach.sh" ]; then
-  row P9 "$want9" "outside-path-reach.sh is not beside this file in $here" UNKNOWN
+elif [ ! -f "$OUTSIDE_PATH_REACH" ]; then
+  row P9 "$want9" "OUTSIDE_PATH_REACH names no file: $OUTSIDE_PATH_REACH" UNKNOWN
 else
   reach=$(OUTSIDE_ORIGIN="$dispatch" OUTSIDE_PATH_TARGETS="$OUTSIDE_PATH_TARGETS" \
-    OUTSIDE_PATH_ALLOW_HTTP="$allow_http" bash "$here/outside-path-reach.sh" 2>&1 </dev/null)
+    OUTSIDE_PATH_ALLOW_HTTP="$allow_http" bash "$OUTSIDE_PATH_REACH" 2>&1 </dev/null)
   status=$?
   printf '%s\n' "$reach" >&2
   last=${reach##*"$newline"}
