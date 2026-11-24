@@ -2707,8 +2707,14 @@ func aFrozenPublisherSendsNothingWhenItResumes(t *testing.T, lane benchtime.Lane
 		// ended, and the line that says so is written only after the store that ends the turn,
 		// so it is waited for: the wait fails, naming the reads, when it never comes.
 		ended := testwait.Until(t, "the standby to log the end of its turn as holder, the one thing that lets "+strings.Join(disagree, " and "),
-			func() (outboxLine, bool) { return turnEndAfter(standby.outboxLines(t), took) })
-		t.Logf("%s, once the standby's turn as holder had ended: %s", strings.Join(disagree, "; "), ended.text)
+			func() (string, bool) {
+				lines := standby.outboxLines(t)
+				if end, found := turnEndAfter(lines, took); found {
+					return end.text, true
+				}
+				return turnSoFar(lines, took), false
+			})
+		t.Logf("%s, once the standby's turn as holder had ended: %s", strings.Join(disagree, "; "), ended)
 	}
 	scene.requireOnceAndInOrder(t)
 }
@@ -2727,6 +2733,24 @@ func turnEndAfter(lines []outboxLine, took outboxLine) (outboxLine, bool) {
 		}
 	}
 	return outboxLine{}, false
+}
+
+// turnSoFar is what lines, the same process's, show of the turn as holder that took began while
+// they show no line that ended it (turnEndAfter): how many of its lines follow took and the newest
+// of them, or that took is not among them.
+func turnSoFar(lines []outboxLine, took outboxLine) string {
+	for index, line := range lines {
+		if line.text != took.text {
+			continue
+		}
+		after := lines[index+1:]
+		if len(after) == 0 {
+			return "the process's took line is its newest outbox line: " + took.text
+		}
+		return fmt.Sprintf("%d outbox lines of the process follow its took line, none a lost or released line; the newest: %s",
+			len(after), after[len(after)-1].text)
+	}
+	return fmt.Sprintf("none of the process's %d outbox lines is its took line %s", len(lines), took.text)
 }
 
 // A role's events reach the role's holder once and in order, and a role that moves sends the
@@ -3047,7 +3071,7 @@ func githubFakeAnswer(r *http.Request) (int, string) {
 		return http.StatusOK, "[" + githubFakeInstallation + "]"
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "/app/installations/") && strings.HasSuffix(path, "/access_tokens"):
 		return http.StatusCreated, fmt.Sprintf(`{"token":"ghs_multiprocess","expires_at":%q}`,
-			time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+			time.Now().Add(stagedPastTheRun).UTC().Format(time.RFC3339))
 	case strings.HasPrefix(path, "/repos/") && strings.HasSuffix(path, "/installation"):
 		return http.StatusOK, githubFakeInstallation
 	case path == "/installation/repositories":
@@ -3557,27 +3581,22 @@ func TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed(t *testing.T) {
 // and a stop can land inside one of its transactions, whose locks - the registry's
 // (processes.registryLock), which the standby's admission takes, among them - would stay held for
 // as long as the freeze lasts. A stop that finds a durable unbound or a transaction open is undone,
-// and made again once the process delivers from every durable again. No other process connects to
-// the pair's database before the standby starts, and the test's own pool holds no transaction
-// between its reads, so every open transaction of a client is the frozen process's.
+// and made again once the process delivers from every durable again. The whole of it is one shared
+// wait (testwait.Until), each try one step: a read of the bindings while the process runs, and the
+// stop once they are all bound; a read of the threads while the stop has not stopped them all
+// (threadsStopped); and, once it has, the reads of the bindings and the transactions, which end
+// the wait or undo the stop. Its give-up prints that try's reading with the last stop's: the
+// transactions that stop found open and the durables it found unbound, and the process's output.
+// No other process connects to the pair's database before the standby starts, and the test's own
+// pool holds no transaction between its reads, so every open transaction of a client is the
+// frozen process's.
 func freezeHolder(t *testing.T, pair *dispatchPair, js natsgo.JetStreamContext, process *dispatchProcess) (map[string]durableBinding, time.Time) {
 	t.Helper()
-	for {
-		testwait.Until(t, "the process running alone to deliver from every delivery durable", func() (withOutput[string], bool) {
-			if hasExited(process) {
-				t.Fatalf("the process exited before it was frozen:\n%s", process.Output.String())
-			}
-			var unbound []string
-			for _, durable := range deliveryDurables {
-				if binding := readDurableBinding(t, pair, js, durable); !binding.bound() {
-					unbound = append(unbound, durable+" is "+binding.String())
-				}
-			}
-			return readWith(strings.Join(unbound, "; "), process.Output), len(unbound) == 0
-		})
-		stoppedAt := process.signal(t, syscall.SIGSTOP)
-		waitFrozen(t, process)
-		bindings := map[string]durableBinding{}
+	var bindings map[string]durableBinding
+	var stoppedAt time.Time
+	// unboundOf reads every durable's binding into bindings, and answers those not bound.
+	unboundOf := func() []string {
+		bindings = map[string]durableBinding{}
 		var unbound []string
 		for _, durable := range deliveryDurables {
 			bindings[durable] = readDurableBinding(t, pair, js, durable)
@@ -3585,20 +3604,45 @@ func freezeHolder(t *testing.T, pair *dispatchPair, js natsgo.JetStreamContext, 
 				unbound = append(unbound, durable+" is "+bindings[durable].String())
 			}
 		}
-		var open int
+		return unbound
+	}
+	// stopping is whether a stop was sent that has not been undone; lastStop is what the last stop
+	// found once every thread had stopped.
+	stopping, lastStop := false, "no stop has been made yet"
+	testwait.Until(t, "the process to stop while it delivers from every delivery durable and holds no transaction open", func() (withOutput[string], bool) {
+		if hasExited(process) {
+			t.Fatalf("the process exited before it was frozen:\n%s", process.Output.String())
+		}
+		if !stopping {
+			if unbound := unboundOf(); len(unbound) > 0 {
+				return readWith(fmt.Sprintf("the process runs with [%s]; %s", strings.Join(unbound, "; "), lastStop), process.Output), false
+			}
+			stoppedAt, stopping = process.signal(t, syscall.SIGSTOP), true
+		}
+		if thread, stopped := threadsStopped(process); !stopped {
+			return readWith(fmt.Sprintf("the stop sent at %s has not stopped every thread: %s; %s",
+				stoppedAt.Format(time.RFC3339Nano), thread, lastStop), process.Output), false
+		}
+		unbound := unboundOf()
+		var open []string
 		if err := pair.database.Pool.QueryRow(context.Background(),
-			`select count(*) from pg_stat_activity
+			`select coalesce(array_agg(format('pid %s (%s, %s since %s): %s', pid, application_name, state, xact_start, left(query, 200))), '{}')
+			 from pg_stat_activity
 			 where datname = current_database() and backend_type = 'client backend'
 			   and pid <> pg_backend_pid() and xact_start is not null`).Scan(&open); err != nil {
 			t.Fatalf("read the transactions open on the pair's database: %v", err)
 		}
-		if len(unbound) == 0 && open == 0 {
-			return bindings, stoppedAt
+		lastStop = fmt.Sprintf("the last stop, sent at %s, found %d transactions open on the pair's database %v and the durables unbound [%s]",
+			stoppedAt.Format(time.RFC3339Nano), len(open), open, strings.Join(unbound, "; "))
+		if len(unbound) == 0 && len(open) == 0 {
+			return readWith(lastStop, process.Output), true
 		}
-		t.Logf("the process stopped with %d transactions open on the database and [%s]; it runs again, to be stopped once it delivers from every durable again",
-			open, strings.Join(unbound, "; "))
+		t.Logf("%s; the process runs again, to be stopped once it delivers from every durable again", lastStop)
 		process.signal(t, syscall.SIGCONT)
-	}
+		stopping = false
+		return readWith(lastStop, process.Output), false
+	})
+	return bindings, stoppedAt
 }
 
 // waitFrozen waits for every thread of the process to be stopped as the kernel itself reports
@@ -3610,35 +3654,40 @@ func freezeHolder(t *testing.T, pair *dispatchPair, js natsgo.JetStreamContext, 
 // what the frozen-holder row is looking for is the opposite, a process that handles a message
 // it no longer holds. One run of 20 published into that window and read it as a repeat. Its
 // failure names the thread it last found running, with that thread's stat line, or what kept it
-// from reading the threads.
+// from reading the threads (threadsStopped).
 func waitFrozen(t *testing.T, p *dispatchProcess) {
 	t.Helper()
+	testwait.Until(t, "every thread of the frozen process to be stopped", func() (threadRead, bool) { return threadsStopped(p) })
+}
+
+// threadsStopped is one read of p's threads (/proc/<pid>/task/*/stat): whether every one of them
+// is stopped (state T), and otherwise the first one that is not, with its stat line, or what kept
+// the read from naming one.
+func threadsStopped(p *dispatchProcess) (threadRead, bool) {
 	threads := fmt.Sprintf("/proc/%d/task/*/stat", p.Cmd.Process.Pid)
-	testwait.Until(t, "every thread of the frozen process to be stopped", func() (threadRead, bool) {
-		tasks, err := filepath.Glob(threads)
+	tasks, err := filepath.Glob(threads)
+	if err != nil {
+		return threadRead{err: err}, false
+	}
+	if len(tasks) == 0 {
+		return threadRead{err: fmt.Errorf("no thread matches %s", threads)}, false
+	}
+	for _, task := range tasks {
+		stat, err := os.ReadFile(task)
 		if err != nil {
 			return threadRead{err: err}, false
 		}
-		if len(tasks) == 0 {
-			return threadRead{err: fmt.Errorf("no thread matches %s", threads)}, false
+		// The state follows comm, which is parenthesised and may hold spaces of its own.
+		name := bytes.LastIndexByte(stat, ')')
+		if name < 0 || name+2 >= len(stat) || stat[name+2] != 'T' {
+			return threadRead{task: task, stat: stat}, false
 		}
-		for _, task := range tasks {
-			stat, err := os.ReadFile(task)
-			if err != nil {
-				return threadRead{err: err}, false
-			}
-			// The state follows comm, which is parenthesised and may hold spaces of its own.
-			name := bytes.LastIndexByte(stat, ')')
-			if name < 0 || name+2 >= len(stat) || stat[name+2] != 'T' {
-				return threadRead{task: task, stat: stat}, false
-			}
-		}
-		return threadRead{}, true
-	})
+	}
+	return threadRead{}, true
 }
 
-// threadRead is waitFrozen's reading: a thread of the process that is not stopped, with its stat
-// line, or what kept the read of the threads from naming one.
+// threadRead is threadsStopped's reading: a thread of the process that is not stopped, with its
+// stat line, or what kept the read of the threads from naming one.
 type threadRead struct {
 	task string
 	stat []byte
@@ -6497,11 +6546,6 @@ func versionActorsSince(t *testing.T, pair *dispatchPair, issueKey string, seq i
 	return actors
 }
 
-// docsDefaultSettle is the document service's own settle delay (docs.New's default), which a
-// process given no DISPATCH_TEST_SETTLE_DELAY settles a document at once it has had no change for
-// that long.
-const docsDefaultSettle = 2 * time.Second
-
 // theClose is the sequence of the issue.closed event of issueKey's first close past event since,
 // as a subquery: the moment the database fixes for that close, which every event of the close's
 // own transaction and of every write before it comes ahead of.
@@ -7147,7 +7191,9 @@ func twoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t *testing.T, lane
 			if err := reading.editor.WaitForText(t, markdown, markdown(typing.editor)); err != nil {
 				t.Fatalf("%s's keystroke %d did not reach %s: %v", typing.who, keystroke+1, reading.who, err)
 			}
-			if span := time.Since(typedBefore); keystroke > 0 && span >= docsDefaultSettle {
+			// The pair runs with no DISPATCH_TEST_SETTLE_DELAY, so each process's settle delay is the
+			// document service's own (docs.DefaultSettle).
+			if span := time.Since(typedBefore); keystroke > 0 && span >= docs.DefaultSettle {
 				lapses++
 				t.Logf("keystroke %d was held by both processes %v after keystroke %d was typed, at or past the settle delay", keystroke+1, span, keystroke)
 			}
@@ -7652,9 +7698,9 @@ func TestTheRunningServersSettleAClosedIssuesDocument(t *testing.T) {
 // Spec item 3: an ask block keeps the author who wrote it, whichever process settles it.
 //
 // Bob writes an ask block in his tab on B, and B is killed (SIGKILL) before it settles - B's
-// settle delay is ten minutes - so the settlement the document owes is left to the resumption on
-// A. The pending row is made older than the resumption age (one minute) by SQL rather than by
-// waiting it out, so A's next pass (one a minute) arms it.
+// settle delay is a day (stagedPastTheRun) - so the settlement the document owes is left to the
+// resumption on A. The pending row is made older than the resumption age (one minute) by SQL
+// rather than by waiting it out, so A's next pass (one a minute) arms it.
 //
 // Alice edits the document through B after bob's block and before the kill. Without her, the
 // latest edit source the pending row names is bob's, and at this row's first commit a settlement
@@ -7664,10 +7710,10 @@ func TestTheRunningServersSettleAClosedIssuesDocument(t *testing.T) {
 // where A can read it names bob.
 func TestAnAskBlockKeepsItsAuthorWhenAnotherProcessSettlesIt(t *testing.T) {
 	pair := newPair(t)
-	pair.startSettling(t, nil, 0, 10*time.Minute)
+	pair.startSettling(t, nil, 0, stagedPastTheRun)
 	project := uniqueProjectKey(t, "ASKA")
 	pair.b.createProject(t, project, "Ask authors across processes")
-	// Created through B, whose own settlement is ten minutes away, so A never loads this
+	// Created through B, whose own settlement is a day away, so A never loads this
 	// document before its resumption does.
 	issueKey, artifactID := pair.b.createIssueIn(t, project, "Bob asks on B", "Intro.")
 
@@ -8113,12 +8159,12 @@ func (p *dispatchPair) resumptionsByPeriod(t *testing.T, artifactID string) (byP
 }
 
 // Spec item 6: a rebuild, the settlement resumption, the conditional-edit queue and a write to a
-// document no room holds behave across processes as on one. Every process here has a ten-minute
-// settle delay, so no settlement runs inside the row: an owed settlement stays owed for the
-// resumption to find, and no settlement loads a room.
+// document no room holds behave across processes as on one. Every process here has a settle
+// delay of a day (stagedPastTheRun), so no settlement runs inside the row: an owed settlement
+// stays owed for the resumption to find, and no settlement loads a room.
 func TestRebuildResumptionQueueAndColdWritesHoldAcrossProcesses(t *testing.T) {
 	pair := newPair(t)
-	pair.startSettling(t, nil, 10*time.Minute, 10*time.Minute)
+	pair.startSettling(t, nil, stagedPastTheRun, stagedPastTheRun)
 	project := uniqueProjectKey(t, "MAIN")
 	pair.a.createProject(t, project, "Maintenance across processes")
 
@@ -8272,7 +8318,7 @@ func TestRebuildResumptionQueueAndColdWritesHoldAcrossProcesses(t *testing.T) {
 		// wait at once, with the failure the row is about, rather than at the wait's give-up. A
 		// redial of either process's listener ends it too, since it can drop that process's
 		// queue from the count.
-		testwait.Until(t, "one of the 33 conditional edits in flight to answer 429 EDIT_QUEUE_FULL, or either process's room-sync listener to redial", func() (int, bool) {
+		testwait.Until(t, "one of the 33 conditional edits in flight to answer 429 EDIT_QUEUE_FULL, or either process's room-sync listener to redial", func() (string, bool) {
 			for index, request := range later {
 				if answered[index] != nil {
 					continue
@@ -8288,17 +8334,32 @@ func TestRebuildResumptionQueueAndColdWritesHoldAcrossProcesses(t *testing.T) {
 				default:
 				}
 			}
+			byStatus, waiting := map[int]int{}, 0
+			for _, answer := range answered {
+				if answer == nil {
+					waiting++
+					continue
+				}
+				byStatus[answer.status]++
+			}
+			redial := redialed()
+			listeners := redial
+			if listeners == "" {
+				listeners = fmt.Sprintf("neither process's room-sync listener redialed: A's stood up %d LISTENs and B's %d, as at the start", standsA, standsB)
+			}
+			reading := fmt.Sprintf("of the 32 edits queued behind the first, %d answered (count by status %v) and %d have not; %s",
+				queued-waiting, byStatus, waiting, listeners)
 			if refused > 0 {
-				return refused, true
+				return reading, true
 			}
-			if redial := redialed(); redial != "" {
+			if redial != "" {
 				t.Logf("no conditional edit has answered 429 yet, and a process's room-sync listener redialed, which drops its queue from the count: %s", redial)
-				return refused, true
+				return reading, true
 			}
-			if !slices.Contains(answered, nil) {
+			if waiting == 0 {
 				t.Fatalf("33 conditional edits of one document were in flight at once - the first parked holding it, 16 queued behind it on A and 16 on B - and none answered 429 EDIT_QUEUE_FULL: each process held its own queue to 32, so the two together queued 33")
 			}
-			return refused, false
+			return reading, false
 		})
 		if !pair.a.releaseLiveWritePause(t, artifactID, docs.PauseAfterFirstAppend) {
 			t.Fatalf("the release found no edit parked")
@@ -9149,14 +9210,22 @@ func requireWaitingOutTheTakeOver(t *testing.T, database *store.Store, listener 
 const quickTakeoverWindow = time.Second
 
 // heldTakeoverWindow is how long a sender keeps trying a listener being replaced in the subtests
-// that drive a take-over (DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW). It is staged state the child
-// judges on its own clock, not a wait of the test's: stagedPastTheRun, longer than any -timeout CI
-// gives this package, so a sender tries until the take-over the fake runs has ended, however a
-// loaded machine spaces its tries, and no real timer of the sender's decides the row. The twelve
-// seconds a deployment runs (api's listenerTakeoverWindow) are held where their timer is
-// reachable, on the server's fake clock: api.TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce
-// and api.TestAMessageToASessionNoStoreHoldsIsQueuedOneTakeOverWindowAfterItsFirstTry.
-const heldTakeoverWindow = stagedPastTheRun
+// that drive a take-over (DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW): what is left, as the row
+// starts its processes, until the test's own waits give up (testwait.GiveUpAt), so a sender tries
+// until the take-over the fake runs has ended, however a loaded machine spaces its tries, and
+// gives up no sooner than the test would. Each sender counts the window from its own first try,
+// which comes after this read, so its window ends at or after the give-up. The setting is a
+// duration, and a duration cannot say "none", so under -timeout 0, whose waits have no end, the
+// window is a day (stagedPastTheRun) in place of none. The twelve seconds a deployment runs (api's
+// listenerTakeoverWindow) are held where their timer is reachable, on the server's fake clock:
+// api.TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce and
+// api.TestAMessageToASessionNoStoreHoldsIsQueuedOneTakeOverWindowAfterItsFirstTry.
+func heldTakeoverWindow(t *testing.T) time.Duration {
+	if end, bounded := testwait.GiveUpAt(t); bounded {
+		return time.Until(end)
+	}
+	return stagedPastTheRun
+}
 
 // While the active listener is replaced, its successor refuses connections, then answers 503
 // "service starting" - on every route, then on the send alone while the outgoing listener still
@@ -9174,7 +9243,7 @@ func TestASendDuringAListenerTakeOverReachesItsSession(t *testing.T) {
 		// No attempt here is back-dated, and no delivery sweep runs inside the row (unsweptEnv),
 		// so only each request's own sender can deliver.
 		env := listener.unsweptEnv()
-		env["DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW"] = heldTakeoverWindow.String()
+		env["DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW"] = heldTakeoverWindow(t).String()
 		pair := startPair(t, env)
 		project := uniqueProjectKey(t, "TKO")
 		pair.a.createProject(t, project, "Listener take-over")
@@ -9256,7 +9325,7 @@ func TestASendDuringAListenerTakeOverReachesItsSession(t *testing.T) {
 	t.Run("killed during the wait", func(t *testing.T) {
 		listener := startFakeListener(t, resumeSession)
 		env := listener.quickSweepEnv()
-		env["DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW"] = heldTakeoverWindow.String()
+		env["DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW"] = heldTakeoverWindow(t).String()
 		pair := startPair(t, env)
 		project := uniqueProjectKey(t, "TKK")
 		pair.a.createProject(t, project, "Killed during a take-over")
@@ -9465,7 +9534,7 @@ func startRateLimitGitHub(t *testing.T) *rateLimitGitHub {
 	})
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		_, _ = fmt.Fprintf(w, `{"token":%q,"expires_at":%q}`, rateLimitToken, time.Now().Add(time.Hour).Format(time.RFC3339))
+		_, _ = fmt.Fprintf(w, `{"token":%q,"expires_at":%q}`, rateLimitToken, time.Now().Add(stagedPastTheRun).Format(time.RFC3339))
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -9694,7 +9763,7 @@ func startArchitectureGitHub(t *testing.T, head string, commits map[string]map[s
 	})
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		_, _ = fmt.Fprintf(w, `{"token":"ghs_multiprocess","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		_, _ = fmt.Fprintf(w, `{"token":"ghs_multiprocess","expires_at":%q}`, time.Now().Add(stagedPastTheRun).Format(time.RFC3339))
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{branch}", func(w http.ResponseWriter, r *http.Request) {
 		fake.mu.Lock()
@@ -10006,8 +10075,9 @@ func startHookPair(t *testing.T, env map[string]string) *dispatchPair {
 
 // callUntilTheGiveUp is call with the request under the shared wait's context (testwait.Context):
 // a call whose answer a process holds back, such as a test hook waiting on another process's
-// acknowledgement with its own bound staged past the run, fails the test at the give-up naming
-// the call, rather than holding it past the binary's deadline.
+// acknowledgement with its own bound at the test's give-up (DISPATCH_TEST_HOOK_DEADLINE,
+// endsAtTheGiveUp), fails the test at the give-up naming the call, rather than holding it past the
+// binary's deadline.
 func (p *dispatchProcess) callUntilTheGiveUp(t *testing.T, method, path, body string, status int) []byte {
 	t.Helper()
 	request, err := http.NewRequestWithContext(testwait.Context(t), method, p.url(path), strings.NewReader(body))

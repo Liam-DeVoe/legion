@@ -201,6 +201,11 @@ type testServerOptions struct {
 	// gives up (DepsInput.ListenerCallDeadline), and a test that drives a timer passes a
 	// clocktest.Fake, which keeps envoy.CallWindow for the test to move to its end.
 	clock clock.Clock
+	// takeoverWindow is the server's Deps.ListenerTakeoverWindow, given before the server is
+	// built: zero keeps the window the server's clock decides (testTakeoverWindow on the real
+	// clock, listenerTakeoverWindow on a fake), and a row whose send must be its attempt's last
+	// try passes a window already spent, which leaves the first try alone inside it.
+	takeoverWindow time.Duration
 	// idempotencyLease is the server's Deps.IdempotencyLease: zero keeps
 	// contracts.IdempotencyLease, and a row whose repeats must find the first run in flight however
 	// long the machine takes stages stagedAhead.
@@ -378,17 +383,21 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	}
 	// A server on a fake clock runs the production take-over window: it costs no wall clock
 	// there, and the test moves the clock through it itself, so the window a verdict reads is
-	// the one the deployment runs. A server on the real clock takes the short one.
+	// the one the deployment runs. A server on the real clock takes the short one, and a row that
+	// gives a window of its own (testServerOptions.takeoverWindow) takes that one.
 	takeoverWindow := listenerTakeoverWindow
 	// A server on the real clock ends every listener call's window where the shared wait gives
 	// up (testwait.GiveUpAt), not envoy.CallWindow after the call began, so a call a stand-in
 	// listener holds ends when the test's own waits would give up on it, and under -timeout 0 not
 	// at all: the test's one bound, not a number of its own. A server on a fake clock keeps
 	// CallWindow, which its test moves to the window's end itself.
-	var callDeadline envoy.CallDeadline
+	var callDeadline clock.Deadline
 	if options.clock == nil {
 		takeoverWindow = testTakeoverWindow
-		callDeadline = envoy.CallsEndAt(testwait.GiveUpAt(t))
+		callDeadline = clock.DeadlineAt(testwait.GiveUpAt(t))
+	}
+	if options.takeoverWindow != 0 {
+		takeoverWindow = options.takeoverWindow
 	}
 	agentPublisher := options.agentPublisher
 	switch {
@@ -2016,8 +2025,9 @@ func TestArtifactSlugsDisambiguateNormalizedNameCollisions(t *testing.T) {
 func TestConcurrentStatusPatchesUseCommittedPreimage(t *testing.T) {
 	t.Parallel()
 	// The seeded specs' settlement would lock the child row this test holds; keep it
-	// out of the lock queue so only the two status patches are counted as waiters.
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	// out of the lock queue so only the two status patches are counted as waiters: the server's
+	// settle delay is stagedAhead, on the real clock, so no settlement runs inside the row.
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
 	}, "alice"); response.Code != http.StatusCreated {
@@ -2285,7 +2295,7 @@ func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Durat
 	cookieIdentity := identity.CookieIdentity{SigningKey: testSigningKey, Sessions: sessions}
 	broker := events.NewBroker()
 	documentService := docs.New(docs.Deps{
-		Store: database, Events: broker, Identity: cookieIdentity, Settle: time.Hour,
+		Store: database, Events: broker, Identity: cookieIdentity, Settle: stagedAhead,
 	})
 	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 	deps, err := NewDeps(DepsInput{

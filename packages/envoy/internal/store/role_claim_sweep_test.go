@@ -80,6 +80,15 @@ const (
 	sweepDeadline = 30 * time.Second
 )
 
+// stagedAhead is how long a row of this package stages a session TTL the registry judges a role
+// claim's grace by: a claim restored when the registry opened is kept for one session TTL after
+// the open, on the registry's clock, which is the real clock when the row gives it none
+// (releaseReadExpiredRoleClaim). It is staged state for that clock, not a wait: longer than any
+// `go test -timeout` CI gives this package (30 minutes in the race lane), so a restored claim
+// still reads within its grace however long the machine takes, where a minute would pass on a
+// loaded one.
+const stagedAhead = 24 * time.Hour
+
 // sweepRoleKeyValue is the role bucket's legacy handle with every Get and Delete counted, per key
 // and in total, and each delayed by delay. It is how these cases read what a deregistration cost:
 // the count, not the clock, is what says the sweep read the roles the session holds rather than

@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
@@ -86,8 +85,8 @@ func (b *lockedBuffer) count(msg string, attrs ...string) int {
 // the client reads a rate-limited answer's wait against (githubapp.WithRateLimitClock), as the
 // stand-in for GitHub stamps its moments from it too, so the wait an x-ratelimit-reset names is
 // exact; the client's waits stay on the real clock. A recorded rate limit is judged by the
-// database's clock, so a test moves a limit's end (passLimits, holdLimit) rather than advancing
-// the clock past it.
+// database's clock, so a test moves a limit's end (githubapptest.PassLimits, HoldLimits) rather
+// than advancing the clock past it.
 type harness struct {
 	t        *testing.T
 	webhook  *githubapptest.Webhook
@@ -144,15 +143,6 @@ func (h *harness) sweeper() *redeliver.Sweeper {
 	}
 }
 
-// passLimits moves the end of every recorded rate limit into the past, as waiting out GitHub's
-// time would; the rows stay, strikes and all.
-func (h *harness) passLimits() {
-	h.t.Helper()
-	if _, err := h.database.Pool.Exec(context.Background(), `update github_rate_limits set until = now() - interval '1 second'`); err != nil {
-		h.t.Fatalf("move the recorded rate limits back: %v", err)
-	}
-}
-
 // limitLeft is how long scope's recorded limit has left by the database's clock; zero or less
 // when it has passed or there is none.
 func (h *harness) limitLeft(scope string) time.Duration {
@@ -167,44 +157,13 @@ func (h *harness) limitLeft(scope string) time.Duration {
 	return limit.Wait
 }
 
-// recordedWait is the wait scope's recorded limit was last written with: its end less the
-// database's now() at that write (Record, Strike), which neither the moment of this read nor the
-// time since moves, and zero when there is none.
-func (h *harness) recordedWait(scope string) time.Duration {
-	h.t.Helper()
-	var micros int64
-	err := h.database.Pool.QueryRow(context.Background(), `
-		select (extract(epoch from until - updated_at) * 1000000)::bigint from github_rate_limits where scope = $1
-	`, scope).Scan(&micros)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0
-	}
-	if err != nil {
-		h.t.Fatalf("read the wait the %s rate limit was recorded with: %v", scope, err)
-	}
-	return time.Duration(micros) * time.Microsecond
-}
-
 // stagedAhead is how far past the database's clock a row holds the end of a recorded rate limit
-// on (holdLimit): staged state for the database's clock, which judges the limit, not a wait, and
-// longer than any `go test -timeout` CI gives this package, so the sweep the row runs next is
-// still inside the limit however slow the row is. A wait GitHub's answer names is held to
-// serverwait.MaxWait, an hour, the longest the client records from an answer, which no
+// on (githubapptest.HoldLimits): staged state for the database's clock, which judges the limit,
+// not a wait, and longer than any `go test -timeout` CI gives this package, so the sweep the row
+// runs next is still inside the limit however slow the row is. A wait GitHub's answer names is
+// held to serverwait.MaxWait, an hour, the longest the client records from an answer, which no
 // `go test -timeout` CI gives this package reaches either.
 const stagedAhead = 24 * time.Hour
-
-// holdLimit moves the end of scope's recorded limit stagedAhead past the database's clock, for a
-// row that reads a sweep made inside a limit a slow run may outlast before it gets there: GitHub's
-// minute where its answer names no wait, or the few minutes of the sweep's own doubled backoff.
-// The row reads the wait the limit was recorded with first (recordedWait); the row stays, strikes
-// and all, as passLimits leaves it.
-func (h *harness) holdLimit(scope string) {
-	h.t.Helper()
-	if _, err := h.database.Pool.Exec(context.Background(),
-		`update github_rate_limits set until = now() + make_interval(secs => $2) where scope = $1`, scope, stagedAhead.Seconds()); err != nil {
-		h.t.Fatalf("hold the %s rate limit stagedAhead on: %v", scope, err)
-	}
-}
 
 // fail records an attempt GitHub made that the receiver answered with code, ago before now.
 func (h *harness) fail(guid string, code int, ago time.Duration) githubapptest.Delivery {
@@ -925,8 +884,8 @@ func TestARefusedDeliveryOutsideTheWindowIsAskedAgain(t *testing.T) {
 // so the sweep below runs inside the time GitHub gave however slow the row is: no
 // `go test -timeout` CI gives this package reaches an hour. Where none does GitHub's wait is the
 // minute the client takes for it, which a slow row can outlast before that sweep: the limits are
-// read as recorded and then held stagedAhead on (holdLimit), so that sweep still runs inside a
-// limit the database recorded.
+// read as recorded and then held stagedAhead on (githubapptest.HoldLimits), so that sweep still
+// runs inside a limit the database recorded.
 func TestARateLimitStopsTheSweepUntilGitHubsRetryTime(t *testing.T) {
 	retryAfter := func(*harness) http.Header { return http.Header{"Retry-After": {"3600"}} }
 	for _, tc := range []struct {
@@ -967,15 +926,14 @@ func TestARateLimitStopsTheSweepUntilGitHubsRetryTime(t *testing.T) {
 			}
 
 			// GitHub would answer now, but the sweep does not ask before the time GitHub gave.
-			if got := h.recordedWait("redelivery"); got != tc.wait {
+			if got := githubapptest.RecordedWait(t, h.database, "redelivery"); got != tc.wait {
 				t.Fatalf("the sweep's backoff was recorded for %s, want GitHub's %s", got, tc.wait)
 			}
-			if got := h.recordedWait(githubapp.AppScope); got != tc.wait {
+			if got := githubapptest.RecordedWait(t, h.database, githubapp.AppScope); got != tc.wait {
 				t.Fatalf("the App's limit was recorded for %s, want GitHub's %s", got, tc.wait)
 			}
 			if tc.wait < time.Hour {
-				h.holdLimit("redelivery")
-				h.holdLimit(githubapp.AppScope)
+				githubapptest.HoldLimits(t, h.database, stagedAhead, "redelivery", githubapp.AppScope)
 			}
 			h.webhook.Limit(tc.method, 0, nil)
 			listings := h.webhook.Listings()
@@ -984,7 +942,7 @@ func TestARateLimitStopsTheSweepUntilGitHubsRetryTime(t *testing.T) {
 				t.Fatalf("a sweep before the retry time called GitHub: %d requests (want %d), %d listings (want %d)", got, wantSent, h.webhook.Listings(), listings)
 			}
 
-			h.passLimits()
+			githubapptest.PassLimits(t, h.database)
 			report := h.sweep(redeliver.Options{})
 			for i := range 3 {
 				if got := outcome(report, fmt.Sprintf("guid-%d", i)); got != redeliver.Redelivered {
@@ -1021,7 +979,7 @@ func TestASweepClearsOnlyTheRateLimitItRead(t *testing.T) {
 	h.fail("guid-limited", http.StatusServiceUnavailable, time.Minute)
 	h.webhook.Limit(http.MethodPost, http.StatusTooManyRequests, http.Header{"Retry-After": {"3600"}})
 	h.sweep(redeliver.Options{})
-	h.passLimits() // the limit has passed, and its row is still there
+	githubapptest.PassLimits(t, h.database) // the limit has passed, and its row is still there
 
 	paused := pausedListing{GitHub: h.client, entered: make(chan struct{}), release: make(chan struct{})}
 	first := h.sweeper()
@@ -1110,7 +1068,7 @@ func TestASweepPausedBeforeItsRequestSendsNothingUnderANewLimit(t *testing.T) {
 	// Its claim was undone: once the limit passes, guid-newer is asked for as its first attempt.
 	h.webhook.Limit(http.MethodPost, 0, nil)
 	h.clock.advance(2*time.Minute + time.Second)
-	h.passLimits()
+	githubapptest.PassLimits(t, h.database)
 	if got := outcome(h.sweep(redeliver.Options{}), "guid-newer"); got != redeliver.Redelivered {
 		t.Fatalf("after the limit: guid-newer outcome %q, want %q", got, redeliver.Redelivered)
 	}
@@ -1119,22 +1077,22 @@ func TestASweepPausedBeforeItsRequestSendsNothingUnderANewLimit(t *testing.T) {
 // A secondary limit met again and again on redelivery requests doubles the sweep's own backoff
 // (one, two, then four minutes), and only the sweep's: the App's limit holds GitHub's minute, so
 // once that minute has passed the App's own calls reach GitHub while the sweep still waits. The
-// backoff is read as recorded and then held stagedAhead on (holdLimit), since a slow row can
-// outlast its four minutes before the last sweep.
+// backoff is read as recorded and then held stagedAhead on (githubapptest.HoldLimits), since a
+// slow row can outlast its four minutes before the last sweep.
 func TestARedeliveryBackoffHoldsTheSweepAndNotTheApp(t *testing.T) {
 	h := newHarness(t)
 	h.fail("guid-limited", http.StatusServiceUnavailable, time.Minute)
 	h.webhook.Limit(http.MethodPost, http.StatusForbidden, nil) // a secondary limit: GitHub asks for a minute
 	for strike := 1; strike <= 3; strike++ {
-		h.passLimits()
+		githubapptest.PassLimits(t, h.database)
 		if report := h.sweep(redeliver.Options{}); report.RateLimitedUntil.IsZero() {
 			t.Fatalf("sweep %d was not rate-limited: %+v", strike, report)
 		}
 	}
-	if got := h.recordedWait("redelivery"); got != 4*time.Minute {
+	if got := githubapptest.RecordedWait(t, h.database, "redelivery"); got != 4*time.Minute {
 		t.Fatalf("after three limits the sweep's backoff was recorded for %s, want four minutes", got)
 	}
-	h.holdLimit("redelivery")
+	githubapptest.HoldLimits(t, h.database, stagedAhead, "redelivery")
 	if left := h.limitLeft(githubapp.AppScope); left > time.Minute {
 		t.Fatalf("after three limits the App's limit has %s left, want GitHub's minute", left)
 	}

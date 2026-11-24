@@ -1287,11 +1287,13 @@ func TestIsValidRole(t *testing.T) {
 
 // stagedAhead is how long a row of this package stages a time the product judges against a clock
 // the row does not move: a session TTL, which is the registry's deadline for a row and the
-// bucket's age nats-server drops a record at, and the interval a durable's bind waits out between
+// bucket's age nats-server drops a record at, the interval a durable's bind waits out between
 // attempts on the real clock (bindListenerDurable), which a bind that ignored its context would
-// sit out. It is staged state for those clocks, not a wait of the row's: longer than any
-// `go test -timeout` CI gives this package, so what the row staged holds however long the machine
-// takes, and a bind that waited out its interval would not return before the shared wait gave up.
+// sit out, and the backoff a paused relay waits on the real clock before it sends again
+// (newRelayRigReceipt), which a row about what resumes the relay needs never to run out. It is
+// staged state for those clocks, not a wait of the row's: longer than any `go test -timeout` CI
+// gives this package, so what the row staged holds however long the machine takes, and a bind
+// that waited out its interval would not return before the shared wait gave up.
 const stagedAhead = 24 * time.Hour
 
 // The session cache counts ses_health until its TTL passes, so the TTL is staged at stagedAhead,

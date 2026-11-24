@@ -35,7 +35,7 @@ const (
 // pending author: the authors already pending stay, and no one else is added.
 func TestWritingIssueAskStatesReachesTheAsksBlocksAndTheirCopiesAlone(t *testing.T) {
 	service, original := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	ctx := context.Background()
 	seedServiceText(t, service, original, "Context\n\n"+regionBlock+"\n"+transportBlock+"\n"+shipBlock)
 	settleCurrentGeneration(t, service, original)
@@ -117,7 +117,7 @@ func TestWritingIssueAskStatesReachesTheAsksBlocksAndTheirCopiesAlone(t *testing
 // and names it under the id it repeats, which it leaves alone for settlement to stamp.
 func TestWritingIssueAskStatesMarksABlockRepeatingAnAsksIDByItsPlace(t *testing.T) {
 	service, original := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, original, "Context\n\n"+regionBlock)
 	settleCurrentGeneration(t, service, original)
 	region := blockAskOn(t, service, original, "region")
@@ -206,7 +206,7 @@ func TestWritingIssueAskStatesLeavesTheLatestEditSourceAlone(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, "Context\n\n"+regionBlock)
 			settleCurrentGeneration(t, service, artifactID)
 			region := blockAskOn(t, service, artifactID, "region")
@@ -267,7 +267,7 @@ func TestReopeningAnIssueRestoresTheLatestEditSourceOfARoomLoadedWhileClosed(t *
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			ctx := context.Background()
 			seedServiceText(t, service, artifactID, "Context\n\n"+regionBlock)
 			settleCurrentGeneration(t, service, artifactID)
@@ -329,7 +329,7 @@ func TestASettlementAfterAReleasingCloseAndAReopenNamesTheLatestEditor(t *testin
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			ctx := context.Background()
 			seedServiceText(t, service, artifactID, "Context\n\n"+regionBlock)
 			settleCurrentGeneration(t, service, artifactID)
@@ -426,7 +426,7 @@ func TestWritingIssueAskStatesReachesAClosedIssuesDocuments(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			ctx := context.Background()
 			seedServiceText(t, service, artifactID, "Context\n\n"+regionBlock)
 			settleCurrentGeneration(t, service, artifactID)
@@ -464,12 +464,12 @@ func TestWritingIssueAskStatesReachesAClosedIssuesDocuments(t *testing.T) {
 // A reopen writes the withdrawn blocks back to open, so a document that had nothing else pending
 // renders as its latest version again, and the settlement the close and the reopen left owed
 // writes no version. That holds because no settlement ran while the issue was closed: the settle
-// delay here is an hour, and nothing resumes the documents. A settlement on the closed issue would
+// delay here is a day (stagedAhead), and nothing resumes the documents. A settlement on the closed issue would
 // have saved the blocks resolved, and the reopen's settlement would then write a version with
 // them open again.
 func TestWritingAReopensAskStatesBackLeavesNoVersionToWrite(t *testing.T) {
 	service, original := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	ctx := context.Background()
 	seedServiceText(t, service, original, "Context\n\n"+regionBlock)
 	settleCurrentGeneration(t, service, original)
@@ -522,7 +522,7 @@ func TestWritingAReopensAskStatesBackLeavesNoVersionToWrite(t *testing.T) {
 // writer, once SettleIssueDocuments returns: the settlement runs on the caller's goroutine.
 func TestSettlingAnIssuesDocumentsIndexesABlockWrittenWithinTheSettleDelay(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	untouched := createIssueDocument(t, service.store, 1, "# Untouched")
@@ -549,7 +549,7 @@ func TestSettlingAnIssuesDocumentsIndexesABlockWrittenWithinTheSettleDelay(t *te
 // inside one, and the block it would have indexed waits for its settlement.
 func TestSettlingAnIssuesDocumentsRefusesToRunInsideATransaction(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	writeThroughLedger(t, service, artifactID, model.Actor{Kind: "session", ID: "waiting-session"}, freshBlock, withoutVersion)
 

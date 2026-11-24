@@ -240,7 +240,7 @@ func newExcerptService(t *testing.T, database *store.Store, persistence Versione
 // (excerptMoment).
 func newExcerptServiceOn(t *testing.T, database *store.Store, persistence VersionedStore, serviceClock clock.Clock) *Service {
 	t.Helper()
-	service := New(Deps{Store: database, Persistence: persistence, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, Clock: serviceClock})
+	service := New(Deps{Store: database, Persistence: persistence, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: stagedAhead, Clock: serviceClock})
 	t.Cleanup(func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
 	return service
 }

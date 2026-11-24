@@ -239,7 +239,7 @@ func TestSuggestionKindReadsBrowserMark(t *testing.T) {
 
 func TestAcceptSuggestionReplacesMarkedTextAndRemovesTheMark(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 	spec := MarkSpec{Kind: MarkSuggestion, ID: "s1", By: model.Actor{Kind: "session", ID: "s1"}}
 	if _, err := joinedMarkQuote(service, artifactID, spec, "brown", nil); err != nil {
@@ -263,7 +263,7 @@ func TestAcceptSuggestionReplacesMarkedTextAndRemovesTheMark(t *testing.T) {
 // suggestion accepted elsewhere in it, are not refused for how that address reads (INFRA-531).
 func TestEditsBesideAPlainWebAddressInTheirParagraphAreAccepted(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "Placeholder.\n")
 	editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 		tree.Children[0].Children = []*pmdoc.Node{{Type: "text", Text: "The quick fox x;https://x.test jumps over the lazy dog"}}
@@ -290,7 +290,7 @@ func TestEditsBesideAPlainWebAddressInTheirParagraphAreAccepted(t *testing.T) {
 // as anywhere: a reject is not read back.
 func TestRejectSuggestionInCodeGivesBackTheCode(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, ":::callout{#c1 kind=\"note\" title=\"T\"}\n```\nabc added\n```\n:::\n")
 	browserMarkWithAttrs(t, service, artifactID, "proofSuggestion", " added", pmdoc.Attrs{
 		"id": "ins", "by": "user:bob", "kind": "insert",
@@ -333,7 +333,7 @@ func TestRejectSuggestionDeletesTheInsertsText(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, test.spec)
 			for _, run := range test.runs {
 				browserMarkWithAttrs(t, service, artifactID, "proofSuggestion", run, pmdoc.Attrs{
@@ -380,7 +380,7 @@ func TestRejectSuggestionRefusesARemovalTheDocumentCannotHold(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, test.spec)
 			runs := test.runs
 			if runs == nil {
@@ -409,7 +409,7 @@ func TestRejectSuggestionRefusesARemovalTheDocumentCannotHold(t *testing.T) {
 
 func TestRejectSuggestionIsKindAware(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "keep this and drop that")
 	if _, err := joinedMarkQuote(service, artifactID, MarkSpec{
 		Kind: MarkSuggestion,
@@ -543,7 +543,7 @@ func newUnrecordedMarkService(t *testing.T) (*Service, string, func(age time.Dur
 	service := New(Deps{
 		Store:             database,
 		Events:            events.NewBroker(),
-		Settle:            time.Hour,
+		Settle:            stagedAhead,
 		UnrecordedMarkTTL: markSweepTTL,
 	})
 	started := time.Now()
@@ -754,7 +754,7 @@ func TestSettleKeepsTheAnchoredMarkOfAnAskThatAlsoNamesABlock(t *testing.T) {
 	service := New(Deps{
 		Store:             database,
 		Events:            events.NewBroker(),
-		Settle:            time.Hour,
+		Settle:            stagedAhead,
 		UnrecordedMarkTTL: ttl,
 	})
 	started := time.Now()
@@ -804,7 +804,7 @@ func TestCompactionRetainsContentClassificationAcrossMarkUpdates(t *testing.T) {
 	for _, keep := range []int{1, 500} {
 		t.Run(fmt.Sprintf("keep_%d", keep), func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, "before")
 			if _, err := joinedReplaceText(service, artifactID, "after", model.Actor{Kind: "user", ID: "alice"}); err != nil {
 				t.Fatalf("write content update: %v", err)
@@ -834,7 +834,7 @@ func TestCompactionRetainsContentClassificationAcrossMarkUpdates(t *testing.T) {
 
 func TestCompactionDoesNotCarryCoveredContentClassificationPastCursor(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "| header |\n| :--- |\n| `one\\|two` |\n")
 	if _, err := service.store.Pool.Exec(context.Background(), `
 		update artifact_versions set markdown = $2 where artifact_id = $1 and number = 1
@@ -863,7 +863,7 @@ func TestCompactionDoesNotCarryCoveredContentClassificationPastCursor(t *testing
 // and the folded row keeps its content_changed, so settlement versions the content.
 func TestCompactionRetainsUncoveredContentBeyondVersionCursor(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	alignLatestVersionWithUpdates(t, service, artifactID)
 	for index := range 2 {
@@ -936,7 +936,7 @@ func TestProjectMarkRearmsPendingSettlement(t *testing.T) {
 // approval, that nothing explains.
 func TestTransactionalMarkWritesSettleWithoutAVersion(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 	alignLatestVersionWithUpdates(t, service, artifactID)
 	tx, err := service.store.Pool.Begin(context.Background())
@@ -1023,7 +1023,7 @@ func TestAReplaceKeepsTheAnchorOverItsWholeCurrentExtent(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, text)
 			askID := insertAnchoredAsk(t, service, artifactID, quote)
 			commentID := insertAnchoredComment(t, service, artifactID, quote)
@@ -1066,7 +1066,7 @@ func TestAReplaceKeepsTheAnchorOverItsWholeCurrentExtent(t *testing.T) {
 // text it replaced.
 func TestAnAcceptedSuggestionStaysInsideTheCommentAroundIt(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "The quick brown fox jumps over the lazy dog")
 	commentID := insertAnchoredComment(t, service, artifactID, "quick brown fox jumps")
 	if _, err := joinedMarkQuote(service, artifactID, MarkSpec{
@@ -1091,7 +1091,7 @@ func TestAnAcceptedSuggestionStaysInsideTheCommentAroundIt(t *testing.T) {
 // anchored on the new text rather than losing its anchor to the first one's mark.
 func TestAcceptingOneOfTwoSuggestionsOverAWordKeepsTheOther(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 	for _, id := range []string{"earlier", "later"} {
 		if _, err := joinedMarkQuote(service, artifactID, MarkSpec{
@@ -1336,7 +1336,7 @@ func repeatLiveBlockID(t *testing.T, service *Service, artifactID string) {
 // it was.
 func TestAcceptSuggestionBesideABlockTheParserAlreadyRefuses(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "- Lead.\n\n  :::callout{#c1 kind=\"note\" title=\"T\"}\n  Gone.\n  :::\n\nIntro.\n\nBody.\n\nAfter.\n")
 	editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 		pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
@@ -1372,7 +1372,7 @@ func TestAcceptSuggestionBesideABlockTheParserAlreadyRefuses(t *testing.T) {
 // browser editor keeps a definition nothing refers to, and an accept inside it stores.
 func TestAcceptSuggestionInAFootnoteDefinitionWhoseReferenceIsGone(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "Intro[^1].\n\n[^1]: Body.\n")
 	editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 		intro := tree.Children[0]
@@ -1424,7 +1424,7 @@ func TestAcceptSuggestionLeavesCodeItDoesNotWrite(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, test.spec)
 			editLiveTree(t, service, artifactID, codeWithMarkedBreak(test.code))
 			spec := MarkSpec{Kind: MarkSuggestion, ID: "s1", By: model.Actor{Kind: "session", ID: "s1"}}
@@ -1445,7 +1445,7 @@ func TestAcceptSuggestionLeavesCodeItDoesNotWrite(t *testing.T) {
 // carry included: the accept settles only what it wrote.
 func TestAcceptSuggestionLeavesASiblingItemsSpread(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "- Body.\n- two\n")
 	sibling := func(tree *pmdoc.Node) *pmdoc.Node {
 		var found *pmdoc.Node
@@ -1496,7 +1496,7 @@ func TestAcceptSuggestionRefusesCodeWithAPipeAfterABackslashInATableCell(t *test
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, "| Cmd | Note |\n| --- | --- |\n| run | Body. |\n")
 			if test.browser {
 				editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
@@ -1592,7 +1592,7 @@ func TestWritesBesideALiveRepeatedBlockIDAreTaken(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, seed)
 			repeatLiveBlockID(t, service, artifactID)
 			before, err := service.Text(context.Background(), artifactID)
@@ -1719,7 +1719,7 @@ func refreshedAnchor(t *testing.T, event model.Event) (string, model.Anchor) {
 // quote, so a refresh that walks the found marks, or one row per mark, drops one of them.
 func TestRefreshAnchorsRefreshesEveryRowSharingAMark(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 	if _, err := joinedMarkQuote(service, artifactID, MarkSpec{
 		Kind: MarkComment, ID: "shared", By: model.Actor{Kind: "user", ID: "alice"},
@@ -1756,7 +1756,7 @@ func TestRefreshAnchorsRefreshesEveryRowSharingAMark(t *testing.T) {
 func TestAcceptSuggestionSkipsItsMarkIDForRowsOfEveryType(t *testing.T) {
 	service, artifactID := newTestService(t)
 	// No settlement may run: it refreshes without the accept's skip.
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "The quick brown fox jumps")
 	by := model.Actor{Kind: "session", ID: "s1"}
 	// The ask's mark shares the suggestion's id, so the ask row would read "quick" if refreshed.
@@ -1804,7 +1804,7 @@ func TestAcceptSuggestionSkipsItsMarkIDForRowsOfEveryType(t *testing.T) {
 // it last had, and a refresh that changes nothing writes and announces nothing.
 func TestRefreshAnchorsFollowsAMarkRemovedRestoredAndRemovedAgain(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 	if _, err := joinedMarkQuote(service, artifactID, MarkSpec{
 		Kind: MarkComment, ID: "c1", By: model.Actor{Kind: "user", ID: "alice"},
@@ -1860,7 +1860,7 @@ func TestRefreshAnchorsFollowsAMarkRemovedRestoredAndRemovedAgain(t *testing.T) 
 // order, or a refresh in a map's order, matches five rows by chance in about one round of five.
 func TestRefreshAnchorsAnnouncesEveryKindInRowOrder(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "alpha bravo charlie delta echo")
 	rows := []struct{ kind, id, quote string }{
 		{"suggestion", "00000000-0000-4000-8000-0000000000d1", "echo"},
@@ -1971,7 +1971,7 @@ func TestMarkQuoteReturnsTheWrittenMarksAnchor(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, test.text)
 			spec := MarkSpec{Kind: MarkComment, ID: "c1", By: model.Actor{Kind: "user", ID: "alice"}}
 			anchored, err := joinedMarkQuote(service, artifactID, spec, test.quote, nil)

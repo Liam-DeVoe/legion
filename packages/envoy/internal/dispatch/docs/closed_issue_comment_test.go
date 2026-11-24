@@ -467,7 +467,7 @@ func closedIssueRoomService(t *testing.T, database *store.Store, artifactID stri
 	service := New(Deps{
 		Store: database, Persistence: held, Events: events.NewBroker(),
 		Identity: identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
-		Settle:   time.Hour,
+		Settle:   stagedAhead,
 	})
 	t.Cleanup(func() {
 		if err := docstest.Shutdown(t, context.Background(), service); err != nil {

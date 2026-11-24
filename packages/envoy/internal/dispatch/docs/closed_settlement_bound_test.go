@@ -159,7 +159,7 @@ func TestFailingSettlementsWaitBehindOnWhicheverServiceRunsThePass(t *testing.T)
 	requireStillFailing(t, pair.database, failing)
 }
 
-// boundedResumptionService is a document service with its test hooks on and an hour's settle
+// boundedResumptionService is a document service with its test hooks on and a day's settle
 // delay, on a database holding project CORE and its issues CORE-1 and CORE-2, both open.
 func boundedResumptionService(t *testing.T) (*store.Store, *Service) {
 	t.Helper()
@@ -176,7 +176,7 @@ func boundedResumptionService(t *testing.T) (*store.Store, *Service) {
 		Store:     database,
 		Events:    events.NewBroker(),
 		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Settle:    stagedAhead,
 		TestHooks: true,
 	})
 	t.Cleanup(func() {

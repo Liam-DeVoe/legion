@@ -357,7 +357,7 @@ func newReadCacheServiceOn(t *testing.T, database *store.Store, persistence Vers
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
 		ServerURL:   "https://dispatch.example",
-		Settle:      time.Hour,
+		Settle:      stagedAhead,
 		Clock:       serviceClock,
 	})
 	t.Cleanup(func() {

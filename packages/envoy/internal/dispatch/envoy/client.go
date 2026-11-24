@@ -289,7 +289,7 @@ type Client struct {
 	clock clock.Clock
 	// callDeadline is the end a test gives every call's window in CallWindow's place
 	// (WithCallDeadline); its zero value, production's, leaves each call CallWindow.
-	callDeadline CallDeadline
+	callDeadline clock.Deadline
 	// logger takes the line a call made again on the shared token writes (do); slog.Default()
 	// unless WithLogger names another.
 	logger *slog.Logger
@@ -301,38 +301,6 @@ type Client struct {
 // window to make a call miss it (api's comment delivery tests), and a test that holds a call at
 // its stand-in listener derives what it may hold from it.
 const CallWindow = 5 * time.Second
-
-// CallDeadline is the end a test gives every listener call's window in place of CallWindow after
-// the call began: a clock.Deadline, the moment the test's own waits give up (testwait.GiveUpAt),
-// so a call the test's stand-in listener holds ends when the test would give up on it and not
-// before, or no end at all for a test binary run under -timeout 0, whose waits have none. Its zero
-// value is production's, CallWindow. CallsEndAt makes one; String and ParseCallDeadline are the
-// form a test hands a Dispatch process (cmd/dispatch's DISPATCH_TEST_LISTENER_CALL_DEADLINE), the
-// one form every DISPATCH_TEST_*_DEADLINE setting takes (clock.ParseDeadline).
-type CallDeadline struct {
-	end clock.Deadline
-}
-
-// CallsEndAt is the CallDeadline at end, or no end at all when bounded is false: what
-// testwait.GiveUpAt answers, under -timeout 0 with bounded false (clock.DeadlineAt, which panics
-// on a bounded zero time, which would read as production's CallWindow).
-func CallsEndAt(end time.Time, bounded bool) CallDeadline {
-	return CallDeadline{end: clock.DeadlineAt(end, bounded)}
-}
-
-// String is the deadline's written form (clock.Deadline.String): its moment in RFC 3339 with
-// nanoseconds, "none" for no end, and "" for the zero value, which leaves CallWindow.
-func (d CallDeadline) String() string { return d.end.String() }
-
-// ParseCallDeadline reads String's form back, through the one parser of a test's deadline
-// (clock.ParseDeadline): "none", or a moment in RFC 3339, and anything else an error.
-func ParseCallDeadline(value string) (CallDeadline, error) {
-	end, err := clock.ParseDeadline(value)
-	if err != nil {
-		return CallDeadline{}, fmt.Errorf("a listener call deadline: %w", err)
-	}
-	return CallDeadline{end: end}, nil
-}
 
 // Option configures a Client.
 type Option func(*Client)
@@ -346,9 +314,9 @@ func WithClock(clock clock.Clock) Option {
 
 // WithCallDeadline ends every listener call's window at deadline instead of CallWindow after the
 // call began, on the client's clock; the zero deadline leaves CallWindow, which is what a
-// deployment runs. It is for a test that holds a call at its stand-in listener for as long as its
-// own waits last (CallDeadline).
-func WithCallDeadline(deadline CallDeadline) Option {
+// deployment runs. A test that holds a call at its stand-in listener gives the moment its own waits
+// give up (testwait.GiveUpAt), or no end under -timeout 0, whose waits have none.
+func WithCallDeadline(deadline clock.Deadline) Option {
 	return func(c *Client) { c.callDeadline = deadline }
 }
 
@@ -412,11 +380,11 @@ func New(baseURL string, options ...Option) *Client {
 	return client
 }
 
-// roundTrip sends request within its window on the client's clock (callWindow). The window covers
-// reading the answer's body as well as its head, so its end is released when the caller closes
-// the body.
+// roundTrip sends request within its window on the client's clock: CallWindow, or the end a test
+// set (WithCallDeadline), or none at all (clock.Deadline.WithTimeout). The window covers reading
+// the answer's body as well as its head, so its end is released when the caller closes the body.
 func (c *Client) roundTrip(request *http.Request) (*http.Response, error) {
-	ctx, cancel := c.callWindow(request.Context())
+	ctx, cancel := c.callDeadline.WithTimeout(c.clock, request.Context(), CallWindow)
 	response, err := c.httpClient.Do(request.WithContext(ctx))
 	if err != nil {
 		cancel()
@@ -424,12 +392,6 @@ func (c *Client) roundTrip(request *http.Request) (*http.Response, error) {
 	}
 	response.Body = windowedBody{ReadCloser: response.Body, cancel: cancel}
 	return response, nil
-}
-
-// callWindow is one call's window from ctx: CallWindow on the client's clock, or the end a test
-// set (WithCallDeadline) on that clock, or none at all (clock.Deadline.WithTimeout).
-func (c *Client) callWindow(ctx context.Context) (context.Context, context.CancelFunc) {
-	return c.callDeadline.end.WithTimeout(c.clock, ctx, CallWindow)
 }
 
 // windowedBody is an answer's body whose Close also ends the window roundTrip opened for its call.

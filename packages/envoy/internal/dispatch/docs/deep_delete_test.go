@@ -33,7 +33,7 @@ func TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel(t *testing.T) {
 			levelsPerUp = 5_000
 		)
 		service, artifactID := newTestService(t)
-		service.settle = time.Hour
+		service.settle = stagedAhead
 		seedServiceText(t, service, artifactID, "before")
 		httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 		t.Cleanup(httpServer.Close)

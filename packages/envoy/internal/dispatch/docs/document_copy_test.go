@@ -75,7 +75,7 @@ func TestAStoredHistoryLoadsEveryItemOneClientWroteAheadOfItsParent(t *testing.T
 	service, artifactID := newTestService(t)
 	// Settlement is not under test, and its stamp of every paragraph's block id would race the
 	// subtests' reads of the history.
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	ctx := context.Background()
 	persist := NewPgVersioned(service.store)
 	live := crdt.New(crdt.WithClientID(1_000_000))
@@ -170,7 +170,7 @@ const browserUpdateBlocks = 75_000
 func TestTheStoreTakesOneBrowserUpdateItsRoomTook(t *testing.T) {
 	service, artifactID := newTestService(t)
 	// Settlement is not under test, and its stamp would race the reads below.
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "before")
 	persist := NewPgVersioned(service.store)
@@ -273,7 +273,7 @@ func TestTheStoreTakesOneBrowserUpdateItsRoomTook(t *testing.T) {
 func TestASettlementStampsMoreBlocksThanYgosDefaultQueue(t *testing.T) {
 	service, artifactID := newTestService(t)
 	// The settlement runs below, once, on the test's own goroutine.
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
 	const blocks = 150_000
@@ -335,7 +335,7 @@ func TestTheRoomsRenderedReplicaHoldsWhatACommitParked(t *testing.T) {
 	service, artifactID := newTestService(t)
 	// Settlement is not under test, and its stamp of the browser's blocks would commit into the
 	// room while the edit is parked.
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n")
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("open a room on the seeded document: %v", err)

@@ -22,7 +22,7 @@ import (
 func newerContentDocument(t *testing.T) (*Service, string) {
 	t.Helper()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	if err := service.InjectUnknownElementForTest(context.Background(), artifactID); err != nil {
 		t.Fatalf("write an element this build does not know: %v", err)

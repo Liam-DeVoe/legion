@@ -630,10 +630,10 @@ func TestSessionConsumerUnreachableSessionPausesAndSendsAgainAfterItsBackoff(t *
 
 // A registration resumes a paused relay at once, long before its backoff would send again.
 func TestSessionConsumerUnreachableSessionResumesAtOnceWhenItRegisters(t *testing.T) {
-	// A backoff no test waits out: only the registration can make the relay send again here.
-	// The receipt wait is this row's own, as in the row above.
+	// A backoff no test waits out (stagedAhead): only the registration can make the relay send
+	// again here. The receipt wait is this row's own, as in the row above.
 	const receipt = 500 * time.Millisecond
-	rig := newRelayRigReceipt(t, time.Minute, time.Minute, receipt)
+	rig := newRelayRigReceipt(t, stagedAhead, stagedAhead, receipt)
 	const sessionID = "ses_unreachable_registers"
 	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)

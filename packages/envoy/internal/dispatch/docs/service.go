@@ -72,6 +72,10 @@ const (
 	peerWriteQueueBytes = 128 << 20
 )
 
+// DefaultSettle is the settle delay of a service whose Deps.Settle names none (zero or less): how
+// long a room's settlement waits after its last flushed edit (Deps.Settle).
+const DefaultSettle = 2 * time.Second
+
 // Deps configures the live document service. MaxLiveRooms and MaxDocConnections are its room and
 // connection caps (cmd/dispatch's DISPATCH_MAX_LIVE_ROOMS and DISPATCH_MAX_DOC_CONNECTIONS); zero
 // is the default, 1,000 each.
@@ -86,8 +90,8 @@ type Deps struct {
 	// arming replaces the timer armed before it, so a burst of edits settles once, Settle after the
 	// last. The unrecorded-mark sweep (sweepUnrecordedMarks) and settleAfter arm that timer with
 	// delays of their own: the time left to a mark's TTL, and the delay settleAfter's caller hands
-	// it (SettleNow's 0). Zero or less means 2 s. The timer runs on Clock, so with a fake Clock a
-	// settlement runs only once the test moves the fake past its delay.
+	// it (SettleNow's 0). Zero or less means DefaultSettle, 2 s. The timer runs on Clock, so with a
+	// fake Clock a settlement runs only once the test moves the fake past its delay.
 	Settle            time.Duration
 	MarkWait          time.Duration
 	UnrecordedMarkTTL time.Duration
@@ -922,7 +926,7 @@ var shutdownServiceHook func(*Service)
 func New(deps Deps) *Service {
 	settle := deps.Settle
 	if settle <= 0 {
-		settle = 2 * time.Second
+		settle = DefaultSettle
 	}
 	markWait := deps.MarkWait
 	if markWait <= 0 {

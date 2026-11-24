@@ -95,7 +95,7 @@ func TestEveryDocumentWriteRefusesAnUnjoinedContext(t *testing.T) {
 func TestSeedTextStoresTreeAndReturnsCanonicalMarkdown(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
-	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: stagedAhead})
 	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	tx, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -292,7 +292,7 @@ func TestTransactionalApplySchedulesSettlementAfterCommit(t *testing.T) {
 
 func TestTransactionalApplyRefreshesAnchoredComment(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "target")
 	const commentID = "00000000-0000-4000-8000-000000000003"
 	if _, err := joinedMarkQuote(service, artifactID, MarkSpec{
@@ -493,7 +493,7 @@ func TestSnapshotVersionDoesNotAttributeUnchangedDocument(t *testing.T) {
 // document differently, as settlement writes none.
 func TestSnapshotVersionWritesNoVersionForAnotherRenderersMarkdownOfUnchangedContent(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	ctx := context.Background()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	snapshot := func() VersionResult {
@@ -537,7 +537,7 @@ func TestSnapshotVersionWritesNoVersionForAnotherRenderersMarkdownOfUnchangedCon
 }
 func TestCommittedSnapshotAndNamedVersionsClearPendingAuthors(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	editor := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	snapshotter := model.Actor{Kind: "user", ID: "alice"}
@@ -584,7 +584,7 @@ func TestCommittedSnapshotAndNamedVersionsClearPendingAuthors(t *testing.T) {
 
 func TestVersionCaptureDoesNotClearAuthorsFromLaterEdits(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	first := model.Actor{Kind: "user", ID: "alice"}
 	second := model.Actor{Kind: "user", ID: "bob"}
@@ -638,7 +638,7 @@ func TestVersionCaptureDoesNotClearAuthorsFromLaterEdits(t *testing.T) {
 // credited on the named version alone.
 func TestNamedVersionKeepsTheCreditOfAnEditItsAuthorMakesBeforeItCommits(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	bob := model.Actor{Kind: "user", ID: "bob"}
@@ -687,7 +687,7 @@ func TestNamedVersionKeepsTheCreditOfAnEditItsAuthorMakesBeforeItCommits(t *test
 // (LEGION-503).
 func TestNamedVersionCreditsNoAuthorOfAnEditMadeAfterItsForkRead(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	bob := model.Actor{Kind: "user", ID: "bob"}
@@ -745,7 +745,7 @@ func TestNamedVersionCreditsNoAuthorOfAnEditMadeAfterItsForkRead(t *testing.T) {
 // followed the bound, and no later version credits them again.
 func TestSnapshotCreditsAnEditMadeBetweenItsCreditBoundAndReadOnce(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -803,7 +803,7 @@ func TestSnapshotCreditsAnEditMadeBetweenItsCreditBoundAndReadOnce(t *testing.T)
 func TestColdSnapshotCapturesFirstEditAfterWarm(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
-	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: stagedAhead})
 	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	seedServiceText(t, service, artifactID, "before")
 	if err := service.srv.Apply(context.Background(), artifactID, func(_ *crdt.Doc, _ func(func(*crdt.Transaction))) {}); err != nil && !errors.Is(err, ygws.ErrNoChanges) {
@@ -866,7 +866,7 @@ func TestReplaceTextAcceptsUnchangedEmptyDocument(t *testing.T) {
 // settlement owed.
 func TestAJoinedWriteWhoseTransactionChangesNothingAppendsNoUpdateAndKeepsItsSettlementMark(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "Context\n\n"+regionBlock)
 	settleCurrentGeneration(t, service, artifactID)
 	closer := model.Actor{Kind: "user", ID: "carol"}
@@ -1021,7 +1021,7 @@ func TestRefreshAnchorsClosesRowsBeforeUpdating(t *testing.T) {
 }
 func TestNamedVersionIndexesDocumentReferences(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	if _, err := joinedReplaceText(service, artifactID, "See dispatch://DOC-1/artifact/spec.", model.Actor{Kind: "user", ID: "alice"}); err != nil {
 		t.Fatalf("replace document text: %v", err)
@@ -1043,7 +1043,7 @@ func TestNamedVersionIndexesDocumentReferences(t *testing.T) {
 
 func TestNamedVersionIndexesServerURLDocumentReferences(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	if _, err := joinedReplaceText(service, artifactID, "See https://dispatch.example/issues/DOC-1/spec.", model.Actor{Kind: "user", ID: "alice"}); err != nil {
 		t.Fatalf("replace document text: %v", err)
@@ -1112,7 +1112,7 @@ func TestSettledVersionNamesChangedReferenceTargets(t *testing.T) {
 // hour here, as in every test of a version writer's own write.
 func TestVersionWritersReportChangedReferenceTargets(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "# First\n\nPending.")
 	actor := model.Actor{Kind: "user", ID: "alice"}
 	issueKey := "DOC-1"

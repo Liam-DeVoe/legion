@@ -25,7 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// blockIndexService is a document service whose settle delay is an hour, so no timer settles a
+// blockIndexService is a document service whose settle delay is a day (stagedAhead), so no timer settles a
 // document during a test, on a database holding project CORE and its issues CORE-1, where the
 // documents live unless a test puts one on CORE-2, and CORE-2, which they cite.
 func blockIndexService(t *testing.T) (*store.Store, *Service) {
@@ -43,12 +43,12 @@ func blockIndexService(t *testing.T) (*store.Store, *Service) {
 }
 
 // blockIndexProcess is one process's document service on database, serving the build of commit
-// (the empty string: an unstamped build's), whose settle delay is an hour, so no timer settles a
+// (the empty string: an unstamped build's), whose settle delay is a day (stagedAhead), so no timer settles a
 // document during a test. A test that builds a second one on the same database has a second
 // process of that build start beside the first, or after it.
 func blockIndexProcess(t *testing.T, database *store.Store, commit string) *Service {
 	t.Helper()
-	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, BuildCommit: commit})
+	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: stagedAhead, BuildCommit: commit})
 	// Taken before the cleanup below is registered, so the context is cancelled after it runs.
 	stop := testwait.Context(t)
 	t.Cleanup(func() { _ = docstest.Shutdown(t, stop, service) })

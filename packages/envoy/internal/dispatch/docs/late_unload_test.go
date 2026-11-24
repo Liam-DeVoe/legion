@@ -695,7 +695,7 @@ func TestARoomALateSettlementLoadedIsRetiredAsTheTimersRetryOfThatSettlementEnds
 // synchronous settlement (settleOwedNow) that runs before the retry's timer fires takes that retry
 // over: the room the late settlement loaded is retired as the synchronous settlement ends. The
 // departing browser's socket end retires nothing while the retry's timer is armed, and the
-// fixture's settle delay of an hour keeps it armed until the synchronous settlement takes it.
+// fixture's settle delay of a day (stagedAhead) keeps it armed until the synchronous settlement takes it.
 func TestARoomALateSettlementLoadedIsRetiredAsTheSynchronousSettlementThatTakesItsRetryOverEnds(t *testing.T) {
 	r := unloadAcrossAReload(t)
 	r.releaseFirstRoom()
@@ -845,7 +845,7 @@ func unloadAcrossAReload(t *testing.T) *reloadedRoom {
 		Events:    events.NewBroker(),
 		Identity:  headerIdentity(database),
 		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Settle:    stagedAhead,
 	})
 	service.srv.RoomIdleTimeout = stagedAhead
 	// Taken before the cleanup below is registered, so the context is cancelled after it runs.

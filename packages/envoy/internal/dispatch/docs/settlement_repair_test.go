@@ -29,7 +29,7 @@ import (
 // writes hold both (LEGION-479).
 func TestSettlementRepairKeepsAnEditMadeAfterItsRead(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext before.\n")
 	service.settleRoom(artifactID, 0)
 	answer := answerBlockAsk(t, service, artifactID)
@@ -57,7 +57,7 @@ func TestSettlementRepairKeepsAnEditMadeAfterItsRead(t *testing.T) {
 // than of the tree its stamp read (LEGION-479).
 func TestSettlementStampVersionKeepsAnEditMadeAfterItsRead(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	editLiveTree(t, service, artifactID, appendUnidentifiedBlocks(t, "added"))
@@ -86,7 +86,7 @@ func TestSettlementStampVersionKeepsAnEditMadeAfterItsRead(t *testing.T) {
 // The settlement the replacement's load arms versions the document with the repair (LEGION-479).
 func TestSettlementWhoseRoomWasReplacedLeavesTheDocumentToTheReplacement(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext before.\n")
 	service.settleRoom(artifactID, 0)
 	answer := answerBlockAsk(t, service, artifactID)
@@ -125,7 +125,7 @@ func TestSettlementWhoseRoomWasReplacedLeavesTheDocumentToTheReplacement(t *test
 // version that could credit them (LEGION-479).
 func TestSettlementRepairCreditsTheAuthorOfAnEditItsVersionHolds(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext before.\n")
 	service.settleRoom(artifactID, 0)
 	answerBlockAsk(t, service, artifactID)
@@ -159,7 +159,7 @@ func TestSettlementRepairCreditsTheAuthorOfAnEditItsVersionHolds(t *testing.T) {
 // author. The version the edit's own settlement writes holds it and credits them (LEGION-479).
 func TestSettlementRepairCreditsNoAuthorOfAnEditMadeWhileItsVersionRenders(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext before.\n")
 	service.settleRoom(artifactID, 0)
 	answer := answerBlockAsk(t, service, artifactID)
@@ -222,7 +222,7 @@ func latestVersionAuthors(t *testing.T, service *Service, artifactID string) []m
 // (LEGION-479).
 func TestSettlementStoresAnEditItsRepairedVersionHoldsBeforeTheRepair(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext before.\n")
 	service.settleRoom(artifactID, 0)
 	answer := answerBlockAsk(t, service, artifactID)
@@ -272,7 +272,7 @@ func requireLatestVersionMarkdown(t *testing.T, service *Service, artifactID, wa
 // finished with that update and the room's persistence worker consumes it (LEGION-479).
 func TestSettlementRepairOfAnAskAPeerDeletedWritesNothing(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext.\n")
 	service.settleRoom(artifactID, 0)
 	answerBlockAsk(t, service, artifactID)
@@ -318,7 +318,7 @@ func latestVersionNumber(t *testing.T, service *Service, artifactID string) int 
 // (LEGION-479).
 func TestSettlementReleasesTheSlotOfAStampTheDocumentNoLongerNeeds(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 
@@ -358,7 +358,7 @@ func TestBackfillStoresNothingForAStampTheDocumentNoLongerNeeds(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
-	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: stagedAhead})
 	t.Cleanup(func() {
 		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
@@ -415,7 +415,7 @@ func TestBackfillStoresNothingForAStampTheDocumentNoLongerNeeds(t *testing.T) {
 // released once each reaches it (LEGION-479).
 func TestSettlementThatStampsAndRepairsReleasesItsSlots(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n")
 	service.settleRoom(artifactID, 0)
 	for round := range 3 {
@@ -444,7 +444,7 @@ func TestSettlementThatStampsAndRepairsReleasesItsSlots(t *testing.T) {
 // retiring the room's worker under it (roomServer, LEGION-498).
 func TestARoomThatFailsWhileASettlementCommitsIntoItRecovers(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	pause := pauseRepairCommits(service)
 	generation := owedStamp(t, service, artifactID)
 	// Old rows give the eviction's compaction a fold to write, which waits for the lock.
@@ -506,7 +506,7 @@ func TestASecondWriterIntoARoomClosingUnderASettlementsRepairReturns(t *testing.
 	} {
 		t.Run(closer.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			pause := pauseRepairCommits(service)
 			generation := owedStamp(t, service, artifactID)
 			held := service.srv.GetDoc(artifactID)

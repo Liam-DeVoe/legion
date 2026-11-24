@@ -24,7 +24,7 @@ func TestTheStoredRowsOfARoomFoldToItsDocumentWhenAPeerUpdateParks(t *testing.T)
 	service, artifactID := newTestService(t)
 	// No settlement writes the room between the load of its stored rows and the read of the room
 	// that load is compared with.
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "Seed.\n")
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(server.Close)

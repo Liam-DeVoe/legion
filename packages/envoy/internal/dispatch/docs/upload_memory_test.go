@@ -155,7 +155,7 @@ func newLoadAgent(t *testing.T) (*loadAgent, time.Time) {
 	// Only to keep ygo's idle sweep away from the room while the agent loads it: the sweep reads
 	// the wall clock inside ygo (provider/websocket/idle_sweep.go), so no clock of the test's
 	// reaches it.
-	service.srv.RoomIdleTimeout = time.Hour
+	service.srv.RoomIdleTimeout = stagedAhead
 	r := rand.New(rand.NewPCG(715, 1))
 	spec, quotes, paragraphs := docstest.LoadSpec(r, "LOAD-1", 25_000)
 	seedServiceText(t, service, artifactID, spec)

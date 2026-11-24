@@ -46,7 +46,7 @@ func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *
 				testwait.Returns(t, "every connection of the dedicated table-race pool to come back, so the pool closes", pool.Close)
 			})
 			artifactID := createDocument(t, database, "")
-			service := New(Deps{Store: database, Settle: time.Hour})
+			service := New(Deps{Store: database, Settle: stagedAhead})
 			t.Cleanup(func() {
 				if err := docstest.Shutdown(t, testwait.Context(t), service); err != nil {
 					t.Errorf("shutdown service: %v", err)

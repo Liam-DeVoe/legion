@@ -416,7 +416,7 @@ func TestTheStoreJudgesAnUpdateByItsHeader(t *testing.T) {
 				Persistence: failingVersionedStore{VersionedStore: NewPgVersioned(database), loadUpdate: test.update},
 				Events:      events.NewBroker(),
 				Identity:    headerIdentity(database),
-				Settle:      time.Hour,
+				Settle:      stagedAhead,
 			})
 			t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 			// The failed room's eviction is held, so the failure it carries is still the room's
@@ -498,7 +498,7 @@ func TestALoadThatPanicsFailsItsRoomWhereThePanicIsMet(t *testing.T) {
 				Persistence: panicking,
 				Events:      events.NewBroker(),
 				Identity:    headerIdentity(database),
-				Settle:      time.Hour,
+				Settle:      stagedAhead,
 			})
 			t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 			// The failed room's eviction is held, so the failure the load leaves is still the
@@ -549,7 +549,7 @@ func TestALoadThatPanicsFailsItsRoomWhereThePanicIsMet(t *testing.T) {
 // than open the room without that update.
 func TestASocketsPreloadIsServedOnlyWhileTheHistoryHasNotMoved(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	var mu sync.Mutex
 	var recording bool
 	var decoded [][]byte
@@ -761,7 +761,7 @@ func TestShutdownReturnsAtItsDeadlineWithAnEditorConnectedAndAnAppendLocked(t *t
 	if err := service.waitForDurableAppends(waitCtx, artifactID); err != nil {
 		t.Fatalf("wait for the locked append to be stored: %v", err)
 	}
-	reloaded := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
+	reloaded := New(Deps{Store: database, Events: events.NewBroker(), Settle: stagedAhead})
 	defer docstest.Shutdown(t, context.Background(), reloaded)
 	if got, err := reloaded.Text(context.Background(), artifactID); err != nil || got != "after\n" {
 		t.Fatalf("text after the shutdown the locked append outlasted = %q (%v), want after", got, err)
@@ -776,7 +776,7 @@ func TestAppendFailureClosesDocumentConnectionAndReloadsRoom(t *testing.T) {
 		Persistence: failingVersionedStore{VersionedStore: NewPgVersioned(database), appendErr: errors.New("append failed")},
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
-		Settle:      time.Hour,
+		Settle:      stagedAhead,
 	})
 	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	seedServiceText(t, service, artifactID, "before")

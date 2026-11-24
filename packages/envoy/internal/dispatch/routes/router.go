@@ -41,7 +41,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
-	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapi"
@@ -180,7 +179,7 @@ type AppContextOptions struct {
 	GitHubRequestDeadline clock.Deadline
 	// ListenerCallDeadline is the end a test gives every listener call's window; the zero value
 	// keeps envoy.CallWindow. See api.DepsInput.ListenerCallDeadline.
-	ListenerCallDeadline envoy.CallDeadline
+	ListenerCallDeadline clock.Deadline
 	// HorizonStallAfter and HorizonWarnEvery replace how long a pending event-horizon
 	// observation waits before the process logs its stall warning and how often each of that
 	// Horizon's three warnings repeats - the stall warning, the failed-observation warning and

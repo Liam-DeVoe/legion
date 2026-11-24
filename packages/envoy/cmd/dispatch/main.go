@@ -151,7 +151,7 @@ type bootConfig struct {
 	// dispatchenvoy.CallWindow after the call began; its zero value, production's, keeps
 	// CallWindow. Only DISPATCH_TEST_LISTENER_CALL_DEADLINE, under the test hooks, sets it: to the
 	// moment the test that runs this process gives up, or no end under -timeout 0.
-	ListenerCallDeadline dispatchenvoy.CallDeadline
+	ListenerCallDeadline clock.Deadline
 	// HorizonStallAfter is how long a pending event-horizon observation waits before the process
 	// logs its stall warning, and HorizonWarnEvery how often every event-horizon warning repeats
 	// - that stall warning, the failed-observation warning and the failed-persist warning - both
@@ -1628,6 +1628,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_HOOK_DEADLINE", &boot.TestHookDeadline},
 		{"DISPATCH_TEST_INTAKE_HOLD_CALL_DEADLINE", &boot.IntakeHoldCallDeadline},
 		{"DISPATCH_TEST_INTAKE_MESSAGE_DEADLINE", &boot.IntakeMessageDeadline},
+		{"DISPATCH_TEST_LISTENER_CALL_DEADLINE", &boot.ListenerCallDeadline},
 	} {
 		if err := testHookDeadline(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
@@ -1638,9 +1639,6 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.IntakeHoldTTL != 0 && boot.IntakeHoldTTL <= delivery.IntakeHoldTTLFloor {
 		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_INTAKE_HOLD_TTL=%q (expected a Go duration longer than %v, the intake hold's renewal interval and margin)",
 			strings.TrimSpace(env.get("DISPATCH_TEST_INTAKE_HOLD_TTL")), delivery.IntakeHoldTTLFloor)
-	}
-	if err := testHookCallDeadline(env, "DISPATCH_TEST_LISTENER_CALL_DEADLINE", boot.TestHooksEnabled, &boot.ListenerCallDeadline); err != nil {
-		return bootConfig{}, err
 	}
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
 		return bootConfig{}, err
@@ -2677,29 +2675,9 @@ func testHookDuration(env settingValues, name string, testHooksEnabled bool, tar
 	return nil
 }
 
-// testHookCallDeadline reads the test-only listener call deadline name into target, leaving target
-// as it is when the setting is unset. It is refused without DISPATCH_TEST_HOOKS=1, and so is any
-// value that is not an RFC 3339 moment or none (dispatchenvoy.ParseCallDeadline).
-func testHookCallDeadline(env settingValues, name string, testHooksEnabled bool, target *dispatchenvoy.CallDeadline) error {
-	raw := strings.TrimSpace(env.get(name))
-	if raw == "" {
-		return nil
-	}
-	if !testHooksEnabled {
-		return fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
-	}
-	deadline, err := dispatchenvoy.ParseCallDeadline(raw)
-	if err != nil {
-		return fmt.Errorf("%s=%q (expected an RFC 3339 moment or none)", name, raw)
-	}
-	*target = deadline
-	return nil
-}
-
 // testHookDeadline reads the test-only deadline name into target, leaving target as it is when the
 // setting is unset. It is refused without DISPATCH_TEST_HOOKS=1, and so is any value that is not
-// an RFC 3339 moment or none: clock.ParseDeadline, the one parser of a test's deadline, which
-// dispatchenvoy.ParseCallDeadline reads DISPATCH_TEST_LISTENER_CALL_DEADLINE through too.
+// an RFC 3339 moment or none: clock.ParseDeadline, the one parser of a test's deadline.
 func testHookDeadline(env settingValues, name string, testHooksEnabled bool, target *clock.Deadline) error {
 	raw := strings.TrimSpace(env.get(name))
 	if raw == "" {

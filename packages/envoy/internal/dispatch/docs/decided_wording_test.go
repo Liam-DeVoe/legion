@@ -19,7 +19,7 @@ import (
 func TestARestorationRefusesAnAskAnsweredSinceItsPlan(t *testing.T) {
 	ctx := context.Background()
 	service, original := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, original, "Context\n\n"+shipBlock)
 	settleCurrentGeneration(t, service, original)
 	answer, _ := decidedShip("answered")

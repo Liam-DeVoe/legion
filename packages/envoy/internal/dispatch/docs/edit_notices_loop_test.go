@@ -98,12 +98,12 @@ func editNoticeDueIn(t *testing.T, database *store.Store) time.Duration {
 	return time.Duration(*micros) * time.Microsecond
 }
 
-// With no notice due - one held, naming nobody, and one an hour off - the sweep's boot pass arms
-// one timer, for the hour-off notice's due time, and nothing else: no sweep on a timer of five
-// seconds, the period of the timer this loop replaced, and no lease attempt between. The loop
-// waits on its clock alone, so the one deadline it holds on a fake the test does not move is
-// everything it will do; a loop that swept on a period would hold that period's timer too. Its
-// pass asks to run again at that due time.
+// With no notice due - one held, naming nobody, and one due a day ahead (stagedAhead) - the
+// sweep's boot pass arms one timer, for the later notice's due time, and nothing else: no sweep on
+// a timer of five seconds, the period of the timer this loop replaced, and no lease attempt
+// between. The loop waits on its clock alone, so the one deadline it holds on a fake the test does
+// not move is everything it will do; a loop that swept on a period would hold that period's timer
+// too. Its pass asks to run again at that due time.
 func TestEditNoticeSweepMakesNoStatementWithNothingDue(t *testing.T) {
 	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
@@ -113,25 +113,25 @@ func TestEditNoticeSweepMakesNoStatementWithNothingDue(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `
 		insert into document_edit_notices (artifact_id, from_version, to_version, editors, last_editor, due_at)
 		values ($1, 1, 2, '["alice@example.com"]', null, null),
-		       ($2, 1, 2, '["alice@example.com"]', '{"kind":"user","id":"alice@example.com"}', now() + interval '1 hour')
-	`, held, later); err != nil {
-		t.Fatalf("open a held notice and one due in an hour: %v", err)
+		       ($2, 1, 2, '["alice@example.com"]', '{"kind":"user","id":"alice@example.com"}', now() + make_interval(secs => $3))
+	`, held, later, stagedAhead.Seconds()); err != nil {
+		t.Fatalf("open a held notice and one due in a day: %v", err)
 	}
 	sweeper := newEditNoticeSweeper(t, database, fake)
 	leases := excerptLeases(t, database)
 	runEditNoticeLoop(t, func(ctx context.Context) { sweeper.RunEditNotices(ctx, leases, nil) })
 
 	// Only a pass that read the due time can have armed this, so the boot pass ran.
-	armed := awaitOneSweepTimer(t, fake, "the sweep's one timer, for the hour-off notice's due time", func(at time.Time) bool {
+	armed := awaitOneSweepTimer(t, fake, "the sweep's one timer, for the later notice's due time", func(at time.Time) bool {
 		return at.After(fake.Now().Add(editNoticeMinGap))
 	})
 	// The pass read the due time before this read, so what it armed is further off than this.
-	if until, left := armed.Sub(fake.Now()), editNoticeDueIn(t, database); until > time.Hour || until < left {
-		t.Fatalf("the sweep's boot pass armed its timer %v off; want the hour-off notice's due time, between %v and an hour", until, left)
+	if until, left := armed.Sub(fake.Now()), editNoticeDueIn(t, database); until > stagedAhead || until < left {
+		t.Fatalf("the sweep's boot pass armed its timer %v off; want the later notice's due time, between %v and %v", until, left, stagedAhead)
 	}
 	next := sweeper.editNoticePass(ctx)
-	if until, left := next.Sub(fake.Now()), editNoticeDueIn(t, database); until > time.Hour || until < left {
-		t.Fatalf("a pass with only an hour-off notice asked to run again in %v; want at that notice's due time, between %v and an hour", until, left)
+	if until, left := next.Sub(fake.Now()), editNoticeDueIn(t, database); until > stagedAhead || until < left {
+		t.Fatalf("a pass with only the later notice due asked to run again in %v; want at that notice's due time, between %v and %v", until, left, stagedAhead)
 	}
 	if edits := len(humanEdits(t, database, held)) + len(humanEdits(t, database, later)); edits != 0 {
 		t.Fatalf("the sweep sent %d notices; want none, nothing being due", edits)
@@ -145,7 +145,7 @@ func TestEditNoticeSweepMakesNoStatementWithNothingDue(t *testing.T) {
 // sweep that sends it.
 func TestEditNoticeSweepSendsAWokenNoticeAtItsDueTime(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 

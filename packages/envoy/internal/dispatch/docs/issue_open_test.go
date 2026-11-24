@@ -447,7 +447,7 @@ func newHeldAppendsService(t *testing.T, database *store.Store) (*Service, *http
 		Events:    events.NewBroker(),
 		Identity:  headerIdentity(database),
 		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Settle:    stagedAhead,
 		TestHooks: true,
 	})
 	t.Cleanup(func() {
@@ -1352,7 +1352,7 @@ func requireRecordLastActor(t *testing.T, service *Service, artifactID string, a
 // opens the document on an open issue, so her connect loads the room and is admitted writable, a
 // scope ygo fixes at her admission; her edit is then recorded as a landed browser edit records
 // it - a durable pending author and the record's latest edit source, with no settlement to take
-// it, this service's Settle being an hour (recordActor). The issue closes with nothing notified,
+// it, this service's Settle being a day (recordActor). The issue closes with nothing notified,
 // as a listener's redial leaves it (this test runs no room sync), and bob's connect is what
 // records that close on the record: his admission reads the issue closed and records that read
 // there, while his connect loads nothing, the room being resident, so the source the record
@@ -1456,7 +1456,7 @@ func TestTheAppendGatesCloseMovesTheRecordsLatestEditSourceToThePendingSettlemen
 //
 // Here alice types into a writable room on an open issue: her keystroke lands and leaves her on
 // the record as the latest edit source and on the row, with no settlement to take either, this
-// service's Settle being an hour (connectedCreditLocked). The issue then closes unheard, as a
+// service's Settle being a day (connectedCreditLocked). The issue then closes unheard, as a
 // listener's redial leaves it (this test runs no room sync), far enough back for the update's
 // age to decide it, and the gate refuses her next keystroke (ErrIssueClosed); the close that
 // refusal starts reads alice off the record and closes the room. It is held where it has closed
@@ -1603,7 +1603,7 @@ func TestACloseForARefusedAppendLeavesThePendingSettlementRowTheRoomThatLoadedIn
 //
 // Here alice types into a writable room on task A: her keystroke lands and leaves her on the
 // record as the latest edit source and on the row, with no settlement to take either, this
-// service's Settle being an hour (connectedCreditLocked). The issue then closes unheard, as a
+// service's Settle being a day (connectedCreditLocked). The issue then closes unheard, as a
 // listener's redial leaves it (neither task here runs a room sync), far enough back for the
 // update's age to decide it, and the gate refuses her next keystroke (ErrIssueClosed); the close
 // that refusal starts reads alice off the record and closes the room, and is held where it has
@@ -1703,7 +1703,7 @@ func TestACloseForARefusedAppendWritesNoPendingSettlementRowASettlementTookWhile
 // Here the document is settled before anything else, so it owes nothing and holds no row; alice's
 // edit is then recorded on task A's record as a landed browser edit records it - a durable
 // pending author and the record's latest edit source, with no settlement to take it, this
-// service's Settle being an hour (recordActor) - and the row that edit writes is deleted again,
+// service's Settle being a day (recordActor) - and the row that edit writes is deleted again,
 // as the settlement before it left the document (clearPendingSettlementRow), which leaves the
 // close a source to write and the document still without a row. The issue closes unheard, as a
 // listener's redial leaves it (neither task here runs a room sync), far enough back for the
@@ -1824,7 +1824,7 @@ func TestACloseForARefusedAppendWritesNoPendingSettlementRowWhereItsSnapshotRead
 //
 // While it is held carol's edit is credited on the record as the room credits an edit it has
 // observed whose append has not landed - the record's latest edit source and its credit
-// sequence, with no settlement to take that source, this service's Settle being an hour
+// sequence, with no settlement to take that source, this service's Settle being a day
 // (recordRoomEditSource): the record names carol and stands at a credit sequence past the one
 // alice was read at, and the row, which no append has written since the close read it, still
 // names bob.
@@ -1984,7 +1984,7 @@ func clearPendingSettlementRow(t *testing.T, service *Service, artifactID string
 // Here the seed's append leaves a row naming user:seed, the room it loaded is evicted, and
 // alice's edit is recorded on task A's record as a landed browser edit records it - a durable
 // pending author and the record's latest edit source, with no settlement to take it, this
-// service's Settle being an hour (recordActor) - so the close has a source to write and a row to
+// service's Settle being a day (recordActor) - so the close has a source to write and a row to
 // read. The issue then closes, notified to task A and handed to it on a goroutine of its own,
 // and that close is parked between its two readings (closeIssueOnItsOwnGoroutine,
 // parkCloseBetweenItsSnapshotReads).
@@ -2069,7 +2069,7 @@ func TestAnIssuesCloseWritesNoPendingSettlementRowASettlementTookInsideItsSnapsh
 //
 // Here alice types into a writable room on task A, alone in it, so her keystroke credits her and
 // nobody else and its append writes her to the row (connectedCreditLocked), with no settlement
-// to take either, this service's Settle being an hour. The issue then closes unheard, as a
+// to take either, this service's Settle being a day. The issue then closes unheard, as a
 // listener's redial leaves it (neither task here runs a room sync), far enough back for the
 // update's age to decide it, and the gate refuses her next keystroke (ErrIssueClosed): the room
 // credits her for it too, and the append stores nothing (gateAppend). The close that refusal
@@ -2395,8 +2395,8 @@ func awaitNotifiedClose(t *testing.T, handled <-chan struct{}) {
 // rather than at the end of service's settle window, and waits for the pending-settlement row the
 // settlement takes to be gone: a settlement deletes that row whether or not it writes a version
 // (SettleNow, clearSettlementPending). The window is 20 ms while it runs, as it is in every test
-// that drives a settlement to completion on a service whose window is an hour, so a try that
-// stops short is retried at once rather than an hour from now (retrySettleLocked); the service's
+// that drives a settlement to completion on a service whose window is a day, so a try that
+// stops short is retried at once rather than a day from now (retrySettleLocked); the service's
 // own window is back on return, so an edit a test makes after it leaves its settlement unrun.
 func settleTheDocumentNow(t *testing.T, service *Service, artifactID string) {
 	t.Helper()

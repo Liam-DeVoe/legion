@@ -392,7 +392,7 @@ func TestTheConnectionAndRoomCapsCountWithoutScanning(t *testing.T) {
 	// sweep reads the wall clock inside ygo (provider/websocket/idle_sweep.go), so no clock of the
 	// test's reaches it; it reads the timeout when the first room starts it, so it is set before
 	// any room.
-	service.srv.RoomIdleTimeout = time.Hour
+	service.srv.RoomIdleTimeout = stagedAhead
 	ids := createDocuments(t, database, maxLiveRooms+2)
 	resident, spare := ids[:maxLiveRooms], ids[maxLiveRooms:]
 	warmRooms(t, service, resident)
@@ -506,7 +506,7 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 			Events:            events.NewBroker(),
 			Identity:          headerIdentity(database),
 			ServerURL:         "https://dispatch.example",
-			Settle:            time.Hour,
+			Settle:            stagedAhead,
 			MaxLiveRooms:      rooms,
 			MaxDocConnections: connections,
 		})
@@ -517,7 +517,7 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 		})
 		// Only to keep ygo's idle sweep away from the burst's rooms: the sweep reads the wall clock
 		// inside ygo (provider/websocket/idle_sweep.go), so no clock of the test's reaches it.
-		service.srv.RoomIdleTimeout = time.Hour
+		service.srv.RoomIdleTimeout = stagedAhead
 		server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 		t.Cleanup(server.Close)
 		return service, server.URL
@@ -657,7 +657,7 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
 		ServerURL:   "https://dispatch.example",
-		Settle:      time.Hour,
+		Settle:      stagedAhead,
 	})
 	t.Cleanup(func() {
 		letLoad()

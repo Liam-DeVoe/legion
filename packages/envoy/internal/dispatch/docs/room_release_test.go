@@ -126,7 +126,7 @@ func TestAStateWithNoTimerIsReleasedWhileAnotherRoomArmsOne(t *testing.T) {
 // room's next load.
 func TestClosingAnIssueReleasesItsUnsettledDocuments(t *testing.T) {
 	service, database := newRoomReleaseService(t)
-	service.settle = time.Hour // the issue closes before any settlement runs
+	service.settle = stagedAhead // the issue closes before any settlement runs
 	ctx := context.Background()
 	ids := createDocuments(t, database, 3)
 	for _, id := range ids {

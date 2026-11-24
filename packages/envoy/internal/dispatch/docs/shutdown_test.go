@@ -220,7 +220,7 @@ func TestShutdownJoinsATimersSettlementUnderWay(t *testing.T) {
 		t.Fatalf("wait for the edit to be stored: %v", err)
 	}
 
-	// The edit armed the room's settlement on its hour-long timer; arming it again with no delay
+	// The edit armed the room's settlement on its day-long timer; arming it again with no delay
 	// fires it now, so the settlement runs as the timer's own.
 	hold.armed.Store(true)
 	state := service.lockState(artifactID)
@@ -529,7 +529,7 @@ func TestShutdownLeavesASettlementThatMustWriteIntoItsRoomToResume(t *testing.T)
 	}
 }
 
-// newShutdownTestService is a document service whose settlements wait an hour, so a test's
+// newShutdownTestService is a document service whose settlements wait a day (stagedAhead), so a test's
 // Shutdown is the one that runs them, and whose browsers name their person in X-Dispatch-User.
 // appends, when set, stands in for the store's own document persistence.
 func newShutdownTestService(t *testing.T, database *store.Store, appends VersionedStore) *Service {
@@ -544,7 +544,7 @@ func newShutdownTestServiceOn(t *testing.T, database *store.Store, appends Versi
 	service := New(Deps{
 		Store: database, Persistence: appends, Events: events.NewBroker(),
 		Identity: identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
-		Settle:   time.Hour,
+		Settle:   stagedAhead,
 		Clock:    serviceClock,
 	})
 	// A test that already called Shutdown runs this one a second time; it logs its own

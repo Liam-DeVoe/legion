@@ -339,7 +339,7 @@ type DepsInput struct {
 	// envoy.CallWindow's place (envoy.WithCallDeadline); the zero value, a deployment's, keeps
 	// CallWindow. Only a test process sets another (cmd/dispatch:
 	// DISPATCH_TEST_LISTENER_CALL_DEADLINE, under the test hooks).
-	ListenerCallDeadline envoy.CallDeadline
+	ListenerCallDeadline clock.Deadline
 	// HorizonStallAfter and HorizonWarnEvery replace the five-second stall threshold and the
 	// thirty-second repeat of every event-horizon warning; see Deps.HorizonStallAfter.
 	HorizonStallAfter time.Duration

@@ -675,7 +675,7 @@ type heldReturn struct {
 func TestShutdownsCompactionLeavesTheYoungRowsAsWritten(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
-	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: stagedAhead})
 	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	seedServiceText(t, service, artifactID, "First.\n")
 	editLiveTree(t, service, artifactID, appendBlocks(t, "Second.\n"))

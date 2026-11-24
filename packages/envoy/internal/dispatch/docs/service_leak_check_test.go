@@ -114,7 +114,7 @@ func TestLeakCheckChild(t *testing.T) {
 		Events:    events.NewBroker(),
 		Identity:  headerIdentity(database),
 		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Settle:    stagedAhead,
 	})
 	switch child {
 	case "shut-down-held":

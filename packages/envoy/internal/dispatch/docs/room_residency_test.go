@@ -52,7 +52,7 @@ import (
 // (watchRoomLoads), and the document the store holds at the end is the last one written.
 func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	loads := watchRoomLoads(service)
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
@@ -251,7 +251,7 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 // leaves and a read loads the room again (roomIdleTimeout).
 func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
@@ -383,7 +383,7 @@ func TestARoomOnlyTheAPITouchesLeavesWithinTheIdleTimeout(t *testing.T) {
 				t.Errorf("shutdown document service: %v", err)
 			}
 		})
-		service.settle = time.Hour
+		service.settle = stagedAhead
 		timeout := service.srv.RoomIdleTimeout
 		if timeout != roomIdleTimeout {
 			t.Fatalf("the service hands ygo an idle timeout of %v, want its own roomIdleTimeout, %v", timeout, roomIdleTimeout)
@@ -508,7 +508,7 @@ func (w *roomLoads) count() int {
 // Under -race the walk of the live tree is a data race with the other writers.
 func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
@@ -632,7 +632,7 @@ func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
 // for every room the server evicts, and one that outlived the room would keep it for good.
 func TestAnEvictedRoomsReplicaGoesWithIt(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
 	// A write the room's update observer sees, which makes its replica. The room is resident first,
@@ -700,7 +700,7 @@ func listedReplica(t *testing.T, service *Service, artifactID string) (weak.Poin
 // the cleanup fails to take is one more for every room the process ever loads.
 func TestAnEvictedRoomsLoadRecordGoesWithIt(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
 	// The warm loads the room, which is what records the load: keepInstance runs on the load's
@@ -737,7 +737,7 @@ func TestAnEvictedRoomsLoadRecordGoesWithIt(t *testing.T) {
 // wrote.
 func TestEditingALiveReadsTreeChangesNoLaterRead(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, `:::ask{#ask-1}
 Which transport should we expose?
 
@@ -807,7 +807,7 @@ func newRetiringRoomService(t *testing.T) (*Service, *store.Store) {
 		Events:    events.NewBroker(),
 		Identity:  headerIdentity(database),
 		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Settle:    stagedAhead,
 	})
 	t.Cleanup(func() {
 		if err := service.Shutdown(testwait.Context(t)); err != nil {

@@ -86,7 +86,7 @@ func TestATailCompactionFoldsOnlyTheRowsOlderThanTheTail(t *testing.T) {
 // as it did.
 func TestARoomCloseCompactionFoldsOnlyTheRowsOlderThanTheTail(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	foldPoint := writeRoomRows(t, service, artifactID)
 	ageUpdatesThrough(t, service.store, artifactID, foldPoint, time.Hour)
 	before, cursor := storedRows(t, service.store, artifactID), settlementCursor(t, service.store, artifactID)
@@ -108,7 +108,7 @@ func TestARoomCloseCompactionFoldsOnlyTheRowsOlderThanTheTail(t *testing.T) {
 // for a later compaction, which folds them once the lock is free.
 func TestARoomCloseCompactionLeavesABusyDocumentForALaterCompaction(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	foldPoint := writeRoomRows(t, service, artifactID)
 	ageUpdatesThrough(t, service.store, artifactID, foldPoint, time.Hour)
 	before, cursor := storedRows(t, service.store, artifactID), settlementCursor(t, service.store, artifactID)
@@ -131,7 +131,7 @@ func TestARoomCloseCompactionLeavesABusyDocumentForALaterCompaction(t *testing.T
 // recovered room reads the document as it was.
 func TestAFailedRoomsEvictionCompactionWaitsForTheLockAndFoldsOnlyOldRows(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	foldPoint := writeRoomRows(t, service, artifactID)
 	ageUpdatesThrough(t, service.store, artifactID, foldPoint, time.Hour)
 	before, cursor := storedRows(t, service.store, artifactID), settlementCursor(t, service.store, artifactID)
@@ -325,7 +325,7 @@ func TestACompactionDropsItsFoldWhenAnOlderBuildCompactsInsideIt(t *testing.T) {
 // row does not claim content past the cursor, and a later settlement versions nothing more.
 func TestACompactionReadsTheCursorASettlementMovedInsideIt(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n")
 	if _, err := joinedReplaceText(service, artifactID, "Second.\n", model.Actor{Kind: "user", ID: "alice"}); err != nil {
 		t.Fatalf("write a content update: %v", err)
@@ -421,7 +421,7 @@ func TestACompactionSkipsAnUnfoldableLogUntilItChanges(t *testing.T) {
 // above them, stays as written.
 func TestABrowserAppendLandsWhileACompactionIsInsideItsFold(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n")
 	editLiveTree(t, service, artifactID, appendBlocks(t, "Second.\n"))
 	waitForLandedAppends(t, service, artifactID)
@@ -455,7 +455,7 @@ func TestABrowserAppendLandsWhileACompactionIsInsideItsFold(t *testing.T) {
 // held inside its fold, and the compaction then folds the rows it read beneath the write's row.
 func TestAJoinedWriteCommitsWhileACompactionIsInsideItsFold(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n")
 	editLiveTree(t, service, artifactID, appendBlocks(t, "Second.\n"))
 	waitForLandedAppends(t, service, artifactID)

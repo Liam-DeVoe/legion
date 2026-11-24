@@ -26,7 +26,7 @@ import (
 // settlement writes holds the edit and credits its author (LEGION-503).
 func TestSettlementCreditsNoAuthorOfAnEditMadeAfterItsRead(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -71,7 +71,7 @@ func TestSettlementCreditsNoAuthorOfAnEditMadeAfterItsRead(t *testing.T) {
 // followed the bound, and no later version credits them again.
 func TestSettlementCreditsAnEditMadeBetweenItsCreditBoundAndReadOnce(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -121,7 +121,7 @@ func TestSettlementCreditsAnEditMadeBetweenItsCreditBoundAndReadOnce(t *testing.
 // the entry it took, not that newer one (LEGION-503).
 func TestSettlementKeepsTheCreditOfAnEditItsAuthorMakesBeforeItCommits(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	bob := model.Actor{Kind: "user", ID: "bob"}
@@ -167,7 +167,7 @@ func TestSettlementKeepsTheCreditOfAnEditItsAuthorMakesBeforeItCommits(t *testin
 // writes none, and no later version credits the author again.
 func TestAnEditReadBeforeItsObserverRunsIsCreditedOnTheVersionThatStoresIt(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -277,7 +277,7 @@ func TestANewAskIsAttributedToTheUpdateThatIntroducedIt(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 			settleCurrentGeneration(t, service, artifactID)
 			test.arrange(t, service, artifactID)
@@ -314,7 +314,7 @@ func TestANewAskIsAttributedToTheUpdateThatIntroducedIt(t *testing.T) {
 // Deep's probe E, Acceptance's present-before-the-take test).
 func TestAnAskInTheRoomBeforeASettlementsTakeKeepsItsAuthor(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -402,7 +402,7 @@ func TestAServiceWriteAndABrowserEditLandTogetherEachAskGoesToItsOwnAuthor(t *te
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	session := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	service.addConnection(artifactID, 1, bob)
@@ -442,7 +442,7 @@ func TestAPublishedAgentWriteAndABrowserEditLandTogetherEachAskGoesToItsOwnAutho
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	session := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	service.addConnection(artifactID, 1, bob)
@@ -526,7 +526,7 @@ func TestApplyOpsOwnBlockIDRepairCarriesForwardTheRenamedBlocksAuthor(t *testing
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	session := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	service.addConnection(artifactID, 1, bob)
@@ -554,7 +554,7 @@ func TestApplyOpsOwnBlockIDRepairCarriesForwardTheRenamedBlocksAuthor(t *testing
 func TestAConditionalEditIntroducesAnAskCreditedToItsAuthor(t *testing.T) {
 	session := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 
@@ -591,7 +591,7 @@ func TestADiscardedJoinedWriteDoesNotOutrankALaterCommitOfTheSameAskID(t *testin
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 
@@ -636,7 +636,7 @@ func TestADiscardedJoinedWriteDoesNotOutrankALaterCommitOfTheSameAskID(t *testin
 func TestRecordStampedAskBlocksKeepsACopiedRenamesPreviousIDLive(t *testing.T) {
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	service.addConnection(artifactID, 1, bob)
@@ -684,7 +684,7 @@ func TestARefusedGrowthDoesNotLeaveACarriedAskAuthorPending(t *testing.T) {
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	session := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	service.addConnection(artifactID, 1, bob)
@@ -713,7 +713,7 @@ func TestARefusedGrowthDoesNotLeaveACarriedAskAuthorPending(t *testing.T) {
 // owed, and it marked no in-flight credit consumed. The next settlement lists her.
 func TestASettlementThatAbandonsAfterWritingItsVersionReleasesWhatItRemembered(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice"}

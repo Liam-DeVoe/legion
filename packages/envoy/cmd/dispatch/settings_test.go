@@ -41,7 +41,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
-	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
@@ -1947,9 +1946,9 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.ListenerCallDeadline.String() != "" {
 				t.Errorf("DISPATCH_TEST_LISTENER_CALL_DEADLINE unset: ListenerCallDeadline = %q, want the zero value (each call's own CallWindow)", boot.ListenerCallDeadline)
 			}
-			for _, deadline := range []dispatchenvoy.CallDeadline{
-				dispatchenvoy.CallsEndAt(time.Date(2026, time.November, 24, 12, 0, 0, 123456789, time.UTC), true),
-				dispatchenvoy.CallsEndAt(time.Time{}, false),
+			for _, deadline := range []clock.Deadline{
+				clock.DeadlineAt(time.Date(2026, time.November, 24, 12, 0, 0, 123456789, time.UTC), true),
+				clock.DeadlineAt(time.Time{}, false),
 			} {
 				boot := resolveWith(t, map[string]string{
 					"DISPATCH_TEST_HOOKS":                  "1",
@@ -2324,9 +2323,19 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if server := httpServerFor(resolveWith(t, map[string]string{}), http.NotFoundHandler(), time.Now); server.ReadHeaderTimeout != readHeaderTimeout {
 				t.Errorf("DISPATCH_TEST_READ_HEADER_DEADLINE unset: ReadHeaderTimeout = %v, want readHeaderTimeout (%v)", server.ReadHeaderTimeout, readHeaderTimeout)
 			}
-			later := clock.DeadlineAt(time.Now().Add(time.Hour), true)
-			if server := httpServerFor(resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_READ_HEADER_DEADLINE": later.String()}), http.NotFoundHandler(), time.Now); server.ReadHeaderTimeout <= 59*time.Minute || server.ReadHeaderTimeout > time.Hour {
-				t.Errorf("DISPATCH_TEST_READ_HEADER_DEADLINE an hour away: ReadHeaderTimeout = %v, want the span to it", server.ReadHeaderTimeout)
+			// httpServerFor reads its span off the wall clock at one moment inside the call, so the
+			// span lies between the spans to the deadline read just before and just after it, however
+			// long the machine takes over the call. The moment carries no monotonic reading
+			// (Round(0)), as the setting's parsed moment carries none, so all three spans are the
+			// wall clock's.
+			later := time.Now().Add(time.Hour).Round(0)
+			boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_READ_HEADER_DEADLINE": clock.DeadlineAt(later, true).String()})
+			before := time.Until(later)
+			server := httpServerFor(boot, http.NotFoundHandler(), time.Now)
+			after := time.Until(later)
+			if server.ReadHeaderTimeout < after || server.ReadHeaderTimeout > before {
+				t.Errorf("DISPATCH_TEST_READ_HEADER_DEADLINE an hour away: ReadHeaderTimeout = %v, want the span to it, between %v (read after the call) and %v (read before it)",
+					server.ReadHeaderTimeout, after, before)
 			}
 			if server := httpServerFor(resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_READ_HEADER_DEADLINE": "none"}), http.NotFoundHandler(), time.Now); server.ReadHeaderTimeout >= 0 {
 				t.Errorf("DISPATCH_TEST_READ_HEADER_DEADLINE=none: ReadHeaderTimeout = %v, want a negative one, net/http's none", server.ReadHeaderTimeout)

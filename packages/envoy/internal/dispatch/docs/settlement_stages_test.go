@@ -92,7 +92,7 @@ func seedAnsweredAskBlock(t *testing.T, service *Service, artifactID string) str
 // instance stands at, which is the generation every later stage compares the room against.
 func TestSettlementTakeHoldsTheRoomsLiveInstance(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "Context.\n")
 	settleCurrentGeneration(t, service, artifactID)
 
@@ -178,7 +178,7 @@ func TestSettlementTakeOfARoomNoRoomHolds(t *testing.T) {
 // that version would credit.
 func TestSettlementReadLockedReadsTheTreeTheSettlementReconciles(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "Context.\n")
 	settleCurrentGeneration(t, service, artifactID)
 
@@ -208,7 +208,7 @@ func TestSettlementReadLockedReadsTheTreeTheSettlementReconciles(t *testing.T) {
 // from the room's persistence until the settlement stores it.
 func TestSettlementApplyStampStampsTheBlockIdsTheDocumentLacks(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	owedStamp(t, service, artifactID)
 
 	settle := stageSettlement(t, service, artifactID)
@@ -239,7 +239,7 @@ func TestSettlementApplyStampStampsTheBlockIdsTheDocumentLacks(t *testing.T) {
 // version.
 func TestSettlementCommitStampCommitsTheStampAlone(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	owedStamp(t, service, artifactID)
 	versions := latestVersionNumber(t, service, artifactID)
 
@@ -279,7 +279,7 @@ func TestSettlementCommitStampCommitsTheStampAlone(t *testing.T) {
 // document owes each block.
 func TestSettlementPlanRepairsReconcilesTheAnsweredAskBlock(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedAnsweredAskBlock(t, service, artifactID)
 
 	settle := stageSettlement(t, service, artifactID)
@@ -307,7 +307,7 @@ func TestSettlementPlanRepairsReconcilesTheAnsweredAskBlock(t *testing.T) {
 // read once every update through it is stored.
 func TestSettlementCommitRepairsWritesTheRepairIntoTheRoom(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedAnsweredAskBlock(t, service, artifactID)
 
 	settle := stageSettlement(t, service, artifactID)
@@ -342,7 +342,7 @@ func TestSettlementCommitRepairsWritesTheRepairIntoTheRoom(t *testing.T) {
 // nothing into the room and versions the document unrepaired.
 func TestSettlementStagesSettleTheDocumentInOrder(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	want := seedAnsweredAskBlock(t, service, artifactID)
 
 	settle := stageSettlement(t, service, artifactID)

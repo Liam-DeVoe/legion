@@ -20,7 +20,7 @@ import (
 // stand without the write. It must settle again after the publish instead.
 func TestSettlementBetweenCommitAndPublishWaitsForTheWrite(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	paused := make(chan struct{})
 	resume := make(chan struct{})
@@ -162,7 +162,7 @@ func TestARolledBackWriteIsNoAuthorOfTheNextVersion(t *testing.T) {
 // directly does, and a version settled after the browser left names only its own editor.
 func TestAJoinedWritesVersionNamesItsWriterNotAConnectedBrowser(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	browser := model.Actor{Kind: "user", ID: "alice"}
 	connectionID := service.nextConnection.Add(1)

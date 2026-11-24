@@ -315,7 +315,7 @@ func tracedRoomService(t *testing.T) (*Service, string, *roundTripRecorder) {
 		Events:    events.NewBroker(),
 		Identity:  headerIdentity(traced),
 		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Settle:    stagedAhead,
 	})
 	t.Cleanup(func() {
 		if err := docstest.Shutdown(t, context.Background(), service); err != nil {

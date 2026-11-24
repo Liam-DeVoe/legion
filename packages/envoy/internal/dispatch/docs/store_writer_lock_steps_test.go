@@ -856,7 +856,7 @@ func (r *docsWriterRig) requireNothingBetweenTheStepsAndTheFence(t *testing.T, c
 
 // --- the rig ------------------------------------------------------------------------------
 
-// docsWriterRig is the document service the paths run in, whose settle delay is an hour so no
+// docsWriterRig is the document service the paths run in, whose settle delay is a day so no
 // timer settles a document under a hold (blockIndexService), with three documents of issue CORE-1
 // written through the request path: versioned, whose settlements write versions; asked, whose
 // settlements open asks; and askedLive, whose settlements open asks and write versions, with the

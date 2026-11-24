@@ -46,7 +46,7 @@ func dropBlock(t *testing.T, prefix string) func(*pmdoc.Node) *pmdoc.Node {
 // struct and advances no client's clock, the case a clock-only signal would miss.
 func TestADeletionTheRoomTakesAfterAWritesReadIsVersionedAfterTheWrite(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before\n\ndoomed paragraph")
 
 	ctx := context.Background()
@@ -90,7 +90,7 @@ func TestADeletionTheRoomTakesAfterAWritesReadIsVersionedAfterTheWrite(t *testin
 // the quote gone, must orphan the ask.
 func TestAnAnchorWhoseQuoteTheRoomDeletedIsOrphanedByTheVersionWrite(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before\n\nthe anchored quote paragraph")
 
 	askID := "00000000-0000-4000-8000-0000000000b1"
@@ -149,7 +149,7 @@ func TestAnAnchorWhoseQuoteTheRoomDeletedIsOrphanedByTheVersionWrite(t *testing.
 // render back under the issue row.
 func TestARoomChangeAfterAWritesReadCostsItsVersionNoRender(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 
 	ctx := context.Background()
@@ -205,7 +205,7 @@ func TestARoomChangeAfterAWritesReadCostsItsVersionNoRender(t *testing.T) {
 // rather than waited for.
 func TestACaptureNeverReusesARenderingTheForkHasMovedPast(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	body := make([]string, 0, 1200)
 	for index := range 1200 {
 		body = append(body, fmt.Sprintf("Paragraph %d of the specification body with enough words to be realistic prose.", index+1))

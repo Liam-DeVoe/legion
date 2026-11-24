@@ -2297,14 +2297,14 @@ func aProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T, lane benchti
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	writeKeywordFillComments(t, database, 200)
-	// The heartbeat of the peer is an hour ahead of the database's clock, so the peer stays live
-	// (processes.Live) for the whole test with no heartbeat of its own. The peer has the owner
-	// lock protocol of this build, as a peer of this build registers it (processes.admit), so the
-	// process does not find an earlier build in the fleet.
+	// The heartbeat of the peer is stagedPastTheRun, a day, ahead of the database's clock, so the
+	// peer stays live (processes.Live) for the whole test with no heartbeat of its own. The peer
+	// has the owner lock protocol of this build, as a peer of this build registers it
+	// (processes.admit), so the process does not find an earlier build in the fleet.
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into server_processes (instance, commit, signing_keys, heartbeat_at, owner_lock_protocol)
-		values (gen_random_uuid(), 'peer0commit', '{a-fingerprint-this-process-does-not-hold}', now() + interval '1 hour', $1)`,
-		store.OwnerLockProtocol); err != nil {
+		values (gen_random_uuid(), 'peer0commit', '{a-fingerprint-this-process-does-not-hold}', now() + make_interval(secs => $2), $1)`,
+		store.OwnerLockProtocol, stagedPastTheRun.Seconds()); err != nil {
 		t.Fatalf("add a live peer that does not share the keys of the process: %v", err)
 	}
 

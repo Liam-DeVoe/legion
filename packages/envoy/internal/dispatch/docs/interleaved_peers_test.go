@@ -32,7 +32,7 @@ import (
 // update as pending, so nothing holds the room's settlement or its record (unusedLocked).
 func TestARoomWhosePeersUpdatesReachItsPersistenceOutOfOrderSettlesBoth(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	var attempts atomic.Int64
 	service.afterSettleWarm = func(string) { attempts.Add(1) }
 	var first atomic.Uint64
@@ -158,7 +158,7 @@ func TestARoomsParkedOnlyCommitIsStoredAndReplaysFromItsLog(t *testing.T) {
 func parkedOnlyCommitSurvivesReload(t *testing.T, truncated bool) {
 	t.Helper()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
@@ -291,7 +291,7 @@ func parkedOnlyCommitSurvivesReload(t *testing.T, truncated bool) {
 // keeps both clients' edits.
 func TestAPeerUpdateThatChangesTheRoomAndParksKeepsBothAcrossARestart(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {

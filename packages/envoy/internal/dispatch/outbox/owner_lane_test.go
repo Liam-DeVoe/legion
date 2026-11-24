@@ -51,11 +51,12 @@ func TestAnOwnerOfTheStalledHoldersBatchIsReleasedBeforeTheBatchEnds(t *testing.
 	const (
 		stalledRole, stalledHolder = "stalled-reviewer", "ses_never_acknowledged"
 		liveRole, liveHolder       = "live-reviewer", "ses_acknowledged"
-		// What the outbox waits for the stalled forward's acknowledgement (Deps.forwardAckWait).
-		// It outlasts the whole test, so the wait is still running when the verdict below is read
-		// and a batch that held its owners until it ended could not end during this test at all,
-		// however slow the machine is.
-		stalledForwardWait = 10 * time.Minute
+		// What the outbox waits for the stalled forward's acknowledgement (Deps.forwardAckWait):
+		// stagedAhead, a wait of the product's on the real clock that outlasts the whole test, so
+		// the wait is still running when the verdict below is read and a batch that held its
+		// owners until it ended could not end during this test at all, however slow the machine
+		// is.
+		stalledForwardWait = stagedAhead
 	)
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	rig := newRoleRig(t)

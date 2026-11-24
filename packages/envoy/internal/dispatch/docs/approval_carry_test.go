@@ -653,7 +653,7 @@ const regionSpec = "Context\n\n:::ask{#region urgency=\"low\" multiple=\"false\"
 // write after settle, seeds the document's live text with the same markdown, and returns the
 // store, the service and the document's id once settlement has indexed the block as an ask of the
 // document - the row the carry reads. That settlement runs at once (SettleNow), whatever settle
-// is, so a test that holds every later settlement off its steps passes an hour.
+// is, so a test that holds every later settlement off its steps passes stagedAhead.
 func seededRegionDocument(t *testing.T, settle time.Duration) (*store.Store, *Service, string) {
 	t.Helper()
 	database := storetest.Open(t)
