@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The comparison, after the release, of the step records of one or more issues with their agents'
-# transcripts and the daemon's log lines of the reads each record used. It runs the check c-real
-# word for word, and a second comparison beside it, live-at-both-reads, which is not c-real.
+# transcripts. It also reads the daemon's log lines of the reads each record used. It runs the
+# check c-real word for word. Beside it, it runs live-at-both-reads, which is not c-real.
 #
 #   scripts/e2e/step-models-check.sh --issue <KEY> [--issue <KEY> …] --daemon-log <file> \
 #     --agents <file> [--lower-one]
@@ -10,28 +10,28 @@
 # what each run printed. lib/step-models-check.ts then judges the records. --daemon-log names the
 # daemon's JSON log, whose lines "workflow: a step used a read of its agent's calls" it reads.
 # --agents names a JSON file that gives each claim its harness (omp or claude), its transcript
-# and setModel, the model the deployment's settings give the claim's role. Read that model from
-# those settings, never from a record, and keep a copy of the settings as evidence.
+# and its setModel. setModel is the model that the deployment's settings give the claim's role.
+# Read it from those settings, never from a record, and keep a copy of the settings as evidence.
 #
-# c-real takes, for each harness of the agents file, the first step that its agent ended and whose
-# two reads both lie more than 2 s from any response of the transcript. That step's set model must
-# be the settings', and its counts must be known, at least 1, and equal to the transcript's
+# For each harness of the agents file, c-real takes the first step that its agent ended. Both
+# reads of that step must lie more than 2 s from any response of the transcript. The step's set
+# model must be the settings'. Its counts must be known, at least 1, and equal to the transcript's
 # responses between the two reads. No record may name a model its transcript does not hold.
 # live-at-both-reads holds a step that another fact ended to the same four things. --lower-one
-# lowers the first count of each taken step by 1, the negative control: both verdicts then FAIL.
+# lowers the first count of each taken step by 1, the negative control. Both verdicts then FAIL.
 #
 # Its last two lines are `c-real: PASS|FAIL|UNKNOWN` and `live-at-both-reads: PASS|FAIL|UNKNOWN`.
 # It exits with the c-real verdict's code: 0, 1 or 2. It answers UNKNOWN, exit 2, for a harness
-# with no step to take, and when it could read nothing to judge. That is a failed command, a line
-# of other than 16 words, a log with no read line, or a record whose agent the agents file lacks.
-# A usage error is exit 2 too, with the usage on stderr.
+# with no step to take. It answers UNKNOWN too when it could read nothing to judge. That is a
+# failed command, a line of other than 16 words, or a log with no read line. So does a log line
+# that holds the read line's message and is no JSON, and a record whose agent the agents file
+# lacks. A usage error is exit 2 too, with the usage on stderr.
 #
-# It runs where the operator runs `dispatch` by hand, with the operator's own credential: the
-# `dispatch` command on PATH (packages/envoy-client's bin), the session the operator's shell names
-# (DISPATCH_HOST and DISPATCH_SESSION_ID), and the deployed Dispatch and token the operator's
-# envoy.json or DISPATCH_URL and DISPATCH_TOKEN name. It needs `bun` on PATH for
-# lib/step-models-check.ts. It sets no credential, reads no credential of its own, and writes
-# nothing but a scratch directory it removes.
+# It runs where the operator runs `dispatch` by hand, with the operator's own credential. That is
+# the `dispatch` command on PATH (packages/envoy-client's bin), and the session the shell names
+# (DISPATCH_HOST and DISPATCH_SESSION_ID). It reaches the Dispatch and token that envoy.json, or
+# DISPATCH_URL and DISPATCH_TOKEN, name. It also needs `bun` on PATH for lib/step-models-check.ts.
+# It sets no credential, reads none of its own, and writes only a scratch directory it removes.
 set -euo pipefail
 
 usage="usage: scripts/e2e/step-models-check.sh --issue <KEY> [--issue <KEY> …] --daemon-log <file> --agents <file> [--lower-one]"

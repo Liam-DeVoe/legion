@@ -5613,15 +5613,18 @@ Each item below names a comparison, then what it takes and judges.
 - `live-at-both-reads` is no part of `c-real`.
   For each harness, it takes the first step that another fact ended, on the same two reads, and holds it to the same four things.
 
-- For each step that its agent ended, taken or not, it prints one `GAP:` line with each read's two gaps, or why the read is missing or final.
+- For each step that its agent ended, taken or not, it prints one `GAP:` line.
+  That line gives each read's two gaps, or says why the read is missing or final.
   A harness with no such step prints `GAP: harness <harness>: saw no step that its agent ended`.
 
 | exit | printed | when |
 | :--- | :--- | :--- |
 | 0 | `PASS: c-real: <ISSUE> <task> <step> <kind> attempt <a>: <model>=<calls>,…` for each harness, then `c-real: PASS` | each harness took a step that shows the four things, and no record names a model its transcript does not hold |
 | 1 | one `FAIL: …` line for each fault, then `c-real: FAIL` | a taken step's set model or counts do not hold, or a record names a model its transcript does not hold |
-| 2 | `UNKNOWN: <reason>` or `c-real: UNKNOWN: took no step of harness <harness>`, then `c-real: UNKNOWN` | a harness took no step, a command failed, a line has other than 16 words, the log holds no read line, or a record's agent has no transcript |
+| 2 | `UNKNOWN: <reason>` or `c-real: UNKNOWN: took no step of harness <harness>`, then `c-real: UNKNOWN` | a harness took no step, or it could read nothing to judge |
 
+It could read nothing to judge where a command failed, a line has other than 16 words, or the log holds no read line.
+The same holds where a log line holds the read line's message and is no JSON, or where a record's agent has no transcript.
 Its last two lines are `c-real: <verdict>` and `live-at-both-reads: <verdict>`, on every exit.
 A usage error is exit 2 too, with the usage on stderr.
 

@@ -55,7 +55,10 @@ function answer(issue: string, runs: string[]): string {
 // path, where agents.json names its own by a path relative to its directory.
 const agentsFile = (name: string) => join(dir, `agents-${name}.json`);
 const agentsJson = join(data, "agents.json");
-const daemonLog = join(data, "daemon-log-k7.jsonl");
+const daemonLog = join(data, "daemon-log-reads.jsonl");
+// The same log with line 6, A2's end read, cut to its first 200 bytes, as a copy made while the
+// daemon writes may be. The cut line still holds the read line's message.
+const cutLog = join(dir, "daemon-log-cut.jsonl");
 beforeAll(() => {
   const one = (claim: string, harness: string, transcript: string, setModel: string) =>
     JSON.stringify({ [claim]: { harness, transcript: join(data, transcript), setModel } });
@@ -75,6 +78,9 @@ beforeAll(() => {
     agentsFile("tester-refusal"),
     one(tester, "claude", "claude-stream-refusal-turn.jsonl", sonnet)
   );
+  const log = readFileSync(daemonLog, "utf8").split("\n");
+  log[5] = log[5].slice(0, 200);
+  writeFileSync(cutLog, log.join("\n"));
 });
 
 const readOf = fakeDispatchRead(script, dir, []);
@@ -216,6 +222,16 @@ describe("step-models-check.sh", () => {
     const run = check({ [A]: [A1] }, agentsFile("implementer"), { log });
     expect(run.stdout).toContain(
       `UNKNOWN: the daemon log ${log} holds no line "workflow: a step used a read of its agent's calls"`
+    );
+    expect(run.stdout).not.toContain("PASS");
+    expect(run.verdicts).toEqual(["c-real: UNKNOWN", "live-at-both-reads: UNKNOWN"]);
+    expect(run.code).toBe(2);
+  });
+
+  test("a read line cut short exits 2, and takes no other step in its place", () => {
+    const run = check({ [A]: [A2, A1] }, agentsFile("implementer"), { log: cutLog });
+    expect(run.stdout).toContain(
+      `UNKNOWN: line 6 of the daemon log ${cutLog} holds "workflow: a step used a read of its agent's calls" and is no JSON object`
     );
     expect(run.stdout).not.toContain("PASS");
     expect(run.verdicts).toEqual(["c-real: UNKNOWN", "live-at-both-reads: UNKNOWN"]);

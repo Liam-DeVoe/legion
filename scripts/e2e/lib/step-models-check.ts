@@ -242,9 +242,10 @@ function answersOf(text: string): Answer[] | null | undefined {
 }
 
 /**
- * One run line of `dispatch steps` (packages/envoy-client/src/dispatch-commands/steps.ts), 16 words:
- * `<task> <step> <kind> <role> <type> attempt <a> <agent> <model> <started> <ended> <result> set
- * <set model> answered <answers>`. A line of the release before has 12 words, and is unknown.
+ * One run line of `dispatch steps` (packages/envoy-client/src/dispatch-commands/steps.ts). It has
+ * 16 words: `<task> <step> <kind> <role> <type> attempt <a> <agent> <model> <started> <ended>
+ * <result> set <set model> answered <answers>`. A line of the release before has 12 words, and is
+ * unknown.
  */
 function stepLine(issue: string, line: string): StepLine {
   const words = line.trim().split(/\s+/);
@@ -361,7 +362,10 @@ interface ReadLine {
   endedBy: string | null;
 }
 
-/** Each read line of the daemon's JSON log, in log order. A line that is no JSON is no read line. */
+/**
+ * Each read line of the daemon's JSON log, in log order. A line that is no JSON is no read line.
+ * A line that holds the read line's message and is no JSON object, such as a cut line, is unknown.
+ */
 function readLines(path: string): ReadLine[] {
   const reads: ReadLine[] = [];
   const texts = readText(path, "the daemon log").split("\n");
@@ -371,6 +375,11 @@ function readLines(path: string): ReadLine[] {
       entry = object(JSON.parse(texts[index]));
     } catch {
       entry = null;
+    }
+    if (entry === null && texts[index].includes(READ_LINE)) {
+      throw new Unknown([
+        `line ${index + 1} of the daemon log ${path} holds "${READ_LINE}" and is no JSON object`,
+      ]);
     }
     if (entry === null || entry.msg !== READ_LINE) continue;
     const startedAt = instant(entry.startedAt);
@@ -579,9 +588,9 @@ function judge(comparison: string, taken: Judged, window: Window, lowerOne: bool
 }
 
 /**
- * One comparison: for each harness, the first step in `--issue` order and then in printed order
- * that `takes` accepts on its end read, held to the four things. A harness with no such step is
- * UNKNOWN.
+ * One comparison. For each harness, it takes the first step that `takes` accepts on its end read,
+ * in `--issue` order and then in printed order. It holds that step to the four things. A harness
+ * with no such step is UNKNOWN.
  */
 function compare(
   comparison: string,
