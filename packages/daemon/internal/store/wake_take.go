@@ -361,13 +361,14 @@ func lockReleaseMark(ctx context.Context, tx pgx.Tx, project, issue string) (boo
 // mark first (LockReleaseMark), before the issue's pause lock (LockIssueForPause), the pause's row
 // and its writes. The workflow's take and the cancel both take the global fact serializer first
 // (treelifecycle.Serialize), then the mark. The cancel takes the issue's pause lock and the pause's
-// row after the mark, and before it deletes a resume. The outbox's delivery take holds no lock
-// when it locks the mark. The record holds no lock when it locks the mark. It locks the pause's
-// row after the mark, and before it writes a resume or a start (Store.RecordPodRelease). A
-// project's resume (Resume) locks the pause's row `for update` and never the mark. It then writes
-// the starts the pause holds and the project's open resumes. A take, a cancel or a record that
-// waits for that row has written no resume and no start yet. The teardown's delete of the mark
-// (ClearIssueRelease) waits for a take's share lock, as every delete of a locked row does.
+// row after the mark, and before it writes or deletes a start or a resume (CancelIssueRelease).
+// The outbox's delivery take holds no lock when it locks the mark. The record holds no lock when
+// it locks the mark. It locks the pause's row after the mark, and before it writes a resume or a
+// start (Store.RecordPodRelease). A project's resume (Resume) locks the pause's row `for update`
+// and never the mark. It then writes the starts the pause holds and the project's open resumes. A
+// take, a cancel or a record that waits for that row has written no resume and no start yet. The
+// teardown's delete of the mark (ClearIssueRelease) waits for a take's share lock, as every delete
+// of a locked row does.
 //
 // Every wake runs through here — the four the workflow applies inside a fact's transaction, the
 // delivery wake the outbox takes in one of its own (Store.TakeDeliveryWake) and the stop

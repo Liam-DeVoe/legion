@@ -157,10 +157,13 @@ type ReleaseWokenRow func(role claim.Role, generation uint64, wake DroppedWake) 
 // delete then reads the take's resume and drops it. When this read comes first, the take waits
 // until this transaction commits, and then finds the mark gone. Without the lock, a take still
 // open when the delete runs leaves its resume behind, under a release that did not happen. The
-// cancel takes the issue's pause lock and the pause's row after the mark and before that delete,
-// as a take orders them, so a project's resume, which writes the open resumes under the pause's
-// row, never waits for a resume this cancel deleted while this cancel waits for that row.
-// PodRecords.TakePodWake gives the whole lock order.
+// cancel takes the issue's pause lock and the pause's row after the mark, and before it writes or
+// deletes a start or a resume, as a take orders them. It takes them whenever it writes for a role:
+// when the mark records a role, and when a stop of the release that the mark does not record is
+// still in the outbox (unrecordedStops). So a project's resume, which writes the starts the pause
+// holds and the open resumes under the pause's row, never waits for a start or a resume this
+// cancel wrote while this cancel waits for that row. PodRecords.TakePodWake gives the whole lock
+// order.
 func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, woken ReleaseWokenRow,
 	outOfWorkflow func(status string) bool, paused ReleaseCancelPause) (ReleaseCancelled, error) {
 	if project == "" || issue == "" || woken == nil || outOfWorkflow == nil {
@@ -220,27 +223,28 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, w
 				return err
 			}
 		}
+		// The roles this release stopped that no cancel resumes, whose wake's start is the role's
+		// one start: the roles of the set that another path took over, and the roles whose stop
+		// the mark does not record. Each is told in the words of a release that did not finish,
+		// before dropTakenOverWakes deletes the resume whose kind the retell reads. The resume of
+		// a role whose stop the mark does not record stays, and it pairs with release 0 from here
+		// on, whether the project runs or is paused (pairUnrecordedWakesWithNoRelease). The read
+		// writes nothing, so it comes before the locks below.
+		unrecorded, err := unrecordedStops(ctx, tx, issue, first, last, suspended)
+		if err != nil {
+			return err
+		}
 		var held Pause
 		var open bool
-		if len(suspended) > 0 {
-			// The issue's pause lock and the pause's row come after the mark and before any
-			// resume is deleted, as a take orders them (PodRecords.TakePodWake).
+		if len(suspended) > 0 || len(unrecorded) > 0 {
+			// The issue's pause lock and the pause's row come after the mark and before any start
+			// or resume is written or deleted, as a take orders them (PodRecords.TakePodWake).
 			if err := LockIssueForPause(ctx, tx, issue); err != nil {
 				return err
 			}
 			if held, open, err = LockOpenPauseByTokenTx(ctx, tx, project); err != nil {
 				return err
 			}
-		}
-		// The roles this release stopped that no cancel resumes, whose wake's start is the role's
-		// one start: the roles of the set that another path took over, and the roles whose stop
-		// the mark does not record. Each is told in the words of a release that did not finish,
-		// before dropTakenOverWakes deletes the resume whose kind the retell reads. The resume of
-		// a role whose stop the mark does not record stays, and it pairs with release 0 from here
-		// on, whether the project runs or is paused (pairUnrecordedWakesWithNoRelease).
-		unrecorded, err := unrecordedStops(ctx, tx, issue, first, last, suspended)
-		if err != nil {
-			return err
 		}
 		kept := unrecorded
 		for _, role := range suspended {
