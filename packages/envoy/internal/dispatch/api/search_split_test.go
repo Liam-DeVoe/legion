@@ -201,11 +201,10 @@ var searchSplitMainLegEdits = strings.NewReplacer(
 // searchSplitStatements is every statement the split can run, by side and then by shape. The
 // head's rank-free statements are built from the head's own builders over the rank-free legs.
 // Main's are main's frozen texts with their keyword legs replaced by main's own legs built
-// rank-free, which are the head's rank-free legs with main's #3512 change to the updated_since
-// filter undone (searchSplitMainLegEdits). The undo is held against main's frozen legs first:
-// undone in the head's ranked legs it must give mainAtDF18SearchKeywordLegs byte for byte, so a
-// later change of the legs the undo does not cover fails here rather than measures main with
-// the head's text.
+// rank-free, which are the head's rank-free legs with main's edits after df18d9be undone
+// (searchSplitMainLegEdits). The undo is held against main's frozen legs first: undone in the
+// head's ranked legs it must give mainAtDF18SearchKeywordLegs byte for byte, so a later change of
+// the legs the undo does not cover fails here instead of measuring main with the head's text.
 func searchSplitStatements(t *testing.T) map[string]map[string]searchSplitSQL {
 	t.Helper()
 	if undone := searchSplitMainLegEdits.Replace(searchKeywordLegsSQL); undone != mainAtDF18SearchKeywordLegs {

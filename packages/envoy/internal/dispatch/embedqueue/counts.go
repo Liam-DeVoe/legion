@@ -45,10 +45,10 @@ const (
 
 // coverageLoopBound is the fill's timeout and the recount's bound, one constant so that a raise is
 // a one-line change. R7's design (dispatch://INFRA-4864/spec) sets each of the two as the larger
-// of two times. The first is four times its own longest time in the coverage-scale Job. The second
-// is four times the longer of two production runs of main's coverage statement, a first run and a
-// second run right after it, through INFRA-4863's read login. Where that login's 30 s statement
-// bound cut a run, the bound is at least 120 s.
+// of two times. The first is four times the fill's, or the recount's, own longest time in the
+// coverage-scale Job. The second is four times the longer of two production runs of main's
+// coverage statement, a first run and a second run right after it, through INFRA-4863's read
+// login. Where that login's 30 s statement bound cut a run, the bound is at least 120 s.
 //
 // The Job is the builds Job infra-4864-coverage-scale-h96p8 at f28566f1 (2026-11-24), at scale 3.6
 // of scripts/coverage-scale.sh's corpus: 3,582,232 items, 2.2 times production's 1,622,093 on
@@ -56,8 +56,8 @@ const (
 // test's fill took 10,659 ms. Its longest whole recount took 16,213 ms, in the state where no page
 // of embeddings is all-visible ("all"). Four times each, rounded up to the next 10 s, is 70 s.
 //
-// The production reading is not taken yet. Where it asks for more than 70 s, this constant is
-// raised before the merge, and cb-delta-bound's span, the recount bound plus 11 s, follows it.
+// 70 s rests on the first of the two times alone; no production run is in it. A raise lengthens
+// the span CoverageDeltaBound is sized over, one recount bound and one fold period.
 const coverageLoopBound = 70 * time.Second
 
 // The counts loop's settings a test sets, as identityRecheckInterval is a var for a test to shrink.
@@ -289,13 +289,13 @@ func foldCoverage(ctx context.Context, database *store.Store) error {
 // coverageRefreshBatch bounds how many issues one transaction of the refresh refreshes
 // (refreshIssueStates). Each refresh (search_coverage_issue_refresh) holds its issue's state row
 // lock until its batch commits, and a write of that issue's inputs, whose trigger refreshes the
-// same row, waits for it; so a batch holds at most 10 refreshes, about 10 x 0.2 ms on the
-// coverage-scale Job's 8 CPUs (the fill's refresh of 40,144 issues at scale 3.6 took 6,384 ms in
-// infra-4864-coverage-scale-h96p8). It replaces batches of coverageStatementRows, 500 issues:
-// measured at scale 1 of that corpus in dispatch://INFRA-4864's pod beside four writers, the
-// fill's batches took 344 to 991 ms, and an issue's title update waited about 330 ms on one; a
-// recount's batches over 2,000 stale issues took 2,561 to 4,740 ms, and a title update took
-// 2,048 ms, about 1.7 s of it waiting.
+// same row, waits for it; so that write waits for at most one batch of 10 refreshes, about
+// 10 x 0.2 ms on the coverage-scale Job's 8 CPUs (the fill's refresh of 40,144 issues at scale
+// 3.6 took 6,384 ms in infra-4864-coverage-scale-h96p8). A batch of coverageStatementRows, 500
+// issues, keeps that write waiting far longer: measured at scale 1 of that corpus in
+// dispatch://INFRA-4864's pod beside four writers, the fill's batches took 344 to 991 ms, and an
+// issue's title update waited about 330 ms on one; a recount's batches over 2,000 stale issues
+// took 2,561 to 4,740 ms, and a title update took 2,048 ms, about 1.7 s of it waiting.
 const coverageRefreshBatch = 10
 
 // refreshIssueStates brings every issue's state row up to its inputs before the issue group is
