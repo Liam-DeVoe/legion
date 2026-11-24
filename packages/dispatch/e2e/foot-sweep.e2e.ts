@@ -1,31 +1,44 @@
 /** The sweep of the foot of the screen (dispatch://INFRA-4731): Pending changes and the update
  *  banner float at the foot (`web/src/hooks/useFootInset.ts`), and wherever they show, every
- *  reading here is that the foot is clear, as the tester's probe reads it (`e2e/foot-probe.ts`):
+ *  reading here is that the foot is clear, as the check `c-foot-clear` says it and the probe reads
+ *  it, clause by clause (`e2e/foot-probe.ts`):
  *
  *  - no float's box meets another foot element's box;
- *  - no float covers the centre of a control;
- *  - each scroller's last content, read at its real end, lies wholly above every float's top;
+ *  - no float covers the centre of a control, read where that centre lies inside every box that
+ *    clips the control;
+ *  - at each scroller's real end, no leaf element of its own content, as far as it lies inside
+ *    each box that clips it, the scroller's own box among them, meets a float's box on both axes;
+ *    the content of a float, a scroller inside it included, is not read against the floats;
  *  - the shell's Navigation stays on the screen at the end of a page;
- *  - a scroller that scrolls only sideways keeps its height under a float;
- *  - with no float shown, no scroller carries end room once the reader has scrolled out of it;
+ *  - a box that scrolls only sideways keeps its height under a float;
+ *  - when a float goes, only a scroller whose reader stands in the end room it would lose keeps
+ *    that room, no more than it held, and the document's scroller also while a box it holds
+ *    would be clamped without it, each until a scroll leaves it;
+ *  - with no float shown and every scroller at its start, no scroller carries end room;
  *  - a float that shows for a moment moves no content when it goes.
  *
- *  Three kinds of row read it. The rows by route group open every reviewed route of
+ *  Each is read as a settled state: the same answer on two readings at least two animation
+ *  frames apart.
+ *
+ *  Four kinds of row read it. The rows by route group open every reviewed route of
  *  `e2e/review-routes.ts` against the review corpus (`e2e/review-seed.ts`) at three desktop
- *  sizes with both floats shown, then close both and read that no end room is left. The rows of
- *  the fixed surface open eight pages, one row each and three for the issues table (the selection
- *  bar hidden; shown with the update banner; shown with the banner dismissed), seeded so each
- *  page's scrollers reach the foot, and read every combination of the floats at seven sizes from
- *  a phone's up. And two rows hold three steps of their own: a float over a sticky column, a box
+ *  sizes with both floats shown, then close both and read the end room they leave: only room
+ *  the reader stands in, and none once every scroller is back at its start. The rows of the
+ *  fixed surface open eight pages, one row each, three for the issues table (the selection bar
+ *  hidden; shown with the update banner; shown with the banner dismissed) and two for the live
+ *  view (its four smaller sizes; its three desktop sizes), seeded so each page's scrollers reach
+ *  the foot, and read every combination of the floats at seven sizes from a phone's up. Two
+ *  rows hold three steps of their own: a float over a sticky column, a box
  *  that scrolls only sideways under a float, and a float that shows for a moment at the end of a
- *  scroll.
+ *  scroll. And one row reads a page it writes itself: Pending changes, whose own list of refused
+ *  changes scrolls in its box.
  *
  *  Each reading prints one `FOOT-CELL <page> <WxH> <floats> <clean|problems…>` line, so a run's
- *  output is the table of every cell. Every title carries `@foot`, which the check c-foot-clear
- *  reads from the full lane; none carries `@pr`, so the pull-request lane runs none of them. None
- *  carries `@phone` either: each row sets every size it reads itself, the phone sizes included,
- *  so the `iphone` project would read the same sizes again. */
-import { CLEARANCE_PROPERTY, MARK_ATTRIBUTE } from "../web/src/hooks/useFootInset";
+ *  output is the table of every cell; the two controls of the row that writes its own page are
+ *  readings that must find a problem, and print none. Every title carries `@foot`, which the
+ *  check c-foot-clear reads from the full lane; none carries `@pr`, so the pull-request lane runs
+ *  none of them. None carries `@phone` either: each row sets every size it reads itself, the
+ *  phone sizes included, so the `iphone` project would read the same sizes again. */
 import {
   type FakeSession,
   listedSession,
@@ -55,9 +68,14 @@ import {
 import {
   expectFootClear,
   expectNoEndRoom,
-  type FootSelectors,
+  FOOT_ELEMENTS,
+  FOOT_NAMES,
   footCellLine,
+  navigationProblems,
+  readFootElements,
   readFootEnds,
+  readSidewaysBox,
+  type SidewaysReading,
   sampleFootRest,
 } from "./foot-probe";
 import { inboxPane, selectedRow } from "./inbox-pane";
@@ -111,20 +129,6 @@ const MOMENT_SIZES: readonly Size[] = [
   { width: 1600, height: 1000 },
 ];
 
-/** Every foot element of the page layer a page here can show (`FOOT_LAYERS`), each by a selector
- *  that matches it and no other element of these pages, and the Conversation's and the live
- *  view's `Jump to latest`. `readFootElements` leaves out each one a page does not show. The
- *  selection bar is the one toolbar with no name: the new issue page's view row is a toolbar
- *  named by its controls. */
-const FOOT_ELEMENTS: FootSelectors = {
-  "the selection bar": '[role="toolbar"]:not([aria-label])',
-  "the broadcast composer": 'section[aria-label="Broadcast"]',
-  "the comment composer": 'form[aria-label="Comment composer"]',
-  "the margin's sheet": 'aside[aria-label="Review panel"]',
-  "the live view's composer": '[data-testid="agent-composer"]',
-  "Jump to latest": '[data-testid="jump-to-latest"]',
-};
-
 /** What a cell shows at the foot: Pending changes, the update banner and, on the issues table,
  *  the selection bar. */
 type Shown = "pending" | "banner" | "bar";
@@ -150,7 +154,7 @@ async function expectStuckInPlace(page: Page, cell: string): Promise<void> {
     await expect
       .poll(
         async () => {
-          await page.evaluate(readFootEnds);
+          await page.evaluate(readFootEnds, FOOT_NAMES);
           problems = await page.evaluate(() => {
             const stuck = [
               ...(document.getElementById("main-content")?.querySelectorAll("*") ?? []),
@@ -182,23 +186,23 @@ async function expectStuckInPlace(page: Page, cell: string): Promise<void> {
   }
 }
 
-/** Reads `page`, named `name`, at every size of the fixed surface with `shown` at the foot: the
- *  foot clear where a float shows, and no end room where none does. Where `stuck`, each reading
- *  with a float shown is followed by `expectStuckInPlace`, as a cell of `<name>:stuck`. */
+/** Reads `page`, named `name`, at each of `sizes` with `shown` at the foot: the foot clear where
+ *  a float shows, and no end room where none does. Where `stuck`, each reading with a float shown
+ *  is followed by `expectStuckInPlace`, as a cell of `<name>:stuck`. */
 async function readEverySize(
   page: Page,
   name: string,
   shown: readonly Shown[],
-  stuck = false
+  { stuck = false, sizes = SURFACE_SIZES }: { stuck?: boolean; sizes?: readonly Size[] } = {}
 ): Promise<void> {
   if (shown.includes("pending")) await expect(pendingWrites(page)).toBeVisible();
   if (shown.includes("banner")) await expect(updateBanner(page)).toBeVisible();
   if (shown.includes("bar")) await expect(page.getByRole("toolbar")).toBeVisible();
   const floatShown = shown.includes("pending") || shown.includes("banner");
-  for (const size of SURFACE_SIZES) {
+  for (const size of sizes) {
     await page.setViewportSize(size);
     const cell = cellName(name, size, shown);
-    if (floatShown) await expectFootClear(page, FOOT_ELEMENTS, cell);
+    if (floatShown) await expectFootClear(page, cell);
     else await expectNoEndRoom(page, cell);
     if (floatShown && stuck) await expectStuckInPlace(page, cellName(`${name}:stuck`, size, shown));
   }
@@ -273,11 +277,7 @@ for (const routes of routeRows()) {
         for (const size of ROUTE_SIZES) {
           await page.setViewportSize(size);
           await waitForRouteSettled(page, route);
-          await expectFootClear(
-            page,
-            FOOT_ELEMENTS,
-            cellName(route.name, size, ["pending", "banner"])
-          );
+          await expectFootClear(page, cellName(route.name, size, ["pending", "banner"]));
         }
         await dismissBanner(page);
         await discardPending(page);
@@ -296,20 +296,22 @@ for (const routes of routeRows()) {
 /** One page of the fixed surface: its name in a cell, the address it opens at, and what it has
  *  drawn once it is ready to read, after each load. `first` runs once, after the first load,
  *  before the page is read. Where `stuck`, each reading with a float shown is followed by
- *  `expectStuckInPlace`. */
+ *  `expectStuckInPlace`. `sizes` are the sizes it is read at, every size of the fixed surface
+ *  where it names none. */
 interface Surface {
   readonly name: string;
   readonly path: string;
   readonly ready: (page: Page) => Promise<void>;
   readonly first?: (page: Page) => Promise<void>;
   readonly stuck?: true;
+  readonly sizes?: readonly Size[];
 }
 
 /**
- * Reads `surface` at every size of the fixed surface with each combination of the floats: both,
- * Pending changes alone, the banner alone and neither. The banner, once dismissed, stays so for
- * the page's life, so the page is loaded afresh for the banner alone: Pending changes keeps the
- * refused change across the load, and is then discarded.
+ * Reads `surface` at its sizes with each combination of the floats: both, Pending changes alone,
+ * the banner alone and neither. The banner, once dismissed, stays so for the page's life, so the
+ * page is loaded afresh for the banner alone: Pending changes keeps the refused change across the
+ * load, and is then discarded.
  */
 async function sweepSurface(page: Page, refusedKey: string, surface: Surface): Promise<void> {
   await routeFloats(page, refusedKey);
@@ -317,15 +319,16 @@ async function sweepSurface(page: Page, refusedKey: string, surface: Surface): P
   await surface.first?.(page);
   await surface.ready(page);
   const stuck = surface.stuck === true;
-  await readEverySize(page, surface.name, ["pending", "banner"], stuck);
+  const sizes = surface.sizes ?? SURFACE_SIZES;
+  await readEverySize(page, surface.name, ["pending", "banner"], { stuck, sizes });
   await dismissBanner(page);
-  await readEverySize(page, surface.name, ["pending"], stuck);
+  await readEverySize(page, surface.name, ["pending"], { stuck, sizes });
   await reloadWithBanner(page, refusedKey, surface.path);
   await surface.ready(page);
   await discardPending(page);
-  await readEverySize(page, surface.name, ["banner"], stuck);
+  await readEverySize(page, surface.name, ["banner"], { stuck, sizes });
   await dismissBanner(page);
-  await readEverySize(page, surface.name, []);
+  await readEverySize(page, surface.name, [], { sizes });
 }
 
 /** The session that asks the margin's questions and writes the Conversation's messages. */
@@ -654,13 +657,11 @@ test("the floats leave the foot of the Inbox clear in every combination at seven
   }
 });
 
-// An agent's live view, its transcript at the stream's limit, as the live view row of
-// `e2e/issues-table.e2e.ts` seeds it.
-// SLOW(>=2s): a transcript at the stream's limit, and four combinations of the floats at seven
-// sizes, each a settled reading at the end of every scroller.
-test("the floats leave the foot of an agent's live view clear in every combination at seven sizes @foot", async ({
-  browser,
-}) => {
+/**
+ * Reads an agent's live view, its transcript at the stream's limit, as the live view row of
+ * `e2e/issues-table.e2e.ts` seeds it, at `sizes` (`sweepSurface`).
+ */
+async function sweepLiveView(browser: Browser, sizes: readonly Size[]): Promise<void> {
   /** A live session whose conversation is at the stream's limit. Its id is a UUID, which
    *  Dispatch's agent routes require. */
   const live: FakeSession = {
@@ -686,10 +687,31 @@ test("the floats leave the foot of an agent's live view clear in every combinati
       name: "live-view",
       path: `/agents/${live.session_id}/live`,
       ready: () => expectConversationInFront(page, live.session_id),
+      sizes,
     });
   } finally {
     await context.close();
   }
+}
+
+// An agent's live view, read in two rows by size, each in its own row budget: a transcript at the
+// stream's limit is seeded for each, and each resize lays it out again, which took the one row of
+// all seven sizes to 51 s to 60 s on an issue pod. This row reads the four smaller sizes.
+// SLOW(>=2s): a transcript at the stream's limit, and four combinations of the floats at four
+// sizes, each a settled reading at the end of every scroller.
+test("the floats leave the foot of an agent's live view clear in every combination at the four smaller sizes, 360x640 to 1024x500 @foot", async ({
+  browser,
+}) => {
+  await sweepLiveView(browser, SURFACE_SIZES.slice(0, 4));
+});
+
+// The live view's second row: the three desktop sizes.
+// SLOW(>=2s): a transcript at the stream's limit, and four combinations of the floats at three
+// sizes, each a settled reading at the end of every scroller.
+test("the floats leave the foot of an agent's live view clear in every combination at the three desktop sizes, 1280x720 to 1920x1080 @foot", async ({
+  browser,
+}) => {
+  await sweepLiveView(browser, SURFACE_SIZES.slice(4));
 });
 
 /** How many messages the Conversation row seeds: forty run the tab thousands of pixels past a
@@ -772,10 +794,13 @@ const CODE_SPEC = [
  * margin's content fits it, Pending changes lies over it, the margin is the scroller that takes
  * end room for the part of Pending changes over it, `body` carries none, and the shell's
  * Navigation as a reader sees it keeps its top on the screen at the end of the page; read until
- * it holds, each read at the end of every scroll (`readFootEnds`). Pending changes is wider than
- * the margin, so its left edge lies over `main`, which takes room for that part by the same
- * rule: the room `main` holds is read and printed after the cell's `FOOT-CELL` line, which is
- * printed either way, and is no problem of the step's.
+ * it holds, each read at the end of every scroll (`readFootEnds`), as a settled state: the
+ * probe's answer gives the Navigation's problems with those of a scroll short of its end and of
+ * two readings that differ (`navigationProblems`), and the step's own read of the margin and
+ * Pending changes is a problem where two readings two animation frames apart differ. Pending
+ * changes is wider than the margin, so its left edge lies over `main`, which takes room for that
+ * part by the same rule: the room `main` holds is read and printed after the cell's `FOOT-CELL`
+ * line, which is printed either way, and is no problem of the step's.
  */
 async function expectStickyClear(page: Page, cell: string): Promise<void> {
   let problems: readonly string[] = ["the page was never read"];
@@ -784,55 +809,77 @@ async function expectStickyClear(page: Page, cell: string): Promise<void> {
     await expect
       .poll(
         async () => {
-          const ends = await page.evaluate(readFootEnds);
-          const read = await page.evaluate(
-            ({ attribute, property }) => {
+          const ends = await page.evaluate(readFootEnds, FOOT_NAMES);
+          const read = await page.evaluate(async ({ clearance, mark }) => {
+            const once = () => {
               const column = document.querySelector<HTMLElement>(
                 'aside[aria-label="Review margin"]'
               );
               const pending = document.querySelector('[aria-label="Pending changes"]');
               const shell = document.getElementById("main-content");
-              const mainRoom = shell?.hasAttribute(attribute)
+              const mainRoom = shell?.hasAttribute(mark)
                 ? `main holds ${shell.style.paddingBottom} of end room`
                 : "main holds no end room";
-              if (column === null) return { main: mainRoom, problems: ["no Review margin shows"] };
+              if (column === null) {
+                return { main: mainRoom, boxes: [], problems: ["no Review margin shows"] };
+              }
               if (pending === null) {
-                return { main: mainRoom, problems: ["no Pending changes shows"] };
+                return { main: mainRoom, boxes: [], problems: ["no Pending changes shows"] };
               }
               const a = column.getBoundingClientRect();
               const b = pending.getBoundingClientRect();
               const over =
                 Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 &&
                 Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1;
-              // The margin's own room lengthens its scroll, so its content is measured without it.
-              const room = Number.parseFloat(column.style.getPropertyValue(property)) || 0;
+              // The margin's own room lengthens its scroll: its content is measured without it.
+              const room = Number.parseFloat(column.style.getPropertyValue(clearance)) || 0;
               return {
                 main: mainRoom,
+                boxes: [
+                  `the Review margin at y ${Math.round(a.top)}-${Math.round(a.bottom)} ` +
+                    `x ${Math.round(a.left)}-${Math.round(a.right)}`,
+                  `Pending changes at y ${Math.round(b.top)}-${Math.round(b.bottom)} ` +
+                    `x ${Math.round(b.left)}-${Math.round(b.right)}`,
+                ],
                 problems: [
                   ...(over ? [] : ["Pending changes does not lie over the Review margin"]),
                   ...(column.scrollHeight - room > column.clientHeight + 1
                     ? ["the Review margin's content does not fit it"]
                     : []),
-                  ...(column.hasAttribute(attribute)
-                    ? []
-                    : [`the Review margin carries no ${attribute}`]),
-                  ...(document.body.hasAttribute(attribute)
-                    ? [`body carries ${attribute} (${document.body.style.paddingBottom})`]
+                  ...(column.hasAttribute(mark) ? [] : [`the Review margin carries no ${mark}`]),
+                  ...(document.body.hasAttribute(mark)
+                    ? [`body carries ${mark} (${document.body.style.paddingBottom})`]
                     : []),
                 ],
               };
-            },
-            { attribute: MARK_ATTRIBUTE, property: CLEARANCE_PROPERTY }
-          );
+            };
+            // Settled: "the same answer on two readings at least two animation frames apart",
+            // as the probe's reads take it (`e2e/foot-probe.ts`). The answer is each box and the
+            // problems; where the two readings differ, the answer is the second one, with a
+            // problem that says what changed.
+            const first = once();
+            const frames = Promise.withResolvers<void>();
+            requestAnimationFrame(() => requestAnimationFrame(() => frames.resolve()));
+            await frames.promise;
+            const second = once();
+            const before = [...first.boxes, ...first.problems];
+            const after = [...second.boxes, ...second.problems];
+            const went = before.filter((piece) => !after.includes(piece));
+            const came = after.filter((piece) => !before.includes(piece));
+            if (went.length === 0 && came.length === 0) return second;
+            return {
+              ...second,
+              problems: [
+                ...second.problems,
+                `the Review margin and Pending changes were not settled: of two readings two ` +
+                  `animation frames apart, the first read ` +
+                  `${went.slice(0, 3).join("; ") || "nothing more"} and the second ` +
+                  `${came.slice(0, 3).join("; ") || "nothing more"}`,
+              ],
+            };
+          }, FOOT_NAMES);
           main = read.main;
-          problems = [
-            ...read.problems,
-            ...(ends.navigationTop === null
-              ? ["the Navigation does not show"]
-              : ends.navigationTop < 0
-                ? [`the Navigation's top is at y ${ends.navigationTop} at the end of the page`]
-                : []),
-          ];
+          problems = [...read.problems, ...navigationProblems(ends)];
           return problems;
         },
         { message: cell }
@@ -843,52 +890,10 @@ async function expectStickyClear(page: Page, cell: string): Promise<void> {
   }
 }
 
-/** The code block's computed overflow on both axes, its height, and the top of the paragraph
- *  after it in the document, which no scroll moves; and whether the update banner lies over the
- *  block. */
-interface SidewaysReading {
-  readonly overflow: string;
-  readonly height: number;
-  readonly after: number;
-  readonly under: boolean;
-}
-
-/** Reads the code block of `CODE_SPEC` on `page` (`SidewaysReading`). Where `toBanner`, scrolls
- *  the document first so the block's middle stands at the banner's. */
+/** Reads the code block of `CODE_SPEC` on `page` through the probe (`readSidewaysBox`). Where
+ *  `toBanner`, scrolls the document first so the block's middle stands at the banner's. */
 function readSideways(page: Page, toBanner: boolean): Promise<SidewaysReading> {
-  return page.evaluate(
-    ({ after, code, toBanner }) => {
-      const block = [...document.querySelectorAll("pre")].find((pre) =>
-        (pre.textContent ?? "").includes(code)
-      );
-      const next = [...document.querySelectorAll("p")].find(
-        (paragraph) => paragraph.textContent === after
-      );
-      if (block === undefined || next === undefined) {
-        return { after: Number.NaN, height: Number.NaN, overflow: "no block", under: false };
-      }
-      const banner = document.querySelector('[aria-label="A new version is available"]');
-      const bannerBox = banner?.getBoundingClientRect();
-      if (toBanner && bannerBox !== undefined) {
-        const box = block.getBoundingClientRect();
-        window.scrollBy(0, box.top + box.height / 2 - (bannerBox.top + bannerBox.height / 2));
-      }
-      const box = block.getBoundingClientRect();
-      const { overflowX, overflowY } = getComputedStyle(block);
-      const under =
-        bannerBox !== undefined &&
-        bannerBox.height > 0 &&
-        Math.min(box.right, bannerBox.right) - Math.max(box.left, bannerBox.left) > 1 &&
-        Math.min(box.bottom, bannerBox.bottom) - Math.max(box.top, bannerBox.top) > 1;
-      return {
-        after: Math.round(next.getBoundingClientRect().top + window.scrollY),
-        height: Math.round(box.height),
-        overflow: `${overflowX}/${overflowY}`,
-        under,
-      };
-    },
-    { after: AFTER_CODE, code: CODE_LINES[0], toBanner }
-  );
+  return page.evaluate(readSidewaysBox, { after: AFTER_CODE, code: CODE_LINES[0], toBanner });
 }
 
 // Two steps, each read as a settled state.
@@ -938,18 +943,18 @@ test("a float over a sticky column leaves body without end room and the Navigati
             await readSideways(page, true);
             // At rest: the foot's layers, the document's height, the scroll and every mark hold
             // one state for half a second, and the block is read after that.
-            rest = (await page.evaluate(sampleFootRest, 500)).length;
+            rest = (await page.evaluate(sampleFootRest, { ms: 500, names: FOOT_NAMES })).length;
             shown = await readSideways(page, false);
             return { ...shown, rest };
           },
           { message: `the code block under the banner, at rest, at ${at}` }
         )
-        .toMatchObject({ overflow: "auto/auto", rest: 1, under: true });
+        .toMatchObject({ overflow: "auto/auto", rest: 1, settled: true, under: true });
     } finally {
       console.log(
         footCellLine(
           `sideways-step ${at} banner`,
-          shown?.under === true && shown.overflow === "auto/auto" && rest === 1
+          shown?.under === true && shown.overflow === "auto/auto" && shown.settled && rest === 1
             ? []
             : [`the code block was read as ${JSON.stringify({ ...shown, rest })}`]
         )
@@ -962,16 +967,16 @@ test("a float over a sticky column leaves body without end room and the Navigati
         .poll(
           async () => {
             closed = await readSideways(page, false);
-            return { after: closed.after, height: closed.height };
+            return { after: closed.after, height: closed.height, settled: closed.settled };
           },
           { message: `the code block's height and the paragraph after it, banner closed, at ${at}` }
         )
-        .toEqual({ after: shown?.after, height: shown?.height });
+        .toEqual({ after: shown?.after, height: shown?.height, settled: true });
     } finally {
       console.log(
         footCellLine(
           `sideways-step ${at} none`,
-          closed?.height === shown?.height && closed?.after === shown?.after
+          closed?.height === shown?.height && closed?.after === shown?.after && closed?.settled
             ? []
             : [
                 `the code block is ${shown?.height}px under the banner and ${closed?.height}px ` +
@@ -1025,7 +1030,7 @@ const CHORD_ENDS = [
 
 /** One animation frame of the end of a scroll, as `watchTheEnd` reads it: when, on the page's
  *  clock, whether the float shows, the top of the scroll's last content, and every element that
- *  carries `MARK_ATTRIBUTE` with the room it holds. */
+ *  carries the hook's mark (`FOOT_NAMES.mark`) with the room it holds. */
 interface EndFrame {
   readonly at: number;
   readonly shown: boolean;
@@ -1074,18 +1079,18 @@ async function standAtTheEnd(page: Page, end: MomentEnd, cell: string): Promise<
  *  has a box. The first frame is read at once, before anything the row presses next. */
 function watchTheEnd(page: Page, end: MomentEnd, float: string): Promise<void> {
   return page.evaluate(
-    ({ attribute, float, last, property }) => {
+    ({ float, last, names }) => {
       const frames: EndFrame[] = [];
       let reading = true;
       const read = () => {
         const content = [...document.querySelectorAll(last)].at(-1);
         frames.push({
           at: performance.now(),
-          marks: [...document.querySelectorAll<HTMLElement>(`[${attribute}]`)]
+          marks: [...document.querySelectorAll<HTMLElement>(`[${names.mark}]`)]
             .map(
               (element) =>
                 `${element.tagName}${element.id ? `#${element.id}` : ""}:${
-                  element.style.getPropertyValue(property) || element.style.paddingBottom
+                  element.style.getPropertyValue(names.clearance) || element.style.paddingBottom
                 }`
             )
             .join(","),
@@ -1107,7 +1112,7 @@ function watchTheEnd(page: Page, end: MomentEnd, float: string): Promise<void> {
         },
       };
     },
-    { attribute: MARK_ATTRIBUTE, float, last: end.last, property: CLEARANCE_PROPERTY }
+    { float, last: end.last, names: FOOT_NAMES }
   );
 }
 
@@ -1279,4 +1284,142 @@ test("a float that shows for a moment moves no content when it goes @foot", asyn
   } finally {
     await context.close();
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// A float's own scroller.
+// ---------------------------------------------------------------------------------------------
+
+/** The size the row of a float's own scroller reads at. */
+const OWN_SCROLLER_SIZE: Size = { width: 1280, height: 720 };
+
+/** How many refused changes Pending changes lists in the row of a float's own scroller: ten rows
+ *  of 2rem run past its list's 12rem box, as more refused changes than the box shows do in the
+ *  shell. */
+const REFUSED_ROWS = 10;
+
+/**
+ * The page the row of a float's own scroller writes (`page.setContent`), so it needs no seed and
+ * no API: `main#main-content`, at least as tall as the screen, so that a point out of Pending
+ * changes hits the page, as it does in the shell; and Pending changes fixed at the foot of the
+ * screen as the shell draws it at its fullest (`PendingWritesIndicator`), with a list of
+ * `REFUSED_ROWS` refused changes, each with Retry and Discard, that scrolls in a 12rem box
+ * (`max-h-48 overflow-y-auto`). Where `tall`, `main` runs past the screen, and its last
+ * paragraph, 18rem tall, ends under Pending changes at the end of the document's scroll; else
+ * `main` holds one short paragraph and fills the screen, with no scroll.
+ * Above the list, Pending changes holds three controls more, each in a box of no height whose
+ * overflow is hidden. That box clips neither `Close`, absolute, nor `Help`, fixed, since it is
+ * not their containing block: Pending changes is Close's, and the screen is Help's. The box of
+ * `Hidden`, fixed, has a transform, which makes it Hidden's containing block, so it clips Hidden
+ * away, 3rem above Pending changes. The page is in standards mode, as Dispatch's pages are: in
+ * quirks mode the body, not the root, scrolls the document, and the probe reads the root's scroll.
+ */
+function ownScrollerPage(tall: boolean): string {
+  const rows = Array.from(
+    { length: REFUSED_ROWS },
+    (_, index) =>
+      '<li style="display: flex; align-items: center; gap: 0.5rem; min-height: 2rem">' +
+      `<span style="flex: 1">Not saved: change ${index + 1}</span>` +
+      '<button type="button">Retry</button><button type="button">Discard</button></li>'
+  ).join("");
+  const main = tall
+    ? '<p style="height: 150vh">The lead of a tall page.</p>' +
+      '<p style="height: 18rem">The last paragraph of the page.</p>'
+    : "<p>The one paragraph of the page.</p>";
+  return `<!doctype html>
+<body style="margin: 0; font: 16px sans-serif">
+  <main id="main-content" style="display: flow-root; min-height: 100vh">${main}</main>
+  <section aria-label="Pending changes" style="position: fixed; right: 1rem; bottom: 1rem; width: 20rem; padding: 0.5rem; border: 1px solid; background: white">
+    <div style="height: 0; overflow: hidden">
+      <button type="button" style="position: absolute; top: 0.25rem; right: 0.25rem">Close</button>
+    </div>
+    <div style="height: 0; overflow: hidden">
+      <button type="button" style="position: fixed; top: 1rem; left: 50%">Help</button>
+    </div>
+    <div style="height: 0; overflow: hidden; transform: translateX(0)">
+      <button type="button" style="position: fixed; top: -3rem; left: 0">Hidden</button>
+    </div>
+    <ul style="max-height: 12rem; overflow-y: auto; margin: 2rem 0 0; padding: 0; list-style: none">${rows}</ul>
+  </section>
+</body>`;
+}
+
+// A float's own scroller: Pending changes lists its refused changes in a 12rem box that scrolls
+// (`PendingWritesIndicator`), so with more of them than the box shows, the list is a scroller
+// inside a float. "The content of a float, a scroller inside it included, is not read against
+// the floats": the probe neither scrolls the list nor reads its content at its end. And "no float
+// covers the centre of a control, read where that centre lies inside every box that clips the
+// control": a Retry or Discard whose centre the list scrolls out of its view is not read, and
+// each control in its view is. The row writes the page itself (`ownScrollerPage`), at 1280x720,
+// with the list scrolled to its middle, so that it clips rows above its view and below it, and
+// the foot must read clean. Then two controls, each of which must find a problem, so a reading
+// too broad fails. A fixed box laid over the centre of a Retry in the list's view, of `Close` and
+// of `Help` covers each: those two lie in a box that clips but is not their containing block, so
+// they are read, while `Hidden`, which its containing block clips away, is still not read. And a
+// tall `main` whose last paragraph ends under Pending changes is a cover at the end of the
+// document's scroll, the one cover there.
+test("a list that scrolls inside Pending changes is not read against the floats, and a control goes unread only where a box that clips it hides its centre @foot", async ({
+  page,
+}) => {
+  const at = `${OWN_SCROLLER_SIZE.width}x${OWN_SCROLLER_SIZE.height}`;
+  await page.setViewportSize(OWN_SCROLLER_SIZE);
+  await page.setContent(ownScrollerPage(false));
+  await page.evaluate((pending) => {
+    const list = document.querySelector(`${pending} ul`);
+    if (list === null) throw new Error("The page holds no list of refused changes");
+    list.scrollTop = (list.scrollHeight - list.clientHeight) / 2;
+  }, PENDING_CHANGES);
+  await expectFootClear(page, cellName("pending-list", OWN_SCROLLER_SIZE, ["pending"]));
+
+  // The first control: a fixed box over the centre of Close, of Help and of a Retry in the
+  // list's view.
+  await page.evaluate((pending) => {
+    const list = document.querySelector(`${pending} ul`);
+    if (list === null) throw new Error("The page holds no list of refused changes");
+    const view = list.getBoundingClientRect();
+    const buttons = [...document.querySelectorAll(`${pending} button`)];
+    const inView = buttons.find((button) => {
+      const box = button.getBoundingClientRect();
+      const y = box.top + box.height / 2;
+      return button.textContent === "Retry" && y > view.top && y < view.bottom;
+    });
+    for (const button of [
+      ...["Close", "Help"].map((text) => buttons.find((each) => each.textContent === text)),
+      inView,
+    ]) {
+      if (button === undefined) throw new Error("Pending changes holds no control the row names");
+      const box = button.getBoundingClientRect();
+      const over = document.createElement("div");
+      over.style.cssText =
+        `position: fixed; z-index: 1; left: ${box.left}px; top: ${box.top}px; ` +
+        `width: ${box.width}px; height: ${box.height}px; background: gray`;
+      document.body.append(over);
+    }
+  }, PENDING_CHANGES);
+  await expect
+    .poll(async () => (await page.evaluate(readFootElements, FOOT_ELEMENTS)).problems, {
+      message: `pending-list ${at}: each control a fixed box lies over is covered, and no other`,
+    })
+    .toEqual([
+      `Pending changes's control "Close" is covered by DIV`,
+      `Pending changes's control "Help" is covered by DIV`,
+      `Pending changes's control "Retry" is covered by DIV`,
+    ]);
+
+  // The second control: a tall `main`, read at the end of the document's scroll.
+  await page.setContent(ownScrollerPage(true));
+  await expect
+    .poll(async () => (await page.evaluate(readFootEnds, FOOT_NAMES)).problems, {
+      message: `pending-list ${at}: the last paragraph of a tall main is the one cover`,
+    })
+    .toEqual({
+      covers: [
+        expect.stringMatching(
+          /^the document's own content meets a float at its end: "The last paragraph of the page\." at y \d+-\d+ x \d+-\d+ meets Pending changes at y \d+-\d+$/
+        ),
+      ],
+      short: [],
+      navigation: [],
+      unsettled: [],
+    });
 });

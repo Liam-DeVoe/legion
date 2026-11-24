@@ -687,13 +687,17 @@ func statusChangeCallerName(actor model.Actor) string {
 const claimedSessionNameMax = 64
 
 // claimedSessionName is the id of a session that only a request's body named, as a comment quotes
-// it: an inline code span of the id with every backtick, every line ending and every other control
-// character removed, its spaces at both ends trimmed, and cut to claimedSessionNameMax runes, so
-// no text of the caller's leaves the span as a link, a new line or a block. An id with nothing
-// left is "a session".
+// it: an inline code span of the id with every backtick, every line ending, every other control
+// character, every format character (Unicode's Cf, which holds the bidirectional controls and the
+// zero-width spaces and joiners), every variation selector (Variation_Selector) and every other
+// character that Unicode lets a reader show with no width (Other_Default_Ignorable_Code_Point,
+// which holds the combining grapheme joiner and the Hangul fillers) removed, its spaces at both
+// ends trimmed, and cut to claimedSessionNameMax runes, so no text of the caller's leaves the span
+// as a link, a new line or a block, turns the direction of the text after it, or stays in it with
+// no width. An id with nothing left is "a session".
 func claimedSessionName(id string) string {
 	quoted := strings.TrimSpace(strings.Map(func(r rune) rune {
-		if r == '`' || unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+		if r == '`' || unicode.In(r, unicode.Cc, unicode.Cf, unicode.Zl, unicode.Zp, unicode.Variation_Selector, unicode.Other_Default_Ignorable_Code_Point) {
 			return -1
 		}
 		return r
@@ -751,8 +755,9 @@ func (s *server) refuseStatusChangeKey(w http.ResponseWriter, err error, recover
 }
 
 // The members of a status change's recovery point (statusChangeRecovery), each named here once:
-// every statement that writes the point or reads it names them by these constants, and so does
-// the point's decoding (statusChangeRecovery.UnmarshalJSON).
+// every statement that writes the point or reads it names them by these constants, and each field
+// of statusChangeRecovery has its member's constant as its json tag, which
+// TestEachFieldOfAStatusChangesRecoveryPointIsTaggedWithItsMember holds.
 const (
 	// pointChanged is the entry of each step that wrote, which recoveryPointRead gathers from
 	// request_key_steps.
@@ -773,53 +778,24 @@ const (
 // head's members in its SQL and adds its entry as a row of request_key_steps
 // (queueStatusChangeStep), and the call marks it finished, with the answer's issue, once its last
 // step has run (markStatusChangeFinished). Every reader reads it with the steps' entries under
-// changed (recoveryPointRead). Go only reads it, by the members' names above (UnmarshalJSON).
+// changed (recoveryPointRead). Each field's json tag is the name of its member above, so every
+// json.Unmarshal of the point (resumedStatusChange, refuseStatusChangeKey, replayRecovered) names
+// each member as those statements do, and a member the point does not hold stays empty.
 type statusChangeRecovery struct {
 	// Changed is the entry of each step that wrote, in the order the steps committed, each with
 	// its issue as its step's write answered it, which every answer from the point carries.
-	Changed []statusChangeEntry
+	Changed []statusChangeEntry `json:"changed"`
 	// Events is the ids of every event the steps appended on the issue the call names, which the
 	// fence of a resumed attempt counts as the call's own.
-	Events []int64
+	Events []int64 `json:"events"`
 	// Withdrawn is the ids of the asks that the close of the issue the call names withdrew, which
 	// that close's ask sweep takes.
-	Withdrawn []string
+	Withdrawn []string `json:"withdrawn"`
 	// Finished is the mark that every step of the call ran.
-	Finished bool
+	Finished bool `json:"finished"`
 	// Issue is the answer's issue (statusChangeRun.namedIssue), written with the mark, which a
 	// replay answers.
-	Issue *model.Issue
-}
-
-// UnmarshalJSON reads the point by its members' names, the constants above that every statement
-// writing or reading the point names too, so a reader and a writer cannot name a member apart and
-// read it as empty. A member the point does not hold stays empty.
-func (point *statusChangeRecovery) UnmarshalJSON(data []byte) error {
-	var members map[string]json.RawMessage
-	if err := json.Unmarshal(data, &members); err != nil {
-		return err
-	}
-	for name, member := range members {
-		var into any
-		switch name {
-		case pointChanged:
-			into = &point.Changed
-		case pointEvents:
-			into = &point.Events
-		case pointWithdrawn:
-			into = &point.Withdrawn
-		case pointFinished:
-			into = &point.Finished
-		case pointIssue:
-			into = &point.Issue
-		default:
-			continue
-		}
-		if err := json.Unmarshal(member, into); err != nil {
-			return fmt.Errorf("read %s of a status change's recovery point: %w", name, err)
-		}
-	}
-	return nil
+	Issue *model.Issue `json:"issue,omitempty"`
 }
 
 // holds reports whether the point holds the entry of key's step, which counts that step as made.
