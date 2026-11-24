@@ -50,10 +50,6 @@ func FromBlocks(artifactID string, version int, blocks []Block) (Plan, error) {
 			p.RoleBlocks = append(p.RoleBlocks, block.ID)
 			continue
 		}
-		if !taskIDForm.MatchString(block.ID) {
-			return Plan{}, fmt.Errorf("the task %s has an id of %d bytes outside the form of a task id, lowercase letters, digits and hyphens, starting with a letter or a digit, at most %d bytes, so Dispatch could record none of its steps",
-				quoted(block.ID), len(block.ID), MostTaskIDBytes)
-		}
 		task, err := taskOf(block)
 		if err != nil {
 			return Plan{}, err
