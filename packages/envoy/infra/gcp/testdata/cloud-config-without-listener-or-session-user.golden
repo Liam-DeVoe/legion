@@ -91,7 +91,7 @@ write_files:
       marker=$1
       key=$2
       until docker exec tailscaled tailscale --socket=/tmp/tailscaled.sock status --json 2>/dev/null |
-        jq -e '.BackendState == "Running"' >/dev/null; do
+        jq -en 'input | .BackendState == "Running"' >/dev/null 2>&1; do
         sleep 5
       done
       : >"$key" && touch "$marker"

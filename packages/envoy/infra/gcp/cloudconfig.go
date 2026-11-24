@@ -310,14 +310,17 @@ func (v vm) fetchKeyUnit() string {
 // and exits non-zero: its unit runs the script again, and every later boot fetches and drops the
 // key again until a drop succeeds. tailscaled writes its state file before it logs in (tailscale
 // v1.104.1 ipn/ipnlocal/local.go:3185-3190, 4496-4526), so the file's existence does not mean the
-// node has joined: hence the marker.
+// node has joined: hence the marker. jq reads the status with `input` under -n, so an empty
+// answer, which docker exec gives while the container is not up, is an error under every jq and
+// the loop asks again: -e alone exits 0 on no input under jq 1.6, and 4 under jq 1.7. jq's error
+// goes to /dev/null with docker's, so the wait prints nothing.
 const joinedScript = `#!/bin/sh
 # tailnet-joined MARKER KEY_FILE
 set -u
 marker=$1
 key=$2
 until docker exec tailscaled tailscale --socket=/tmp/tailscaled.sock status --json 2>/dev/null |
-  jq -e '.BackendState == "Running"' >/dev/null; do
+  jq -en 'input | .BackendState == "Running"' >/dev/null 2>&1; do
   sleep 5
 done
 : >"$key" && touch "$marker"
