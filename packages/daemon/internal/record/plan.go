@@ -719,7 +719,7 @@ func (s *Postgres) PlansInForce(ctx context.Context, tx pgx.Tx, keys []string) (
 	}
 	plans, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (PlanInForce, error) {
 		var inForce PlanInForce
-		version, err := scanPlanVersion(withColumn{row, &inForce.FirstRole})
+		version, err := scanPlanVersion(scanThen{row: row, after: []any{&inForce.FirstRole}})
 		inForce.Version = version
 		return inForce, err
 	})
@@ -728,15 +728,6 @@ func (s *Postgres) PlansInForce(ctx context.Context, tx pgx.Tx, keys []string) (
 	}
 	return plans, nil
 }
-
-// withColumn is row read as a scanner of the columns before its last, whose last column goes to
-// last: a read that adds one column to the columns of another scan reuses that scan whole.
-type withColumn struct {
-	row  scanner
-	last any
-}
-
-func (w withColumn) Scan(dest ...any) error { return w.row.Scan(append(dest, w.last)...) }
 
 // ReadFirstPhases is the phase the run of each issue of issues starts in, by key, for each issue
 // whose promotion moves it into the first step of its plan: one standing at admitted in the
