@@ -22,10 +22,9 @@ import (
 // passage "Otherwise, release the child again once it is `todo`.", which waits for G to be todo,
 // which only a release writes.
 func TestARecoveredChildWhoseParentIsRecordedIsReleasedAgainWhateverItsStatus(t *testing.T) {
-	quickInstallReads(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
-	w, client, installs, _ := repositoryRigWith(t, installs)
+	w, client, installs, _ := repositoryRigWith(t, installs, quickInstallReads)
 	const tree, c, g = "LEGION-1650", "LEGION-1651", "LEGION-1652"
 	liveRoot(t, w, client, tree)
 	client.show(issue(c, "zeta/tools", "todo", false, tree, 1), issue(g, "acme/widgets", "backlog", false, c, 1))

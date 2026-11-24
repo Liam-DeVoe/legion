@@ -24,10 +24,9 @@ import (
 // INFRA-3686's R2: "a step that a text gives today goes into the reader's prompt where the prompt
 // does not give it"; the change's own wrong fact is its defect (the architect's ruling).
 func TestARecoveredChildsReleaseStepGivesNoCauseTheChildDidNotHave(t *testing.T) {
-	quickInstallReads(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
-	w, client, installs, _ := repositoryRigWith(t, installs)
+	w, client, installs, _ := repositoryRigWith(t, installs, quickInstallReads)
 	const tree, c, e = "LEGION-1660", "LEGION-1661", "LEGION-1662"
 	liveRoot(t, w, client, tree)
 	client.show(issue(c, "zeta/tools", "todo", false, tree, 1), issue(e, "zeta/tools", "todo", false, tree, 1))
