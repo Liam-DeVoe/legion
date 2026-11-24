@@ -613,6 +613,19 @@ func (r *Runtime) claimBundle(ctx context.Context, issue string, role claim.Role
 	return appauth.ClaimBundle(ctx, r.gitHubCredential, r.controllerCredential, issue, role, repo, owner)
 }
 
+// secretProjectionBound is the least a launch into a pod it keeps gives its launcher to see the
+// slot credential the launch wrote (writeLaunchCredential) in the slot's gh files, whatever the
+// launch's start bound has left. The kubelet rewrites a Secret volume's files at the pod's next
+// sync, and Kubernetes documents the delay from the Secret's update to the new files as up to the
+// kubelet's sync period plus the propagation of its Secret cache: syncFrequency, one minute by
+// default, and the cache's watch, its default change detection
+// (configMapAndSecretChangeDetectionStrategy). The kubelet's pod workers schedule each periodic
+// sync up to half a sync period late at random (pod_workers.go, workerResyncIntervalJitterFactor),
+// so a default kubelet takes up to 90 s and the watch's delay; two minutes leaves 30 s of that
+// for the watch and the volume's remount. A cluster whose kubelets sync less often, or read
+// Secrets through a cache with a time to live, can take longer than this bound.
+const secretProjectionBound = 2 * time.Minute
+
 // writeLaunchCredential writes the slot of spec's claim in pod, a pod the launch keeps, for the App
 // of the step the claim does now (runtime.SlotRole), at once and with the one-slot write
 // (writeSlotCredential), records on the Secret in that write the role the launch's process runs
