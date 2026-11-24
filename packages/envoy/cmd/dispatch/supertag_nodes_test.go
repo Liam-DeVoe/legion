@@ -485,7 +485,7 @@ func requireNoMigrationTheBackfillReadsWritesGraphNodes(t *testing.T, ctx contex
 // to being admitted for bounded writes of graph_nodes and of graph_tuples, which the census read
 // above the limit, with no refusal at all. The type migrations are each pending migration that
 // writes rows of graph_nodes (writesGraphNodes), whatever its number: those numbered above
-// backfillReadsThrough, written after the backfill, and those of unreleasedVersionsBelowTheBackfill,
+// backfillVersion, written after the backfill, and those of unreleasedVersionsBelowTheBackfill,
 // which a store of the v34.11.x releases meets after its backfill too. Any other pending migration
 // is not judged here: its refusal at one byte says nothing about a type migration. A census that
 // judged no type migration fails, since it proved nothing.
