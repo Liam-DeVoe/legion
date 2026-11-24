@@ -7530,6 +7530,7 @@ Where its issue's pod was released before the wake, that report still ends the r
 While the project is paused, `GET /legion/v1/state` carries `paused`: the pause's `id`, `since`, `by` and `reason`, then `waitsOn`, each claim whose stop the pause still waits on, and `held`, each row that the pause holds, with its kind, its issue, its claim where the row names one, and the seconds it has waited.
 While the project runs after a pause has ended, the state carries `lastPause` instead, the last pause with its `endedAt` and `endedBy`.
 `legion state` prints one line for each: `paused: pause <id> since <time> by <who>: <reason>; waits on <n> roles — <ISSUE> <role>, …`, which ends `waits on no role` where the pause waits on none, and `last pause: pause <id> since <time> by <who>: <reason>; ended <time> by <who>`.
+A claim of an agent not named for its role, such as a second agent of one role, `implementer-2`, is named there with its token beside its issue and role: `<ISSUE> <role> (claim <token>)`.
 `<who>` is `the controller (session <id>)` or `the operator`.
 The summary of the controller's `read_state` prints each line in the same words, and adds how many rows the pause holds.
 Its times are the daemon's own strings, where `legion state` prints each time at whole seconds.
