@@ -612,61 +612,23 @@ A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): 
 ## A test reads a lock wait from pg_locks
 
 A Go test that waits for a backend to queue on a lock, or checks that one still waits, reads it
-through `packages/envoy/lockwaittest`: `lockwaittest.Waiting` is the condition, on a row of
-`pg_stat_activity`, that `pg_locks` holds an ungranted request of its pid, and
-`lockwaittest.WaitingOn("advisory")` is the same for one kind of lock. `pg_blocking_pids` reads the
-same queue. A test never reads `pg_stat_activity`'s `wait_event_type` or `wait_event` for it. A
-waiting backend's request stays queued in `pg_locks` until the lock is granted or the wait is
-cancelled. Its wait event reads `Lock` only while the backend sleeps on its latch. Each time the
-backend is woken, by its deadlock check at `deadlock_timeout` or by a signal, the wait event reads
-nothing until it sleeps again.
-
-What was measured: a probe sampled one waiting backend's wait event and its `pg_locks` request
-together, beside the whole of `internal/daemon` under `-race`, with `deadlock_timeout` at its
-default of 1 s. In 2 of 10 waits it read no wait event at 1.007, 1.009 and 1.011 s into the wait,
-with the request still queued. `TestReadyzIsFalseUntilTheDaemonServes` read the wait event once
-and counted 0 of the daemon's backends waiting while its one connection waited (CI run
-45206462019); how far into its wait that read fell was not measured.
-
-Envoy's `internal/textcheck` (`lock_wait_reads_test.go`) holds the three Go modules to this: Envoy,
-Envoy's infra and the daemon, each walked alone. It reads every Go string literal and fails on one
-that writes `lockwaittest`'s predicate out: the subquery
-`pid in (select pid from pg_locks where not granted)`, with or without one
-`and locktype = '…'` before its `)`, or that select as the whole of a literal. It fails on one
-that compares a wait event with a lock by its exact value: `wait_event_type = 'Lock'`, the
-reverse `'Lock' = wait_event_type`, a list such as `wait_event_type in ('Lock')`, a `like 'Lock'`,
-`wait_event` with a lock type such as `'advisory'`, and each of those with the column qualified
-(`a.wait_event_type`), in a `coalesce` or cast (`::text`). It fails too on a root that holds no
-`go.mod`, and on a module in which it read no Go file. It does not see:
-
-- the predicate written another way: its conditions in the other order
-  (`where locktype = 'advisory' and not granted`), with a table alias
-  (`select l.pid from pg_locks l where not l.granted`), or as the start of a longer statement;
-- a wait event matched by a pattern rather than its exact value, such as `like 'Lock%'`;
-- a comparison made in Go, of a `wait_event_type` the test scanned;
-- a statement built from pieces: a value passed as a bind parameter (`wait_event_type = $1`), a
-  column and a value in two literals joined by `+`, or a format verb;
-- another operator, such as `= any(…)`, or a literal in a `testdata` directory;
-- a test that decides on one sample of a wait event other than a lock's, such as an idle
-  holder's `Client/ClientRead`, which a signal blanks the same way. Such a test reads the
-  sample again, within a bound, until it holds.
-
-A read of one lock from `pg_locks`, by relation or by advisory key, a read of one backend's
-request by its pid, and a read of the waiters behind one backend (`pg_blocking_pids`) do not write
-the predicate out, and the check leaves them alone.
+through `packages/envoy/lockwaittest` (`Waiting`, or `WaitingOn("advisory")` for one kind of
+lock) or through `pg_blocking_pids`, never from `pg_stat_activity`'s `wait_event_type` or
+`wait_event`: a waiting backend's request stays queued in `pg_locks` for the whole wait, but its
+wait event reads nothing each time its deadlock check or a signal wakes it. A test that decides on
+one sample of any wait event reads it again, within a bound, until it holds. Envoy's
+`internal/textcheck` (`lock_wait_reads_test.go`) holds the three Go modules to this.
+`lockwaittest`'s package documentation gives what was measured, every form the check names and
+every form it does not see.
 
 ## A file a test runs
 
 A Go test that writes a file it then runs (a fake command, a stand-in script, a stub on `PATH`)
-can see the run fail with `ETXTBSY` ("text file busy"). While a file is open for writing, a fork
-of the test process copies the write descriptor into the child, which holds it until its own exec
-closes it, and the kernel refuses to exec a file any process holds open for writing. A test
-running beside it (`t.Parallel`) forks each time it starts a command, so once `internal/daemon`'s
-tests ran beside each other a gate test failed so under load
-(`TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid/refuses`, one run in 660).
-`testexec.WriteFile` (`packages/envoy/testexec`, which every module reaches) is `os.WriteFile`
-holding `syscall.ForkLock` for reading while the file is open, which every fork of a Go process
-takes for writing, so no fork falls inside the write.
+can see the run fail with `ETXTBSY` ("text file busy"): a fork of the test process copies the
+write descriptor into the child until its exec, and the kernel refuses to exec a file any process
+holds open for writing. `testexec.WriteFile` (`packages/envoy/testexec`, which every module
+reaches) holds `syscall.ForkLock` while the file is open, so no fork falls inside the write; its
+package documentation gives the failure that was measured.
 
 Two kinds of package write such a file with `testexec.WriteFile`: a package whose tests call
 `Parallel`, in its test files, and a test-support package (a package whose name begins or ends
@@ -677,42 +639,13 @@ binary runs one test at a time, and a fork in another process copies none of its
 only a goroutine of the running test can fork while the file is open.
 
 Each module's `internal/textcheck` holds those two kinds of package to the rule with
-`testexec.Unguarded`, and fails on each place it names, as file and line. It names:
-
-- an `os.WriteFile` or `os.OpenFile` whose mode has an execute bit, or a mode it cannot read as a
-  constant;
-- an `os.WriteFile`, `os.OpenFile`, `os.Create` or `os.CreateTemp` whose file the same top-level
-  function gives an execute bit, or a mode it cannot read as a constant, with a `Chmod`:
-  `os.Chmod` of the path the open names, spelled the same way, or of the path an `os.Rename` of
-  the function moved it to after the open, or the `Chmod` method of an expression that holds the
-  file, or `os.Chmod` of that one's `Name()`. The open holds its file, and so does a call that
-  wraps it at any depth, as `must(wrap(os.CreateTemp(dir, "")))`. So does a variable or field an
-  assignment of the function gives one of those, or a variable or field that held the file at
-  that point (`g := f`), and each field a keyed composite literal sets to one, nested too
-  (`h := &holder{f: f}` gives `h.f` the file). `(*h).f` is read as `h.f`;
-- a use of `os.WriteFile`, `os.OpenFile`, `os.Create`, `os.CreateTemp` or `os.Chmod` as a value;
-- a dot import of `os`.
-
-It reads each file's syntax alone, with no types, so it does not see:
-
-- a `Chmod` in another function than the open, or of the same path spelled another way, such as
-  a variable that holds the open's `filepath.Join` or its file's `Name()`;
-- a file handed to a name other than one an assignment of the open's own function gives it, from
-  the open, from a call that wraps it, or from a variable or field that holds it, directly or
-  through a keyed composite literal: a parameter of another function, a channel, a positional
-  composite literal, a slice that `append` adds it to, the address of a variable that holds it,
-  or a copy of a struct value that holds it in a field;
-- a file opened inside a function that returns it, such as a helper that calls `os.CreateTemp`
-  and returns the file, which its caller then gives an execute bit;
-- a file written by another function of `os` (`os.CopyFS`) or by another package's function
-  (`syscall.Open`, a helper of a package that is neither of the two kinds above);
-- a test-support package whose name does not begin or end with `test`.
-
-A write in one of those forms needs `testexec.WriteFile` by hand. A file that a command such as
-`cp` writes needs nothing: it is open in the command's process, not in the test's, so no fork of
-the test copies its descriptor. The check also fails when the directory it reads holds no
-`go.mod`, or when it read no test file there, so a check pointed at the wrong directory cannot
-pass while it reads nothing.
+`testexec.Unguarded`, and fails on each place it names, as file and line. `Unguarded`'s doc
+comment (`packages/envoy/testexec/unguarded.go`) lists the forms it names and the forms it does
+not see: it reads each file's syntax alone, with no types. A write in an unseen form needs
+`testexec.WriteFile` by hand. A file that a command such as `cp` writes needs nothing: it is open
+in the command's process, not in the test's, so no fork of the test copies its descriptor. The
+check also fails when the directory it reads holds no `go.mod`, or when it read no test file
+there, so a check pointed at the wrong directory cannot pass while it reads nothing.
 
 ## A Go test that opens a NATS client
 

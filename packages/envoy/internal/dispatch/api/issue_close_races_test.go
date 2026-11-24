@@ -375,7 +375,7 @@ func requireResolvedDecisionAndCopy(t *testing.T, handler http.Handler, database
 }
 
 // A decision block written within the settle delay, whose settlement is in flight - holding the
-// issue's row - when the issue is closed: the close waits for it on that row, so the settlement
+// issue's owner lock - when the issue is closed: the close waits for that lock, so the settlement
 // indexes the block as an ask credited to its writer, and the close then withdraws that ask,
 // naming the closer. The close's own settlement, behind it, finds the document settled, so the
 // two write at most one version of it before the close, and none holds the block resolved. The
@@ -384,7 +384,8 @@ func requireResolvedDecisionAndCopy(t *testing.T, handler http.Handler, database
 func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) {
 	t.Parallel()
 	var documents *docs.Service
-	// hold names the document whose next settlement is held at its owner row, until release.
+	// hold names the document whose next settlement is held once it holds its owner lock (its
+	// issue's), until release.
 	var hold atomic.Pointer[string]
 	held := make(chan struct{})
 	release := make(chan struct{})
@@ -435,9 +436,11 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 		defer close(closing)
 		closed = dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice")
 	}()
-	// The close waits for the issue's owner lock, which the held settlement holds: the waiter is
-	// the close's own backend, running owner_lock('exclusive', …), and no other backend of this
-	// database waits on a lock while the close is not sent.
+	// The close waits for the issue's owner lock, which the held settlement holds. lockWaiters
+	// counts any backend of this database that waits on a lock, not the close's alone, and that is
+	// enough here: in 15 runs that logged the waiter, the one waiter ran owner_lock('exclusive', …),
+	// and with the close never sent no backend waited in 20 of 20 runs. A close that does not wait
+	// fails the test anyway, at the select below or at the end-state checks after it.
 	awaitLockWaiters(t, database, 1)
 	select {
 	case <-closing:

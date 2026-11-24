@@ -3,9 +3,13 @@
 // file busy") whenever another goroutine of the test process forks while the file is open for
 // writing, as a test running beside it (t.Parallel) does each time it starts a command: the child
 // holds a copy of the write descriptor from the fork until its own exec closes it, and the kernel
-// refuses to exec a file some process holds open for writing. WriteFile keeps every fork of the
-// process out of that span, so no process the test binary starts can hold the file open when it
-// runs. Unguarded is the check the modules' text checks hold their tests to.
+// refuses to exec a file some process holds open for writing. Once internal/daemon's tests ran
+// beside each other, a gate test failed so under load
+// (TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid/refuses, one run in 660). WriteFile keeps
+// every fork of the process out of that span, so no process the test binary starts can hold the
+// file open when it runs. Unguarded is the check the modules' text checks hold their tests to, and
+// its doc comment lists the forms it names and the forms it does not see. docs/testing.md, "A file
+// a test runs", states the rule.
 package testexec
 
 import (

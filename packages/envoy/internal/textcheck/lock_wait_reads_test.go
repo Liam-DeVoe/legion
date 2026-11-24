@@ -22,13 +22,16 @@ var lockWaitRoots = []string{"../..", "../../infra", "../../../daemon"}
 // lockWaitHelper is the one Go file that spells the lock-wait predicate, from this directory.
 const lockWaitHelper = "../../lockwaittest/lockwaittest.go"
 
-// lockWaitTerm is a read of pg_stat_activity's wait_event_type or wait_event, as a column, a
-// qualified column (a.wait_event_type), a coalesce of either, or any of those cast (::text).
-const lockWaitTerm = `(?:coalesce\s*\(\s*(?:\w+\.)?wait_event(?:_type)?\s*,[^)]*\)|(?:\w+\.)?wait_event(?:_type)?)(?:\s*::\s*\w+)?`
+// lockWaitTerm is a read of pg_stat_activity's wait_event_type or wait_event: the column, qualified
+// (a.wait_event_type) or not, alone or inside one pair of parentheses, of a function call
+// (coalesce of the column and a default, lower of the column) or bare ((wait_event_type)), and any
+// of those cast (::text).
+const lockWaitTerm = `(?:\w*\s*\(\s*(?:\w+\.)?wait_event(?:_type)?\s*(?:,[^)]*)?\)|(?:\w+\.)?wait_event(?:_type)?)(?:\s*::\s*\w+)?`
 
 // lockWaitValue is Lock, the wait_event_type of a lock wait, or one of the wait_event values a lock
-// wait reports, which are pg_locks' locktype values, as a SQL string.
-const lockWaitValue = `'(?:lock|relation|extend|frozenid|page|tuple|transactionid|virtualxid|spectoken|object|userlock|advisory|applytransaction)'`
+// wait reports, which are pg_locks' locktype values, as a SQL string, an escape string (E'Lock')
+// too.
+const lockWaitValue = `e?'(?:lock|relation|extend|frozenid|page|tuple|transactionid|virtualxid|spectoken|object|userlock|advisory|applytransaction)'`
 
 // lockWaitOperator is how SQL compares two values for this check: =, <> or !=, or like, ilike and
 // their negations.
@@ -41,19 +44,20 @@ var (
 	lockWaitEvent = regexp.MustCompile(`(?i)` + lockWaitTerm + lockWaitOperator + lockWaitValue +
 		`|` + lockWaitValue + lockWaitOperator + lockWaitTerm +
 		`|` + lockWaitTerm + `\s+(?:not\s+)?in\s*\([^)]*` + lockWaitValue)
-	// lockWaitPredicate is lockwaittest's predicate written out: the subquery of the backends
-	// pg_locks holds an ungranted request of, with or without one lock type, and no other
-	// condition, or that select as the whole of a literal. A read of the waiters behind one
-	// backend (pg_blocking_pids) is another read.
+	// lockWaitPredicate is lockwaittest's predicate written out: the select of the backends
+	// pg_locks holds an ungranted request of, with or without one lock type and no other
+	// condition, followed by the ) that closes it or by the end of the literal, in whatever
+	// statement holds it (pid in, pid not in, exists, a with query). A read of the waiters behind
+	// one backend (pg_blocking_pids) adds a condition and is another read.
 	lockWaitPredicate = regexp.MustCompile(`(?i)select\s+pid\s+from\s+pg_locks\s+where\s+not\s+granted(?:\s+and\s+locktype\s*=\s*'\w+')?(?:\s*\)|\s*;?\s*$)`)
 )
 
 // No Go file of the three modules compares a wait event with a lock (lockWaitEvent) or writes out
 // lockwaittest's predicate (lockWaitPredicate): a test names lockwaittest.Waiting or WaitingOn
-// instead. Other reads of pg_locks, and the forms docs/testing.md lists as unseen, pass. Why the
-// wait event is the wrong read is lockwaittest's package comment; the measured figures are in
-// docs/testing.md, "A test reads a lock wait from pg_locks". A root that holds no go.mod, or in
-// which the walk reads no Go file, fails the check, which would otherwise pass having read nothing.
+// instead. Other reads of pg_locks, and the forms lockwaittest's package documentation lists as
+// unseen, pass. That documentation also says why the wait event is the wrong read and what was
+// measured. A root that holds no go.mod, or in which the walk reads no Go file, fails the check,
+// which would otherwise pass having read nothing.
 func TestEveryTestReadsALockWaitThroughLockwaittest(t *testing.T) {
 	offences, err := lockWaitReads(lockWaitRoots, lockWaitHelper)
 	if err != nil {
@@ -67,13 +71,14 @@ func TestEveryTestReadsALockWaitThroughLockwaittest(t *testing.T) {
 }
 
 // The check names a wait event compared with a lock as SQL writes it plainly, reversed, in a list,
-// qualified in the reversed form and in a coalesce and cast, and by like with the exact value, and
-// the predicate written out as a subquery, with a lock type, and as the whole of a literal, each
-// at the line it is on, in a raw literal across lines too. It leaves alone a wait event read for a
-// diagnosis or compared with another wait, a read of the waiters behind one backend, a comment,
-// the helper file, and a module below the root. A root that holds no go.mod, and one in which it
-// reads no Go file, is an error. The planted source splits each form across two literals, so this
-// file holds none of them whole.
+// qualified in the reversed form, in a coalesce and cast, in another function's call, in
+// parentheses, as an escape string, and by like with the exact value; and the predicate written out
+// in a pid in, a pid not in, an exists and a with query, with a lock type, and as the whole and the
+// end of a literal; each at the line it is on, in a raw literal across lines too. It leaves alone
+// a wait event read for a diagnosis or compared with another wait, the column inside two calls, a
+// pattern, a read of the waiters behind one backend, a comment, the helper file, and a module below
+// the root. A root that holds no go.mod, and one in which it reads no Go file, is an error. The
+// planted source splits each form across two literals, so this file holds none of them whole.
 func TestTheLockWaitCheckSeesWhatItGuards(t *testing.T) {
 	root := t.TempDir()
 	plant := func(path string, lines ...string) string {
@@ -105,6 +110,15 @@ func TestTheLockWaitCheckSeesWhatItGuards(t *testing.T) {
 		"var whole = \"select pid from pg_"+"locks where not granted\"",
 		"var diagnosis = \"select "+typed+", "+event+" from pg_stat_activity\"",
 		"var other = \""+typed+" = 'IO' and "+event+" = 'WalSync'\"",
+		"var negated = \"pid not in (select pid from pg_"+"locks where not granted)\"",
+		"var exists = \"exists (select pid from pg_"+"locks where not granted)\"",
+		"var with = \"with w as (select pid from pg_"+"locks where not granted) select count(*) from w\"",
+		"var tail = \"select 1; select pid from pg_"+"locks where not granted\"",
+		"var lowered = \"lower("+typed+") = 'lock'\"",
+		"var bracketed = \"'Lock' = ("+typed+")\"",
+		"var escaped = \""+typed+" = E'Lock'\"",
+		"var nested = \"lower(trim("+typed+")) = 'lock'\"",
+		"var pattern = \""+typed+" like 'Lock%'\"",
 		"",
 	)
 	helper := plant("lockwaittest/lockwaittest.go", "package lockwaittest", "",
@@ -117,16 +131,14 @@ func TestTheLockWaitCheckSeesWhatItGuards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	const predicate, compared = ": lockwaittest's predicate, written out", ": a wait event compared with a lock"
 	want := []string{
-		planted + ":11: the predicate lockwaittest.Waiting holds, written out",
-		planted + ":12: the predicate lockwaittest.Waiting holds, written out",
-		planted + ":14: the predicate lockwaittest.Waiting holds, written out",
-		planted + ":4: a wait event compared with a lock",
-		planted + ":5: a wait event compared with a lock",
-		planted + ":6: a wait event compared with a lock",
-		planted + ":7: a wait event compared with a lock",
-		planted + ":8: a wait event compared with a lock",
-		planted + ":9: a wait event compared with a lock",
+		planted + ":11" + predicate, planted + ":12" + predicate, planted + ":14" + predicate,
+		planted + ":17" + predicate, planted + ":18" + predicate, planted + ":19" + predicate,
+		planted + ":20" + predicate, planted + ":21" + compared, planted + ":22" + compared,
+		planted + ":23" + compared, planted + ":4" + compared, planted + ":5" + compared,
+		planted + ":6" + compared, planted + ":7" + compared, planted + ":8" + compared,
+		planted + ":9" + compared,
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("the check found\n\t%s\nwant\n\t%s", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
@@ -239,7 +251,7 @@ func lockWaitReadsIn(path string, source []byte, helper bool) []string {
 		}
 		if !helper {
 			for _, match := range lockWaitPredicate.FindAllStringIndex(text, -1) {
-				name(match[0], "the predicate lockwaittest.Waiting holds, written out")
+				name(match[0], "lockwaittest's predicate, written out")
 			}
 		}
 	}
