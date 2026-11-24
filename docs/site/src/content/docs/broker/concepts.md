@@ -1656,18 +1656,20 @@ deployment's settings name one of two ways (`packages/envoy/internal/cipher/prox
   server's identity. What the constraints bound depends on the client. Go's `crypto/tls` never
   takes a subject's common name as the server's name, so it refuses every leaf that names a host
   only there, and GnuTLS refused every such leaf too. Clients built on OpenSSL (`openssl verify`,
-  curl, Python's `ssl`, Node) hold a multi-label common name to the DNS constraints but not a
-  wildcard (`*.evil.example`) or single-label (`localhost`) one, and Bun trusts any common name
-  once the leaf carries a subject alternative name that is not a DNS or IP name (a URI, email or
-  registeredID name); against those clients a leaked pod key is bounded by the intermediate's
-  life, at most 7 days and 5 minutes, and not by its names. The `serverAuth` usage keeps the key
-  from signing a certificate a verifier takes for e-mail or for a client. The pod asks for the next
-  intermediate when the one it holds has less than 2 days left, and goes on asking with a backoff
-  of 1 second doubling to 5 minutes until it gets one; an answer it refuses counts as a failure. It
-  goes on signing with the intermediate it held until a minute after the new one's start, so after
-  a renewal a command whose clock runs up to a minute behind the pool's never meets an
-  intermediate that is not yet valid. A pod's first intermediate, and the one after an
-  intermediate ended, have no earlier one to sign with, so they rely on the pool's
+  curl, Python's `ssl`, Node) read the common name of a leaf with no DNS alternative name and
+  accept a name outside the allowed ones when that common name is one label, such as `localhost`,
+  or a wildcard over two or more labels, such as `*.evil.example` for `a.evil.example`; they refuse
+  a plain name, such as `evil.example`, and a wildcard over one label, such as `*.example`. Bun
+  accepts any name through the common name once the leaf also carries a URI, email or
+  registered-ID alternative name. Against those clients a leaked pod key is bounded by the
+  intermediate's life, at most 7 days and 5 minutes, and not by its names. The `serverAuth` usage
+  keeps the key from signing a certificate a verifier takes for e-mail or for a client. The pod
+  asks for the next intermediate when the one it holds has less than 2 days left, and goes on
+  asking with a backoff of 1 second doubling to 5 minutes until it gets one; an answer it refuses
+  counts as a failure. It goes on signing with the intermediate it held until a minute after the
+  new one's start, so after a renewal a command whose clock runs up to a minute behind the pool's
+  never meets an intermediate that is not yet valid. A pod's first intermediate, and the one after
+  an intermediate ended, have no earlier one to sign with, so they rely on the pool's
   `backdateDuration: 300s`, which covers five minutes in every case. It logs one line for each
   intermediate it takes, and one for each request that failed.
 - **A mounted pair** (`BROKER_AIRLOCK_CA_CERT_FILE`, `BROKER_AIRLOCK_CA_KEY_FILE`), for a deployment
