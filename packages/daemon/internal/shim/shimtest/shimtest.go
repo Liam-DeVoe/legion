@@ -13,8 +13,8 @@
 package shimtest
 
 import (
-	"bufio"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"net"
@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -56,6 +57,15 @@ type Workspace struct {
 	// Ctx is the context every git and jj command of the fixture runs under (NewWithin). A caller
 	// may set it again, to bound the commands it runs next by another context.
 	Ctx context.Context
+	// AheadOfTheShim, when a caller sets it, is called with the address of Bundle's listener
+	// before the shim starts, on the goroutine that called Bundle: what it dials there stands ahead
+	// of the shim's own connection, as a client of another test binary redialling a reused
+	// loopback port would.
+	AheadOfTheShim func(address string)
+	// ShimConfig, when a caller sets it, is called with the config Bundle is about to run the shim
+	// under, on the goroutine that called Bundle, and may change it: a case can make the shim end
+	// before it dials, say, with an enrollment whose keygen cannot start (shim.Config.AgentSecrets).
+	ShimConfig func(config *shim.Config)
 
 	tb testing.TB
 }
@@ -161,6 +171,13 @@ const bundleBudget = 2 * time.Minute
 // is the shim's whole answer, its own time of the reading (At) included; a caller that stands in
 // for the daemon's reader leaves out what that reader leaves out (stream.Conn.BundleWorkspace).
 //
+// The shim runs under a boot token of this exchange's own, and the daemon's end takes the shim's
+// connection by its hello under that token, past every connection another process opened to the
+// listener ahead of it, which it closes (shimsConnection): the kernel can hand the listener a
+// loopback port that a client of another test binary still redials. AheadOfTheShim, where it is
+// set, dials such connections before the shim starts. A shim that returns before its hello
+// arrives ends that wait at once, with an error carrying what shim.Run returned.
+//
 // It fails no test, because the daemon's cadence asks for a bundle from a goroutine of its own,
 // where no test may be failed: every way the exchange comes to nothing, the shim's refusal among
 // them, is its error. The shim runs only while Bundle does. It is stopped, and its wrapped process
@@ -178,36 +195,51 @@ func (w *Workspace) Bundle(ctx context.Context, maxBytes int) (shimwire.Workspac
 		return shimwire.WorkspaceBundle{}, fmt.Errorf("listen for the shim: %w", err)
 	}
 	defer listener.Close()
-	// A shim that never dials would leave the accept waiting past the end of ctx.
-	context.AfterFunc(ctx, func() { _ = listener.Close() })
+	if w.AheadOfTheShim != nil {
+		w.AheadOfTheShim(listener.Addr().String())
+	}
+	bootToken := "boot-" + rand.Text()
+	// The wrapped process is a plain `cat`: the shim bridges its stdio and answers the bundle frame
+	// itself, so nothing of Oh My Pi is needed to prove the save.
+	config := shim.Config{
+		Network: "tcp", Address: listener.Addr().String(), BootToken: bootToken,
+		Argv: []string{"/bin/sh", "-c", "exec cat"},
+		Env:  slices.Concat(w.Env, []string{"LEGION_WORKSPACE=" + w.Dir}),
+	}
+	if w.ShimConfig != nil {
+		w.ShimConfig(&config)
+	}
 	run, stop := context.WithCancel(ctx)
-	exited := make(chan struct{})
+	ran := &shimReturn{returned: make(chan struct{})}
 	go func() {
-		defer close(exited)
-		// The wrapped process is a plain `cat`: the shim bridges its stdio and answers the
-		// bundle frame itself, so nothing of Oh My Pi is needed to prove the save.
-		_, _ = shim.Run(run, shim.Config{
-			Network: "tcp", Address: listener.Addr().String(), BootToken: "boot",
-			Argv: []string{"/bin/sh", "-c", "exec cat"},
-			Env:  slices.Concat(w.Env, []string{"LEGION_WORKSPACE=" + w.Dir}),
-		})
+		defer close(ran.returned)
+		ran.code, ran.err = shim.Run(run, config)
 	}()
-	saved, err := w.ask(ctx, listener, maxBytes)
+	saved, err := w.ask(ctx, listener, bootToken, ran, maxBytes)
 	stop()
 	select {
-	case <-exited:
+	case <-ran.returned:
 	case <-time.After(20 * time.Second):
 		err = errors.Join(err, errors.New("the shim did not leave after its context ended"))
 	}
 	return saved, err
 }
 
-// ask is the daemon's end of one exchange with the shim that dials listener: the shim's hello and
-// its ack, the bundle-workspace frame, and the lines the shim sends until its result is whole.
-func (w *Workspace) ask(ctx context.Context, listener net.Listener, maxBytes int) (shimwire.WorkspaceBundle, error) {
-	conn, err := listener.Accept()
+// shimReturn is the shim's run as Bundle waits on it: returned closes once shim.Run has returned,
+// and code and err, what it returned, are read only after that.
+type shimReturn struct {
+	returned chan struct{}
+	code     int
+	err      error
+}
+
+// ask is the daemon's end of one exchange with the shim that dials listener under bootToken and
+// runs as ran: the shim's hello (shimsConnection) and its ack, the bundle-workspace frame, and the
+// lines the shim sends until its result is whole.
+func (w *Workspace) ask(ctx context.Context, listener net.Listener, bootToken string, ran *shimReturn, maxBytes int) (shimwire.WorkspaceBundle, error) {
+	conn, reader, err := shimsConnection(ctx, listener, bootToken, ran)
 	if err != nil {
-		return shimwire.WorkspaceBundle{}, fmt.Errorf("the shim never dialled: %w", err)
+		return shimwire.WorkspaceBundle{}, err
 	}
 	defer conn.Close()
 	// The deadline ends a read the shim leaves waiting once the budget is spent, and a cancel of
@@ -216,12 +248,6 @@ func (w *Workspace) ask(ctx context.Context, listener net.Listener, maxBytes int
 	deadline, _ := ctx.Deadline()
 	if err := conn.SetDeadline(deadline); err != nil {
 		return shimwire.WorkspaceBundle{}, err
-	}
-	reader := shimwire.NewReader(bufio.NewReader(conn))
-	if line, err := reader.ReadLine(); err != nil {
-		return shimwire.WorkspaceBundle{}, fmt.Errorf("the shim's hello: %w", err)
-	} else if frame, err := shimwire.Decode(line); err != nil || frame.FrameType() != shimwire.TypeHello2 {
-		return shimwire.WorkspaceBundle{}, fmt.Errorf("the shim opened with %v (%v)", frame, err)
 	}
 	writer := shimwire.NewWriter(conn)
 	if err := writer.WriteFrame(shimwire.HelloAck{}); err != nil {
@@ -270,6 +296,101 @@ func (w *Workspace) ask(ctx context.Context, listener net.Listener, maxBytes int
 			Bundle: result.Bundle, Head: result.Head, Tips: result.Tips, Bookmarks: result.Bookmarks, At: result.At,
 		}, nil
 	}
+}
+
+// shimsConnection takes the shim's connection off listener: the first connection it accepts whose
+// first line is the shim's hello under bootToken, with the reader that read that line. It reads
+// each accepted connection's first line on a goroutine of its own, so one that sends nothing holds
+// up no other, and closes every other connection it accepts: one that closes before it sends a
+// line, one whose first line is no frame or another frame, a hello under another boot token, and
+// one that is still silent when the wait ends. The shim's return (ran) ends the wait at once, as an
+// error carrying what shim.Run returned, and so does the end of ctx, whose deadline bounds each
+// first line's read too; an opening that never comes is an error naming that bound and ctx's cause.
+// Whatever the outcome, listener is closed, every connection but the shim's is closed, and no
+// goroutine of the wait is left running when it returns.
+func shimsConnection(ctx context.Context, listener net.Listener, bootToken string, ran *shimReturn) (net.Conn, *shimwire.Reader, error) {
+	deadline, _ := ctx.Deadline()
+	bound := time.Until(deadline)
+	type opened struct {
+		conn   net.Conn
+		reader *shimwire.Reader
+	}
+	found := make(chan opened, 1)
+	var (
+		mu sync.Mutex
+		// done is set once the shim's connection is handed on or the wait has ended: from then on
+		// each read closes the connection it read.
+		done bool
+		// pending is each connection whose first line is still being read.
+		pending = map[net.Conn]bool{}
+		reads   sync.WaitGroup
+	)
+	accepting := make(chan struct{})
+	go func() {
+		defer close(accepting)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			pending[conn] = true
+			mu.Unlock()
+			reads.Add(1)
+			go func() {
+				defer reads.Done()
+				_ = conn.SetReadDeadline(deadline)
+				reader := shimwire.NewReader(conn)
+				line, err := reader.ReadLine()
+				shims := false
+				if err == nil {
+					frame, err := shimwire.Decode(line)
+					hello, ok := frame.(shimwire.Hello2)
+					shims = err == nil && ok && hello.BootToken == bootToken
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				delete(pending, conn)
+				if shims && !done {
+					done = true
+					found <- opened{conn: conn, reader: reader}
+					return
+				}
+				_ = conn.Close()
+			}()
+		}
+	}()
+	var got opened
+	var err error
+	select {
+	case got = <-found:
+	case <-ran.returned:
+		err = fmt.Errorf("the shim returned (%d, %v) before a connection to %s opened with its hello under the exchange's boot token",
+			ran.code, ran.err, listener.Addr())
+	case <-ctx.Done():
+		err = fmt.Errorf("no connection to %s opened with the shim's hello under the exchange's boot token within the wait's bound of %s: %w",
+			listener.Addr(), bound.Round(time.Millisecond), context.Cause(ctx))
+	}
+	// Nothing accepts from listener from here, and every read still waiting for a first line ends.
+	_ = listener.Close()
+	<-accepting
+	mu.Lock()
+	done = true
+	for conn := range pending {
+		_ = conn.Close()
+	}
+	mu.Unlock()
+	reads.Wait()
+	if err != nil {
+		// The shim's connection can have opened as ctx ended.
+		select {
+		case late := <-found:
+			_ = late.conn.Close()
+		default:
+		}
+		return nil, nil, err
+	}
+	return got.conn, got.reader, nil
 }
 
 // GitDir is the git directory behind a workspace, as the restore resolves it.

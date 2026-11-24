@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shim/shimtest"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
@@ -375,6 +377,68 @@ func TestAReleasedWorkspacesWorkIsBundledByTheShimAndRestoredByTheLauncher(t *te
 	}
 }
 
+// A save is read off the shim's own connection, past every connection another process opened to
+// the daemon end ahead of it: one that closes at once, one that sends nothing, an HTTP request and
+// a hello under another pane's boot token, as a client of another test binary redialing a reused
+// loopback port would. Before the daemon end of the exchange (shimtest.Workspace.Bundle) read each
+// connection's opening, it took the first connection its listener accepted as the shim's and
+// failed on the one that closed.
+func TestASaveIsReadOffTheShimsConnectionPastTheConnectionsAheadOfIt(t *testing.T) {
+	testbin.RequireJJFilters(t)
+	f := newBundleFixture(t)
+	f.workOne()
+	f.AheadOfTheShim = func(address string) {
+		dial := func(open func(net.Conn) error) {
+			t.Helper()
+			conn, err := net.Dial("tcp", address)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			if err := open(conn); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dial(func(conn net.Conn) error { return conn.Close() })
+		dial(func(net.Conn) error { return nil })
+		dial(func(conn net.Conn) error {
+			_, err := conn.Write([]byte("GET /computeMetadata/v1/instance/service-accounts/default/identity HTTP/1.1\r\nHost: metadata\r\n\r\n"))
+			return err
+		})
+		dial(func(conn net.Conn) error {
+			return shimwire.NewWriter(conn).WriteFrame(shimwire.Hello2{BootToken: "another-pane"})
+		})
+	}
+	saved := f.bundleWorkspaceOne()
+	if saved.Head != f.Commits["working copy"] || saved.Bookmarks["legion/"+bundleIssue] != f.Commits["issue work"] {
+		t.Fatalf("the save is on %s with the bookmarks %v, want the shim's: the working copy %s and legion/%s on %s",
+			saved.Head, saved.Bookmarks, f.Commits["working copy"], bundleIssue, f.Commits["issue work"])
+	}
+}
+
+// A shim that returns before its hello reaches the daemon end ends the save's wait for that hello
+// at once, with what shim.Run returned, and not at the exchange's bound: here an enrollment with
+// the secrets broker whose keygen cannot start ends the shim before it dials (shim.Config's
+// AgentSecrets). Before the daemon end of the exchange (shimtest.Workspace.Bundle) read the shim's
+// return, such a save waited out its whole bound and named only that.
+func TestASaveWhoseShimReturnsBeforeItsHelloEndsAtOnceWithWhatTheShimReturned(t *testing.T) {
+	testbin.RequireJJFilters(t)
+	f := newBundleFixture(t)
+	keygen := filepath.Join(t.TempDir(), "no-agent-secrets")
+	f.ShimConfig = func(config *shim.Config) {
+		config.AgentSecrets = &shim.AgentSecrets{KeyDir: t.TempDir(), TokenFile: filepath.Join(t.TempDir(), "token"), Binary: keygen}
+	}
+	bound := beforeDeadline(t)
+	ctx, cancel := context.WithTimeout(f.Ctx, bound)
+	defer cancel()
+	_, err := f.Bundle(ctx, runtime.MaxWorkspaceBundleBytes)
+	const want = "the shim returned (1, agent-secrets keygen --out "
+	if ctx.Err() != nil || err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), keygen) {
+		t.Fatalf("the save ended with %v (its context: %v, its bound %s), want the shim's return before the bound: %q and the keygen %s it could not start",
+			err, ctx.Err(), bound.Round(time.Second), want, keygen)
+	}
+}
+
 // The launcher is its pod's PID 1, whose reaper reaps every exited child the launcher does not
 // hold (reapOrphans), and a put-back's jj and git are the launcher's own children. Each starts
 // through the guard the reaper skips (pidGuard.starter, which newManagers gives the pod's
@@ -673,7 +737,9 @@ const (
 // the fixture of every test that runs the real shim's bundler (shimtest.Workspace), and the pods
 // that replace it, into which this package's launcher restores what that shim bundled. Each of its
 // commands, and the shim's save, runs under the Workspace's Ctx: a command still running when Ctx
-// ends is killed, and its failure names Ctx's cause.
+// ends is killed, and its failure names Ctx's cause. The save's daemon end takes the shim's
+// connection by its hello under a boot token of the save's own, past whatever a case's
+// AheadOfTheShim dials there first, as another process's client on a reused port would.
 type bundleFixture struct {
 	*shimtest.Workspace
 	t *testing.T
