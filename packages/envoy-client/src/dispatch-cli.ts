@@ -16,6 +16,7 @@ import {
   type ParsedCommand,
   parseCommand,
 } from "./dispatch-command";
+import { apiCommand } from "./dispatch-commands/api";
 import { defined } from "./dispatch-commands/context";
 import { loginCommand } from "./dispatch-commands/login";
 import type { ActiveDispatchConfig } from "./dispatch-config";
@@ -43,6 +44,7 @@ import { messageFor } from "./errors";
 import { nearestAncestorNamed } from "./process-ancestry";
 import {
   handedConfigFile,
+  type SessionConfigFile,
   sessionConfigFile,
   sessionDispatchSettings,
   sessionEnvoySettings,
@@ -240,6 +242,54 @@ function commandHost(
   return env.CLAUDE_CODE_CHILD_SESSION === "1" ? "claude" : undefined;
 }
 
+/** The host a command runs under and the session it acts as there, with the envoy.json that
+ *  host's plugin chose, or the usage error a command refuses the absence of either with. */
+export type HostSession =
+  | {
+      readonly host: DispatchHost;
+      readonly sessionId: string;
+      readonly file: SessionConfigFile;
+    }
+  | { readonly problem: string };
+
+/**
+ * The session a command acts as under the host `hostName` names (`commandHost`): Claude Code's
+ * `claudeSession`, Codex's `CODEX_THREAD_ID`, else `DISPATCH_SESSION_ID`; and the file the
+ * session's plugin handed its shell (each plugin sets `DISPATCH_HOST` and `ENVOY_CONFIG_FILE`
+ * together), else the host's own rule. A host that is none of `HOSTS`, or a session id that is not
+ * set, is the usage error every command refuses with.
+ */
+function hostSession(
+  hostName: string | undefined,
+  env: Readonly<Record<string, string>>,
+  claudeSession: string | undefined
+): HostSession {
+  const host = HOSTS.find((name) => name === hostName);
+  if (host === undefined) {
+    return {
+      problem:
+        hostName === undefined
+          ? "dispatch: DISPATCH_HOST is not set. The host plugin sets it in an agent's shell. From an agent's session, send the command as a bash call. To run dispatch by hand, set DISPATCH_HOST, and set DISPATCH_SESSION_ID to the id of your own session."
+          : `dispatch: DISPATCH_HOST is ${JSON.stringify(hostName)}, not omp, claude or codex.`,
+    };
+  }
+  const [sessionId, sessionVariable] =
+    host === "claude"
+      ? [claudeSession, "ENVOY_SESSION_ID or CLAUDE_CODE_SESSION_ID"]
+      : host === "codex"
+        ? [env.CODEX_THREAD_ID, "CODEX_THREAD_ID"]
+        : [env.DISPATCH_SESSION_ID, "DISPATCH_SESSION_ID"];
+  if (sessionId === undefined) {
+    return {
+      problem: `dispatch: ${sessionVariable} is not set, so this call has no session to act as. The host plugin sets it in an agent's shell.`,
+    };
+  }
+  const file =
+    (env.DISPATCH_HOST === undefined ? null : handedConfigFile(env)) ??
+    sessionConfigFile(host, env);
+  return { host, sessionId, file };
+}
+
 export async function runDispatchCli(
   argv: readonly string[],
   rawEnv: Readonly<Record<string, string | undefined>>,
@@ -277,6 +327,35 @@ export async function runDispatchCli(
     };
     return resolvedHost.name;
   };
+  /** Appends `text`, a refusal made before the call reached Dispatch, to the ledger of the
+   *  session this call knows, if any. */
+  const ledgerRefusal = (text: string, tool?: string, askgate?: ResultInput["askgate"]): void => {
+    const sessionId =
+      ledgerHost() === "codex"
+        ? env.CODEX_THREAD_ID
+        : (claudeSession ?? env.DISPATCH_SESSION_ID ?? env.CODEX_THREAD_ID);
+    if (sessionId === undefined) return;
+    try {
+      appendResult(sessionDirectory(env, sessionId), {
+        tool: tool ?? "dispatch",
+        error: text.trimEnd(),
+        ...(askgate === undefined ? {} : { askgate }),
+      });
+    } catch {
+      // The session's directory is unusable; the printed refusal stands on its own.
+    }
+  };
+  // `dispatch api` sends one request of Dispatch's HTTP API (`dispatch-commands/api.ts`). Like
+  // `dispatch login` it runs where no host is found, as in a GitHub Actions job, reading Dispatch
+  // from the environment alone; under a host it acts as that host's session. Its refusals before
+  // a request is sent go to the ledger as every other command's do.
+  if (argv[0] === "api") {
+    const hostName = ledgerHost();
+    return await apiCommand(argv.slice(1), env, io, {
+      hosted: hostName === undefined ? undefined : hostSession(hostName, env, claudeSession),
+      ledger: ledgerRefusal,
+    });
+  }
   const refuse = (
     text: string,
     code: number,
@@ -284,21 +363,7 @@ export async function runDispatchCli(
     askgate?: ResultInput["askgate"]
   ): number => {
     print(text);
-    const sessionId =
-      ledgerHost() === "codex"
-        ? env.CODEX_THREAD_ID
-        : (claudeSession ?? env.DISPATCH_SESSION_ID ?? env.CODEX_THREAD_ID);
-    if (sessionId !== undefined) {
-      try {
-        appendResult(sessionDirectory(env, sessionId), {
-          tool: tool ?? "dispatch",
-          error: text.trimEnd(),
-          ...(askgate === undefined ? {} : { askgate }),
-        });
-      } catch {
-        // The session's directory is unusable; the printed refusal stands on its own.
-      }
-    }
+    ledgerRefusal(text, tool, askgate);
     return code;
   };
 
@@ -326,30 +391,9 @@ export async function runDispatchCli(
         );
   }
 
-  const hostName = ledgerHost();
-  const host = HOSTS.find((name) => name === hostName);
-  if (host === undefined) {
-    return refuse(
-      hostName === undefined
-        ? "dispatch: DISPATCH_HOST is not set. The host plugin sets it in an agent's shell. From an agent's session, send the command as a bash call. To run dispatch by hand, set DISPATCH_HOST, and set DISPATCH_SESSION_ID to the id of your own session."
-        : `dispatch: DISPATCH_HOST is ${JSON.stringify(hostName)}, not omp, claude or codex.`,
-      USAGE,
-      parsed.tool
-    );
-  }
-  const [sessionId, sessionVariable] =
-    host === "claude"
-      ? [claudeSession, "ENVOY_SESSION_ID or CLAUDE_CODE_SESSION_ID"]
-      : host === "codex"
-        ? [env.CODEX_THREAD_ID, "CODEX_THREAD_ID"]
-        : [env.DISPATCH_SESSION_ID, "DISPATCH_SESSION_ID"];
-  if (sessionId === undefined) {
-    return refuse(
-      `dispatch: ${sessionVariable} is not set, so this call has no session to act as. The host plugin sets it in an agent's shell.`,
-      USAGE,
-      parsed.tool
-    );
-  }
+  const hosted = hostSession(ledgerHost(), env, claudeSession);
+  if ("problem" in hosted) return refuse(hosted.problem, USAGE, parsed.tool);
+  const { host, sessionId, file } = hosted;
   let dir: string;
   try {
     dir = sessionDirectory(env, sessionId);
@@ -357,11 +401,6 @@ export async function runDispatchCli(
     return refuse(messageFor(error), USAGE, parsed.tool);
   }
 
-  // The file the session's plugin handed its shell (each plugin sets DISPATCH_HOST and
-  // ENVOY_CONFIG_FILE together), else the host's own rule.
-  const file =
-    (env.DISPATCH_HOST === undefined ? null : handedConfigFile(env)) ??
-    sessionConfigFile(host, env);
   if (parsed.dryRun && !dryRunAsksDispatch(parsed.tool, parsed.args)) {
     // The call's own argument check, so the call refuses no arguments its dry run passed; what
     // the call needs besides (Dispatch's configuration, this session's state, Dispatch's answers)
