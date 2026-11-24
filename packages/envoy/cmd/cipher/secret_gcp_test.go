@@ -43,6 +43,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 const (
@@ -643,7 +645,10 @@ type gcloudStub struct{ dir string }
 // gcloudVariables as its environment holds them. It also clears the variables a developer's own
 // shell could set to steer the sign-in, GOOGLE_APPLICATION_CREDENTIALS, CLOUDSDK_CORE_ACCOUNT,
 // CLOUDSDK_ACTIVE_CONFIG_NAME and CLOUDSDK_AUTH_ACCESS_TOKEN, and points HOME and CLOUDSDK_CONFIG
-// at an empty directory, so no test reaches the developer's own gcloud or credentials.
+// at an empty directory, so no test reaches the developer's own gcloud or credentials. No test of
+// this stub is about the deadline on its `config list` (gcloudSettingsDeadline), whose kill
+// would print the principal unknown, so the read gets what is left of the test binary's deadline
+// less waitMargin rather than a span a loaded machine can spend before the stub answers.
 func useGcloud(t *testing.T, accounts ...string) gcloudStub {
 	t.Helper()
 	dir := t.TempDir()
@@ -669,7 +674,7 @@ func useGcloud(t *testing.T, accounts ...string) gcloudStub {
 		"esac",
 		"",
 	}, "\n")
-	if err := os.WriteFile(filepath.Join(dir, "gcloud"), []byte(script), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(dir, "gcloud"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
@@ -677,6 +682,9 @@ func useGcloud(t *testing.T, accounts ...string) gcloudStub {
 	t.Setenv("CLOUDSDK_CORE_ACCOUNT", "")
 	t.Setenv("CLOUDSDK_AUTH_ACCESS_TOKEN", "")
 	useEmptyGcloudConfigDir(t)
+	restoreSettingsDeadline := gcloudSettingsDeadline
+	gcloudSettingsDeadline = testwait.Remaining(t, waitMargin)
+	t.Cleanup(func() { gcloudSettingsDeadline = restoreSettingsDeadline })
 	return gcloudStub{dir}
 }
 
@@ -1288,7 +1296,7 @@ func TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) 
 	useStoreCallDeadline(t, 300*time.Millisecond)
 	dir := t.TempDir()
 	gcloud := filepath.Join(dir, "gcloud")
-	if err := os.WriteFile(gcloud, []byte("#!/bin/sh\nsleep 3600\n"), 0o755); err != nil {
+	if err := testexec.WriteFile(gcloud, []byte("#!/bin/sh\nsleep 3600\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	expired := &oauth2.Token{AccessToken: "old", TokenType: "Bearer", Expiry: time.Now().Add(-time.Minute)}
@@ -1310,7 +1318,10 @@ func TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) 
 // account, answers `auth print-access-token` with stubTokenPrefix + account, and answers
 // `auth list` (account, active) and `config list` (no auth property) as authList and configList
 // say: "" answers, "fail" fails as gcloud does, naming the failure on its standard error, and
-// "hang" answers nothing for 30 s. It first clears every other source, as useNoADC does.
+// "hang" answers nothing until t ends, or until the test binary's deadline less waitMargin
+// (testwait.Remaining), or until this test process is gone: never for a span of its own, so no
+// run answers by the hang's own end before the deadline under test ends it. It first clears every
+// other source, as useNoADC does.
 func useGcloudThatAnswers(t *testing.T, account, authList, configList string) {
 	t.Helper()
 	sleep, err := exec.LookPath("sleep")
@@ -1318,12 +1329,20 @@ func useGcloudThatAnswers(t *testing.T, account, authList, configList string) {
 		t.Fatal(err)
 	}
 	useNoADC(t)
+	release := filepath.Join(t.TempDir(), "release")
+	giveUp := time.AfterFunc(testwait.Remaining(t, waitMargin), func() { _ = os.WriteFile(release, nil, 0o600) })
+	t.Cleanup(func() {
+		giveUp.Stop()
+		if err := os.WriteFile(release, nil, 0o600); err != nil {
+			t.Errorf("release the stub gcloud's hang: %v", err)
+		}
+	})
 	behave := func(command, answer, mode string) string {
 		switch mode {
 		case "fail":
 			return `echo 'ERROR: (gcloud.` + command + `) the test fails it' >&2; exit 1`
 		case "hang":
-			return "exec " + shellWord(sleep) + " 30"
+			return "while [ ! -e " + shellWord(release) + " ] && kill -0 " + strconv.Itoa(os.Getpid()) + " 2>/dev/null; do " + shellWord(sleep) + " 0.05; done"
 		}
 		return "printf '%s\\n' " + shellWord(answer)
 	}
@@ -1338,7 +1357,7 @@ func useGcloudThatAnswers(t *testing.T, account, authList, configList string) {
 		"",
 	}, "\n")
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "gcloud"), []byte(script), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(dir, "gcloud"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)

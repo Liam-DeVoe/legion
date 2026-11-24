@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -23,6 +24,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // manifestAt is where the tests' pi-legion manifest goes under a plugins root, and envoyManifestAt
@@ -283,24 +286,32 @@ func TestPluginManifestPathRefusesAProfileOhMyPiRefuses(t *testing.T) {
 // yes-* step prints interface 1 for pi-legion, and 1 for pi-envoy except the steps that test a
 // missing or mismatched pi-envoy, whatever the release's own number is, on purpose: the gate
 // compares the number pi-legion speaks with the one pi-envoy publishes, never either with a
-// release.
+// release. invocation is path as the gate's OMP invocation holds it, one shell word
+// (shellprefix.Word), as omplaunch.ResolveInvocation quotes LEGION_OMP_PATH: a temporary path can
+// hold a space or a quote.
 type fakeOmp struct {
-	dir, path, prefix string
+	dir, path, prefix, invocation string
 }
 
 func newFakeOmp(t *testing.T, plan ...string) fakeOmp {
 	t.Helper()
 	dir := t.TempDir()
+	// What the fake leaves running ends at the test's cleanup, if no stop has ended it first (held).
+	t.Cleanup(func() { _ = os.WriteFile(filepath.Join(dir, "release"), nil, 0o644) })
 	if err := os.WriteFile(filepath.Join(dir, "plan"), []byte(strings.Join(plan, "\n")+"\n"), 0o644); err != nil {
 		t.Fatalf("write the plan: %v", err)
 	}
 	script := `#!/bin/sh
-dir=` + dir + `
+dir=` + shellprefix.Literal(dir) + `
+# held stands in for a process that hangs: it runs until a signal ends it or the test's cleanup
+# writes release, and never ends on a timer of its own.
+held() { until [ -e "$dir/release" ]; do sleep 0.05; done; }
 n=$(( $(cat "$dir/count" 2>/dev/null || echo 0) + 1 ))
 # Renamed into place: the test reads this file while a later attempt writes it, and a plain
 # redirection truncates before it writes, so the reader can see it empty.
 echo "$n" >"$dir/count.$n" && mv "$dir/count.$n" "$dir/count"
-printf '%s\n' "$*" >"$dir/argv.$n"
+# One argument a line: the probe's path is a temporary one, which can hold a space.
+printf '%s\n' "$@" >"$dir/argv.$n"
 env >"$dir/env.$n"
 cp "$3" "$dir/probe.$n"
 step=$(sed -n "${n}p" "$dir/plan")
@@ -320,7 +331,7 @@ yes) printf "$legion$with_envoy" >&2; exit 0 ;;
 # A pass that takes its time, as Oh My Pi does on a loaded machine: longer than a budget of a
 # second or two, and far inside the rig's.
 yes-slowly) sleep 2; printf "$legion$with_envoy" >&2; exit 0 ;;
-yes-then-linger) printf "$legion$with_envoy" >&2; sleep 30 & echo $! >"$dir/lingering.pid"; exit 0 ;;
+yes-then-linger) printf "$legion$with_envoy" >&2; held & echo $! >"$dir/lingering.pid"; exit 0 ;;
 yes-elsewhere) printf "LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=file://$HOME/elsewhere/dist/legion.js?mtime=1\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n$with_envoy" >&2; exit 0 ;;
 yes-unowned) printf "LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=file://$HOME/unowned/legion.js\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n$with_envoy" >&2; exit 0 ;;
 # No pi-envoy; a skill asked for is missing too, so a test can see which refusal wins.
@@ -334,20 +345,21 @@ no) echo LEGION_PLUGIN_LOADED=no >&2; exit 0 ;;
 silent) exit 0 ;;
 denied) echo "secrets: ANTHROPIC_API_KEY was denied" >&2; exit 3 ;;
 denied-then-killed) echo "secrets: ANTHROPIC_API_KEY was denied" >&2; kill -KILL $$ ;;
-hang) exec sleep 30 ;;
-# Answers, then hangs past the rig's answerBudget, so the budget cuts it only after the answer.
-no-then-hang) echo LEGION_PLUGIN_LOADED=no >&2; exec sleep 120 ;;
+# Writes that attempt n's stand-in hangs, the fact a row's budget passes at (hangsUnder).
+hang) : >"$dir/hanging.$n"; held; exit 0 ;;
+# Answers, then hangs (held), so the budget cuts it only after the answer.
+no-then-hang) echo LEGION_PLUGIN_LOADED=no >&2; held; exit 0 ;;
 esac
 `
 	path := filepath.Join(dir, "omp")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := testexec.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the fake omp: %v", err)
 	}
 	prefix := filepath.Join(dir, "launch-prefix")
-	if err := os.WriteFile(prefix, []byte("#!/bin/sh\necho prefixed >\""+dir+"/prefixed\"\nexec \"$@\"\n"), 0o755); err != nil {
+	if err := testexec.WriteFile(prefix, []byte("#!/bin/sh\necho prefixed >"+shellprefix.Literal(filepath.Join(dir, "prefixed"))+"\nexec \"$@\"\n"), 0o755); err != nil {
 		t.Fatalf("write the launch prefix: %v", err)
 	}
-	return fakeOmp{dir: dir, path: path, prefix: prefix}
+	return fakeOmp{dir: dir, path: path, prefix: prefix, invocation: shellprefix.Word(path)}
 }
 
 func (f fakeOmp) attempts(t *testing.T) int {
@@ -380,8 +392,8 @@ func (f fakeOmp) read(t *testing.T, name string) string {
 // installs it — the profile's package directory a link to the unpacked plugin — run through f with
 // f's launch prefix, and a log that records what it said. Its attempt budget is answerBudget, the
 // image probe rig's, so an attempt that answers races no clock: one that answers and then hangs
-// is cut only after its answer. A case whose attempts hang before they answer anything takes
-// hangBudget (hangsUnder).
+// is cut only after its answer. A case whose attempts hang before they answer anything has each
+// attempt's budget pass once its stand-in hangs (hangsUnder).
 func gateUnder(t *testing.T, f fakeOmp, legion string) (pluginGate, *bytes.Buffer) {
 	t.Helper()
 	home := t.TempDir()
@@ -399,13 +411,35 @@ func gateUnder(t *testing.T, f fakeOmp, legion string) (pluginGate, *bytes.Buffe
 			"XDG_DATA_HOME": filepath.Join(home, "state", "home", ".local", "share"),
 		},
 		workDir:    t.TempDir(),
-		invocation: f.path,
+		invocation: f.invocation,
 		prefix:     []string{f.prefix},
 		timeout:    answerBudget,
 		retry:      bootprobe.Retry{Initial: 10 * time.Millisecond, Max: 40 * time.Millisecond},
 		contract:   3,
 		log:        slog.New(slog.NewTextHandler(&logged, nil)),
 	}, &logged
+}
+
+// Each probe attempt runs under the gate's own budget, slow_command_timeout_seconds: the context
+// budget gives an attempt ends timeout after the call. The rows that cut a probe that hangs before
+// it answers pass its budget at a fact of the run (hangsUnder), so no load can pass it before the
+// probe has started. This row holds the clock budget gives that end from, and the rows whose fake
+// answers and then hangs hold that clock's end on a running probe
+// (TestTheLoadProbeRefusesAPluginOhMyPiDidNotLoad's no-then-hang, and the image probe's
+// missing-then-hang): only answerBudget's clock cuts those.
+func TestAProbeAttemptRunsUnderTheGatesTimeout(t *testing.T) {
+	t.Parallel()
+	const timeout = 7 * time.Second
+	before := time.Now()
+	attempt, cancel := pluginGate{timeout: timeout}.budget(context.Background())
+	defer cancel()
+	after := time.Now()
+
+	deadline, ok := attempt.Deadline()
+	if !ok || deadline.Before(before.Add(timeout)) || deadline.After(after.Add(timeout)) {
+		t.Fatalf("the attempt's deadline is %s (one set: %t), want %s after the call, between %s and %s",
+			deadline.Format(time.RFC3339Nano), ok, timeout, before.Add(timeout).Format(time.RFC3339Nano), after.Add(timeout).Format(time.RFC3339Nano))
+	}
 }
 
 const (
@@ -518,7 +552,7 @@ func TestTheLoadProbeRunsWhatAPaneRunsAndPassesOnTheLoadedMarker(t *testing.T) {
 	if n := f.attempts(t); n != 1 {
 		t.Fatalf("Oh My Pi ran %d times, want once", n)
 	}
-	argv := strings.Fields(f.read(t, "argv.1"))
+	argv := strings.Split(strings.TrimSuffix(f.read(t, "argv.1"), "\n"), "\n")
 	if len(argv) != 4 || argv[0] != "models" || argv[1] != "--extension" || argv[3] != "--json" {
 		t.Errorf("omp argv = %q, want models --extension <probe> --json", argv)
 	}
@@ -548,22 +582,23 @@ func TestTheLoadProbeRunsWhatAPaneRunsAndPassesOnTheLoadedMarker(t *testing.T) {
 }
 
 // Exit 0 with LEGION_PLUGIN_LOADED=yes already written is an answer, whatever the launch started
-// that is still running when Oh My Pi itself exits: a process it left behind (sleep 30 &, standing
-// in for whatever a real tmux pane's launch can leave running) holds the probe's output pipe open
-// past procgroup.WaitDelay, but the probe already answered before that, and must neither be
-// retried for it nor wait for it. Attempts is capped at 1 so a reintroduced regression (treating
-// the lingering child as a transient non-answer) fails fast with this test's own message, instead
-// of retrying until go test's own timeout ends the run; and the child must still be running when
-// the gate returns, so a gate that waited for it to close the pipe fails here too. With one
-// attempt, a budget kill fails the test, so the budget is wide: it only has to outlast the fake's
-// own exit on a loaded box. An exit inside the budget whose pipe is held past it is
+// that is still running when Oh My Pi itself exits: a process it left behind (held &, which only a
+// signal or the test's cleanup ends, standing in for whatever a real tmux pane's launch can leave
+// running) holds the probe's output pipe open past procgroup.WaitDelay, but the probe already
+// answered before that, and must neither be retried for it nor wait for it. Attempts is capped at
+// 1 so a reintroduced regression (treating the lingering child as a transient non-answer) fails
+// fast with this test's own message, instead of retrying until go test's own timeout ends the run;
+// and the child must still be running when the gate returns, so a gate that waited for it to close
+// the pipe fails here too. With one attempt, a budget kill fails the test, which gateUnder's budget
+// (answerBudget, 20 s) keeps out of reach of the fake's own exit on a loaded box. The child stays
+// in the probe's process group, so this row holds the in-group side of a budget far away. An exit
+// inside the budget whose pipe is held past it is
 // TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt's.
 func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutputPipe(t *testing.T) {
 	t.Parallel()
 	f := newFakeOmp(t, "yes-then-linger")
 	gate, _ := gateUnder(t, f, contractCurrent)
 	gate.retry.Attempts = 1
-	gate.timeout = 10 * time.Second
 	t.Cleanup(func() { killPIDFile(t, filepath.Join(f.dir, "lingering.pid")) })
 
 	if err := gate.verify(context.Background()); err != nil {
@@ -583,45 +618,269 @@ func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutpu
 }
 
 // A probe that exits on its own inside its budget was not cut off by it, however long
-// procgroup.WaitDelay then holds the run open for a child the probe left holding its output pipe.
-// The budget here is 100 ms short of WaitDelay, so every such run returns past its deadline, while
-// the probe still has 900 ms to exit under load: a run that read "timed out" from the deadline
-// having passed would call this answer a budget kill, and a load probe whose Oh My Pi answered yes
-// inside the last WaitDelay of slow_command_timeout_seconds would be retried, and refused once its
-// retries ran out.
+// procgroup.WaitDelay then holds the run open for a child the probe left holding its output pipe,
+// and however much of that time passes after the budget: a run that read "timed out" from the
+// deadline having passed would call this answer a budget kill, and a load probe whose Oh My Pi
+// answered yes inside the last WaitDelay of slow_command_timeout_seconds would be retried, and
+// refused once its retries ran out.
+//
+// The budget passes at a fact of the run, not at a time (budgetPassedOnceTheProbeIsGone): once the
+// probe's process group is gone, which is after the probe has exited on its own and Go has reaped
+// it. WaitDelay then holds the run open for the child, and the watch of the group sees the group
+// gone inside that second unless a loaded machine holds the watch up for as long. A run that
+// returned inside WaitDelay had nothing holding its pipe, and fails at once. Of the others, only a
+// run in which the budget passed before the run gave its answer back is judged. A run of the other
+// order made its judgment before the budget passed, so it shows nothing of a gate that reads a
+// passed budget: the row runs the probe again, within its bound (answerBudget, testwait.Bounded),
+// until a run of the right order comes. It fails naming the runs it made when none comes, and
+// naming the group when the group is not gone by the end of the bound, since the budget then never
+// passed at all. Main's form counted a 900 ms budget from before the shell started, which a loaded
+// machine could spend before the shell had exited.
+//
+// gate.timeout is the budget as a clock reads it, 100 ms short of WaitDelay. The attempt's deadline
+// reads as the budget's at a time (when the attempt began plus timeout) until the budget passes,
+// and as the moment the budget passed from then on (attemptDeadline, testwait.StandInDeadline).
+// No clock in run reads either where expire is set, but a gate that judged the end by the clock,
+// the run's time against timeout or the time against the attempt's deadline, read before the
+// command runs or after, would call this exit a timeout: the run returns past WaitDelay, after
+// both.
+//
+// The child holding the pipe leaves the probe's process group (setsid) before the probe exits, so
+// the group is gone once the probe is, and a stop sent to the group after that finds nothing to
+// signal (ESRCH), which procgroup.Configure reads as no kill. The child runs until the row
+// releases it once the run is over, or a kill ends it, never on a timer of its own, so its own end
+// lets no run's pipe go early.
+//
+// With a child still in the group, one side is held by facts, the other by a far budget
+// (answerBudget, 20 s). A budget that passes while the probe runs stops the whole group
+// (TestABudgetThatPassesWhileTheProbeRunsStopsItsWholeGroup), and a probe that exits on its own
+// while its budget is far away is no kill
+// (TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutputPipe). A deadline
+// that passes between the leader's reap and Wait's read of its context still meets exec's Cancel,
+// whose stop the child in the group takes, so the run reports a kill, as procgroup.Configure's doc
+// says. No fact outside os/exec orders that window, and no test asserts either answer there.
 func TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt(t *testing.T) {
 	t.Parallel()
-	pidFile := filepath.Join(t.TempDir(), "lingering.pid")
-	t.Cleanup(func() { killPIDFile(t, pidFile) })
 	gate := pluginGate{env: map[string]string{"PATH": os.Getenv("PATH")}, workDir: t.TempDir(), timeout: procgroup.WaitDelay - 100*time.Millisecond}
+	within := testwait.Bounded(t, answerBudget, cutRunMargin)
+	until := time.Now().Add(within)
+	for runs := 1; ; runs++ {
+		dir := t.TempDir()
+		pidFile, leader, release := filepath.Join(dir, "lingering.pid"), filepath.Join(dir, "leader"), filepath.Join(dir, "release")
+		var watch *groupWatch
+		gate.expire, watch = budgetPassedOnceTheProbeIsGone(leader, gate.timeout, until)
 
-	r, err := gate.run(context.Background(), `echo answered >&2; sleep 30 & echo $! >"$1"; exit 0`, pidFile)
+		r, err := gate.run(context.Background(), `echo $$ >"$2"; echo answered >&2; setsid sh -c 'echo $$ >"$0"; until [ -e "$1" ]; do sleep 0.01; done' "$1" "$3" & while [ ! -s "$1" ]; do sleep 0.01; done; exit 0`, pidFile, leader, release)
 
-	if err != nil {
-		t.Fatalf("run = %v, want the probe's own exit", err)
-	}
-	if r.elapsed < gate.timeout {
-		t.Fatalf("the run returned after %s, inside its %s budget: nothing held the pipe past the deadline, so this run proves nothing", r.elapsed, gate.timeout)
-	}
-	if r.timedOut || r.exit != 0 || !strings.Contains(r.stderr, "answered") {
-		t.Errorf("run = exit %d, timed out %t, stderr %q after %s; want exit 0, not timed out, and the answer: the probe exited on its own inside its %s budget",
-			r.exit, r.timedOut, r.stderr, r.elapsed, gate.timeout)
+		<-watch.done
+		// The run is over: its child is released, and killed in case the release does not reach it.
+		if err := os.WriteFile(release, nil, 0o644); err != nil {
+			t.Errorf("release run %d's child: %v", runs, err)
+		}
+		killPIDFile(t, pidFile)
+		if !watch.gone {
+			t.Fatalf("run %d: the probe's process group was not gone by the end of the row's %s bound, so its budget never passed (run = %v, exit %d, timed out %t, stderr %q after %s)",
+				runs, within, err, r.exit, r.timedOut, r.stderr, r.elapsed)
+		}
+		if r.elapsed < procgroup.WaitDelay {
+			t.Fatalf("run %d = %v returned after %s, inside WaitDelay (%s): nothing held the probe's output pipe past its exit, so this run proves nothing", runs, err, r.elapsed, procgroup.WaitDelay)
+		}
+		if !watch.passedFirst {
+			if time.Now().Before(until) {
+				continue
+			}
+			t.Fatalf("no run of the right order in %d runs over %s: in each, the attempt's budget passed only after the run gave its answer back, so no run shows how the gate reads a passed budget",
+				runs, within)
+		}
+
+		if err != nil {
+			t.Fatalf("run %d = %v, want the probe's own exit", runs, err)
+		}
+		if r.timedOut || r.exit != 0 || !strings.Contains(r.stderr, "answered") {
+			t.Errorf("run %d = exit %d, timed out %t, stderr %q after %s; want exit 0, not timed out, and the answer: the probe exited on its own before its budget passed",
+				runs, r.exit, r.timedOut, r.stderr, r.elapsed)
+		}
+		return
 	}
 }
 
-// killPIDFile kills the process named by the PID pidFile holds, left running past a test's own
-// assertions by design (a backgrounded sleep standing in for a command's own lingering child).
+// cutRunMargin is what the rows bounded by answerBudget leave of the test binary's deadline
+// (testwait.Bounded): the time a run the bound cuts takes to return, its stop's grace and
+// WaitDelay, and a second for the row to fail in.
+const cutRunMargin = procgroup.StopGrace + procgroup.WaitDelay + time.Second
+
+// budgetPassedOnceTheProbeIsGone is an expire (pluginGate.expire) whose attempt's budget passes as
+// the gate's own budget does (testwait.StandInDeadline: its Err and its cause
+// context.DeadlineExceeded) once the probe's process group is gone. The probe's shell writes its
+// own pid, its group's id (procgroup.Configure), to leader as its first act, and kill(-pid, 0)
+// answers ESRCH once no member of that group is left: after the probe has exited on its own and Go
+// has reaped it, which Wait does before it starts the WaitDelay a child holding the pipe keeps the
+// run open for. Until its budget passes, the attempt's deadline reads as the real budget's would,
+// timeout after the attempt began (attemptDeadline).
+//
+// What it saw of the attempt is in the groupWatch it returns, for one attempt. The cancel the run
+// calls once it has its answer records whether the budget had passed by then (passedFirst), before
+// it ends the attempt itself. The watch goes on past the run's return, so a group that goes late
+// is told from one that never goes: done closes once the group is gone (gone), or once until, the
+// end of the row's bound, has passed without it. The watch then ends the attempt as a cancel, not
+// as its budget, so a run still going then reads no budget passed.
+func budgetPassedOnceTheProbeIsGone(leader string, timeout time.Duration, until time.Time) (func(context.Context) (context.Context, context.CancelFunc), *groupWatch) {
+	watch := &groupWatch{done: make(chan struct{})}
+	gone := func() bool {
+		pid := pidIn(leader)
+		return pid > 0 && errors.Is(syscall.Kill(-pid, 0), syscall.ESRCH)
+	}
+	return func(ctx context.Context) (context.Context, context.CancelFunc) {
+		run, pass, cancel := testwait.StandInDeadline(ctx)
+		go func() {
+			defer close(watch.done)
+			if watch.gone = testwait.Holds(time.Until(until), testwait.Poll, gone); watch.gone {
+				pass(context.DeadlineExceeded)
+				return
+			}
+			cancel()
+		}()
+		return attemptDeadline{Context: run, budget: time.Now().Add(timeout)}, func() {
+			watch.passedFirst = errors.Is(run.Err(), context.DeadlineExceeded)
+			cancel()
+		}
+	}, watch
+}
+
+// groupWatch is what budgetPassedOnceTheProbeIsGone saw of one attempt. passedFirst is written by
+// the attempt's cancel, on the goroutine that runs the probe; gone is written before done closes.
+type groupWatch struct {
+	done        chan struct{}
+	gone        bool
+	passedFirst bool
+}
+
+// attemptDeadline is an attempt whose deadline reads as budget, the moment the real budget of
+// context.WithTimeout would pass, until the stand-in it wraps sets a deadline of its own: the moment
+// the stand-in's budget passed.
+type attemptDeadline struct {
+	context.Context
+	budget time.Time
+}
+
+func (a attemptDeadline) Deadline() (time.Time, bool) {
+	if at, ok := a.Context.Deadline(); ok {
+		return at, true
+	}
+	return a.budget, true
+}
+
+// killPIDFile kills the process named by the PID pidFile holds (pidIn), left running past a test's
+// own assertions by design (a process standing in for a command's own lingering child).
 func killPIDFile(t *testing.T, pidFile string) {
 	t.Helper()
-	raw, err := os.ReadFile(pidFile)
+	if pid := pidIn(pidFile); pid > 0 {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+}
+
+// A budget that passes while the probe's leader still runs ends the attempt as a kill, and the
+// stop reaches the probe's whole process group (procgroup.Configure): a child the leader started,
+// left in the group and holding the output pipe, is gone after the run too, where a stop sent to
+// the leader alone would leave it running. The budget passes at facts, not at a time: once the
+// leader has started the child, while the leader waits for release. The row writes release only
+// once it has seen the leader end, or at the end of its bound (answerBudget, testwait.Bounded)
+// without that, so a run that no stop reached still returns, and the row fails on its answer. The
+// child runs until a signal ends it or the row's cleanup writes held, never on a timer of its own,
+// so within the row nothing but a stop ends it, however long the row waits for it.
+func TestABudgetThatPassesWhileTheProbeRunsStopsItsWholeGroup(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	leader, child := filepath.Join(dir, "leader"), filepath.Join(dir, "child")
+	release, held := filepath.Join(dir, "release"), filepath.Join(dir, "held")
+	t.Cleanup(func() {
+		_ = os.WriteFile(held, nil, 0o644)
+		killPIDFile(t, child)
+	})
+	within := testwait.Bounded(t, answerBudget, cutRunMargin)
+	until := time.Now().Add(within)
+	gate := pluginGate{env: map[string]string{"PATH": os.Getenv("PATH")}, workDir: t.TempDir(), timeout: answerBudget}
+	type watched struct{ passed, leaderEnded bool }
+	saw := make(chan watched, 1)
+	gate.expire = func(ctx context.Context) (context.Context, context.CancelFunc) {
+		attempt, pass, cancel := testwait.StandInDeadline(ctx)
+		go func() {
+			var w watched
+			if w.passed = testwait.Holds(time.Until(until), testwait.Poll, func() bool { return pidIn(leader) > 0 && pidIn(child) > 0 }); w.passed {
+				pass(context.DeadlineExceeded)
+				// The leader is the run's own child, which the run reaps once it has ended, so kill
+				// answers ESRCH for it from then on: no /proc read, which this goroutine could not
+				// fail the test on.
+				pid := pidIn(leader)
+				w.leaderEnded = testwait.Holds(time.Until(until), testwait.Poll, func() bool { return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) })
+			}
+			// Written whether or not the leader ended: a leader no stop reached exits on it.
+			if err := os.WriteFile(release, nil, 0o644); err != nil {
+				t.Errorf("write the release: %v", err)
+			}
+			saw <- w
+		}()
+		return attempt, cancel
+	}
+
+	r, err := gate.run(context.Background(), `echo $$ >"$1"; (until [ -e "$4" ]; do sleep 0.01; done) & echo $! >"$2"; while [ ! -e "$3" ]; do sleep 0.01; done; exit 0`, leader, child, release, held)
+	w := <-saw
+
+	if !w.passed {
+		t.Fatalf("the probe did not start its child within the row's %s bound, so its budget never passed (run = %v, exit %d, stderr %q after %s)", within, err, r.exit, r.stderr, r.elapsed)
+	}
 	if err != nil {
-		return
+		t.Fatalf("run = %v, want the budget's kill", err)
+	}
+	if !r.timedOut {
+		t.Fatalf("run = exit %d, timed out false, stderr %q after %s, the leader seen to end before its release: %t; want a kill: the budget passed while the probe ran",
+			r.exit, r.stderr, r.elapsed, w.leaderEnded)
+	}
+	pid := pidIn(child)
+	if !testwait.Holds(time.Until(until), testwait.Poll, func() bool { return processEnded(t, pid) }) {
+		t.Errorf("the child the probe left in its group (PID %d) still ran at the end of the row's %s bound, after the run's kill: the budget's stop did not reach the group", pid, within)
+	}
+}
+
+// pidIn is the PID a probe's shell wrote to path, once the whole line is there, and 0 before.
+func pidIn(path string) int {
+	raw, err := os.ReadFile(path)
+	if err != nil || !strings.HasSuffix(string(raw), "\n") {
+		return 0
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil {
-		return
+	if err != nil || pid <= 0 {
+		return 0
 	}
-	_ = syscall.Kill(pid, syscall.SIGKILL)
+	return pid
+}
+
+// processEnded is whether the process pid is gone, or has exited and waits only to be reaped: its
+// state, the third field of /proc/<pid>/stat after the command in parentheses, reads Z. A child a
+// probe left behind is reaped by whatever it was reparented to, not by the run, and kill(pid, 0)
+// answers nil for it until then. A process kill still finds is never read as ended from a /proc
+// entry that cannot be read: the row fails there, naming /proc, since it has no other way to ask.
+// kill is asked again after such a read, because a process that went between the two leaves no
+// entry, and has ended. It calls t.Fatalf, so it must be called from the goroutine running the
+// test.
+func processEnded(t *testing.T, pid int) bool {
+	t.Helper()
+	if pid <= 0 {
+		return false
+	}
+	if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+		return true
+	}
+	stat := filepath.Join("/proc", strconv.Itoa(pid), "stat")
+	body, err := os.ReadFile(stat)
+	if err != nil {
+		if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+			return true
+		}
+		t.Fatalf("%s cannot be read (%v) for process %d, which kill still finds: this row reads from /proc whether a process that answers kill has exited", stat, err, pid)
+	}
+	_, after, ok := strings.Cut(string(body), ") ")
+	return ok && strings.HasPrefix(after, "Z")
 }
 
 // The plugin a pane loads must be the one whose manifest the contract probe read. A launch prefix
@@ -812,7 +1071,7 @@ func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
 			if err == nil {
 				t.Fatal("the gate passed a launch that failed")
 			}
-			for _, want := range []string{"OMP launch probe failed " + ending + " for launch command", f.prefix + " " + f.path, "secrets: ANTHROPIC_API_KEY was denied"} {
+			for _, want := range []string{"OMP launch probe failed " + ending + " for launch command", strconv.Quote(shellprefix.Command([]string{f.prefix}) + " " + f.invocation), "secrets: ANTHROPIC_API_KEY was denied"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("the refusal does not say %q: %v", want, err)
 				}
@@ -828,15 +1087,20 @@ func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
 // out-of-memory kill), says nothing about the plugin: the gate waits it out and asks again, as it
 // does a probe the budget cut off before it answered (TestTheLoadProbeGivesUpOnAProbeCutOffEveryTime).
 // A pass slower than a second or two passes on the first attempt that answers, as it does on a
-// loaded machine.
+// loaded machine. No budget cuts an attempt here (expire, a context that ends only with the gate's
+// own): each attempt ends at its own exit, so no load can cut the pass and ask once more, and the
+// gate's whole wait ends at the test binary's deadline less testwait's margin (testwait.Remaining).
 func TestTheLoadProbeRetriesWhatSaysNothingAboutThePlugin(t *testing.T) {
 	t.Parallel()
 	for _, step := range []string{"yes-then-die", "yes-then-killed"} {
 		t.Run(step, func(t *testing.T) {
 			f := newFakeOmp(t, step, step, "yes-slowly", "yes")
 			gate, logged := gateUnder(t, f, contractCurrent)
+			gate.expire = func(ctx context.Context) (context.Context, context.CancelFunc) { return context.WithCancel(ctx) }
+			ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+			defer cancel()
 
-			if err := gate.verify(context.Background()); err != nil {
+			if err := gate.verify(ctx); err != nil {
 				t.Fatalf("the gate refused after transient failures: %v", err)
 			}
 			if n := f.attempts(t); n != 3 {
@@ -850,32 +1114,34 @@ func TestTheLoadProbeRetriesWhatSaysNothingAboutThePlugin(t *testing.T) {
 }
 
 // A probe the budget cuts off every time is asked again until the retry budget ends, and the
-// refusal then names that budget and the cut. The attempts are the gate's count, from its refusal
-// and its transient lines: the fake's own count can fall short of it, as an attempt cut off before
-// the fake wrote its count leaves none, and it can never pass it.
+// refusal then names that budget and the cut. Each attempt's budget passes once its stand-in hangs
+// (hangsUnder), so the fake ran each attempt the gate counted: its count, the refusal's and the
+// transient lines' agree.
 func TestTheLoadProbeGivesUpOnAProbeCutOffEveryTime(t *testing.T) {
 	t.Parallel()
 	plan := []string{"hang"}
 	f := newFakeOmp(t, plan...)
 	gate, logged := gateUnder(t, f, contractCurrent)
-	hangsUnder(&gate, plan, 3)
+	hangsUnder(t, &gate, plan, 3, func(n int) string { return filepath.Join(f.dir, "hanging."+strconv.Itoa(n)) })
 
 	err := gate.verify(context.Background())
 
-	for _, want := range []string{"never completed within its retry budget (3 attempts)", "timed out after " + hangBudget.String()} {
+	for _, want := range []string{"never completed within its retry budget (3 attempts)", "timed out after " + answerBudget.String()} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("err = %v, want it to say %q", err, want)
 		}
 	}
-	if n := f.attempts(t); n > 3 {
-		t.Errorf("Oh My Pi ran %d times, more than the 3 attempts of the retry budget", n)
+	if n := f.attempts(t); n != 3 {
+		t.Errorf("Oh My Pi ran %d times, want the 3 attempts of the retry budget", n)
 	}
 	if got := strings.Count(logged.String(), "failed transiently"); got != 2 {
 		t.Errorf("the gate logged %d transient failures, want 2 before it gave up:\n%s", got, logged.String())
 	}
 }
 
-// A daemon stopped while its gate waits kills the probe it is running and starts no other.
+// A daemon stopped while its gate waits kills the probe it is running and starts no other. The
+// probe hangs until a signal ends it (held), so a gate that left it running would return only at
+// the end of its attempt's minute budget, which the row reads, never at a span of its own.
 func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
 	t.Parallel()
 	f := newFakeOmp(t, "hang")
@@ -887,14 +1153,12 @@ func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
 	// before the probe starts, and the gate then cancels having run nothing.
 	go func() {
 		defer cancel()
-		for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); {
-			// Read here rather than through attempts: a helper that fails the test belongs to the
-			// test's own goroutine, and this one only needs to know the probe started.
-			if raw, err := os.ReadFile(filepath.Join(f.dir, "count")); err == nil && strings.TrimSpace(string(raw)) == "1" {
-				return
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
+		// Read here rather than through attempts: a helper that fails the test belongs to the
+		// test's own goroutine, and this one only needs to know the probe started.
+		testwait.Holds(30*time.Second, testwait.Poll, func() bool {
+			raw, err := os.ReadFile(filepath.Join(f.dir, "count"))
+			return err == nil && strings.TrimSpace(string(raw)) == "1"
+		})
 	}()
 
 	started := time.Now()
@@ -903,8 +1167,8 @@ func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want the daemon's cancellation", err)
 	}
-	if elapsed := time.Since(started); elapsed > 5*time.Second {
-		t.Errorf("the gate took %s to stop", elapsed)
+	if elapsed := time.Since(started); elapsed >= gate.timeout {
+		t.Errorf("the gate took %s to stop, its attempt's whole %s budget: the daemon's stop did not end the probe", elapsed, gate.timeout)
 	}
 	if n := f.attempts(t); n != 1 {
 		t.Errorf("Oh My Pi ran %d times, want the one the stop interrupted", n)
@@ -914,7 +1178,10 @@ func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
 // The gate runs under the environment a pane gets from the daemon's own (HOME and OMP_PROFILE here)
 // before the daemon boots: a refusal records no boot, and a daemon stopped while the gate waits
 // stops cleanly, having served nothing. The plugin is held to this daemon's own number, so the
-// contract below it — the one the previous release pins — is refused like any other.
+// contract below it — the one the previous release pins — is refused like any other. The stop
+// lands once the gate's first probe hangs, a fact of the run, and the run must return before that
+// probe's attempt budget (slow_command_timeout_seconds) would have ended it: the probe hangs until
+// a signal ends it (held), so a gate that left it running would return only then.
 func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process.
 	// The daemon holds the plugin to its own DaemonAPIVersion.
@@ -945,14 +1212,32 @@ func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
+			stopped := make(chan bool, 1)
+			bound := testwait.Bounded(t, answerBudget, cutRunMargin)
 			if testCase.want == "" {
-				time.AfterFunc(300*time.Millisecond, cancel)
+				go func() {
+					defer cancel()
+					stopped <- testwait.Holds(bound, testwait.Poll, func() bool {
+						_, err := os.Stat(filepath.Join(f.dir, "hanging.1"))
+						return err == nil
+					})
+				}()
 			}
 
+			started := time.Now()
 			err := run(ctx, cfg, quietLogger(), o)
+			elapsed := time.Since(started)
 
-			if testCase.want == "" && err != nil {
-				t.Fatalf("run stopped during its gate = %v, want a clean stop", err)
+			if testCase.want == "" {
+				if !<-stopped {
+					t.Fatalf("the gate's probe did not hang within %s, so the stop landed on no probe (run = %v)", bound, err)
+				}
+				if err != nil {
+					t.Fatalf("run stopped during its gate = %v, want a clean stop", err)
+				}
+				if elapsed >= cfg.SlowCommandTimeout {
+					t.Fatalf("run took %s to stop, its probe's whole %s attempt budget: the stop did not end the probe", elapsed, cfg.SlowCommandTimeout)
+				}
 			}
 			if testCase.want != "" && (err == nil || !strings.Contains(err.Error(), testCase.want)) {
 				t.Fatalf("run = %v, want the gate's refusal naming %q", err, testCase.want)
@@ -1014,7 +1299,7 @@ case "$2:$3" in
   *) exit 99 ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(stub, "secrets"), []byte(secrets), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(stub, "secrets"), []byte(secrets), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	home := t.TempDir()

@@ -5493,12 +5493,9 @@ func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 	locked := false
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		var waiting int
-		if err := service.store.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'
-		`).Scan(&waiting); err != nil {
-			t.Fatalf("inspect database locks: %v", err)
+		waiting, err := storetest.CountLockWaits(context.Background(), service.store, "%")
+		if err != nil {
+			t.Fatal(err)
 		}
 		if waiting > 0 {
 			locked = true
@@ -5707,12 +5704,9 @@ func waitForDatabaseLock(t *testing.T, database *store.Store) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		var waiting int
-		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'
-		`).Scan(&waiting); err != nil {
-			t.Fatalf("inspect database locks: %v", err)
+		waiting, err := storetest.CountLockWaits(context.Background(), database, "%")
+		if err != nil {
+			t.Fatal(err)
 		}
 		if waiting > 0 {
 			return

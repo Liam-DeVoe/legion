@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -301,7 +302,7 @@ func TestTheTmuxBootGateReadsAMemoryRolesWholeValue(t *testing.T) {
 	script := "#!/bin/sh\ncase \"$PI_CONFIG_FILES\" in *controller.yml*memory.yml*)\n" +
 		"  echo \"error: Failed to parse config overlay $PI_CONFIG_FILES: SyntaxError\" >&2; exit 1;; esac\n" +
 		"echo '{\"value\": false}'\n"
-	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
+	if err := testexec.WriteFile(omp, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	controller, memory := filepath.Join(dir, "controller.yml"), filepath.Join(dir, "memory.yml")

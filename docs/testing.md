@@ -16,6 +16,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   `Remaining` is what is left of the binary's deadline less 30 s, for a hang guard that is not the test's subject, such as the acknowledgement window of a consumer whose window also bounds each store read a handling makes, and a wait for those acknowledgements (`packages/daemon/internal/intake`): a fixed bound there, a minute say, lets the machine decide whether a store read of 61 s is cut.
   `Receive`, in both modules, waits for one receive from a channel, such as the answer of a call the test started, and sets no span of its own: it gives up 30 s before the binary's deadline (the daemon module's, a quarter of a `-timeout` under 2 minutes, so its waits still wait under a short `-timeout`), writes why to stderr at once and then fails the test, so a call that waits for ever fails by name, even without `-v`, and a call that is merely slow passes; the launcher rig's waits for a role's connection and for its next frame are such waits.
   A row whose verdict is what a call answers, a refusal or a replaced file, waits for it with `Receive`.
+  `StandInDeadline` is the daemon module's one context for a test clock that stands in for a production limit, budget or deadline (a `context.WithTimeout` or `WithTimeoutCause`) and passes at a fact of the run under test, such as the end of the process group a probe attempt started, rather than at a time a loaded machine can reach before that run has started. Every such clock uses it, because it ends as the real one does, by `Err`, `context.Cause` and its parent's end, and only its `Deadline` differs, on purpose; its doc comment (`internal/testwait/deadline.go`) says how, and why a clock built on `context.WithCancelCause`, whose `Err` is `context.Canceled`, passes a test it should fail.
   In `packages/envoy`, `Until` waits until a reading holds and returns it, at `Poll`, `UntilPolling` is `Until` at a pace of the caller's, and `Context` is a context for a call that takes one, or for a socket's deadline. Like `Receive`, they end at the binary's own deadline less 30 s, the time the failing test's cleanups run in, and take no bound of their own, so a step that is only slow on a loaded machine fails nothing. Under a `-timeout` of 30 s or less that moment has passed before the test starts, so each of them fails at once.
   A loop that is not a wait-for keeps its body: one that runs its check for a whole span rather than stopping at the first success, one that sends or serves on a tick, one that drives a stand-in process's own main loop, and one that retries a compare-and-set.
 
@@ -696,6 +697,29 @@ process and removes the directory when `testbuild.Main` ends the run.
 A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): the server
 `DISPATCH_TEST_DATABASE_URL` names can hold other databases, such as the local Dispatch's on
 `packages/envoy/scripts/dev-postgres.sh`'s container.
+
+## A test reads a lock wait from pg_locks
+
+A Go test that waits for a backend to queue on a lock, or checks that one still waits, reads it
+through `lockwaittest.Waiting` or `WaitingOn` or `pg_blocking_pids`, never from `wait_event_type`
+or `wait_event`, which read nothing each time the waiter is woken. A test reads one sample of any
+wait event again, within a bound, until it holds. Envoy's `internal/textcheck` holds Envoy, Envoy's
+infra and the daemon to this; `lockwaittest`'s package documentation gives why and what was
+measured, and the check's doc comment the forms it names and misses.
+
+## A file a test runs
+
+A Go test that writes a file it then runs (a fake command, a stand-in script, a stub on `PATH`)
+can see the run fail with `ETXTBSY`: a fork of the test process holds the write descriptor until
+its exec. `testexec.WriteFile` holds `syscall.ForkLock` while the file is open, so no fork falls
+inside the write. A package whose tests call `Parallel` writes such a file with it in its test
+files, a test-support package (a name that begins or ends with `test`) in every file, and any test
+that starts a command from another goroutine wherever it writes one; in a package whose tests run
+one at a time only the running test can fork, so `os.WriteFile` is safe there. Each module's
+`internal/textcheck` holds the two kinds of package to this with `testexec.Unguarded`, which
+fails on a directory with no `go.mod` or no test file. Its doc comment lists the forms it names and
+misses, and `testexec`'s package documentation gives the failure that was measured. A write in a
+missed form needs `testexec.WriteFile` by hand. A file a command such as `cp` writes needs nothing.
 
 ## A Go test that opens a NATS client
 
