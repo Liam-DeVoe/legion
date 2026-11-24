@@ -152,6 +152,53 @@ func TestOneClaimGetsTheReviewOfAMergeThatLandedPastReviewAndItCoversTheLanded(t
 	}
 }
 
+// A merge forward asked by the release before keeps no agent and no role (record.MergeForward.Agent
+// and Role), and its landing still sends no landed to the agent that pushed the merge: that agent is
+// the one mergeForward asks by its rule, the agent of the task's step of the type implementation
+// where the ask was made (implementationAgent at record.MergeForward.Phase). On `implementer:x
+// reviewer acceptance:x` in accepting, the keyed agent x implemented and accepts, and the record
+// names no agent: the landing sends the review to the reviewer alone.
+//
+// The control: `implementer reviewer acceptance:x`, whose implementation step is a fresh
+// implementer's, with the same record: the landing sends x, which did not push the merge, the landed.
+func TestALandingOfAnAskTheReleaseBeforeRecordedSendsNoLandedToTheAgentThatPushedIt(t *testing.T) {
+	implementer := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleImplementer))
+	reviewer := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleReviewer))
+	// Each key's agent is named for its first step's role (record.NameAgents).
+	pushedAndAccepts := agentToken(t, "implementer")
+	accepts := agentToken(t, "acceptance")
+	for _, tc := range []struct {
+		name   string
+		words  []string
+		agents []claim.Token
+		want   []sent
+	}{
+		{name: "the keyed agent implements and accepts", words: []string{"implementer:x", "reviewer", "acceptance:x"},
+			agents: []claim.Token{pushedAndAccepts, reviewer, pushedAndAccepts},
+			want:   []sent{{step: record.MergeForwardReview, role: claim.RoleReviewer, claim: reviewer}}},
+		{name: "control: a fresh implementer", words: []string{"implementer", "reviewer", "acceptance:x"},
+			agents: []claim.Token{implementer, reviewer, accepts},
+			want: []sent{{step: record.MergeForwardReview, role: claim.RoleReviewer, claim: reviewer},
+				{step: record.MergeForwardLanded, role: claim.RoleAcceptance, claim: accepts}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := standsAtStep(t, phase.Accepting, 3, tc.words, tc.agents, "")
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				_, err := tx.Exec(t.Context(), "update pull_requests set merge_forward = merge_forward - 'agent' - 'role' where issue = 'LEGION-208'")
+				return err
+			})
+			if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Agent != "" || asked.Role != "" {
+				t.Fatalf("the record holds the merge forward %+v, want one with no agent and no role: this case proves nothing", asked)
+			}
+			applyRefusingNothing(t, pool, returnEngine(), intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208",
+				Base: "main", HeadSHA: "head-forward", Before: "head-42", Sender: "legion-implementer[bot]"})
+			if got := sentOf(mergeForwardMessages(t, pool)); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("the landing sent %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 // The agent asked to merge that also works the step the issue stands at gets the ask alone, which
 // covers the hold: on `implementer:owner reviewer:owner` in reviewing, the owner is asked, and the
 // ask carries that its step waits for the merge and goes on at the head the merge leaves. It is
