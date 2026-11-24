@@ -472,7 +472,7 @@ func (r *ownerStepsRig) ownersTextOverThePlannersBlocks() {
 	// The planner's version 5 takes t3's parent away, so t3 stands at the top and Legion refuses
 	// it. The owner gives version 4 again, whose t3 stands under default.
 	r.editPlan(doc, map[string]any{"op": "retype", "block": "t3", "type": planwords.TaskBlockType, "attributes": map[string]any{
-		"needs": "dispatch://" + r.key + "/artifact/plan-md#b-t2", "serves": "dispatch://" + r.key + "/spec#b-r3"}}, 5)
+		"needs": []string{"dispatch://" + r.key + "/artifact/plan-md#b-t2"}, "serves": []string{"dispatch://" + r.key + "/spec#b-r3"}}}, 5)
 	if refusal := r.refused(doc, 5); !slices.ContainsFunc(refusal.Reasons, func(reason api.PlanReason) bool { return strings.Contains(reason.Reason, "t3") }) {
 		t.Fatalf("Legion refuses version 5 with %+v, want a reason naming t3, the block at the top", refusal.Reasons)
 	}
