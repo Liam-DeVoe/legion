@@ -181,11 +181,6 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
   },
   {
     file: "skills/legion-worker/references/ci-checks.md",
-    has: "Each tester and reviewer step sends it to the architect as a finding",
-    keep: "Who reports a CI-check finding, not a Dispatch check.",
-  },
-  {
-    file: "skills/legion-worker/references/ci-checks.md",
     has: "the tester, or the implementer with no tester step, still proves the real surface",
     keep: "Who proves the surface CI cannot run, not the reviewer's gate.",
   },

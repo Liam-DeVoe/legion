@@ -19,17 +19,19 @@ Your role prompt says what `stop_task` does, what holds a stopped task and what 
   Then give a later version that changes the task, or end the work: for a child under your own issue, your own status write in Dispatch, by the rules for ending a child in your role prompt; `dispatch ask` on the root for a root.
   When the stopped task is your own issue's, as a child's architect, send the end of that work to the architect above you with `envoy_publish`: the daemon sets back your status write on your own issue.
 
-- **`retro-held`:** a task passed its last step, and Legion holds it before its retro for one of three reasons, which its reason names.
-  - Issues beneath a parent are still in the workflow, and the last step is not your `acceptance:owner` step.
-    Legion holds it so that it merges after them.
-    Run each issue it names to done, or end it by your own status write in Dispatch, by the same rules.
-    `retry_or_escalate` refuses that hold, a retry and an escalation alike: while issues beneath it are in the workflow, `409 HELD_FOR_CHILDREN` names each of them; with none left, the answer says that its tree lingers or that its root waits in the admission line.
-    A `todo` on the root leaves it held.
-  - A fix of the task runs: wait for the fix's end, which decides what runs next.
-  - A `ci_check` check has not passed at the task's head: nothing is asked of you.
-    A failure there starts a fix where the task takes one; else a `ci-failed` notice comes.
-    To act before CI passes, send it back with `request_backward_move`, or stop its task with `stop_task`.
-  The retro starts once no reason holds it.
+- **`retro-held`:** a parent's task passed its last step, which is not your `acceptance:owner` step, while issues beneath it are still in the workflow.
+  Legion holds it before its retro, so that it merges after them, and starts the retro once the last one leaves and no fix or CI holds it.
+  Run each issue it names to done, or end it by your own status write in Dispatch, by the same rules.
+  `retry_or_escalate` refuses that hold, a retry and an escalation alike: while issues beneath it are in the workflow, `409 HELD_FOR_CHILDREN` names each of them; with none left, the answer says that its tree lingers or that its root waits in the admission line.
+  A `todo` on the root leaves it held.
+
+- **`retro-held` for a fix or for CI:** any task that passed its last step, held before its retro.
+  For a fix: a fix of the task runs; wait for its end, which decides what runs next.
+  For CI: a `ci_check` check has not passed at the task's head, and nothing is asked of you.
+  A failure there starts a fix where the task takes one; else a `ci-failed` notice comes.
+  To act before CI passes, send it back with `request_backward_move`, or stop its task with `stop_task`.
+  `retry_or_escalate` refuses either hold (`409 FIX_RUNNING`, `409 CI_PENDING`), and a `todo` on the root leaves it held.
+  The retro starts once nothing holds it.
 
 - **`ci-failed`:** a `ci_check` check fails at the head of a task held before its retro, and no fix takes it.
   It comes once for that check at that head.

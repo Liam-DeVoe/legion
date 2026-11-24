@@ -87,7 +87,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 - The merge gate follows the task's `Steps:` line: each named step runs in order, then retro and the merger.
   The default task has tester evidence, reviewer approval and architect acceptance.
   With no tester step, the implementer's evidence serves;
-  with no reviewer step, no Legion approval is awaited; without `acceptance:owner`, retro follows the last step.
+  with no reviewer step, no Legion approval is awaited; without `acceptance:owner`, the last step starts retro, once no fix or CI holds it.
   Only the merger runs `gh pr merge`; nobody turns auto-merge on.
 
 - End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.
