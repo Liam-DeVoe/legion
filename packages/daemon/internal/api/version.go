@@ -3398,4 +3398,47 @@ package api
 // From this entry the last number of answers.go's SupportedContracts is
 // `api.assignmentPlanContract`, after `OwnerPlanContract`. Read the base's own number and every
 // open pull request again at the next merge rather than from this line.)
-const DaemonAPIVersion = 220
+//
+// 243: dispatch://INFRA-5616 -- the controller changes the project's admission cap while the
+// daemon runs, with no pull request and no restart, up to the deployment's ceiling. Four routes:
+// the controller's `POST /legion/v1/project/admission-cap` (`{grantId, cap}`) and `POST
+// /legion/v1/project/admission-cap/clear` (`{grantId}`), which take a controller grant, the
+// controller session's or one the operator's bearer minted, and refuse any other with 403
+// `CONTROLLER_REQUIRED` (the pause's actor rule: a grant the operator's bearer minted sets the cap
+// as the operator), and the operator's `POST /legion/v1/operator/project/admission-cap`
+// (`{cap}`) and `POST /legion/v1/operator/project/admission-cap/clear` (no body), which take the
+// operator's bearer as every operator route does (`legion project set-admission-cap` and
+// `clear-admission-cap`). None names a project: the daemon changes its own. A set refuses a cap
+// below 1 with `400 INVALID_ADMISSION_CAP` and one above the ceiling, the deployment's
+// `admission_cap` (else `LEGION_ADMISSION_CAP`), with `409 ADMISSION_CAP_ABOVE_CEILING`, whose
+// sentence names the ceiling and that the operator raises it in legion.yaml; a daemon with no
+// workflow refuses all four with `409 ADMISSION_CAP_UNAVAILABLE`. Each refusal is a Failure, its
+// code and its sentence, and changes nothing. A set or a clear is one fact
+// (`intake.AdmissionCapSet`) whose admission writes the cap into the new table
+// `project_admission_caps` (migration `20261124040825`), or deletes it, and makes its pass in the
+// same transaction, so the cap is in force from that pass on; every pass reads the cap again
+// (admit's capAt), and admits under the smaller of the cap set and the ceiling, so a cap set
+// before a restart holds after it, unless the ceiling is lower then. A lower cap stops nothing
+// that runs: it starts nothing new until fewer issues than it hold a slot. The controller's two
+// routes answer `{cap, ceiling, override}` (`api.AdmissionCapResponse`, answers.go's
+// AnswerAdmissionCap, whose routes arrive with it, so no contract below 243 records either); the
+// operator's answer the same body to the `legion` command, which no plugin parses. `cap` is the
+// cap the passes admit under, `ceiling` the deployment's, and `override`, `{cap, setBy, setAt}`
+// with `setBy` a pause's actor view (`{kind: controller, session}` or `{kind: operator}`), is
+// the cap set while the daemon runs, absent after a clear. `GET /legion/v1/state` gains the same
+// two keys under `admission`: `admission.ceiling` and `admission.override`; `admission.cap`, which
+// every reader has typed since before the floor, now says the cap the passes admit under where it
+// said the configured cap, the same number until a cap is set. The records of 243 hold the two
+// keys, and no record below 243 does: a caller whose contract (the one it states, else its pod's)
+// is below 243 is served the admission without them (the band of shaping.go's stateNarrowings,
+// `withoutAdmissionCap`). `settings.admission_cap` stays the configured value, the ceiling. No
+// value of an enumerated field moves: the actor's `kind` is a discriminator read with a
+// `z.literal`, as the pause's is.
+// (This entry takes 243, the lowest number above main's 220 that no open pull request declares:
+// a reading of `const DaemonAPIVersion` at refs/pull/<n>/head of each of the 138 of the 509 open
+// pull requests that change version.go, made between 2026-11-24T04:59:37Z and 05:02:59Z, found
+// every number from 221 to 242 declared and 243 by none. From this entry the last number of
+// answers.go's SupportedContracts is `api.admissionCapContract`, after `assignmentPlanContract`.
+// Read the base's own number and every open pull request again at the next merge rather than from
+// this line.)
+const DaemonAPIVersion = 243

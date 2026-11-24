@@ -1,0 +1,284 @@
+package api
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/blockers"
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/credential"
+	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
+)
+
+// capCeiling is the deployment's cap these tests run under.
+const capCeiling = 3
+
+// capChangedAt is the clock of the cap harness's server, the moment every change is made at.
+var capChangedAt = time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC)
+
+// The four routes of the cap.
+const (
+	capRoute              = "/legion/v1/project/admission-cap"
+	capClearRoute         = "/legion/v1/project/admission-cap/clear"
+	operatorCapRoute      = "/legion/v1/operator/project/admission-cap"
+	operatorCapClearRoute = "/legion/v1/operator/project/admission-cap/clear"
+)
+
+// capHarness is the cap routes over the daemon's own handler chain (daemon/workflow.go: the mirror,
+// the engine, admission) under a ceiling of capCeiling, and four roots that wait in todo, so a
+// cap's effect on admission reads in the slots each request leaves.
+func capHarness(t *testing.T) *harness {
+	t.Helper()
+	h := newHarness(t)
+	records := record.NewStore()
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	engine := workflow.New(records, workflow.Config{Project: testDispatchProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quiet)
+	h.handler = NewServer("127.0.0.1", 8437, capOptions(h, []intake.Handler{blockers.NewMirror(records, testDispatchProject), engine,
+		admit.New(records, engine, capCeiling, testDispatchProject, quiet)})).Handler
+	for _, key := range []string{"LEGION-901", "LEGION-902", "LEGION-903", "LEGION-904"} {
+		h.recordIssue(record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testDispatchProject,
+			Title: key, Tree: key, Phase: phase.Admitted, Generation: 1, Status: "todo", Rank: key[len(key)-1:], HandedOver: true})
+	}
+	return h
+}
+
+// capOptions is the daemon a cap harness serves: its store, machines and boot tokens, handlers, and
+// the ceiling.
+func capOptions(h *harness, handlers []intake.Handler) Options {
+	return Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
+		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: record.NewStore(),
+		Handlers: handlers, AdmissionCeiling: capCeiling, Now: func() time.Time { return capChangedAt },
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+}
+
+// capOK sends a change of the cap and requires a 200, answering the cap it reports.
+func capOK(t *testing.T, h *harness, target string, body any, header http.Header) AdmissionCapResponse {
+	t.Helper()
+	recorder := h.request(http.MethodPost, target, body, header)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("POST %s = %d, want 200; body %s", target, recorder.Code, recorder.Body)
+	}
+	var answer AdmissionCapResponse
+	decodeInto(t, recorder, &answer)
+	return answer
+}
+
+// capRefused requires recorder to be a refusal of status with code, and answers it.
+func capRefused(t *testing.T, recorder *httptest.ResponseRecorder, status int, code string) Failure {
+	t.Helper()
+	if recorder.Code != status {
+		t.Fatalf("status = %d, want %d %s; body %s", recorder.Code, status, code, recorder.Body)
+	}
+	var refusal Failure
+	decodeInto(t, recorder, &refusal)
+	if refusal.Code != code {
+		t.Fatalf("code = %s (%s), want %s", refusal.Code, refusal.Error, code)
+	}
+	return refusal
+}
+
+// capChangeViews is the state's `admission.capChanges` as the harness's store holds it.
+func capChangeViews(t *testing.T, h *harness) []AdmissionCapChangeView {
+	t.Helper()
+	var views []AdmissionCapChangeView
+	if err := store.Transact(h.ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		views, err = AdmissionCapChangesTx(ctx, tx, testDispatchProject)
+		return err
+	}); err != nil {
+		t.Fatalf("read the cap changes: %v", err)
+	}
+	return views
+}
+
+// slotted counts the issues holding a slot.
+func slotted(t *testing.T, h *harness) int {
+	t.Helper()
+	var slots []record.Slot
+	if err := store.Transact(h.ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		slots, err = record.NewStore().Slots(ctx, tx)
+		return err
+	}); err != nil {
+		t.Fatalf("read the slots: %v", err)
+	}
+	return len(slots)
+}
+
+// controllerSessionGrantID registers ses_controller as the project's controller and answers a grant
+// that session minted.
+func controllerSessionGrantID(t *testing.T, h *harness) string {
+	t.Helper()
+	registration := h.registeredController(h.mintedSecret(), "ses_controller")
+	recorder := h.controllerSessionGrant("ses_controller", registration.Secret)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("the controller session's grant = %d; body %s", recorder.Code, recorder.Body)
+	}
+	var grant GrantResponse
+	decodeInto(t, recorder, &grant)
+	return grant.GrantID
+}
+
+// TestAdmissionCapRoutes is the API half of dispatch://INFRA-5616: the four routes of the cap over
+// the daemon's handler chain and a database of their own.
+func TestAdmissionCapRoutes(t *testing.T) {
+	controller := PauseActorView{Kind: "controller", Session: "ses_controller"}
+	operator := PauseActorView{Kind: "operator"}
+
+	// The controller's grant sets the cap, and the request's own admission pass admits under it:
+	// a cap of 1 starts one of the four waiting roots and a raise to the ceiling two more, each
+	// answered with the cap in force, the ceiling and the cap that stands. A clear answers the
+	// ceiling and no cap set. Every change is recorded, newest first, with the caps before and
+	// after it, who, when, why and the regulator's tick.
+	t.Run("the controller's grant sets and clears the cap, in force on the request's own pass", func(t *testing.T) {
+		h := capHarness(t)
+		grant := controllerSessionGrantID(t, h)
+
+		set := capOK(t, h, capRoute, ProjectAdmissionCapRequest{GrantID: grant, Cap: 1, Reason: "the merge queue waits 52 minutes",
+			TickID: "admission:LEGION:2026-11-24T06:00:00Z"}, nil)
+		want := AdmissionCapOverride{Cap: 1, SetBy: controller, SetAt: capChangedAt, Reason: "the merge queue waits 52 minutes",
+			TickID: "admission:LEGION:2026-11-24T06:00:00Z"}
+		if set.Cap != 1 || set.Ceiling != capCeiling || set.Override == nil || *set.Override != want {
+			t.Fatalf("the set answered %+v (override %+v), want cap 1 of the ceiling %d set as %+v", set, set.Override, capCeiling, want)
+		}
+		if n := slotted(t, h); n != 1 {
+			t.Fatalf("slots after a cap of 1 = %d, want 1", n)
+		}
+		grant = controllerSessionGrantID(t, h)
+		capOK(t, h, capRoute, ProjectAdmissionCapRequest{GrantID: grant, Cap: capCeiling, Reason: "the signals are back under their limits",
+			TickID: "admission:LEGION:2026-11-24T07:00:00Z"}, nil)
+		if n := slotted(t, h); n != capCeiling {
+			t.Fatalf("slots after a raise to the ceiling = %d, want %d", n, capCeiling)
+		}
+
+		grant = controllerSessionGrantID(t, h)
+		cleared := capOK(t, h, capClearRoute, ProjectAdmissionCapClearRequest{GrantID: grant, Reason: "a person asked for the deployment's cap"}, nil)
+		if cleared.Cap != capCeiling || cleared.Ceiling != capCeiling || cleared.Override != nil {
+			t.Fatalf("the clear answered %+v, want the ceiling %d and no cap set", cleared, capCeiling)
+		}
+
+		changes := capChangeViews(t, h)
+		if len(changes) != 3 {
+			t.Fatalf("the changes = %+v, want three", changes)
+		}
+		clear, raise, first := changes[0], changes[1], changes[2]
+		if clear.Cap != 0 || clear.CapBefore != capCeiling || clear.CapAfter != capCeiling || clear.TickID != "" ||
+			clear.SetBy != controller || clear.Reason != "a person asked for the deployment's cap" {
+			t.Errorf("the clear = %+v, want no cap, from %d to %d, by the controller, with no tick", clear, capCeiling, capCeiling)
+		}
+		if raise.Cap != capCeiling || raise.CapBefore != 1 || raise.CapAfter != capCeiling || raise.TickID != "admission:LEGION:2026-11-24T07:00:00Z" {
+			t.Errorf("the raise = %+v, want %d from 1, at the second tick", raise, capCeiling)
+		}
+		if first.Cap != 1 || first.CapBefore != capCeiling || first.CapAfter != 1 || first.Ceiling != capCeiling ||
+			first.SetBy != controller || !first.SetAt.Equal(capChangedAt) || first.ID == 0 || first.ID >= raise.ID || raise.ID >= clear.ID {
+			t.Errorf("the first set = %+v, want 1 from %d by the controller at %s, the lowest id", first, capCeiling, capChangedAt)
+		}
+	})
+
+	// The operator's routes record the operator and no tick, and take no tickId at all; a grant the
+	// operator's token minted records the operator too.
+	t.Run("the operator's routes and the operator's grant record the operator", func(t *testing.T) {
+		h := capHarness(t)
+		if set := capOK(t, h, operatorCapRoute, OperatorAdmissionCapRequest{Cap: 2, Reason: "a pool is down"}, bearer); set.Override == nil ||
+			set.Override.SetBy != operator || set.Override.TickID != "" {
+			t.Fatalf("the operator's set answered %+v, want the cap set by the operator at no tick", set.Override)
+		}
+		ticked := h.request(http.MethodPost, operatorCapRoute, `{"cap":2,"reason":"a pool is down","tickId":"t"}`, bearer)
+		if ticked.Code != http.StatusBadRequest {
+			t.Fatalf("an operator's set naming a tick = %d, want 400: an operator's change is no tick's; body %s", ticked.Code, ticked.Body)
+		}
+		grant := controllerGrant(t, h).GrantID
+		if set := capOK(t, h, capRoute, ProjectAdmissionCapRequest{GrantID: grant, Cap: 1, Reason: "an operator's grant"}, nil); set.Override == nil ||
+			set.Override.SetBy != operator {
+			t.Fatalf("a set through the operator's grant answered %+v, want the operator's", set.Override)
+		}
+		if cleared := capOK(t, h, operatorCapClearRoute, OperatorAdmissionCapClearRequest{Reason: "the pool is back"}, bearer); cleared.Override != nil {
+			t.Fatalf("the operator's clear answered %+v, want no cap set", cleared)
+		}
+		if changes := capChangeViews(t, h); len(changes) != 3 || changes[0].SetBy != operator || changes[0].Cap != 0 ||
+			changes[1].SetBy != operator || changes[2].SetBy != operator {
+			t.Fatalf("the changes = %+v, want three by the operator, the clear newest", changes)
+		}
+	})
+
+	// Each refusal changes nothing: a cap below 1, a cap above the ceiling, whose sentence names the
+	// ceiling and where it is raised, a blank reason, a tick id of white space, a body naming a field
+	// the route does not take, a phase worker's grant, and an operator route with no bearer or a
+	// wrong one. The control is the set at the ceiling after them, which is recorded.
+	t.Run("the refusals change nothing", func(t *testing.T) {
+		h := capHarness(t)
+		grant := controllerSessionGrantID(t, h)
+		capRefused(t, h.request(http.MethodPost, capRoute, ProjectAdmissionCapRequest{GrantID: grant, Reason: "why"}, nil),
+			http.StatusBadRequest, invalidAdmissionCap)
+		capRefused(t, h.request(http.MethodPost, operatorCapRoute, OperatorAdmissionCapRequest{Cap: -2, Reason: "why"}, bearer),
+			http.StatusBadRequest, invalidAdmissionCap)
+		above := capRefused(t, h.request(http.MethodPost, capRoute, ProjectAdmissionCapRequest{GrantID: grant, Cap: capCeiling + 1, Reason: "why"}, nil),
+			http.StatusConflict, admissionCapAboveCeiling)
+		if !strings.Contains(above.Error, "ceiling of 3") || !strings.Contains(above.Error, "admission_cap") {
+			t.Errorf("the refusal above the ceiling says %q, want it to name the ceiling of 3 and admission_cap", above.Error)
+		}
+		capRefused(t, h.request(http.MethodPost, operatorCapRoute, OperatorAdmissionCapRequest{Cap: capCeiling + 1, Reason: "why"}, bearer),
+			http.StatusConflict, admissionCapAboveCeiling)
+		capRefused(t, h.request(http.MethodPost, capRoute, ProjectAdmissionCapRequest{GrantID: grant, Cap: 2, Reason: " \n"}, nil),
+			http.StatusBadRequest, admissionCapReasonRequired)
+		capRefused(t, h.request(http.MethodPost, capClearRoute, ProjectAdmissionCapClearRequest{GrantID: grant}, nil),
+			http.StatusBadRequest, admissionCapReasonRequired)
+		capRefused(t, h.request(http.MethodPost, operatorCapClearRoute, OperatorAdmissionCapClearRequest{}, bearer),
+			http.StatusBadRequest, admissionCapReasonRequired)
+		capRefused(t, h.request(http.MethodPost, capRoute, ProjectAdmissionCapRequest{GrantID: grant, Cap: 2, Reason: "why", TickID: "  "}, nil),
+			http.StatusBadRequest, invalidTickID)
+		if named := h.request(http.MethodPost, capRoute, `{"grantId":"`+grant+`","cap":2,"reason":"why","project":"LEGION"}`, nil); named.Code != http.StatusBadRequest {
+			t.Fatalf("a set naming a project = %d, want 400: the route takes none; body %s", named.Code, named.Body)
+		}
+		worker := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+		capRefused(t, h.request(http.MethodPost, capRoute, ProjectAdmissionCapRequest{GrantID: worker.grant(t), Cap: 2, Reason: "a worker's cap"}, nil),
+			http.StatusForbidden, "CONTROLLER_REQUIRED")
+		for _, target := range []string{operatorCapRoute, operatorCapClearRoute} {
+			for _, header := range []http.Header{nil, {"Authorization": {"Bearer not-the-operator"}}} {
+				if recorder := h.request(http.MethodPost, target, OperatorAdmissionCapRequest{Cap: 2, Reason: "x"}, header); recorder.Code != http.StatusForbidden {
+					t.Fatalf("POST %s with no operator's bearer = %d, want 403; body %s", target, recorder.Code, recorder.Body)
+				}
+			}
+		}
+		if changes := capChangeViews(t, h); len(changes) != 0 {
+			t.Fatalf("the refused calls recorded %+v, want no change", changes)
+		}
+		if n := slotted(t, h); n != 0 {
+			t.Fatalf("slots after the refusals = %d, want none: a refusal applies no fact and so runs no pass", n)
+		}
+		capOK(t, h, capRoute, ProjectAdmissionCapRequest{GrantID: grant, Cap: capCeiling, Reason: "the control: a set at the ceiling"}, nil)
+		if changes := capChangeViews(t, h); len(changes) != 1 || changes[0].Cap != capCeiling {
+			t.Fatalf("the control's set recorded %+v, want its one change to the ceiling", changes)
+		}
+		if n := slotted(t, h); n != capCeiling {
+			t.Fatalf("slots after the control's set = %d, want the ceiling's %d", n, capCeiling)
+		}
+	})
+
+	// A daemon with no workflow admits nothing and refuses every change.
+	t.Run("a daemon with no workflow refuses a change", func(t *testing.T) {
+		h := newHarness(t)
+		h.handler = NewServer("127.0.0.1", 8437, capOptions(h, nil)).Handler
+		capRefused(t, h.request(http.MethodPost, operatorCapRoute, OperatorAdmissionCapRequest{Cap: 2, Reason: "why"}, bearer),
+			http.StatusConflict, admissionCapUnavailable)
+		capRefused(t, h.request(http.MethodPost, operatorCapClearRoute, OperatorAdmissionCapClearRequest{Reason: "why"}, bearer),
+			http.StatusConflict, admissionCapUnavailable)
+	})
+}

@@ -2831,23 +2831,23 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	ready := &servingLatch{}
 	server := api.NewServer(cfg.Bind, cfg.Port, api.Options{
 		State: &source{
-			store:        st,
-			records:      records,
-			project:      cfg.Project,
-			projectToken: p.project,
-			runtime:      cfg.Runtime.Name,
-			admissionCap: cfg.AdmissionCap,
-			startedAt:    startedAt,
-			now:          p.clock.Now,
-			secretsLogin: p.secretsLogin,
-			deployment:   s.deploymentWith,
-			reports:      s.capabilityReports,
-			wakes:        s.waitingWakes,
-			repositories: p.repositories,
-			caches:       s.cacheStatuses,
-			gatedSteps:   cfg.Gates.Steps(),
-			experiments:  cfg.ExperimentsDeclared(),
-			settings:     api.SettingsOf(cfg),
+			store:            st,
+			records:          records,
+			project:          cfg.Project,
+			projectToken:     p.project,
+			runtime:          cfg.Runtime.Name,
+			admissionCeiling: cfg.AdmissionCap,
+			startedAt:        startedAt,
+			now:              p.clock.Now,
+			secretsLogin:     p.secretsLogin,
+			deployment:       s.deploymentWith,
+			reports:          s.capabilityReports,
+			wakes:            s.waitingWakes,
+			repositories:     p.repositories,
+			caches:           s.cacheStatuses,
+			gatedSteps:       cfg.Gates.Steps(),
+			experiments:      cfg.ExperimentsDeclared(),
+			settings:         api.SettingsOf(cfg),
 			// The same rule the lane itself reads, over the same configuration, so the count
 			// the state serves and the claims the pass posts are one set (refreshStalePlugins,
 			// and the NoPluginInstall option three lines below).
@@ -2900,6 +2900,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
 		Pause:              pauses,
+		AdmissionCeiling:   cfg.AdmissionCap,
 	})
 
 	group, serving := errgroup.WithContext(ctx)
@@ -2990,7 +2991,8 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 }
 
 // source answers the state route out of one repeatable-read snapshot: the daemon itself, the cap
-// it admits under, every stored claim filed under the issue it is on, and the project's controller.
+// it admits under with its ceiling and the changes made to it while it runs, every stored claim
+// filed under the issue it is on, and the project's controller.
 // A machine persists its claim before it publishes it to supervision, so the durable snapshot
 // prevents a claim view and strandedClaims from describing different instants.
 type source struct {
@@ -2999,8 +3001,10 @@ type source struct {
 	project      string
 	projectToken string
 	runtime      string
-	admissionCap int
-	startedAt    time.Time
+	// admissionCeiling is the deployment's admission cap (config.Config.AdmissionCap), the ceiling
+	// of the cap the controller or the operator sets while the daemon runs.
+	admissionCeiling int
+	startedAt        time.Time
 	// now is the daemon's one clock (overrides.clock, the wall clock in production), the moment
 	// the state is read at; nil, in a source a test builds by hand, is the wall clock.
 	now func() time.Time
@@ -3486,7 +3490,15 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		StartedAt:     s.startedAt,
 	}
 	state.Settings = s.settings
-	state.Admission.Cap = s.admissionCap
+	// The cap the passes admit under, the ceiling, the cap set while the daemon runs and the
+	// newest changes of it, read through tx as the passes read the cap (api.AdmissionCapStateTx).
+	state.Admission.Ceiling = s.admissionCeiling
+	if state.Admission.Cap, state.Admission.Override, err = api.AdmissionCapStateTx(ctx, tx, s.project, s.admissionCeiling); err != nil {
+		return api.State{}, nil, err
+	}
+	if state.Admission.CapChanges, err = api.AdmissionCapChangesTx(ctx, tx, s.project); err != nil {
+		return api.State{}, nil, err
+	}
 	controller, _, err := s.store.ControllerTx(ctx, tx, s.projectToken)
 	if err != nil {
 		return api.State{}, nil, err

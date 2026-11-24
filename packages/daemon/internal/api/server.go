@@ -282,6 +282,10 @@ type Options struct {
 	// project is paused (refusedWhilePaused). Nil is a daemon with no workflow, which has no pause:
 	// it answers every pause and resume PAUSE_UNAVAILABLE and refuses no turn for one.
 	Pause PauseService
+	// AdmissionCeiling is the deployment's admission cap (config.Config.AdmissionCap, legion.yaml's
+	// admission_cap, else LEGION_ADMISSION_CAP): the cap the daemon admits under where nobody set
+	// one while it runs, the most the cap routes set, and the state's `admission.ceiling`.
+	AdmissionCeiling int
 }
 
 // TreeLifecycles is the store's durable tree barrier (store.Store) as the operator routes use it:
@@ -386,6 +390,8 @@ type server struct {
 	claimActivity      ClaimActivityStore
 	// pause is Options.Pause, nil for a daemon with no workflow.
 	pause PauseService
+	// admissionCeiling is Options.AdmissionCeiling.
+	admissionCeiling int
 	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
 	// a server that is ready, since a caller that sets no latch is serving already.
 	readiness func() bool
@@ -460,6 +466,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		releaseRecordStore: opts.ReleaseRecords,
 		claimActivity:      opts.ClaimActivity,
 		pause:              opts.Pause,
+		admissionCeiling:   opts.AdmissionCeiling,
 		readiness:          opts.Ready,
 		log:                opts.Log,
 		stopping:           opts.Stopping,
@@ -572,6 +579,8 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/children/rerun", s.rerunChild},
 		{"POST /legion/v1/project/pause", s.projectPause},
 		{"POST /legion/v1/project/resume", s.projectResume},
+		{"POST /legion/v1/project/admission-cap", s.projectAdmissionCap},
+		{"POST /legion/v1/project/admission-cap/clear", s.projectAdmissionCapClear},
 
 		{"POST /legion/v1/operator/claims", s.operator(s.spawn)},
 		{"GET /legion/v1/operator/claims", s.operator(s.list)},
@@ -586,6 +595,8 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/operator/claims/{token}/close", s.operator(s.closeTree)},
 		{"POST /legion/v1/operator/project/pause", s.operator(s.operatorProjectPause)},
 		{"POST /legion/v1/operator/project/resume", s.operator(s.operatorProjectResume)},
+		{"POST /legion/v1/operator/project/admission-cap", s.operator(s.operatorProjectAdmissionCap)},
+		{"POST /legion/v1/operator/project/admission-cap/clear", s.operator(s.operatorProjectAdmissionCapClear)},
 
 		// The catch-all answers every unrouted request, including a known path asked for with the
 		// wrong method: "no route" is the whole story the plugin, the operator's CLI, or a proof

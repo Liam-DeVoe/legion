@@ -569,7 +569,28 @@ type ContractView struct {
 // Admission is the issue cap and the issues under it, in Dispatch rank order. Concurrency is
 // capped on issues, never on workers, so there is no worker queue here.
 type Admission struct {
+	// Cap is the cap the admission passes admit under: the smaller of Override's cap and Ceiling
+	// where a cap was set while the daemon runs, else Ceiling (AdmissionCapStateTx, the reading
+	// every pass makes).
 	Cap int `json:"cap"`
+	// Ceiling is the deployment's cap (legion.yaml's admission_cap, else LEGION_ADMISSION_CAP):
+	// the cap where nobody set one, and the most a set of the cap may name
+	// (dispatch://INFRA-5616). Every body at admissionCapContract carries it, at least 1; a body
+	// served a caller below that contract leaves it out (shaping.go's withoutAdmissionCap, which
+	// zeroes it, and `omitzero` writes no key for the zero).
+	Ceiling int `json:"ceiling,omitzero"`
+	// Override is the cap the controller or the operator set while the daemon runs and that stands,
+	// who set it, when, why and at which regulator tick, absent where none stands and from a body
+	// served a caller below admissionCapContract.
+	Override *AdmissionCapOverride `json:"override,omitempty"`
+	// CapChanges is the project's newest changes of the cap, newest first, at most
+	// store.AdmissionCapChangesShown of them (AdmissionCapChangesTx): each with the cap it set or
+	// none for a clear, the caps before and after it, the ceiling then, who, when, why and the
+	// regulator tick that made it. The daemon's log names every change, and its store keeps every
+	// one. Every body at admissionCapContract carries the list, empty rather than null where no
+	// change was ever made; it is `omitzero`, so the nil a band leaves writes no key and the empty
+	// list the source writes is `[]` (withoutAdmissionCap).
+	CapChanges []AdmissionCapChangeView `json:"capChanges,omitzero"`
 	// Active is every issue holding an admission slot, a child as much as a root: the cap counts
 	// the issues the daemon has started rather than the trees (dispatch://INFRA-980), and an
 	// issue holds one of the cap's slots while it stands in a phase that keeps one, from the moment

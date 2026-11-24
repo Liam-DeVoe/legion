@@ -32,9 +32,12 @@ import (
 // Admission assigns root issues and orphans to the configured number of architect slots.
 // All work occurs in the transaction supplied by intake or daemon boot reconciliation.
 type Admission struct {
-	store   record.Store
-	engine  *workflow.Engine
-	cap     int
+	store  record.Store
+	engine *workflow.Engine
+	// ceiling is the deployment's cap (legion.yaml's admission_cap, else LEGION_ADMISSION_CAP): the
+	// cap every pass admits under while nobody set one at run time, and the most a cap set at run
+	// time admits under (capAt).
+	ceiling int
 	project string
 	log     *slog.Logger
 	now     func() time.Time
@@ -157,15 +160,31 @@ func (a *Admission) UseWorkerSilence(silence, background time.Duration) {
 
 var _ intake.Handler = (*Admission)(nil)
 
-// New creates an admission handler for one Dispatch project. engine is the workflow's own, shared
-// with intake's other handler: reenterStrandedChildren calls its exported ReenterChild rather than
-// keeping a second copy of re-entry and gate-open behavior.
-func New(store record.Store, engine *workflow.Engine, cap int, project string, log *slog.Logger) *Admission {
+// New creates an admission handler for one Dispatch project, admitting under ceiling, the
+// deployment's cap, or under a lower cap the controller or the operator set while it runs
+// (capAt). engine is the workflow's own, shared with intake's other handler:
+// reenterStrandedChildren calls its exported ReenterChild rather than keeping a second copy of
+// re-entry and gate-open behavior.
+func New(store record.Store, engine *workflow.Engine, ceiling int, project string, log *slog.Logger) *Admission {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Admission{store: store, engine: engine, cap: cap, project: project, log: log, now: time.Now,
+	return &Admission{store: store, engine: engine, ceiling: ceiling, project: project, log: log, now: time.Now,
 		pending: make(map[string]heldSummary), unclassifiedLogged: make(map[string]uint64)}
+}
+
+// capAt is the cap this pass admits under, read through tx: the smaller of the cap the controller
+// or the operator set while the daemon runs and the deployment's own, or the deployment's own where
+// nobody set one or the last change was a clear (store.EffectiveAdmissionCap). It is read on every
+// pass rather than held, so a cap set while the daemon runs is in force from the pass of its own
+// fact on (setAdmissionCap), with no restart, and one set before a restart is in force from the
+// boot's first pass.
+func (a *Admission) capAt(ctx context.Context, tx pgx.Tx) (int, error) {
+	standing, found, err := store.AdmissionCapTx(ctx, tx, a.project)
+	if err != nil {
+		return 0, err
+	}
+	return store.EffectiveAdmissionCap(a.ceiling, standing, found), nil
 }
 
 // Apply records root and orphan todo observations of issues handed to Legion and every newer
@@ -238,6 +257,16 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 	}
 	if handover, ok := fact.(intake.Handover); ok {
 		if err := a.consumeHandover(ctx, tx, handover); err != nil {
+			return nil, nil, err
+		}
+		_, returned, err := a.promote(ctx, tx)
+		return returned, nil, err
+	}
+	if change, ok := fact.(intake.AdmissionCapSet); ok {
+		// The cap is written before the pass, in the fact's own transaction, so this very pass
+		// admits under it: a raised cap fills the slots it adds now rather than at the next fact or
+		// tick, and a lowered one starts nothing new and stops nothing that runs.
+		if err := a.setAdmissionCap(ctx, tx, change); err != nil {
 			return nil, nil, err
 		}
 		_, returned, err := a.promote(ctx, tx)
@@ -426,8 +455,9 @@ const todoWakeDelay = 30 * time.Second
 // answer differently from the pass that acts, and a slot this said was free would then go to
 // nobody.
 func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
-	if a.cap <= 0 {
-		return false, nil
+	cap, err := a.capAt(ctx, tx)
+	if err != nil || cap <= 0 {
+		return false, err
 	}
 	issues, err := a.store.LiveIssues(ctx, tx, a.project)
 	if err != nil {
@@ -452,7 +482,48 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 			taking++
 		}
 	}
-	return len(own)+taking < a.cap, nil
+	return len(own)+taking < cap, nil
+}
+
+// setAdmissionCap appends the change the fact makes (store.RecordAdmissionCapChangeTx) with the cap
+// the passes admitted under before it and the one they admit under from it on, and logs it once it
+// commits: who made it, why, the tick that made it, the cap it set or that it cleared, the caps
+// before and after it and the deployment's ceiling. A change that changes nothing writes no row
+// and logs one Debug line: a set of the cap that stands, which the controller's regulator makes on
+// every tick its signals hold still, and a clear where no cap stands. It refuses nothing: the routes
+// refused a cap above the ceiling before the fact, and capAt admits under the smaller of the two
+// whatever the row holds.
+func (a *Admission) setAdmissionCap(ctx context.Context, tx pgx.Tx, change intake.AdmissionCapSet) error {
+	standing, found, err := store.AdmissionCapTx(ctx, tx, a.project)
+	if err != nil {
+		return err
+	}
+	stands := found && !standing.Cleared()
+	before := store.EffectiveAdmissionCap(a.ceiling, standing, found)
+	args := []any{"by", string(change.By.Kind), "by_session", change.By.Session, "reason", change.Reason,
+		"tick", change.TickID, "ceiling", a.ceiling}
+	if (change.Cap == 0 && !stands) || (stands && change.Cap == standing.Cap) {
+		args = append(args, "set", capWords(change.Cap), "cap", before)
+		store.OnCommit(ctx, func() { a.log.Debug("admission: the cap change changes nothing, so no change is recorded", args...) })
+		return nil
+	}
+	recorded := store.AdmissionCapChange{Project: a.project, Cap: change.Cap, CapBefore: before, Ceiling: a.ceiling,
+		By: change.By, Reason: change.Reason, TickID: change.TickID, At: change.At}
+	recorded.CapAfter = store.EffectiveAdmissionCap(a.ceiling, recorded, true)
+	if recorded, err = store.RecordAdmissionCapChangeTx(ctx, tx, recorded); err != nil {
+		return err
+	}
+	a.logOnCommit(ctx, "admission: the cap changed", append(args, "change", recorded.ID, "set", capWords(change.Cap),
+		"cap_before", recorded.CapBefore, "cap_after", recorded.CapAfter)...)
+	return nil
+}
+
+// capWords is the cap a change names, as its log line writes it: the number, or "clear".
+func capWords(cap int) any {
+	if cap == 0 {
+		return "clear"
+	}
+	return cap
 }
 
 // wakeController queues notice on issue, due at dueAt, when a controller is registered and no
@@ -1660,7 +1731,7 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 // mark would say the issue stands in the line waiting for its slot
 // back when nothing of it is waiting, and its work coming back later would take its place in
 // the line from the moment before the park (record.Waiting).
-func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) ([]string, error) {
+func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts, cap int) ([]string, error) {
 	own, err := a.store.SlottedIssues(ctx, tx, a.project)
 	if err != nil {
 		return nil, fmt.Errorf("list this project's slotted issues: %w", err)
@@ -1684,7 +1755,7 @@ func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record
 		}
 		inUse--
 		released = append(released, issue.Key)
-		a.logSlot(ctx, "released", issue.Key, inUse)
+		a.logSlot(ctx, "released", issue.Key, inUse, cap)
 	}
 	for _, issue := range issues {
 		if issue.ReleasedForWaitAt == nil {
@@ -1719,7 +1790,7 @@ func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record
 // the controller's free-slot wake is about the capacity of the project and not about the reason
 // a row came free.
 func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues []record.Issue,
-	slots []record.Slot, facts record.LineFacts,
+	slots []record.Slot, facts record.LineFacts, cap int,
 ) ([]string, error) {
 	own := ownSlots(issues, slots)
 	inUse := len(own)
@@ -1733,15 +1804,15 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 		}
 		inUse--
 		released = append(released, slot.Issue)
-		a.logSlot(ctx, "released", slot.Issue, inUse)
+		a.logSlot(ctx, "released", slot.Issue, inUse, cap)
 	}
 	return released, nil
 }
 
 // logSlot logs a slot released or taken once the fact commits: the issue, the slots the project
-// holds after the change, and the cap.
-func (a *Admission) logSlot(ctx context.Context, change, issue string, inUse int) {
-	store.OnCommit(ctx, func() { a.log.Info("admission: slot "+change, "issue", issue, "slots", inUse, "cap", a.cap) })
+// holds after the change, and cap, the cap the pass admits under (capAt).
+func (a *Admission) logSlot(ctx context.Context, change, issue string, inUse, cap int) {
+	store.OnCommit(ctx, func() { a.log.Info("admission: slot "+change, "issue", issue, "slots", inUse, "cap", cap) })
 }
 
 // logOnCommit writes one Info line once the transaction commits (store.OnCommit), for a line that
@@ -1805,6 +1876,12 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	if err != nil || paused {
 		return 0, nil, err
 	}
+	// The cap is read once for the pass, beside the pause, and every release, the stalled-tree
+	// measure and the promotion below judge under it.
+	cap, err := a.capAt(ctx, tx)
+	if err != nil {
+		return 0, nil, err
+	}
 	issues, slots, facts, err := a.adoptQueuedRoots(ctx, tx, respectHolds)
 	if err != nil {
 		return 0, nil, err
@@ -1826,7 +1903,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			return 0, nil, err
 		}
 	}
-	released, err := a.releaseSlots(ctx, tx, issues, facts)
+	released, err := a.releaseSlots(ctx, tx, issues, facts, cap)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -1861,7 +1938,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// so this pass's own line and its ownSlots read the state after the release: an issue that
 	// waits holds none of the cap's slots, and the slot it gives back is offered to the line on
 	// this very pass rather than the next one.
-	waiting, err := a.releaseSlotsForWaits(ctx, tx, issues, slots, facts)
+	waiting, err := a.releaseSlotsForWaits(ctx, tx, issues, slots, facts, cap)
 	if err != nil {
 		return 0, append(released, waiting...), err
 	}
@@ -1901,10 +1978,10 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// holds now. It runs before the cap check below, because a deployment whose cap admits
 	// nothing still runs the trees it opened before and still owes its controller the news that
 	// one has stopped.
-	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots, line, dropped, rows, floor); err != nil {
+	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots, line, dropped, rows, floor, cap); err != nil {
 		return 0, released, err
 	}
-	if a.cap <= 0 {
+	if cap <= 0 {
 		return 0, released, nil
 	}
 	admitted := 0
@@ -1948,7 +2025,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			// brought, and an answered root resumes its architect on the row it kept through
 			// the wait.
 			takes := slotFor(candidate)
-			if !capLets(candidate, len(own), a.cap) {
+			if !capLets(candidate, len(own), cap) {
 				// A full cap gives no further slot, and the scan goes on. This is not the hold
 				// above and must not be read as one: a hold is an answer for every candidate
 				// behind it, because it says the pass does not yet know what this candidate is;
@@ -2040,7 +2117,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 					}
 				}
 				slots, own = append(slots, slot), append(own, slot)
-				a.logSlot(ctx, "taken", issue.Key, len(own))
+				a.logSlot(ctx, "taken", issue.Key, len(own), cap)
 			}
 			switch candidate.Kind {
 			case record.LineReturning:

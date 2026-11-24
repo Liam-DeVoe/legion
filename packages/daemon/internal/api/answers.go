@@ -46,16 +46,16 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// 193, 202, 205, 213, 219 and 220 are constants rather than their numbers, because the entries
-// that added them name them (shapedAnswersContract, the shaped answers' entry;
+// 193, 202, 205, 213, 219, 220 and 243 are constants rather than their numbers, because the
+// entries that added them name them (shapedAnswersContract, the shaped answers' entry;
 // repositoriesLiveContract, dispatch://INFRA-4401's; childRouteRemovedContract,
 // dispatch://INFRA-3178's; cachesSourceContract, dispatch://INFRA-4036's; OwnerPlanContract, the
-// owner's plan's; and assignmentPlanContract, the experiment group's): a renumber of any of those
-// entries moves its constant and this list with it, and moving one of the two alone would
-// describe a shape at a contract no entry declares. The other entries above 193 follow them as
-// numbers: 199 is version.go's entry for INFRA-4605, and 217 its entry for
-// dispatch://INFRA-3531 and dispatch://INFRA-4567.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract}
+// owner's plan's; assignmentPlanContract, the experiment group's; and admissionCapContract,
+// dispatch://INFRA-5616's): a renumber of any of those entries moves its constant and this list
+// with it, and moving one of the two alone would describe a shape at a contract no entry
+// declares. The other entries above 193 follow them as numbers: 199 is version.go's entry for
+// INFRA-4605, and 217 its entry for dispatch://INFRA-3531 and dispatch://INFRA-4567.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, admissionCapContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -82,6 +82,7 @@ const (
 	AnswerProjectPause       AnswerID = "project-pause"
 	AnswerProjectResume      AnswerID = "project-resume"
 	AnswerPlanRegister       AnswerID = "plan-register"
+	AnswerAdmissionCap       AnswerID = "admission-cap"
 )
 
 // Answer is one response schema a plugin parses, with every route that answers it and the
@@ -138,7 +139,8 @@ var typedSettings = []TypedSetting{
 }
 
 // Answers is one row per answer a plugin parses. The operator's claim answers, the operator's
-// pause and resume answers (`legion project pause|resume`) and the controller's secret and
+// pause and resume answers (`legion project pause|resume`), the operator's answers of the cap
+// (`legion project set-admission-cap|clear-admission-cap`) and the controller's secret and
 // credential answers are no rows: no plugin parses them.
 var Answers = []Answer{
 	// Older than the floor: `GET /legion/v1/state` predates every numbered entry of version.go.
@@ -210,6 +212,13 @@ var Answers = []Answer{
 	// version.go's 219: the plan register_plan took (`api.PlanRegisterResponse`). The route
 	// arrives with the answer, so no contract below 219 records either.
 	{ID: AnswerPlanRegister, Routes: []string{"POST /legion/v1/plans/register"}, Since: OwnerPlanContract},
+	// version.go's admissionCapContract: the cap the controller's set or clear of the admission cap
+	// left (`api.AdmissionCapResponse`). The two routes arrive with the answer, so no contract
+	// below it records any of them.
+	{ID: AnswerAdmissionCap, Routes: []string{
+		"POST /legion/v1/project/admission-cap",
+		"POST /legion/v1/project/admission-cap/clear",
+	}, Since: admissionCapContract},
 }
 
 // EnumeratedField is one field of one answer that a plugin parses with a strict enumeration,

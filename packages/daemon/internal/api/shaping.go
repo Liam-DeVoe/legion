@@ -297,15 +297,15 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
 		AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
 		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
-		AnswerPlanRegister:
+		AnswerPlanRegister, AnswerAdmissionCap:
 		// The identity, one row each: every contract this daemon serves one of these answers
 		// reads the body it writes. No key has arrived on any of them since that answer arrived.
 		// One key has gone: AnswerHandoffComplete lost its `note` at stateMachineContract, and
 		// no reader from ServingFloor to 85 requires it, so no stand-in is written for it
 		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract,
-		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, and
-		// AnswerPlanRegister arrived whole at OwnerPlanContract, so no older contract records any
-		// of the four at all.
+		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract,
+		// AnswerPlanRegister arrived whole at OwnerPlanContract, and AnswerAdmissionCap arrived
+		// whole at admissionCapContract, so no older contract records any of the five at all.
 		return body, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -575,6 +575,8 @@ var stateNarrowings = []stateNarrowing{
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
 	{contract: assignmentPlanContract, issue: withoutAssignmentPlans, dropped: "the issues' assignments' plan"},
+	{contract: admissionCapContract, state: withoutAdmissionCap,
+		dropped: "admission.ceiling, admission.override and admission.capChanges"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -1740,6 +1742,21 @@ func withoutLowestPluginContract(state State) (State, bool) {
 func withoutPause(state State) (State, bool) {
 	moved := state.Paused != nil || state.LastPause != nil
 	state.Paused, state.LastPause = nil, nil
+	return state, moved
+}
+
+// withoutAdmissionCap is state with no `admission.ceiling`, `admission.override` or
+// `admission.capChanges`, the three keys admissionCapContract added to the state; its routes are no
+// keys of this one. `cap` stays, and says to every reader what it always said: the cap the passes
+// admit under. The ceiling is `omitzero` and at least 1 on every body the source builds, so zeroing
+// it takes the key off; the override is a pointer with `omitempty`, absent where none stands; and
+// the list is `omitzero`, so nil takes it off where the source writes it empty. The band reports a
+// move for every state that carries any of them. Admission is a value of the state, so the state
+// the source answered is left as it was, as withoutPause leaves it.
+func withoutAdmissionCap(state State) (State, bool) {
+	admission := state.Admission
+	moved := admission.Ceiling != 0 || admission.Override != nil || admission.CapChanges != nil
+	state.Admission.Ceiling, state.Admission.Override, state.Admission.CapChanges = 0, nil, nil
 	return state, moved
 }
 
