@@ -3284,11 +3284,12 @@ func TestAResolveThatDidNotAnswerIsUnknownAndNotAVerdict(t *testing.T) {
 	})
 }
 
-// The gate's question over several results of one check. A fail stands for nothing, a pass at
-// a commit no basis names does not stand, and the two passes at the head do, so the check
-// answers yes and names both roles. Rewording the check takes every one of them away: a pass
-// whose check's words moved is no pass that stands (R5), although each result stands at the
-// head exactly as it did, which is the separation the two fields keep.
+// The gate's question over several results of one check. A fail at a commit no basis names
+// stands for nothing, a pass there does not stand either, and the two passes at the head do, so
+// the check answers yes and names both roles. (A pass and a fail at the head itself would read not
+// known, R4.) Rewording the check takes every one of them away: a pass whose check's words moved
+// is no pass that stands (R5), although each result stands at the head exactly as it did, which is
+// the separation the two fields keep.
 func TestPassStandsNamesTheRolesWhosePassesStand(t *testing.T) {
 	t.Parallel()
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
@@ -3298,7 +3299,7 @@ func TestPassStandsNamesTheRolesWhosePassesStand(t *testing.T) {
 	uploadDocument(t, handler, owner, "verification.md", siblingChecks)
 	writeHead(t, database, "acme/widgets", 63, headCommit, "open", issue.Key)
 
-	recordResult(t, handler, issue.Key, resultBody("k1", "fail", headCommit, map[string]any{"failed": 1}))
+	recordResult(t, handler, issue.Key, resultBody("k1", "fail", newHeadCommit, map[string]any{"failed": 1}))
 	recordResult(t, handler, issue.Key, resultBody("k1", "pass", newHeadCommit, map[string]any{"role": "tester"}))
 	byImplementer := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key,
 		resultBody("k1", "pass", headCommit, nil)))
