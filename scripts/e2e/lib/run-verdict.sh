@@ -35,9 +35,9 @@ run_end() { run_ended=1; }
 run_passed() { [ "$1" -eq 0 ] && [ -n "$run_ended" ]; }
 
 # run_status STATUS prints the status a run that exits with STATUS ends with: STATUS, or 1 for a
-# status of 0 that the run did not reach its end with. A trap passes it to a teardown that keeps
-# evidence for a failed run (lib/kind-sandbox.sh's kind_sandbox_teardown), so a killed run keeps
-# its evidence too.
+# status of 0 that the run did not reach its end with. run_verdict exits with it; a teardown that
+# keeps evidence for a failed run can read it the same way, so that a killed run keeps its
+# evidence too, though no caller passes it to one now.
 run_status() {
   if [ "$1" -ne 0 ] || run_passed "$1"; then
     echo "$1"

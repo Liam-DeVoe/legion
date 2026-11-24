@@ -18,14 +18,15 @@
 # NAME is the environment variable the caller read DSN from, and it starts that line. WHAT is
 # what the run does on that server, in a few words.
 #
-# Seven call sites read a DSN with this guard before they start anything, because the server must
-# be this machine's, and each is a proof of its own: verification-results.sh,
+# Nine call sites read a DSN with this guard before they start anything, because the server must
+# be this machine's: eight proofs of their own, verification-results.sh,
 # dispatch-claimant-delivery.sh, stage2-tmux-supervision.sh, controller-start-tmux.sh,
-# clean-session-stop-tmux.sh, envoy-session-delivery.sh and dispatch-session-settings.sh. Five of
-# the seven call this function.
-# envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN with
-# run_database_url alone, which begins with this guard's own check. Every proof that writes a
-# server its caller's DSN names reads that DSN with this guard before it starts anything.
+# clean-session-stop-tmux.sh, envoy-session-delivery.sh, dispatch-session-settings.sh and
+# dispatch-user-turns.sh, and the tool approved-version-news.sh. Six of the nine call this
+# function; envoy-session-delivery.sh, dispatch-session-settings.sh and dispatch-user-turns.sh
+# read their DSN with run_database_url alone, which begins with this guard's own check. Every
+# proof that writes a server its caller's DSN names reads that DSN with this guard before it
+# starts anything.
 #
 # libpq's own parser answers which host the DSN names, because libpq and a URL parser read
 # different text as the host. libpq ends the user name at the first `@` and starts no query

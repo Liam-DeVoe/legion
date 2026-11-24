@@ -1,7 +1,7 @@
 # The end-to-end scripts
 
 Each script here runs real binaries built from the checkout against real dependencies on the machine it runs on and fails loudly on the first step that does not hold.
-Each is a step of a job of `ci.yaml`, which gives it what it needs ([Where each script runs](#where-each-script-runs)), but for two tools, `step-records-read.sh` and `plan-ratings-read.sh`.
+Each is a step of a job of `ci.yaml`, which gives it what it needs ([Where each script runs](#where-each-script-runs)), but for the tools `step-records-read.sh`, `plan-ratings-read.sh`, `approved-version-news.sh` and `pack-memory-job.sh`, with the `pack-memory-probe.sh` its Job runs.
 `lib/` holds what the scripts share:
 standalone helpers they run, and the files they source, which `shellcheck` follows from this directory through `scripts/e2e/.shellcheckrc`:
 
@@ -66,8 +66,10 @@ Each item below names a script, then what it proves.
   It writes its own stand-in shared check into its scratch directory, and the rule file embedded in the image's `legion` decides every verdict;
   k7's other two failures cannot be met in an image at all, since the rules are embedded in that binary and the engine is linked into it, which the run says in its own log.
   Its control is the same image with `/opt/legion/bin` taken off `PATH`, where the real `git` and `jj` let all five cases through.
+  Two pushes outside those shapes run after both arms, on the image's own `PATH`: a `jj gerrit upload` that names its git on the command line (`--config git.executable-path=/usr/bin/git`), which the jj wrapper refuses before it starts, with exit 2, a `LEAK CHECK SETUP ERROR` line naming that `git.executable-path` and the remote unchanged;
+  and its negative control, a `jj git push --named` with `/opt/legion/bin` off `PATH`, which the guard never sees and which must land.
   Each check prints one `CHECK <name>: PASS|FAIL` line.
-  The `worker-image` job of `ci.yaml` runs it after its build
+  The `worker-image` job of `ci.yaml` runs it after its build, and the `leak-guard` leg of the `kind` job runs it in the image the `kind-image` job built
 
 - `pack-memory-job.sh`
 
@@ -169,6 +171,15 @@ Each item below names a script, then what it proves.
   a read that lists no finished issue, or that fails, is `UNKNOWN` and never a pass.
   A deployed Dispatch and the operator's credential; it starts nothing
 
+- `approved-version-news.sh`
+
+  part two of an approved version's news: real Oh My Pi sessions on a real model, under this checkout's role prompts and under its base's, answer an approved new version of a design, run once as the benchmark `BenchmarkRealSessionsTellAndAnswerANewVersion` (`packages/daemon/internal/daemon/approved_version_news_sessions_live_test.go`).
+  It counts each step's runs in each arm the driver's plan makes it in, and the base arm is each step's control, which bites when a base run fails at its assertion.
+  Its last line reads PASS, MEASURED for a run that picks its runs (`APPROVED_VERSION_NEWS_STEP`, `APPROVED_VERSION_NEWS_ARM`, `APPROVED_VERSION_NEWS_RUNS`), or FAIL at the check it stopped in.
+  Part one, what the daemon sends with no agent, is `TestAnApprovedVersionReachesItsHolderLive`, which the `daemon-live` job runs.
+  It needs a loopback `LEGION_TEST_PG_DSN`, `LEGION_TEST_OMP`, `ANTHROPIC_BASE_URL` and a model key file; its header says the rest.
+  A person runs it for a decision on the prompts; no job runs it
+
 - `envoy-session-delivery.sh`
 
   every Envoy event reaches a real Oh My Pi session and a real Claude Code session under `legion claude-bridge` exactly once
@@ -187,29 +198,32 @@ Each item below names a script, then what it proves.
 
 ## Where each script runs
 
-Every script here but two is a step of a job of `ci.yaml`, and that job gives it what it needs:
+Every script here but the tools is a step of a job of `ci.yaml`, and that job gives it what it needs:
 
-- `stage1-skeleton.sh` is a step of the `daemon-go` job ([In CI](#in-ci) says what the job gives it).
+- `stage1-skeleton.sh` is a step of the last plain leg of the `daemon-go` job, `daemon-go (3/3)` ([In CI](#in-ci) says what the job gives it).
+  That job runs in the merge queue and on a pull request labelled `full-ci` or `lane:daemon_go_tests`.
 
-- `dispatch-claimant-delivery.sh` and `verification-results.sh` are steps of the `envoy-session-stall` job, each against a database of its own on that job's Postgres.
+- `dispatch-claimant-delivery.sh` and `verification-results.sh` are steps of the `envoy-session-proofs` leg of the `envoy-held` job, each against a database of its own on that leg's Postgres.
+  That job runs in the merge queue and on a pull request labelled `full-ci`, `lane:envoy_go_checks` or `lane:envoy_infra_go`.
 
 - `stage2-tmux-supervision.sh`, `controller-start-tmux.sh` and `clean-session-stop-tmux.sh` are steps of the `tmux-scripts` part of the `agent-harness` job;
   `dispatch-session-settings.sh` is a step of its `session-settings` part, `dispatch-user-turns.sh` and `envoy-session-delivery.sh` are steps of its `session-scripts` part, and `nats-callout-sessions.sh` is two steps of its `nats-callout-sessions` part, one in each of its modes.
-  That job runs in the merge queue and on a pull request labelled `full-ci`.
+  That job runs in the merge queue and on a pull request labelled `full-ci` or `lane:agent_harness`.
   Each of these scripts takes Oh My Pi, and Claude Code, Codex CLI, Chromium or Postgres where it uses them, from the job, starts its own NATS and, where it calls a model, its own model stand-in, and prints one `CHECK` line for each check it makes.
 
 - `leak-guard-image-probe.sh` is a step of the `worker-image` job, which runs it inside the image it has just built.
   In the merge queue, which runs no `worker-image`, it is the step of the `leak-guard` leg of the `kind` job, which runs it inside the image the `kind-image` job built.
 
-- `step-records-read.sh` and `plan-ratings-read.sh` are tools, not tests:
-  an operator runs each after the merge against a deployed Dispatch, with the operator's own credential, and its header says for which decision.
+- `step-records-read.sh`, `plan-ratings-read.sh`, `approved-version-news.sh` and `pack-memory-job.sh`, with its `pack-memory-probe.sh`, are tools, not tests:
+  a person runs each, and its header says for which decision.
+  An operator runs the first two after the merge against a deployed Dispatch, with the operator's own credential.
   The `daemon-live` job's `TestPlanRatingsLive` runs `plan-ratings-read.sh` against the Dispatch it starts, which holds its parse to what a real Dispatch serves.
 
-None of them needs a secret, and none may:
+None of the tests needs a secret, and none may:
 Sami answered that no API key goes into this repository, and that a smoke test which calls a model runs in the deployment repository on workload identity federation (sjawhar/legion#2512).
 The whole-daemon tests that drive no agent are not scripts:
 they are Go tests of `packages/daemon/internal/daemon` that the `daemon-live` job of `ci.yaml` runs by name on each pull request whose paths select it, and each test's own header says what it proves.
-The whole-daemon tests that drive real Oh My Pi panes are Go tests of that package too, which the `agent-harness` job of `ci.yaml` runs by name in the merge queue and on a pull request labelled `full-ci`;
+The whole-daemon tests that drive real Oh My Pi panes are Go tests of that package too, which the `agent-harness` job of `ci.yaml` runs by name in the merge queue and on a pull request labelled `full-ci` or `lane:agent_harness`;
 so is the Claude Code backend's test on tmux, `claude_backend_live_test.go`, which that job's `tmux-scripts` part runs.
 The tests of the Sandbox runtime and of the whole daemon on a kind cluster are Go tests as well, which the `kind` job runs on the rig [`lib/kind-sandbox.sh`](#libkind-sandboxsh) builds.
 
@@ -312,10 +326,12 @@ Two notes on what the script had to learn about its own surface:
 
 ### In CI
 
-On every pull request whose diff selects them, the `typecheck` job of `.github/workflows/ci.yaml` runs `go vet ./...` in `packages/daemon`, and its `daemon-go` job installs `tmux` — the tmux runtime's tests drive a real tmux server and skip without one, and the daemon refuses to start without it
-— and the pinned `jj` (through mise, as the pi-legion job does)
+The `typecheck` leg of `.github/workflows/ci.yaml`'s `lint` job runs `go vet ./...` in `packages/daemon`.
+The legs of its `daemon-go` job install `tmux` — the tmux runtime's tests drive a real tmux server and fail without one on GitHub Actions, and the daemon refuses to start without it
+— and the pinned `jj` (`.github/actions/install-jj`)
 — the workspace tests drive a real jj, and the daemon resolves jj at boot and refuses to start without it
-— then runs `go test ./...` against its Postgres service (`LEGION_TEST_PG_DSN`, and `BROKER_TEST_DATABASE_URL` for the real broker that `internal/cipher`'s contract tests drive, which fail there rather than skip without it), then this script with `LEGION_E2E_PG_DSN` pointing at the same service, so the script runs no docker of its own there.
+— then each runs its share of `go test ./...` against its Postgres service (`LEGION_TEST_PG_DSN`, and `BROKER_TEST_DATABASE_URL` for the real broker that `internal/cipher`'s contract tests drive, which fail there rather than skip without it), and the last plain leg, `daemon-go (3/3)`, then runs this script with `LEGION_E2E_PG_DSN` pointing at the same service, so the script runs no docker of its own there.
+Those legs run in the merge queue, and on a pull request only with the `full-ci` or `lane:daemon_go_tests` label.
 `daemon-go` is the Go daemon's own job: that suite left the `test` job in dispatch://INFRA-1413, where one filter had to cover both it and the shell-script harnesses.
 
 ## stage2-tmux-supervision.sh
@@ -887,7 +903,7 @@ the cases are about a mention that resolved, whatever its send did.
 A comment answers its mention attempts `pending` and its sender settles them after the response, so each mention case reads the comment's delivery rows once none is `pending`, and fails when one still is 10 s after the 201 (two of the listener client's 5 s windows).
 
 Every case runs and prints `== <case>`, what it read, and `CHECK <case>: PASS` or `CHECK <case>: FAIL: <why>`, as each step before the cases does; a summary follows, and any FAIL exits 1.
-The `envoy-session-stall` job of `ci.yaml` runs it on a database of its own on the job's Postgres service.
+The `envoy-session-proofs` leg of `ci.yaml`'s `envoy-held` job runs it on a database of its own on the leg's Postgres service.
 The work directory, under `TMPDIR`, holds the binaries and the logs of natsd, the fake listener and the server:
 removed when the run passes, kept (without the binaries) and printed when it fails.
 Every process the run started is stopped on any exit.
@@ -933,7 +949,7 @@ Each item below names an input and its default, then what it means.
 
   a scratch PostgreSQL database with `pgvector` available, on `127.0.0.1`, `localhost` or `::1`: [`lib/loopback-dsn.py`](#libloopback-dsnpy) asks libpq which host the DSN names, and the run refuses every other answer.
   The run empties its `public` schema with [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `empty_public_schema` before the server migrates it: every table, view, routine and type goes, and the extensions stay.
-  The `envoy-session-stall` job gives it a database of its own on that job's PostgreSQL, the pgvector image.
+  The `envoy-session-proofs` leg of the `envoy-held` job gives it a database of its own on that leg's PostgreSQL, the pgvector image.
   The run leaves what it wrote there for inspection.
   The driver reads it too, as `VERIFICATION_RESULTS_E2E_DATABASE_URL`, for the one fixture no route of Dispatch can write: a stored pull request row of the attribution rule before this build's, since every write of this build stamps the rule it judges by
 
@@ -1080,7 +1096,7 @@ Each item below names a case and how it is driven, then what must hold for it to
   A field that a step did not send reads as the empty string
 
 Every case prints `== <case>`, what it read, and `CHECK <case>: PASS` or `CHECK <case>: FAIL: <why>`, as each step before the cases does; a summary follows, and any FAIL exits 1.
-The `envoy-session-stall` job of `ci.yaml` runs it on a database of its own on the job's Postgres service.
+The `envoy-session-proofs` leg of `ci.yaml`'s `envoy-held` job runs it on a database of its own on the leg's Postgres service.
 The work directory, under `TMPDIR`, holds the binaries and the logs of natsd, the two fakes and the server:
 removed when the run passes, kept (without the binaries) and printed when it fails.
 Every process the run started is stopped on any exit.
@@ -1403,11 +1419,12 @@ Exit status: 0 every check passed; 1 a check failed; 2 refused (an input or tool
 
 Prints what libpq reads from a PostgreSQL DSN, rewrites that DSN to name a run's own database, or refuses the DSN in one line.
 Python 3.9 or later, the standard library, and libpq itself, which it loads with `ctypes`.
-Eight scripts read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
-Each is a test of its own:
-[`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), [`stage2-tmux-supervision.sh`](#stage2-tmux-supervisionsh), [`controller-start-tmux.sh`](#controller-start-tmuxsh), `clean-session-stop-tmux.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh), [`dispatch-session-settings.sh`](#dispatch-session-settingssh) and [`dispatch-user-turns.sh`](#dispatch-user-turnssh).
+Nine scripts read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
+Eight are tests of their own:
+[`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), [`stage2-tmux-supervision.sh`](#stage2-tmux-supervisionsh), [`controller-start-tmux.sh`](#controller-start-tmuxsh), `clean-session-stop-tmux.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh), [`dispatch-session-settings.sh`](#dispatch-session-settingssh) and [`dispatch-user-turns.sh`](#dispatch-user-turnssh);
+the ninth, `approved-version-news.sh`, is a tool.
 Each call calls it in one line, through [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` or through its `run_database_url`, which begins with the same check.
-Six of the eight source that file through [`lib/rig.sh`](#librigsh), and [`stage2-tmux-supervision.sh`](#stage2-tmux-supervisionsh) and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) source it on their own:
+Six of the nine source that file through [`lib/rig.sh`](#librigsh), and [`stage2-tmux-supervision.sh`](#stage2-tmux-supervisionsh), [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and `approved-version-news.sh` source it on their own:
 
 ```sh
 require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the database" || fail "$db_host"
@@ -1691,6 +1708,11 @@ Each item below names a flag, then what it means.
   optional: the Oh My Pi build steps 2 and 3 run (`github:cybermonklabs/oh-my-pi@<version>`), `.omp-pin`'s by default.
   Stage 2 passes the build its daemon and panes run, so no other build opens the profile.
   Refused when empty.
+
+- `--omp-path <binary>`
+
+  optional, in place of `--omp`: the same build named as the binary itself, for a proof whose daemon runs the Oh My Pi a CI job installed (`LEGION_TEST_OMP`, from `.github/actions/install-omp`) by its path, with no mise.
+  Refused when empty, when it names no executable file, and beside `--omp`.
 
 The first four flags are required; each refusal names its flag and exits 2.
 Stdout is exactly one line, the installed manifest's path as `HOME=<home> OMP_PROFILE=<name> omp plugin list --json` reports the plugin;
@@ -2045,7 +2067,7 @@ Each item below names a function, then what it does.
 
 - `run_status STATUS`
 
-  prints STATUS, or 1 for a status of 0 the run did not reach its end with, for a teardown that keeps evidence for a failure ([`lib/kind-sandbox.sh`](#libkind-sandboxsh)'s `kind_sandbox_teardown`), so a killed run keeps its evidence too
+  prints STATUS, or 1 for a status of 0 the run did not reach its end with: the status `run_verdict` exits with
 
 - `run_verdict STATUS PASSED FAILED`
 
@@ -2070,7 +2092,7 @@ A one-line `if …; then …; fi` in an `else` branch, with more after its `fi` 
 
 The host-side helpers a script sources for its rig: bounded waits, ports, the processes the run starts, and their teardown.
 Stage 1, `controller-start-tmux.sh`, `clean-session-stop-tmux.sh`, `dispatch-user-turns.sh`, `dispatch-session-settings.sh`, `dispatch-claimant-delivery.sh` and `verification-results.sh` source it, as do the docs site's broker and operator-walkthrough recorders and pi-legion's skill-scenario rig.
-Six of the eight scripts that call [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s helpers source it too, for those two helpers, which this file sources for them.
+Six of the nine scripts that call [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s helpers source it too, for those two helpers, which this file sources for them.
 `stage2-tmux-supervision.sh` sources `lib/loopback-dsn.sh` on its own, and `envoy-session-delivery.sh` sources it and [`lib/port-file.sh`](#libport-filesh) on its own and keeps an `await_port_file` and a `keep_port` of its own.
 
 ```sh
@@ -2157,7 +2179,7 @@ Each item below names a function, then what it does.
 
   prints the pid of every process of the run still alive: each that carries the run's mark ([`marked_processes`](#libprocess-treesh)), which the run exports as `LEGION_E2E_RUN=$work` right after its transcript starts, or a daemon pane's `XDG_CONFIG_HOME` under `$work`.
   A process that only works under `$work` or names it on its command line carries neither, so a person's shell `cd`'d there, a `tail -f` of the transcript, an editor on a file under it, or another agent's `grep -r` over it is none of the run's.
-  It prints why and exits 2 when the run's processes could not be read, which the cleanup checkpoint's wait and the two stage proofs' last checks fail on.
+  It prints why and exits 2 when the run's processes could not be read.
   Each sweep that ends them is `stop_marked_processes "$work"`, which signals only the marked processes
 
 - `real_bin_path DEST NAME…`
@@ -2298,7 +2320,7 @@ A walk or a read that cannot see the processes it reads says why and fails with 
 
   succeeds once PID's environment holds a variable.
   Linux names the program an exec starts in `/proc/<pid>/exe` before it lays out that program's arguments and environment: the command line reads empty until the environment's bounds are first set, and the environment until its end is, so `env_of`, `env_has` and `env_length` answer 2 there for a process that will run with a full environment.
-  A caller that found PID by the program it runs (`launched`, a wait on `/proc/<pid>/exe`) waits on this before it reads the environment, as the Stage 3 pane watchers do: an Oh My Pi found in that window is read again at the next poll, not counted as a violation.
+  A caller that found PID by the program it runs (`launched`, a wait on `/proc/<pid>/exe`) waits on this before it reads the environment, as `lib/controller-start-guards.test.ts`'s wait for the controller's Oh My Pi does: an Oh My Pi found in that window is read again at the next poll, not counted as a violation.
   It fails, too, for a process that has gone and for one started with an empty environment
 
 - `names_dir DIR NAME… PID`, `procs_naming DIR NAME…`
@@ -2348,12 +2370,12 @@ A walk or a read that cannot see the processes it reads says why and fails with 
 
   prints FILE's real path, and refuses a script (`#!`) and a mise shim: a script's process runs its interpreter and a mise shim execs the version mise picks, so no process runs either by the kernel's record.
   `launched`, `child_running` and `omp_program` take their programs through it.
-  The clean-session-stop proof refuses an Oh My Pi named in `LEGION_E2E_OMP_PATH` that is either, and with it unset takes the first `omp` on PATH that is neither, as a devbox's own omp wrapper takes the first `omp` on PATH that is no wrapper
+  The clean-session-stop proof refuses an Oh My Pi named in `LEGION_TEST_OMP` or a Claude Code named in `LEGION_TEST_CLAUDE` that is either, and the controller-start and user-turns proofs refuse such an Oh My Pi
 
 - `first_native NAME`
 
   prints the first `NAME` on PATH that `native_program` takes, each `type -ap` line a whole path, spaces and all, and fails naming each candidate it passed.
-  A rig whose `omp` or `claude` may be a wrapper finds the program itself with it
+  No proof calls it now; `lib/process-tree.test.ts` holds it
 
 - `omp_program PIN`
 
@@ -2405,7 +2427,7 @@ Panes are unaffected, since the daemon moves their four XDG base directories und
 jj reads a leading `~/` in a config value against `HOME`, which is `DIR` once the daemon runs.
 An operator's `signing.key = "~/.ssh/<key>.pub"` would then name a key inside `DIR`, where there is none.
 With `signing.behavior = "own"`, the first commit of every workspace clone the daemon makes is authored by the operator, so it fails to sign, and no pane ever starts:
-the daemon log shows each provision failing with `Couldn't load public key <dir>/.ssh/...`, and the run fails `panes-pinned-to-the-rig-before-any-agent-turn` waiting for the architect to register.
+the daemon log shows each provision failing with `Couldn't load public key <dir>/.ssh/...`, and no architect ever registers.
 So `make_omp_home` pins every `~/` value of the operator's jj config, in `DIR/.jjconfig-operator-paths.toml`, to the path it names under the operator's `HOME`.
 It exports `JJ_CONFIG` as the operator's own config files (`jj config path --user`, which names jj's default files when `JJ_CONFIG` is unset), with that overlay last, so the daemon's jj signs as the operator's does.
 A second call leaves its own overlay out when it reads the operator's config.
@@ -2415,7 +2437,7 @@ Panes commit as their App's identity (`JJ_USER` and `JJ_EMAIL`), which `"own"` n
 A run's panes and controller therefore see none of the operator's `~/.gitconfig`, `~/.claude`, `~/.codex` or `~/.aws`, which is what a Sandbox pod sees.
 The gateway key command alone runs under the operator's `HOME` ([`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh)).
 
-`omp_setup_wizard_off FILE` appends `startup.setupWizard: false` to `FILE`, the `agent/config.yml` of a profile the run writes, and every writer of a profile that an interactive Oh My Pi opens calls it: the three model-route libraries and the controller proof.
+`omp_setup_wizard_off FILE` appends `startup.setupWizard: false` to `FILE`, the `agent/config.yml` of a profile the run writes, and every writer of a profile that an interactive Oh My Pi opens calls it: the two model-route libraries ([`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh) and [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh)), the controller proof and the user-turns proof.
 An interactive Oh My Pi in a terminal, such as the one `legion controller start` runs in a tmux pane, opens its first-run setup wizard (`Setup step 1 of 5`, `Sign in to your providers`) while the profile's `setupVersion` is below the build's `CURRENT_SETUP_VERSION`, and on a fresh profile the wizard blocks the session's first command and normal editor interaction (`runInteractiveMode` in `packages/coding-agent/src/main.ts` and `selectSetupScenes` in `packages/tui/src/setup/wizard.ts`, at the pin).
 `startup.setupWizard: false` shuts the wizard whatever setup version the build counts to; an Oh My Pi in `--mode rpc`, as every daemon pane runs, never opens it.
 A named profile's own settings file is its `agent/config.yml`, and it inherits no other `config.yml` of the home (`getProfileConfigRoot`, `@oh-my-pi/pi-utils` `dirs.ts`).
@@ -2496,7 +2518,7 @@ Each item below names a function, then what it does.
 
   applies Agent Sandbox's CRD and its vendored manifest, and waits for its controller's rollout
 
-- `kind_sandbox_install_gvisor WORK`
+- `kind_sandbox_install_gvisor FETCHED WORK`
 
   installs gVisor's dated release, pinned by sha512, into the node's containerd as the `runsc` handler with a `gvisor` RuntimeClass, and fails unless a `runtimeClassName: gvisor` pod's `dmesg` says `Starting gVisor`
 
@@ -2512,7 +2534,7 @@ Each item below names a function, then what it does.
 
 - `kind_node_pulls JOURNAL...`
 
-  reads the containerd journals of the cluster's nodes, prints each image a node pulled, and returns 3 when one is neither a `ghcr.io/cybermonklabs/legion/ci` image named by digest nor an image of the rig's local registry, or when no journal holds a successful pull; `kind-sandbox.test.ts` holds it on the journals under `testdata/kind-node-pulls`
+  reads the containerd journals of the cluster's nodes, prints each image a node pulled, and returns 3 when one is neither a `ghcr.io/cybermonklabs/legion/ci` image named by digest nor an image of the rig's local registry, and 4 when no journal holds a successful pull; `kind-sandbox.test.ts` holds it on the journals under `testdata/kind-node-pulls`
 
 - `kind_sandbox_start_nfs_server SEED`
 
@@ -2525,7 +2547,7 @@ Each item below names a function, then what it does.
 - `kind_sandbox_teardown STATUS EVIDENCE`
 
   when `STATUS` is not 0, writes the cluster's nodes and pods, the `legion` namespace's Sandboxes and volume claims, the descriptions and container logs of the `legion`, `nfs` and `postgres` namespaces' pods and every event to `EVIDENCE/cluster-at-failure.txt`, and the Agent Sandbox controller's log to `EVIDENCE/agent-sandbox-controller.log`;
-  in every case saves each node's containerd journal to `EVIDENCE/containerd-<node>.journal`, prints the names CoreDNS refused, and reads the pull list with `kind_node_pulls`, whose status 3 the rig's teardown turns into a failed test (`CHECK kind-node-pulls`);
+  in every case saves each node's containerd journal to `EVIDENCE/containerd-<node>.journal`, prints the names CoreDNS refused, and reads the pull list with `kind_node_pulls`: it returns 3 when that read returns 3, or 4 with `STATUS` 0, and the rig's teardown turns that into a failed test (`CHECK kind-node-pulls`), while a 4 with `STATUS` not 0 is no second failure, since a rig that failed before its first pull leaves no pull to read;
   then deletes the pod route, the cluster and the registry.
   It does nothing before `kind_sandbox_use` or `kind_sandbox_create` named a cluster, and deletes no cluster once it is gone
 

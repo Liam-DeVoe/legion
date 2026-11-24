@@ -10,7 +10,8 @@
 # new comment mentioning a session skips that session's own copy only when the mention's send
 # landed (attempt.leftToMention): the fake listener refuses the send to make it fail. Each step and
 # each case prints `CHECK <name>: PASS` or `CHECK <name>: FAIL: <reason>`, a case after what it
-# read; every case runs, and any FAIL exits 1. The `envoy-session-stall` job of `ci.yaml` runs it.
+# read; every case runs, and any FAIL exits 1. The `envoy-session-proofs` leg of `ci.yaml`'s
+# `envoy-held` job runs it.
 #
 #   DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     [DISPATCH_BIN=<envoy-dispatch>] bash scripts/e2e/dispatch-claimant-delivery.sh

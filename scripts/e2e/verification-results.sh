@@ -41,7 +41,8 @@
 # stdin gives are stored byte for byte, while `--observed '--- PASS ...'` still reads as a flag.
 # Each step and each case prints `CHECK <name>: PASS` or `CHECK <name>: FAIL: <reason>`, a case
 # after `== <case>` and what it read; the first case failing stops the run, since every later case
-# records a result too, and any FAIL exits 1. The `envoy-session-stall` job of `ci.yaml` runs it.
+# records a result too, and any FAIL exits 1. The `envoy-session-proofs` leg of `ci.yaml`'s
+# `envoy-held` job runs it.
 #
 #   DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     [DISPATCH_BIN=<envoy-dispatch>] \

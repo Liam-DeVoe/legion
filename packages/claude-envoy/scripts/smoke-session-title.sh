@@ -2,7 +2,7 @@
 # smoke-session-title.sh — the test that the name a person gave a Claude Code session is what this
 # plugin registers with a real Envoy listener, that a rename replaces it, and that a session
 # nobody named keeps the folder-and-short-id fallback (dispatch://INFRA-92). The
-# `envoy-session-stall` job of `ci.yaml` runs it.
+# `envoy-session-proofs` leg of `ci.yaml`'s `envoy-held` job runs it.
 #
 # It runs the bundles, not the TypeScript: a NATS server and an Envoy listener, both built from
 # this tree, and a copy of the plugin built from this tree into the scratch directory
