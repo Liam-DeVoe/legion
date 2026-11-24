@@ -1,7 +1,12 @@
 /**
- * The one way the TypeScript of scripts/e2e signals a process group: signalGroup. It imports
- * nothing, so lib/app-logins.ts, which the stage proofs run with `bun`, and the test rows import it
+ * How the TypeScript of scripts/e2e signals a process group: signalGroup. It imports nothing, so
+ * lib/app-logins.ts, which the stage proofs run with plain `bun`, and the test rows import it
  * alike. lib/process-tree.sh's group_signalable is the shell's form of the same check.
+ *
+ * RefusedGroup and signalGroup are the same code as packages/dispatch/e2e/signal-group.ts, the
+ * copy the Dispatch package's e2e code imports. There are two because this copy imports nothing,
+ * the Dispatch one included, so the stage proofs run lib/app-logins.ts with plain `bun` from
+ * scripts/e2e/lib alone. A change to either copy is made to the other.
  */
 
 /**

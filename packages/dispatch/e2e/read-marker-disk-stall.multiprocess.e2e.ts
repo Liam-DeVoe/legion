@@ -10,13 +10,14 @@ import {
 } from "./disk-stall";
 import { connectedDot, documentEditor, holdFirstRequest } from "./editor";
 import { sql } from "./psql";
-import { emptyDatabase, expect, rowKey, test } from "./test";
+import { resetDatabase } from "./seed";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * The reset that empties the database (e2e/seed.ts) - once per worker, before its first row, and
- * where a row empties it itself (`emptyDatabase`, e2e/test.ts) - empties `user_document_reads`,
- * and waits at most 5 s for the table. A page that opens a document marks it read (PUT
+ * The reset that empties the database (`resetDatabase`, e2e/seed.ts) - once per worker, before
+ * its first row, and where a row empties it itself - empties `user_document_reads`, and waits at
+ * most 5 s for the table. A page that opens a document marks it read (PUT
  * /api/v1/me/documents/{id}/read), and a row that ends right after closes that page while the
  * write is in flight. When the database's disk stops answering at that moment, the write's commit
  * waits for it: Postgres flushes a commit record with its interrupts held, so the cancel the
@@ -179,9 +180,10 @@ test("a read marker whose page closed while the database's disk did not answer h
     // A reset of the database, with the disk still silent: the one the next worker on this stack
     // starts with, or one a row makes itself. A reset that needs the disk waits on it until the
     // row's timeout; only the cleanup ends the stall. It is counted as the worker's
-    // (`emptyDatabase`), so the datasets the worker keeps are written again into the database
-    // the next row reads: the delivery settings `two-builds.multiprocess.e2e.ts` reads after it.
-    await emptyDatabase();
+    // (`resetDatabase` counts every database it empties), so the datasets the worker keeps are
+    // written again into the database the next row reads: the delivery settings
+    // `two-builds.multiprocess.e2e.ts` reads after it.
+    await resetDatabase();
     expect(
       existsSync(stallEnvironment(stallDir).PG_STALL_FILE),
       "the disk was still stalled when the reset returned"

@@ -16,8 +16,8 @@ import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
 import { nextFrames } from "./frames";
 import { clearedInbox, expectDrawn } from "./inbox-drawn";
-import { clearIssueCreator } from "./seed";
-import { emptyDatabase, expect, type Locator, rowKey, rowNumber, rowPerson, test } from "./test";
+import { clearIssueCreator, resetDatabase } from "./seed";
+import { expect, type Locator, rowKey, rowNumber, rowPerson, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
@@ -39,10 +39,10 @@ test("database reset clears fake Envoy subscribers before the next issue", async
   // empties the database once per worker and resets the fakes before each row (e2e/test.ts), and
   // this call proves what an emptying of the database does IN a row - the fake Envoy's
   // subscribers go with the tables, so the recycled issue key below starts with none. Deleting it
-  // would leave the row asserting nothing. It empties through `emptyDatabase`, which counts the
+  // would leave the row asserting nothing. It empties through `resetDatabase`, which counts the
   // database as the worker's, so the datasets the worker keeps are written again for the rows
   // after this one.
-  await emptyDatabase();
+  await resetDatabase();
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "No stale subscriber" });
   expect(issue.key).toBe(staleIssue.key);

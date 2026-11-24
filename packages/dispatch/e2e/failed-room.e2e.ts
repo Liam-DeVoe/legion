@@ -27,7 +27,8 @@ import {
 } from "./api";
 import { documentEditor } from "./editor";
 import { sql } from "./psql";
-import { emptyDatabase, expect, rowKey, test } from "./test";
+import { resetDatabase } from "./seed";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /** Holds the room's next durable append inside its `doc_updates` insert for this long, which is
@@ -150,9 +151,9 @@ test("a writer inside the docs layer when its room fails is told, and the room r
   // (e2e/test.ts), so this row empties it itself. This body is read as one procedure by hand, on
   // two checkouts at once (the header above), and what the probe starts from is the first thing a
   // reader of that comparison needs: a row whose 40 s are spent on one append cannot be read
-  // against another tree's run without it. It empties through `emptyDatabase`, which counts the
+  // against another tree's run without it. It empties through `resetDatabase`, which counts the
   // database as the worker's, so the datasets the worker keeps are written again after it.
-  await emptyDatabase();
+  await resetDatabase();
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
     project: core,

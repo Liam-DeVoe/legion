@@ -279,7 +279,7 @@ under it. Each `web/src/` and `e2e/` path below is under `packages/dispatch`.
   A spec takes its `test` from `e2e/test.ts`, whose fixtures empty the worker's database once, before the worker's first row, and before each row reset the fake services, whose state no key separates, and sign the default context in.
   A real-stack row makes its data under names of its own (`rowKey`, `rowPerson`, `rowSessionId` and `rowNumber` in `e2e/test.ts`), so it needs no emptied database: it seeds beside what the rows before it wrote, under names none of them used.
   A row empties the database inside itself in four cases only: for a claim about an empty list that is the whole stack's, which no key of the row's can make its own; for a row whose claim is the emptying itself; for an opt-in probe that a person compares by hand against a run on another checkout; and for a row that measures layout over text of a fixed width, whose project key and issue numbers must be the same on every run.
-  Such a row empties through `emptyDatabase` (`e2e/test.ts`), which counts the emptying, so the datasets the worker keeps are written again for the rows after it.
+  Such a row empties through `resetDatabase` (`e2e/seed.ts`), the one way to empty the database, which counts every emptying, so the datasets the worker keeps are written again for the rows after it.
   The empty-list rows are these.
   `e2e/legion.e2e.ts`'s "the Settings page refuses a state URL that is not a daemon's, and its Remove stops the reading" ends on a Legion daemons section that lists no daemon, and that section lists every project's daemon of the stack.
   `e2e/priorities.e2e.ts`'s "with no priority the page reads the server's sentence, and writes the first one" and "the rail's Priorities count falls as work leaves flight and as a parent link moves" read a deployment with no priority, and a priority belongs to no project: the order and the rail's count are the whole stack's.
@@ -299,6 +299,7 @@ under it. Each `web/src/` and `e2e/` path below is under `packages/dispatch`.
   A helper that inserts its project straight into Postgres (`e2e/legion-seed.ts`, and the fixtures of `e2e/delivery-seed.ts` under the place `deliveryPlace` makes) inserts it with no `ON CONFLICT`, so a second project under one key fails the row rather than leaving the first in its place.
   A caller whose key is fixed on purpose writes it as `fixedKey(key, why)`, and `why` names the reason a fixed key is right there: the recording a stubbed row replays, the review corpus seeded once into each database a worker holds, the docs' pictures, the local instance, a project another service names (`e2e/read-token-live.ts`), or a row that measures layout over text of a fixed width.
   A row that measures layout over a login writes that login as `fixedPerson(login, why)` (`e2e/test.ts`), and the row's end deletes that person as it deletes a `rowPerson`, so the list of everyone who has signed in is whole again for the next row.
+  A row signs in only as alice or bob, whom every reset re-creates, or as a login that `rowPerson` or `fixedPerson` answered: `signIn`, `asUser` (`e2e/users.ts`) and the `signedIn` option (`e2e/test.ts`) take only those two and the `RowLogin` type the two functions answer, so a row that signs in as another literal login fails the typecheck.
 
 Two rules set the edges of those layers:
 

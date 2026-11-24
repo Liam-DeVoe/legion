@@ -25,7 +25,7 @@ import {
   rowSessionId,
   test,
 } from "./test";
-import { asUser } from "./users";
+import { asUser, type SignInLogin } from "./users";
 
 /**
  * The live view's header shows the model and thinking level an Oh My Pi session runs now, as its
@@ -139,7 +139,7 @@ function freshReplay(sessionID: string): Record<string, unknown> {
 async function viewer(
   browser: Browser,
   project: string,
-  login: string
+  login: SignInLogin
 ): Promise<{ context: BrowserContext; page: Page }> {
   const context = await asUser(browser, login);
   const page = await context.newPage();

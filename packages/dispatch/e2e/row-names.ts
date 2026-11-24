@@ -5,12 +5,15 @@
  *  a running row, so e2e/__tests__/row-names.test.ts can hold the derivation to its inputs. */
 import { createHash } from "node:crypto";
 
-/** What every name of a row derives from. Playwright gives each `--repeat-each` copy of a row the
- *  same `testId` and a `repeatEachIndex` of its own, and a retry the same two with a `retry` of its
- *  own, so all three are read: a name from `testId` alone would be the same name in two repeats of
- *  the row on one worker, and the second would read what the first left. `phase` is the phase the
- *  row has moved on to (`nextRowPhase`, e2e/test.ts), and `nonce` the bytes the process drew once,
- *  so a second run of the suite against the same database never meets a name the first made. */
+/** What every name of a row derives from. Playwright 1.64.1 gives each `--repeat-each` copy of a
+ *  row a `testId` and a worker of its own: `applyRepeatEachIndex` (playwright/lib/common/index.js)
+ *  puts ` (repeat:N)` into what the id hashes and `-N` at the end of the worker hash. A retry
+ *  keeps the `testId` and the `repeatEachIndex` of the attempt before it and has a `retry` of its
+ *  own. All three are read, so two copies of a row get names of their own even under one
+ *  `testId`, which Playwright 1.64.1 never gives two copies; reading `repeatEachIndex` beside an
+ *  id that already differs does no harm. `phase` is the phase the row has moved on to
+ *  (`nextRowPhase`, e2e/test.ts), and `nonce` the bytes the process drew once, so a second run of
+ *  the suite against the same database never meets a name the first made. */
 export interface RowIdentity {
   readonly testId: string;
   readonly repeatEachIndex: number;

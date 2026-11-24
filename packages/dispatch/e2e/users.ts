@@ -1,7 +1,36 @@
 import type { Browser, BrowserContext, BrowserContextOptions, Page } from "@playwright/test";
 
-import { devSignInError, devSignInPath, reusableSessionCookie } from "./api";
+import { devSignInError, devSignInPath, type ResetLogin, reusableSessionCookie } from "./api";
 import { measured } from "./measure";
+
+/** A login a sign-in takes that no reset re-creates: the running row's own person,
+ *  `rowPerson(...)`, or a login fixed on purpose, `fixedPerson(...)` (both e2e/test.ts), whose
+ *  `people` and `user_sessions` rows the row's end deletes (`ownPeople`, e2e/test.ts); or, for a
+ *  caller outside the real-stack suite's rows, `fixedLogin(...)`, below. A real-stack row that
+ *  signed in as a literal login other than alice or bob would record a person nothing deletes,
+ *  since no reset empties the database between the rows of a worker (e2e/test.ts), and every
+ *  later row of the worker that reads the list of everyone who has signed in whole (the options
+ *  of an assignee control) would read that person in it. So the brand turns that row into a type
+ *  error on its own pull request, as `RowKey` does for a key (e2e/api.ts). */
+export type RowLogin = string & { readonly rowLogin: unique symbol };
+
+/** What `signIn`, `asUser`, `asPlainHttpUser` and the `signedIn` option (e2e/test.ts) sign in
+ *  as: alice or bob (`resetLogins`, e2e/api.ts), whom every reset re-creates, or a `RowLogin`. */
+export type SignInLogin = ResetLogin | RowLogin;
+
+/** `login` as a login the sign-ins take, for a caller outside the real-stack suite's rows whose
+ *  login is fixed on purpose: the docs' pictures, which show it (docs/site/media/broker/flow.ts).
+ *  `why` names that reason where the login is written, and a call without one throws, as
+ *  `fixedKey`'s does (e2e/api.ts). A row of the suite writes `fixedPerson(login, why)`
+ *  (e2e/test.ts) instead, whose person the row's end deletes. */
+export function fixedLogin(login: string, why: string): RowLogin {
+  if (why.trim() === "") {
+    throw new Error(
+      `fixedLogin: the fixed login ${JSON.stringify(login)} must name why it is fixed`
+    );
+  }
+  return login as RowLogin;
+}
 
 /** Signs `context` in as `login`, with the cookie an issuer sign-in issues.
  *
@@ -10,8 +39,8 @@ import { measured } from "./measure";
  *  harness server for one: the reset re-created the `user_sessions` row that cookie names
  *  (e2e/seed.ts), so it authenticates again, and one cache serves both the row's API seeds and
  *  its browser contexts, which therefore act as the same session. The reset runs once per worker,
- *  before its first row, and where a row empties the database itself (`emptyDatabase`,
- *  e2e/test.ts). The cookie itself carries no state of an earlier row into this one: it names a
+ *  before its first row, and where a row empties the database itself (`resetDatabase`,
+ *  e2e/seed.ts). The cookie itself carries no state of an earlier row into this one: it names a
  *  login and a generation, which no row moves (a row signs out only a person of its own,
  *  `rowPerson`).
  *
@@ -19,7 +48,7 @@ import { measured } from "./measure";
  *  context's request client shares the context's cookie jar, and a relative URL resolves against
  *  the config's baseURL. The route answers a sign-in with a 302, which is not followed: the
  *  redirect is the dashboard, which this does not need. */
-export async function signIn(context: BrowserContext, login: string): Promise<void> {
+export async function signIn(context: BrowserContext, login: SignInLogin): Promise<void> {
   await measured("sign-in", async () => {
     const reusable = reusableSessionCookie(login);
     if (reusable !== undefined) {
@@ -35,7 +64,7 @@ export async function signIn(context: BrowserContext, login: string): Promise<vo
 
 export async function asUser(
   browser: Browser,
-  login: string,
+  login: SignInLogin,
   options: BrowserContextOptions = {}
 ): Promise<BrowserContext> {
   const context = await browser.newContext(options);
@@ -61,7 +90,10 @@ export async function withAlice(
  *  resolves only inside Chromium (its `--host-resolver-rules`), while the request client resolves
  *  names in Node, which answers `ENOTFOUND`. A sign-in the route refuses is not redirected, so the
  *  page's own answer, with its body, is the refusal. */
-export async function asPlainHttpUser(browser: Browser, login: string): Promise<BrowserContext> {
+export async function asPlainHttpUser(
+  browser: Browser,
+  login: SignInLogin
+): Promise<BrowserContext> {
   const context = await browser.newContext();
   const page = await context.newPage();
   const landed = await measured("sign-in", () => page.goto(devSignInPath(login)));

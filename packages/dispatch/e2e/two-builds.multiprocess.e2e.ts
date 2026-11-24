@@ -45,7 +45,7 @@ import {
   test,
 } from "./test";
 import { type LazyPiece, lazyPieces, type WalkRoutePath, walkRoutes } from "./two-builds-routes";
-import { signIn } from "./users";
+import { type RowLogin, signIn } from "./users";
 
 /**
  * A rolling release of Dispatch runs two builds at once behind one load balancer: a page one
@@ -224,7 +224,7 @@ interface Seeded {
   readonly priority: string;
   /** The person the walk signs in as and writes the issue's comment as: a person of the row's
    *  own (`rowPerson`, e2e/test.ts), whose page lists that one comment. */
-  readonly reader: string;
+  readonly reader: RowLogin;
   /** The id of the session the walk seeded (`rowSession`). */
   readonly session: string;
 }

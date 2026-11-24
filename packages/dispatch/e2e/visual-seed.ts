@@ -30,7 +30,7 @@ if (path === undefined) {
 // dark). So a seed that would start within `dayEndMarginMs` of midnight waits for the new day.
 // 90 s is the seed's 15 s bound below, the minute the pin adds and 15 s for the reset before it;
 // the wait is the wall clock's, as the day the page reads is, and at most 91 s, which the visual
-// job's two browser steps' budgets hold (.github/ci-notes/dispatch-browser.md).
+// job's browser step's budget holds (.github/ci-notes/dispatch-browser.md).
 const dayEndMarginMs = 90_000;
 const now = Date.now();
 const nextUtcMidnight = Math.ceil((now + 1) / 86_400_000) * 86_400_000;

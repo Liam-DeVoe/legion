@@ -1,5 +1,5 @@
 import { INBOX_DISMISSED_PAGE, type InboxDismissSeen, inboxThreadRow } from "@legion/contracts";
-import { GROUP_PAGE } from "../web/src/features/inbox/InboxGroups";
+import { GROUP_PAGE } from "../web/src/features/inbox/grouping";
 
 import { setLiveSessions } from "./agents";
 import {

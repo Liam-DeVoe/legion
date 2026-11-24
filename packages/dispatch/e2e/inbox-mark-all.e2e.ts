@@ -1,4 +1,4 @@
-import { GROUP_PAGE } from "../web/src/features/inbox/InboxGroups";
+import { GROUP_PAGE } from "../web/src/features/inbox/grouping";
 
 import { setLiveSessions } from "./agents";
 import { createAsk, createIssue, createProject, listMyReplies } from "./api";

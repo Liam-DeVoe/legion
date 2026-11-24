@@ -69,19 +69,11 @@ import {
 } from "./issue-page-p";
 import { onBody } from "./keyboard-issue";
 import { boxesApart } from "./layout";
+import { resetDatabase } from "./seed";
 import { answeredPost, holdPosts, navigateInApp } from "./sends";
-import {
-  emptyDatabase,
-  expect,
-  fixedPerson,
-  type Locator,
-  type Page,
-  type Request,
-  rowKey,
-  test,
-} from "./test";
+import { expect, fixedPerson, type Locator, type Page, type Request, rowKey, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
-import { asUser } from "./users";
+import { asUser, type RowLogin } from "./users";
 
 /**
  * The new issue page's header: the list of what it draws and its limits, the approval control,
@@ -204,7 +196,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
   // would find its project already made. So the row empties the database before its seed. Row
   // (3) draws the same measured key and empties the database too, so neither finds the other's
   // project.
-  await emptyDatabase();
+  await resetDatabase();
   const seed = () => seedHeader(MEASURED_KEY);
   await phase(browser, seed, async (page, seeded) => {
     await patchIssue(seeded.key, { labels: [...TWENTY_LABELS], title: PHONE_TITLE });
@@ -851,7 +843,7 @@ test("the header holds its limits when the typeface does not load @phone", async
   // Dispatch, which deletes no project, takes away the project an earlier run made. So the row
   // empties the database before its seed, as row (1) does with the same measured key; neither
   // then finds the other's project.
-  await emptyDatabase();
+  await resetDatabase();
   const seed = () => seedHeader(MEASURED_KEY);
   await phase(browser, seed, async (page, seeded) => {
     await patchIssue(seeded.key, { labels: [...TWENTY_LABELS], title: PHONE_TITLE });
@@ -1826,7 +1818,7 @@ test("the header draws the words of its two counts as a reader reads them @phone
  *  (`rowPerson`, e2e/test.ts), whose five more characters change the width being measured. Like a
  *  person of the row's own, it is deleted when the row ends (`fixedPerson`, through `ownPeople`):
  *  everyone who has signed in is one list, the options of every assignee control. */
-function measuredAssignee(): string {
+function measuredAssignee(): RowLogin {
   return fixedPerson(
     "dana@example.dev",
     "the header's limits are read over a login as long as the measured root's assignee's; a generated suffix changes the width being measured"
@@ -1852,7 +1844,7 @@ test("the header holds its limits on a large gated root @phone", async ({ browse
   // every run, and neither the worker, which empties its database only before its first row, nor
   // Dispatch, which deletes no project, takes away the project an earlier run made. So the row
   // empties the database before its seed.
-  await emptyDatabase();
+  await resetDatabase();
   await phase(
     browser,
     async () => {

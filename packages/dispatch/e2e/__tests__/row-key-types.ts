@@ -1,14 +1,20 @@
-/** Type-level rows of the per-row keys (R8 of dispatch://INFRA-983). docs/testing.md, "Where a
- *  Dispatch test belongs", says a real-stack row makes its projects under `rowKey(...)`, that
- *  `createProject` takes only the `RowKey` type `rowKey` answers, and that "a helper that makes a
- *  project under a key its caller passes takes a `RowKey` too". Each call below writes a literal
- *  key and must fail the typecheck: `bun run typecheck` reads this file (packages/dispatch's
- *  tsconfig.json includes `e2e/**\/*.ts`), and a directive above a call that compiles is unused,
- *  which tsc reports as an error. The first call is the control: `createProject` refuses the key
- *  today. Nothing runs this file. */
+/** Type-level rows of the per-row keys (R8 of dispatch://INFRA-983) and of the logins a row signs
+ *  in as. docs/testing.md, "Where a Dispatch test belongs", says a real-stack row makes its
+ *  projects under `rowKey(...)`, that `createProject` takes only the `RowKey` type `rowKey`
+ *  answers, and that "a helper that makes a project under a key its caller passes takes a `RowKey`
+ *  too"; it says too that `signIn`, `asUser` and the `signedIn` option take only alice, bob and
+ *  the `RowLogin` type `rowPerson` and `fixedPerson` answer. Each call below writes a literal key
+ *  or a literal login other than alice and bob and must fail the typecheck: `bun run typecheck`
+ *  reads this file (packages/dispatch's tsconfig.json includes `e2e/**\/*.ts`), and a directive
+ *  above a call that compiles is unused, which tsc reports as an error. The first call is the
+ *  control: `createProject` refuses the key today. Nothing runs this file. */
+import type { Browser, BrowserContext } from "@playwright/test";
+
 import { createProject } from "../api";
 import { deliveryPlace } from "../delivery-seed";
 import { seedLegionDaemon, seedLegionProject } from "../legion-seed";
+import { test } from "../test";
+import { asUser, signIn } from "../users";
 
 export function literalProjectKeysFailTheTypecheck(): void {
   // @ts-expect-error a literal key is no RowKey
@@ -19,4 +25,13 @@ export function literalProjectKeysFailTheTypecheck(): void {
   void seedLegionDaemon("ACME", "http://daemon.test/state");
   // @ts-expect-error a literal key is no RowKey: the seed of the place inserts the project
   deliveryPlace("ACME", 10_000, 1, 1);
+}
+
+export function literalLoginsFailTheTypecheck(browser: Browser, context: BrowserContext): void {
+  // @ts-expect-error a literal login other than alice and bob is no RowLogin
+  void asUser(browser, "carol");
+  // @ts-expect-error a literal login other than alice and bob is no RowLogin
+  void signIn(context, "carol");
+  // @ts-expect-error a literal login other than alice and bob is no RowLogin
+  test.use({ signedIn: "carol" });
 }

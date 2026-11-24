@@ -76,7 +76,7 @@ export const MEASURED_TITLE =
  *  key's five more characters change it: under a wide suffix the control takes a line of its own
  *  and the header grows by 28 px (INFRA-1196 decision 398). A fixed key is the same text on every
  *  run of a row, and Dispatch deletes no project, so each row that draws it empties the database
- *  before it seeds (`emptyDatabase`, e2e/test.ts); none of those rows then finds another's
+ *  before it seeds (`resetDatabase`, e2e/seed.ts); none of those rows then finds another's
  *  project, so all of them draw this one key. */
 export const MEASURED_KEY = fixedKey(
   "HDR",

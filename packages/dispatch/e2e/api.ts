@@ -132,8 +132,17 @@ export function devSignInError(login: string, status: number, responseText: stri
 }
 
 /** The people the reset re-creates, each with a `user_sessions` row at generation 0
- *  (`resetDatabaseOnce`, e2e/seed.ts): the only logins whose session cookie outlives a reset. */
-export const resetLogins: readonly string[] = ["alice", "bob"];
+ *  (`resetDatabaseOnce`, e2e/seed.ts): the only logins whose session cookie outlives a reset, and
+ *  the only literal logins a sign-in takes (`SignInLogin`, e2e/users.ts). */
+export const resetLogins = ["alice", "bob"] as const;
+
+/** A login of `resetLogins`: alice or bob. */
+export type ResetLogin = (typeof resetLogins)[number];
+
+/** Whether `login` is one of `resetLogins`. */
+function isResetLogin(login: string): login is ResetLogin {
+  return resetLogins.some((reset) => reset === login);
+}
 
 /** One cached session cookie, of one login signed in at one process. */
 interface CachedSession {
@@ -154,12 +163,11 @@ const sessionCookies = new Map<string, CachedSession>();
  *  spelling of a login and process asked, and kept until something revokes it: the generation
  *  the cookie names lives in `user_sessions`, which `resetDatabase` empties and refills for
  *  `resetLogins` alone (it calls `forgetSessions`) - once per worker, before its first row, and
- *  where a row empties the database itself (`emptyDatabase`, e2e/test.ts) - and a browser
- *  context's Sign out as the same login advances it, so a row signs out only a person of its own
- *  (`rowPerson`, e2e/test.ts). With `target` set the sign-in is pinned to that process, so every
- *  request a pinned call makes, its sign-in included, is served by the process it names. A
- *  sign-in that fails, by its answer or by the request itself, is not kept, so the next call asks
- *  again. */
+ *  where a row empties the database itself - and a browser context's Sign out as the same login
+ *  advances it, so a row signs out only a person of its own (`rowPerson`, e2e/test.ts). With
+ *  `target` set the sign-in is pinned to that process, so every request a pinned call makes, its
+ *  sign-in included, is served by the process it names. A sign-in that fails, by its answer or by
+ *  the request itself, is not kept, so the next call asks again. */
 export function sessionCookie(login: string, target?: DispatchProcess): Promise<Cookie> {
   const key = `${target ?? ""} ${login}`;
   const cached = sessionCookies.get(key);
@@ -208,7 +216,7 @@ const reusedSignIns = new Set<string>();
  *  refused. The suite resets the database once per worker (e2e/test.ts), so that first sign-in
  *  is the worker's, and every later one mints until a row empties the database itself. */
 export function reusableSessionCookie(login: string): Promise<Cookie> | undefined {
-  if (!resetLogins.includes(login) || reusedSignIns.has(login)) {
+  if (!isResetLogin(login) || reusedSignIns.has(login)) {
     return undefined;
   }
   reusedSignIns.add(login);
@@ -217,8 +225,7 @@ export function reusableSessionCookie(login: string): Promise<Cookie> | undefine
 
 /** Forgets the cached session cookies the reset leaves unusable, and the sign-ins it undoes;
  *  `resetDatabase` calls it after emptying the tables, which the suite does once per worker,
- *  before its first row, and where a row empties the database itself (`emptyDatabase`,
- *  e2e/test.ts).
+ *  before its first row, and where a row empties the database itself (e2e/seed.ts).
  *
  *  The cookies of `resetLogins`, alice and bob, are kept: the reset re-inserts their people rows
  *  and their `user_sessions` rows at generation 0 (e2e/seed.ts), the generation a cookie minted
@@ -230,7 +237,7 @@ export function reusableSessionCookie(login: string): Promise<Cookie> | undefine
  *  database holds again. */
 export function forgetSessions(): void {
   for (const [key, session] of sessionCookies) {
-    if (!resetLogins.includes(session.login) || !session.atGenerationZero) {
+    if (!isResetLogin(session.login) || !session.atGenerationZero) {
       sessionCookies.delete(key);
     }
   }
@@ -383,8 +390,8 @@ export type RowKey = string & { readonly rowKey: unique symbol };
  *  seeded once into each database a worker holds; the docs pictures, which show the key; the
  *  local instance; a live proof whose project another service names (e2e/read-token-live.ts); a
  *  row that measures layout over text of a fixed width, since a generated key changes the width
- *  being measured, and which empties the database before it seeds (`emptyDatabase`,
- *  e2e/test.ts), so its key and its issue numbers are the same on every run. `why` names that
+ *  being measured, and which empties the database before it seeds (`resetDatabase`,
+ *  e2e/seed.ts), so its key and its issue numbers are the same on every run. `why` names that
  *  reason where the key is written, and a call without one throws. Any other real-stack row's key
  *  is `rowKey(...)`, never this. */
 export function fixedKey(key: string, why: string): RowKey {

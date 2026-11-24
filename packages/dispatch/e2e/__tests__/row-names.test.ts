@@ -1,14 +1,15 @@
 /** A row's names are its own in every copy of it a run makes, and their suffix holds no vowel.
  *
  *  The database is emptied once per worker, so a row reads beside what every row before it on
- *  the worker wrote (e2e/test.ts), and `--repeat-each` runs the copies of one row one after the
- *  other on one worker. Playwright gives those copies the same `testId` and a `repeatEachIndex`
- *  each, so a name derived from `testId` alone would be the same project, person, session and
- *  number in both copies, and the second would read what the first left. These read the
- *  derivations of e2e/row-names.ts, which `rowKey`, `rowPerson`, `rowSessionId` and `rowNumber`
- *  call with the running row, over two copies of one row, and the suffix a key and a person end
- *  in over many rows: five of the twenty consonants other than Y and the ten digits, so a
- *  control's name, which Playwright matches as a substring, finds no word in it but one that
+ *  the worker wrote (e2e/test.ts). Playwright 1.64.1 gives each `--repeat-each` copy of a row a
+ *  `testId` and a worker of its own (`RowIdentity`, e2e/row-names.ts), and the derivation reads
+ *  `repeatEachIndex` beside `testId` as well. These rows hold that derivation for one `testId`
+ *  they give both copies, which Playwright 1.64.1 never gives two copies: two copies that differ
+ *  in `repeatEachIndex` alone still get a project, a person, a session and a number each. They
+ *  read the derivations of e2e/row-names.ts, which `rowKey`, `rowPerson`, `rowSessionId` and
+ *  `rowNumber` call with the running row, over those two copies, and the suffix a key and a
+ *  person end in over many rows: five of the twenty consonants other than Y and the ten digits,
+ *  so a control's name, which Playwright matches as a substring, finds no word in it but one that
  *  consonants and digits spell alone.
  */
 

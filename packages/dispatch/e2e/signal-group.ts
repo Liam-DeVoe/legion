@@ -1,7 +1,13 @@
-/** The one way the e2e code and its rows signal a process group: `signalGroup`, which
- *  `signalUnlessGone` calls for a row's process or group that may have ended. It imports nothing,
- *  so `e2e/local-instance-support.ts` and `e2e/tools/unit-repeat.ts` both import it without a
- *  cycle. */
+/** How the e2e code and its rows signal a process group: `signalGroup`, which `signalUnlessGone`
+ *  calls for a row's process or group that may have ended. It imports nothing, so
+ *  `e2e/local-instance-support.ts` and `e2e/tools/unit-repeat.ts` both import it without a
+ *  cycle.
+ *
+ *  `RefusedGroup` and `signalGroup` are the same code as `scripts/e2e/lib/signal-group.ts`, the
+ *  copy the TypeScript of scripts/e2e imports. There are two because that copy imports nothing
+ *  either and stays beside its importers, so the stage proofs run
+ *  `scripts/e2e/lib/app-logins.ts`, which imports it, with plain `bun` and nothing of this
+ *  package. A change to either copy is made to the other. */
 
 /** The refusal `signalGroup` throws. A caller whose catch reads every other error as a group
  *  that has already ended (ESRCH) throws this one on, so a refusal is never read as that. */

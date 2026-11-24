@@ -1,7 +1,7 @@
 import { type FakeSession, getSentMessages, setLiveSessions } from "./agents";
 import { listAgentMessages, publishAgentStreamFrame, replyToMessageDelivery } from "./api";
 import { type Browser, type BrowserContext, expect, type Page, test } from "./test";
-import { asUser } from "./users";
+import { asUser, type SignInLogin } from "./users";
 
 /**
  * The live view's header pickers switch an Oh My Pi session's model and thinking level (INFRA-195),
@@ -83,7 +83,7 @@ const PROBE = { intervals: [50, 50, 100, 200, 500] };
 /** A browser context signed in as `login`, and a page at a 1280 × 800 desktop. */
 async function viewer(
   browser: Browser,
-  login: string
+  login: SignInLogin
 ): Promise<{ context: BrowserContext; page: Page }> {
   const context = await asUser(browser, login);
   const page = await context.newPage();

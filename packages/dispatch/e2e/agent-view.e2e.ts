@@ -32,7 +32,7 @@ import { FRONT_LIVE_VIEW, frontLiveView } from "./live-views";
 import { selectMention } from "./mention";
 import { MESSAGE_REFUSED, navigateInApp, refusePosts } from "./sends";
 import { expect, type Locator, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
-import { asUser } from "./users";
+import { asUser, type RowLogin } from "./users";
 
 /**
  * The live agent conversation view. The harness runs Dispatch with NATS disabled, so the frames
@@ -664,7 +664,7 @@ test("mid-turn, an empty box refuses Send, says why on screen once it is pressed
 /** The planner, and a person of the row's own to talk to it (`rowPerson`, e2e/test.ts): the
  *  navigation's "New replies" counts one person's unread replies to their direct messages over
  *  every session, so under alice a row reads every earlier row's unread replies beside its own. */
-function ownPlanner(): { readonly me: string; readonly planner: FakeSession } {
+function ownPlanner(): { readonly me: RowLogin; readonly planner: FakeSession } {
   return { me: rowPerson("alice"), planner };
 }
 

@@ -370,6 +370,18 @@ export async function resetFakes(): Promise<void> {
   });
 }
 
+/** The count `databasesEmptied` answers, which `resetDatabase` moves. */
+let emptied = 0;
+
+/** How many times this process has emptied its database: every `resetDatabase` that returned,
+ *  whoever called it. A dataset the real-stack worker writes once (`deliverySettings` and
+ *  `reviewCorpus`, e2e/test.ts) is written into the database this number names, and written
+ *  again once the number has moved, since that database is gone; it is never written twice into
+ *  one. */
+export function databasesEmptied(): number {
+  return emptied;
+}
+
 /**
  * Empties every table, after the server has closed every live document and finished the
  * settlements in flight, so the documents the previous scenario had open finish writing before
@@ -384,10 +396,13 @@ export async function resetFakes(): Promise<void> {
  * last reset); a context signing in as one of them carries the kept cookie instead of minting
  * (e2e/users.ts).
  *
- * The real-stack suite empties a worker's database through it once, before the worker's first
- * row, and again only where a row empties it itself (`emptyDatabase`, e2e/test.ts). The delete's
- * side is the timing fixture's part `reset-sql` (e2e/measure.ts), and the fakes are its part
- * `reset-fakes`.
+ * Each reset that returns counts one more database emptied (`databasesEmptied`), whoever called
+ * it, so the next row that reads a dataset the worker writes once writes it again into the
+ * emptied database: no way to empty the database leaves the count behind. The real-stack suite
+ * empties a worker's database through it once, before the worker's first row (`workerDatabase`,
+ * e2e/test.ts), and again only where a row empties it itself (docs/testing.md names those rows).
+ * The delete's side is the timing fixture's part `reset-sql` (e2e/measure.ts), and the fakes are
+ * its part `reset-fakes`.
  */
 export async function resetDatabase(): Promise<void> {
   const resets = await Promise.allSettled([
@@ -396,4 +411,5 @@ export async function resetDatabase(): Promise<void> {
   ]);
   for (const reset of resets) if (reset.status === "rejected") throw reset.reason;
   forgetSessions();
+  emptied += 1;
 }

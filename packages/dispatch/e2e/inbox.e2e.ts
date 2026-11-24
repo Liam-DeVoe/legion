@@ -36,7 +36,7 @@ import { expectInboxCount } from "./inbox-threads";
 import { setCreatedAt } from "./seed";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, rowKey, rowPerson, test } from "./test";
-import { asUser } from "./users";
+import { asUser, type RowLogin } from "./users";
 
 const session = {
   actor: {
@@ -1362,7 +1362,9 @@ test("the Inbox opens on the reader's own questions, every visit, and ?assignee=
   );
 
   // Whatever casing reaches the identity header, Dispatch names the person by its lowercase form.
-  const alice = await asUser(browser, `A${aliceLogin.slice(1)}`);
+  // The capitalised login is `aliceLogin` in another casing, so the person it records is the
+  // row's own, whom the row's end deletes (`ownPeople`, e2e/test.ts).
+  const alice = await asUser(browser, `A${aliceLogin.slice(1)}` as RowLogin);
   const bob = await asUser(browser, bobLogin);
   try {
     const alicePage = await alice.newPage();

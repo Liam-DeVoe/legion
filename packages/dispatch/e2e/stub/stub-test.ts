@@ -195,8 +195,7 @@ export function stubbed<Scene>(seed: () => Promise<Scene>) {
       // holds them, so the next row's seed would meet them and fail; and what it records must be
       // the server's answer to its own seed alone, which only an emptied database gives. It runs
       // only in record mode - `bun run e2e:stub:record` by hand and the nightly's re-record job -
-      // and never in a gating lane, which replays and reaches no database. It is no
-      // `emptyDatabase`: this `test` keeps no dataset of a worker for a count to write again.
+      // and never in a gating lane, which replays and reaches no database.
       await resetDatabase();
       await signIn(context, "alice");
       const value = await seed();

@@ -9,7 +9,8 @@
 import { type Refusal, routePath } from "../web/src/api/paths";
 import { baseUrl, userHeaders } from "./api";
 import { removeLegionDaemon, seedLegionDaemon, seedLegionProject } from "./legion-seed";
-import { emptyDatabase, expect, rowKey, test } from "./test";
+import { resetDatabase } from "./seed";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const DAEMON_URL = "http://legion.acme.internal:9731";
@@ -62,9 +63,9 @@ test("the Settings page refuses a state URL that is not a daemon's, and its Remo
   // The claim after the Remove is a section that lists no daemon and says so, which only an
   // empty stack holds: the section lists every project's daemon of the stack, so no key of this
   // row's makes a list of its own, and a daemon another row left would stand in it. It empties
-  // through `emptyDatabase`, which counts the database as the worker's, so the datasets the
+  // through `resetDatabase`, which counts the database as the worker's, so the datasets the
   // worker keeps are written again for the rows after this one.
-  await emptyDatabase();
+  await resetDatabase();
   await seedLegionDaemon(acme, DAEMON_URL);
   // Signed in after the emptying, as e2e/issue.e2e.ts's row is: the emptying deletes every
   // session a sign-in wrote but the ones it writes again for alice and bob (e2e/users.ts).

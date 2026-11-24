@@ -7,16 +7,16 @@
  *  the worker writes once (`deliverySettings`, `reviewCorpus`), and it takes out again what it
  *  added to a list the stack keeps whole (`ownPeople`, `ownBroadcasts`,
  *  `ownArchitectureSources`). So a row that keys its data needs no database emptied before it:
- *  the worker empties it once, before its first row (`workerDatabase`, through `emptyDatabase`),
- *  for whatever a run before it left there. The few rows docs/testing.md names empty it again
- *  inside themselves, through `emptyDatabase`; among them are the rows that measure layout over
- *  text of a fixed width under a fixed project key (`fixedKey` in e2e/api.ts), whose project keys
- *  and issue numbers must be the same on every run. A fixed login (`fixedPerson`, below) needs no
- *  emptying, since `ownPeople` deletes its rows when the row ends. What the fake services hold -
- *  the fake Envoy's sessions and subscriptions, the broker's credential requests, the fake
- *  GitHub's repositories, the embedder's counts - is the row's, and no key separates it, so an
- *  automatic fixture resets the fakes before every row (`freshFakes`, through `resetFakes` in
- *  e2e/seed.ts). Both used to
+ *  the worker empties it once, before its first row (`workerDatabase`, through `resetDatabase` in
+ *  e2e/seed.ts), for whatever a run before it left there. The few rows docs/testing.md names
+ *  empty it again inside themselves, through `resetDatabase`; among them are the rows that
+ *  measure layout over text of a fixed width under a fixed project key (`fixedKey` in
+ *  e2e/api.ts), whose project keys and issue numbers must be the same on every run. A fixed login
+ *  (`fixedPerson`, below) needs no emptying, since `ownPeople` deletes its rows when the row
+ *  ends. What the fake services hold - the fake Envoy's sessions and subscriptions, the broker's
+ *  credential requests, the fake GitHub's repositories, the embedder's counts - is the row's, and
+ *  no key separates it, so an automatic fixture resets the fakes before every row (`freshFakes`,
+ *  through `resetFakes` in e2e/seed.ts). Both used to
  *  be a `test.beforeEach` at the top of every spec file that emptied the database and the fakes
  *  before each row: one copy of one hook in each file, as many places to read it, and one chance
  *  to forget it in every spec written since. As fixtures they run for every row of every file
@@ -48,7 +48,10 @@
  *
  *  It is read where Playwright reads any option - at file scope, or inside a `test.describe` -
  *  and it governs the default context alone. A row that opens its own context signs that one in
- *  itself, as it always has: `asUser(browser, rowPerson("alice"))` for a person of its own.
+ *  itself, as it always has: `asUser(browser, rowPerson("alice"))` for a person of its own. The
+ *  option, `asUser` and `signIn` take the same logins (`SignInLogin`, e2e/users.ts): alice, bob,
+ *  or a login `rowPerson` or `fixedPerson` answered, so a row that signs in as another literal
+ *  login fails the typecheck.
  *
  *  **What a worker keeps.** Three things are the worker's, not a row's: its database, emptied
  *  once before its first row (`workerDatabase`), the delivery settings the delivery rows read
@@ -57,7 +60,7 @@
  *  and the corpus are each written once into each database the worker empties - once for the
  *  worker, and again after a row that empties the database itself - and a row that changes one
  *  puts it back when it ends. A row that empties the database itself does it through
- *  `emptyDatabase`, which counts that database too.
+ *  `resetDatabase`, which counts that database too (`databasesEmptied`, e2e/seed.ts).
  *
  *  The stubbed layer takes no part in any of this: it reaches no server, no database and no
  *  sign-in, and declares a `test` of its own (e2e/stub/stub-test.ts). So does the containerised
@@ -94,8 +97,15 @@ import {
   rowPersonOf,
   rowSessionIdOf,
 } from "./row-names";
-import { broadcastIds, deleteBroadcastsBut, resetDatabase, resetFakes, sqlLiteral } from "./seed";
-import { signIn } from "./users";
+import {
+  broadcastIds,
+  databasesEmptied,
+  deleteBroadcastsBut,
+  resetDatabase,
+  resetFakes,
+  sqlLiteral,
+} from "./seed";
+import { type RowLogin, type SignInLogin, signIn } from "./users";
 import { workspaceSessions } from "./workspace";
 
 /** Bytes this process drew once, when it loaded this module, and folds into every `rowKey`: a
@@ -244,12 +254,14 @@ const namedPeople = new Set<string>();
  *  Everyone who has signed in is one list (`GET /api/v1/users`, the options of every assignee
  *  control), and a row that reads that list whole - Settings' default assignee offering exactly
  *  alice and bob - reads it back at its start only if each row takes its own people out again.
+ *  The login is a `RowLogin` (e2e/users.ts), which `asUser`, `signIn` and the `signedIn` option
+ *  take beside alice and bob.
  *
  *      const me = rowPerson("alice");
  *      await createProject({ key: rowKey("CORE"), name: "Core" }, { login: me });
  *      const context = await asUser(browser, me); */
-export function rowPerson(logical: string): string {
-  const login = rowPersonOf(runningRow(), logical);
+export function rowPerson(logical: string): RowLogin {
+  const login = rowPersonOf(runningRow(), logical) as RowLogin;
   namedPeople.add(login);
   return login;
 }
@@ -265,15 +277,16 @@ export function rowPerson(logical: string): string {
  *  The person is recorded as `rowPerson`'s is, by the row's first sign-in, and is the row's to
  *  the end in the same way: when the row ends, pass or fail, `ownPeople` deletes its `people`
  *  and `user_sessions` rows, so the list of everyone who has signed in reads at the next row's
- *  start as it read at this one's. */
-export function fixedPerson(login: string, why: string): string {
+ *  start as it read at this one's. The login is a `RowLogin` (e2e/users.ts), as `rowPerson`'s
+ *  is, so `asUser`, `signIn` and the `signedIn` option take it. */
+export function fixedPerson(login: string, why: string): RowLogin {
   if (why.trim() === "") {
     throw new Error(
       `fixedPerson: the fixed login ${JSON.stringify(login)} must name why it is fixed`
     );
   }
   namedPeople.add(login);
-  return login;
+  return login as RowLogin;
 }
 
 /** A `signedIn` value that signs the default context in as the row's own person for `login`. */
@@ -289,23 +302,6 @@ export function own(login: string): OwnPerson {
   return { own: login };
 }
 
-/** How many times this worker has emptied its database (`emptyDatabase`): the database a dataset
- *  the worker keeps was written into, so that it is written again once that database is gone,
- *  and never twice into one. */
-let emptied = 0;
-
-/** Empties the database (`resetDatabase`, e2e/seed.ts) and counts it as one more database this
- *  worker holds, so that every dataset the worker keeps - the delivery settings, the review
- *  corpus - is written again into it by the next row that reads one. `workerDatabase` empties
- *  through it, once, before the worker's first row, and so does a row that empties the database
- *  itself (docs/testing.md names those rows): a reset made beside the count leaves the worker
- *  believing its datasets stand in a database that holds none of them, and the next delivery row
- *  reads a deployment with no delivery settings. */
-export async function emptyDatabase(): Promise<void> {
-  await resetDatabase();
-  emptied += 1;
-}
-
 /** Every architecture source the stack holds, `<project>\t<repo>` each, read from the store's
  *  own table (migrations 0036 and 0117): the pair Dispatch's delete route names one by. */
 async function architectureSourcesHeld(): Promise<string[]> {
@@ -317,9 +313,10 @@ async function architectureSourcesHeld(): Promise<string[]> {
 
 /** What a spec may set with `test.use`. */
 type DispatchOptions = {
-  /** The login Playwright's own `context` is signed in as, `own(login)` for the row's own
-   *  person for that login, or `false` for a context nobody signed in. */
-  signedIn: string | OwnPerson | false;
+  /** The login Playwright's own `context` is signed in as (a `SignInLogin`, e2e/users.ts: alice,
+   *  bob, or a `rowPerson` or `fixedPerson` login), `own(login)` for the row's own person for
+   *  that login, or `false` for a context nobody signed in. */
+  signedIn: SignInLogin | OwnPerson | false;
 };
 
 /** What this `test` adds beyond the options. */
@@ -349,14 +346,15 @@ type DispatchFixtures = {
 
 /** What this `test` keeps for a whole worker. */
 type DispatchWorkerFixtures = {
-  /** The database this worker empties once, before its first row (`emptyDatabase`). It carries
+  /** The database this worker empties once, before its first row (`resetDatabase`). It carries
    *  no value: what `freshFakes` takes from it is that it ran. */
   workerDatabase: undefined;
   /** Writes the delivery settings the delivery rows read (`writeDeliverySettings`), unless the
-   *  worker has written them into the database it holds now. */
+   *  worker has written them into the database it holds now (`databasesEmptied`). */
   deliverySettings: () => Promise<void>;
   /** The review corpus (`seedReviewRoutes`), seeded unless the worker has seeded it into the
-   *  database it holds now, with what a row before this one changed of it put back. */
+   *  database it holds now (`databasesEmptied`), with what a row before this one changed of it
+   *  put back. */
   reviewCorpus: () => Promise<ReviewSeed>;
 };
 
@@ -369,12 +367,12 @@ export const test = base.extend<DispatchOptions & DispatchFixtures, DispatchWork
   // keeps, and takes out again what it added to a list the stack keeps whole (`ownPeople`,
   // `ownBroadcasts`, `ownArchitectureSources`), so it starts beside what the rows before it wrote
   // and reads none of it. The few rows docs/testing.md names empty it again themselves, through
-  // `emptyDatabase`.
+  // `resetDatabase` too, which counts every database it empties (`databasesEmptied`).
   workerDatabase: [
     // Playwright refuses a first argument that is not a destructuring pattern.
     // biome-ignore lint/correctness/noEmptyPattern: the emptying takes no other fixture.
     async ({}, use) => {
-      await emptyDatabase();
+      await resetDatabase();
       await use(undefined);
     },
     { scope: "worker" },
@@ -471,9 +469,10 @@ export const test = base.extend<DispatchOptions & DispatchFixtures, DispatchWork
     async ({}, use) => {
       let writtenInto: number | undefined;
       await use(async () => {
-        if (writtenInto === emptied) return;
+        const database = databasesEmptied();
+        if (writtenInto === database) return;
         await writeDeliverySettings();
-        writtenInto = emptied;
+        writtenInto = database;
       });
     },
     { scope: "worker" },
@@ -518,14 +517,15 @@ export const test = base.extend<DispatchOptions & DispatchFixtures, DispatchWork
     async ({}, use) => {
       let seeded: { into: number; seed: ReviewSeed; settings: string } | undefined;
       await use(async () => {
-        if (seeded?.into === emptied) {
+        const database = databasesEmptied();
+        if (seeded?.into === database) {
           await putDeliverySettings(seeded.settings);
           await setLiveSessions(workspaceSessions);
           return seeded.seed;
         }
         // The seed's waits give up at the bound a row's own assertions use, inside its clock.
         const seed = await seedReviewRoutes({ boundMs: expectTimeout });
-        seeded = { into: emptied, seed, settings: await readDeliverySettings() };
+        seeded = { into: database, seed, settings: await readDeliverySettings() };
         return seed;
       });
     },

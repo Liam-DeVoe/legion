@@ -25,7 +25,8 @@ import {
   patchPriority,
 } from "./api";
 import { sql } from "./psql";
-import { test as base, emptyDatabase, expect, type Locator, type Page, rowKey } from "./test";
+import { resetDatabase } from "./seed";
+import { test as base, expect, type Locator, type Page, rowKey } from "./test";
 import { asUser } from "./users";
 
 /** This file's `test`: e2e/test.ts's, with the priorities a row wrote taken out again when it
@@ -35,7 +36,7 @@ import { asUser } from "./users";
  *  wrote, as the reset does (`priority_nodes` and `priority_tuples`, which no foreign key
  *  reaches): every node the stack holds at the row's end that it did not hold at its start, and
  *  every tuple written after the newest one at its start or written of a node it deletes. The
- *  second half is for a row that empties the database itself (`emptyDatabase`): the emptying
+ *  second half is for a row that empties the database itself (`resetDatabase`): the emptying
  *  starts the tuples' `seq` again from 1, under the newest one at the row's start, so that row's
  *  tuples are found by their node rather than by their place in the log. Rows of one worker run
  *  one at a time on that worker's own stack, so what the end holds beyond the start is this
@@ -522,9 +523,9 @@ test("with no priority the page reads the server's sentence, and writes the firs
   // The claim is an empty stack: a priority belongs to no project, and the order is the whole
   // stack's (`GET /api/v1/priorities` answers every live priority), so no key of this row's makes
   // a deployment with none, and whatever another row or the review corpus left would stand here.
-  // It empties through `emptyDatabase`, which counts the database as the worker's, so the
+  // It empties through `resetDatabase`, which counts the database as the worker's, so the
   // datasets the worker keeps are written again for the rows after this one.
-  await emptyDatabase();
+  await resetDatabase();
   // Signed in after the emptying, as e2e/issue.e2e.ts's row is: the emptying deletes every
   // session a sign-in wrote but the ones it writes again for alice and bob (e2e/users.ts).
   const context = await asUser(browser, "alice");
@@ -698,9 +699,9 @@ test("the rail's Priorities count falls as work leaves flight and as a parent li
   // The row's last claim is the rail of a deployment with no priority, and only an empty stack
   // holds one: a priority belongs to no project, and the order and the two faults the rail counts
   // are the whole stack's, so no key of this row's makes them its own. It empties through
-  // `emptyDatabase`, which counts the database as the worker's, so the datasets the worker keeps
+  // `resetDatabase`, which counts the database as the worker's, so the datasets the worker keeps
   // are written again for the rows after this one. The rail's number is then the row's own five.
-  await emptyDatabase();
+  await resetDatabase();
   const seed = await seedPriorities();
   // Signed in after the emptying, as e2e/issue.e2e.ts's row is: the emptying deletes every
   // session a sign-in wrote but the ones it writes again for alice and bob (e2e/users.ts).

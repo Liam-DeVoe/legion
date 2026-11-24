@@ -10,7 +10,7 @@ import {
 import { type DispatchProcess, processPinCookie } from "./harness-processes";
 import type { ProxiedSocket } from "./round-robin-proxy";
 import { type Browser, type BrowserContext, expect, type Page, rowKey, test } from "./test";
-import { signIn } from "./users";
+import { type SignInLogin, signIn } from "./users";
 
 /**
  * Two people on one document, each served by a different Dispatch process on one Postgres, as two
@@ -47,7 +47,7 @@ test.beforeEach(async () => {
  *  in: below a 1280 px editor the document has no awareness (ProofDocument.tsx). */
 async function pinnedUser(
   browser: Browser,
-  login: string,
+  login: SignInLogin,
   process: DispatchProcess
 ): Promise<BrowserContext> {
   const context = await browser.newContext();

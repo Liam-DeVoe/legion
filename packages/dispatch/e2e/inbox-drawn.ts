@@ -9,9 +9,9 @@
  * reader's own threads (`GET /api/v1/me/replies`, the Inbox's kinds, `state=inbox`), sorts them
  * newest first, bands them by priority, folds **Later**, and draws at most `GROUP_PAGE` rows of
  * each band with a **Show more** for the rest (`Inbox.tsx`). This module makes the same two reads
- * through e2e/api.ts and applies the product's own rules, imported from
- * `web/src/features/inbox/`, never copied, so the rows a row expects are the rows the page's own
- * code draws from that answer.
+ * through e2e/api.ts and applies the product's own rules and the **Show more** label
+ * (`showMoreLabel`), imported from `web/src/features/inbox/`, never copied, so the rows and the
+ * buttons a row expects are the ones the page's own code draws from that answer.
  *
  * It reads; it writes nothing. A row calls it once its seeds are written and before it reads
  * the page, and rows of one worker run one at a time on that worker's own stack, so nothing else
@@ -20,8 +20,13 @@
 import { INBOX_THREAD_KINDS } from "@legion/contracts";
 import { expect, type Page } from "@playwright/test";
 
-import { DEFAULT_FOLDED_GROUPS, group, sortRows } from "../web/src/features/inbox/grouping";
-import { GROUP_PAGE } from "../web/src/features/inbox/InboxGroups";
+import {
+  DEFAULT_FOLDED_GROUPS,
+  GROUP_PAGE,
+  group,
+  showMoreLabel,
+  sortRows,
+} from "../web/src/features/inbox/grouping";
 import { type InboxListRow, rowId } from "../web/src/features/inbox/list-row";
 import { sectionTitles } from "../web/src/features/inbox/sections";
 import { getInbox, listMyReplies } from "./api";
@@ -65,11 +70,7 @@ export async function clearedInbox(viewer: string): Promise<DrawnInbox> {
     const drawn = band.rows.slice(0, GROUP_PAGE);
     rows.push(...drawn.map(rowId));
     const held = band.rows.length - drawn.length;
-    if (held > 0) {
-      more.push(
-        `Show ${Math.min(held, GROUP_PAGE)} more${band.label === undefined ? "" : ` in ${band.label}`}`
-      );
-    }
+    if (held > 0) more.push(showMoreLabel(held, band.label));
   }
   return { more, rows };
 }
