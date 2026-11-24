@@ -1,4 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
+
+import { inputMethodKey } from "../../lib/input-method";
 import {
   borderDefault,
   focusVisibleRing,
@@ -121,7 +123,10 @@ export function InPlaceField({
         className={className}
         list={listId}
         onKeyDown={(event) => {
-          if (event.key !== "Enter") return;
+          // The Enter that ends an input method's composition commits what the reader composed
+          // into the field, and saves nothing: Safari sends it with `isComposing` false and
+          // keyCode 229 (`inputMethodKey`).
+          if (event.key !== "Enter" || inputMethodKey(event.nativeEvent)) return;
           event.preventDefault();
           save();
           event.currentTarget.blur();

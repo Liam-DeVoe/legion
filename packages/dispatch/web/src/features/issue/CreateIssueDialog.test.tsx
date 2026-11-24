@@ -9,10 +9,11 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { pressHeld } from "../../__tests__/held-press";
+import { heldUntilLate } from "../../__tests__/held-until-late";
 import { listOf, panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError } from "../../api/client";
+import { ApiError, api, NetworkError, type WriteBounds } from "../../api/client";
 import type { CreateIssueInput, Issue, Project } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
@@ -59,10 +60,10 @@ function CurrentRoute(): ReactNode {
 }
 
 /** The dialog, its project list and its related-item check answered here; `readProjects` answers
- *  the project list, at once by default. */
+ *  the project list, at once by default. `create` is each attempt of a create, with its bounds. */
 function renderDialog(
   user: UserEvent,
-  create: (input: CreateIssueInput) => Promise<Issue>,
+  create: (input: CreateIssueInput, bounds: WriteBounds) => Promise<Issue>,
   path = "/",
   onClose = () => {},
   readProjects: () => Promise<Project[]> = () => Promise.resolve(projects)
@@ -294,6 +295,99 @@ test.each([
     await act(async () =>
       answer.resolve(issue(calls[0] ?? { project: "CORE", title: "Held create" }, "CORE-9"))
     );
+    view.unmount();
+  }
+});
+
+/** The dialog over a create that Dispatch never answers while `refusing` is false - each try
+ *  fails at the network, and the next waits out its backoff - and refuses once it is true, and
+ *  how many presses made it: the keys its attempts went out under. The case holds the fake
+ *  clock, from before the dialog is drawn. */
+function slowCreateDialog(refusing: () => boolean) {
+  const keys: string[] = [];
+  const view = renderDialog(userOnFakeClock(), (_input, bounds) => {
+    keys.push(bounds.key);
+    return Promise.reject(
+      refusing()
+        ? new ApiError(403, { code: "FORBIDDEN", error: "not in this project" })
+        : new NetworkError("/api/v1/issues", new TypeError("Failed to fetch"))
+    );
+  });
+  return { presses: () => new Set(keys).size, view };
+}
+
+/** Files "Slow create" by Enter on Create, and checks Create is held until that create's
+ *  deadline and let go past it (`heldUntilLate`), with the create still out. */
+async function createUntilLate(
+  user: UserEvent,
+  queryClient: QueryClient,
+  presses: () => number
+): Promise<HTMLButtonElement> {
+  await projectPicked();
+  await user.click(screen.getByRole("textbox", { name: "Title" }));
+  await user.paste("Slow create");
+  const create = screen.getByRole<HTMLButtonElement>("button", { name: "Create" });
+  await heldUntilLate(user, create, {
+    label: "New issue “Slow create”",
+    name: "Create",
+    queryClient,
+    sent: presses,
+  });
+  return create;
+}
+
+/** What the dialog says beside Create of a press it refused while "Slow create" is out. */
+const STILL_SENDING =
+  "Create sent nothing: the issue “Slow create” is still being sent. It opens once Dispatch makes it; if it fails, this dialog says why and you can press Create again.";
+
+/** The dialog's line of a press it refused, if it shows one: the page's route is a status too. */
+const refusedLine = () =>
+  within(screen.getByRole("dialog", { name: "Create issue" })).queryByRole("status");
+
+// A create that never answers holds the dialog until its deadline (`SEND_DEADLINE_MS`), and no
+// longer: past it the create is late and still tried, and the dialog is let go, with the focus on
+// the Create the reader pressed. A press then would make a second issue while the first is still
+// tried under its key, so it sends nothing, and the line beside Create says why and what comes:
+// the first is still being sent, and it opens once Dispatch makes it.
+test("Create is let go at its create's deadline, and a press while that create is out sends no second one and says so", async () => {
+  jest.useFakeTimers();
+  const { presses, view } = slowCreateDialog(() => false);
+  try {
+    const create = await createUntilLate(view.user, view.queryClient, presses);
+    expect(refusedLine()).toBeNull();
+    await view.user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(presses(), "a press while the create is out sent one").toBe(1);
+    expect(refusedLine()?.textContent).toBe(STILL_SENDING);
+    expect(create).toHaveFocus();
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
+// The line goes once the first create is decided. Refused, the dialog shows the reason, and Create
+// takes a press again, which sends a create of its own.
+test("once a create out past its deadline is refused, Create sends a create again", async () => {
+  jest.useFakeTimers();
+  let refusing = false;
+  const { presses, view } = slowCreateDialog(() => refusing);
+  try {
+    await createUntilLate(view.user, view.queryClient, presses);
+    await view.user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(refusedLine()?.textContent).toBe(STILL_SENDING);
+
+    refusing = true;
+    // Past the next try, half a minute at the longest backoff.
+    await tick(30_000);
+    expect(screen.getByRole("alert")).toHaveTextContent("not in this project");
+    expect(refusedLine()).toBeNull();
+    await view.user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(presses(), "a press after the refusal sent no create").toBe(2);
+  } finally {
+    realClock();
     view.unmount();
   }
 });

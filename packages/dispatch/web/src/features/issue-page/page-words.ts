@@ -681,6 +681,10 @@ export const ANSWER_LINES = freeze({
   /** What a decision's Change form says when Dispatch refused its send, whatever the server
    *  answered: the reader's words stay in the field, to send again (`DecisionActions.tsx`). */
   change_not_sent: "Could not send the change.",
+  /** What a decision's Change form says of a Send change pressed while the change it sent before
+   *  is still out past its deadline: that press sent no second comment (`DecisionActions.tsx`). */
+  change_still_sending:
+    "Send change sent nothing, since your change is still being sent: it shows under the decision once Dispatch posts it; if it fails, this form says so and you can press Send change again.",
   /** What Left on a row of the Decisions list says, and so does the key that zooms out, since
    *  the list has no level above its rows: the outline's own report for those keys speaks of
    *  the whole issue, which the list is not (`decisions-filter/DecisionsFilterBody.tsx`). */

@@ -13,12 +13,13 @@
 // the only role Dispatch has, so the controls are offered to any signed-in person (`useIsHuman`)
 // and the server refuses the rest; its refusal is shown under the form as it wrote it.
 import { useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useState } from "react";
+import { type FormEvent, type ReactNode, useRef, useState } from "react";
 
 import { apiErrorMessage, legionDaemonRemovalRequest, legionDaemonRequest } from "../../api/client";
 import { legionDaemonQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { LegionSetting } from "../../api/types";
+import { ARM_ON_PRESS, useFocusPlace } from "../../components/focus-place";
 import { heldField, heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
@@ -115,6 +116,11 @@ export function LegionDaemonsSection(): ReactNode {
   const [stateUrl, setStateUrl] = useState("");
   const [failedAction, setFailedAction] = useState<FailedAction>();
   const legion = useLegionDaemons();
+  const list = useRef<HTMLElement>(null);
+  const noteFocus = useFocusPlace(
+    () => list.current,
+    () => null
+  );
   const daemonKey = (named: string) => legionDaemonQuery(named).queryKey;
   // The line both writes of a daemon go on (`target`), in press order.
   const daemonTarget = (named: string) => `legion-daemon:${named}`;
@@ -250,7 +256,13 @@ export function LegionDaemonsSection(): ReactNode {
   };
 
   return (
-    <section aria-labelledby="legion-daemons-heading" data-legion-daemons>
+    <section
+      {...ARM_ON_PRESS}
+      aria-labelledby="legion-daemons-heading"
+      data-legion-daemons
+      onFocus={noteFocus}
+      ref={list}
+    >
       <h2 className={`text-xl font-semibold ${textPrimaryOnCanvas}`} id="legion-daemons-heading">
         Legion
       </h2>

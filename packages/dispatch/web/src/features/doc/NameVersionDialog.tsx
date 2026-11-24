@@ -1,6 +1,7 @@
 import { type KeyboardEvent, type ReactNode, useRef, useState } from "react";
 
 import { heldField, heldPress } from "../../components/held-press";
+import { inputMethodKey } from "../../lib/input-method";
 import {
   backdrop40,
   card,
@@ -58,8 +59,11 @@ export function NameVersionDialog({
     onSave(trimmed);
   };
 
+  // The Enter that ends an input method's composition commits what the reader composed into the
+  // field, and names nothing: Safari sends it with `isComposing` false and keyCode 229
+  // (`inputMethodKey`).
   const handleInputKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
-    if (event.key !== "Enter" || event.nativeEvent.isComposing) {
+    if (event.key !== "Enter" || inputMethodKey(event.nativeEvent)) {
       return;
     }
     event.preventDefault();

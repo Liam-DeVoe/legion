@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
-import { render, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: the Enter that ends an IME composition is a key marked as the input method's, which user-event has no form for.
+import { fireEvent, render, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
+
+import { INPUT_METHOD_MARKS } from "../../__tests__/input-method-marks";
 import { InPlaceField } from "./InPlaceField";
 
 /**
@@ -53,4 +56,34 @@ test("a text written elsewhere replaces what a field the reader is not holding s
     "Written elsewhere"
   );
   view.unmount();
+});
+
+// Enter in a one-line field saves what the reader wrote and leaves the field. The Enter that ends
+// an input method's composition commits what the reader composed into the field and is the input
+// method's (`INPUT_METHOD_MARKS`): it saves nothing, and the field keeps the focus. The plain
+// Enter after it saves and leaves.
+test.each(
+  INPUT_METHOD_MARKS
+)("an Enter that ends an IME composition, marked by %s, saves nothing and leaves the focus in the field", async (_mark, composing) => {
+  const user = userEvent.setup();
+  const saved: string[] = [];
+  const view = render(
+    <InPlaceField label="Title" onSave={(next) => saved.push(next)} value="Old name" />
+  );
+  try {
+    const field = within(view.container).getByRole("textbox", { name: "Title" });
+    await user.clear(field);
+    await user.paste("New name");
+    fireEvent.keyDown(field, { ...composing, key: "Enter" });
+    expect(saved, "the Enter that ended a composition saved").toEqual([]);
+    expect(field, "the Enter that ended a composition left the field").toHaveFocus();
+
+    await user.keyboard("{Enter}");
+    // Enter saves, and the leaving it makes saves the same text.
+    expect(saved.length).toBeGreaterThan(0);
+    expect(saved.every((text) => text === "New name")).toBe(true);
+    expect(field).not.toHaveFocus();
+  } finally {
+    view.unmount();
+  }
 });

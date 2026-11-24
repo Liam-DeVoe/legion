@@ -4,7 +4,9 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 
 import { realClock } from "../../__tests__/fake-clock";
+import { afterFrameAndTasks } from "../../__tests__/frames";
 import { pressHeld } from "../../__tests__/held-press";
+import { heldUntilLate } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, panelOf, pickFromLabelled, textBoxes } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -12,6 +14,7 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { ArchitectureSource, Project } from "../../api/types";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import { ArchitectureSourcesSection } from "./ArchitectureSourcesSection";
 
 const architectureSource: ArchitectureSource = {
@@ -482,6 +485,74 @@ async function sourcesOf(
  *  stop. */
 const dropped = () =>
   Promise.reject(new NetworkError("/api/v1/projects/CORE", new TypeError("Failed to fetch")));
+
+test.each([
+  { name: "Add source", label: "CORE's architecture source legion/arch" },
+  {
+    name: "Delete architecture source legion/arch for CORE",
+    label: "CORE's architecture source legion/arch removed",
+  },
+  {
+    name: "Refresh architecture source legion/arch for CORE",
+    label: "Refresh of CORE's architecture source legion/arch",
+  },
+] as const)("$name is released at its write's deadline", async ({ name, label }) => {
+  const sync = spyOn(api, "syncArchitectureSource").mockImplementation(dropped);
+  const page = await sourcesOf(async () => [architectureSource], dropped, dropped);
+  try {
+    const button = await page.section.findByRole<HTMLButtonElement>("button", { name });
+    if (name === "Add source") {
+      const user = userEvent.setup();
+      await pickFromLabelled(user, "Source project", "CORE · Core");
+      await user.click(page.section.getByLabelText("Source repository"));
+      await user.paste("legion/arch");
+    }
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => writesOf(page.queryClient).rows().length;
+    await heldUntilLate(user, button, { label, name, queryClient: page.queryClient, sent });
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(sent()).toBe(2));
+  } finally {
+    realClock();
+    page.restore();
+    sync.mockRestore();
+  }
+});
+
+test("Delete hands focus to the preceding source's Delete after the re-read removes its row", async () => {
+  const user = userEvent.setup();
+  const before = { ...architectureSource, repo: "acme/infra" };
+  const updatedList = Promise.withResolvers<ArchitectureSource[]>();
+  let removed = false;
+  const page = await sourcesOf(
+    () => (removed ? updatedList.promise : Promise.resolve([before, architectureSource])),
+    dropped,
+    async () => {
+      removed = true;
+    }
+  );
+  try {
+    const pressed = await page.section.findByRole("button", {
+      name: "Delete architecture source legion/arch for CORE",
+    });
+    const preceding = page.section.getByRole("button", {
+      name: "Delete architecture source acme/infra for CORE",
+    });
+    act(() => pressed.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(removed).toBe(true));
+    // The re-read remains out past the frame and task a press with no hold waits.
+    await afterFrameAndTasks();
+    expect(pressed).toHaveFocus();
+    await act(async () => updatedList.resolve([before]));
+    await waitFor(() => expect(pressed).not.toBeInTheDocument());
+    expect(preceding).toHaveFocus();
+  } finally {
+    await act(async () => updatedList.resolve([before]));
+    page.restore();
+  }
+});
 
 // A save or a removal the reader stopped may have been made: the section says so, and that its
 // Retry sends the same change again - a `PUT` or a `DELETE` sends no key - rather than that it

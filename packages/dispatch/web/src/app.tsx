@@ -810,6 +810,8 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     // A reload never takes the sign-out up again: no request of it goes through `api.send` to be
     // kept.
     method: "POST",
+    // Sign out is held only while the sign-out is out within its deadline (`signOutPending`).
+    readsLate: true,
     // Dispatch's own 401 (`NO_IDENTITY`) says the session the sign-out would end is already gone
     // - an earlier attempt ended it and its answer was lost, or a sign-out in another browser
     // revoked it - so the sign-out has done what it was for, whatever the sign-in check can be
@@ -889,7 +891,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       signOutError={
         signOutRefused && signOut.error !== null ? signOutFailure(signOut.error) : undefined
       }
-      signOutPending={signOut.isPending || askingTabs}
+      // Sign out is held while the other tabs are asked, and while the sign-out is out within its
+      // deadline. A sign-out past it (`late`) holds it no longer: it is still tried, and the
+      // shell's indicator offers to stop it, but one that never answers - the browser offline -
+      // would otherwise hold Sign out for good. A press then signs out again, which ends the
+      // session or finds it ended (`isNoIdentity`).
+      signOutPending={(signOut.isPending && !signOut.late) || askingTabs}
       user={user}
     />
   );

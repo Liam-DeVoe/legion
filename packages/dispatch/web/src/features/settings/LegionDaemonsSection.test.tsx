@@ -199,6 +199,20 @@ test("removing a project's daemon sends the DELETE and drops its row", async () 
   expect(await section.findByText("No project names a Legion daemon yet.")).toBeDefined();
 });
 
+test("Remove hands focus to the preceding daemon's Remove as its row goes", async () => {
+  const user = userEvent.setup();
+  const server = legionServer([setting, { ...setting, project: "CORE" }]);
+  const remove = answerDaemonRemovals().mockImplementation((project) => server.remove(project));
+  const section = await renderSection(server);
+  const pressed = await section.findByRole("button", { name: "Remove the Legion daemon of CORE" });
+  const preceding = section.getByRole("button", { name: "Remove the Legion daemon of ACME" });
+  act(() => pressed.focus());
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(pressed).not.toBeInTheDocument());
+  expect(remove).toHaveBeenCalledTimes(1);
+  expect(preceding).toHaveFocus();
+});
+
 // While a write of the section is out, Save Legion daemon, the address box and every row's Remove
 // are held, by `aria-disabled`, never `disabled` (`pressHeld`). A Remove takes its row away at the
 // press, so its hold is read on the other row's Remove, which the reader moves to. The control

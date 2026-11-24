@@ -7,6 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { pressHeld } from "../../__tests__/held-press";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -375,6 +376,42 @@ test("a save the reader stopped says it may have been made, not that it failed",
         anew: "Save delivery settings sends what the form holds now.",
       })
     );
+  } finally {
+    realClock();
+    cleanup();
+    queryClient.clear();
+    getDeliverySettings.mockRestore();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// A save that never answers - each try fails at the network, and the next waits out its backoff -
+// holds Save until its deadline (`SEND_DEADLINE_MS`), and no longer: past it the save is late and
+// still tried, and Save is let go, with the focus on it. A press then is a save of its own, which
+// sends what the fields hold: the guard that drops a second press of the same task lets go too.
+test("Save, held until its save's deadline, is let go there, and a press then saves again", async () => {
+  const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(record);
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockRejectedValue(
+    new NetworkError("/api/v1/settings/delivery", new TypeError("Failed to fetch"))
+  );
+  const queryClient = renderForm();
+  try {
+    await screen.findByDisplayValue("acme/widgets");
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await heldUntilLate(
+      user,
+      screen.getByRole<HTMLButtonElement>("button", { name: "Save delivery settings" }),
+      {
+        label: "Delivery settings saved",
+        name: "Save delivery settings",
+        queryClient,
+        sent: () => pressesOf([putDeliverySettings]),
+      }
+    );
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(pressesOf([putDeliverySettings]), "a press past the deadline saved nothing").toBe(2);
   } finally {
     realClock();
     cleanup();

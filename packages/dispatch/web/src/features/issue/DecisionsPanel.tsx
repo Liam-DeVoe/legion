@@ -34,6 +34,7 @@ import { buildIssuePath, DECISIONS_DOCUMENT_SLUG, documentItemPath } from "../re
 import { textSourceOf } from "../refs/text-references";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useOneCreateOut } from "../writes/useOneCreateOut";
 
 /** The word that opens the paragraph the server reads as a decision's doubt
  *  (`api/decisions.go`'s `unsurePrefix`). */
@@ -243,6 +244,7 @@ function ChangeComposer({
     inline: true,
     label: () => `Change to ${decision.heading}`,
     method: "POST",
+    readsLate: true,
     // The decisions document belongs to an issue, and a comment on an issue's document is the
     // issue's own write: the artifact route refuses it, naming the issue route (`send-request.ts`
     // follows the same rule for a thread's replies).
@@ -257,18 +259,21 @@ function ChangeComposer({
       onDone();
     },
   });
-  // Send is held, not disabled, while the change is out: it keeps the focus the press gave it
-  // (`heldPress`), and Enter or a second press sends nothing more.
-  const held = send.isPending;
+  // Send is held, not disabled, while the change is out within its deadline: it keeps the focus
+  // the press gave it (`heldPress`), and Enter or a second press sends nothing more. A change past
+  // its deadline (`late`) holds it no longer: it is still tried under its key, but one that never
+  // answers would otherwise hold the form for good. A press then would post the change twice, so
+  // it sends nothing while that change is out, and the form says so (`oneChange`).
+  const held = send.isPending && !send.late;
+  const oneChange = useOneCreateOut(send);
   return (
     <form
       aria-label={`Change ${decision.heading}`}
       className="space-y-2"
       onSubmit={(event) => {
         event.preventDefault();
-        if (body.trim() !== "" && !held) {
-          send.mutate({ body, quote });
-        }
+        if (body.trim() === "" || held || oneChange.refuse()) return;
+        send.mutate({ body, quote });
       }}
     >
       <blockquote
@@ -298,6 +303,12 @@ function ChangeComposer({
             : send.error.message}
         </p>
       )}
+      {oneChange.refused ? (
+        <p className={`text-sm ${textSecondaryOnSurface}`} role="status">
+          Send sent nothing: your change is still being sent. This form closes once Dispatch posts
+          it; if it fails, this form says why and you can press Send again.
+        </p>
+      ) : null}
       <div className="flex gap-2">
         <button
           aria-disabled={held || undefined}
@@ -404,6 +415,7 @@ function WaitingDecision({
     inline: true,
     label: () => `Keep ${decision.heading}`,
     method: "POST",
+    readsLate: true,
     // The sum of the text this card showed: a decision the agent changed since is refused
     // (`409 DECISION_CHANGED`), so a Keep never stands over words the reader did not see.
     write: (id: string, bounds) =>
@@ -440,9 +452,11 @@ function WaitingDecision({
         writable ? (
           <div className="space-y-2">
             <div className="flex gap-2">
+              {/* Held while its Keep is out within its deadline (`heldPress`); a Keep past it is
+                  still tried under its key, but one that never answers would hold it for good. */}
               <button
                 className={secondaryButtonCompact}
-                {...heldPress(keep.isPending, () => keep.mutate(documentId))}
+                {...heldPress(keep.isPending && !keep.late, () => keep.mutate(documentId))}
                 type="button"
               >
                 Keep

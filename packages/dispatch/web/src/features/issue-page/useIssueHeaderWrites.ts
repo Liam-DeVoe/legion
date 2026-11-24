@@ -153,6 +153,7 @@ export function useIssueHeaderWrites(
     // A release made again after one that landed needs no `removedEvenIfGone`: Dispatch answers a
     // release of an issue nobody holds with the issue, as it answers the first.
     method: "DELETE",
+    readsLate: true,
     write: (issueKey: string, bounds) => api.releaseIssueClaim(issueKey, bounds),
     inline: true,
     label: (issueKey) => `Claim on ${issueKey} released`,

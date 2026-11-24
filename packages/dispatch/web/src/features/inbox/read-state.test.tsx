@@ -4,19 +4,20 @@
  */
 
 import { afterEach, expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { onlineManager, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { onFakeClock, realClock, tick } from "../../__tests__/fake-clock";
+import { heldNotDisabled } from "../../__tests__/held-press";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentStates, answerThreadReads } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { api, NetworkError } from "../../api/client";
+import { api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
 import {
   inboxQuery,
   inboxThreadsQuery,
@@ -25,6 +26,7 @@ import {
   userAgentStateQuery,
   whoAmIQuery,
 } from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
 import type {
   Agent,
   Comment,
@@ -263,6 +265,55 @@ test("a Mark read the reader stopped says what Retry does, not a message's words
       })
     );
   } finally {
+    realClock();
+  }
+});
+
+test("Mark read releases its hold when its landed mark's re-read reaches the request deadline", async () => {
+  const answer = Promise.withResolvers<void>();
+  const mark = answerThreadReads().mockReturnValue(answer.promise);
+  mockCommentReads();
+  const client = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const key = inboxThreadsQuery().queryKey;
+  client.setQueryData(key, threadsRead([]));
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const online = onlineManager.isOnline();
+  function ReadThreads() {
+    useQuery({ queryKey: key, queryFn: async () => threadsRead([]) });
+    return null;
+  }
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <ReadThreads />
+        <ThreadRowCard thread={commentRow("comment-1", "The retry budget")} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await screen.findByTestId("inbox-thread-comment");
+    jest.useFakeTimers();
+    const button = screen.getByRole<HTMLButtonElement>("button", { name: "Mark read" });
+    await userOnFakeClock().click(button);
+    await waitFor(() => expect(mark).toHaveBeenCalledTimes(1));
+    act(() => onlineManager.setOnline(false));
+    await act(async () => answer.resolve());
+    await tick(0);
+    expect(client.getQueryState(key)?.fetchStatus).toBe("paused");
+    await tick(REQUEST_DEADLINE_MS - 1_000);
+    expect(heldNotDisabled(button, "Mark read")).toBe(true);
+
+    await tick(1_000);
+    expect(client.getQueryState(key)?.fetchStatus).toBe("paused");
+    expect(heldNotDisabled(button, "Mark read")).toBe(false);
+    expect(button).toHaveFocus();
+    expect(screen.getByRole("alert")).toHaveTextContent("Dispatch could not be reached.");
+  } finally {
+    view.unmount();
+    client.clear();
+    act(() => onlineManager.setOnline(online));
     realClock();
   }
 });

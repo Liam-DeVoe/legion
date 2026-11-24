@@ -1,4 +1,3 @@
-import type { UseMutationResult } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { apiErrorMessage } from "../../api/client";
@@ -16,25 +15,28 @@ import {
   secondaryButtonText,
 } from "../../theme/classes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import type { KeyedWriteResult } from "../writes/useKeyedWrite";
 
 /**
  * The Approve/Deny button pair `MachineLoginPage` renders for a pending machine login: that page
  * builds its own `approve`/`deny` mutations, whose POST bodies carry the code the operator typed,
- * then hands them here for the shared guard (both are held while either decision is out,
- * `heldPress`), click-wiring, and verbatim broker-error rendering. With no `approve`, only Deny
- * shows: a record nobody may approve any more, such as a service's machine login from before
- * services logged in with their tokens.
+ * then hands them here for the shared guard (both are held while either decision is out within
+ * its deadline, `heldPress`), click-wiring, and verbatim broker-error rendering. A decision past
+ * its deadline (`late`, which the page's writes read) holds them no longer: it is still tried
+ * under its key, but one that never answers would otherwise hold both for good. With no
+ * `approve`, only Deny shows: a record nobody may approve any more, such as a service's machine
+ * login from before services logged in with their tokens.
  */
 export function CredentialDecisionButtons({
   approve,
   deny,
   submitGuard,
 }: {
-  approve?: UseMutationResult<DecisionResponse | null, Error, void>;
-  deny: UseMutationResult<StateResponse | null, Error, void>;
+  approve?: KeyedWriteResult<DecisionResponse, void, unknown>;
+  deny: KeyedWriteResult<StateResponse, void, unknown>;
   submitGuard: SubmitGuard;
 }): ReactNode {
-  const deciding = approve?.isPending === true || deny.isPending;
+  const deciding = (approve?.isPending === true && !approve.late) || (deny.isPending && !deny.late);
   return (
     <div className="space-y-2">
       <div className="flex gap-2">

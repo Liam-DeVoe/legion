@@ -194,6 +194,7 @@ export function IssueHeader({
     // A release made again after one that landed needs no `removedEvenIfGone`: Dispatch answers a
     // release of an issue nobody holds with the issue, as it answers the first.
     method: "DELETE",
+    readsLate: true,
     write: (_variables, bounds) => api.releaseIssueClaim(issue.key, bounds),
     inline: true,
     label: () => `Claim on ${issue.key} released`,
@@ -202,6 +203,7 @@ export function IssueHeader({
       void queryClient.invalidateQueries({ queryKey: ["issues"] });
     },
   });
+  const releasing = releaseClaim.isPending && !releaseClaim.late;
   // A title, route, parent or close the header shows refused itself, beside its draft; a status
   // pick is a control, so its refusal is the shell's (`PendingWritesIndicator`), and the pick
   // rolls back. Every field write goes in the issue's line (`issue:<key>`), so an older one still
@@ -673,11 +675,11 @@ export function IssueHeader({
               <button
                 aria-label={`Release the claim on ${issue.key}`}
                 className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-                {...heldPress(releaseClaim.isPending, () => releaseClaim.mutate())}
+                {...heldPress(releasing, () => releaseClaim.mutate())}
                 title="Release this claim so another agent can take the issue"
                 type="button"
               >
-                {releaseClaim.isPending ? "Releasing…" : "Release"}
+                {releasing ? "Releasing…" : "Release"}
               </button>
             </>
           )}

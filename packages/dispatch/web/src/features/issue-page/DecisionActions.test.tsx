@@ -1,11 +1,14 @@
-import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { displayTree } from "../../__tests__/display-trees";
-import { ApiError, api } from "../../api/client";
+import { realClock, tick } from "../../__tests__/fake-clock";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { Artifact, ArtifactText, Decision, IssueDecisions } from "../../api/types";
 import {
   borderDefault,
@@ -91,12 +94,12 @@ function spyDocumentText(markdown: string | Error): DocumentTextSpy {
 
 /** Draws the decision's controls over `answer`, with the decisions document's text read answered
  *  by `documentText`; inside the page's `NoTooltips` where `page` says so, as the issue page
- *  draws them. */
+ *  draws them. `client` is the page's query client, whose store holds the writes. */
 function renderActions(
   answer: IssueDecisions = read,
   documentText: string | Error = DOCUMENT_TEXT,
   { page = false }: { page?: boolean } = {}
-): { text: DocumentTextSpy; unmount: () => void } {
+): { client: QueryClient; text: DocumentTextSpy; unmount: () => void } {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["decisions", KEY], answer);
   const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(answer);
@@ -111,9 +114,11 @@ function renderActions(
     { wrapper }
   );
   return {
+    client,
     text,
     unmount: () => {
       view.unmount();
+      client.clear();
       decisions.mockRestore();
       text.mockRestore();
     },
@@ -201,6 +206,123 @@ test("Send change keeps the focus while its change is out, held rather than disa
     stopFocusFixup();
     unmount();
     createComment.mockRestore();
+  }
+});
+
+/** A write's try that fails at the network, as every try does while Dispatch cannot be reached. */
+const failsAtTheNetwork = () =>
+  Promise.reject(
+    new NetworkError("/api/v1/issues/CORE-1/comments", new TypeError("Failed to fetch"))
+  );
+
+// A Keep that never answers - each try fails at the network, and the next waits out its backoff -
+// holds Keep until its deadline (`SEND_DEADLINE_MS`), and no longer: past it the Keep is late and
+// still tried, and Keep is let go, with the focus on it. A press then sends a Keep of its own.
+test("Keep, held until its Keep's deadline, is let go there, and a press then sends a Keep again", async () => {
+  const keepDecision = spyOn(api, "keepDecision").mockImplementation(failsAtTheNetwork);
+  const { client, unmount } = renderActions();
+  try {
+    const keep = await screen.findByRole<HTMLButtonElement>("button", {
+      name: CONTROL_LABELS.keep_decision,
+    });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await heldUntilLate(user, keep, {
+      label: `${CONTROL_LABELS.keep_decision} ${decision.heading}`,
+      name: "Keep",
+      queryClient: client,
+      sent: () => pressesOf([keepDecision]),
+    });
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(pressesOf([keepDecision]), "a press past the deadline sent no Keep").toBe(2);
+  } finally {
+    realClock();
+    unmount();
+    keepDecision.mockRestore();
+  }
+});
+
+/**
+ * Opens the Change form and sends "Keep one preset." by Enter on Send change, to a Dispatch that
+ * never answers while `refusing` is false - each try fails at the network - and refuses once it is
+ * true, and checks Send change is held until that change's deadline and let go past it
+ * (`heldUntilLate`), with the change still out. Answers how many presses posted a change, and
+ * what puts the page and the fake clock away (`restore`).
+ */
+async function changeUntilLate(refusing: () => boolean) {
+  const createComment = spyOn(api, "createComment").mockImplementation(() =>
+    refusing()
+      ? Promise.reject(new ApiError(409, { code: "QUOTE_AMBIGUOUS", error: "two places" }))
+      : failsAtTheNetwork()
+  );
+  const { client, unmount } = renderActions();
+  const restore = () => {
+    realClock();
+    unmount();
+    createComment.mockRestore();
+  };
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Keep one preset.");
+    jest.useFakeTimers();
+    const onFakeClock = userOnFakeClock();
+    await heldUntilLate(
+      onFakeClock,
+      screen.getByRole<HTMLButtonElement>("button", { name: CONTROL_LABELS.send_change }),
+      {
+        label: `${CONTROL_LABELS.change_decision} ${decision.heading}`,
+        name: "Send change",
+        queryClient: client,
+        sent: () => pressesOf([createComment]),
+      }
+    );
+    return { presses: () => pressesOf([createComment]), restore, user: onFakeClock };
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
+
+// A change that never answers holds Send change until its deadline, and no longer. A press then
+// would post the change a second time while the first is still tried under its key, so it sends
+// nothing, and the line beside Send change says why and what comes: the first is still being
+// sent, and it shows under the decision once Dispatch posts it.
+test("Send change is let go at its change's deadline, and a press while that change is out posts no second one and says so", async () => {
+  const page = await changeUntilLate(() => false);
+  try {
+    expect(screen.queryByRole("status")).toBeNull();
+    await page.user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(page.presses(), "a press while the change is out posted one").toBe(1);
+    expect(screen.getByRole("status").textContent).toBe(ANSWER_LINES.change_still_sending);
+    expect(screen.getByRole("button", { name: CONTROL_LABELS.send_change })).toHaveFocus();
+  } finally {
+    page.restore();
+  }
+});
+
+// The line goes once the first change is decided. Refused, the form says the change was not
+// sent, and Send change takes a press again, which posts a change of its own.
+test("once a change out past its deadline is refused, Send change posts it again", async () => {
+  let refusing = false;
+  const page = await changeUntilLate(() => refusing);
+  try {
+    await page.user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(screen.getByRole("status").textContent).toBe(ANSWER_LINES.change_still_sending);
+
+    refusing = true;
+    // Past the next try, half a minute at the longest backoff.
+    await tick(30_000);
+    expect(screen.getByRole("alert").textContent).toBe(ANSWER_LINES.change_not_sent);
+    expect(screen.queryByRole("status")).toBeNull();
+    await page.user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(page.presses(), "a press after the refusal posted no change").toBe(2);
+  } finally {
+    page.restore();
   }
 });
 

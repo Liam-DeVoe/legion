@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useId, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useId, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { deliverySettingsQuery } from "../../api/queries";
@@ -177,10 +177,11 @@ export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): Re
  *  form's submit sends nothing while Save is held. The `refused:` variant paints a held Save as a
  *  disabled one. The form, its fields and its Save stay the same elements through the read, so
  *  the focus stays where the reader pressed; a form the caller replaces goes while Save is held,
- *  so the control the reader pressed from keeps the focus until the form goes. A record read that
- *  has not settled by the request deadline (`REQUEST_DEADLINE_MS`) lets them go then, with the
- *  reason under the form (`useReadBound`). A refusal lets them go at once, with its reason under
- *  the form. */
+ *  so the control the reader pressed from keeps the focus until the form goes. A save past its
+ *  deadline (`SEND_DEADLINE_MS`) lets them go then, still tried under its key, and a record read
+ *  that has not settled by the request deadline (`REQUEST_DEADLINE_MS`) lets them go then, with
+ *  the reason under the form (`useReadBound`). A refusal lets them go at once, with its reason
+ *  under the form. */
 function DeliverySettingsFields({
   record,
   replacedByCaller,
@@ -213,6 +214,7 @@ function DeliverySettingsFields({
     inline: true,
     label: () => "Delivery settings saved",
     onSettled: () => submitGuard.release(),
+    readsLate: true,
     onSuccess: () => {
       if (replacedByCaller) holdUntilDrawn();
       // Pending through the record's own read, which a caller holding the record has none of. A
@@ -230,10 +232,17 @@ function DeliverySettingsFields({
       return holdThrough(read);
     },
   });
-  // The fields and Save are held, not disabled, while a save is out and until what it changes is
-  // drawn: whichever holds the focus keeps it, an edit made then is dropped, and a submit then
-  // sends nothing (`submitGuard` covers only the save's own round trip).
-  const held = save.isPending || drawing;
+  // The fields and Save are held, not disabled, while a save is out within its deadline and until
+  // what it changes is drawn: whichever holds the focus keeps it, an edit made then is dropped,
+  // and a submit then sends nothing (`submitGuard` covers only the save's own round trip). A save
+  // past its deadline (`late`) holds them no longer: it is still tried under its key, and the
+  // shell's indicator offers to stop it, but one that never answers - the browser offline - would
+  // otherwise hold the form for good. The guard lets go there too, so a submit then sends the
+  // fields as a save of its own rather than nothing.
+  const held = (save.isPending && !save.late) || drawing;
+  useEffect(() => {
+    if (save.late) submitGuard.release();
+  }, [save.late, submitGuard]);
   const edit = (next: Draft) => {
     if (!held) setDraft(next);
   };

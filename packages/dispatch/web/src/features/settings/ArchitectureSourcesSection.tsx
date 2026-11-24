@@ -1,8 +1,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useState } from "react";
+import { type FormEvent, type ReactNode, useLayoutEffect, useRef, useState } from "react";
 
 import { api, apiErrorMessage, isSourceNotFound, removedEvenIfGone } from "../../api/client";
 import { architectureSourcesQuery, projectsQuery } from "../../api/queries";
+import { invalidateWaitingForPaused } from "../../api/query-client";
+import { useReadBound } from "../../api/read-bound";
+import { ARM_ON_PRESS, useFocusPlace } from "../../components/focus-place";
 import { heldField, heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
@@ -67,12 +70,19 @@ export function ArchitectureSourcesSection(): ReactNode {
   const submitGuard = useSubmitGuard();
   const sources = useQuery(architectureSourcesQuery());
   const projects = useQuery(projectsQuery());
+  const list = useRef<HTMLElement>(null);
+  const noteFocus = useFocusPlace(
+    () => list.current,
+    () => null
+  );
+  const [unsettled, holdThrough] = useReadBound();
   // The form shows a refused save beside the repository it was refused over.
   const saveSource = useKeyedWrite({
     inline: true,
     label: (input: { project: string; repo: string; branch: string }) =>
       `${input.project}'s architecture source ${input.repo}`,
     method: "PUT",
+    readsLate: true,
     write: (input, bounds) =>
       api.putArchitectureSource(input.project, input.repo, { branch: input.branch }, bounds),
     onSettled: () => submitGuard.release(),
@@ -89,13 +99,16 @@ export function ArchitectureSourcesSection(): ReactNode {
     // A removal made again after one that landed finds no source (`404 SOURCE_NOT_FOUND`), which
     // is the removal done (`removedEvenIfGone`).
     method: "DELETE",
+    readsLate: true,
     write: (source, bounds) =>
       removedEvenIfGone(
         api.deleteArchitectureSource(source.project, source.repo, bounds),
         isSourceNotFound
       ),
+    // The re-read removes the pressed Delete. Keep its hand-off armed until the read answers
+    // or reaches its deadline.
     onSuccess: () =>
-      void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey }),
+      holdThrough(invalidateWaitingForPaused(queryClient, architectureSourcesQuery().queryKey)),
   });
   // A refresh settles into the row either way: a rejected model comes back 200
   // with the reason in last_error, and even a 409 (access revoked, branch gone)
@@ -104,16 +117,19 @@ export function ArchitectureSourcesSection(): ReactNode {
     label: (source: SourceKey) =>
       `Refresh of ${source.project}'s architecture source ${source.repo}`,
     method: "POST",
+    readsLate: true,
     write: (source, bounds) => api.syncArchitectureSource(source.project, source.repo, bounds),
     onSettled: () =>
       void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey }),
   });
-  // Add source is held while a save or a removal is out, by `aria-disabled`, and a submit sends
-  // nothing then. The project list, the repository and the branch are held while a save is out
-  // (`saveHeld`): `aria-disabled`, and the two boxes read-only. So the control the reader
-  // submitted from keeps the focus.
-  const saveHeld = saveSource.isPending;
-  const formHeld = saveHeld || deleteSource.isPending;
+  // The form and row actions are held only until the deadline of the write holding them.
+  const saveHeld = saveSource.isPending && !saveSource.late;
+  const deleteHeld = deleteSource.isPending && !deleteSource.late;
+  const refreshHeld = refreshSource.isPending && !refreshSource.late;
+  const formHeld = saveHeld || deleteHeld;
+  useLayoutEffect(() => {
+    if (saveSource.late) submitGuard.release();
+  }, [saveSource.late, submitGuard]);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (formHeld) return;
@@ -138,7 +154,12 @@ export function ArchitectureSourcesSection(): ReactNode {
     : undefined;
 
   return (
-    <section aria-labelledby="architecture-sources-heading">
+    <section
+      {...ARM_ON_PRESS}
+      aria-labelledby="architecture-sources-heading"
+      onFocus={noteFocus}
+      ref={list}
+    >
       <h2
         className={`text-xl font-semibold ${textPrimaryOnCanvas}`}
         id="architecture-sources-heading"
@@ -227,9 +248,8 @@ export function ArchitectureSourcesSection(): ReactNode {
                       <button
                         aria-label={`Refresh architecture source ${source.repo} for ${source.project}`}
                         className={`mr-4 font-medium refused:cursor-not-allowed refused:opacity-50 ${linkText} ${linkHoverText}`}
-                        {...heldPress(
-                          refreshSource.isPending || deleteSource.isPending || saveSource.isPending,
-                          () => refreshSource.mutate({ project: source.project, repo: source.repo })
+                        {...heldPress(refreshHeld || formHeld, () =>
+                          refreshSource.mutate({ project: source.project, repo: source.repo })
                         )}
                         type="button"
                       >
@@ -255,6 +275,11 @@ export function ArchitectureSourcesSection(): ReactNode {
               )}
             </TableBody>
           </TableShell>
+          {unsettled === undefined ? null : (
+            <div className="mt-4">
+              <QueryError message={`Couldn't load architecture sources. ${unsettled}.`} />
+            </div>
+          )}
 
           <form
             className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-2 sm:items-end ${borderDefault}`}

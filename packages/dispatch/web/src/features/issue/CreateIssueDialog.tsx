@@ -31,6 +31,7 @@ import { buildIssuePath, routeProjectOf } from "../refs/routes";
 import { useDialog } from "../shell/useDialog";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { useOneCreateOut } from "../writes/useOneCreateOut";
 import { RelatedItems } from "./RelatedItems";
 
 const createIssue = (input: CreateIssueInput, bounds: WriteBounds): Promise<Issue> =>
@@ -55,13 +56,19 @@ const createIssue = (input: CreateIssueInput, bounds: WriteBounds): Promise<Issu
  * while their read is out, and that they could not be loaded where it failed, as the dialog does
  * beside it.
  *
- * While the create is out, the reader's press stays where they made it. Title and Spec are held:
- * `aria-disabled` and read-only, never disabled. Create is held by `aria-disabled`. So the field
- * or the button the reader submitted from keeps the focus, and a submit then sends nothing. A
- * create that lands with no answer empties the title, and Create stays held while it has no
- * title, with the focus still on it. Create is disabled only while no project is picked, which
- * nothing the dialog sends changes. Create anyway is held while the create is out
- * (`heldPress`), and disabled while the draft cannot be filed.
+ * While the create is out within its deadline, the reader's press stays where they made it.
+ * Title and Spec are held: `aria-disabled` and read-only, never disabled. Create is held by
+ * `aria-disabled`. So the field or the button the reader submitted from keeps the focus, and a
+ * submit then sends nothing. A create past its deadline (`late`) holds the dialog no longer: it is
+ * still tried under its key, and the shell's indicator offers to stop it, but one that never
+ * answers - the browser offline - would otherwise hold the dialog for good. A press of Create or
+ * Create anyway while it is still out sends no second issue, and the line beside them says so:
+ * the first is still being sent, opens once Dispatch makes it, and a refusal of it shows here,
+ * after which Create sends again (`useOneCreateOut`). A create that lands with no answer empties
+ * the title, and Create stays held while it has no title, with the focus still on it. Create is
+ * disabled only while no project is picked, which nothing the dialog sends changes. Create anyway
+ * is held while the create is out within its deadline (`heldPress`), and disabled while the draft
+ * cannot be filed.
  */
 export function CreateIssueDialog({
   onClose,
@@ -89,6 +96,7 @@ export function CreateIssueDialog({
     label: (input: CreateIssueInput) => `New issue “${input.title}”`,
     onSettled: () => submitGuard.release(),
     method: "POST",
+    readsLate: true,
     write: create,
     onSuccess: (issue) => {
       void queryClient.invalidateQueries({ queryKey: ["issues"] });
@@ -117,13 +125,16 @@ export function CreateIssueDialog({
   const trimmedTitle = title.trim();
   const trimmedSpec = spec.trim();
   // A draft with no project or no title cannot be filed (`ready`): Create is held then, and
-  // disabled only while no project is picked. While the create is out the dialog is held
-  // (`heldField`, `heldPress`): whichever control holds the focus keeps it, and nothing sends a
-  // second create.
+  // disabled only while no project is picked. While the create is out within its deadline the
+  // dialog is held (`heldField`, `heldPress`): whichever control holds the focus keeps it, and
+  // nothing sends a second create. Past it the dialog is let go, and a press sends nothing while
+  // the create is still out (`oneOut`).
   const ready = selectedProject !== "" && trimmedTitle !== "";
-  const held = mutation.isPending;
+  const held = mutation.isPending && !mutation.late;
   const canSubmit = ready && !held;
-  const submit = (force: boolean) =>
+  const oneOut = useOneCreateOut(mutation);
+  const submit = (force: boolean) => {
+    if (oneOut.refuse()) return;
     submitGuard.guard(() =>
       mutation.mutate({
         project: selectedProject,
@@ -132,6 +143,7 @@ export function CreateIssueDialog({
         ...(force ? { force } : {}),
       })
     );
+  };
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (canSubmit) {
@@ -281,6 +293,13 @@ export function CreateIssueDialog({
               {mutation.isPending ? "Creating…" : "Create"}
             </button>
           </div>
+          {oneOut.refused ? (
+            <p className={`text-sm ${textSecondaryOnSurface}`} role="status">
+              Create sent nothing: the issue “{mutation.variables?.title}” is still being sent. It
+              opens once Dispatch makes it; if it fails, this dialog says why and you can press
+              Create again.
+            </p>
+          ) : null}
         </form>
       </div>
     </>

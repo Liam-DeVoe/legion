@@ -5,6 +5,8 @@ import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { myRepliesKey } from "../../api/queries";
+import { invalidateWaitingForPaused } from "../../api/query-client";
+import { useReadBound } from "../../api/read-bound";
 import type { MyReplyRow, UserAgentState } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
@@ -38,10 +40,12 @@ import { ThreadTitle } from "./ThreadTitle";
  * **Open**, **Mark read**, and the **Dismiss** that takes the row out of the Inbox - **Move to
  * Inbox** in the Dismissed view - which the list it is drawn in provides (`DismissControl`). A
  * thread anchored in a document shows the text it is anchored to rather than the document: a card
- * is no place to open one. Mark read is held while its write is out (`heldPress`).
+ * is no place to open one. Mark read is held while its write is out (`heldPress`) and through
+ * the re-read it starts, up to the read's request deadline (`useReadBound`).
  */
 export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
   const queryClient = useQueryClient();
+  const [unsettled, holdThrough] = useReadBound();
   // The press carries the row as it stood when Mark read was pressed: its newest reply and its
   // unread ids move as replies arrive, and the Retry of a press the reader stopped marks what
   // that press marked.
@@ -65,7 +69,7 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
       if (state !== null && state !== undefined && read.kind === "agent") {
         storeAgentState(queryClient, read.session.id, state);
       }
-      return queryClient.invalidateQueries({ queryKey: myRepliesKey });
+      return holdThrough(invalidateWaitingForPaused(queryClient, myRepliesKey));
     },
   });
   const row = { kind: "thread", thread } as const;
@@ -116,7 +120,11 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
             onRetry={markRead.retry}
           />
         </div>
-      ) : null}
+      ) : unsettled === undefined ? null : (
+        <div className="mt-2">
+          <QueryError message={`Could not load your inbox. ${unsettled}.`} />
+        </div>
+      )}
     </div>
   );
 }

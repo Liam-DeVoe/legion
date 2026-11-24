@@ -39,6 +39,7 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { useOneCreateOut } from "../writes/useOneCreateOut";
 import { settingsSubmitButton } from "./classes";
 
 const agentTokensQueryKey = ["agent-tokens"] as const;
@@ -177,12 +178,14 @@ export function AgentTokensSection(): ReactNode {
   const [rereadAt, setRereadAt] = useState<number | undefined>(undefined);
   const { copy, reset: resetCopyStatus, status: copyStatus } = useCopyFeedback();
   const tokens = useQuery({ queryKey: agentTokensQueryKey, queryFn: () => api.listAgentTokens() });
-  // The form shows a refused mint beside the name it was refused over.
+  // The form shows a refused mint beside the name it was refused over. Every write here is read
+  // late (`readsLate`): each holds its controls only while it is out within its deadline.
   const createToken = useKeyedWrite({
     inline: true,
     label: (input: { name: string; before: readonly string[]; scopes: readonly DispatchScope[] }) =>
       `New agent token ${input.name}`,
     method: "POST",
+    readsLate: true,
     write: ({ name: label, scopes }, bounds) =>
       api.createAgentToken({ name: label, scopes: [...scopes] }, bounds),
     onSuccess: (created) => {
@@ -212,6 +215,7 @@ export function AgentTokensSection(): ReactNode {
   const revokeToken = useKeyedWrite({
     label: (id: string) => `Agent token ${id} revoked`,
     method: "DELETE",
+    readsLate: true,
     write: (id: string, bounds) => api.revokeAgentToken(id, bounds),
     onSuccess: (_result, id) => {
       replaceQueryData<AgentToken[]>(queryClient, agentTokensQueryKey, (current = []) =>
@@ -227,6 +231,7 @@ export function AgentTokensSection(): ReactNode {
     label: (input: { id: string; name: string; scopes: DispatchScope[] }) =>
       `What agent token ${input.name} may do`,
     method: "PATCH",
+    readsLate: true,
     write: (input, bounds) => api.setAgentTokenScopes(input.id, input.scopes, bounds),
     onSuccess: (updated, input) => {
       replaceQueryData<AgentToken[]>(queryClient, agentTokensQueryKey, (current = []) =>
@@ -236,13 +241,24 @@ export function AgentTokensSection(): ReactNode {
       );
     },
   });
+  // Each write holds its controls while it is out within its deadline, by `aria-disabled`, so the
+  // control the reader pressed keeps the focus and a press of it then sends nothing. A write past
+  // its deadline (`late`) holds them no longer: it is still tried under its key, and the shell's
+  // indicator offers to stop it, but one that never answers - the browser offline - would
+  // otherwise hold them for good. A mint let go that way is still out, so New token then sends no
+  // second token, and the form says so (`oneMint`).
+  const minting = createToken.isPending && !createToken.late;
+  const revoking = revokeToken.isPending && !revokeToken.late;
+  const scoping = setTokenScopes.isPending && !setTokenScopes.late;
+  const oneMint = useOneCreateOut(createToken);
   /** Every token the page lists now, read at a press. */
   const listedIds = () => (tokens.data ?? []).map((token) => token.id);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     // An emptied form - a mint that landed - sends nothing, whatever submits it, and so does one
-    // whose mint is out: a held New token is only `aria-disabled`, so its press still submits.
-    if (name.trim() === "" || createToken.isPending) return;
+    // whose mint is out: a held New token is only `aria-disabled`, so its press still submits, and
+    // one let go past the mint's deadline says why it sent nothing (`oneMint`).
+    if (name.trim() === "" || minting || oneMint.refuse()) return;
     createToken.mutate({ before: listedIds(), name, scopes: newScopes });
   };
   /** A mint whose value was lost with its answer, until the next mint or the reader writes
@@ -278,8 +294,7 @@ export function AgentTokensSection(): ReactNode {
         }),
     });
   };
-  const replacing = revokeToken.isPending || createToken.isPending;
-  const minting = createToken.isPending;
+  const replacing = revoking || minting;
   const copyToken = () => {
     if (shownToken === undefined) {
       return;
@@ -353,7 +368,7 @@ export function AgentTokensSection(): ReactNode {
                     <TokenScopeChoices
                       chosen={heldScopes(token.scopes)}
                       disabled={token.revoked_at !== null}
-                      held={setTokenScopes.isPending}
+                      held={scoping}
                       onChoose={(scopes) =>
                         setTokenScopes.mutate({ id: token.id, name: token.name, scopes })
                       }
@@ -365,7 +380,7 @@ export function AgentTokensSection(): ReactNode {
                       <button
                         aria-label={`Revoke ${token.name}`}
                         className={`min-h-11 px-2 font-medium refused:cursor-not-allowed refused:opacity-50 ${dangerText} ${dangerHoverText}`}
-                        {...heldPress(revokeToken.isPending, () => revoke(token))}
+                        {...heldPress(revoking, () => revoke(token))}
                         type="button"
                       >
                         Revoke
@@ -411,6 +426,13 @@ export function AgentTokensSection(): ReactNode {
             New token
           </button>
         </div>
+        {oneMint.refused ? (
+          <p className={`text-sm ${textSecondaryOnCanvas}`} role="status">
+            New token sent nothing: the token “{createToken.variables?.name}” is still being sent.
+            It shows here once Dispatch makes it; if it fails, this form says why and you can press
+            New token again.
+          </p>
+        ) : null}
         <TokenScopeChoices
           chosen={newScopes}
           held={minting}

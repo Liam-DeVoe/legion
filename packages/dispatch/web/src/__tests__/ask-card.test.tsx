@@ -25,6 +25,7 @@ import { commentDeliveryFields } from "./comment-fixture";
 import { realClock, tick } from "./fake-clock";
 import { graphNode } from "./graph-fixture";
 import { pressHeld } from "./held-press";
+import { INPUT_METHOD_MARKS } from "./input-method-marks";
 import { keyedAttempt } from "./keyed-attempt";
 import { userOnFakeClock } from "./user";
 
@@ -1316,6 +1317,47 @@ test("Escape in an approval's Request changes reason drops that pick and sends n
     expect((view.getByRole("radio", { name: "Approve" }) as HTMLInputElement).checked).toBe(true);
   } finally {
     window.removeEventListener("keydown", listen);
+    view.unmount();
+  }
+});
+
+// The Escape that ends an input method's composition in that reason is the input method's
+// (`INPUT_METHOD_MARKS`): it cancels what the reader was composing, and the Request changes pick
+// stays. A plain Escape after it drops the pick.
+test.each(
+  INPUT_METHOD_MARKS
+)("an Escape that ends an IME composition in an approval's Request changes reason, marked by %s, keeps that pick", async (_mark, composing) => {
+  const user = userEvent.setup();
+  const input = ask({
+    kind: "approval",
+    options: [{ label: "Approve" }, { label: "Request changes" }],
+  });
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async (_id, submission) =>
+        answered(input, submission.selected, submission.text ?? null)
+      }
+      getAskThread={emptyThread(input)}
+    />
+  );
+
+  try {
+    const requestChanges = (await view.findByRole("radio", {
+      name: "Request changes",
+    })) as HTMLInputElement;
+    await user.click(requestChanges);
+    const reasonField = view.getByLabelText("Reason (required)");
+    expect(reasonField).toHaveFocus();
+    fireEvent.keyDown(reasonField, { ...composing, key: "Escape" });
+    expect(requestChanges.checked, "the Escape that ended a composition dropped the pick").toBe(
+      true
+    );
+    expect(reasonField).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+    expect(requestChanges.checked).toBe(false);
+  } finally {
     view.unmount();
   }
 });

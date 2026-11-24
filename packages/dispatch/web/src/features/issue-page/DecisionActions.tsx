@@ -19,6 +19,7 @@ import {
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useOneCreateOut } from "../writes/useOneCreateOut";
 import { anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
@@ -178,6 +179,7 @@ function DecisionControls({
     inline: true,
     label: () => `${CONTROL_LABELS.keep_decision} ${decision.heading}`,
     method: "POST",
+    readsLate: true,
     // The sum of the text this node showed: a decision the agent changed since is refused
     // (`409 DECISION_CHANGED`), so a Keep never stands over words the reader did not see.
     write: (id: string, bounds) =>
@@ -210,10 +212,12 @@ function DecisionControls({
           // Out of the tab order, as every control inside a row is, unless `tabStops` holds,
           // and found by its mark: the tree is one tab stop and the row's own key presses this
           // (R9, WCAG 2.1.1, `useTreeKeymap.ts`'s `tree-keep`). Held, not disabled, while its
-          // Keep is out (`heldPress`): it keeps the focus, and a second press keeps nothing more.
+          // Keep is out within its deadline (`heldPress`): it keeps the focus, and a second press
+          // keeps nothing more. A Keep past its deadline (`late`) holds it no longer: it is still
+          // tried under its key, but one that never answers would otherwise hold it for good.
           <button
             className={`${DECISION_BUTTON} bg-page-decision text-page-paper`}
-            {...heldPress(keep.isPending, () => {
+            {...heldPress(keep.isPending && !keep.late, () => {
               if (keepButton.current !== null) keepFocusOnRow(keepButton.current);
               keep.mutate(documentId);
             })}
@@ -288,6 +292,7 @@ function ChangeComposer({
     inline: true,
     label: () => `${CONTROL_LABELS.change_decision} ${decision.heading}`,
     method: "POST",
+    readsLate: true,
     // A comment on an issue's document is the issue's own write: the artifact route refuses it,
     // naming the issue route (`send-request.ts` follows the same rule for a thread's replies).
     write: (input: { anchor: ChangeAnchor; body: string }, bounds) =>
@@ -322,8 +327,14 @@ function ChangeComposer({
     },
   });
   // Whether the send is reading the decisions document's text, which it does before the comment
-  // goes out: Send is held while it does, as it is while the comment is out.
+  // goes out: Send is held while it does, as it is while the comment is out within its deadline.
   const [reading, setReading] = useState(false);
+  // A comment past its deadline (`late`) holds Send no longer: it is still tried under its key,
+  // but one that never answers would otherwise hold the form for good. A press then would post the
+  // change twice, so it sends nothing while that comment is out, and the form says so
+  // (`oneChange`).
+  const sendHeld = reading || (send.isPending && !send.late);
+  const oneChange = useOneCreateOut(send);
   // The one place inside a row that takes the tab order, and only while it is open: this is a
   // form a reader is typing in, so Tab walks its field, Send change and Cancel as it does in
   // every other form of the app. At rest - no form open - the tree is still one tab stop (R9).
@@ -339,12 +350,13 @@ function ChangeComposer({
       className="flex min-w-0 flex-col gap-1"
       onSubmit={(event) => {
         event.preventDefault();
-        if (body.trim() === "" || reading || send.isPending) return;
+        if (body.trim() === "" || sendHeld || oneChange.refuse()) return;
         // Send is held while the send reads the document and while the comment is out, and this
         // sends nothing then; the form goes once the comment lands. The draft goes while the send
         // is out: a body that closes then comes back with Change closed, and the shell's
         // pending-writes indicator holds the send, so a second press cannot write the change
-        // twice. A refusal gives the words back to the draft (`onError`).
+        // twice, nor can one made past its deadline (`oneChange`). A refusal gives the words back
+        // to the draft (`onError`).
         keepFocusOnRow(event.currentTarget);
         drafts?.delete(decision.ref);
         // Which of the quote's places in the decisions document is this decision's own, counted
@@ -403,13 +415,18 @@ function ChangeComposer({
           {ANSWER_LINES.change_not_sent}
         </p>
       )}
+      {oneChange.refused ? (
+        <p className={`text-xs ${tones.muted}`} role="status" {...pageChrome}>
+          {ANSWER_LINES.change_still_sending}
+        </p>
+      ) : null}
       <p className="flex min-w-0 flex-wrap items-baseline gap-2">
         {/* The document read and the comment are both this press's own send, so Send is held
-            while either is out, never disabled: it keeps the focus the press gave it
-            (`heldPress`), and the form's submit sends nothing then. Only an empty field, which
-            has nothing to send, disables it. */}
+            while either is out, the comment within its deadline, never disabled: it keeps the
+            focus the press gave it (`heldPress`), and the form's submit sends nothing then. Only
+            an empty field, which has nothing to send, disables it. */}
         <button
-          aria-disabled={reading || send.isPending || undefined}
+          aria-disabled={sendHeld || undefined}
           className={`rounded border px-1 text-xs ${tones.rule} ${tones.muted}`}
           disabled={body.trim() === ""}
           type="submit"

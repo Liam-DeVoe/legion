@@ -1,4 +1,4 @@
-import { expect, type Mock, spyOn, test } from "bun:test";
+import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import { hashKey, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the presses that end a title edit go inside one act, so React commits what they change after them as a browser does; user-event commits inside each event; and a key that ends an IME composition is marked as the input method's, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -6,11 +6,13 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { settle } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { api, type WriteBounds } from "../../api/client";
+import { userOnFakeClock } from "../../__tests__/user";
+import { api, NetworkError, type WriteBounds } from "../../api/client";
 import { issueQuery, userStateQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type {
@@ -22,6 +24,7 @@ import type {
   UserIssueState,
   UserState,
 } from "../../api/types";
+import { sessionClaim } from "../issue-page/issue-fixtures";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
@@ -500,6 +503,46 @@ function renderHeader(client: QueryClient, ui: ReactNode) {
     user: userEvent.setup(),
   };
 }
+
+test("Release in the issue header stops holding at the release deadline and takes another press", async () => {
+  const agents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const release = spyOn(api, "releaseIssueClaim").mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1/claim", new TypeError("Failed to fetch"))
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = renderHeader(
+    client,
+    <IssueHeader
+      documentArtifact={undefined}
+      isClosed={false}
+      issue={{ ...details, claim: sessionClaim }}
+      priorityWrite={idlePriorityWrite}
+      state={stateForIssue(undefined, details.key)}
+    />
+  );
+  try {
+    const control = await view.q.findByRole<HTMLButtonElement>("button", {
+      name: "Release the claim on CORE-1",
+    });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await heldUntilLate(user, control, {
+      label: "Claim on CORE-1 released",
+      name: "Release in the issue header",
+      queryClient: client,
+      sent: () => pressesOf([release]),
+    });
+    await user.keyboard("{Enter}");
+    await tick(0);
+    expect(pressesOf([release])).toBe(2);
+  } finally {
+    view.unmount();
+    client.clear();
+    realClock();
+    release.mockRestore();
+    agents.mockRestore();
+  }
+});
 
 // The pin's answer went into the cache under a read of the viewer's state asked while the PUT was
 // out, and that read's answer, of the state from before Dispatch took the pin, landed over it: the
