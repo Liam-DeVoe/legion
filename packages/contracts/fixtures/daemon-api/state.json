@@ -7,11 +7,49 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 220,
-    "caller": 220
+    "daemon": 244,
+    "caller": 244
   },
   "admission": {
     "cap": 5,
+    "ceiling": 8,
+    "override": {
+      "cap": 5,
+      "setBy": {
+        "kind": "controller",
+        "session": "ses_controller"
+      },
+      "setAt": "2026-09-22T09:00:00Z",
+      "reason": "the merge queue waits 52 minutes, above its limit of 45",
+      "tickId": "admission:LEGION:2026-09-22T09:00:00Z"
+    },
+    "capChanges": [
+      {
+        "id": 2,
+        "cap": 5,
+        "capBefore": 8,
+        "capAfter": 5,
+        "ceiling": 8,
+        "setBy": {
+          "kind": "controller",
+          "session": "ses_controller"
+        },
+        "setAt": "2026-09-22T09:00:00Z",
+        "reason": "the merge queue waits 52 minutes, above its limit of 45",
+        "tickId": "admission:LEGION:2026-09-22T09:00:00Z"
+      },
+      {
+        "id": 1,
+        "capBefore": 3,
+        "capAfter": 8,
+        "ceiling": 8,
+        "setBy": {
+          "kind": "operator"
+        },
+        "setAt": "2026-09-21T18:00:00Z",
+        "reason": "the provider outage is over"
+      }
+    ],
     "active": [
       "LEGION-208",
       "LEGION-210",

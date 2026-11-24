@@ -165,5 +165,14 @@
     ],
     "since": 219,
     "noBody": false
+  },
+  {
+    "id": "admission-cap",
+    "routes": [
+      "POST /legion/v1/project/admission-cap",
+      "POST /legion/v1/project/admission-cap/clear"
+    ],
+    "since": 244,
+    "noBody": false
   }
 ]
