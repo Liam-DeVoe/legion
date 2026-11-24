@@ -2,6 +2,8 @@ package plan
 
 import (
 	"fmt"
+	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -15,22 +17,35 @@ const (
 )
 
 // Block is one block of a version of the plan document, as Dispatch gives it: its id, its type,
-// its attributes as its opening line writes them, and its text.
+// its attributes as its opening line writes them, and its text. Dispatch gives a version's typed
+// blocks alone, since only a typed block keeps its id from one read of the version to the next.
 type Block struct {
 	ID, Type   string
 	Attributes map[string]string
 	Text       string
+	// Parent is the id of the block of the same version that this block stands directly
+	// under, as its reader resolved it (ParentOf before the tree). It is "" for a block with
+	// no parent and for a parent that is no block of this plan.
+	Parent string
 }
 
 // FromBlocks reads one version of the plan document from its blocks: each `plan_task` block is a
 // task and each `plan_role` block a role the plan defines, in the document's order, and every
-// other block is skipped. A document with no task block is read as a plan with no task, which
-// Validate refuses. It answers an error only for a block it cannot read at all: a task or a role
-// with no id, one id on two such blocks, and a task whose `steps` is outside the grammar
-// (ParseSteps); the error names the block.
+// other block is skipped. Places says where each task block stands: a task at the top, a part of a
+// task, which is a task of the plan with that task in its PartOf, or an element of a task, which is
+// no task of the plan and is kept in Elements for Validate. Each task keeps who its parent is, its
+// `parent` whole, in ParentRef. A task block whose Parent names an id that no block of blocks holds
+// stands at the top with that id in Task.MissingParent, which Validate refuses. A `needs` word that
+// names an element moves to Task.ElementNeeds (elementNeeds). A document with no task block is read
+// as a plan with no task, which Validate refuses. It answers an error only for a block it cannot
+// read at all: a task or a role with no id, one id on two such blocks, a task block whose `steps`
+// is outside the grammar (ParseSteps), and task blocks whose parents make a cycle (Places); the
+// error names the block.
 func FromBlocks(artifactID string, version int, blocks []Block) (Plan, error) {
 	p := Plan{ArtifactID: artifactID, Version: version}
 	typeOf := map[string]string{}
+	var taskBlocks []Block
+	var read []Task
 	for _, block := range blocks {
 		if block.Type != TaskBlockType && block.Type != RoleBlockType {
 			continue
@@ -50,16 +65,37 @@ func FromBlocks(artifactID string, version int, blocks []Block) (Plan, error) {
 		if err != nil {
 			return Plan{}, err
 		}
+		taskBlocks, read = append(taskBlocks, block), append(read, task)
+	}
+	places, err := Places(blocks)
+	if err != nil {
+		return Plan{}, err
+	}
+	held := make(map[string]bool, len(blocks))
+	for _, block := range blocks {
+		held[block.ID] = true
+	}
+	for i, task := range read {
+		block, place := taskBlocks[i], places[task.ID]
+		if place.Kind == PlaceElement {
+			p.Elements = append(p.Elements, elementOf(block, task, place))
+			continue
+		}
+		if block.Parent != "" && !held[block.Parent] {
+			task.MissingParent = block.Parent
+		}
+		task.PartOf = place.Task
 		p.Tasks = append(p.Tasks, task)
 	}
-	return p, nil
+	return elementNeeds(p), nil
 }
 
-// taskOf is one `plan_task` block as a task. `needs` is its words, each kept whole; `merges` is
-// read by its presence, and only the word false says the task does not merge.
+// taskOf is one `plan_task` block as a task, before Places says where it stands. `needs` is its
+// words, each kept whole; `parent` is kept whole as ParentRef; `merges` is read by its presence,
+// and only the word false says the task does not merge.
 func taskOf(block Block) (Task, error) {
 	attributes := block.Attributes
-	task := Task{ID: block.ID, PartOf: attributes["part_of"], Owner: attributes["owner"], Text: block.Text}
+	task := Task{ID: block.ID, Owner: attributes["owner"], ParentRef: strings.TrimSpace(attributes["parent"]), Text: block.Text}
 	if needs := strings.Fields(attributes["needs"]); len(needs) > 0 {
 		task.Needs = needs
 	}
@@ -76,11 +112,85 @@ func taskOf(block Block) (Task, error) {
 	return task, nil
 }
 
+// elementOf is task, read from block, as an element of a task (place): the block it stands
+// directly under, and each attribute it names that only a task carries out, read as taskOf reads
+// each one, `steps` with a step, `owner` with a role and `merges` by its presence.
+func elementOf(block Block, task Task, place Place) Element {
+	element := Element{ID: task.ID, Of: place.Task, Under: block.Parent}
+	if task.NamesSteps() {
+		element.Names = append(element.Names, "steps")
+	}
+	if task.Owner != "" {
+		element.Names = append(element.Names, "owner")
+	}
+	if _, merges := block.Attributes["merges"]; merges {
+		element.Names = append(element.Names, "merges")
+	}
+	return element
+}
+
+// elementNeeds is p with each task's `needs` words that name an element of p (Plan.Elements),
+// by the id each holds (neededID), moved to Task.ElementNeeds in the block's order, each once.
+// Every other word stays whole in Task.Needs, in its order. Validate refuses each word it moves,
+// since Legion does not carry out an element, and Supported refuses each word it keeps.
+func elementNeeds(p Plan) Plan {
+	if len(p.Elements) == 0 {
+		return p
+	}
+	elements := make(map[string]bool, len(p.Elements))
+	for _, element := range p.Elements {
+		elements[element.ID] = true
+	}
+	tasks := make([]Task, len(p.Tasks))
+	for i, task := range p.Tasks {
+		words := task.Needs
+		task.Needs = nil
+		for _, word := range words {
+			switch {
+			case !elements[neededID(word)]:
+				task.Needs = append(task.Needs, word)
+			case !slices.Contains(task.ElementNeeds, word):
+				task.ElementNeeds = append(task.ElementNeeds, word)
+			}
+		}
+		tasks[i] = task
+	}
+	p.Tasks = tasks
+	return p
+}
+
+// pin is the `@v<N>` that pins a reference to version N, as Dispatch reads one.
+var pin = regexp.MustCompile(`^v[1-9][0-9]*$`)
+
+// neededID is the id of the task a `needs` word names: the block id after the word's last `#b-`,
+// read as Dispatch reads a block reference's fragment (EncodeBlockID and blockID in
+// packages/envoy/internal/dispatch/text): an `@` is only ever a pin, which names a version of the
+// document and no other block, and the rest is percent-decoded. A word with no `#b-` is the id
+// itself. It is "" for a fragment with a malformed pin or an escape that does not decode, an id no
+// task has: FromBlocks refuses a block with none.
+func neededID(word string) string {
+	at := strings.LastIndex(word, "#b-")
+	if at < 0 {
+		return word
+	}
+	encoded := word[at+len("#b-"):]
+	if unpinned, version, pinned := strings.Cut(encoded, "@"); pinned {
+		if !pin.MatchString(version) {
+			return ""
+		}
+		encoded = unpinned
+	}
+	// url.PathUnescape answers "" with its error, for an escape that does not decode.
+	id, _ := url.PathUnescape(encoded)
+	return id
+}
+
 // ChangedTasks is the ids of the tasks next changes against held, in the order of their ids: each
-// task whose block says anything else (its steps, its text, `needs`, `owner`, `part_of` or
-// `merges`), each task held has and next does not, and each task next adds. A change of the prose
-// outside the task blocks changes no task, and neither does a change of `serves`, which says what
-// a task is for and nothing Legion carries out. The answer is never nil.
+// task whose block says anything else (its steps, its text, `needs`, `owner`, `merges`, or the task
+// it is a part of, which its `parent` gives), each task held has and next does not, and each task
+// next adds. A change of the prose outside the task blocks changes no task, and neither does a
+// change of `serves`, which says what a task is for and nothing Legion carries out, nor a change of
+// an element, which is no task (Places). The answer is never nil.
 //
 // It compares the tasks as the blocks write them, so a held plan is read from the blocks of the
 // version that was given, not from the steps a task runs (a task with no steps runs the project's
@@ -113,8 +223,8 @@ func sameBlock(a, b Task) bool {
 }
 
 // sameBesideText says whether two tasks of one id say the same thing but for their text: the same
-// steps, `needs`, `owner`, `part_of` and `merges`. It is the one rule of a change that is only
-// text: the change a running task takes (RunningChange).
+// steps, `needs`, `owner` and `merges`, and the same task they are a part of. It is the one rule of
+// a change that is only text: the change a running task takes (RunningChange).
 func sameBesideText(a, b Task) bool {
 	return a.PartOf == b.PartOf && a.Owner == b.Owner && a.Merges == b.Merges &&
 		slices.Equal(a.Needs, b.Needs) && slices.Equal(a.Steps, b.Steps)

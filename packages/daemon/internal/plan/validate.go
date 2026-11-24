@@ -16,11 +16,15 @@ const noTask = "the plan has no task block, so it gives Legion no work."
 // notYet ends each reason of Supported: what a later release carries out.
 const notYet = " This release of Legion does not carry it out yet."
 
-// Validate is what Legion cannot carry out in any release: a plan with no task, and each step
-// that names a role neither d nor the plan's own role blocks define, refused once for each role
-// at the first step that names it. It refuses no plan for a step the plan lacks. The other causes
-// no release carries out need an attribute or a block that Supported refuses in this release, so
-// the release that lifts that refusal adds them here.
+// Validate is what Legion cannot carry out in any release: a plan with no task; each task block
+// whose `parent` names an id of the plan's document that no typed block of the version holds
+// (Task.MissingParent), in the document's order; each element that names `steps`, `owner` or
+// `merges` (Element.Names), in the document's order, since Legion does not carry out an element;
+// and for each task, each `needs` word that names an element (Task.ElementNeeds), in the block's
+// order, then each step that names a role neither d nor the plan's own role blocks define, refused
+// once for each role at the first step that names it. It refuses no plan for a step the plan lacks.
+// The other causes no release carries out need an attribute or a block that Supported refuses in
+// this release, so the release that lifts that refusal adds them here.
 func Validate(p Plan, d Deployment) []Refusal {
 	if len(p.Tasks) == 0 {
 		return []Refusal{{Reason: noTask}}
@@ -31,6 +35,30 @@ func Validate(p Plan, d Deployment) []Refusal {
 	}
 	var refusals []Refusal
 	for _, task := range p.Tasks {
+		if task.MissingParent != "" {
+			refusals = append(refusals, Refusal{Task: task.ID, Reason: fmt.Sprintf("task block %s names %s as its parent, which no typed block of version %d of the plan holds. "+
+				"Name a typed block of this version in parent, or leave parent out.", task.ID, task.MissingParent, p.Version)})
+		}
+	}
+	elements := make(map[string]Element, len(p.Elements))
+	for _, element := range p.Elements {
+		elements[element.ID] = element
+		if len(element.Names) == 0 {
+			continue
+		}
+		under := fmt.Sprintf("%s, which names no sub-owner", element.Under)
+		if element.Under != element.Of {
+			under = fmt.Sprintf("%s, an element of %s", element.Under, element.Of)
+		}
+		refusals = append(refusals, Refusal{Task: element.ID, Reason: fmt.Sprintf("task block %s is an element of task %s: it stands under %s. "+
+			"Legion does not carry out an element, so an element names no steps, owner or merges, and %s names %s.",
+			element.ID, element.Of, under, element.ID, wordList(element.Names))})
+	}
+	for _, task := range p.Tasks {
+		for _, word := range task.ElementNeeds {
+			refusals = append(refusals, Refusal{Task: task.ID, Reason: fmt.Sprintf("task %s needs %s, which is an element of task %s. "+
+				"Legion does not carry out an element, so a task cannot need one.", task.ID, word, elements[neededID(word)].Of)})
+		}
 		refused := map[string]bool{}
 		for i, step := range task.Steps {
 			if _, ok := d.Roles[step.Role]; ok || defined[step.Role] || refused[step.Role] {
@@ -44,14 +72,22 @@ func Validate(p Plan, d Deployment) []Refusal {
 	return refusals
 }
 
+// wordList is words joined as a sentence lists them: "a", "a and b", "a, b and c".
+func wordList(words []string) string {
+	if len(words) < 2 {
+		return strings.Join(words, "")
+	}
+	return strings.Join(words[:len(words)-1], ", ") + " and " + words[len(words)-1]
+}
+
 // Supported is what this release does not carry out yet: more than one task, a role block,
-// and, for each task, `needs`, `owner`, `part_of` and `merges`, each key but the owner's on
-// acceptance, acceptance with no key, a role named at two steps, no implementer, and each step
-// of a role that reads the implementer's pull request with no implementer step before it. Its
-// steps stand in any other order: the planner at any place, and the tester, the reviewer and the
-// acceptance in any order after the implementer. A task that names no steps runs the project's
-// default steps, which the configuration loader holds to these same checks, so none of its step
-// causes apply.
+// and, for each task, `needs`, `owner`, a task that is a part of another (Places) and `merges`,
+// each key but the owner's on acceptance, acceptance with no key, a role named at two steps, no
+// implementer, and each step of a role that reads the implementer's pull request with no
+// implementer step before it. Its steps stand in any other order: the planner at any place, and
+// the tester, the reviewer and the acceptance in any order after the implementer. A task that
+// names no steps runs the project's default steps, which the configuration loader holds to these
+// same checks, so none of its step causes apply.
 func Supported(p Plan) []Refusal {
 	var refusals []Refusal
 	if len(p.Tasks) > 1 {
@@ -83,7 +119,7 @@ func taskReasons(t Task) []string {
 		reasons = append(reasons, fmt.Sprintf("task %s names owner.", t.ID))
 	}
 	if t.PartOf != "" {
-		reasons = append(reasons, fmt.Sprintf("task %s names part_of.", t.ID))
+		reasons = append(reasons, fmt.Sprintf("task %s is a part of task %s.", t.ID, t.PartOf))
 	}
 	if t.Merges {
 		reasons = append(reasons, fmt.Sprintf("task %s names merges.", t.ID))
