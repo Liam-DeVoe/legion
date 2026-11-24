@@ -63,9 +63,9 @@ test("the compiled manifest is the page's own, and it reads check.subject and ch
     types: schema.types.map((type) =>
       type.name === "check"
         ? {
-            ...check,
+            ...type,
             attributes: Object.fromEntries(
-              Object.entries(check.attributes).filter(
+              Object.entries(type.attributes).filter(
                 ([name]) => name !== "subject" && name !== "program"
               )
             ),
