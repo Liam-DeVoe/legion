@@ -20,7 +20,7 @@ import { DisplayMenu, type DisplayMenuSection } from "../../components/DisplayMe
 import { EmptyState } from "../../components/EmptyState";
 import { type FilterChip, filterChips } from "../../components/filter-chips";
 import { focusLost, SHOWN_ITEM_ATTRIBUTE } from "../../components/focus-place";
-import { heldPress } from "../../components/held-press";
+import { heldPress, useHeldThroughAnswer } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
@@ -1833,6 +1833,13 @@ function InboxBody({
     shown: bulkBarShown,
   });
 
+  // The bar's Snooze is held from its pick through the commit after its write's answer
+  // (`useHeldThroughAnswer`), as a row's own Snooze is, and the hold is part of the action of the
+  // pick that made the write (`holdHandOff`). So the bar's going when the write lands, with the
+  // rows it snoozed, is the reader's doing, and its hand-off lands the focus: at the reading
+  // column's width the short rows draw no Snooze of their own to hold the pick.
+  const bulkSnoozeHeld = useHeldThroughAnswer(bulkSnoozing.size !== 0);
+
   if (inbox.isPending || whoAmI.isPending) {
     return <LoadingSkeleton label="Loading your inbox" />;
   }
@@ -2325,7 +2332,7 @@ function InboxBody({
         // records nothing, so the row outlives a pick (`onTriggerFocus`).
         <SnoozePick
           badge="Snooze"
-          held={bulkSnoozing.size !== 0}
+          held={bulkSnoozeHeld}
           label="Snooze selected asks"
           marks={BULK_PICKER_MARKS}
           onPick={snoozePick}

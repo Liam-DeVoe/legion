@@ -17,6 +17,7 @@ import {
 import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
+import { nextFrame } from "../../__tests__/frames";
 import { heldNotDisabled } from "../../__tests__/held-press";
 import { pickIn } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
@@ -7595,6 +7596,70 @@ test("a bulk snooze of the selected row keeps the list and the picker the reader
     expect(screen.queryByTestId("inbox-pane")).not.toBeInTheDocument();
     expect(screen.getByTestId("inbox-list")).toBe(list);
     await waitFor(() => expect(screen.queryByText("Snoozing 2…")).not.toBeInTheDocument());
+  } finally {
+    unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+// The bar's Snooze at the reading column's width with no rescue mounted, where the short rows draw
+// no Snooze of their own and the column shows a row the reader did not mark: nothing but the bar's
+// own Snooze holds the pick's press through its write. The write lands past the pick's own frame
+// and task, as a server slower than a frame keeps it, and the bar goes with the rows it snoozed:
+// that going is the pick's doing, so the focus goes to the row that moves up into the place of the
+// row marked last, as it does in the narrow list, and never to the body.
+test("a bulk Snooze that lands after its pick's frame, at the reading column's width with no rescue, hands the focus to the row now at the place of the row marked last, never the body", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+    inboxIssue("ask-c", "CORE-3", "Which owner?"),
+    inboxIssue("ask-d", "CORE-4", "Which date?"),
+  ];
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const landing = Promise.withResolvers<void>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+    await landing.promise;
+    served = served.map((each) => (each.id === id ? { ...each, snoozed_until: until } : each));
+    return { snoozed_until: until };
+  });
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox("/?group=waiting-on");
+  try {
+    await screen.findByTestId("inbox-pane");
+    // The third row and then the second: the row marked last is neither the list's first nor the
+    // last marked in the list's order. The column stays on the first row, which is not marked.
+    await user.click(markOf("ask-c"));
+    await user.click(markOf("ask-b"));
+    await screen.findByText("2 selected");
+    expect(selectedIds()).toEqual(["ask-a"]);
+    const picker = screen.getByLabelText("Snooze selected asks");
+    await pickIn(user, () => picker, "Tomorrow");
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
+    expect(picker).toHaveFocus();
+    await act(async () => {
+      await nextFrame();
+      for (const _ of [0, 1]) {
+        const turn = Promise.withResolvers<void>();
+        setTimeout(turn.resolve, 0);
+        await turn.promise;
+      }
+    });
+
+    await act(async () => {
+      landing.resolve();
+      await landing.promise;
+    });
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-d"]));
+    expect(screen.queryByRole("toolbar", { name: "Selected rows" })).not.toBeInTheDocument();
+    await waitFor(() => expect(markOf("ask-d")).toHaveFocus());
   } finally {
     unmount();
     narrow();
