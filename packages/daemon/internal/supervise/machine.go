@@ -2480,6 +2480,16 @@ func (m *Machine) View() ClaimView {
 	return v
 }
 
+// Published is the claim as the machine last published it, as View reads it, shared rather than
+// copied: publish stores a view built fresh and nothing writes a stored one again, so a reader
+// that only reads the claim may share its slices and maps, as WaitingWake does. A reader that keeps
+// the claim past its own read, or writes it, takes View. It never waits on the decision in flight.
+// The daemon's refresh pass reads it for each claim it would post (internal/daemon's
+// refreshStalePlugins), at a sweep of every claim, where a copy of each would be garbage.
+func (m *Machine) Published() Claim {
+	return m.view.Load().Claim
+}
+
 // WaitingWake is the wake the pacing holds over this claim, nil while none waits: what the
 // published view names (ClaimView.WakeWaiting) with the claim's token, issue and role beside it,
 // for the reader of every claim the state route is (the daemon's waitingWakes,
