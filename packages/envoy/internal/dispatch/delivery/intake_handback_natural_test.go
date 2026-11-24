@@ -26,6 +26,7 @@ import (
 // (bus.Client.SubOK) is internal/bus's row, TestASeverDoesNotWaitForACallerHoldingTheClientsLock
 // in sever_lock_test.go.
 func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
+	testnats.RequireSocketQueues(t)
 	shrinkIntakeFlowControl(t)
 	budget := intakeStopBudget
 	intakeStopBudget = stopBudget
@@ -139,6 +140,7 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 // connection and not the order of events: what the frozen relay had already read of the socket
 // before the sever is beyond the client, and reaches the server once the relay thaws.
 func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *testing.T) {
+	testnats.RequireSocketQueues(t)
 	logs := captureLogs(t)
 	shrinkIntakeFlowControl(t)
 	budget := intakeStopBudget
