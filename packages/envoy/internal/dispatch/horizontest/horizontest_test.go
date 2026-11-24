@@ -99,8 +99,9 @@ func heldRead(t *testing.T, database string, since time.Duration) Warning {
 // test a boundary that has moved.
 func TestVerdictOfKeysTheWaitOnTheStallWarning(t *testing.T) {
 	const ownDatabase = "dispatch_test_ab"
-	// A foreign holder: another service's transaction on the same Postgres instance, which holds
-	// the horizon back and is no defect of Dispatch's, however long it has stood.
+	// A foreign holder: an event write of another database, which a horizon reading that database
+	// reports - another server's in the same process, which Listen hears too - and which is no
+	// defect of this test's, however long it has stood.
 	foreign := FromLine(stallWarningLine("legion_daemon", 2*OwnHoldBound))
 	// warnStall's other two arms carry no database= field at all.
 	diagnosisFailed := FromLine(stallWarningHead(2*OwnHoldBound) + ` diagnosis_error="timeout: context deadline exceeded"`)
@@ -267,7 +268,7 @@ func TestAWatchInTheTestsOwnProcessIsEndedBySilenceNowhere(t *testing.T) {
 		if failure := pastBoth(NewWatch(t, none, ownDatabase, nil)).Failure(what); !strings.Contains(failure, "never said it was held back") {
 			t.Errorf("a silent horizon past Base: Failure = %q, want the base bound's failure", failure)
 		}
-		if failure := pastBoth(NewWatch(t, none, ownDatabase, noHolder{})).Failure(what); !strings.Contains(failure, "no transaction on the instance holds a transaction id now") {
+		if failure := pastBoth(NewWatch(t, none, ownDatabase, noHolder{})).Failure(what); !strings.Contains(failure, "no event write of the database is open now") {
 			t.Errorf("a silent horizon past Base whose holder the watch read and found none: Failure = %q, want the base bound's failure naming that read", failure)
 		}
 		warned := []Warning{FromLine(stallWarningLine("other_service", time.Second))}
@@ -391,7 +392,7 @@ func (h heldBy) Scan(dest ...any) error {
 	return nil
 }
 
-// noHolder is a Querier whose holder read finds no transaction holding an id on the instance.
+// noHolder is a Querier whose holder read finds no event write of the database open.
 type noHolder struct{}
 
 func (noHolder) QueryRow(context.Context, string, ...any) pgx.Row { return failedRow{pgx.ErrNoRows} }
