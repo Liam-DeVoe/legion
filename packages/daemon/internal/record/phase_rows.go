@@ -98,10 +98,11 @@ func rowOnEntry(rows []PhaseRow, role claim.Role, entry int64) (PhaseRow, bool) 
 // workflow's shareReviewedHead), and "" where no such row holds one, so agent reads the whole
 // change. Those rows hold one commit, the newest, so whichever is read holds it. A run of agent's
 // step at place is named it as its own where workflow's stepRunRow says so. A row is agent's only
-// while it names agent's claim: a later version of the plan can give a step of agent's to another
-// agent, whose run then takes the step's row, so an agent whose every row of role on task passed
-// that way is named "", though a review of its own read a commit before. agent "" (an issue whose
-// key names no claims) has no row the reviews write onto, and is named "".
+// while it names agent's claim, and only a run writes another claim on it (workflow's enter): where
+// another agent's run has taken every row of role on task that agent worked, agent is named "",
+// though a review of its own read a commit before. A later version of the plan that gives agent's
+// step to another agent, with no run of it, takes no row. agent "" (an issue whose key names no
+// claims) has no row the reviews write onto, and is named "".
 func AgentsReviewedHead(rows []PhaseRow, role claim.Role, task string, place int, agent claim.Token) string {
 	step := PhaseRow{Role: role, StepTask: task, StepPlace: place, Claim: agent}
 	for _, other := range rows {
