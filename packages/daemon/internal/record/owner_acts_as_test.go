@@ -26,12 +26,12 @@ func ownersPlanOf(issue string, generation uint64, steps string, place TaskPlace
 	return v, tasks, rows
 }
 
-// While the owner does a step of its task, its slot acts as that step's role, and only then:
-// the issues are read back from the store, so the role the slot acts as is decided on the issue's
-// own plan rows. `implementer:owner reviewer` at step 1 acts as the implementer; `implementer
-// reviewer:owner` at step 2 as the reviewer, and at step 1, a step of another agent, as nothing;
-// `implementer acceptance:owner` at accepting as acceptance. The owner's retro is done as the role
-// of the task's last step of the type implementation where that step is the owner's: so
+// With no merge forward asked of it, the owner's slot acts as the role of the step it does, and
+// only then: the issues are read back from the store, so the role the slot acts as is decided on
+// the issue's own plan rows. `implementer:owner reviewer` at step 1 acts as the implementer;
+// `implementer reviewer:owner` at step 2 as the reviewer, and at step 1, a step of another agent,
+// as nothing; `implementer acceptance:owner` at accepting as acceptance. The owner's retro is done
+// as the role of the task's last step of the type implementation where that step is the owner's: so
 // `implementer:owner reviewer` acts as the implementer at its retro, the App that opened its pull
 // request, and the same retro held acts as nothing. Where the task has no such step the owner does
 // the retro as itself, so `tester` and `acceptance:owner` act as nothing there; where another agent

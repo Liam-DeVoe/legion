@@ -381,8 +381,8 @@ func (r *ownerHoldRig) stands(t *testing.T, at phase.Phase, place record.TaskPla
 }
 
 // writtenBack runs one supervise slot_credential of the owner's claim, the write of its slot back
-// to its own App that the end of a run the owner did queues, and deletes the row once the executor
-// finished it, as the runner does.
+// to its own App that the end of an act the owner did as another role queues, and deletes the row
+// once the executor finished it, as the runner does.
 func (r *ownerHoldRig) writtenBack(t *testing.T) {
 	t.Helper()
 	row := leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", record.SuperviseRequest{Op: "slot_credential", Tree: "LEGION-1",

@@ -177,8 +177,8 @@ func TestAnOwnerStepIsToldOnceItsSlotHoldsTheStepsApp(t *testing.T) {
 		if len(lines) != 1 {
 			t.Fatalf("the log holds %d lines of the stale notice, want one:\n%s", len(lines), logged.String())
 		}
-		// The notice names no run, so the executor judges it by the role the owner's slot acts as,
-		// which it read, and the line says what it read.
+		// The notice names no run, so the executor judges it by the role of the place the owner
+		// works, read with the role the owner's slot acts as, and the line names both roles it read.
 		if slot := lines[0]["slot"]; slot != string(claim.RoleArchitect) {
 			t.Fatalf("the stale notice's line names the slot %v, want the architect it read:\n%s", slot, logged.String())
 		}
