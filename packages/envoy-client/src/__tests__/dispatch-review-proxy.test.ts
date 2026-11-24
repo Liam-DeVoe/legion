@@ -8,6 +8,7 @@
 // route sends the review as before, and a Dispatch URL the route does not reach sends nothing.
 
 import { expect, test } from "bun:test";
+import { createServer } from "node:net";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import type { ApproveRoute, RequestCredential } from "../bearer";
 import {
@@ -122,15 +123,17 @@ test("a Dispatch URL the approve route does not reach sends nothing", async () =
   }
 });
 
-test("the proxy's refusal is thrown as Dispatch's client throws an answer, without the placeholder", async () => {
+test("Dispatch's own refusal of a review through the proxy (no proxy headers) is Dispatch's answer, without the placeholder", async () => {
   const fetchImpl = recordingFetch(403, { code: "NOT_ALLOWED", error: "not allowed by rule" });
   const client = new DispatchClient("https://dispatch.example", credential(ROUTE), fetchImpl);
   const refused = await client.reviewArtifact("artifact-1", 3, { state: "approved" }).then(
     () => null,
-    (error: unknown) => error as Error
+    (error: unknown) => error
   );
-  expect(refused).not.toBeNull();
-  expect(refused?.message ?? "").not.toContain(PLACEHOLDER);
+  expect(refused).toBeInstanceOf(DispatchServiceError);
+  const refusal = refused as DispatchServiceError;
+  expect([refusal.code, refusal.status, refusal.fromDispatch]).toEqual(["NOT_ALLOWED", 403, true]);
+  expect(refusal.message).not.toContain(PLACEHOLDER);
 });
 
 /** The production pacing with no time passing: every pause returns at once and the clock stands
@@ -285,4 +288,109 @@ test("the proxy's answer after the review may have reached Dispatch leaves the r
   expect(unsettled.message).toContain("Cipher's proxy");
   expect(unsettled.message).not.toContain("Dispatch URL");
   expect(unsettled.message).not.toContain(PLACEHOLDER);
+});
+
+test("after an answer that may have reached Dispatch, the proxy's refusal on the retry leaves the review unsettled and neither says nothing reached Dispatch nor advises a new review", async () => {
+  const fetchImpl = scriptedFetch([
+    () => proxyAnswer(407, "GRANT_NOT_LIVE", "unknown"),
+    () => proxyAnswer(407, "GRANT_NOT_LIVE", "false"),
+  ]);
+  const client = new DispatchClient("https://dispatch.example", credential(ROUTE), fetchImpl, {
+    writeRetry: NO_WAIT,
+  });
+  const ended = await client.reviewArtifact("artifact-1", 3, { state: "approved" }).then(
+    () => null,
+    (error: unknown) => error
+  );
+  expect(fetchImpl.sent).toHaveLength(2);
+  expect(ended).toBeInstanceOf(DispatchWriteUnsettledError);
+  const message = (ended as DispatchWriteUnsettledError).message;
+  expect(message).toContain("GRANT_NOT_LIVE");
+  expect(message).toContain("Cipher's proxy");
+  expect(message).not.toContain("nothing reached Dispatch");
+  expect(message).not.toContain("a new `dispatch review` trades a new grant");
+  expect(message).toContain("read the write back");
+});
+
+/**
+ * A proxy that refuses every CONNECT itself, as Cipher's proxy does when a placeholder's grant is
+ * not live (`proxy.go`, `refuseCredential`, 407) or its store cannot be read (`fail`, 503): its own
+ * answer with `Cipher-Proxy-Code` and `Cipher-Proxy-Forwarded: false`, before any tunnel opens.
+ * Bun's fetch rejects such an answer as `ERR_PROXY_TUNNEL`, keeping its status and headers.
+ */
+async function refusingProxy(
+  status: number,
+  reason: string,
+  code: string
+): Promise<{ readonly url: string; readonly connects: () => number; close(): void }> {
+  let connects = 0;
+  const body = `airlock: ${code.toLowerCase().replaceAll("_", " ")}\n`;
+  const server = createServer((socket) => {
+    socket.once("data", () => {
+      connects += 1;
+      socket.end(
+        `HTTP/1.1 ${status} ${reason}\r\n${status === 407 ? 'Proxy-Authenticate: Basic realm="airlock"\r\n' : ""}Content-Type: text/plain; charset=utf-8\r\nCipher-Proxy-Code: ${code}\r\nCipher-Proxy-Forwarded: false\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n${body}`
+      );
+    });
+  });
+  const listening = Promise.withResolvers<void>();
+  server.listen(0, "127.0.0.1", listening.resolve);
+  await listening.promise;
+  const { port } = server.address() as { port: number };
+  return { url: `http://127.0.0.1:${port}`, connects: () => connects, close: () => server.close() };
+}
+
+test("a CONNECT the proxy refuses (407 GRANT_NOT_LIVE) is the proxy's refusal: one CONNECT, and nothing reached Dispatch", async () => {
+  const proxy = await refusingProxy(407, "Proxy Authentication Required", "GRANT_NOT_LIVE");
+  try {
+    const client = new DispatchClient(
+      "https://dispatch.example",
+      credential({ ...ROUTE, proxyUrl: proxy.url }),
+      fetch,
+      { writeRetry: NO_WAIT }
+    );
+    const refused = await client.reviewArtifact("artifact-1", 3, { state: "approved" }).then(
+      () => null,
+      (error: unknown) => error
+    );
+    expect(proxy.connects()).toBe(1);
+    expect(refused).toBeInstanceOf(DispatchServiceError);
+    const refusal = refused as DispatchServiceError;
+    expect([refusal.code, refusal.status, refusal.fromDispatch]).toEqual([
+      "GRANT_NOT_LIVE",
+      407,
+      false,
+    ]);
+    expect(refusal.message).toContain(`Cipher's proxy at ${proxy.url}`);
+    expect(refusal.message).toContain("nothing reached Dispatch");
+    expect(refusal.message).toContain("a new `dispatch review` trades a new grant");
+    expect(refusal.message).not.toContain(PLACEHOLDER);
+  } finally {
+    proxy.close();
+  }
+});
+
+test("a CONNECT the proxy fails (503 GRANT_UNREADABLE) is asked again, then ends as the proxy's failure, never unsettled", async () => {
+  const proxy = await refusingProxy(503, "Service Unavailable", "GRANT_UNREADABLE");
+  try {
+    const client = new DispatchClient(
+      "https://dispatch.example",
+      credential({ ...ROUTE, proxyUrl: proxy.url }),
+      fetch,
+      { writeRetry: NO_WAIT }
+    );
+    const refused = await client.reviewArtifact("artifact-1", 3, { state: "approved" }).then(
+      () => null,
+      (error: unknown) => error
+    );
+    expect(proxy.connects()).toBe(DISPATCH_WRITE_RETRY.pausesMs.length + 1);
+    expect(refused).not.toBeInstanceOf(DispatchWriteUnsettledError);
+    expect(refused).toBeInstanceOf(DispatchServiceError);
+    const refusal = refused as DispatchServiceError;
+    expect([refusal.code, refusal.status]).toEqual(["GRANT_UNREADABLE", 503]);
+    expect(refusal.message).toContain("nothing reached Dispatch");
+    expect(refusal.message).toContain("once the broker answers");
+  } finally {
+    proxy.close();
+  }
 });

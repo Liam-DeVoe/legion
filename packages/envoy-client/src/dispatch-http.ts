@@ -198,6 +198,42 @@ export class DispatchProxyRefusalError extends DispatchServiceError {
   override readonly fromDispatch = false;
 }
 
+/** A `Cipher-Proxy-Code` as the proxy writes one (`proxy.go`, `record.go`): an upper-case word of
+ *  at most 64 characters. A CONNECT answer comes over the plain-HTTP hop to the proxy, so a code of
+ *  any other form is not taken into an error's code or text. */
+const PROXY_CODE_FORM = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+/**
+ * The answer Cipher's proxy wrote itself to a CONNECT it refused (`proxy.go`: `refuseCredential`'s
+ * 407 for a grant not live, `fail`'s 503 for a store it could not read), rebuilt from the error
+ * Bun's fetch rejects such an answer with: `code` `ERR_PROXY_TUNNEL`, keeping the answer's
+ * `status` and `headers`. It is a response of that status with the proxy's two headers and no body,
+ * which Bun does not keep, so the write reads it as any answer the proxy wrote itself
+ * (`answerEvent`). An error of any other kind, or one whose code is not of the proxy's form
+ * (`PROXY_CODE_FORM`), is no such answer, and stands as it was thrown.
+ */
+function proxyTunnelAnswer(error: unknown): Response | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const { code, status, headers } = error as {
+    readonly code?: unknown;
+    readonly status?: unknown;
+    readonly headers?: unknown;
+  };
+  if (code !== "ERR_PROXY_TUNNEL" || typeof status !== "number" || !(headers instanceof Headers)) {
+    return undefined;
+  }
+  const proxyCode = headers.get(PROXY_CODE_HEADER) ?? "";
+  if (status < 400 || status > 599 || !PROXY_CODE_FORM.test(proxyCode)) return undefined;
+  const forwarded = headers.get(PROXY_FORWARDED_HEADER);
+  return new Response(null, {
+    status,
+    headers: {
+      [PROXY_CODE_HEADER]: proxyCode,
+      ...(forwarded === null ? {} : { [PROXY_FORWARDED_HEADER]: forwarded }),
+    },
+  });
+}
+
 /**
  * A write that ended, once an attempt may have landed (write-outcome.ts), without a 2xx Dispatch
  * wrote, read whole (not an empty, untyped or non-JSON one; a bodiless 204 or 205 is one; not one
@@ -2595,7 +2631,9 @@ export class DispatchClient {
    * of its own: once `silenceMs` pass before its answer begins with no read of its body in that
    * time, it is cut off and fails as `WriteAttemptSilent`. The bound ends with the answer's
    * headers; its body is read under `limit` alone. `transport` is Cipher's proxy and its
-   * authority, for a write sent through it (`ProxyTransport`).
+   * authority, for a write sent through it (`ProxyTransport`): a CONNECT the proxy refused itself
+   * is answered as the proxy's own answer (`proxyTunnelAnswer`), which the write reads as it reads
+   * one written inside the tunnel.
    */
   async #attempt(
     url: string,
@@ -2625,6 +2663,11 @@ export class DispatchClient {
       });
     } catch (error) {
       if (cut.signal.aborted && !limit.aborted) throw cut.signal.reason;
+      // The proxy checks the grant as the tunnel opens, so its usual refusal - a grant not live,
+      // a store it could not read - answers the CONNECT, and Bun's fetch rejects that answer
+      // rather than returning it. No tunnel opened, so nothing of the write left the proxy.
+      const refused = transport === undefined ? undefined : proxyTunnelAnswer(error);
+      if (refused !== undefined) return refused;
       // A write through Cipher's proxy that got no answer failed at the proxy, which is the
       // secrets broker's, or past it: its text names the proxy, never a restart of this process,
       // which no setting of this process would mend.
@@ -2670,7 +2713,7 @@ export class DispatchClient {
     let own: unknown = failure;
     const proxyCode = via === undefined ? null : answer?.response.headers.get(PROXY_CODE_HEADER);
     if (via !== undefined && answer !== undefined && typeof proxyCode === "string") {
-      own = this.#proxyRefusal(request, via, answer, proxyCode);
+      own = this.#proxyRefusal(request, via, answer, proxyCode, state);
     } else if (answer?.response.ok === true) {
       const { status } = answer.response;
       own = new Error(
@@ -2719,27 +2762,33 @@ export class DispatchClient {
   /**
    * The refusal Cipher's proxy wrote itself (`code`, from `Cipher-Proxy-Code`) to a write sent
    * through it on `via`: its status and code, the proxy by its origin (never the placeholder in its
-   * user info), and its text redacted as every excerpt is. Where it says no byte of the request
-   * left it (`Cipher-Proxy-Forwarded: false`), nothing reached Dispatch, and the advice is the
-   * proxy's: a new `dispatch review` trades a new grant (once the broker answers, for a 5xx). Where
-   * it does not, the write may have reached Dispatch, and `#endWrite` ends it unsettled with this
-   * as its `last`.
+   * user info), and its text redacted as every excerpt is. Its words follow what the write is,
+   * `state` and the proxy's `Cipher-Proxy-Forwarded`: only a write no attempt of which may have
+   * reached Dispatch (`nothing-sent`), refused before any byte of this attempt left the proxy
+   * (`false`), says nothing reached Dispatch, with the proxy's advice that a new `dispatch review`
+   * trades a new grant (once the broker answers, for a 5xx). Any other is the last answer of a
+   * write that may have landed: `#endWrite` ends it unsettled with this as its `last`, whose own
+   * advice is to read the write back first.
    */
   #proxyRefusal(
     request: string,
     via: ProxyTransport,
     answer: WriteAnswer,
-    code: string
+    code: string,
+    state: WriteState
   ): DispatchProxyRefusalError {
     const { status } = answer.response;
     const said = excerpt(answer.text, this.#sent.with(this.token));
     const by = `${request} was answered ${status} ${code} by Cipher's proxy at ${originOf(via.init.proxy)}${said === "" ? "" : ` (${JSON.stringify(said)})`}`;
+    const leftNothing = answer.response.headers.get(PROXY_FORWARDED_HEADER) === "false";
     const message =
-      answer.response.headers.get(PROXY_FORWARDED_HEADER) !== "false"
-        ? `${by}, after the review may have reached Dispatch`
-        : status >= 500
-          ? `${by} before any of it left the proxy, so nothing reached Dispatch. The proxy is the secrets broker's, and a new \`dispatch review\` trades a new grant once the broker answers.`
-          : `${by} before any of it left the proxy, so nothing reached Dispatch, and a new \`dispatch review\` trades a new grant.`;
+      state !== "nothing-sent"
+        ? `${by}${leftNothing ? " before this attempt left the proxy" : ""}, after an earlier attempt of the review may have reached Dispatch`
+        : !leftNothing
+          ? `${by}, after the review may have reached Dispatch`
+          : status >= 500
+            ? `${by} before any of it left the proxy, so nothing reached Dispatch. The proxy is the secrets broker's, and a new \`dispatch review\` trades a new grant once the broker answers.`
+            : `${by} before any of it left the proxy, so nothing reached Dispatch, and a new \`dispatch review\` trades a new grant.`;
     return new DispatchProxyRefusalError(code, status, message);
   }
 
