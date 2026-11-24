@@ -25,6 +25,9 @@ legion controller start	--config string	--daemon-url string
 legion gh	hidden	words unread
 legion git	hidden	words unread
 legion git-credential	hidden	words unread
+legion intake
+legion intake discard	--config string	--consumer string	--give-up int64	--operator-token-file string	--port int	--reason string	--through-seq uint64
+legion intake replay	--config string	--consumer string	--give-up int64	--operator-token-file string	--port int	--through-seq uint64
 legion issue
 legion issue status	--config string	--operator-token-file string	--port int
 legion jj	hidden	words unread
