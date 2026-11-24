@@ -89,9 +89,9 @@ type Credential struct {
 	// every other credential.
 	ReadOnly bool
 	// NamedProject is the one project a broker token an operator's entry mapped to one project
-	// may write (ciphertoken.ProjectScopeNamed), set by brokerTokenActor beside Projects, and
-	// empty for every other credential. It is the write scope such a token had before projects
-	// could be private, which holds whatever the deployment holds: api's namedProjectOf reads it.
+	// may write (ciphertoken.ProjectScopeNamed). Nothing in this tree sets or reads it: a later
+	// slice sets it beside Projects when it resolves such a token, and reads it as the write scope
+	// such a token had before projects could be private. Empty for every credential here.
 	// A fact of the request, never written to a row or an answer.
 	NamedProject string `json:"-"`
 	// ProjectScope is a broker-issued token's project scope as the broker answered it
@@ -439,7 +439,8 @@ const (
 
 // ProjectAccess is who may see one project and who changes that: its owner, its visibility, and
 // the people (lowercase emails) and groups its access list names, each list sorted and never
-// null (GET /api/v1/projects/{key}/access).
+// null. The access package's writes answer it (access.SetOwner); a later slice adds the route that
+// reads and writes it.
 type ProjectAccess struct {
 	Project    string   `json:"project"`
 	Owner      string   `json:"owner"`
@@ -480,17 +481,18 @@ type AccessGroup struct {
 // them, one more is refused (access.PutGroup).
 const MaxGroupsPerOwner = 100
 
-// AccessGroupPage is one page of GET /api/v1/access-groups: the groups after the page before it,
-// in name order, and Next, the name the next page starts after, absent on the last page.
+// AccessGroupPage is one page of the groups (access.ListGroups), which a later slice serves: the
+// groups after the page before it, in name order, and Next, the name the next page starts after,
+// absent on the last page.
 type AccessGroupPage struct {
 	Groups []AccessGroup `json:"groups"`
 	Next   string        `json:"next,omitempty"`
 }
 
-// AccessAnswer is the membership answer the secrets broker reads (GET
-// /api/v1/access/projects/{key}?person=): one project's owner and visibility, the person's member
-// kind (MemberAnswerFull, MemberAnswerRestricted or MemberAnswerNone), whether the read rule lets
-// that person see the project at a browser, and the project's Slack channels. It names no
+// AccessAnswer is the membership answer the secrets broker is to read, which a later slice
+// serves (access.Answer): one project's owner and visibility, the person's member kind
+// (MemberAnswerFull, MemberAnswerRestricted or MemberAnswerNone), whether the read rule lets that
+// person see the project at a browser, and the project's Slack channels. It names no
 // repositories: GitHub events carry no project, so no reader needs a project's repositories.
 type AccessAnswer struct {
 	Project    string `json:"project"`
@@ -504,35 +506,27 @@ type AccessAnswer struct {
 	// SlackChannelsChangedAt is when that list last changed, as ProjectAccess carries it: null
 	// until a write changes the list.
 	SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
-	// Holder is present for a question naming a person that describes the credential being checked
-	// (?account_issuer=&account_subject=, or ?account=none, each with ?credential_created_at=):
-	// whether that credential holds the person's address. False when Dispatch records another
-	// Google account for the person, when the credential records an account of another issuer, or
-	// when it records none and was made before Dispatch recorded the person's account, within
-	// brokerCredentialMargin after, or at a time not given (accountHolder), and Visible is then
-	// false too. A question naming a person alone carries none, as before.
+	// Holder is to say whether the credential a question describes holds the person's address.
+	// access.Answer leaves it absent; the later slice that records a person's Google account sets
+	// it, and Visible is then false whenever it is false.
 	Holder *bool `json:"holder,omitempty"`
 }
 
-// PrivateProjectChannels is one private project's Slack channels as the secrets broker reads
-// them (GET /api/v1/access/private-projects): the project's key, its channels, sorted and [] for
-// none, and when that list last changed, null until a write changes the list.
+// PrivateProjectChannels is one private project's Slack channels as the secrets broker is to read
+// them, which a later slice serves (access.PrivateProjects): the project's key, its channels,
+// sorted and [] for none, and when that list last changed, null until a write changes the list.
 type PrivateProjectChannels struct {
 	Project                string     `json:"project"`
 	SlackChannels          []string   `json:"slack_channels" nullable:"false"`
 	SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
 }
 
-// PersonAnswer is one person's member kind as the membership answer spells it (GET
-// /api/v1/access/person?person=), with Holder as AccessAnswer carries it. Held is whether Dispatch
-// holds the person's personal tokens and broker credentials until they sign in again or a refresh
-// confirms them (identity.Membership.Standing): present whenever that answered, false for a person
-// no row holds, and left out when it failed, so a reader tells "not held" from "could not be read".
-// AsOf is the database time of the read the answer rests on: Standing's, or the database's now()
-// where Standing did not answer. NotHeldUntil is set under IAP identity alone, on every answer that
-// is not held: when it stops being served, the last Active Workspace Directory answer plus 24
-// hours, or AsOf itself for an answer that is unavailable, a person no Active answer confirmed in
-// 24 hours or no row holds. It is left out of a held answer and everywhere outside IAP.
+// PersonAnswer is one person's member kind as the membership answer spells it, which a later
+// slice serves (access.PersonAnswer), with Holder as AccessAnswer carries it. AsOf is the database
+// time of the read the answer rests on. Held, whether Dispatch holds the person's personal tokens
+// and broker credentials until they sign in again, and NotHeldUntil, when an answer that is not
+// held stops being served under IAP identity, are left absent by access.PersonAnswer: the later
+// slice that holds a person's credentials sets them.
 type PersonAnswer struct {
 	Person       string     `json:"person"`
 	MemberKind   string     `json:"member_kind" enum:"full,restricted,none"`
@@ -555,10 +549,11 @@ const (
 // was, and nothing else: every reader of the project's events reads it - the event log, the live
 // socket's events view and the bus, credentials without the person scope included - so it carries
 // no email, group name or channel id. Who the change named, and the project's owner and visibility
-// as it left them, are the server's own record of the event (project_access_changes), which a live
-// resume reads to tell whether the change moved what its caller sees. A reader that needs the list
-// reads GET /api/v1/projects/{key}/access, under that route's own rule, and every reader that
-// resolved a viewer resolves again. It is owned by the project and never notifies.
+// as it left them, are the server's own record of the event (project_access_changes), which a
+// later slice's live resume is to read to tell whether the change moved what its caller sees. A
+// reader that needs the list reads it under the read rule of the route a later slice adds, and
+// every reader that resolved a viewer resolves again. It is owned by the project and never
+// notifies.
 type ProjectAccessEventPayload struct {
 	Project string `json:"project"`
 	Change  string `json:"change"`
