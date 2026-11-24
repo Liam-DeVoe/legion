@@ -436,8 +436,11 @@
  * call; one whose recorded system prompt, role's prompt or first user message names by an
  * absolute path outside its checkout's root a file it reads itself (a `read` call, or `cat`,
  * `head`, `tail` or `sed -n` in a `bash` call), a skill's file aside, as `outside-material`, both
- * before the reader is asked; and one whose work the reader finds is on the skill's own text as
- * `skill-as-material` (`chooseContext`). A `--context-session` of any of them is refused (exit 1).
+ * before the reader is asked; one whose work the reader finds is on the skill's own text as
+ * `skill-as-material`; and one for which the reader's every reply, on each try, stopped at the
+ * model's refusal (the model refuses that session's material; any other failure of the reader
+ * fails the build) as `reader-refused` (`chooseContext`). A `--context-session` of any of them is
+ * refused (exit 1).
  * The context session is `--context-session`'s, or one `--sessions` and `--seed` choose; a build
  * given both is refused (exit 2), since it would read neither `--sessions` nor `--seed`. Its first
  * read of the skill is the one a session case's step comes after (`firstSkillRead`): a `skill://`
@@ -886,6 +889,8 @@ export const DROP_REASONS = {
     "in build-cases --written, the context session's recorded system prompt, its role's prompt or its first user message names by an absolute path outside its checkout's root a file the session itself reads (by a read call, or with cat, head, tail or sed -n in a bash call), other than a skill file; a written case's run answers no read of it from the checkout, so the session is passed over",
   "no-checkout":
     "in build-cases --written, the build knows no checkout of the context session's working directory: its header names none, its profile names no session repository, or the directory is not at the profile's path in the checkout; a written case's run answers its read-only calls from that checkout alone, so the session is passed over",
+  "reader-refused":
+    "in build-cases --written, the written-case reader's every reply for the context session, on each try, stopped at the model's refusal: the model refuses that session's material, so the session is passed over",
   "no-common-line":
     "the session's own successful reads of the skill's files hold no whole line of the base text, so the case reader has no line to offer",
   "step-not-after-read": "the case reader's step is at or before the skill's read",
@@ -7967,21 +7972,33 @@ interface ChosenContext {
   readonly passed: PassedSession[];
 }
 
+/** The written-case reader's answer for a context session (`buildWrittenCases`' `askReader`), or,
+ *  where its every reply stopped at the model's refusal, its refusals (`refused`: ReaderFailed's
+ *  message). */
+type WrittenAsked = WrittenCaseAnswer | { readonly refused: string };
+
+/** How readers.ts's `ask` ends why it refused a reply that stopped at the model's refusal (its
+ *  `stop_reason` `refusal`). */
+const STOPPED_AT_REFUSAL = "(the reply stopped at refusal)";
+
 /**
  * The context session of a written build, the written-case reader's tasks for it (`ask`), how it
  * was chosen, and the sessions passed over before it: the one `given` names (`--context-session`),
  * refused (thrown, naming why) where it gives no written cases (`writtenContext`: one in no
  * checkout the build knows among them, `no-checkout`), reads material outside its checkout
- * (`outsideMaterial`) or `ask` says its work is on the skill's own text; else the first session of
+ * (`outsideMaterial`), or `ask` says its work is on the skill's own text or its every reply
+ * stopped at the model's refusal; else the first session of
  * `order` (the build's seeded order of `--sessions`) that gives written cases on a model the
  * gateway serves and whose answer is tasks, one that gives none passed over under its drop reason
  * (`no-checkout` among them), one that reads material outside its checkout passed over, before it
- * is asked, as `outside-material`, and one whose answer is `material` as
- * `skill-as-material` with the reader's why; else, when none does, the first that gives them on
+ * is asked, as `outside-material`, one whose answer is `material` as `skill-as-material` with the
+ * reader's why, and one whose every reply stopped at refusal as `reader-refused` with the reader's
+ * refusals; else, when none does, the first that gives them on
  * any model and whose answer is tasks, each such session asked in its turn (the first one's
  * context kept, each later one's pulled again). `paths` gives the path of a candidate whose line
  * names none. Each candidate is pulled into a spool of its own under `spools`, removed once it is
- * passed over. Throws, naming why, when no session gives one; rejects as `ask` does (BudgetSpent).
+ * passed over. Throws, naming why, when no session gives one; rejects as `ask` does (BudgetSpent,
+ * and any other failure of the reader).
  */
 async function chooseContext(
   run: CaseRun,
@@ -7990,10 +8007,20 @@ async function chooseContext(
   paths: ReadonlyMap<string, string>,
   spools: string,
   io: BuildIo,
-  ask: (context: WrittenContext) => Promise<WrittenCaseAnswer>
+  ask: (context: WrittenContext) => Promise<WrittenAsked>
 ): Promise<ChosenContext> {
   const material: DropReason = "skill-as-material";
   const outside: DropReason = "outside-material";
+  const refused: DropReason = "reader-refused";
+  // The reader's tasks for `made`, or why its answer passes the session over.
+  const tasksOf = async (
+    made: WrittenContext
+  ): Promise<{ readonly tasks: WrittenCaseAnswer["tasks"] } | { readonly why: string }> => {
+    const answer = await ask(made);
+    if ("refused" in answer) return { why: `${refused}: ${answer.refused}` };
+    if ("material" in answer) return { why: `${material}: ${answer.material.why}` };
+    return { tasks: answer.tasks };
+  };
   if (given !== undefined) {
     const named = `--context-session ${given.store}:${given.hash}`;
     const { paths: found } = await resolvePaths(run.config.psqlCommand, given.store, [given.hash]);
@@ -8006,8 +8033,8 @@ async function chooseContext(
     if ("drop" in made) throw new Error(`${named}: ${made.drop}: ${made.detail}`);
     const reads = outsideMaterial(made);
     if (reads !== undefined) throw new Error(`${named}: ${outside}: ${reads}`);
-    const answer = await ask(made);
-    if ("material" in answer) throw new Error(`${named}: ${material}: ${answer.material.why}`);
+    const answer = await tasksOf(made);
+    if ("why" in answer) throw new Error(`${named}: ${answer.why}`);
     return { chosen: made, tasks: answer.tasks, how: "--context-session", passed: [] };
   }
   const passed: PassedSession[] = [];
@@ -8044,16 +8071,16 @@ async function chooseContext(
         rmSync(spool, { force: true });
         continue;
       }
-      const answer = await ask(made);
-      if (!("material" in answer)) {
+      const answer = await tasksOf(made);
+      if ("tasks" in answer) {
         return {
           chosen: made,
           tasks: answer.tasks,
-          how: `the first of the skill's reading sessions in the seeded order (--sessions, --seed) on a model the gateway serves whose rebuilt profile installs the skill, that reads no material outside its checkout and whose work is not on the skill's own text: ${place}`,
+          how: `the first of the skill's reading sessions in the seeded order (--sessions, --seed) on a model the gateway serves whose rebuilt profile installs the skill, that reads no material outside its checkout, whose work is not on the skill's own text and whose material the written-case reader's model does not refuse: ${place}`,
           passed,
         };
       }
-      passOver(store.name, candidate.hash, `${material}: ${answer.material.why}`, place);
+      passOver(store.name, candidate.hash, answer.why, place);
       rmSync(spool, { force: true });
       continue;
     }
@@ -8103,16 +8130,16 @@ async function chooseContext(
       passAgain(`${outside}: ${reads}`);
       continue;
     }
-    const answer = await ask(made);
-    if (!("material" in answer)) {
+    const answer = await tasksOf(made);
+    if ("tasks" in answer) {
       return {
         chosen: made,
         tasks: answer.tasks,
-        how: `no reading session on a served model has a rebuilt profile that installs the skill, reads no material outside its checkout and works on what is not the skill's own text, so the first of the seeded order (--sessions, --seed) that has, on a model the gateway does not serve: ${each.place}`,
+        how: `no reading session on a served model has a rebuilt profile that installs the skill, reads no material outside its checkout, works on what is not the skill's own text and has material the written-case reader's model does not refuse, so the first of the seeded order (--sessions, --seed) that has, on a model the gateway does not serve: ${each.place}`,
         passed: passed.slice(0, each.at),
       };
     }
-    passAgain(`${material}: ${answer.material.why}`);
+    passAgain(answer.why);
   }
   throw new Error(
     `no session of --sessions gives written cases of ${run.skill}: ${passed.map((each) => `${each.store} ${each.hash}: ${each.why}`).join("; ") || "it holds none"}`
@@ -8521,11 +8548,12 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
         return { paths: listed, whole, held };
       });
     /** The written-case reader's answer for `context` (or `--written-answer`'s), the paths of
-     *  `absent` named as absent from its checkout on a second ask. */
+     *  `absent` named as absent from its checkout on a second ask; or its refusals where its every
+     *  reply stopped at the model's refusal (the model refuses the session's material). */
     const askReader = async (
       context: WrittenContext,
       absent: readonly string[]
-    ): Promise<WrittenCaseAnswer> => {
+    ): Promise<WrittenAsked> => {
       const firstUser = context.t.items.findIndex((item) => item.slim.role === "user");
       const firstMessage = firstUser < 0 ? "" : messageText(context.t.message(firstUser)).trim();
       if (firstMessage === "") {
@@ -8568,6 +8596,12 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
         return WrittenCaseAnswer.parse(result.answer);
       } catch (error) {
         if (error instanceof BudgetSpent) throw error;
+        if (
+          error instanceof ReaderFailed &&
+          error.refusals.every((each) => each.endsWith(STOPPED_AT_REFUSAL))
+        ) {
+          return { refused: error.message };
+        }
         throw new Error(`the written-case reader: ${messageFor(error)}`);
       }
     };
@@ -8948,6 +8982,9 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       );
       try {
         const again = await askReader(chosen, absent);
+        // The session is chosen already, so a refusal of this second ask fails the build, as any
+        // other failure of the reader does.
+        if ("refused" in again) throw new Error(`the written-case reader: ${again.refused}`);
         retry = { absent, tasksWritten: again.tasks.length };
         written += again.tasks.length;
         await decideAll(2, again.tasks, tasks.length);

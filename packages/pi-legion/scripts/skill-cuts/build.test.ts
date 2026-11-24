@@ -1237,6 +1237,15 @@ const WRITTEN_REFERENCE_TASK = {
 /** A test acme/proj's commit SHA does not hold, which its branch did. */
 const PROJ_FARM = "tools/tests/test_farm.py";
 
+/** The first message of a context session whose material the stand-in written-case reader's model
+ *  refuses: each of its replies stops at refusal, with no text (`refusedReply`). */
+const REFUSED_REQUEST = "Write the alpha report of the made-up lock picking kit.";
+/** The first message of a context session whose first reply of each READER_TRIES the stand-in
+ *  written-case reader's model refuses (`refusedReply`); its others end their turn with
+ *  UNWRITTEN, no JSON. */
+const PARTLY_REFUSED_REQUEST = "Write the alpha report of the made-up lock notes.";
+const UNWRITTEN = "I would rather not write these tasks.";
+
 /** The stand-in reader's answer to `body`. */
 function readerAnswer(body: {
   system: { text: string }[];
@@ -1249,6 +1258,7 @@ function readerAnswer(body: {
   if (system.startsWith(AUDIT_PROMPT)) return JSON.stringify(auditAnswer(name));
   if (system.startsWith(NAVIGATION_PROMPT)) return JSON.stringify(navigationAnswer(user));
   if (system.startsWith(WRITTEN_PROMPT)) {
+    if (user.includes(`<first-message>\n${PARTLY_REFUSED_REQUEST}\n`)) return UNWRITTEN;
     // A session whose work is on alpha's own text: no task, as the prompt asks.
     if (user.includes("<first-message>\nRewrite the alpha skill")) {
       return JSON.stringify({
@@ -1323,6 +1333,22 @@ function readerAnswer(body: {
     });
   }
   return "{}";
+}
+
+/** The stand-in written-case reader's replies so far for the context session whose first message
+ *  is PARTLY_REFUSED_REQUEST. */
+let partlyRefusedReplies = 0;
+
+/** Whether the stand-in's reply to `body` stops at the model's refusal, with no text: each reply of
+ *  the written-case reader for a context session whose first message is REFUSED_REQUEST, and the
+ *  first of each READER_TRIES for one whose first message is PARTLY_REFUSED_REQUEST. */
+function refusedReply(body: Parameters<typeof readerAnswer>[0]): boolean {
+  if (!(body.system[0]?.text ?? "").startsWith(WRITTEN_PROMPT)) return false;
+  const user = body.messages[0]?.content.map((part) => part.text).join("\n") ?? "";
+  if (user.includes(`<first-message>\n${REFUSED_REQUEST}\n`)) return true;
+  if (!user.includes(`<first-message>\n${PARTLY_REFUSED_REQUEST}\n`)) return false;
+  partlyRefusedReplies += 1;
+  return partlyRefusedReplies % READER_TRIES === 1;
 }
 
 let recorder: Recorder;
@@ -1909,15 +1935,18 @@ beforeAll(() => {
     route: (request: RecordedRequest) => {
       if (request.method !== "POST" || request.path !== "/v1/messages") return undefined;
       const body = JSON.parse(request.body);
+      const refused = refusedReply(body);
+      const reply = messageSse({
+        id: `msg_standin_${request.n}`,
+        model: body.model,
+        content: refused ? [] : [{ type: "text", text: readerAnswer(body) }],
+        stopReason: "end_turn",
+        inputTokens: 100,
+        outputTokens: 20,
+      });
+      // A refused reply's stop, which recorder.ts's messageSse names none of, in its end_turn's place.
       return sseResponse(
-        messageSse({
-          id: `msg_standin_${request.n}`,
-          model: body.model,
-          content: [{ type: "text", text: readerAnswer(body) }],
-          stopReason: "end_turn",
-          inputTokens: 100,
-          outputTokens: 20,
-        }),
+        refused ? reply.replace('"stop_reason":"end_turn"', '"stop_reason":"refusal"') : reply,
         `req_standin_${request.n}`
       );
     },
@@ -5222,6 +5251,83 @@ test("build-cases --written passes over a context session the written-case reade
     EXIT.failed
   );
   expect(refused.join("")).toContain(`--context-session ${context}: skill-as-material: `);
+}, 120_000);
+
+// Catches: a written build ended (exit 1) by the model's refusal of one context session's material
+// (the defect: a skill's written build exited 1, the written-case reader's every reply, on each of
+// 3 tries, stopped at refusal), which is that session's, not the build's, while the next session of
+// the seeded order gives tasks; and a reader failure of another kind, a reply that ends its turn
+// with no JSON among its tries, taken for that refusal.
+test("build-cases --written passes over a context session whose every written-case reader reply stopped at refusal as reader-refused, takes the next one, and refuses a --context-session of it; a reader whose replies did not all stop at refusal still fails the build", async () => {
+  const refusedFile = "/sessions/written-refused.jsonl";
+  const partlyFile = "/sessions/written-partly-refused.jsonl";
+  const store = changedStore("written-refused", (files) => {
+    const held = files.store_a ?? {};
+    held[refusedFile] = sessionText("written-refused", (lines) =>
+      setText(lines, 0, () => REFUSED_REQUEST)
+    );
+    held[partlyFile] = sessionText("written-partly-refused", (lines) =>
+      setText(lines, 0, () => PARTLY_REFUSED_REQUEST)
+    );
+  });
+  const goodFile = sessionPath("good");
+  // The arguments of a build into `name` whose seeded order takes `first`, then the good session.
+  const seeded = (name: string, first: string) => {
+    const candidates = [first, goodFile].map((file) => ({
+      store: "store_a",
+      hash: fileHash(file),
+      path: file,
+    }));
+    const seed = Array.from({ length: 100 }, (_, n) => String(n)).find(
+      (each) => blindOrder(candidates, each)[0]?.item.path === first
+    );
+    expect(seed).toBeDefined();
+    const sessions = path.join(setupDir, `${name}-sessions.jsonl`);
+    writeFileSync(sessions, candidates.map((each) => `${JSON.stringify(each)}\n`).join(""));
+    const args = writtenArgs(
+      path.join(scratch, name, "cases.jsonl"),
+      "--sessions",
+      sessions,
+      "--seed",
+      seed ?? ""
+    );
+    args[args.indexOf("--config") + 1] = store;
+    return args;
+  };
+  const refusal = 'the answer is not one JSON value: "" (the reply stopped at refusal)';
+  const tries = `the written-case reader's answer was refused on each of ${READER_TRIES} tries`;
+  const why = `reader-refused: ${tries}: ${Array(READER_TRIES).fill(refusal).join(" | ")}`;
+  const printed: string[] = [];
+  expect(await main(seeded("written-refused", refusedFile), io(printed))).toBe(EXIT.ok);
+  const out = path.join(scratch, "written-refused", "cases.jsonl");
+  const summary = summaryOf<WrittenSummary>(out);
+  expect(summary.contextSession.hash).toBe(fileHash(goodFile));
+  expect(summary.contextSession.passed).toEqual([
+    { store: "store_a", hash: fileHash(refusedFile), why },
+  ]);
+  expect(printed.join("")).toContain(
+    `build-cases: context session place 1 of 2, store_a ${fileHash(refusedFile)}: passed over (${why})\n`
+  );
+  expect(loadCases(out, old).length).toBeGreaterThan(0);
+  // A --context-session of it is refused (exit 1), naming why.
+  const refused: string[] = [];
+  const named = writtenArgs(
+    path.join(scratch, "written-refused-named", "cases.jsonl"),
+    "--context-session",
+    `store_a:${fileHash(refusedFile)}`
+  );
+  named[named.indexOf("--config") + 1] = store;
+  expect(await main(named, io(refused))).toBe(EXIT.failed);
+  expect(refused.join("")).toContain(`--context-session store_a:${fileHash(refusedFile)}: ${why}`);
+  // The first reply stopped at refusal, the others ended their turn with no JSON: the build fails
+  // as on any other failure of the reader, and takes no next session.
+  const failed: string[] = [];
+  expect(await main(seeded("written-partly-refused", partlyFile), io(failed))).toBe(EXIT.failed);
+  const unwritten = `the answer is not one JSON value: ${JSON.stringify(UNWRITTEN)}`;
+  expect(failed.join("")).toContain(
+    `the written-case reader: ${tries}: ${[refusal, ...Array(READER_TRIES - 1).fill(unwritten)].join(" | ")}`
+  );
+  expect(existsSync(path.join(scratch, "written-partly-refused", "cases.jsonl"))).toBe(false);
 }, 120_000);
 
 /** A change of F1 for a session in a checkout of acme/proj whose first message is `request` and

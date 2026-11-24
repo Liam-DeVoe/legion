@@ -137,7 +137,8 @@
  * them); no network; no capability (so nothing it runs can unmount what hides a directory); an
  * environment of only what it needs (SANDBOX_ENV: PATH, a fixed LANG, an empty HOME, no system or
  * global git configuration, GIT_CONFIG through GIT_CONFIG_COUNT: no fsmonitor, no hooks, a bare
- * repository used only where named, no transport, no pager; GIT_OPTIONAL_LOCKS=0; jj's
+ * repository used only where named, no transport, no pager, the index's stat data trusted though
+ * the namespace shows each file's owner as root; GIT_OPTIONAL_LOCKS=0; jj's
  * SANDBOX_JJ_CONFIG, which names no external tool and no signing program); a time limit, past
  * which every process it started is ended, and an output cap. The sandbox's fresh `/proc` still
  * lists, in `/proc/self/mountinfo`, the mount points of the pod it was made from (the hidden ones
@@ -1722,13 +1723,23 @@ backends.ssh.program = "/mnt/no-signing-program"
 /** git's configuration in each answer, through GIT_CONFIG_COUNT (which outranks every file of the
  *  repository's): no file-system monitor and no hooks, a bare repository used only where a command
  *  names it (so a directory of the checkout laid out as one, its `config` its own, is refused), no
- *  transport (so no lazy fetch of a blob from the commit's remote), and no pager. */
+ *  transport (so no lazy fetch of a blob from the commit's remote), no pager, and a stat check of
+ *  the index's entries by mtime seconds, size and mode alone (`core.checkStat=minimal`,
+ *  `core.trustctime=false`). The sandbox's user namespace shows each file of the copy as owned by
+ *  uid and gid 0 where the index recorded the runner's, and the copy's ctime need not be the
+ *  index's, so git's default check would call every file changed and compare its content again,
+ *  on each call, since GIT_OPTIONAL_LOCKS=0 writes no refreshed index (a `git status` of a
+ *  checkout of 115,965 files ran past BASH_TIME_LIMIT_MS so); the read-only bind keeps what the
+ *  minimal check reads, and git compares the content where it differs, so no answer's text
+ *  changes. */
 const GIT_CONFIG: readonly (readonly [string, string])[] = [
   ["core.fsmonitor", "false"],
   ["core.hooksPath", "/dev/null"],
   ["safe.bareRepository", "explicit"],
   ["protocol.allow", "never"],
   ["core.pager", "cat"],
+  ["core.checkStat", "minimal"],
+  ["core.trustctime", "false"],
 ];
 /** The environment an answer runs in, and the copy's colocation (`colocateJj`), the same for each:
  *  none of the runner's variables; its PATH the sandbox's jj wrapper (`/mnt/bin`, `runSandboxed`),

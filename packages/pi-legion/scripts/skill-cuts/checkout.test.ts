@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -783,6 +783,38 @@ test("a git command in a copy that lacks an older commit's blob fetches nothing:
   expect(answer).toMatchObject({ isError: true });
   expect(JSON.stringify(answer)).not.toContain("old app");
   expect(holdsOlder()).toBe(false);
+}, 60_000);
+
+// Catches: git in an answer's sandbox hashing every file of the copy again, so `git status` in a
+// large checkout runs past the 30 s limit (the defect: 155 runs of test-driven-development's
+// written cases got no answer to a bash call holding `git status`, in a checkout of 115,965 files):
+// in the sandbox's user namespace each file shows uid and gid 0 where the index recorded the
+// runner's, and the copy's ctime may not be the index's, so git's default stat check calls every
+// file changed and compares its content, and with GIT_OPTIONAL_LOCKS=0 it never writes the
+// refreshed index, so every call does it again. The probe of "not hashed again": a file whose text
+// changed with its size and mtime kept is shown clean only when git trusts its stat data.
+test("git in the sandbox trusts the stat data the runner's user wrote to the index, its ctime aside: a file whose text changed with its size and mtime kept is not hashed again, so git status shows it clean; one whose size changed shows as modified", async () => {
+  const dir = gitCopy("stat-kept");
+  const past = new Date("2020-01-01T00:00:00Z");
+  const keepMtime = (file: string) => utimesSync(path.join(dir, file), past, past);
+  keepMtime("docs/guide.md");
+  keepMtime("src/app.py");
+  // The index takes the files' stat data, written long after their mtime, so no entry of it is
+  // racily clean (which git would compare by content whatever its stat check).
+  gitIn(dir, "update-index", "--refresh");
+  // Past the next whole second, so each changed file's ctime differs from the index's in seconds,
+  // as a copy's may (so the row fails with git's default check even where the runner is root and
+  // no owner differs): the kernel sets a file's ctime from its clock, and no call sets it back.
+  await Bun.sleep(1_100);
+  writeFileSync(path.join(dir, "docs/guide.md"), GUIDE.replace("app", "api"));
+  keepMtime("docs/guide.md");
+  writeFileSync(path.join(dir, "src/app.py"), "def main():\n    return 10\n");
+  keepMtime("src/app.py");
+  const copy = { dir, root: ROOT, cwd: ROOT, git: true };
+  expect(await sandboxedBash(copy, "git status --short")).toMatchObject({
+    output: " M src/app.py\n",
+    exitCode: 0,
+  });
 }, 60_000);
 
 // The negative control of verification v18's c-cases: calls the read-only rule counts as read-only,

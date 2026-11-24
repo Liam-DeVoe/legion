@@ -544,9 +544,14 @@ it cannot be, no command runs); no network; no capability, so
 nothing it runs can unmount what hides a directory; an environment of only what it needs (`PATH`,
 `LANG=C.UTF-8`, `HOME` an empty directory, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
 `GIT_OPTIONAL_LOCKS=0`, git's `core.fsmonitor=false`, `core.hooksPath=/dev/null`,
-`safe.bareRepository=explicit`, `protocol.allow=never` and `core.pager=cat` through
-`GIT_CONFIG_COUNT`, and for jj a configuration that names no external tool: no pager, its default
-diff formatter, no signature shown by its templates, no file-system monitor, `signing.backend =
+`safe.bareRepository=explicit`, `protocol.allow=never`, `core.pager=cat`, `core.checkStat=minimal`
+and `core.trustctime=false` through `GIT_CONFIG_COUNT` (the last two so git trusts the stat data
+the runner's user wrote to the index: the sandbox's user namespace shows each file as owned by
+uid 0, so git's default check would hash every file again on each call, and `git status` in a
+checkout of 115,965 files ran past the time limit; git still compares a file's content where its
+mtime seconds, size or mode differ, so no answer's text changes), and for jj a configuration that
+names no external tool: no pager, its default diff formatter, no signature shown by its templates,
+no file-system monitor, `signing.backend =
 "none"` and each signing backend's program (`signing.backends.gpg.program`, `.gpgsm.program`,
 `.ssh.program`) a path the sandbox does not hold, so a `-T` template that verifies a signature runs
 no gpg or ssh-keygen); a time limit, past which every process it started is ended, and an output
@@ -2188,8 +2193,13 @@ user message names by an absolute path outside its checkout's root a file the se
 reads, by a `read` call or with `cat`, `head`, `tail` or `sed -n` in a `bash` call (a skill's
 file, read by `skill://`, shown as a skill file or under a skill's installed directory, is none;
 the detail names the path, where it is named and the message that reads it), whose runs would ask
-for material the checkout copy answers no read of, or `skill-as-material: <why>` for a session
-whose work, by the written-case reader's answer, is on the skill's own text: such a session is
+for material the checkout copy answers no read of, `skill-as-material: <why>` for a session
+whose work, by the written-case reader's answer, is on the skill's own text, or
+`reader-refused: <refusals>` for a session for which the written-case reader's every reply, on
+each of its 3 tries, stopped at the model's refusal (`stop_reason` `refusal`: the model refuses
+that session's material; the detail is the reader's refusal of each reply; a reader that fails in
+any other way, one of its replies not stopped at refusal among them, still fails the build, exit
+1, as does a refusal of its second ask, below): such a session is
 passed over, a `no-checkout` or an `outside-material` one before the reader is asked, as the
 session form drops a `skill-as-material` one, and the next candidate taken; a `--context-session`
 of one is refused, exit 1). A case's
