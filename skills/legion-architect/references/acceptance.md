@@ -66,6 +66,7 @@ If the pull request merged before its last round, move nothing back. Once the ch
 ## After your sign-off
 
 The steps after your acceptance in the task run, then retro, then the merger merges the last step's head under the repository's rules; you start none of it.
+Before retro, Legion can hold the issue for a fix or its CI (`retro-held`); while CI holds it, the move back is yours.
 A person's request after your sign-off is a requirement of this issue: the role that holds the phase makes the `request_backward_move`.
 When the merger reports:
 

@@ -29,6 +29,7 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
 - `no_head`: Dispatch holds no pull request head of the issue.
 
 - `neutral`, `skipped` or `cancelled`: the run concluded and proved nothing.
+  On a task that takes a fix, Legion counts each of these as a failure.
 
 - `github_unreadable`: Dispatch could not read GitHub; treat it as a run still going.
 
@@ -36,9 +37,11 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
 
 - The implementer copies each such check's `Pull request line` into the `Checks` block.
   The next role that writes the body reads `dispatch results` again and replaces a no-result line.
+  On a task that takes a fix, a failure at the head goes to the implementer's step or starts a fix, as its role prompt says.
 
 - The tester runs and records only the checks with no `ci_check`.
   A `ci_check` check goes in `failures` only when its derived result is a fail, or its run concluded `skipped`, `neutral` or `cancelled`.
+  A check that a running fix holds goes in no `failures` entry.
   A run still going fails no round: say so in `implementerProof.how`.
 
 - The reviewer waits for a run still going by its name, and neither approves nor requests changes for that check until it concludes.
@@ -56,7 +59,7 @@ When the head's checks have settled and no run of the name answers:
 2. A held-back job reads `skipped`, not absent: the label cures it.
 
 3. Otherwise the check's words are wrong.
-   Each tester and reviewer step sends it to the architect as a finding with `envoy_publish`; with neither step, the implementer sends it during retro.
+   Each tester and reviewer step sends it to the architect as a finding with `envoy_publish`; with neither step, Legion holds the task before its retro, and the architect reads the name in the `retro-held` notice.
    No role fails the round or requests changes for it.
 
 ## What the evidence is
