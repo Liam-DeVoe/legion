@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  A role publish through `POST /v1/messages/publish` that names no `source_session`, to a role no
+  live session holds, is refused `404` and nothing is kept. It was answered `202 kept`, and when no
+  session took the copy within its hour the listener dropped it with no dead letter, since a dead
+  letter goes to the publish's source session alone, so the sender was never told the copy had
+  expired. The 404 carries the same `reason` (`unclaimed`, or `holder_lapsed` with `holder_state`)
+  and holder fields as a `keep: false` publish's, and the same refusal exception; its `error` names
+  the role and says that nothing was kept and why. The request's log line names the outcome
+  `role_no_source_session`. For such a publish, whether a live session holds the role is read from
+  the role bucket stream's leader and the holder's registration from the session bucket stream's
+  leader, never from a copy, so a copy that is behind refuses no message a live holder can take. A
+  publish that names a session, and one to a role a live session holds, are unchanged.
+time: 2026-11-24T17:39:19Z
+custom:
+    Issue: pr5412

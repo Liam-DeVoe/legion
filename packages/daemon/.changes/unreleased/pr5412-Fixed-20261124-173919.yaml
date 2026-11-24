@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  A hook prompt whose role no live session holds waits for one: the Envoy listener now refuses to
+  keep a publish that names no source session, as the daemon's prompts name none, and the prompt's
+  outbox row retries on its backoff until a session holds the role, for up to one hour after the
+  hook fired. A released role's woken session, which claims its role a few attempts after the
+  daemon's wake, gets the prompt once. The row ends at once when the role's claim failed or was
+  retired. When a prompt ends undelivered, every other waiting prompt of that role on the issue
+  ends with it, and one Dispatch message on the issue names them all: the hook, the role, why the
+  prompt ended, the move back it was written for and its words, and that no session received them.
+  Ship this daemon with or before the listener that refuses such a keep: an earlier daemon ends the
+  row at the listener's 404 and the prompt is lost.
+time: 2026-11-24T17:39:19Z
+custom:
+    Issue: pr5412
