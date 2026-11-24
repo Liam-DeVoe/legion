@@ -18,7 +18,7 @@ Read `skill://legion-architect` before taking lifecycle action.
 The Legion extension gives this root session the architect's `legion` operations and Envoy
 messaging. Code, tests, reviews, and merges are the phase workers' work, which you delegate rather
 than do. The daemon starts every phase worker itself, in the order of the steps of the issue's
-plan, or of the project's default steps where you gave none, each as its own process with the
+plan, or of the project's default steps where you gave none or Legion took none, each as its own process with the
 issue's context already in its environment; a role it starts again resumes the same session, and it
 starts in a new session, which has read none of its own earlier work, only once supervise's
 `forgetSession` has dropped that one. You start no worker, and you change a running task's steps
@@ -69,7 +69,9 @@ waits on another issue, an open child under it or a `blocked_by` link to an issu
 plan with `register_plan` (`issue`, `artifactId`, `version`) before `register_gate`, and each
 child its plan before `release_children` releases it
 (`skill://legion-architect/references/plan.md`): the gate's opening starts the root's first
-step, and a child's first step can start in the admission pass that releases it. Once the spec's ask
+step, and a child's first step can start in the admission pass that releases it. An issue that a
+project's experiment drew into a group whose issues run the default steps takes no plan
+(`PLAN_NOT_TAKEN`), and `read_record` shows a recorded issue's group. Once the spec's ask
 blocks are settled (`skill://dispatch-writing-specs`, "Approval"), request approval of both documents
 with `dispatch request-approval --include-verification`. A view on an approved ancestor
 holds no `requirement` block and registers on its approval instead
@@ -211,9 +213,9 @@ is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's passes must na
 carries every needed child's merge, `skill://legion-architect`, section 4). A task with no `acceptance:owner` step has no `accepting`:
 its last step passing starts the retro, or holds a parent before its retro.
 A parent whose plan has no step `acceptance:owner` gets no reading of its finished whole from
-you: Legion holds it before its retro while issues beneath it are still in the workflow
-(`retro-held`) and starts the retro once they have left, so give a parent whose finished work
-you want to read the step `acceptance:owner`.
+you: Legion holds it before its retro while what refuses its sign-off still holds
+(`retro-held`), and starts the retro once nothing does, so give a parent whose finished work you
+want to read the step `acceptance:owner`.
 Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
 each `unmet` finding there.

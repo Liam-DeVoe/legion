@@ -231,18 +231,23 @@ type scratchReview struct {
 // architects keeps, by tree, the launch and the registered session of each architect admit
 // launched, which ready reports ready; tune, when set, adjusts the daemon's test overrides at each
 // boot, as a proof that holds the outbox or a registration sets them.
+// experimentSource, set before boot, is the random source the booted daemon draws a `random`
+// experiment with; nil is the daemon's own. daemonLog, set before boot, also receives the
+// daemon's log, as a live proof keeps it for its evidence; nil keeps it in logs alone.
 type personHandoverRig struct {
-	t          *testing.T
-	dispatch   *scratchDispatch
-	baseURL    string
-	cfg        config.Config
-	pool       *store.Pool
-	logs       *syncBuffer
-	github     string
-	rt         *fake.Runtime
-	d          *daemon
-	architects map[string]rigArchitect
-	tune       func(*overrides)
+	t                *testing.T
+	dispatch         *scratchDispatch
+	baseURL          string
+	cfg              config.Config
+	pool             *store.Pool
+	logs             *syncBuffer
+	github           string
+	rt               *fake.Runtime
+	d                *daemon
+	architects       map[string]rigArchitect
+	tune             func(*overrides)
+	experimentSource func(uint64) (uint64, error)
+	daemonLog        io.Writer
 }
 
 // rigArchitect is one launch of a tree's architect and the session the rig registered for it:
@@ -268,12 +273,17 @@ func newPersonHandoverRig(t *testing.T, admissionCap int) *personHandoverRig {
 }
 
 // newPersonHandoverRigOn is newPersonHandoverRig over the scratch Dispatch board describes: the
-// NATS server it publishes its events on, which the daemon consumes from and which holds no stream
-// of an earlier run, the checkout it runs from, and where its output goes besides. A live proof
-// whose script owns the broker and runs the driver from the checkout's root
-// (register_gate_basis_live_test.go) names all three; every other proof takes newPersonHandoverRig.
+// NATS server it publishes its events on, a server the caller holds (the package's own, or the
+// one a live proof's script runs), which the daemon consumes Dispatch's events from and which
+// holds no stream of an earlier run, the checkout it runs from, and where its output goes
+// besides. A live proof whose script owns the broker and runs the driver from the checkout's root
+// (register_gate_basis_live_test.go, plan_experiment_live_test.go) names all three; every other
+// proof takes newPersonHandoverRig.
 func newPersonHandoverRigOn(t *testing.T, board scratchDispatchOptions, admissionCap int) *personHandoverRig {
 	t.Helper()
+	if board.natsURL == "" {
+		t.Fatal("newPersonHandoverRigOn was given no NATS server, and the daemon reads Dispatch's events off one")
+	}
 	scratch := startScratchDispatchOn(t, board)
 	baseURL := scratch.base
 	cfg := workflowConfig(t, board.natsURL)
@@ -319,11 +329,16 @@ func (r *personHandoverRig) boot() {
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github
 	o.controllerFirstWake = time.Hour
+	o.experimentSource = r.experimentSource
 	if r.tune != nil {
 		r.tune(&o)
 	}
 	r.rt = rt
-	r.d = startDaemonLogging(t, r.cfg, o, slog.New(slog.NewJSONHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	var logged io.Writer = r.logs
+	if r.daemonLog != nil {
+		logged = io.MultiWriter(r.logs, r.daemonLog)
+	}
+	r.d = startDaemonLogging(t, r.cfg, o, slog.New(slog.NewJSONHandler(logged, &slog.HandlerOptions{Level: slog.LevelDebug})))
 }
 
 // create creates an issue of the rig's project through Dispatch's API as identity, with fields

@@ -212,6 +212,22 @@ func (s projectionStore) ChainRows(_ context.Context, _ pgx.Tx, _ string, extra 
 	return rows, nil
 }
 
+// GatesRestingOn is every gate this store holds that rests on one of ancestors
+// (record.DesignGate.RestsOnIssue), in issue and then step order, as the real store reads them:
+// the read of the roots that rest on a parent held before its retro (record.RestingRootsOn).
+func (s projectionStore) GatesRestingOn(_ context.Context, _ pgx.Tx, ancestors ...string) ([]record.DesignGate, error) {
+	var resting []record.DesignGate
+	for _, issue := range slices.Sorted(maps.Keys(s.gates)) {
+		for _, step := range record.DesignSteps {
+			gate, held := s.gates[issue][step]
+			if held && slices.ContainsFunc(ancestors, gate.RestsOnIssue) {
+				resting = append(resting, gate)
+			}
+		}
+	}
+	return resting, nil
+}
+
 // projectedAt is the fixed instant every test here projects at.
 var projectedAt = time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
 

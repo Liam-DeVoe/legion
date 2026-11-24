@@ -76,9 +76,23 @@ func TestEachHoldOfAPlanReadsItsOwnHeldWord(t *testing.T) {
 		planChild("LEGION-71", "LEGION-70", "LEGION-70", "in_progress", phase.Implementing),
 		parked,
 		planHeld("LEGION-72", "LEGION-73", new("LEGION-73"), phase.Merging, HoldTaskStopped),
+		// Roots held before their retro with nothing beneath them in the workflow: one a root of
+		// another tree rests on, one an open Dispatch child holds, and one held by both, which
+		// names the resting root, the hold that comes first in R8's order.
+		planHeld("LEGION-80", "LEGION-80", nil, phase.Retro, HoldForChildren),
+		planHeld("LEGION-81", "LEGION-81", nil, phase.Retro, HoldForChildren),
+		planHeld("LEGION-82", "LEGION-82", nil, phase.Retro, HoldForChildren),
 	}
 	facts := planHoldFacts(issues, copyOf(issues...))
 	facts.Held = map[string][]string{"LEGION-70": {"LEGION-900"}}
+	facts.RetroHeldResting = map[string][]RestingRoot{
+		"LEGION-80": {{Key: "LEGION-90", Phase: phase.Implementing, Steps: []DesignStep{DesignStepSpec}}},
+		"LEGION-82": {{Key: "LEGION-92", Phase: phase.Admitted, Steps: []DesignStep{DesignStepSpec}}},
+	}
+	facts.RetroHeldChildren = map[string]ChildWait{
+		"LEGION-81": {Parent: "LEGION-81", Open: []OpenChild{{Key: "LEGION-91", Status: "backlog"}}},
+		"LEGION-82": {Parent: "LEGION-82", Open: []OpenChild{{Key: "LEGION-93", Status: "todo"}}},
+	}
 	byKey := make(map[string]Issue, len(issues))
 	for _, issue := range issues {
 		byKey[issue.Key] = issue
@@ -101,6 +115,9 @@ func TestEachHoldOfAPlanReadsItsOwnHeldWord(t *testing.T) {
 		{"control: a failed claim from implementing, the hold of an issue with no plan rows", "LEGION-63", HeldUnclassified, nil},
 		{"a Dispatch blocker answers before the hold for children", "LEGION-70", HeldDispatchBlocker, []string{"LEGION-900"}},
 		{"a stopped task under a parked parent reads its own word", "LEGION-72", HeldTaskStopped, nil},
+		{"a root held before its retro names the root resting on it", "LEGION-80", HeldChildrenBeforeRetro, []string{"LEGION-90"}},
+		{"a root held before its retro names its open Dispatch child", "LEGION-81", HeldChildrenBeforeRetro, []string{"LEGION-91"}},
+		{"a resting root comes before an open Dispatch child", "LEGION-82", HeldChildrenBeforeRetro, []string{"LEGION-92"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			word, heldBy := HeldReasonOf(byKey[tc.issue], false, facts)

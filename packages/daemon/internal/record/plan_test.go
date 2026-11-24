@@ -380,13 +380,14 @@ func TestPlanOwnersAreTheArchitectsThatActOnTheIssueOnItsChain(t *testing.T) {
 	})
 }
 
-// The plans a first step passes over are each plan of the issue in force whose giver acts on the
-// issue no longer on its Dispatch chain (PlanOwners), with its version and its giver, in the order
-// they were given: a plan of the issue's own architect is not among them, nor a plan of the
-// architect of an issue above it, nor a plan of the default steps, which nobody gave. Once
-// Dispatch moves the issue from under that issue, its architect's plan is an earlier owner's. On a
-// chain the copy cannot show to its top none is passed over, since who owns the issue is not
-// known and a plan passed over is deleted.
+// The plans of earlier owners a first step passes over are each plan of the issue in force whose
+// giver acts on the issue no longer on its Dispatch chain (PlanOwners), with its version and its
+// giver, in the order they were given: a plan of the issue's own architect is not among them, nor
+// a plan of the architect of an issue above it, nor a plan of the default steps, which nobody
+// gave. Once Dispatch moves the issue from under that issue, its architect's plan is an earlier
+// owner's. On a chain the copy cannot show to its top none is passed over, since who owns the
+// issue is not known and a plan passed over is deleted. (A first step in a group that takes no
+// plan passes its owner's plans over too, which workflow's passOverOwners reads.)
 func TestPlansOfEarlierOwnersLeaveOutEachArchitectThatActsOnTheIssue(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()

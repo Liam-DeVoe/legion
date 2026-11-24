@@ -107,7 +107,15 @@ func (s *server) refuseFailedRead(w http.ResponseWriter, r *http.Request, err er
 	if errors.As(err, &failure) {
 		what = failure.what
 	}
-	s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s failed; retry register_gate", what))
+	s.refuseDispatchRead(w, r, what, "register_gate")
+}
+
+// refuseDispatchRead answers a Dispatch read of what that failed: 502 DISPATCH_FAILED, nothing
+// recorded, so operation, which the refusal names, retries. It is the one text of that refusal,
+// for register_gate's reads (refuseFailedRead), the read of the document an operation names
+// (documentOfIssue) and register_plan's read of the plan's version (planAt).
+func (s *server) refuseDispatchRead(w http.ResponseWriter, r *http.Request, what, operation string) {
+	s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s failed; retry %s", what, operation))
 }
 
 // gateAncestors walks root's Dispatch child_of chain upward from its parent, nearest first,

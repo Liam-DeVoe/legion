@@ -68,15 +68,18 @@ const (
 	// its retro or its merge: nothing of it starts while that issue stands in retro or merging
 	// (HeldUnderAccepted).
 	HeldAcceptedAncestor HeldReason = "accepted_ancestor"
-	// HeldChildrenBeforeRetro is a parent whose task's last step is not the owner's acceptance, held before its retro
-	// while issues beneath it are still in the workflow (HoldForChildren, HeldForChildren). heldBy
-	// names each of them (OpenBeneath). Once none of them is open beneath it in a tree that runs,
-	// the hold ends and the daemon starts the retro itself (workflow's releaseHeldParents). It stands below every
-	// word that speaks of the issue's chain, a Dispatch link or an issue above it, because each of
-	// those holds the issue whatever its own hold is, and above at_work and unclassified, which it
-	// read before it had a word of its own: at_work's sentence, that the issue's workers run, is
-	// false of an issue its hold stopped, and unclassified says that no rule names what the issue
-	// waits for, where this word names it.
+	// HeldChildrenBeforeRetro is a parent whose task's last step is not the owner's acceptance,
+	// held before its retro while a hold on its acceptance holds it (HoldForChildren,
+	// HeldForChildren): issues beneath it on its Dispatch chain still in the workflow, roots that
+	// rest on its approval still in the workflow, or open Dispatch children of it. heldBy names
+	// each issue of the first of them that holds it, in R8's order (retroHeldBy), as the
+	// retro-held notice and the refusal of a retry name them. Once none of them holds it in a tree
+	// that runs, the hold ends and the daemon starts the retro itself (workflow's startHeldRetro).
+	// It stands below every word that speaks of the issue's chain, a Dispatch link or an issue
+	// above it, because each of those holds the issue whatever its own hold is, and above at_work
+	// and unclassified, which it read before it had a word of its own: at_work's sentence, that
+	// the issue's workers run, is false of an issue its hold stopped, and unclassified says that no
+	// rule names what the issue waits for, where this word names it.
 	HeldChildrenBeforeRetro HeldReason = "children_before_retro"
 	// HeldTaskStopped is an issue whose task was stopped, by its owner or by a failed step with no
 	// step to return to (HoldTaskStopped), and that keeps no slot where it stands: one held from
@@ -166,14 +169,39 @@ type HeldIssue struct {
 }
 
 // openChildren is the keys of the open Dispatch children of one wait on them — a children-first
-// wait (ChildWaits) or a started parent's (LineFacts.StartedParentWaits) — in the order that
-// judgement lists them (ChildWait.Open, Dispatch key order).
+// wait (ChildWaits), a started parent's (LineFacts.StartedParentWaits) or a parent's held before
+// its retro (LineFacts.RetroHeldChildren) — in the order that judgement lists them (ChildWait.Open,
+// Dispatch key order).
 func openChildren(wait ChildWait) []string {
 	children := make([]string, len(wait.Open))
 	for i, child := range wait.Open {
 		children[i] = child.Key
 	}
 	return children
+}
+
+// retroHeldBy is what holds issue, a parent held before its retro (HoldForChildren), as heldBy
+// names it: the first of the three holds on its acceptance that holds it, in R8's order, as the
+// workflow reads them (acceptanceHeld) — the issues beneath it on its Dispatch chain still in the
+// workflow (OpenBeneath over the pass's chains), then the roots still in the workflow that rest on
+// its approval (LineFacts.RetroHeldResting), then its open Dispatch children
+// (LineFacts.RetroHeldChildren) — each by key, and nothing where none holds it, as in a tree that
+// runs nothing yet.
+func retroHeldBy(issue Issue, facts LineFacts) []string {
+	if beneath := OpenBeneath(facts.Chains, issue.Key); len(beneath) > 0 {
+		return beneath
+	}
+	if resting := facts.RetroHeldResting[issue.Key]; len(resting) > 0 {
+		keys := make([]string, len(resting))
+		for i, root := range resting {
+			keys[i] = root.Key
+		}
+		return keys
+	}
+	if children := openChildren(facts.RetroHeldChildren[issue.Key]); len(children) > 0 {
+		return children
+	}
+	return nil
 }
 
 // HeldReasonOf is the ladder of C1: the words read in one order, the first that is true of the
@@ -272,10 +300,7 @@ func HeldReasonOf(issue Issue, holds bool, facts LineFacts) (HeldReason, []strin
 	// one that holds no slot row there is the gap unclassified reports.
 	switch {
 	case HeldForChildren(issue):
-		if open := OpenBeneath(chains, issue.Key); len(open) > 0 {
-			return HeldChildrenBeforeRetro, open
-		}
-		return HeldChildrenBeforeRetro, nil
+		return HeldChildrenBeforeRetro, retroHeldBy(issue, facts)
 	case HeldFor(issue, HoldTaskStopped) && !KeepsSlot(issue):
 		return HeldTaskStopped, nil
 	}

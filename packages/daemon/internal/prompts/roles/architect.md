@@ -35,7 +35,8 @@ root (`skill://legion-architect`, "Every turn").
 
 ## Ownership
 
-Own lifecycle steps 1-7 for this child: decompose or adopt, give each issue its plan, release
+Own lifecycle steps 1-7 for this child: decompose or adopt, give each issue its plan (an issue a
+project's experiment drew into a group whose issues run the default steps takes none), release
 children, verify integration, accept its head where its task holds your step `acceptance:owner`,
 require retro, and let the merge close it. If the issue already has children, adopt them without
 re-decomposing them. If it has none, decide whether a single-issue scope is sufficient or create a
@@ -115,7 +116,7 @@ of that wait comes to you, unless the daemon already sent one for your issue in 
 tree. Wait between event-driven wakes; do
 not poll or manufacture progress. The daemon starts every
 phase of each released child itself, in
-the order of the steps of the child's plan, or of the project's default steps where you gave none,
+the order of the steps of the child's plan, or of the project's default steps where you gave none or Legion took none,
 each phase worker
 as its own process with that child's context already in its environment; a role
 it starts again
@@ -150,9 +151,9 @@ step comes before yours
 child's merge, `skill://legion-architect`, section 4). A task with no `acceptance:owner` step has no
 `accepting`: its last step passing starts the retro, or holds a parent before its retro.
 A parent whose plan has no step `acceptance:owner` gets no reading of its finished whole from
-you: Legion holds it before its retro while issues beneath it are still in the workflow
-(`retro-held`) and starts the retro once they have left, so give a parent whose finished work
-you want to read the step `acceptance:owner`.
+you: Legion holds it before its retro while what refuses its sign-off still holds
+(`retro-held`), and starts the retro once nothing does, so give a parent whose finished work you
+want to read the step `acceptance:owner`.
 Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
 each `unmet` finding there.
@@ -181,7 +182,7 @@ write the request into this child's spec, and have the architect above you revie
 `criteria` step where it is gated.
 Retro (`skill://legion-retro`) is mandatory and runs before the merger's merge: the daemon starts
 the implementer on it once the task's last step passes, your sign-off where your acceptance is that
-step (on a parent, once the issues beneath it have left, `retro-held`). Every started role keeps its
+step (on a parent, once nothing holds it, `retro-held`). Every started role keeps its
 session until its issue closes, so an `envoy_publish` to a role that finished its phase still
 reaches that session, and wakes the role when the daemon released its idle pod. The merge closes
 the child: where the project opens a production check, it follows the close in the tester's own

@@ -41,11 +41,9 @@ type Admission struct {
 	// experiments are the project's declared experiments (UseExperiments,
 	// config.Project.ExperimentsDeclared), drawn for each unit this admission records: every
 	// tree-unit experiment when it opens a tree for the first time, and every issue-unit
-	// experiment when it first records an issue (drawExperiments). source is the random source a
-	// `random` mode is drawn with, experiment.CryptoSource in production and a pinned one in a
-	// test, injected as now is.
+	// experiment when it first records an issue (drawExperiments), each drawn with the engine's
+	// random source (workflow.Engine's ExperimentSource), the one source of the daemon's draws.
 	experiments []config.Experiment
-	source      func(uint64) (uint64, error)
 	// stalledTreeNotice is `stalled_tree_notice_hours` (UseStalledTreeNotice), how long a tree
 	// of this project may be quiet before the pass tells the project's controller once that it
 	// has stopped (tellStalledTrees). Zero is no bound and tells nobody, which is the
@@ -176,17 +174,16 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 		log = slog.Default()
 	}
 	return &Admission{store: store, engine: engine, cap: cap, project: project, log: log, now: time.Now,
-		source: experiment.CryptoSource, pending: make(map[string]heldSummary),
-		unclassifiedLogged: make(map[string]uint64), unknownChains: make(map[string]struct{}),
-		keeper: record.NewTreeKeeper(log)}
+		pending: make(map[string]heldSummary), unclassifiedLogged: make(map[string]uint64),
+		unknownChains: make(map[string]struct{}), keeper: record.NewTreeKeeper(log)}
 }
 
 // takeTreeDraw settles the tree-unit experiments of key at its first start (R17 of
 // dispatch://INFRA-3320): each experiment the nearest issue above it in Legion's work holds a row
 // for is copied from that issue (record.Store.CarryAssignments), and key draws its own for each
-// experiment it holds no row of after that, and only those, so the source is read for no answer
-// that would not be written. Both writes are write-once, so a draw stays as it was made, and a
-// later change of parent changes no answer.
+// experiment it holds no row of after that, and only those, with the engine's random source, so
+// the source is read for no answer that would not be written. Both writes are write-once, so a
+// draw stays as it was made, and a later change of parent changes no answer.
 func (a *Admission) takeTreeDraw(ctx context.Context, tx pgx.Tx, key string, chains *record.Chains) error {
 	if _, err := a.store.CarryAssignments(ctx, tx, key, chains.Above(key)); err != nil {
 		return err
@@ -202,7 +199,7 @@ func (a *Admission) takeTreeDraw(ctx context.Context, tx pgx.Tx, key string, cha
 		}
 		rest = append(rest, declared)
 	}
-	return experiment.DrawAndRecord(ctx, tx, a.store, key, rest, config.ExperimentTree, a.source, a.now())
+	return experiment.DrawAndRecord(ctx, tx, a.store, key, rest, config.ExperimentTree, a.engine.ExperimentSource(), a.now())
 }
 
 // Apply records a todo observation of an unrecorded root handed to Legion and every newer
@@ -1043,11 +1040,12 @@ func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intak
 }
 
 // drawExperiments draws every experiment the project declares over unit (UseExperiments) and
-// records the answers against key, in the caller's transaction (experiment.DrawAndRecord): the
-// issue-unit experiments of an issue against its own key when the daemon first records it
-// (putNewRoot). The tree-unit ones are settled at an issue's first start (takeTreeDraw).
+// records the answers against key, in the caller's transaction (experiment.DrawAndRecord), with
+// the engine's random source: the issue-unit experiments of an issue against its own key when the
+// daemon first records it (putNewRoot). The tree-unit ones are settled at an issue's first start
+// (takeTreeDraw).
 func (a *Admission) drawExperiments(ctx context.Context, tx pgx.Tx, key string, unit config.ExperimentUnit) error {
-	return experiment.DrawAndRecord(ctx, tx, a.store, key, a.experiments, unit, a.source, a.now())
+	return experiment.DrawAndRecord(ctx, tx, a.store, key, a.experiments, unit, a.engine.ExperimentSource(), a.now())
 }
 
 // applySummary applies one Dispatch boot-listing summary to admission's own record of the issue
@@ -1393,8 +1391,9 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 
 // childrenWaits is the admission pass's reading of the started parents' wait on their open
 // Dispatch children (record.LineFacts.StartedParentWaits, dispatch://INFRA-3320 R9 and R12), and
-// answers whether it wrote anything, which tells the pass to take its shared reads again. It makes
-// two moves and one write, each through the engine, and no other:
+// of each parent held before its retro (record.HoldForChildren, R8), and answers whether it wrote
+// anything, which tells the pass to take its shared reads again. It makes three moves and one
+// write, each through the engine, and no other:
 //
 //   - a started parent an open child now holds moves into awaiting_children
 //     (workflow.Engine.StopForChildren): a parent in accepting, one whose start is written and
@@ -1404,7 +1403,13 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 //     open under it on the wait's children (workflow.Engine.KeepWaitChildren), so a child filed
 //     or released during the wait is one the return names if it merged;
 //   - a parent in awaiting_children that no open child holds any longer goes back
-//     (workflow.Engine.ReturnFromChildren), on this pass and with nobody acting.
+//     (workflow.Engine.ReturnFromChildren), on this pass and with nobody acting;
+//   - a parent held before its retro that nothing holds any longer — no issue beneath it in the
+//     workflow, no root that rests on its approval in the workflow, no open Dispatch child — has
+//     its retro started (workflow.Engine.ReleaseHeldRetro), on this pass and with nobody acting.
+//     The close of an open Dispatch child, or its move to icebox or out from under the parent,
+//     changes the daemon's mirror of Dispatch alone, a child never released among them, so no
+//     settle of the engine reads it and this pass is what releases the parent.
 //
 // Each reads an issue of this project in the workflow whose gate root has started
 // (record.StartedRoots, record.TreeStarted: the gate root in Legion's work on the pass's chains
@@ -1418,10 +1423,10 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 // at work, it goes on in the list it stands in, neither moved into awaiting_children nor taken
 // back from it, until the daemon has read Dispatch
 // again. A key a hold still names (held, the pass's own predicate) is read on the first pass after
-// the hold ends, as the promotion reads it. The engine leaves alone a parent held, in retro or in
-// merging, whose pull request has merged, or whose phase's role stands on an entry a role's move
-// back raised out of retro or merging (record.PhaseRow.EntryFrom), and a second pass finds a
-// moved parent in awaiting_children already, so it sends nothing again.
+// the hold ends, as the promotion reads it. The engine leaves alone a parent held for any other
+// reason, in retro or in merging, whose pull request has merged, or whose phase's role stands on an
+// entry a role's move back raised out of retro or merging (record.PhaseRow.EntryFrom), and a second
+// pass finds a moved parent in awaiting_children already, so it sends nothing again.
 //
 // It runs before the releases (promoteHolds), so the slot a stopped parent held is freed on this
 // very pass by the one rule for a phase that keeps none (releaseSlots, record.NeedsSlot), and the
@@ -1429,12 +1434,12 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts,
 	held func(string) bool,
 ) (bool, error) {
-	// Either move reaches a parent in awaiting_children or one an open child holds, and nothing
-	// else, and on most passes there is neither: the rest is read for those alone, in byte order
-	// of their keys (SQL's `order by key` may collate otherwise).
+	// Each move reaches a parent in awaiting_children, one an open child holds, or one held before
+	// its retro, and nothing else, and on most passes there is none: the rest is read for those
+	// alone, in byte order of their keys (SQL's `order by key` may collate otherwise).
 	var parents []record.Issue
 	for _, issue := range issues {
-		if _, open := facts.StartedParentWaits[issue.Key]; open || issue.Phase == phase.AwaitingChildren {
+		if _, open := facts.StartedParentWaits[issue.Key]; open || issue.Phase == phase.AwaitingChildren || record.HeldForChildren(issue) {
 			parents = append(parents, issue)
 		}
 	}
@@ -1457,6 +1462,12 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 		}
 		wait, open := facts.StartedParentWaits[parent.Key]
 		switch {
+		case record.HeldForChildren(parent):
+			released, err := a.engine.ReleaseHeldRetro(ctx, tx, parent)
+			if err != nil {
+				return wrote, fmt.Errorf("start the held retro of %s: %w", parent.Key, err)
+			}
+			wrote = wrote || released
 		case parent.Phase == phase.AwaitingChildren && !open:
 			if err := a.engine.ReturnFromChildren(ctx, tx, parent); err != nil {
 				return wrote, fmt.Errorf("take %s back to the start it held: %w", parent.Key, err)
@@ -1588,11 +1599,12 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			return 0, nil, err
 		}
 	}
-	// A started parent an open Dispatch child holds stops, and one whose last open child has gone
-	// goes back to the start it held (childrenWaits). Both are written before the releases and
-	// read again where either was, so a stopped parent's slot is freed on this pass by the release
-	// below (awaiting_children keeps none), and a returned parent's start stands in this pass's
-	// line among the issues whose work came back, at the moment its wait ended.
+	// A started parent an open Dispatch child holds stops, one whose last open child has gone goes
+	// back to the start it held, and one held before its retro that nothing holds any longer starts
+	// its retro (childrenWaits). Each is written before the releases and read again where any was,
+	// so a stopped parent's slot is freed on this pass by the release below (awaiting_children
+	// keeps none), and a returned parent's start stands in this pass's line among the issues whose
+	// work came back, at the moment its wait ended.
 	waited, err := a.childrenWaits(ctx, tx, issues, facts, heldKeys)
 	if err != nil {
 		return 0, nil, err

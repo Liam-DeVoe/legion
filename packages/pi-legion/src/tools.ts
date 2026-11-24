@@ -608,6 +608,35 @@ async function lookUpDocument<T>(
   }
 }
 
+/** Each operation's document id, as its request to the daemon takes it. */
+const DOCUMENT_ID = {
+  register_gate: LegionGateRegisterRequest.shape.artifactId,
+  register_plan: LegionPlanRegisterRequest.shape.artifactId,
+} as const;
+
+/** The id of the document `reference` names on `issue`, as `operation` sends it to the daemon:
+ * `reference` itself where it is an id, and otherwise the id the pane's Dispatch looks it up as.
+ * `spec`, a slug or a filename, the references a `dispatch` command's --artifact accepts, is looked
+ * up there, so the architect's first call names the document however it knows it. A pane with no
+ * Dispatch, and a lookup that fails, refuse the call in `operation`'s words. */
+async function documentIdOf(
+  operation: keyof typeof DOCUMENT_ID,
+  dispatch: () => DispatchClient | undefined,
+  issue: string,
+  reference: string
+): Promise<string> {
+  if (DOCUMENT_ID[operation].safeParse(reference).success) return reference;
+  const board = dispatch();
+  if (board === undefined) {
+    throw new Error(
+      `${operation} cannot look up document "${reference}" on ${issue}: this pane has no Dispatch configured; pass the document's id`
+    );
+  }
+  return lookUpDocument(operation, issue, reference, () =>
+    resolveIssueDocumentId(board, issue, reference)
+  );
+}
+
 /** register_gate's words around the open decision blocks of the root's own document, which it
  * refuses a basis over as `dispatch request-approval` refuses an approval request
  * (`refuseOpenDecisionBlocks`). */
@@ -724,18 +753,21 @@ export function createLegionTool(deps: {
         "status is not triage, backlog, icebox or todo " +
         "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), and a plan given for a run of the issue " +
         "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION). " +
+        "Legion takes no plan for a recorded issue whose experiment's group runs the project's default steps (PLAN_NOT_TAKEN, naming " +
+        "the group): it records nothing, and the same plan given again gets the same answer. " +
         "stop_task (issue, task) stops one task of the plan Legion runs for a recorded issue: its running step stops, and the issue is " +
         "held, `holdReason` task-stopped, until a later version of the plan, given with register_plan, changes or replaces that task, " +
         "or, on a root, a person sets the root todo; the task then starts at its first step (a task that never started waits for its " +
         "gate and its line, as any task does before its first step); retry_or_escalate does not start it again (TASK_STOPPED). On an " +
         "issue whose first step has not run, the stop first settles the plan that step would walk, the newest plan you gave or the " +
         "project's default steps (task default), and then stops its task. The daemon refuses a task the plan does not hold " +
-        "(TASK_NOT_FOUND, naming the plan's tasks), one that is done (TASK_DONE), a stop of a root that waits on a person " +
-        "before its first step (TASK_AWAITING_PERSON: change its " +
-        "task with a later version of the plan, or stop it once the person has answered) and a stop of a parent in awaiting_children " +
-        "(WAITING_ON_CHILDREN, naming its open Dispatch children: act on the children). It also refuses, changing nothing, a stop of " +
-        "an issue you do not own on its Dispatch chain (ISSUE_NOT_OWNED, naming the architect that does), and a stop of a run of " +
-        "the issue that ended before Legion applied it: read the issue again (TASK_STALE_GENERATION). " +
+        "(TASK_NOT_FOUND, naming the plan's tasks), one that is done (TASK_DONE), every task of an issue whose experiment's group " +
+        "runs the project's default steps, since Legion takes no plan from its owner (PLAN_NOT_TAKEN), a stop of a root that waits " +
+        "on a person before its first step (TASK_AWAITING_PERSON: change its task with a later version of the plan, or stop it once " +
+        "the person has answered) and a stop of a parent in awaiting_children (WAITING_ON_CHILDREN, naming its open Dispatch " +
+        "children: act on the children). It also refuses, changing nothing, a stop of an issue you do not own on its Dispatch chain " +
+        "(ISSUE_NOT_OWNED, naming the architect that does), and a stop of a run of the issue that ended before Legion applied it: " +
+        "read the issue again (TASK_STALE_GENERATION). " +
         "sign_off is the architect's acceptance of an issue in accepting, moving its task to its next step, or to retro where the " +
         "acceptance is the task's last step. The daemon refuses, changing nothing, a " +
         "sign-off of an issue you no longer own (ISSUE_NOT_OWNED), one of a run of the " +
@@ -982,24 +1014,12 @@ export function createLegionTool(deps: {
             const step = named.data;
             // A basis is checked whole before anything is read, Dispatch or the daemon.
             const basis = registrationBasis(parameters);
-            let artifactId = reference;
+            let artifactId: string;
             let basisFields: { basisArtifactId?: string; basisVersion?: number; reason?: string } =
               {};
             if (basis === undefined) {
-              // The daemon takes the document's id alone; `spec`, a slug or a filename, the
-              // references a `dispatch` command's --artifact accepts, is looked up first, so the
-              // architect's first call names the document however it knows it.
-              if (!LegionGateRegisterRequest.shape.artifactId.safeParse(reference).success) {
-                const board = dispatch();
-                if (board === undefined) {
-                  throw new Error(
-                    `register_gate cannot look up document "${reference}" on ${issue}: this pane has no Dispatch configured; pass the document's id`
-                  );
-                }
-                artifactId = await lookUpDocument("register_gate", issue, reference, () =>
-                  resolveIssueDocumentId(board, issue, reference)
-                );
-              }
+              // The daemon takes the document's id alone, which a reference is looked up as.
+              artifactId = await documentIdOf("register_gate", dispatch, issue, reference);
             } else {
               const board = dispatch();
               if (board === undefined) {
@@ -1055,18 +1075,7 @@ export function createLegionTool(deps: {
             }
             // The document is named as register_gate's is: its id, or a reference looked up in the
             // pane's Dispatch.
-            let artifactId = reference;
-            if (!LegionPlanRegisterRequest.shape.artifactId.safeParse(reference).success) {
-              const board = dispatch();
-              if (board === undefined) {
-                throw new Error(
-                  `register_plan cannot look up document "${reference}" on ${issue}: this pane has no Dispatch configured; pass the document's id`
-                );
-              }
-              artifactId = await lookUpDocument("register_plan", issue, reference, () =>
-                resolveIssueDocumentId(board, issue, reference)
-              );
-            }
+            const artifactId = await documentIdOf("register_plan", dispatch, issue, reference);
             // The fact is keyed by the issue, its generation, the document and the version, so a
             // repeat is the registration again, answered the same.
             const taken = await retryWhileDaemonRestarts(

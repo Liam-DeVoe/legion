@@ -800,7 +800,7 @@ func TestTheArchitectTaskNamesAKeptDecisionFirstInEveryShape(t *testing.T) {
 // restingOnTheRoot is the text that names a root resting on LEGION-208's approval, as
 // restingRootsTask writes it.
 const restingOnTheRoot = "These roots rest on the approval of LEGION-208 and are still in the workflow: LEGION-300 (its spec step, in implementing). " +
-	"The daemon refuses the sign-off and the close of LEGION-208 while any of them is in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). " +
+	"The daemon refuses the sign-off and the close of LEGION-208, and holds its retro where its task has no acceptance step, while any of them is in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). " +
 	"Each root's own architect, or a person, moves it."
 
 // The roots that rest on the root's approval are named in every shape, apart from what a person

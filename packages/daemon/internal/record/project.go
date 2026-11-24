@@ -553,6 +553,16 @@ type LineFacts struct {
 	// the judgement reads the mirror against the daemon's records in the transaction the line is
 	// never given; it is never stored, and each read of the facts judges it again.
 	StartedParentWaits map[string]ChildWait
+	// RetroHeldChildren is the open Dispatch children of each parent held before its retro
+	// (HoldForChildren), by parent key, judged as StartedParentWaits is (readChildWaits over
+	// RetroHeldParents), and RetroHeldResting the roots still in the workflow that rest on each
+	// such parent's approval (RestingRootsOn): with the issues beneath it still in the workflow
+	// (OpenBeneath), the three holds on its acceptance that hold its retro (workflow's
+	// acceptanceHeld), which the held word children_before_retro names in R8's order
+	// (HeldReasonOf). A parent nothing holds so has no entry in either. ReadLineFacts fills both
+	// and reads nothing for them where no parent is held before its retro.
+	RetroHeldChildren map[string]ChildWait
+	RetroHeldResting  map[string][]RestingRoot
 	// childrenFirst is the children-first judgement ReadLineFacts made from the read of the
 	// children it judged StartedParentWaits from (readChildWaits), which ChildWaitsOf hands the
 	// caller to fill ChildWaits with; nil in facts ReadLineFacts did not read.
@@ -645,12 +655,14 @@ func readChainFacts(ctx context.Context, tx pgx.Tx, store Store, project string,
 
 // ReadLineFacts reads the facts of one admission pass for issues: the pass's one reading of the
 // Dispatch chains and the gates on them (readChainFacts), one read of the starts the project
-// owes, and both judgements of a parent's open children — the started parents'
-// (LineFacts.StartedParentWaits) and the children-first waits ChildWaitsOf hands on — from the
-// children the chain read already holds (readChildWaits), whatever the number of chains, gates
-// and issues involved (R16 of dispatch://INFRA-3320: one pass reads the copy in a number of
-// queries that does not grow with the number of issues or links). project is the Dispatch
-// project key and steps the design-gate steps the deployment gates.
+// owes, the three judgements of a parent's open children — the started parents'
+// (LineFacts.StartedParentWaits), the parents' held before their retro (LineFacts.RetroHeldChildren)
+// and the children-first waits ChildWaitsOf hands on — from the children the chain read already
+// holds (readChildWaits), and the roots that rest on each parent held before its retro
+// (LineFacts.RetroHeldResting, RestingRootsOn: two reads, and none where no parent is held so),
+// whatever the number of chains, gates and issues involved (R16 of dispatch://INFRA-3320: one pass
+// reads the copy in a number of queries that does not grow with the number of issues or links).
+// project is the Dispatch project key and steps the design-gate steps the deployment gates.
 func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, steps []DesignStep) (LineFacts, error) {
 	chains, gates, err := readChainFacts(ctx, tx, store, project, issues, steps)
 	if err != nil {
@@ -671,7 +683,10 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 	facts := LineFacts{Chains: chains, Gates: gates, Owed: owed, OwedRows: rows}
 	// The children are judged last, since the gates say which issues are children-first
 	// candidates and an issue owing a start is a started parent (StartedParents).
-	facts.childrenFirst, facts.StartedParentWaits = readChildWaits(issues, facts)
+	facts.childrenFirst, facts.StartedParentWaits, facts.RetroHeldChildren = readChildWaits(issues, facts)
+	if facts.RetroHeldResting, err = RestingRootsOn(ctx, tx, store, RetroHeldParents(issues)); err != nil {
+		return LineFacts{}, err
+	}
 	return facts, nil
 }
 
@@ -1002,16 +1017,19 @@ func PhaseKeepsSlot(at phase.Phase) bool {
 }
 
 // KeepsSlot is the phase half of the admission rule: an issue holds one of the cap's slots from
-// the moment the daemon starts it until it stands in accepting, retro or merging, which hold
-// none, or until it is done or Dispatch takes it out of the workflow (InWorkflow). Every other
-// phase keeps the row — admitted, awaiting_person, the four worker phases and a hold the record
-// names no phase for (PhaseKeepsSlot) — so an issue waiting for a person or for its review keeps
-// its place against the cap and wins none back from the line when the wait ends. A wait on
-// another issue is the one wait that is not read here: an issue the daemon has started that waits
-// on one gives its row back and stands in the line for one again, by the rule beside this
-// (blockers.waitsOf, admit's releaseSlotsForWaits), save the roots that rule names as keepers.
-// That rule reads this one first, so an issue in accepting, retro or merging waits on nothing
-// there (blockers.waitsOf). The rule whole is "Admission and the `legion` label" in
+// the moment the daemon starts it until it stands in accepting, retro, merging or
+// awaiting_children, which hold none, or until it is done or Dispatch takes it out of the
+// workflow (InWorkflow). Every other phase keeps the row — admitted, awaiting_person, the four
+// worker phases and a hold the record names no phase for (PhaseKeepsSlot) — so an issue waiting
+// for a person or for its review keeps its place against the cap and wins none back from the line
+// when the wait ends. A parent in awaiting_children gives its row back while its open children
+// work under slots of their own, and a start of planning through reviewing that its return makes
+// waits in the line for one again (workflow's ReturnFromChildren). Any other wait on another
+// issue is not read here: an issue the daemon has started that waits on one gives its row back
+// and stands in the line for one again, by the rule beside this (blockers.waitsOf, admit's
+// releaseSlotsForWaits), save the roots that rule names as keepers. That rule reads this one
+// first, so an issue in accepting, retro, merging or awaiting_children waits on nothing there
+// (blockers.waitsOf). The rule whole is "Admission and the `legion` label" in
 // docs/site/src/content/docs/legion/concepts.md.
 //
 // The cap bounds the work in progress, and an issue in accepting, retro or merging writes no more

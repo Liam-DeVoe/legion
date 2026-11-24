@@ -3496,23 +3496,29 @@ func (r *outbox) stopActs(ctx context.Context, row record.OutboxRow, payload rec
 	return true, nil
 }
 
-// claimToStop is machine's claim as a row that stops it reads it first, and whether the claim runs
-// anything to stop, which a failed or retired claim does not. It reads the published view
-// (supervise.Machine.View) first, which never waits, and reads a claim the view shows failed or
-// retired once more through supervise.Machine.Claim before it gives up on it: giving up decides
-// whether to stop the claim at all, and supervise.Machine.Claim says why such a read must see a
-// decision in flight. The view of a failed claim reads failed until its retry's launch is first
-// written, and a row that gave up on that read would leave the retry to launch the claim the row
-// was to stop. The caller's stop decides on the claim answered.
+// failedOrRetired is whether c has failed or retired: a claim its last decision left in either
+// state has let its process go and has no launch under way, so a stop has nothing of it to stop.
+func failedOrRetired(c supervise.Claim) bool {
+	return c.State == supervise.StateFailed || c.State == supervise.StateRetired
+}
+
+// claimToStop is machine's claim as a row that stops it reads it before the stop, and whether the
+// claim has anything to stop (failedOrRetired). It reads the published view
+// (supervise.Machine.View), which never waits, and where the view reads the claim failed or
+// retired it reads the claim once more through supervise.Machine.Claim before it gives up. Giving
+// up decides whether to stop the claim at all, which is "a check a decision must not race"
+// (supervise.Machine.Claim): the view reads a failed claim failed until a retry's launch is first
+// written (supervise's writeTry), so a row that gave up on the view while a retry's decision was
+// in flight would leave that retry to launch the claim the row was to stop. The second read waits
+// out the whole decision, the retry's start in the runtime included, which under a Sandbox can
+// take minutes; a claim the view reads live is never read that way. The caller's stop decides on
+// the claim answered.
 func claimToStop(machine *supervise.Machine) (supervise.Claim, bool) {
-	runsNothing := func(c supervise.Claim) bool {
-		return c.State == supervise.StateFailed || c.State == supervise.StateRetired
-	}
 	held := machine.View().Claim
-	if runsNothing(held) {
+	if failedOrRetired(held) {
 		held = machine.Claim()
 	}
-	return held, !runsNothing(held)
+	return held, !failedOrRetired(held)
 }
 
 // keepsStartTask says whether held still holds a task of this start's phase and run that it will

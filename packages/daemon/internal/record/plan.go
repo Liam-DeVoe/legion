@@ -30,7 +30,8 @@ const (
 	// document.
 	PlanSourceOwner = "owner"
 	// PlanSourceDefault is the project's default steps as one task, written at the start of the
-	// work of a generation no owner's plan reached: version 0, no document and no giver.
+	// work of a generation no owner's plan reached, or whose experiment's group takes no plan from
+	// its owner: version 0, no document and no giver.
 	PlanSourceDefault = "default"
 )
 
@@ -397,10 +398,29 @@ func (s *Postgres) OwnersNewestPlan(ctx context.Context, tx pgx.Tx, issue Issue)
 // on its Dispatch chain are owners, so none of their plans is among them, and a default plan is
 // nobody's, so none is either. On a chain the copy cannot show to its top none is among them:
 // who owns the issue is not known until the daemon has read Dispatch again, and a plan passed
-// over is deleted. The versions are read, and their rows closed, before the givers are judged,
-// since a transaction runs one statement at a time.
+// over is deleted.
 func (s *Postgres) PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error) {
-	describe := fmt.Sprintf("read the plans of %s that earlier owners gave", issue.Key)
+	return s.plansInForce(ctx, tx, issue, false, fmt.Sprintf("read the plans of %s that earlier owners gave", issue.Key))
+}
+
+// PlansOfOwners is the version in force of each generation of issue whose giver acts on issue now
+// (PlanOwners), in the order they were given, generation 0 among them, which holds a plan given
+// before the daemon recorded the issue: every plan an owner gave that a first step could take,
+// each copy a carry wrote to a later generation (CarryPlan) among them. A default plan is
+// nobody's, so none is among them. On a chain the copy cannot show to its top, every plan in force
+// is among them. Its one reader is the first step of an issue whose group takes no plan (workflow's
+// passOverOwners), which passes over an earlier owner's plan as well, so it needs no judgement of
+// the giver, and no plan whose giver the gap hides stays for the run to walk.
+func (s *Postgres) PlansOfOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error) {
+	return s.plansInForce(ctx, tx, issue, true, fmt.Sprintf("read the plans of %s that its owners gave", issue.Key))
+}
+
+// plansInForce is the owner's version in force of each generation of issue, in the order they were
+// given, whose giver acts on issue now (PlanOwners) where owners is true, and acts on it no longer
+// where it is false; on a chain the copy cannot show to its top, every one where owners is true and
+// none where it is false. The versions are read, and their rows closed, before the givers are
+// judged, since a transaction runs one statement at a time.
+func (s *Postgres) plansInForce(ctx context.Context, tx pgx.Tx, issue Issue, owners bool, describe string) ([]PlanVersion, error) {
 	rows, err := tx.Query(ctx, "select "+planVersionColumns+` from issue_plans where `+inForce+`
 		order by given_at, generation`, issue.Key)
 	if err != nil {
@@ -418,22 +438,24 @@ func (s *Postgres) PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Is
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
 	if !known {
+		if owners {
+			return given, nil
+		}
 		return nil, nil
 	}
-	var earlier []PlanVersion
+	var plans []PlanVersion
 	for _, version := range given {
-		if !owns(version.GivenBy) {
-			earlier = append(earlier, version)
+		if owns(version.GivenBy) == owners {
+			plans = append(plans, version)
 		}
 	}
-	return earlier, nil
+	return plans, nil
 }
 
-// HeldForChildrenIssues is every issue of the Dispatch project project held before its retro for
-// the issues beneath it (HeldForChildren: phase held with the hold reason children), by key: the
-// parents a fact's settle asks whether their retro may start (workflow's releaseHeldParents). Its
-// rows are those parents alone, so a settle costs the number of parents held so and not the number
-// of issues at work.
+// HeldForChildrenIssues is every issue of the Dispatch project project held before its retro
+// (HeldForChildren: phase held with the hold reason children), by key: the parents a fact's settle
+// asks whether their retro may start (workflow's releaseHeldParents). Its rows are those parents
+// alone, so a settle costs the number of parents held so and not the number of issues at work.
 func (s *Postgres) HeldForChildrenIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error) {
 	issues, err := queryIssues(ctx, tx, "select "+issueColumns+" from issues where project = $1 and phase = $2 and hold_reason = $3 order by key",
 		project, string(phase.Held), string(HoldForChildren))

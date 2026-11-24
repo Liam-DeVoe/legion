@@ -164,7 +164,7 @@ const schemas: Record<string, z.ZodType> = {
   "operator-claims.json": LegionOperatorClaimsResponse,
   "grant.json": LegionGrantResponse,
   "handoff-complete.json": LegionHandoffCompleteResponse,
-  // The status calls' answer (contract 240), the writes the controller's set_status and an
+  // The status calls' answer (contract 242), the writes the controller's set_status and an
   // architect's rerun_child queued (internal/api's StatusCallResponse).
   "issue-status.json": LegionStatusCallResponse,
   "fresh-session.json": LegionFreshSessionResponse,
@@ -950,7 +950,7 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
 // The held words are the daemon's `record.HeldReasons`, in its order: dispatch://INFRA-3320 added
 // `awaiting_children`, a parent waiting on its open children, between `root_awaiting_person` and
 // `design_gate`, contract 219 added `children_before_retro` and `task_stopped` after
-// `accepted_ancestor`, and dispatch://INFRA-4730 added two at contract 240: `chain_unknown`, an
+// `accepted_ancestor`, and dispatch://INFRA-4730 added two at contract 242: `chain_unknown`, an
 // issue on a Dispatch chain the daemon's copy cannot show to its top, at the head of the ladder,
 // and `awaiting_todo`, a run that starts as a root's does and waits for a person's todo, between
 // `awaiting_children` and `design_gate`.
@@ -1109,6 +1109,12 @@ test("the state golden carries the experiments each issue was drawn for", () => 
   ]);
   // An issue no experiment has reached carries no key.
   expect(issueOf("LEGION-211").assignments).toBeUndefined();
+  // The group an experiment that sets how its issues are done gave the child, as its draw
+  // recorded it: the parse keeps it, and a group that is no string is refused.
+  const planned = LegionStateResponse.parse(state).issues["LEGION-209"]?.assignments?.find(
+    (row) => row.experiment === "planning"
+  );
+  expect(planned?.plan).toBe("default");
 
   const parses = () => LegionStateResponse.safeParse(state).success;
   expect(parses()).toBeTrue();
@@ -1136,6 +1142,12 @@ test("the state golden carries the experiments each issue was drawn for", () => 
   expect(parses()).toBeTrue();
   drawn.assignments = [{ experiment: "memory", variant: "memory" }];
   expect(parses()).toBeTrue();
+  // A group that is no string, and an empty one: the daemon leaves the key off where the arm
+  // named no group.
+  drawn.assignments = [{ experiment: "planning", variant: "b", mode: "random", plan: 1 }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = [{ experiment: "planning", variant: "b", mode: "random", plan: "" }];
+  expect(parses()).toBeFalse();
   drawn.assignments = held;
   expect(parses()).toBeTrue();
 });
@@ -2018,7 +2030,7 @@ test("an escalation rejects empty required fields", () => {
   }
 });
 
-// Contract 240: set_status takes the two arguments of Dispatch's parent rule and rerun_child the
+// Contract 242: set_status takes the two arguments of Dispatch's parent rule and rerun_child the
 // parent one, each in the daemon's own words (`intake.IncludeArgument`, `intake.UnlinkArgument`):
 // `children` is `include` or `unlink` and `parent` is `include`. A word the daemon refuses
 // (`INVALID_CHILDREN`, `INVALID_PARENT`) is refused here before the request leaves the pane, and
@@ -2105,7 +2117,7 @@ test("the state golden names what every blocked issue waits on", () => {
 
 // Contract 51: the cap counts the issues at work, so `active` and `waiting` name issues of any
 // depth and say nothing about which roots are in work. `trees` says it instead — the roots in
-// Legion's work, read from Dispatch's chain since contract 240 — and each issue's `tree` names its
+// Legion's work, read from Dispatch's chain since contract 242 — and each issue's `tree` names its
 // gate root, so a child is told from a root. The computed golden carries a child: LEGION-209's
 // gate root is LEGION-208, and all three roots in work are named while one issue alone holds a
 // slot. Neither key is required: a daemon at this contract strips both from the state it serves a
@@ -2143,7 +2155,7 @@ test("the state names the roots in work and each issue's gate root", () => {
 });
 
 // Contract 38: a release says which of its children it started and which it left held, with what
-// each held child waits on, and since contract 240 each status write it queued (`queued`), a todo
+// each held child waits on, and since contract 242 each status write it queued (`queued`), a todo
 // for each child in the wave's order. No plugin code reads the answer — the `legion` tool hands it
 // to the agent whole — so a body with `released` alone is read, and `held` carries the same
 // `{issue, blockedBy}` row the state's `blocked` does.
@@ -2168,10 +2180,10 @@ test("a wave release answers what it started, what it held and what it queued", 
   ).toBeFalse();
 });
 
-// Contract 240: set_status and rerun_child answer once their call's transaction commits, naming
+// Contract 242: set_status and rerun_child answer once their call's transaction commits, naming
 // each status write the call queued, and no write where the call writes none (a todo on an issue
 // in Legion's work). The `legion` tool hands the answer to the agent whole, so a body without
-// `queued`, which a daemon below 240 answered, is read too; a row that is no outbox row's id is
+// `queued`, which a daemon below 242 answered, is read too; a row that is no outbox row's id is
 // refused.
 test("a status call answers the writes it queued", () => {
   expect(LegionStatusCallResponse.parse(fixture("issue-status.json"))).toEqual({
@@ -2954,21 +2966,22 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   expect(block.data?.caches).toEqual(live.caches);
 
   // Every other key is the state golden's own, the `contract` mark, `lowestPluginContract` and
-  // the keys contracts 239 and 240 added aside: the mark names the contract the caller is served
-  // at, 199, the recorded contract below the 201 the caller states (`recordedContractAtOrBelow`),
-  // INFRA-4605's, which moved no answer's shape, and the lowest plugin contract reports the claims
-  // of the snapshot the route projected the body from, a pod at 201, which `state.json`'s own
-  // fixture does not hold. No band stands between 199 and 202 but the repositories block's, and
-  // the two bands above 202 are contract 239's, which takes every root's `treeRuns` and the
-  // `gatedSteps` of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`), and
-  // contract 240's, which takes `daemon.convertedAt` (`withoutConvertedAt`) and reads a
-  // `chain_unknown` or `awaiting_todo` hold as `unclassified`, of which the golden holds none, so
+  // the keys contracts 220, 239 and 242 added aside: the mark names the contract the caller is
+  // served at, 199, the recorded contract below the 201 the caller states
+  // (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's shape, and the lowest
+  // plugin contract reports the claims of the snapshot the route projected the body from, a pod
+  // at 201, which `state.json`'s own fixture does not hold. Four bands stand above 199: the
+  // repositories block's; contract 220's, which takes `plan` off each assignment, so the golden's
+  // rows are compared without it; contract 239's, which takes every root's `treeRuns` and the
+  // `gatedSteps` of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`); and
+  // contract 242's, which takes `daemon.convertedAt` (`withoutConvertedAt`) and reads a
+  // `chain_unknown` or `awaiting_todo` hold as `unclassified`, of which the golden holds none. So
   // the narrowing changes this one block and those keys and no other key. One value strip of
   // contract 213 stands above 199 as well: `caches`, the source of the repository-cache-room row,
   // arrived at contract 213, so that row is served here without its `source`, every other field of
   // it and every other row as the state golden holds them. Contract 239's value strips take
-  // nothing more here: the strip of its two step statuses takes the `gatedSteps` its band has
-  // taken already, and the golden holds no issue in `awaiting_children` and no held row of it.
+  // nothing more here: the strip of its two step statuses takes the `gatedSteps` its band has taken
+  // already, and the golden holds no issue in `awaiting_children` and no held row of it.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -3007,6 +3020,19 @@ test("a reader at contract 152 parses the repositories block served below 202", 
       delete issue.gatedSteps;
     }
   }
+  const issues = Object.fromEntries(
+    Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => [
+      key,
+      issue.assignments === undefined
+        ? issue
+        : {
+            ...issue,
+            assignments: (issue.assignments as Record<string, unknown>[]).map(
+              ({ plan: _plan, ...row }) => row
+            ),
+          },
+    ])
+  );
   const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);
   expect(capabilities.some((row) => row.source === "caches")).toBeTrue();
   const withoutCachesSource = capabilities.map((row) => {
@@ -3016,7 +3042,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     const { source: _source, ...kept } = row;
     return kept;
   });
-  expect(narrowedRest).toEqual({ ...rest, capabilities: withoutCachesSource });
+  expect(narrowedRest).toEqual({ ...rest, issues, capabilities: withoutCachesSource });
 
   // What serving the current block would do: the reader of 152 refuses it for the three keys it
   // requires beside the `withoutWebhookApp` and `caches` the block keeps, so a caller from 152 to

@@ -184,9 +184,10 @@
 #
 # --control runs part one's negative control against the base, and --base-commit <rev> against
 # <rev> in its place, with no search for the base (news_base): `git archive <rev> | tar -x` into a
-# scratch tree under TMPDIR, this checkout's part-one driver copied into it, and part one built and
-# run there, daemon and Dispatch both of that commit; nothing of this checkout is written. Either
-# runs part one alone, since the control is part one's. The run must fail at
+# scratch tree under TMPDIR, this checkout's part-one driver copied into it, with a file of the
+# control's own for each seam the driver calls that the base lacks (control_compat), and part
+# one built and run there, daemon and Dispatch both of that commit; nothing of this checkout is
+# written. Either runs part one alone, since the control is part one's. The run must fail at
 # a2-the-reviewer-is-told-the-changed-sections, past that step's setup checks, on the one-approval
 # check after them, in that check's own words (control_failure below): the script reports the
 # control as biting then. It reports no control for a pass, a failure in an earlier check or step,
@@ -206,9 +207,9 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 driver_file=packages/daemon/internal/daemon/approved_version_news_live_test.go
-# Part one's driver is three files: the test and its harness, its steps, and its seed and setup
-# checks, which the control copies into the base tree together, since the test runs the steps and
-# the steps call the seed.
+# Part one's driver is three files: the test and its harness, its steps, and its seed, setup
+# checks and requests to Dispatch, which the control copies into the base tree together, since
+# the test runs the steps and both call the seed's file.
 steps_file=packages/daemon/internal/daemon/approved_version_news_part_one_steps_live_test.go
 seed_file=packages/daemon/internal/daemon/approved_version_news_seed_live_test.go
 # Part two's driver, whose sessions…Mark constants are the news marks news_base finds the base by,
@@ -402,22 +403,29 @@ check_jj() {
 # news_base sets base_sha to the base where no --base-commit names one: the first parent of the
 # first commit, in HEAD's history, that adds a news mark to prompts_dir, which is the newest commit
 # that carries none. The news marks are the text between the quotes of every sessions…Mark
-# constant of sessions_file, part two's driver; a driver that names none, or writes one with a
-# backslash or a quote in its text, fails the run. `git log -S<mark>` names each commit that adds
-# or removes a mark and skips merge commits, so a forward merge that brings a mark in from main is
-# never the commit found. Of those commits, the first in `git rev-list --topo-order --reverse HEAD`,
-# where each commit comes after its parents, has none of the others before it in its history. A
-# history in which no commit adds a mark, and a first such commit whose parent the clone lacks, as
-# at the edge of a shallow clone, are refused with exit 2, naming the remedies.
+# constant of sessions_file, part two's driver; a driver that names none, writes one with a
+# backslash or a quote in its text, or assigns one in another form than its name, = and its text
+# in double quotes alone on the line, such as with a comment after it, fails the run, the last
+# naming the line, since a mark left unread would move the base later. `git log -S<mark>` names
+# each commit that adds or removes a mark and skips merge commits, so a forward merge that brings
+# a mark in from main is never the commit found. Of those commits, the first in
+# `git rev-list --topo-order --reverse HEAD`, where each commit comes after its parents, has none
+# of the others before it in its history. A history in which no commit adds a mark, and a first
+# such commit whose parent the clone lacks, as at the edge of a shallow clone, are refused with
+# exit 2, naming the remedies.
 news_base() {
-  local line marks=() mark found sha adders=() order first remedy
+  local line number=0 marks=() mark found sha adders=() order first remedy
   remedy="a shallow clone lacks that history: fetch it (git fetch --unshallow), or, for part one's control alone, name its base with --base-commit <rev>"
   [ -r "$root/$sessions_file" ] || fail "this checkout holds no $sessions_file to read the news marks from"
   while IFS= read -r line; do
-    [[ "$line" =~ ^[[:space:]]*(sessions[A-Za-z0-9_]*Mark)[[:space:]]*=[[:space:]]*\"(.*)\"[[:space:]]*$ ]] || continue
-    [[ "${BASH_REMATCH[2]}" != *[\\\"]* ]] ||
-      fail "$sessions_file writes the news mark ${BASH_REMATCH[1]} with a backslash or a quote in its text, which this script does not read"
-    marks+=("${BASH_REMATCH[2]}")
+    number=$((number + 1))
+    if [[ "$line" =~ ^[[:space:]]*(sessions[A-Za-z0-9_]*Mark)[[:space:]]*=[[:space:]]*\"(.*)\"[[:space:]]*$ ]]; then
+      [[ "${BASH_REMATCH[2]}" != *[\\\"]* ]] ||
+        fail "$sessions_file writes the news mark ${BASH_REMATCH[1]} with a backslash or a quote in its text, which this script does not read"
+      marks+=("${BASH_REMATCH[2]}")
+    elif [[ "$line" =~ (^|[^A-Za-z0-9_])(sessions[A-Za-z0-9_]*Mark)([[:space:]]+[A-Za-z_][A-Za-z0-9_.]*)?[[:space:]]*=([^=]|$) ]]; then
+      fail "$sessions_file line $number assigns the news mark ${BASH_REMATCH[2]} in a form this script does not read, so the run would find the base without that mark: write it as ${BASH_REMATCH[2]} = \"<text>\", alone on its line; the line reads: ${line#"${line%%[![:space:]]*}"}"
+    fi
   done <"$root/$sessions_file"
   [ "${#marks[@]}" -gt 0 ] ||
     fail "$sessions_file names no news mark (no sessions…Mark constant), so this run cannot find the base, the parent of the first commit that adds one"
@@ -436,6 +444,86 @@ news_base() {
   base_sha=$(git -C "$root" rev-parse --verify --quiet "$first^1^{commit}") ||
     refuse "$first, the first commit in HEAD's history that adds a news mark to $prompts_dir, has no parent in this clone, so this run finds no base for part one's control or part two's base arm: $remedy"
   note "the base: $base_sha, the parent of $first, the first commit that adds a news mark"
+}
+
+# control_compat TREE writes into TREE, the scratch copy of the base that part one's control
+# builds, the base's version of each of the two seams this checkout's part-one seed calls that
+# an older base lacks, each a test file of package daemon of the control's own under
+# //go:build e2e, so the base's own packages and any daemon built from them carry neither. The
+# head defines both beside the basis tests (basis_stays_scratch_dispatch_test.go), a file the
+# control does not copy. seedTransact, the seed's transaction, is written where TREE's package
+# daemon defines none: it opens a commit scope (intake.WithCommitHooks), runs the write in one
+# transaction on the base's Pool and runs the hooks once it committed, as the seed did before
+# #4533 moved it onto store.Transact, which the base lacks. recordTaskAt, which keeps a member's
+# plan task where its recorded phase stands, is written where TREE's package daemon defines none:
+# it does nothing, since the base records no task place, so a record the seed writes in a phase
+# needs no move there. The transcript names each file written and each seam TREE already
+# defines. No line of the Go it writes holds `}` alone, since such a line ends this shell
+# function for lib/script-functions.ts, which the script's bun tests read it with.
+control_compat() {
+  local tree=$1 daemon_dir file
+  daemon_dir=$tree/packages/daemon/internal/daemon
+  if grep -q -E '^func seedTransact\(' "$daemon_dir"/*.go 2>/dev/null; then
+    note "the base's package daemon defines seedTransact, so the control writes no file for it"
+  else
+    file=$daemon_dir/approved_version_news_control_transact_live_test.go
+    cat >"$file" <<'EOF' || fail "could not write $file"
+//go:build e2e
+
+// This file is scripts/e2e/approved-version-news.sh's: its negative control writes it into a
+// scratch copy of the base commit alone, whose package daemon defines no seedTransact, the seam
+// the head's part-one seed takes its transaction through. It does what that seed did before
+// #4533 (78a2a9692d) moved it onto store.Transact, which the base lacks: it opens a commit scope
+// (intake.WithCommitHooks), runs write in one transaction on the base's Pool, and runs the hooks
+// the writes registered once the transaction committed, never when it rolled back.
+package daemon
+
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/store"
+)
+
+func seedTransact(ctx context.Context, pool *store.Pool, write func(ctx context.Context, tx pgx.Tx) error) error {
+	ctx, committed := intake.WithCommitHooks(ctx)
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return write(ctx, tx) }); err != nil {
+		return err
+	}
+	committed()
+	return nil
+} // seedTransact
+EOF
+    note "wrote $file: the base's package daemon defines no seedTransact, which $seed_file takes its transaction through"
+  fi
+  if grep -q -E '^func recordTaskAt\(' "$daemon_dir"/*.go 2>/dev/null; then
+    note "the base's package daemon defines recordTaskAt, so the control writes no file for it"
+  else
+    file=$daemon_dir/approved_version_news_control_task_live_test.go
+    cat >"$file" <<'EOF' || fail "could not write $file"
+//go:build e2e
+
+// This file is scripts/e2e/approved-version-news.sh's: its negative control writes it into a
+// scratch copy of the base commit alone, whose package daemon defines no recordTaskAt, the seam
+// the head's part-one seed calls to keep a member's plan task where its recorded phase stands.
+// The base records no task place, so a record the seed writes in a phase needs no move, and this
+// recordTaskAt does nothing.
+package daemon
+
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/record"
+)
+
+func recordTaskAt(context.Context, pgx.Tx, record.Store, record.Issue) error { return nil }
+EOF
+    note "wrote $file: the base's package daemon defines no recordTaskAt, which $seed_file calls"
+  fi
 }
 
 # jwt_exp TOKEN prints the exp claim of the JWT TOKEN, the second it ends at, read from its payload
@@ -935,6 +1023,7 @@ if [ -n "$control" ]; then
   done
   build_tree=$base_tree
   note "$base_sha extracted into $base_tree, with this checkout's $driver_file, $steps_file and $seed_file"
+  control_compat "$base_tree"
   pass
 fi
 

@@ -154,6 +154,11 @@ func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Iss
 // (issues_held_from_check): its stop is refused WAITING_ON_CHILDREN, naming its open children and
 // the architect's levers over them, as its sign-off and its move back are (waitingRefusal,
 // dispatch://INFRA-3320 R11).
+//
+// An issue whose group takes no plan from its owner (groupOf, takesNoPlan) takes no stop of its
+// tasks from that owner either: the experiment decides how the issue is done. The stop is
+// answered PLAN_NOT_TAKEN before anything else is read, and the task goes on as it stood, so a
+// parent of such a group in awaiting_children is answered PLAN_NOT_TAKEN, not WAITING_ON_CHILDREN.
 func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskStopped) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil {
@@ -161,6 +166,13 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 	}
 	if issue == nil {
 		return intake.Result{Refusal: intake.TaskNotFound(fact.Issue, fact.Task, nil)}, nil
+	}
+	group, err := e.groupOf(ctx, tx, issue.Key)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if takesNoPlan(group) {
+		return intake.Result{Refusal: intake.TaskNotStopped(issue.Key, group)}, nil
 	}
 	w, err := e.walk(ctx, tx, *issue)
 	if err != nil {

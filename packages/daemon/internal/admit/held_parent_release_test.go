@@ -133,7 +133,7 @@ func TestARetryOfAParentHeldForItsChildrenSaysWhyItsRetroWaits(t *testing.T) {
 	})
 	assertHeldForChildren(t, pool, parent, "while its gate root waits in the line")
 
-	waits := parent + " waits before its retro, and nothing beneath it is open: its tree " + root +
+	waits := parent + " waits before its retro, and no issue holds it any longer: its tree " + root +
 		" waits in the line to be opened, and Legion starts the retro once the tree runs."
 	assertRetriesRefused(t, pool, admission, engine, parent, waits+" This retry changed nothing.")
 

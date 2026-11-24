@@ -535,7 +535,14 @@ type stateNarrowing struct {
 // line with its `place` and its `length`, and the gated steps of every issue no step of which
 // carries a basis.
 //
-// A second pair touches one block, and one band of it writes that block in an older shape
+// A second pair is of the same kind: assignmentsContract's band drops each issue's `assignments`
+// whole, and assignmentPlanContract's takes `plan` from inside each row of that same list. A
+// caller below both is served no `assignments` whichever runs first. The second reads what the
+// first left only to know whether it took anything: run after it, as this table runs them, it
+// finds no row and writes no line, so a caller below assignmentsContract is told of the
+// assignments and not of their `plan` (narrowingsExpected holds that line back).
+//
+// A third pair touches one block, and one band of it writes that block in an older shape
 // rather than taking a key out: repositoriesLiveContract's band writes `repositories` as
 // contract 152 gave it, keys this daemon no longer writes among them, from the entries of that
 // block alone, and repositoryAppsContract's takes `apps` off the entries of that older block.
@@ -591,6 +598,7 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
+	{contract: assignmentPlanContract, issue: withoutAssignmentPlans, dropped: "the issues' assignments' plan"},
 	{contract: gateBasisContract, issue: withoutGateBasis,
 		dropped: "the issues' treeRuns and the gatedSteps of every issue a step of which stands on an ancestor's basis"},
 	{contract: chainContract, state: withoutConvertedAt, dropped: "daemon.convertedAt"},
@@ -1046,6 +1054,18 @@ const repositoriesLiveContract = 202
 // leaves this constant behind names a contract no entry declares and fails there.
 const cachesSourceContract = 213
 
+// assignmentPlanContract is the daemon contract that added each assignment's `plan`, the group an
+// experiment's arm set at the issue's draw (version.go's 220). A plugin before it is served every
+// assignment without the key (withoutAssignmentPlans): its reader strips a key it does not name,
+// so the band is what keeps the group from a caller that did not ask for it rather than what keeps
+// such a caller reading. The rest of each row stays as assignmentsContract serves it.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract the key arrived at stays where it is. It moves only with this
+// change's own number, and it is a number of answers.go's SupportedContracts, which names the
+// constant rather than its number for that reason.
+const assignmentPlanContract = 220
+
 // gateBasisContract is the daemon contract that let a root's gated step stand open on an
 // ancestor's approval or wait on an ancestor's approval request (version.go's 239,
 // dispatch://INFRA-3320, R1 and R2), served each root whether its tree runs, and added the phase
@@ -1071,10 +1091,11 @@ const cachesSourceContract = 213
 // (heldReasons), served as `children_first`, the word a started parent's wait took over
 // (withoutUnadmittedHeldWords, heldReasonStandIn).
 //
-// Of the bands of stateNarrowings, repositoriesLiveContract's stands right below this one, and
-// shapedAnswersContract's below that, and this band touches no key of either's:
-// shapedAnswersContract's takes `lowestPluginContract` and the claim views' `updateState` and
-// `wake`, repositoriesLiveContract's writes the `repositories` block in contract 152's shape, and
+// Of the bands of stateNarrowings, assignmentPlanContract's stands right below this one,
+// repositoriesLiveContract's below that and shapedAnswersContract's below that, and this band
+// touches no key of any of theirs: shapedAnswersContract's takes `lowestPluginContract` and the
+// claim views' `updateState` and `wake`, repositoriesLiveContract's writes the `repositories`
+// block in contract 152's shape, assignmentPlanContract's takes each assignment's `plan`, and
 // this one takes `treeRuns` and some `gatedSteps`. So a caller from 202 up to the number below
 // this contract is served the keys 193 added and the block 202 writes and none of this contract's
 // keys and words. One that states a number between 202 and this contract is served the nearest
@@ -1082,10 +1103,12 @@ const cachesSourceContract = 213
 // one at 205 to 212 is served 205's, whose records are 202's under its own number, as version.go's
 // 205 entry says, one at 213 to 216 is served 213's, which are 205's with `caches` among the words
 // of a capability row's `source` (cachesSourceContract), one at 217 or 218 is served 217's,
-// which are 213's under its own number, as version.go's 217 entry says, and one at 219 up to the
-// number below this contract is served OwnerPlanContract's, which are 217's with the owner's
-// plan's routes, fields and words, so a caller below OwnerPlanContract is served neither those nor
-// this contract's. A caller from 193 to 201
+// which are 213's under its own number, as version.go's 217 entry says, one at 219 is served
+// OwnerPlanContract's, which are 217's with the owner's plan's routes, fields and words, and one at
+// 220 up to the number below this contract is served assignmentPlanContract's, which are
+// OwnerPlanContract's with each assignment's `plan`, so a caller below assignmentPlanContract is
+// served no assignment's `plan`, and one below OwnerPlanContract neither the owner's plan's
+// additions nor this contract's. A caller from 193 to 201
 // is served the keys 193 added, the block in contract 152's shape and none of this contract's:
 // one that states a number from 194 to 198 is served 193's shape, and one that states 199, 200 or
 // 201 is served 199's, which is 193's, since 199 moves no shape of an answer a plugin parses.
@@ -1097,7 +1120,7 @@ const cachesSourceContract = 213
 const gateBasisContract = 239
 
 // chainContract is the daemon contract at which the daemon stores no tree and reads every parent
-// and child question from its copy of Dispatch's links (version.go's 240, dispatch://INFRA-4730).
+// and child question from its copy of Dispatch's links (version.go's 242, dispatch://INFRA-4730).
 // It added one key a plugin parses to the state, `daemon.convertedAt`, the time the project's first
 // boot on this release finished its conversion, which a plugin below it is served without
 // (withoutConvertedAt, its row of stateNarrowings); two held words, `chain_unknown` and
@@ -1110,7 +1133,7 @@ const gateBasisContract = 239
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is.
-const chainContract = 240
+const chainContract = 242
 
 // withoutConvertedAt is state with no `daemon.convertedAt`, the key chainContract added to the
 // state's daemon block. The key is an `omitempty` pointer, absent until the project's conversion
@@ -1264,6 +1287,22 @@ func withoutEntryTimes(issue Issue) (Issue, bool) {
 	moved := issue.EntryQueuedAt != nil || issue.EntryConfirmedAt != nil || len(issue.ArchitectStalls) > 0
 	issue.EntryQueuedAt, issue.EntryConfirmedAt, issue.ArchitectStalls = nil, nil, nil
 	return issue, moved
+}
+
+// withoutAssignmentPlans is the issue with no assignment carrying `plan`, the one key
+// assignmentPlanContract added to the state; every other key of each row stays. The key is
+// `omitempty` and absent from a row whose arm named no group, so the band reports a move only for
+// an issue one of whose rows carries one. The list is copied before a row is changed, so the state
+// the source answered is left as it was.
+func withoutAssignmentPlans(issue Issue) (Issue, bool) {
+	if !slices.ContainsFunc(issue.Assignments, func(row AssignmentView) bool { return row.Plan != "" }) {
+		return issue, false
+	}
+	issue.Assignments = slices.Clone(issue.Assignments)
+	for i := range issue.Assignments {
+		issue.Assignments[i].Plan = ""
+	}
+	return issue, true
 }
 
 // withoutRepositoryApps is state whose `repositories` block carries no `apps` on any entry of

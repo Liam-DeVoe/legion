@@ -50,7 +50,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // treeBeforeDriverEnv names the release before's driver binary, which the script builds from the
@@ -617,7 +616,7 @@ func TestTheTreeCutoverLive(t *testing.T) {
 		// them (workflow.Engine.acceptanceHeld) names it.
 		type acceptanceReading struct {
 			beneath []string
-			resting []workflow.RestingRoot
+			resting []record.RestingRoot
 			open    []record.OpenChild
 		}
 		reading, err := store.ReadOnly(t.Context(), pool, "read what holds the acceptance of "+a, func(ctx context.Context, tx pgx.Tx) (acceptanceReading, error) {
@@ -633,7 +632,7 @@ func TestTheTreeCutoverLive(t *testing.T) {
 			if err != nil {
 				return acceptanceReading{}, err
 			}
-			resting, err := workflow.RestingRoots(ctx, tx, records, a)
+			resting, err := record.RestingRoots(ctx, tx, records, a)
 			if err != nil {
 				return acceptanceReading{}, err
 			}

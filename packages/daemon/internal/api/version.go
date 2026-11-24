@@ -3363,6 +3363,42 @@ package api
 // declared only by #4611 and by #4902, #4948 and #5161, each stacked on this branch and carrying
 // this entry, so this entry kept 219, and OwnerPlanContract comes after 217 in SupportedContracts.)
 //
+// 220: an experiment sets how each new issue is done. `POST /legion/v1/plans/register` and `POST
+// /legion/v1/tasks/stop` answer `409 PLAN_NOT_TAKEN` for a recorded issue that an experiment drew
+// into an arm whose `plan` is `default`: a code and a sentence that names the issue's variant and
+// experiment, with no `reasons`. Legion takes no plan from that issue's owner, and so no stop of
+// one of its tasks; register_plan's answer leaves the registration unspent, so the same call sent
+// again gets the same answer. The code is a value of the refusal's `code`, which no reader
+// enumerates, so a plugin below 220 reads the code and its sentence as it reads every other one,
+// and no answer's shape moves for it. This entry also names what the two routes answer and 219's
+// entry leaves out: register_plan's `400 INVALID_ISSUE`, `400 INVALID_ARTIFACT_ID`,
+// `400 INVALID_VERSION` and `500 DISPATCH_UNAVAILABLE`, and stop_task's
+// `400 INVALID_ISSUE`. `TestEveryCodeThePlanRoutesAnswerIsInTheContractHistory` reads the codes the
+// two routes answer of their own from the source and holds each to this history.
+// `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` gain one key: each assignment of
+// an issue's `assignments` carries `plan`, the group the arm of an experiment that sets how its
+// issues are done set at the issue's draw (`owner` or `default`), as the draw recorded it, and
+// absent where the arm named none. The issue runs on that group for its whole life, and the
+// project's file can change an arm's `plan` or rename the arm after the draw, so a reader takes
+// the group from the record and never from `settings`. The records of 220 hold
+// `issues.*.assignments.*.plan`, and no record below 220 does: a caller whose contract (the one it
+// states, else its pod's) is below 220 is served every assignment without the key (the band of
+// shaping.go's stateNarrowings, `withoutAssignmentPlans`). The key
+// `settings.projects.<KEY>.experiments.<name>.variants[].plan` came with it: a key below
+// `projects`, which no reader types, so no record holds it and nothing is served down
+// (answers.go's typedSettings).
+// (This entry takes 220, above each number another open pull request declared. The forward merge
+// of 2026-11-22 brought the base's 219 (the owner's plan's entry above). A reading of `const
+// DaemonAPIVersion` at the head commit of each of the 431 open pull requests, made between
+// 2026-11-22T02:35:47Z and 02:36:07Z, read all 431 and found 219 declared by #4611 and #4805, 220
+// by this change's own pull request alone, and nothing above 220. The forward merge of 2026-11-23
+// that brought in 7923340d brought the base's 219 again, over main's 217, and a reading of all 507
+// open heads between 2026-11-23T16:08:36Z and 16:09:51Z found 220 declared only by this change's
+// pull request and #5014, which is stacked on it and carries this entry, so this entry kept 220.
+// From this entry the last number of answers.go's SupportedContracts is
+// `api.assignmentPlanContract`, after `OwnerPlanContract`. Read the base's own number and every
+// open pull request again at the next merge rather than from this line.)
+//
 // 239: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
 // approval, or wait, closed, on an ancestor's open approval request: a basis. Three surfaces
 // move.
@@ -3413,15 +3449,17 @@ package api
 // `lastPause` as well, the entry of 178 above (`withoutPause`), a caller below 146 the issues
 // without both entry times and `architectStalls`, the entry of 146 (`withoutEntryTimes`), and so
 // on down `stateNarrowings`. 178's band and this one touch no key of each other's, and the bands
-// of 193 and 202 stand between them, so a caller at 202 through 238 is served the pause, the keys
-// 193 added and the repositories block 202 writes, and none of this entry's keys and words (a
+// of 193, 202 and 220 stand between them, so a caller at 202 through 238 is served the pause, the
+// keys 193 added and the repositories block 202 writes, and none of this entry's keys and words (a
 // caller that states 203 or 204 is served 202's records, the nearest recorded contract at or below
 // it, one that states 205 to 212 is served 205's, which are 202's under its own number, as 205's
 // entry says, one that states 213 to 216 is served 213's, which are 205's with `caches` among the
 // words of a capability row's `source`, as 213's entry says, one that states 217 or 218 is served
-// 217's, which are 213's under its own number, as 217's entry says, and one that states 219 to 238
-// is served 219's, which are 217's with the owner's plan's routes, fields and words, as 219's
-// entry says, so a caller below 219 is served none of 219's additions either), a
+// 217's, which are 213's under its own number, as 217's entry says, one that states 219 is served
+// 219's, which are 217's with the owner's plan's routes, fields and words, as 219's entry says, and
+// one that states 220 to 238 is served 220's, which are 219's with each assignment's `plan`, as
+// 220's entry says, so a caller below 220 is served no assignment's `plan`, and one below 219 none
+// of 219's additions either), a
 // caller at 193 through 201 the pause, 193's keys and the block in 152's shape (one that states
 // 194 to 198 is served 193's shape and one that states 199 to 201 199's, and 199's is 193's, since
 // 199 moves no shape of an answer a plugin parses), a caller at 178 through 192 the pause and the
@@ -3605,11 +3643,14 @@ package api
 // 512 open heads' file between 2026-11-23T22:25:40Z and 22:34:16Z found 236 declared by #4173,
 // #4182 and #4193, 237 by #5168 and #5169 and 238 by #4771 and #5285, with every number from 220
 // to 235 declared, so this change moved 236 → 239, the lowest number above main's that no other
-// open head declares (dispatch://INFRA-4728/artifact/contract-census-2026-11-23c-md). Read the
-// base's own number and every open head again, by a REST raw read of each head's file, at the
-// next forward merge rather than from this line.)
+// open head declares (dispatch://INFRA-4728/artifact/contract-census-2026-11-23c-md). At the merge
+// of main 4ad19fe8459c a census of the 520 open heads (2026-11-24T01:48:37Z to 01:54:21Z) found 221
+// to 238 and 240 declared by other pull requests and 239 by none, so this change keeps 239
+// (dispatch://INFRA-4728/artifact/contract-census-2026-11-24-md). Read the base's own number and
+// every open head again, by a REST raw read of each head's file, at the next forward merge rather
+// than from this line.)
 //
-// 240: dispatch://INFRA-4730 -- the daemon stores no tree: it reads every parent and child question
+// 242: dispatch://INFRA-4730 -- the daemon stores no tree: it reads every parent and child question
 // from its copy of Dispatch's links (dispatch://INFRA-3320, R15 to R26), and three surfaces move.
 // The status calls decide over that copy and queue their writes. `POST /legion/v1/issues/status`
 // (`api.IssueStatusRequest`) takes two optional fields, the arguments Dispatch's parent rule asks
@@ -3635,7 +3676,7 @@ package api
 // `chain_unknown`, an issue not at work on a chain the copy cannot read to its top, and
 // `awaiting_todo`, an issue whose run starts as a root's does and that waits for a person's todo,
 // as a root a person moved to `in_progress` before its first start does, and a root whose merge
-// closed it and that a person reopened straight to `in_progress`. A caller below 240 is served the
+// closed it and that a person reopened straight to `in_progress`. A caller below 242 is served the
 // state without `daemon.convertedAt` (`withoutConvertedAt`, the row of `chainContract` in
 // shaping.go's `stateNarrowings`) and each `chain_unknown` or `awaiting_todo` row as
 // `unclassified` (the value strip `withoutUnadmittedHeldWords`, which reads each word's arrival
@@ -3663,7 +3704,13 @@ package api
 // legion/INFRA-4728 declared 239 (the entry right above). A count of each open head's version.go,
 // a REST raw read of each of the 510 open heads' file between 2026-11-23T23:03Z and 23:05Z, found
 // 237 declared by #5168 and #5169, 238 by #4771 and #5285, 239 by #4592, and nothing above 239;
-// this change took 240, the lowest number above 239 that no open head declares.
+// this change took 240, the lowest number above 239 that no open head declares. At the forward
+// merge of 2026-11-24 that brought legion/INFRA-4728 in at 9751f6267041, which carries main at
+// 8517faba31ac, main carried 220 (the experiment's plan, the entry above) and legion/INFRA-4728
+// declared 239. A read of `packages/daemon/internal/api/version.go` at each of the 521 open heads
+// between 2026-11-24T02:52:01Z and 02:54:10Z found 239 declared by #4592, 240 by #3831, #5271 and
+// this change, 241 by #4771 and #5307, and nothing above 241; this change took 242, the lowest
+// number above every number another open head declares.
 // Read the base's own number and every open head again at the next forward merge rather than from
 // this line.)
-const DaemonAPIVersion = 240
+const DaemonAPIVersion = 242

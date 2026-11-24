@@ -327,7 +327,8 @@ func awaitingChildrenNotice(parent string, from phase.Phase, hold childrenHold) 
 // cases no transition raises:
 //
 //   - a parent in accepting, where no worker runs: it holds accepting, with the task that start
-//     is given (task, over the reviewer's handoff);
+//     is given (task, over the handoff of the step before accepting, acceptedRole, as the
+//     sign-off reads it);
 //   - a parent whose start is written and not yet delivered — a start of the phase it stands in,
 //     owed its worker at its own generation: it holds that start with the task the role's phases
 //     row keeps as the one its worker was given for the entry the phase stands on (entryWork),
@@ -399,11 +400,15 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 	}
 	hold := childrenHold{Start: issue.Phase, Open: open}
 	if issue.Phase == phase.Accepting {
-		review, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+		accepted, err := e.acceptedRole(ctx, tx, issue)
 		if err != nil {
 			return false, err
 		}
-		hold.Task, hold.Cause = task(issue, at, review, pr, ""), "its reviewed head waited in accepting for the architect's sign-off"
+		report, err := e.phaseRow(ctx, tx, issue.Key, accepted)
+		if err != nil {
+			return false, err
+		}
+		hold.Task, hold.Cause = task(issue, at, report, pr, ""), "the head the step before accepting passed waited in accepting for the architect's sign-off"
 	} else {
 		hold.Task = entryWork(issue, entry, at)
 		if undeliveredStart(issue, owed) {
@@ -731,9 +736,11 @@ func (e *Engine) waitingRefusal(ctx context.Context, tx pgx.Tx, issue record.Iss
 
 // goesBack is where the return takes a parent holding the start of held, as the refusals of an
 // act on it say (waitingRefusal), back being the step the walk of its run returns that start to
-// (record.ReturnStep): a held reviewing or accepting to that step, testing on today's line, unless
-// its pull request merged during the wait (ReturnFromChildren), and every other held start, and
-// one whose walk returns it to itself, to that start.
+// (record.ReturnStep): a held testing, reviewing or accepting to the first step of the walk after
+// the implementer's, where that step stands at or before the held start, testing on today's line,
+// unless its pull request merged during the wait (ReturnFromChildren); and to the held start
+// itself where the walk holds no such step, where the start is a held planning or implementing,
+// or where the pull request merged during the wait.
 func goesBack(held, back phase.Phase) string {
 	if back != held {
 		return fmt.Sprintf("goes back to %s by itself, or to %s, the start it holds, if its pull request merged during the wait", back, held)

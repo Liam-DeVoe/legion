@@ -366,7 +366,8 @@ func (i Issue) Repository() (ghrepo.Repository, error) {
 }
 
 // Assignment is what one unit ran one experiment under: the arm drawn for it, the mode in force
-// when it was drawn and the instant, recorded once for that unit and never changed
+// when it was drawn and the instant, and how the issue drawn is done where the arm says so (Plan),
+// recorded once for that unit and never changed
 // (Store.PutAssignments). It is the declared experiments' record, and the only one: the four
 // issues.memory_* columns the single hard-coded experiment was kept in are written by nothing
 // from this release on, are read by nothing this release's daemon runs but the back-fill of
@@ -398,6 +399,13 @@ type Assignment struct {
 	// from the nearest issue above it in Legion's work that held one (Store.CarryAssignments), or,
 	// in a row the release before wrote, from the tree a hand-over moved it out of.
 	Carried bool
+	// Plan is how the issue drawn is done, a config.PlanGroup word taken as a string for the
+	// reason Unit is: `owner` or `default`, the `plan` of the arm drawn, and "" where the arm
+	// names none, the draw was made under mode off, a hand-over wrote the row, or the row was
+	// drawn before the column existed. The loader refuses `owner-alone`, so no draw writes it. An
+	// issue keeps it for its whole life, whatever the project's file says later
+	// (internal/experiment's GroupOf reads it).
+	Plan string
 }
 
 // HandedOff is an issue whose implementer recorded its handoff, with the commit the handoff
@@ -438,8 +446,10 @@ const HoldEscalated HoldReason = "escalated"
 const HoldTaskStopped HoldReason = "task-stopped"
 
 // HoldForChildren is a hold that stands in place of the retro of an issue whose task's last step
-// is not the owner's acceptance, while issues beneath it are still open (From is phase.Retro,
-// which holds no slot): the retro starts once the last of them has left.
+// is not the owner's acceptance, while one of the three holds on its acceptance holds it: an
+// issue beneath it still in the workflow, a root that rests on its approval still in the
+// workflow, or an open Dispatch child of it (workflow's acceptanceHeld, dispatch://INFRA-3320 R8).
+// From is phase.Retro, which holds no slot: the retro starts once none of them holds it.
 const HoldForChildren HoldReason = "children"
 
 // Awaiting is what a root in awaiting_person waits on: an ask its architect opened on the root
@@ -506,8 +516,9 @@ const (
 // wait on the children began; and Children the children that held the wait. The daemon resumes
 // the parent from this when no open child is left (workflow's ReturnFromChildren): a held
 // planning or implementing starts that phase, and a held testing, reviewing or accepting starts
-// the first step of the issue's walk after the implementer's (ReturnStep), testing on today's
-// line, unless the pull request merged during the wait, when the start goes back as it was held.
+// the first step of the issue's walk after the implementer's where that step stands at or before
+// it (ReturnStep), testing on today's line, and the held start itself where the walk holds no such
+// step or the pull request merged during the wait.
 // Each task the return starts names every child of Children that merged during the wait.
 type ChildrenWait struct {
 	Start  phase.Phase
@@ -2449,6 +2460,10 @@ type Store interface {
 	// PlansOfEarlierOwners is the version in force of each generation of issue whose giver acts on
 	// issue no longer (PlanOwners): the plans its first step passes over.
 	PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error)
+	// PlansOfOwners is the version in force of each generation of issue, generation 0 included,
+	// whose giver acts on issue now (PlanOwners), each carried copy among them: the plans a first
+	// step of an issue whose group takes none passes over.
+	PlansOfOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error)
 	// CarryPlan copies the plan of issue at from to to: with carried, each task where it stands;
 	// without, each task waiting at no act with its counts at 0. It writes nothing where from has
 	// no plan rows.

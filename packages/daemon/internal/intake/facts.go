@@ -1203,9 +1203,9 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // Dispatch at that version and held them to plan.Supported and plan.Validate, so a plan either
 // check refuses never reaches the workflow. Generation is the issue's generation the route read,
 // and 0 for an issue the daemon has not recorded, whose plan waits at generation 0 until the
-// issue's first step takes the newest plan its owner gave. GivenBy is the claim of the
-// architect whose grant gave it, which is how the first step tells its owner's plan from an
-// earlier owner's.
+// issue's first step takes the newest plan its owner gave, or, where the issue's experiment's
+// group takes no plan from its owner, passes it over. GivenBy is the claim of the architect whose
+// grant gave it, which is how the first step tells its owner's plan from an earlier owner's.
 //
 // The workflow judges the giver and the generation again in the fact's own transaction, since
 // the route read them before the fact lock: a giver that acts on the issue no longer on its
@@ -1215,10 +1215,11 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // has not started, and applies the rules of a later version. It answers PLAN_REFUSED
 // (RunningTaskChanged, or StartedBeforePlans for an issue that ran before Legion took plans),
 // PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (FinishedTask, ChangeOfTask),
-// PLAN_STALE_GENERATION, CHAIN_UNKNOWN and ISSUE_NOT_OWNED, and it leaves each of those
-// refusals unspent (Result.Unspent). The route names one registration by the issue, the
-// generation, the document and the version, so a version refused while its task ran is the same
-// fact when the owner gives it again after stop_task, and must apply then.
+// PLAN_STALE_GENERATION, CHAIN_UNKNOWN, ISSUE_NOT_OWNED and PLAN_NOT_TAKEN (an issue whose
+// experiment's group takes no plan from its owner), and it leaves each of those refusals unspent
+// (Result.Unspent). The route names one registration by the issue, the generation, the document
+// and the version, so a version refused while its task ran is the same fact when the owner gives
+// it again after stop_task, and must apply then.
 type PlanGiven struct {
 	Issue      string
 	Generation uint64
@@ -1233,9 +1234,11 @@ func (f PlanGiven) namedIssue() (string, bool) { return f.Issue, true }
 // read. The workflow judges the stop again in the fact's own transaction: an architect that acts
 // on the issue no longer on its Dispatch chain is refused ISSUE_NOT_OWNED (CallRefusal), and a
 // stop of a run the issue has left TASK_STALE_GENERATION (TaskStaleGeneration), each left unspent.
-// It then stops the task, or answers TaskNotFound or TaskDone; a stop of a task already stopped
-// changes nothing and is no refusal. Each request is its own fact, so a task the owner stops,
-// starts again with a later version and stops once more is stopped twice.
+// It then answers TaskNotStopped for every task of an issue whose experiment's group takes no plan
+// from its owner, whatever state the task stands in, and for any other issue stops the task or
+// answers TaskNotFound or TaskDone; a stop of a task already stopped changes nothing and is no
+// refusal. Each request is its own fact, so a task the owner stops, starts again with a later
+// version and stops once more is stopped twice.
 type TaskStopped struct {
 	Issue, Task string
 	By          claim.Token
@@ -1939,6 +1942,36 @@ func PlanDocumentChanged(issue, artifact string) *Refusal {
 		"the plan in force of %s is document %s; give a later version of that document.", issue, artifact)}
 }
 
+// GroupClause is the one text of a group: the sentence that names the variant of the experiment
+// issue was drawn into (group, the issue's row of the experiment that sets how it is done),
+// whose issues run the project's default steps, the one group of this release that takes no plan
+// from an issue's owner (workflow's takesNoPlan). The refusals of register_plan and stop_task
+// (PlanNotTaken, TaskNotStopped) and the plan-not-taken notice of the issue's first step each
+// call it, and no other text states a group.
+func GroupClause(issue string, group record.Assignment) string {
+	return fmt.Sprintf("%s is in the variant %s of the experiment %s, whose issues run the project's default steps.", issue, group.Variant, group.Experiment)
+}
+
+// PlanNotTaken is the 409 PLAN_NOT_TAKEN answer to a plan given for issue, whose group (its row
+// of the experiment that sets how it is done) names the arm's `plan` `default`: the experiment
+// decides how the issue is done, so Legion takes no plan from its owner, and a plan it stored and
+// did not carry out would be dropped in silence. It is no refusal of a plan's content, so it
+// carries no reasons and its code is not PLAN_REFUSED. The workflow leaves the fact unspent, as
+// each refusal of a plan, so the same registration sent again gets this same answer.
+func PlanNotTaken(issue string, group record.Assignment) *Refusal {
+	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: GroupClause(issue, group) +
+		" Legion takes no plan from its owner for this issue. This plan changed nothing."}
+}
+
+// TaskNotStopped is the 409 PLAN_NOT_TAKEN refusal of stop_task for a task of issue, whose group
+// names the arm's `plan` `default`: the experiment decides how the issue is done, so Legion takes
+// no stop of one of its tasks from its owner either, and the code is the one register_plan
+// answers for the same issue.
+func TaskNotStopped(issue string, group record.Assignment) *Refusal {
+	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: GroupClause(issue, group) +
+		" Legion takes no plan from its owner for this issue, so its owner stops none of its tasks. This stop changed nothing."}
+}
+
 // StartedBeforePlans is the reason a plan is refused for issue, which the daemon recorded with no
 // plan rows at its generation and whose work has started: it ran before Legion took plans, and it
 // walks today's line to its end. It names no task, and it does not end with "This release
@@ -2072,34 +2105,46 @@ func stoppedSentence(issue, task, reason string) string {
 }
 
 // RetryOfHeldParent is the 409 HELD_FOR_CHILDREN refusal of a release of issue's hold where issue,
-// a parent whose last step is not the owner's acceptance, waits before its retro for the issues beneath it,
-// beneath (record.HoldForChildren): the last of them to leave starts the retro.
-func RetryOfHeldParent(issue string, beneath []string) *Refusal {
-	return &Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: HeldParentWaitsForChildren(issue, beneath) + " This retry changed nothing."}
+// a parent whose last step is not the owner's acceptance, waits before its retro while holding,
+// the first of the holds on its acceptance that holds it, still holds it (record.HoldForChildren,
+// HeldParentWaitsForChildren).
+func RetryOfHeldParent(issue, holding string) *Refusal {
+	return &Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: HeldParentWaitsForChildren(issue, holding) + " This retry changed nothing."}
 }
 
-// HeldParentWaitsForChildren says why issue, a parent held before its retro for the issues beneath
-// it (record.HoldForChildren), still waits: beneath, the issues beneath it still open, the last of
-// which to leave starts the retro. It says what is true of the issue for whoever reads it, a
-// person beside a set-back todo included, and carries none of the architect's rules for ending a
-// child, which the architect's own retro-held notice gives.
-func HeldParentWaitsForChildren(issue string, beneath []string) string {
-	return fmt.Sprintf("%s waits before its retro for these issues beneath it: %s. Legion starts the retro when the last one leaves.", issue, strings.Join(beneath, ", "))
+// HeldParentWaitsForChildren says why issue, a parent held before its retro (record.HoldForChildren),
+// still waits: holding, the first of the three holds on its acceptance that holds it, which names
+// each issue of that hold in the words of the sign-off's refusal of it — the issues beneath it
+// still in the workflow, the roots that rest on its approval still in the workflow, or its open
+// Dispatch children (workflow's acceptanceHold.holding) — and then what starts the retro
+// (HeldParentRetroStarts). It says what is true of the issue for whoever reads it, a person beside
+// a set-back todo included, and carries none of the architect's rules for ending a child, which
+// the architect's own retro-held notice gives.
+func HeldParentWaitsForChildren(issue, holding string) string {
+	return fmt.Sprintf("%s waits before its retro while %s. %s", issue, holding, HeldParentRetroStarts)
 }
+
+// HeldParentRetroStarts is what starts the retro of a parent held before it (record.HoldForChildren):
+// none of the three holds on its acceptance holding it any longer, which Legion reads again at the
+// settle of each fact and at each admission pass, with nobody acting (workflow's startHeldRetro).
+// The reason beside a held root's set-back todo, the refusal of a release of the hold
+// (HeldParentWaitsForChildren) and the architect's retro-held notice say it in these words.
+const HeldParentRetroStarts = "Legion starts the retro by itself once nothing holds it any longer: no issue beneath it is still in the workflow, " +
+	"no root that rests on its approval is still in the workflow, and no Dispatch child of it is open."
 
 // RetryOfHeldParentUntilTreeRuns is the 409 HELD_FOR_CHILDREN refusal of a release of issue's hold
-// where issue, a parent held before its retro for the issues beneath it (record.HoldForChildren),
-// has none of them open, so its retro waits only for its tree to run (HeldParentWaitsForTree).
+// where issue, a parent held before its retro (record.HoldForChildren), has no issue holding it any
+// longer, so its retro waits only for its tree to run (HeldParentWaitsForTree).
 func RetryOfHeldParentUntilTreeRuns(issue, tree string) *Refusal {
 	return &Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: HeldParentWaitsForTree(issue, tree) + " This retry changed nothing."}
 }
 
-// HeldParentWaitsForTree says why issue, a parent held before its retro for the issues beneath it
-// with none of them open, still waits: its retro waits only for its tree, tree, to run, whose gate
-// root waits in the line for the tree to be opened. The promotion or the return to work that runs
-// the tree starts the retro.
+// HeldParentWaitsForTree says why issue, a parent held before its retro that no issue holds any
+// longer, still waits: its retro waits only for its tree, tree, to run, whose gate root waits in
+// the line for the tree to be opened. The promotion or the return to work that runs the tree
+// starts the retro.
 func HeldParentWaitsForTree(issue, tree string) string {
-	return fmt.Sprintf("%s waits before its retro, and nothing beneath it is open: its tree %s waits in the line to be opened, and Legion starts the retro once the tree runs.", issue, tree)
+	return fmt.Sprintf("%s waits before its retro, and no issue holds it any longer: its tree %s waits in the line to be opened, and Legion starts the retro once the tree runs.", issue, tree)
 }
 
 // ChainUnknown is the 409 CHAIN_UNKNOWN refusal of a call on key, whose Dispatch chain the

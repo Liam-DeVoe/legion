@@ -225,6 +225,10 @@ type testServerOptions struct {
 	metrics *metrics.Registry
 	// parentStatusRule turns DISPATCH_PARENT_STATUS_RULE on for the server (Deps.ParentStatusRule).
 	parentStatusRule bool
+	// listenerRosterUncached is Deps.ListenerRosterUncached: every read of the listener's session
+	// list asks the listener and stores no copy, as the browser suite's server runs
+	// (DISPATCH_TEST_ROSTER_UNCACHED=1, e2e/run-server.sh). False is the deployment's stored copy.
+	listenerRosterUncached bool
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -374,22 +378,23 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the
 		// warning must arrive inside that wait's patience rather than at the production five and
 		// thirty seconds.
-		HorizonStallAfter:     horizontest.StallWarning,
-		HorizonWarnEvery:      horizontest.StallWarning,
-		OIDC:                  options.oidc,
-		BrokerTokens:          brokerTokens,
-		AgentSecretsURL:       options.agentSecretsURL,
-		AgentSecretsTokenFile: agentSecretsTokenFile,
-		AgentStream:           options.agentStream,
-		AgentPublisher:        agentPublisher,
-		Embedder:              options.embedder,
-		Answerer:              options.answerer,
-		Files:                 options.files,
-		DashboardEntry:        options.dashboardEntry,
-		BuildCommit:           options.buildCommit,
-		OutboxPublishes:       options.outboxPublishes,
-		Metrics:               options.metrics,
-		ParentStatusRule:      ParentStatusRule{on: options.parentStatusRule},
+		HorizonStallAfter:      horizontest.StallWarning,
+		HorizonWarnEvery:       horizontest.StallWarning,
+		OIDC:                   options.oidc,
+		BrokerTokens:           brokerTokens,
+		AgentSecretsURL:        options.agentSecretsURL,
+		AgentSecretsTokenFile:  agentSecretsTokenFile,
+		AgentStream:            options.agentStream,
+		AgentPublisher:         agentPublisher,
+		Embedder:               options.embedder,
+		Answerer:               options.answerer,
+		Files:                  options.files,
+		DashboardEntry:         options.dashboardEntry,
+		BuildCommit:            options.buildCommit,
+		OutboxPublishes:        options.outboxPublishes,
+		Metrics:                options.metrics,
+		ParentStatusRule:       ParentStatusRule{on: options.parentStatusRule},
+		ListenerRosterUncached: options.listenerRosterUncached,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

@@ -8,8 +8,8 @@
     "convertedAt": "2026-09-18T14:04:11Z"
   },
   "contract": {
-    "daemon": 240,
-    "caller": 240
+    "daemon": 242,
+    "caller": 242
   },
   "admission": {
     "cap": 5,
@@ -342,6 +342,13 @@
           "variant": "long",
           "mode": "random",
           "drawnAt": "2026-09-21T18:42:11Z"
+        },
+        {
+          "experiment": "planning",
+          "variant": "b",
+          "mode": "random",
+          "drawnAt": "2026-09-21T18:42:11Z",
+          "plan": "default"
         }
       ]
     },

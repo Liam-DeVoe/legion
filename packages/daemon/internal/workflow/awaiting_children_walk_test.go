@@ -49,10 +49,11 @@ func returnsFromChildren(t *testing.T, pool *pgxpool.Pool, engine *Engine, key s
 // A held start of testing, reviewing or accepting comes back as the first step of the issue's walk
 // after the implementer's (record.ReturnStep, dispatch://INFRA-3320 R12). The plan `implementer
 // reviewer` holds no testing step, so its held reviewing comes back as reviewing, the start it
-// held: the task moves to step 2, the reviewer is started, and nobody else, on the return's own
-// task, which names the step it starts, the held start and its reason. The awaiting-children
-// notice and a refusal over the wait say it goes back to reviewing, the start it holds. A return
-// as testing whatever the walk holds would have no place to move the task to.
+// held: the task stays at step 2, where it stood through the wait, the reviewer is started, and
+// nobody else, on the return's own task, which names the step it starts, the held start and its
+// reason. The awaiting-children notice and a refusal over the wait say it goes back to reviewing,
+// the start it holds. A return as testing whatever the walk holds would have no place to move the
+// task to.
 func TestAReturnOnAWalkWithNoTesterStartsTheReviewer(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()

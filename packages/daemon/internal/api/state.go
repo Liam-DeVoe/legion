@@ -718,10 +718,10 @@ type Issue struct {
 	// HoldReason is why a held issue is held, when its hold has one: `escalated` once its architect
 	// sent it to the controller (record.HoldEscalated), `task-stopped` once its owner stopped the task
 	// it ran (record.HoldTaskStopped), and `children` while a parent whose task's last step is not
-	// the owner's acceptance waits, before its retro, for the issues beneath it
-	// (record.HoldForChildren). A hold of either of the last two is no architect's to retry or
-	// escalate: a later version of the plan
-	// starts a stopped task again, and the last issue beneath a parent to leave starts its retro. A
+	// the owner's acceptance waits, before its retro, for the issues beneath it, the roots that rest
+	// on its approval or its open Dispatch children (record.HoldForChildren). A hold of either of
+	// the last two is no architect's to retry or escalate: a later version of the plan
+	// starts a stopped task again, and a parent's retro starts once none of those holds it. A
 	// caller below OwnerPlanContract is served no reason for those two (withoutUnadmittedHoldReason).
 	// Absent otherwise. It and HeldFrom are both facts of the issue's own record (R17 and R20 of
 	// dispatch://INFRA-3320), shown whatever the issue's tree is doing.
@@ -882,7 +882,8 @@ type Issue struct {
 
 // AssignmentView is one experiment's answer for an issue as the state shows it
 // (record.Assignment): the name the project declares the experiment under, the arm the draw gave
-// the unit, the mode in force at that draw and the instant of it.
+// the unit, the mode in force at that draw, the instant of it, and the group the arm set (Plan,
+// `owner` or `default`), as the draw recorded it.
 //
 // Variant and Mode ride the wire whatever they hold, the empty string included, and DrawnAt is
 // absent where the row holds none: a hand-over settles a child at no arm for an experiment the
@@ -890,11 +891,15 @@ type Issue struct {
 // is how a reader tells a unit settled at no arm from a unit never drawn, which is no row at all.
 // Carried, the record's mark of such a row, is no part of the view: what a reader of the state
 // measures is the arm the unit ran under, and a carried row names the arm as a drawn one does.
+// Plan is absent where the arm named none. It is the group the issue runs on for its whole life,
+// read from the record rather than from the settings, which can change an arm's plan or rename
+// the arm after the draw.
 type AssignmentView struct {
 	Experiment string     `json:"experiment"`
 	Variant    string     `json:"variant"`
 	Mode       string     `json:"mode"`
 	DrawnAt    *time.Time `json:"drawnAt,omitempty"`
+	Plan       string     `json:"plan,omitempty"`
 }
 
 // WaitingOnView is what a root in awaiting_person waits on from a person (record.Awaiting). Kind
@@ -987,8 +992,9 @@ type ClaimView struct {
 	// start did not produce a running agent — a launcher that refused it, a failed init container,
 	// a pod that never became ready — and LastReady when its agent last said it could be prompted.
 	// Each is absent until it happens. The two causes are separate because they answer separate
-	// questions, and LastReady is what dates them: a cause older than it is one the agent running
-	// now has already survived.
+	// questions. LastReady dates the death's cause: a death older than it is one the agent running
+	// now has already survived. The claim drops its start failure when its agent says it is ready
+	// (supervise.Claim.LastStartFailure says which older claims can still hold one from before).
 	LastDeathCause   string     `json:"lastDeathCause,omitempty"`
 	LastStartFailure string     `json:"lastStartFailure,omitempty"`
 	LastReady        *time.Time `json:"lastReady,omitempty"`
@@ -1128,7 +1134,7 @@ func ClaimViewOf(c supervise.Claim) ClaimView {
 		Step: StepViewOf(c.Step),
 		// When the agent last began and last ended a turn, and when it last said it could be
 		// prompted, each absent until it happens: they are what tells a worker still making
-		// progress from one wedged in a turn, and what dates the two causes below.
+		// progress from one wedged in a turn, and the ready is what dates the death's cause below.
 		LastTurnStart:    instant(c.LastTurnStart),
 		LastTurnEnd:      instant(c.LastTurnEnd),
 		LastReady:        instant(c.LastReady),

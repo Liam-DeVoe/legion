@@ -3124,17 +3124,26 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // from (workflow's stopUnreturned). The task's owner reads which task, and which step or which
 // architect, in its reason.
 //
-// `retro-held` is a parent whose task's last step is not the owner's acceptance, held before its retro because it
-// passed its last step while issues beneath it are still in the workflow (workflow's
-// beneathRetro, retroHeldNotice; HoldForChildren). Its reason names each of them, and that the
-// retro starts when the last one leaves (workflow's releaseHeldParents).
+// `retro-held` is a parent whose task's last step is not the owner's acceptance, held before its
+// retro because it passed its last step while a hold on its acceptance holds it: issues beneath it
+// still in the workflow, roots that rest on its approval still in the workflow, or its open
+// Dispatch children (workflow's retroHeld, retroHeldNotice; HoldForChildren). Its reason names
+// each issue of the first of them that holds it and what starts the retro: none of them holding
+// it any longer (workflow's startHeldRetro). It is told once for each of the three holds and each
+// run of the retro (workflow's tellRetroHeld).
 //
-// `plan-not-taken` is a plan an earlier owner gave for an issue, which its first step did not take
-// (workflow's passOverEarlierOwners, tellPassedOver): its giver acts on the issue no longer
-// (PlanOwners), as after Dispatch moves the issue from under the giver's issue. The first step
-// deletes its rows and tells the issue's architect once, whatever number of versions it passed
-// over; the reason names each version, its document and its giver, and the plan the first step
-// runs: an owner's, of the issue's generation or carried to it, or the default steps.
+// `plan-not-taken` is a plan its issue's first step did not take, the first step telling the
+// issue's architect once, whatever number of versions it passed over, after it deleted their
+// rows; it carries one of two meanings. A plan an earlier owner gave (workflow's
+// passOverEarlierOwners, tellPassedOver): its giver acts on the issue no longer (PlanOwners), as
+// after Dispatch moves the issue from under the giver's issue; the reason names each version, its
+// document and its giver, the plan the first step runs (an owner's, of the issue's generation or
+// carried to it, or the default steps), and that the architect may give the plan again with
+// register_plan as its own. Or a plan of an issue whose experiment's group takes no plan from its
+// owner (workflow's passOverOwners, tellNotTaken): every plan its owner or an earlier owner gave
+// is passed over, the run takes the project's default steps, and the reason names each version
+// and the group (intake's GroupClause), and offers no register_plan, which that issue's owner is
+// answered PLAN_NOT_TAKEN for.
 //
 // `reparented` tells an architect that the Dispatch parent of an issue in Legion's work changed
 // (ReparentedNotice, R18 of dispatch://INFRA-3320).

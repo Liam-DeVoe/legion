@@ -327,8 +327,10 @@ const legionClaimView = z.object({
    * running agent — a launcher that refused the start, a failed init container, a pod that never
    * became ready. Each is absent until it happens, and the two are separate because they answer
    * separate questions: a claim that cannot start and a claim that keeps dying are different
-   * faults. `lastReady` is when the claim's agent last said it could be prompted, which dates
-   * both: a cause older than it is one the agent running now has already survived. */
+   * faults. `lastReady` is when the claim's agent last said it could be prompted, which dates the
+   * death: a death older than it is one the agent running now has already survived. The daemon
+   * drops the start failure when the agent says it is ready, so one it records is from after
+   * `lastReady`; a claim an older daemon left waiting can still carry one from before. */
   lastDeathCause: nonEmptyString.optional(),
   lastStartFailure: nonEmptyString.optional(),
   lastReady: timestamp.optional(),
@@ -761,12 +763,16 @@ const legionWakeWaiting = z.object({
  * the operator's own names, the empty string is a unit settled at no arm, and a mode a later
  * daemon adds must be read rather than refuse the whole state. The daemon always writes
  * `experiment`, `variant` and `mode`; the reader takes them as optional, since no plugin code reads
- * them (LEGION_ANSWER_READS). */
+ * them (LEGION_ANSWER_READS). `plan` (contract 220) is the group the arm set at the draw, `owner`
+ * or `default`, which the issue runs on for its whole life whatever the settings say later; it is
+ * absent where the arm named none, and a string rather than an enum, so a group a later daemon
+ * carries out is read rather than refuse the state. */
 const legionAssignment = z.object({
   experiment: nonEmptyString.optional(),
   variant: z.string().optional(),
   mode: z.string().optional(),
   drawnAt: timestamp.optional(),
+  plan: nonEmptyString.optional(),
 });
 
 /** `api.Issue` — `workers` is keyed by a plain string, not by the role names this build knows, so
@@ -779,7 +785,7 @@ const legionIssue = z.object({
   generation: z.number().int().nonnegative().optional(),
   phase: z.enum(LEGION_PHASES),
   status: nonEmptyString.optional(),
-  /** The key of the issue's gate root (contract 51), read from Dispatch's chain since contract 240
+  /** The key of the issue's gate root (contract 51), read from Dispatch's chain since contract 242
    * (`record.Chains.StateTree`, R22 of dispatch://INFRA-3320): for an issue in Legion's work, the
    * nearest issue at or above it in work that holds its own gate, which is `key` on a root and on
    * an issue that ran as a root and keeps its gate under a parent; for any other issue the daemon
@@ -807,25 +813,26 @@ const legionIssue = z.object({
   /** Why a held issue is held, when its hold has one: `escalated` once its architect sent it to
    * the controller; and from contract 219 `task-stopped` once its owner stopped its task with
    * stop_task, and `children` while a parent whose task's last step is not the owner's acceptance
-   * waits, before its retro, for the issues beneath it. A caller whose contract (the one it states, else its pod's
+   * waits, before its retro, for the issues beneath it, the roots that rest on its approval or its
+   * open Dispatch children. A caller whose contract (the one it states, else its pod's
    * lowest) is below 219 is served an issue held for either of those two with no `holdReason`
    * (the daemon's value strip `withoutUnadmittedHoldReason`). `heldFrom` beside it is the phase
    * the hold took the issue out of, and is absent for an issue that is not held. Both are facts of
    * the issue's own record, so every issue at `phase: held` names the phase that stopped. A daemon
-   * before contract 240 left the reason off while the issue's tree lingered or was closed
+   * before contract 242 left the reason off while the issue's tree lingered or was closed
    * (`lingerUntil`). A caller in a pod whose plugin declares a contract below 75 is served every
    * issue without `heldFrom` (the daemon's `withoutRecordFields`), so every reader takes it as
    * optional. */
   holdReason: z.enum(["escalated", "task-stopped", "children"]).optional(),
   heldFrom: z.enum(LEGION_WORKFLOW_PHASES).optional(),
-  /** When a lingering root's linger ran out, which a daemon before contract 240 wrote on a root
-   * whose tree's work had finished. A daemon at 240 or later acts on each issue's own status, lets
+  /** When a lingering root's linger ran out, which a daemon before contract 242 wrote on a root
+   * whose tree's work had finished. A daemon at 242 or later acts on each issue's own status, lets
    * no tree linger and writes it on no issue (R20 of dispatch://INFRA-3320), so a reader takes it
    * as optional. */
   lingerUntil: timestamp.optional(),
   /** The keys of a labelled root's Dispatch parent chain, from its parent upward, which a daemon
-   * before contract 240 wrote on a root it held under an unreleased child of a live tree. A daemon
-   * at 240 or later reads every chain from its copy of Dispatch's links and writes it on no issue
+   * before contract 242 wrote on a root it held under an unreleased child of a live tree. A daemon
+   * at 242 or later reads every chain from its copy of Dispatch's links and writes it on no issue
    * (R15, R16 and R19 of dispatch://INFRA-3320), so a reader takes it as optional. */
   ancestry: z.array(issueKey).optional(),
   architect: legionClaimView.optional(),
@@ -965,9 +972,9 @@ const legionIssue = z.object({
 });
 
 /** `api.DaemonInfo` — the running daemon: its project, its store's schema, its boot history, and
- * `convertedAt` (contract 240), when the project's first boot on the release that stores no tree
+ * `convertedAt` (contract 242), when the project's first boot on the release that stores no tree
  * finished converting the store (R22 of dispatch://INFRA-3320), absent while no conversion has
- * finished and from the body the route serves a caller before 240 (`api.stateFor`,
+ * finished and from the body the route serves a caller before 242 (`api.stateFor`,
  * `withoutConvertedAt`). No plugin code reads a field of it: the controller's boot check read
  * `project` here until it read the health answer instead, and the controller's `read_state`
  * hands the state to its agent whole. So every field is optional, as `LEGION_ANSWER_READS`
@@ -1014,14 +1021,14 @@ const legionBlockedIssue = z.object({
 
 /**
  * `record.HeldReason` — the words of `admission.held`, in `record.HeldReasons`' order.
- * `chain_unknown` (contract 240) names an issue not at work whose Dispatch chain the daemon's copy
+ * `chain_unknown` (contract 242) names an issue not at work whose Dispatch chain the daemon's copy
  * cannot show to its top (a row the copy lacks, a loop, more than 32 links), on which the daemon
- * starts nothing until the chain is read right. `awaiting_todo` (contract 240) names an issue whose
+ * starts nothing until the chain is read right. `awaiting_todo` (contract 242) names an issue whose
  * run starts as a root's does and that Dispatch shows in work at a status other than `todo`, as a
  * root a person moved to `in_progress` before its first start is, and a root whose merge closed it
  * and that a person reopened straight to `in_progress`: it waits for a person's `todo` to start
- * its run, and no issue holds it. A caller below 240 is served either word as
- * `unclassified`. `tree_closed` and `tree_parked` keep their place though a daemon at 240 answers
+ * its run, and no issue holds it. A caller below 242 is served either word as
+ * `unclassified`. `tree_closed` and `tree_parked` keep their place though a daemon at 242 answers
  * neither, since no tree lingers or parks there.
  * `children_before_retro` and `task_stopped` came with contract 219; a caller below it is served
  * each such row as `unclassified` with no `heldBy` (the daemon's value strip
@@ -1086,7 +1093,7 @@ const legionHeldIssue = z.object({
  * of the three (the rule: "Admission and the `legion` label" in
  * docs/site/src/content/docs/legion/concepts.md). An issue holding a slot is in
  * `waiting` as well while its work comes back to it, an answered root until the pass that
- * resumes it. `trees` is the roots in Legion's work, sorted (contract 51; since contract 240
+ * resumes it. `trees` is the roots in Legion's work, sorted (contract 51; since contract 242
  * each issue in Legion's work with no issue above it in work on a chain the daemon's copy of
  * Dispatch's links shows to its top, R22 of dispatch://INFRA-3320), which a reader needs because
  * a root at work may hold no slot at all — a root waiting in the line for its first start holds
@@ -1450,7 +1457,7 @@ export type LegionHealth = z.output<typeof LegionHealthResponse>;
  * holds, the secret its ready and exit authenticate with, and `promptAgents`, the sorted names of
  * the task agents the role's prompts dispatch — what the session's subagents check measures its
  * discovered agents against (contract 21). Never null: a role whose prompts name none gets `[]`.
- * `tree` is the issue's gate root at the claim's last launch since contract 240 (R22 of
+ * `tree` is the issue's gate root at the claim's last launch since contract 242 (R22 of
  * dispatch://INFRA-3320), the value the launch set `LEGION_TREE` to; it grants nothing, since
  * every call acts only as the issue's Dispatch chain allows. */
 export const LegionRegisterResponse = z.object({
@@ -1845,8 +1852,9 @@ export const LegionOperatorClaimResponse = z.object({
   lastTurnEnd: timestamp.optional(),
   /** Why the claim's process was last found gone, why its last start did not produce a running
    * agent, and when its agent last said it could be prompted; each absent until it happens. The
-   * two causes answer separate questions and never overwrite each other, and `lastReady` dates
-   * them. `legion claims list --json` serves them. */
+   * two causes answer separate questions and never overwrite each other. `lastReady` dates the
+   * death; the daemon drops the start failure when the agent says it is ready.
+   * `legion claims list --json` serves them. */
   lastDeathCause: nonEmptyString.optional(),
   lastStartFailure: nonEmptyString.optional(),
   lastReady: timestamp.optional(),
@@ -1910,7 +1918,7 @@ export const LegionEmptyResponse = z.object({});
 /** `api.HandoffCompleteResponse`: an empty object. The merger merges and the daemon merges
  * nothing, so no completion has anything to answer with. */
 export const LegionHandoffCompleteResponse = z.object({});
-/** `api.QueuedStatusWrite` — one status write a status call queued (contract 240): the issue, the
+/** `api.QueuedStatusWrite` — one status write a status call queued (contract 242): the issue, the
  * status the write gives it, and the outbox row that writes it on the issue's own lane, which
  * Dispatch takes when the row runs. `status` is a plain string, since the daemon declares no
  * enumeration of it (`enumerated-fields.json`). The tool hands each answer that carries the list
@@ -1923,10 +1931,10 @@ const legionQueuedStatusWrite = z.object({
 });
 /** `api.StatusCallResponse`, the answer of a status call that writes one issue's status, the
  * controller's `POST /legion/v1/issues/status` and an architect's `POST /legion/v1/children/rerun`
- * (contract 240), once the call's transaction has committed: `queued`, each status write the call
+ * (contract 242), once the call's transaction has committed: `queued`, each status write the call
  * queued in the order it queued them, empty where the call writes no status (a todo on an issue in
  * Legion's work, which on a root whose architect claim failed starts that claim again). Each write
- * is counted on the issue's record before Dispatch echoes it. A caller below 240 is served the
+ * is counted on the issue's record before Dispatch echoes it. A caller below 242 is served the
  * empty object both routes answered before (`api.shapeAnswer`). */
 export const LegionStatusCallResponse = z.object({
   queued: z.array(legionQueuedStatusWrite).optional(),
@@ -1934,10 +1942,10 @@ export const LegionStatusCallResponse = z.object({
 /** `api.WaveReleaseResponse`. `released` is every issue the request named, each once, in the order
  * the request first named it, and the architect is never asked to send the request again for a
  * child it named; `started` and `held` then say what the release did with each of them, and
- * `queued` (contract 240) each status write it queued, a todo for each child it writes, in the
+ * `queued` (contract 242) each status write it queued, a todo for each child it writes, in the
  * wave's order, a child's row after the row of a parent the same wave writes. A child neither
  * started nor held — one the daemon does not record, or one still admitted that waits on nothing
- * — is in neither list. A caller below 240 is served the answer without `queued`
+ * — is in neither list. A caller below 242 is served the answer without `queued`
  * (`api.shapeAnswer`). */
 export const LegionWaveReleaseResponse = z.object({
   released: z.array(nonEmptyString).optional(),
@@ -1968,8 +1976,10 @@ const legionAnsweredPause = z.object({
  * each of its tasks, its id and the steps its block names as the plan writes them (`role` or
  * `role:key`). A task whose block names none runs the project's default steps, which the workflow
  * reads when the task's work starts, so it is answered with no step: an empty list, never null. A
- * plan the daemon does not take is answered `409 PLAN_REFUSED`, whose `error` holds every reason
- * in order; the body's `reasons` lists them by task, which `LegionErrorResponse` strips. The
+ * plan whose content the daemon does not take is answered `409 PLAN_REFUSED`, whose `error` holds
+ * every reason in order; the body's `reasons` lists them by task, which `LegionErrorResponse`
+ * strips. A plan of an issue whose experiment's group takes no plan from its owner is answered
+ * `409 PLAN_NOT_TAKEN` (contract 220), a sentence naming the group and no reasons. The
  * reader takes every field as optional, since no plugin code reads one: the `legion` tool hands
  * the answer to its agent whole. */
 export const LegionPlanRegisterResponse = z.object({
@@ -2021,7 +2031,7 @@ export const LegionPauseFailureResponse = z.object({
 
 /** `api.GrantRequest`, the session form that mints one short-lived credential grant: it serves every
  * redemption for sixty seconds while its claim holds the registration that minted it. `tree` is
- * the registration's, sent back as it was answered; since contract 240 the daemon takes any `tree`,
+ * the registration's, sent back as it was answered; since contract 242 the daemon takes any `tree`,
  * and the grant acts only as the issue's Dispatch chain allows. */
 export const LegionGrantRequest = z.strictObject({
   sessionId: nonEmptyString,
@@ -2142,19 +2152,19 @@ export const LegionHandoffCompleteRequest = z
     message: "returnTo is carried only by a completion with the verdict fail",
   });
 
-/** The words of a status call's `children` argument (contract 240, R24 of dispatch://INFRA-3320),
+/** The words of a status call's `children` argument (contract 242, R24 of dispatch://INFRA-3320),
  * which goes with a `backlog` or `icebox`: `include` moves each open issue under the issue with it
  * (Dispatch's `include_children`), and `unlink` takes each open child out from under it
  * (`unlink_children`). */
 export const LEGION_CHILDREN_ARGUMENTS = ["include", "unlink"] as const;
 
-/** The words of a status call's `parent` argument (contract 240, R24 of dispatch://INFRA-3320),
+/** The words of a status call's `parent` argument (contract 242, R24 of dispatch://INFRA-3320),
  * which goes with a `todo`: `include` moves each issue above the issue that is not in work to
  * `in_progress` with it (Dispatch's `include_parent`). */
 export const LEGION_PARENT_ARGUMENTS = ["include"] as const;
 
 /** `api.IssueStatusRequest`, the controller's set_status: the status to write on the issue, and
- * the two arguments Dispatch's parent rule asks for (contract 240). `children` goes with a
+ * the two arguments Dispatch's parent rule asks for (contract 242). `children` goes with a
  * `backlog` or `icebox` and is required where Dispatch shows an open issue under the issue that
  * the move would leave in work under it (`CHILDREN_ARGUMENT_REQUIRED`, naming each); `parent`
  * goes with a `todo` and is required where the todo would put the issue in work under a parent
@@ -2220,7 +2230,7 @@ export const LegionGateRegisterRequest = z.strictObject({
 });
 
 /** `api.WaveReleaseRequest`, the architect's selected issues under its own issue. It takes neither
- * argument of Dispatch's parent rule: since contract 240 the daemon refuses, with
+ * argument of Dispatch's parent rule: since contract 242 the daemon refuses, with
  * `PARENT_NOT_RELEASED` naming the parent, an issue whose own Dispatch parent is not in work and is
  * not released in the same wave, and a wave the daemon refuses releases none. */
 export const LegionWaveReleaseRequest = z.strictObject({
@@ -2289,7 +2299,7 @@ export const LegionSignOffRequest = z.strictObject({
 /** `api.RootCloseRequest`, a root architect's close of its root before the root's first phase
  * starts, with the reason the daemon posts on the issue. It is refused with the sign-off's three
  * codes, in the same order (`SIGNOFF_CHILD_IN_WORKFLOW`, `SIGNOFF_RESTING_ROOT_IN_WORKFLOW`,
- * `SIGNOFF_CHILD_OPEN`), and since contract 240 after them while a Dispatch child of the root is
+ * `SIGNOFF_CHILD_OPEN`), and since contract 242 after them while a Dispatch child of the root is
  * not done (`CHILDREN_NOT_DONE`, naming each with its status), since Dispatch closes an issue only
  * once each of its children is done. */
 export const LegionRootCloseRequest = z.strictObject({
@@ -2300,7 +2310,7 @@ export const LegionRootCloseRequest = z.strictObject({
 
 /** `api.RerunChildRequest`, an architect's rerun_child of one issue strictly under its own issue on
  * the Dispatch chain (`ISSUE_NOT_OWNED` otherwise, naming the architect claim that may act), and
- * its `parent` argument (contract 240): `include` moves each issue above it that is not in work to
+ * its `parent` argument (contract 242): `include` moves each issue above it that is not in work to
  * `in_progress` with its todo, which a todo under a parent out of work needs
  * (`PARENT_ARGUMENT_REQUIRED` without it, naming each such issue). A child Dispatch shows in
  * `backlog` or `icebox`, whoever wrote that status, opens a new run. It answers
@@ -2334,9 +2344,12 @@ export const LegionPlanRegisterRequest = z.strictObject({
  * the issue that ended before the daemon applied it
  * (`TASK_STALE_GENERATION`), a stop of a root that waits on a person before its first step
  * (`TASK_AWAITING_PERSON`), which a later version of the plan changes, or which stops once the
- * person has answered, and, since contract 239, a stop of a parent that waits in
- * `awaiting_children` on its open Dispatch children (`WAITING_ON_CHILDREN`, naming them and what
- * the architect can do about each). Each refusal writes nothing. */
+ * person has answered, every task of an issue whose experiment's group runs the project's
+ * default steps, since Legion takes no plan from its owner (`PLAN_NOT_TAKEN`, contract 220), and,
+ * since contract 239, a stop of a parent that waits in `awaiting_children` on its open Dispatch
+ * children (`WAITING_ON_CHILDREN`, naming them and what the architect can do about each). A stop
+ * on an issue that meets both is answered `PLAN_NOT_TAKEN`, since the daemon reads the issue's
+ * group before anything of its plan. Each refusal writes nothing. */
 export const LegionTaskStopRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,

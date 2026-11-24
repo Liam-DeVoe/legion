@@ -1029,7 +1029,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 
 		spPass(t, pool, admission)
 
-		const cause = "its reviewed head waited in accepting for the architect's sign-off"
+		const cause = "the head the step before accepting passed waited in accepting for the architect's sign-off"
 		pwHeld(t, pool, spParent, phase.Accepting, cause, spChild+" (todo)")
 		pwNotice(t, pool, phase.Accepting, phase.Accepting, cause, spChild+" (todo)")
 		pwStatuses(t, pool, spParent, pwInProgressOver("needs_review"))

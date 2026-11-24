@@ -158,7 +158,7 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionHandoffCompleteResponse>>;
   /** The controller's `set_status`: Dispatch's status of `issue` to `todo`, `backlog` or `icebox`,
    * with the `children` argument a `backlog` or `icebox` takes and the `parent` argument a `todo`
-   * takes where Dispatch's parent rule asks for one (contract 240). The answer names each status
+   * takes where Dispatch's parent rule asks for one (contract 242). The answer names each status
    * write the call queued. */
   readonly issueStatus: (
     input: z.input<typeof LegionIssueStatusRequest>
@@ -217,14 +217,15 @@ export interface LegionDaemonClient {
     input: z.input<typeof LegionRootCloseRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
   /** An architect's `rerun_child`: a todo on an issue under its own, with the `parent` argument
-   * where the todo would put it in work under a parent that is not (contract 240). The answer
+   * where the todo would put it in work under a parent that is not (contract 242). The answer
    * names each status write the call queued. */
   readonly childRerun: (
     input: z.input<typeof LegionChildRequest>
   ) => Promise<z.output<typeof LegionStatusCallResponse>>;
   /** The owner's `register_plan` (contract 219): the plan in one version of a document of the
    * issue, which the daemon reads from Dispatch at that version. The answer is the plan it took;
-   * a plan it does not take is refused `PLAN_REFUSED`, every reason in the sentence. */
+   * a plan whose content it does not take is refused `PLAN_REFUSED`, every reason in the sentence,
+   * and a plan of an issue whose experiment's group takes no plan from its owner `PLAN_NOT_TAKEN`. */
   readonly planRegister: (
     input: z.input<typeof LegionPlanRegisterRequest>
   ) => Promise<z.output<typeof LegionPlanRegisterResponse>>;
