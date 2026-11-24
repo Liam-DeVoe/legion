@@ -307,11 +307,11 @@ func TestATaskWithASubOwnerNamesNoSteps(t *testing.T) {
 // It takes a part that needs its sibling, a part of a part that needs a part of the task above it,
 // and a part that needs a task of the top level that does not wait for its own task.
 //
-// The fault it catches is a plan whose part never starts taken (its controls: Validate with no
-// refusal of the parts answers nothing for each refused plan; neverStarted with its first pass
-// alone misses no row, and with its second pass alone names h's need of f as well in the row of the
-// chain; R14 read as S3 writes it, a part of another task's PartOf than the task's own, refuses the
-// part of a part that needs a part of the task above it).
+// The fault it catches is a plan whose part never starts taken (its controls: neverStarted that
+// answers nothing fails each row of a need that never ends; neverStarted with its second pass
+// alone names a's need of f in the row of the ids whose task of the top level sorts first, and
+// that row fails; R14 read as S3 writes it, a need of a part whose PartOf is not the task's own,
+// refuses the part of a part that needs a part of the task above it, and that row fails).
 func TestAPlanWhosePartNeverStartsIsRefused(t *testing.T) {
 	f, f1 := partBlock("f", "", "owner", "architect"), partBlock("f1", "f", "steps", "implementer")
 	needing := func(id, parent string, needs ...string) Block {
@@ -340,6 +340,8 @@ func TestAPlanWhosePartNeverStartsIsRefused(t *testing.T) {
 			blocks: []Block{f, partBlock("f1", "f", "owner", "architect"), needing("f1a", "f1", "h"), needing("h", "", "f")},
 			want: []Refusal{{Task: "f1a", Reason: "task f1a needs h, which is done only after f1a starts: " +
 				"h needs f, f is done only after its part f1 and f1 is done only after its part f1a."}}},
+		{name: "the chain named at the part, whatever the order of the ids", blocks: []Block{needing("a", "", "f"), f, needing("f1", "f", "a")},
+			want: []Refusal{{Task: "f1", Reason: "task f1 needs a, which is done only after f1 starts: a needs f and f is done only after its part f1."}}},
 		{name: "a task that needs a part of its own", blocks: []Block{partBlock("f", "", "owner", "architect", "needs", needWord("f1")), f1},
 			want: []Refusal{{Task: "f", Reason: "task f needs f1, which is done only after f starts: f1, a part of f, starts only once f has started."}}},
 		{name: "a task outside a task that needs its part", blocks: []Block{f, f1, needing("h", "", "f1")},
