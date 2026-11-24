@@ -488,30 +488,30 @@ func TestABundleAKeptVolumeHoldsIsDroppedWithoutItsBody(t *testing.T) {
 		{"pod-of-a-later-volume", at.Add(time.Hour)},
 		{"pod-of-a-volume-of-the-saves-second", at.Truncate(time.Second)},
 	} {
-		if held, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, "INFRA-945", newVolume.pod, newVolume.created); err != nil || dropped {
+		if held, dropped, err := s.StartKeptPod(ctx, bundleProject, "INFRA-945", newVolume.pod, newVolume.created); err != nil || dropped {
 			t.Fatalf("a pod of a kept Sandbox made %s, against the save at %s, dropped release %d (%t, %v); want the bundle kept for its take",
 				newVolume.created, at, held.Release, dropped, err)
 		}
 	}
 	// The pod the work came off, a role relaunched in the pod being released, on the volume the
 	// save was taken from.
-	if held, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, "INFRA-945", releasedPodUID, kept); err != nil || dropped {
+	if held, dropped, err := s.StartKeptPod(ctx, bundleProject, "INFRA-945", releasedPodUID, kept); err != nil || dropped {
 		t.Fatalf("the pod the work came off dropped release %d (%t, %v); want the bundle left for the pod that replaces it", held.Release, dropped, err)
 	}
 	// A pod of another project's daemon, of a kept Sandbox made before the save: INFRA-945 is a
 	// record of INFRA's, so the bundle is not legion's to drop, nor the pod legion's to record.
-	if held, dropped, err := s.DropHeldWorkspaceBundle(ctx, "legion", "INFRA-945", "pod-of-legions-spawn", at.Add(-time.Hour)); err != nil || dropped {
+	if held, dropped, err := s.StartKeptPod(ctx, "legion", "INFRA-945", "pod-of-legions-spawn", at.Add(-time.Hour)); err != nil || dropped {
 		t.Fatalf("legion's pod of INFRA-945 dropped release %d (%t, %v); want nothing: the bundle is INFRA's", held.Release, dropped, err)
 	}
 	// A drop that names no project, no pod, or no creation of the pod's Sandbox, has nothing to
 	// read the rule by and is refused: a zero creation would read as older than every save.
-	if _, dropped, err := s.DropHeldWorkspaceBundle(ctx, "", "INFRA-945", "pod-after-the-release", kept); err == nil || dropped {
+	if _, dropped, err := s.StartKeptPod(ctx, "", "INFRA-945", "pod-after-the-release", kept); err == nil || dropped {
 		t.Fatalf("a drop that named no project was answered %t, %v; want it refused", dropped, err)
 	}
-	if _, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, "INFRA-945", "", kept); err == nil || dropped {
+	if _, dropped, err := s.StartKeptPod(ctx, bundleProject, "INFRA-945", "", kept); err == nil || dropped {
 		t.Fatalf("a drop that named no pod was answered %t, %v; want it refused", dropped, err)
 	}
-	if _, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, "INFRA-945", "pod-after-the-release", time.Time{}); err == nil || dropped {
+	if _, dropped, err := s.StartKeptPod(ctx, bundleProject, "INFRA-945", "pod-after-the-release", time.Time{}); err == nil || dropped {
 		t.Fatalf("a drop that named no creation of the Sandbox was answered %t, %v; want it refused", dropped, err)
 	}
 	if size, held, err := s.WorkspaceBundleSize(ctx, "INFRA-945"); err != nil || !held || size != len(saved.Bundle) {
@@ -527,7 +527,7 @@ func TestABundleAKeptVolumeHoldsIsDroppedWithoutItsBody(t *testing.T) {
 
 	// The next pod of the kept Sandbox, made in the second before the save's own. None of the
 	// asks above spent the attempt, or this drop would find no row.
-	held, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, "INFRA-945", "pod-after-the-release", kept)
+	held, dropped, err := s.StartKeptPod(ctx, bundleProject, "INFRA-945", "pod-after-the-release", kept)
 	if err != nil || !dropped {
 		t.Fatalf("a pod of a kept Sandbox made before the save dropped nothing (%v); want the bundle its volume holds dropped", err)
 	}
@@ -540,7 +540,7 @@ func TestABundleAKeptVolumeHoldsIsDroppedWithoutItsBody(t *testing.T) {
 	if _, held, err := s.WorkspaceBundleSize(ctx, "INFRA-945"); err != nil || held {
 		t.Fatalf("after the drop the store holds the bundle = %t (%v), want it deleted", held, err)
 	}
-	if again, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, "INFRA-945", "pod-after-the-release", kept); err != nil || dropped {
+	if again, dropped, err := s.StartKeptPod(ctx, bundleProject, "INFRA-945", "pod-after-the-release", kept); err != nil || dropped {
 		t.Fatalf("a second drop answered release %d (%t, %v); want nothing to drop", again.Release, dropped, err)
 	}
 	// The pod whose kept volume holds the work is marked as holding it, as a pod a restore was
@@ -559,7 +559,7 @@ func TestABundleAKeptVolumeHoldsIsDroppedWithoutItsBody(t *testing.T) {
 	if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, bundleProject, "INFRA-945", "pod-of-a-reset", at.Add(time.Minute)); err != nil || take != runtime.WorkspaceBundleSend {
 		t.Fatalf("the pod of a reset was answered %v (%v), want the saved work", take, err)
 	}
-	if spent, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, "INFRA-945", "pod-after-the-reset", at.Add(-2*time.Hour)); err != nil || dropped {
+	if spent, dropped, err := s.StartKeptPod(ctx, bundleProject, "INFRA-945", "pod-after-the-reset", at.Add(-2*time.Hour)); err != nil || dropped {
 		t.Fatalf("a bundle whose attempt was spent was dropped as release %d (%t, %v); want it kept", spent.Release, dropped, err)
 	}
 	wantPodDisks(t, s, "INFRA-945", "after the spent attempt,", []string{
@@ -587,7 +587,7 @@ func TestABundleAKeptVolumeHoldsIsDroppedWithoutItsBody(t *testing.T) {
 		if err := s.PutWorkspaceBundle(ctx, issue, 21, others); err != nil {
 			t.Fatalf("save the bundle of %s: %v", issue, err)
 		}
-		if held, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, issue, "pod-of-infras-spawn", at.Add(-time.Hour)); err != nil || dropped {
+		if held, dropped, err := s.StartKeptPod(ctx, bundleProject, issue, "pod-of-infras-spawn", at.Add(-time.Hour)); err != nil || dropped {
 			t.Fatalf("INFRA's pod of %s dropped release %d (%t, %v); want nothing: INFRA does not record %s", issue, held.Release, dropped, err, issue)
 		}
 		if size, held, err := s.WorkspaceBundleSize(ctx, issue); err != nil || !held || size != len(others.Bundle) {
@@ -598,15 +598,16 @@ func TestABundleAKeptVolumeHoldsIsDroppedWithoutItsBody(t *testing.T) {
 }
 
 // Each start of a role in a pod whose Sandbox owns a kept volume records that pod with its volume,
-// in the drop's transaction (DropHeldWorkspaceBundle), and the record marks the pod as holding
-// work from before it where an earlier pod of the issue mounted the same volume: a kept volume
-// outlives its pod, so what the roles left unpushed in that earlier pod is on the later pod's
-// disk, with no release at all. The first pod of a volume is recorded unmarked, and stays so
-// whatever pod of that volume comes after it. A pod of another volume is not marked by it, and
-// neither is a pod of another issue of the project whose volume was made in the same second. A
-// drop that deletes a bundle marks its pod where no earlier pod has a row, as one that ran before
-// this record shipped, and a take that sends a bundle marks its pod and keeps its volume. No later
-// write clears a mark: not a later start's drop that deletes nothing and finds no earlier pod.
+// in the transaction of that start (StartKeptPod), and the record marks the pod as holding work
+// from before it where an earlier pod of the issue mounted the same volume: a kept volume outlives
+// its pod, so what the roles left unpushed in that earlier pod is on the later pod's disk, with no
+// release at all. A later pod of a volume never marks an earlier one, so the first pod of a volume
+// is marked only for its own drop or take: pod-a, which has neither, stays unmarked whatever pod
+// of its volume comes after it. A pod of another volume is not marked by it, and neither is a pod
+// of another issue of the project whose volume was made in the same second. A start that deletes a
+// bundle marks its pod where no earlier pod has a row, as one that ran before this record shipped,
+// and a take that sends a bundle marks its pod and keeps its volume. No later write clears a mark:
+// not a later start that deletes nothing and finds no earlier pod.
 func TestEachPodOfAKeptVolumeIsMarkedWhereAnEarlierPodOfTheIssueMountedIt(t *testing.T) {
 	ctx := context.Background()
 	s := bundleStore(t)
@@ -618,12 +619,13 @@ func TestEachPodOfAKeptVolumeIsMarkedWhereAnEarlierPodOfTheIssueMountedIt(t *tes
 	second, third, fourth := first.Add(3*time.Hour), first.Add(5*time.Hour), first.Add(7*time.Hour)
 	starts := func(issue, pod string, kept time.Time, wantDropped bool) {
 		t.Helper()
-		if held, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, issue, pod, kept); err != nil || dropped != wantDropped {
+		if held, dropped, err := s.StartKeptPod(ctx, bundleProject, issue, pod, kept); err != nil || dropped != wantDropped {
 			t.Fatalf("a role's start in %s of %s, on the kept volume made %s, dropped release %d: %t (%v), want %t",
 				pod, issue, kept, held.Release, dropped, err, wantDropped)
 		}
 	}
-	// The first pod of a volume holds nothing from before it, at its first start and at the next.
+	// The first pod of a volume, which drops nothing and takes nothing, is unmarked, at its first
+	// start and at the next.
 	starts("INFRA-945", "pod-a", first, false)
 	starts("INFRA-945", "pod-a", first, false)
 	wantPodDisks(t, s, "INFRA-945", "after two starts in the first pod of a volume,", []string{"pod-a/" + keptVolume(first) + "/unmarked"})
@@ -710,7 +712,7 @@ func TestTheDisksOfAnIssuesPodsStayRecordedUntilTheIssuesWorkIsOver(t *testing.T
 	wantPodDisks(t, s, "INFRA-945", "after a release that saved nothing unpushed,", []string{"pod-a/none/marked", "pod-b/none/marked"})
 	// A role's start in the first pod of a kept volume records that pod, unmarked.
 	kept := at.Add(2 * time.Hour)
-	if _, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, "INFRA-945", "pod-c", kept); err != nil || dropped {
+	if _, dropped, err := s.StartKeptPod(ctx, bundleProject, "INFRA-945", "pod-c", kept); err != nil || dropped {
 		t.Fatalf("a role's start in the first pod of a kept volume dropped a bundle: %t (%v), want nothing to drop", dropped, err)
 	}
 	wantPodDisks(t, s, "INFRA-945", "after a start in a pod of a kept volume,",

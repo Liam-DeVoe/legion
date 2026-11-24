@@ -340,7 +340,7 @@ type IssueVolumeReader interface {
 // workspace every role of the issue shares, so a release can keep it while the pod, its disk and
 // the workspace on it go. A kept volume does not go: the release keeps the Sandbox that owns it
 // (IssueReleaser), and the pod after the release takes no saved work that volume holds
-// (HeldWorkspaceBundleDrop). The save is still made, because a reset replaces a kept volume, and
+// (KeptPodStart). The save is still made, because a reset replaces a kept volume, and
 // the save is then the one copy of the unpushed work. The role named must be one whose process
 // runs: the shim builds the bundle with the jj and git of the workspace it already works in. A
 // runtime whose processes share no workspace implements nothing here, and the release of such a
@@ -425,23 +425,50 @@ type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCre
 // the issue's next pod.
 type WorkspaceBundleRestored func(ctx context.Context, issue string, release int64) error
 
-// HeldWorkspaceBundleDrop drops the bundle an issue's last release saved where the pod of podUID
-// holds that work on its volume already: the pod's Sandbox owns the issue's kept volume and was
-// created at keptSince, before the save. That volume is the one the work was taken off, so the pod
-// is sent nothing. The launcher would refuse a bundle sent there, because its workspace is older
-// than the save. It would then log a notice that the work was lost, and the bundle would hold the
-// issue's pod (workflow.IdleHoldBundleUnrestored). The drop answers the release and the time of
-// the bundle it dropped, never its body, and true. False is nothing dropped, and the runtime then
-// takes the bundle as SavedWorkspaceBundle answers it. It deletes the row a confirmed restore
-// deletes (store.Store.DropHeldWorkspaceBundle, bound to the daemon's project where the daemon
-// wires it), under the take's own rules: the pod the work came off drops nothing, a bundle whose
-// one attempt is spent drops nothing, and a bundle of an issue the daemon's project does not
-// record drops nothing. A Sandbox created after the save holds a new volume, which a reset made,
-// and its pod restores the bundle. So does a Sandbox created in the save's own second, which the
-// rule cannot order against the save. The runtime calls it at every role's start in a pod whose
-// Sandbox owns a kept volume, and each call for an issue the daemon's project records also records
-// that pod with its volume for the issue's update round (store.Store.PodHoldsEarlierWork).
-type HeldWorkspaceBundleDrop func(ctx context.Context, issue, podUID string, keptSince time.Time) (WorkspaceBundle, bool, error)
+// KeptPodStart is a role's start in the pod of podUID whose Sandbox owns the issue's kept volume
+// and was created at keptSince, as the daemon's store makes it (store.Store.StartKeptPod, bound to
+// the daemon's project where the daemon wires it). It records that pod with its volume for the
+// issue's update round (store.Store.PodHoldsEarlierWork), whether or not the issue has a saved
+// bundle, and in the same transaction it drops the bundle the issue's last release saved where the
+// pod holds that work on its volume already: a Sandbox created at keptSince, before the save, owns
+// the volume the work was taken off, so the pod is sent nothing. The launcher would refuse a bundle
+// sent there, because its workspace is older than the save. It would then log a notice that the
+// work was lost, and the bundle would hold the issue's pod (workflow.IdleHoldBundleUnrestored). The
+// call answers the release and the time of the bundle it dropped, never its body, and true. False
+// is nothing dropped, and the runtime then takes the bundle as SavedWorkspaceBundle answers it. The
+// drop deletes the row a confirmed restore deletes, under the take's own rules: the pod the work
+// came off drops nothing, a bundle whose one attempt is spent drops nothing, and a bundle of an
+// issue the daemon's project does not record drops nothing, and that pod is not recorded either. A
+// Sandbox created after the save holds a new volume, which a reset made, and its pod restores the
+// bundle. So does a Sandbox created in the save's own second, which the rule cannot order against
+// the save.
+//
+// The runtime calls it at every role's start in a pod whose Sandbox owns a kept volume, and starts
+// no role there while the call fails: it refuses that start with KeptPodUnrecorded before the
+// start is sent.
+type KeptPodStart func(ctx context.Context, issue, podUID string, keptSince time.Time) (WorkspaceBundle, bool, error)
+
+// KeptPodUnrecorded is a role's start refused because the daemon's store could not record the
+// role's pod with the issue's kept volume (KeptPodStart). PodUID is the pod, KeptSince is when the
+// API server created the pod's Sandbox, which names the volume, and Err is the store's error. An
+// end of the issue's update round over a later pod of that volume reads the record for whom it
+// names (store.Store.PodHoldsEarlierWork), so a role that ran in a pod the store does not record
+// could leave work on the volume that no end names it for. The runtime refuses with it before it
+// sends the start, so no process of the role was started, and the supervisor charges it as a launch
+// failure: its text is the claim's last start failure, and where the launches run out, the sentence
+// of the claim's failure and the held notice's start failure.
+type KeptPodUnrecorded struct {
+	PodUID    string
+	KeptSince time.Time
+	Err       error
+}
+
+func (e KeptPodUnrecorded) Error() string {
+	return fmt.Sprintf("pod %s of the kept volume made %s could not be recorded for the issue's update round, so no role starts in it: %v",
+		e.PodUID, e.KeptSince.UTC().Format(time.RFC3339), e.Err)
+}
+
+func (e KeptPodUnrecorded) Unwrap() error { return e.Err }
 
 // MemoryGuardKilled is the daemon's reading of one process an issue pod's launcher ended with
 // SIGKILL because the pod was near its memory limit, or, in a microVM pod, one that the pod's own

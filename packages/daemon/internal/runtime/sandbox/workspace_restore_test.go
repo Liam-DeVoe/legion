@@ -65,11 +65,12 @@ func takeBundle(st *store.Store) runtime.SavedWorkspaceBundle {
 	}
 }
 
-// dropHeldBundle is st's drop of a release's saved work that a kept volume of a pod of the rig's
-// project holds, as the daemon wires it into the runtime (internal/daemon's heldWorkspaceBundle).
-func dropHeldBundle(st *store.Store) runtime.HeldWorkspaceBundleDrop {
+// keptPodStart is st's record of a role's start in a pod of the rig's project whose Sandbox owns
+// the issue's kept volume, which drops a release's saved work that volume holds, as the daemon
+// wires it into the runtime (internal/daemon's keptPodStart).
+func keptPodStart(st *store.Store) runtime.KeptPodStart {
 	return func(ctx context.Context, issue, podUID string, keptSince time.Time) (runtime.WorkspaceBundle, bool, error) {
-		return st.DropHeldWorkspaceBundle(ctx, testProject, issue, podUID, keptSince)
+		return st.StartKeptPod(ctx, testProject, issue, podUID, keptSince)
 	}
 }
 
@@ -317,7 +318,7 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 		t.Fatalf("save the second release's bundle: %v", err)
 	}
 
-	d := newLaunchers(testLeakCheck, nil, takeBundle(st), st.DeleteRestoredWorkspaceBundle, dropHeldBundle(st), nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	d := newLaunchers(testLeakCheck, nil, takeBundle(st), st.DeleteRestoredWorkspaceBundle, keptPodStart(st), nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	spec := workerSpec(t)
 	session := d.accept(spec.Claim, testTree, rigNow, time.Time{}, shimwire.LauncherHello{LauncherID: "late", PodUID: "pod-uid"})
 	frames, err := bundleFrames(testTree, first)
@@ -491,11 +492,11 @@ func TestAKeptVolumeTakesNoSavedWorkItHolds(t *testing.T) {
 	wired := func(st *store.Store) (rigOption, func() []drop) {
 		var mu sync.Mutex
 		var drops []drop
-		held := dropHeldBundle(st)
+		started := keptPodStart(st)
 		option := withOptions(func(o *Options) {
 			o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeBundle(st), st.DeleteRestoredWorkspaceBundle
-			o.HeldWorkspaceBundle = func(ctx context.Context, issue, podUID string, keptSince time.Time) (runtime.WorkspaceBundle, bool, error) {
-				bundle, dropped, err := held(ctx, issue, podUID, keptSince)
+			o.KeptPodStart = func(ctx context.Context, issue, podUID string, keptSince time.Time) (runtime.WorkspaceBundle, bool, error) {
+				bundle, dropped, err := started(ctx, issue, podUID, keptSince)
 				if dropped {
 					mu.Lock()
 					drops = append(drops, drop{release: bundle.Release, keptSince: keptSince})

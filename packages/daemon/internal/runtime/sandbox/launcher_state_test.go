@@ -36,7 +36,7 @@ func TestLauncherExitBeforeStartResultStaysExited(t *testing.T) {
 	}
 	started := make(chan error, 1)
 	go func() {
-		started <- launchers.start(ctx, workerToken, "pod", session, shimwire.LauncherStart{ID: "start-7", Generation: 7, Argv: []string{"true"}})
+		started <- launchers.start(ctx, workerToken, session, shimwire.LauncherStart{ID: "start-7", Generation: 7, Argv: []string{"true"}})
 	}()
 	if _, err := shimwire.NewReader(peer).ReadLine(); err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestStartPreparedForAReplacedLauncherSessionRefuses(t *testing.T) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := launchers.start(ctx, workerToken, "pod", old,
+	if err := launchers.start(ctx, workerToken, old,
 		shimwire.LauncherStart{ID: "start-1", Generation: 1, Argv: []string{"true"}}); err == nil {
 		t.Fatal("a start prepared for a replaced launcher session succeeded")
 	}
@@ -181,7 +181,7 @@ func TestLauncherCommandWriteHonorsItsDeadline(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- launchers.start(ctx, workerToken, "pod", session, shimwire.LauncherStart{ID: "start-1", Generation: 1, Argv: []string{"true"}})
+		done <- launchers.start(ctx, workerToken, session, shimwire.LauncherStart{ID: "start-1", Generation: 1, Argv: []string{"true"}})
 	}()
 	select {
 	case err := <-done:

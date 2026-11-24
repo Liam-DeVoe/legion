@@ -14,13 +14,14 @@ import (
 // through everything before it whatever lands beside it.
 const podDisksVersion = 20261123234016
 
-// 20261123234016 adds issue_pod_disks, the disk of each pod of an issue, and changes no table that
-// the release before reads. A bundle the release before saved is still the bundle after the
-// migration, and the release before's own statements on it still run. The first take of this
-// release that sends the bundle records its pod, marked, and a role's start in a pod of a kept
-// volume records that pod with its volume. The table's key is the issue and the pod, and it
-// refuses a row with no pod or with no mark. The negative control is the table itself, which is
-// not there before the migration.
+// 20261123234016 adds issue_pod_disks, the disks of the pods of an issue that a take sent a bundle
+// or in which a role of a kept volume started, and changes no table that the release before reads.
+// A bundle the release before saved is still the bundle after the migration, and the release
+// before's own statements on it still run. The first take of this release that sends the bundle
+// records its pod, marked, and a role's start in a pod of a kept volume records that pod with its
+// volume. The table's key is the issue and the pod, and it refuses a row with no pod, with no mark,
+// or with neither a kept volume nor a mark, which no write makes. The negative control is the table
+// itself, which is not there before the migration.
 func TestTheDisksOfAnIssuesPodsArriveWith20261123234016(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -80,15 +81,17 @@ func TestTheDisksOfAnIssuesPodsArriveWith20261123234016(t *testing.T) {
 		take != runtime.WorkspaceBundleSend {
 		t.Fatalf("this release's take answered %v (%v), want the bundle sent", take, err)
 	}
-	if _, dropped, err := store.DropHeldWorkspaceBundle(ctx, bundleProject, "INFRA-945", "pod-of-a-kept-volume", at.Add(2*time.Hour)); err != nil || dropped {
-		t.Fatalf("this release's drop answered %t (%v), want nothing dropped", dropped, err)
+	if _, dropped, err := store.StartKeptPod(ctx, bundleProject, "INFRA-945", "pod-of-a-kept-volume", at.Add(2*time.Hour)); err != nil || dropped {
+		t.Fatalf("this release's start in a pod of a kept volume dropped a bundle: %t (%v), want nothing dropped", dropped, err)
 	}
 	if got, want := rowsAsText(t, store, disks), []string{"INFRA-945/pod-of-a-kept-volume/11:30:00/false", "INFRA-945/pod-of-this-release/none/true"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("after this release's take and drop the table holds %v, want %v", got, want)
 	}
 
 	// One row per issue and pod: the same pod of another issue is a row of its own, the same pair
-	// again is refused by the key, and a row with no pod or no mark is refused.
+	// again is refused by the key, and a row with no pod, with no mark, or with neither a kept
+	// volume nor a mark is refused. A row of a kept volume with no mark is the one this release's
+	// start in a pod of a kept volume wrote above, and a marked row with no kept volume the take's.
 	const insert = `insert into issue_pod_disks (issue, pod_uid, kept_since, holds_earlier_work) values ($1, $2, null, $3)`
 	if err := exec(insert, "OTHER-8", "pod-of-this-release", true); err != nil {
 		t.Fatalf("the same pod of another issue: %v", err)
@@ -99,9 +102,10 @@ func TestTheDisksOfAnIssuesPodsArriveWith20261123234016(t *testing.T) {
 		pod   string
 		mark  *bool
 	}{
-		{"the same issue and pod again", "INFRA-945", "pod-of-this-release", new(bool)},
-		{"a row with no pod", "INFRA-945", "", new(bool)},
+		{"the same issue and pod again", "INFRA-945", "pod-of-this-release", new(true)},
+		{"a row with no pod", "INFRA-945", "", new(true)},
 		{"a row with no mark", "INFRA-945", "pod-of-a-later-release", nil},
+		{"a row with neither a kept volume nor a mark", "INFRA-945", "pod-of-a-later-release", new(false)},
 	} {
 		if err := exec(insert, refused.issue, refused.pod, refused.mark); err == nil {
 			t.Fatalf("%s was written, want it refused", refused.what)

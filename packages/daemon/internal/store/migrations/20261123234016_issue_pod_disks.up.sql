@@ -1,13 +1,14 @@
--- 20261123234016_issue_pod_disks.up.sql — the disk of each pod of an issue, one row per issue and
--- pod: whether the pod's Sandbox owns the issue's kept volume, and since when, and whether the
--- pod's disk holds work from before the pod, which the issue's update round reads from the store
--- (dispatch://INFRA-4425).
+-- 20261123234016_issue_pod_disks.up.sql — the disks of two kinds of pod of an issue, one row per
+-- issue and pod: a pod that a take sent a release's bundle, and a pod of the issue's kept volume in
+-- which a role started. Each row says whether the pod's Sandbox owns the issue's kept volume, and
+-- since when, and whether the pod's disk holds work from before the pod, which the issue's update
+-- round reads from the store (dispatch://INFRA-4425).
 --
 -- An idle release saves the unpushed work of the workspace that every role of the issue shares as
 -- a bundle (workspace_bundles). The issue's next pod takes it before any role starts in it: the
 -- pod a restore is sent to (store.TakeWorkspaceBundleForRestore, attempt_outcome `sent`), or the
 -- pod whose Sandbox owns the issue's kept volume and was made before the save, which mounts the
--- volume the work was taken off, so the store drops the saved copy (store.DropHeldWorkspaceBundle).
+-- volume the work was taken off, so the store drops the saved copy (store.StartKeptPod).
 -- A kept volume outlives its pod with no release too: an eviction, a launch's replacement and an
 -- update round's replacement keep it for the issue's next pod, until a reset mark or a change of
 -- the disk's shape replaces the Sandbox with its volume. So a pod that mounts a kept volume an
@@ -24,14 +25,18 @@
 -- a kept volume's drop, or a kept volume that an earlier pod of the issue mounted. Two statements
 -- write a row, each in the transaction of the bundle's own statement. The take that sends a bundle
 -- writes the pod with no kept_since and marked, or marks the pod's row; a take refused as older
--- than the save, and one that found no bundle of the asking project's, write nothing. The drop runs
--- at every role's start in a pod whose Sandbox owns a kept volume, and at every call whose project
--- records the issue it records the pod with its kept_since, marked where it deleted a bundle or
--- where another pod of the issue has a row with the same kept_since. The mark is decided at that
--- write: a Sandbox runs one pod at a time, so at a pod's first record every other row of its
--- volume is an earlier pod's, while the update round can read a pod after the next pod of its
--- volume has recorded, and the first pod of a volume holds nothing from before it. No write clears
--- a mark. internal/daemon's update round reads the mark of its pod (store.PodHoldsEarlierWork,
+-- than the save, and one that found no bundle of the asking project's, write nothing. A role's
+-- start in a pod whose Sandbox owns a kept volume (store.StartKeptPod) runs before the take, at
+-- every start, whether or not the issue has a bundle, and at every call whose project records the
+-- issue it records the pod with its kept_since, marked where it deleted a bundle or where another
+-- pod of the issue has a row with the same kept_since; a start whose record fails goes no further,
+-- so no role runs in a pod of a kept volume that has no row. The mark is decided at that write: a
+-- Sandbox runs one pod at a time, so at a pod's first record every other row of its volume is an
+-- earlier pod's, while the update round can read a pod after the next pod of its volume has
+-- recorded. A later pod of a volume never marks an earlier one, so the first pod of a volume is
+-- marked only for its own drop or take. No write clears a mark, and every row has a kept_since or
+-- a mark, since the start writes a kept_since and the take a mark: the table refuses a row with
+-- neither. internal/daemon's update round reads the mark of its pod (store.PodHoldsEarlierWork,
 -- workOnRoundPod).
 --
 -- The rows of an issue go when the issue's work is over: the outbox's dropReleasedWork, at the
@@ -55,5 +60,6 @@ create table issue_pod_disks (
     pod_uid            text        not null check (pod_uid <> ''),
     kept_since         timestamptz,
     holds_earlier_work boolean     not null,
-    primary key (issue, pod_uid)
+    primary key (issue, pod_uid),
+    check (kept_since is not null or holds_earlier_work)
 );
