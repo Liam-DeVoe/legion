@@ -1553,6 +1553,22 @@ test("a rework or deployed value the page has no label for reaches neither the s
   ]);
 });
 
+// `?priority=` names a closed set too: an issue's priority, P0 to P3, an issue with none and a
+// pull request that names no issue, the values Dispatch counts the facet by and reads a selection
+// of. A value outside it was kept, sent to Dispatch and drawn as a chip.
+test("a priority value outside its facet's values reaches neither the subscription nor a chip, and a known one beside it does", async () => {
+  renderPage(`${DELIVERY_URL}&priority=P9&priority=P0`);
+  const socket = await openSocket();
+  const { sub } = await subscriptionTo(socket, {
+    kind: "timeline",
+    window: URL_WINDOW,
+    query: "priority=P0",
+  });
+  serve(socket, snapshotFrame(sub, everyFacet));
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(rowControls()).toEqual(["Filter · 1", "Remove Priority: P0 filter"]);
+});
+
 // F2 item 3: the count is the answer's for the filter and the window the address names, so the
 // previous answer's number is never shown as this filter's.
 test("the count says it is counting while a new filter's read is out, and shows the answer's number again", async () => {
@@ -1617,6 +1633,51 @@ test("while a pick's read is out the Filter panel's other facets draw no count b
   );
   expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
   expect(await facetOptionNames(user, "Priority")).toEqual(["P1, 2 PRs", "P0, 1 PR"]);
+});
+
+/** Each value a List column's header filter offers, by the name it is read out as
+ *  (`listOptionNames`). Escape closes the list again, so the next read opens its own. */
+async function columnOptionNames(user: UserEvent, column: string): Promise<string[]> {
+  await user.click(screen.getByRole("button", { name: new RegExp(`^Filter ${column}`) }));
+  const names = listOptionNames(screen.getByRole("listbox", { name: `${column} options` }));
+  await user.keyboard("{Escape}");
+  return names;
+}
+
+// The same for the List view's column filters, which count each value from the same answer: while
+// a pick's read was out, a header's filter drew the previous filter's count beside each value.
+test("while a pick's read is out a List column's filter draws no count beside a value, and the answer's counts once it is in", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  const socket = await answered(everyFacet);
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await columnOptionNames(user, "Author")).toEqual(["octocat, 1 PR"]);
+
+  await user.click(screen.getByRole("button", { name: "Filter Issue" }));
+  await user.click(
+    within(screen.getByRole("listbox", { name: "Issue options" })).getByRole("option", {
+      name: /^ACME-1/,
+    })
+  );
+  const { sub } = await subscriptionTo(socket, {
+    kind: "timeline",
+    window: URL_WINDOW,
+    query: "issue=ACME-1",
+  });
+  await user.keyboard("{Escape}");
+  // The first answer is still on screen while the pick's read is out.
+  await screen.findByText("Counting PRs in current filter/window…");
+  expect(await columnOptionNames(user, "Author")).toEqual(["octocat"]);
+
+  serve(
+    socket,
+    snapshotFrame(sub, {
+      ...everyFacet,
+      facet_counts: { ...everyFacet.facet_counts, author: { hubot: 2, octocat: 1 } },
+    })
+  );
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await columnOptionNames(user, "Author")).toEqual(["hubot, 2 PRs", "octocat, 1 PR"]);
 });
 
 /** Each agent the Own colour list offers, by the name it is read out as (`listOptionNames`).

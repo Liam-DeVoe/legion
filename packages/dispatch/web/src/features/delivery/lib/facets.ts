@@ -34,6 +34,14 @@ export const DEPLOYED_LABELS: Record<DeployedFacet, string> = {
 
 export const REWORK_LABELS: Record<ReworkFacet, string> = { value: "value", rework: "rework" };
 
+/** Whether `value` names a value of the priority facet as Dispatch reads a selection of it
+ *  (`deliveryPrioritySelection` and `parseDeliverySelection`, `api/delivery.go`): an issue's
+ *  priority, P0 to P3, which it reads written `p0` or as the bare digit too, an issue with none
+ *  (`NO_PRIORITY`), or a pull request that names no issue (`NO_ISSUE`). */
+export function isPriorityFacet(value: string): boolean {
+  return /^[pP]?[0-3]$/u.test(value) || value === NO_PRIORITY || value === NO_ISSUE;
+}
+
 /** Drops the "owner/" prefix from a repo label when the bare repo name is unique among
  *  `allRepoKeys` — e.g. "widgets" instead of "acme/widgets" — but keeps the full "owner/repo"
  *  wherever two different owners share a repo name, so labels stay unambiguous. */

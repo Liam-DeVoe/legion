@@ -51,6 +51,7 @@ import {
   FACET_PARAMS,
   type FacetKey,
   type Filters,
+  isPriorityFacet,
   PLACEHOLDER_LABELS,
   REWORK_LABELS,
   type ReworkFacet,
@@ -205,8 +206,9 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
   const sortText = SORT_PARAM.read(searchParams, "sort");
   const sorting = useMemo(() => readSorting(sortText), [sortText]);
   const arrayParams = useRepeatableAddressParams(FACET_KEYS);
-  // `?rework=` and `?deployed=` keep only the values their labels name, in the address's order,
-  // so an unknown one reaches neither the request nor a chip.
+  // `?rework=`, `?deployed=` and `?priority=` keep only the values their facets hold - a priority
+  // as Dispatch reads one - in the address's order, so an unknown one reaches neither the request
+  // nor a chip.
   const filters: Filters = useMemo(
     () => ({
       ...arrayParams,
@@ -216,6 +218,7 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
       deployed: arrayParams.deployed.filter((value): value is DeployedFacet =>
         Object.hasOwn(DEPLOYED_LABELS, value)
       ),
+      priority: arrayParams.priority.filter(isPriorityFacet),
       search,
     }),
     [arrayParams, search]
@@ -803,7 +806,8 @@ export function DeliveryPage(): ReactNode {
   // only while the answer on screen is that one: not while a new filter's or a new window's read
   // is out and the previous answer stays on screen (`isPlaceholderData`), nor while a search the
   // reader is typing waits out its debounce before it is asked for. A value's count in the Filter
-  // panel and in the Own colour list is drawn under the same gate.
+  // panel, in the Own colour list and in a List column's header filter is drawn under the same
+  // gate.
   const counted = !query.isPlaceholderData && search === state.filters.search.trim();
   return (
     <section className="flex flex-col gap-3 xl:h-[calc(100dvh-3rem)]">
@@ -965,6 +969,7 @@ export function DeliveryPage(): ReactNode {
                     colorBy={state.view.colorBy}
                     colorScale={colorScale}
                     columnFilters={columnFilters}
+                    counted={counted}
                     facetCounts={data.facet_counts ?? {}}
                     issueTitles={data.issue_titles ?? {}}
                     onColumnFiltersChange={setColumnFilters}
