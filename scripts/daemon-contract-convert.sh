@@ -35,11 +35,21 @@
 #      pi-legion and claude-envoy manifests, the `contract` marks of state.json and
 #      state-narrowed-repositories.json, and the whole of version.json, contract-shapes.json,
 #      request-shapes.json, answers.json and enumerated-fields.json. What the last four held of an
-#      entry, the entry fixture records: step 5 writes it from the rows step 3 moved.
-#   5. It merges main and runs `go test ./internal/api -run '^TestEntryFixtures$' -update`, which
-#      writes the fixture of each entry that has none. While a row of a frozen table still names an
-#      entry, that entry's fixture would leave the row out, so TestEntryFixtures writes none, and
-#      the author runs the same `-update` once the rows have moved (step 6).
+#      entry, the entry fixture records: step 5 writes it from the rows step 3 moved and from what
+#      the daemon serves at the entry's number. That gives each answer's record, because the shape
+#      gate before the cutover held every answer at every contract to its record; it does not give
+#      each route's, because one build's request types read the same fields at every number, so of
+#      two entries that each change a request the first would take both changes. So before
+#      request-shapes.json goes back, each entry's request part is kept: the routes and field paths
+#      by which the branch's record of its number differs from the record of the number before it
+#      (a number the file holds no record of changes nothing). It is kept in the git directory, at
+#      `git rev-parse --git-path daemon-contract-convert/<branch>/entry-requests.json`, so that it
+#      outlasts the run.
+#   5. It merges main and runs `go test ./internal/api -run '^TestEntryFixtures$' -update
+#      -entry-requests=<that file>`, which writes the fixture of each entry that has none, its
+#      request part made over the record of the entries before it. While a row of a frozen table
+#      still names an entry, that entry's fixture would leave the row out, so TestEntryFixtures
+#      writes none, and the author runs the same `-update` once the rows have moved (step 6).
 #   6. It prints `<file>:<line>: <text>` for each line it leaves for the author, at its line after
 #      the merge: each row naming an entry's constant that it could not move, every other line of
 #      Go code that names an entry's constant (a comparison that must read entryNumber(<x>), a
@@ -47,12 +57,12 @@
 #      branch added to a frozen table (a route added to an existing answer, a value strip).
 #      TestNoFrozenRowNamesAnEntry fails until each row of a frozen table that names an entry is in
 #      that entry's file; the author moves the rows, then writes the fixture with `-update` (or
-#      again with `-update-entry=<id>` where step 5 wrote one).
+#      again with `-update-entry=<id>` where step 5 wrote one), with `-entry-requests=<that file>`.
 #
 # The result is one commit, the merge of main, whose message names each entry, each row moved,
 # each copy undone, each fixture written and each line left. Nothing is committed when a step
 # before the merge fails. Where the merge conflicts, the conversion alone is committed and the
-# conflicting files are named; the author merges main and runs `-update` by hand.
+# conflicting files are named; the author merges main and runs the `-update` of step 5 by hand.
 #
 #   --main <ref>  main after the cutover, default refs/remotes/origin/main.
 #   --report      steps 1 to 4 read and nothing done: no file written, no merge, no Go toolchain,
@@ -107,7 +117,10 @@ head_sha=$(git rev-parse --verify -q "${rev:-HEAD}^{commit}") || die "cannot rea
 base=$(git merge-base "$head_sha" "$main_sha") || die "${rev:-HEAD} and $main share no commit"
 
 # convert_py runs the conversion's reading and writing, one phase per call:
-#   analyze report|convert BASE HEAD MAIN STATE   steps 1 to 4 (convert writes them, and STATE)
+#   analyze report|convert BASE HEAD MAIN STATE REQUESTS REQUESTS_AT
+#                                                  steps 1 to 4 (convert writes them, STATE, and
+#                                                  the entries' request parts at REQUESTS, which
+#                                                  is `git rev-parse --git-path REQUESTS_AT`)
 #   finish STATE                                   step 6 and the commit message, after the merge
 convert_py() {
   python3 - "$@" <<'PY'
@@ -127,6 +140,7 @@ REQUESTS_GO = f"{API}/requests.go"
 FIXTURES = "packages/contracts/fixtures/daemon-api"
 MANIFESTS = ("packages/pi-legion/package.json", "packages/claude-envoy/package.json")
 STATE_GOLDENS = (f"{FIXTURES}/state.json", f"{FIXTURES}/state-narrowed-repositories.json")
+REQUEST_SHAPES = f"{FIXTURES}/request-shapes.json"
 WHOLE_COPIES = tuple(f"{FIXTURES}/{name}" for name in (
     "version.json", "contract-shapes.json", "request-shapes.json", "answers.json", "enumerated-fields.json"))
 ENTRY_FILE = re.compile(r"(?:^|/)contract_\d{14}_[a-z0-9]+(?:-[a-z0-9]+)*(?:_test)?\.go$")
@@ -545,6 +559,41 @@ def manifest_number(text):
     return (int(match.group(1)), match) if match else (None, None)
 
 
+def request_parts(text, base_number, numbers):
+    """What each of numbers changes of the requests, by the records of request-shapes.json as the
+    branch holds it (text), in the form of an entry fixture's `routes`: the routes and field paths
+    by which the record of the number differs from the record before it, from the base's own
+    number up. The rule before the cutover wrote a number's records while it was the daemon's own
+    and kept them after, so they tell one entry's change from the next one's, which one build's
+    request types, reading the same fields at every number, cannot. A number the file holds no
+    record of changes nothing: the record before it still stands."""
+    records = {}
+    for record in json.loads(text) if text else []:
+        records.setdefault(record["contract"], {})[record["route"]] = set(record["fieldPaths"] or ())
+    below = [c for c in records if c <= base_number]
+    before = records[max(below)] if below else {}
+    parts = {}
+    for number in sorted(numbers):
+        parts[number] = part = []
+        at = records.get(number)
+        if at is None:
+            continue
+        for route in sorted(set(before) | set(at)):
+            if route not in at:
+                part.append({"route": route, "change": "remove"})
+                continue
+            was = before.get(route, set())
+            change = {"route": route} if route in before else {"route": route, "change": "add"}
+            if at[route] - was:
+                change["addFieldPaths"] = sorted(at[route] - was)
+            if was - at[route]:
+                change["removeFieldPaths"] = sorted(was - at[route])
+            if len(change) > 1:
+                part.append(change)
+        before = at
+    return parts
+
+
 def changed_paths(base, head, *paths):
     return [p for p in git("diff", "--name-only", "--no-renames", base, head, "--", *paths).decode().split("\n") if p]
 
@@ -596,7 +645,7 @@ class Edits:
         return text
 
 
-def analyze(mode, base, head, main, state_path):
+def analyze(mode, base, head, main, state_path, requests_path="", requests_at=""):
     version_specs = read_blobs([f"{base}:{VERSION_GO}", f"{head}:{VERSION_GO}", f"{main}:{VERSION_GO}"])
     base_version, head_version = version_specs[f"{base}:{VERSION_GO}"], version_specs[f"{head}:{VERSION_GO}"]
     if base_version is None or not CONST_LINE.search(base_version):
@@ -931,6 +980,16 @@ def analyze(mode, base, head, main, state_path):
             with open(path, "w") as out:
                 out.write(edit.apply())
             touched.append(path)
+    # Each entry's request part, read from the branch's request-shapes.json before step 4 puts the
+    # file back, for step 5's `-update -entry-requests` (request_parts).
+    parts = request_parts(read_blobs([f"{head}:{REQUEST_SHAPES}"])[f"{head}:{REQUEST_SHAPES}"], base_number, numbers)
+    os.makedirs(os.path.dirname(requests_path), exist_ok=True)
+    with open(requests_path, "w") as out:
+        json.dump({e["id"]: parts[e["number"]] for e in entries}, out, indent=2)
+        out.write("\n")
+    for e in entries:
+        print(f"request part of entry {e['number']}: {json.dumps(parts[e['number']]) if parts[e['number']] else 'none'}")
+    print(f"kept the request part of each entry, read from {REQUEST_SHAPES} at its number, in {requests_path}")
     for path, text in written.items():
         if text is None:
             text = read_blobs([f"{base}:{path}"])[f"{base}:{path}"]
@@ -942,7 +1001,7 @@ def analyze(mode, base, head, main, state_path):
     state = {
         "base": base, "head": head, "main": main, "baseNumber": base_number,
         "entries": [{k: e[k] for k in ("number", "id", "slug", "const", "file")} for e in entries],
-        "moves": moves, "undo": undo, "touched": sorted(set(touched)),
+        "moves": moves, "undo": undo, "touched": sorted(set(touched)), "requestsAt": requests_at,
         "left": [[path, line, text, (path, line) in rows] for (path, line), text in sorted(left.items())],
     }
     with open(state_path, "w") as out:
@@ -1036,7 +1095,9 @@ def finish(state_path):
     body += [f"- wrote {path}" for path in state.get("fixtures", [])]
     if not state.get("fixtures") and any(item[3] for item in state["left"]):
         body.append("- wrote no entry fixture: each row of a frozen table below names an entry, whose fixture "
-                    "records it; `go test ./internal/api -run '^TestEntryFixtures$' -update` writes it once they move")
+                    "records it; `go test ./internal/api -run '^TestEntryFixtures$' -update -entry-requests=<file>` "
+                    "writes it once they move, <file> being the request part of each entry that the conversion "
+                    f"kept, `git rev-parse --git-path {state['requestsAt']}`")
     if left:
         body += ["", "Left for the author, each at its line in this commit: TestNoFrozenRowNamesAnEntry",
                  "fails until each row of a frozen table that names an entry is in its entry file.", ""]
@@ -1052,7 +1113,7 @@ def finish(state_path):
 
 phase = sys.argv[1]
 if phase == "analyze":
-    analyze(*sys.argv[2:7])
+    analyze(*sys.argv[2:9])
 elif phase == "fixtures":
     with open(sys.argv[2]) as f:
         state = json.load(f)
@@ -1077,9 +1138,13 @@ command -v go >/dev/null || die "go is not on PATH: step 5 runs go test ./intern
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 state=$work/state.json
+# Each entry's request part (step 4), kept in the git directory: the `-update` an author runs after
+# moving a row or merging main by hand reads it too, after this run's own files are gone.
+requests_at=daemon-contract-convert/$branch/entry-requests.json
+requests=$(git rev-parse --path-format=absolute --git-path "$requests_at")
 
 echo "== steps 1 to 4: $branch at ${head_sha:0:10}, merge base ${base:0:10}"
-convert_py analyze convert "$base" "$head_sha" "$main_sha" "$state"
+convert_py analyze convert "$base" "$head_sha" "$main_sha" "$state" "$requests" "$requests_at"
 [ -f "$state" ] || exit 0
 mapfile -t touched < <(python3 -c 'import json, sys; print("\n".join(json.load(open(sys.argv[1]))["touched"]))' "$state")
 mapfile -t gofiles < <(printf '%s\n' "${touched[@]}" | grep '\.go$' || true)
@@ -1096,12 +1161,12 @@ if ! merged=$(git merge-tree --write-tree --no-messages --name-only "$converted"
   git reset -q
   echo "the merge of $main conflicts in:" >&2
   sed 1d <<<"$merged" | sort -u | sed 's/^/  /' >&2
-  die "the conversion is committed as ${converted:0:10}; merge $main by hand, then run go test ./internal/api -update in packages/daemon"
+  die "the conversion is committed as ${converted:0:10}; merge $main by hand, then run go test ./internal/api -run '$UPDATE_RUN' -update -entry-requests=$requests in packages/daemon"
 fi
 tree=$(head -1 <<<"$merged")
 git read-tree -m -u "$converted" "$tree"
 update_ok=1
-if ! (cd packages/daemon && go test -count=1 ./internal/api/ -run "$UPDATE_RUN" -update >"$work/update.txt" 2>&1); then
+if ! (cd packages/daemon && go test -count=1 ./internal/api/ -run "$UPDATE_RUN" -update -entry-requests="$requests" >"$work/update.txt" 2>&1); then
   update_ok=0
 fi
 mapfile -t fixtures < <(git ls-files --others --exclude-standard -- packages/contracts/fixtures/daemon-api/contracts)
@@ -1125,8 +1190,8 @@ if [ "$update_ok" = 0 ]; then
     # A row of a frozen table that names an entry is the entry's, so the fixture written now would
     # be wrong: TestEntryFixtures refuses to write it, and the author writes it once the rows move.
     echo "== no entry fixture yet: $rows row(s) of a frozen table above name an entry, and the entry's fixture records them;"
-    echo "   move each into its entry file, then run go test ./internal/api -run '$UPDATE_RUN' -update in packages/daemon"
+    echo "   move each into its entry file, then run go test ./internal/api -run '$UPDATE_RUN' -update -entry-requests=$requests in packages/daemon"
     exit 0
   fi
-  die "go test ./internal/api -run '$UPDATE_RUN' -update failed after the merge, so an entry may have no fixture yet; the merge is committed"
+  die "go test ./internal/api -run '$UPDATE_RUN' -update -entry-requests=$requests failed after the merge, so an entry may have no fixture yet; the merge is committed"
 fi

@@ -23,6 +23,15 @@ import (
 // writes the fixture of an entry that has none.
 var updateEntry = flag.String("update-entry", "", "write again the fixture of the entry of this id, as -update writes the fixture of an entry that has none")
 
+// entryRequests names a file of what entries change of the requests, which `-update` and
+// `-update-entry` write into those entries' fixtures in place of what this build's request types
+// read: a JSON object from an entry's id to its routes, in the form of a fixture's `routes`, made
+// over the record of the entries before it (requestsWith). One build's types read the same fields
+// at every number, so of two entries written in one run that each change a request, the first
+// would take both changes; scripts/daemon-contract-convert.sh writes the file from the records a
+// branch made before dispatch://INFRA-1569 kept at each of its numbers.
+var entryRequests = flag.String("entry-requests", "", "a file of what each entry, by id, changes of the requests, which -update and -update-entry write in place of what the request types read")
+
 // rewritingFixtures is whether this run writes fixtures, with `-update` or `-update-entry`. The
 // cases that read the records skip such a run, which reads the fixtures it is writing.
 func rewritingFixtures() bool {
@@ -854,12 +863,13 @@ func servedRecordsAt(contract int, served map[shapeKey]answerShape, walked map[s
 // The fixture of each entry, in the build's order. `-update` writes the fixture of each entry
 // that has none, and `-update-entry=<id>` writes that entry's again: what the daemon serves at the
 // entry's number less the record the entries before it compose (entryFixtureOf), with the rows of
-// answers.json and enumerated-fields.json as the registry holds them up to that entry. No flag
-// writes a frozen record or another entry's fixture: the frozen records are what the readers of
-// the numbered entries need, and another entry's fixture is what its own contract means. A run
-// with neither flag holds each fixture to the form `-update` writes, and the rows the fixtures
-// compose to the registry's own tables, so an entry whose rows moved after its fixture was written
-// is red here until its fixture is written again.
+// answers.json and enumerated-fields.json as the registry holds them up to that entry, and with
+// the routes `-entry-requests` gives an entry it names in place of what the request types read
+// (entryRequests). No flag writes a frozen record or another entry's fixture: the frozen records
+// are what the readers of the numbered entries need, and another entry's fixture is what its own
+// contract means. A run with neither flag holds each fixture to the form `-update` writes, and the
+// rows the fixtures compose to the registry's own tables, so an entry whose rows moved after its
+// fixture was written is red here until its fixture is written again.
 func TestEntryFixtures(t *testing.T) {
 	entries := NumberedEntries()
 	if !rewritingFixtures() {
@@ -899,6 +909,7 @@ func TestEntryFixtures(t *testing.T) {
 	}
 	served := servedShapes(t, callerKinds[0])
 	walked := walkedRequests(t)
+	requests := requestsOfEntries(t, entries)
 	byID := map[int]contractEntry{}
 	for _, entry := range registeredEntries {
 		byID[entry.id] = entry
@@ -919,7 +930,11 @@ func TestEntryFixtures(t *testing.T) {
 			if err != nil {
 				t.Fatalf("build the registry of the entries up to %s: %v", name, err)
 			}
-			fixture, err = entryFixtureOf(before, servedRecordsAt(entry.Number, served, walked, upTo.answers, upTo.enumeratedFields))
+			at := servedRecordsAt(entry.Number, served, walked, upTo.answers, upTo.enumeratedFields)
+			if changes, given := requests[entry.ID]; given {
+				at.Requests = requestsWith(before.Requests, changes, entry.Number)
+			}
+			fixture, err = entryFixtureOf(before, at)
 			if err != nil {
 				t.Fatalf("entry %s: %v", name, err)
 			}
@@ -938,6 +953,64 @@ func TestEntryFixtures(t *testing.T) {
 		}
 		before = composed[0]
 	}
+}
+
+// requestsOfEntries is the routes of each entry, by id, of the file `-entry-requests` names
+// (entryRequests), and nil where the flag names none. An id of no entry of entries is refused, as
+// `-update-entry` refuses one: the file is another branch's.
+func requestsOfEntries(t *testing.T, entries []NumberedEntry) map[int][]routeChange {
+	t.Helper()
+	if *entryRequests == "" {
+		return nil
+	}
+	encoded, err := os.ReadFile(*entryRequests)
+	if err != nil {
+		t.Fatalf("read -entry-requests: %v", err)
+	}
+	var requests map[int][]routeChange
+	if err := json.Unmarshal(encoded, &requests); err != nil {
+		t.Fatalf("-entry-requests=%s is no object of each entry's routes by its id: %v", *entryRequests, err)
+	}
+	for _, id := range slices.Sorted(maps.Keys(requests)) {
+		if !slices.ContainsFunc(entries, func(entry NumberedEntry) bool { return entry.ID == id }) {
+			t.Fatalf("-entry-requests=%s names entry %d, which this package does not register", *entryRequests, id)
+		}
+	}
+	return requests
+}
+
+// requestsWith is the requests of before, at contract, with changes made as the records they were
+// read from made them: a removed route goes, and every other route they name holds before's field
+// paths less those removed and with those added. Those records stood over the branch's own base,
+// not over before, so a change that before already holds (a field main added too) changes nothing
+// here, and entryFixtureOf writes only what the entry changes of before.
+func requestsWith(before []requestShape, changes []routeChange, contract int) []requestShape {
+	routes := make(map[string]map[string]bool, len(before))
+	for _, request := range before {
+		routes[request.Route] = setOf(request.FieldPaths)
+	}
+	for _, change := range changes {
+		if change.Change == changeRemove {
+			delete(routes, change.Route)
+			continue
+		}
+		paths, held := routes[change.Route]
+		if !held {
+			paths = map[string]bool{}
+			routes[change.Route] = paths
+		}
+		for _, path := range change.RemoveFieldPaths {
+			delete(paths, path)
+		}
+		for _, path := range change.AddFieldPaths {
+			paths[path] = true
+		}
+	}
+	requests := make([]requestShape, 0, len(routes))
+	for _, route := range slices.Sorted(maps.Keys(routes)) {
+		requests = append(requests, requestShape{Contract: contract, Route: route, FieldPaths: slices.Sorted(maps.Keys(routes[route]))})
+	}
+	return requests
 }
 
 // jsonOf is value as JSON, for a comparison whose failure prints both sides.

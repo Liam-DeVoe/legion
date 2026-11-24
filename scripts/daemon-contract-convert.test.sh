@@ -34,9 +34,10 @@
 #     row left behind;
 #   - the script names the file and line of that row;
 #   - TestNoFrozenRowNamesAnEntry fails until the test moves that row into the entry file;
-#   - after the move and the `-update` that then writes the entry's fixture, the fixture holds
-#     the two `since: N+1` rows (the answer's and the value's), and the contract check and the
-#     shape gate pass.
+#   - after the move and the `-update` that then writes the entry's fixture, with the request part
+#     of the entry that the script kept (`-entry-requests`, no change here), the fixture holds the
+#     two `since: N+1` rows (the answer's and the value's), and the contract check and the shape
+#     gate pass.
 #
 # Without the conversion the merge conflicts in version.go and answers.go, and the test fails
 # there (the control: this file with the line that runs the script taken out).
@@ -49,8 +50,9 @@
 # N+1 holds convertFirst alone, and its record of N+2 both fields. After the conversion, the
 # fixture of N+1's entry records convertFirst alone and the fixture of N+2's convertSecond alone:
 # the request types of the converted branch read both fields at every number, so only the
-# branch's records of each number tell one entry's change from the other's. TestEntryFixtures and
-# the request gate then pass over the two fixtures.
+# branch's records of each number, which the script keeps before it puts request-shapes.json back,
+# tell one entry's change from the other's. TestEntryFixtures and the request gate then pass over
+# the two fixtures.
 #
 # Run from the repository root: bash scripts/daemon-contract-convert.test.sh [<base>]
 set -euo pipefail
@@ -279,11 +281,16 @@ with open(entry, "w") as f:
     f.write(text[:close + 1] + moved + text[close:])
 PY
 gofmt -w "$api/answers.go" "$entry"
-# The fixture: written now, where the conversion wrote none while the row was left, else again.
+# The fixture: written now, where the conversion wrote none while the row was left, else again,
+# with the request part of each entry that the script kept, as the script tells the author to.
+requests=$(sed -n 's/^kept the request part of each entry, read from .* at its number, in \(\/.*\)$/\1/p' "$scratch/convert.txt")
+[ -f "$requests" ] || fail "the script names no file it kept of the entries' request parts: ${requests:-none}"
+jq -e --arg id "$id" '.[$id] == []' "$requests" >/dev/null ||
+  fail "$requests gives entry $id, which changes no request, a request part: $(jq -c . "$requests")"
 if [ -f "$fixture" ]; then update=-update-entry=$id; else update=-update; fi
-(cd packages/daemon && go test -count=1 ./internal/api/ -run '^TestEntryFixtures$' "$update" \
+(cd packages/daemon && go test -count=1 ./internal/api/ -run '^TestEntryFixtures$' "$update" -entry-requests="$requests" \
   >"$scratch/update-entry.txt" 2>&1) || { cat "$scratch/update-entry.txt"; fail "$update failed after the move"; }
-echo "go test ./internal/api -run '^TestEntryFixtures\$' $update"
+echo "go test ./internal/api -run '^TestEntryFixtures\$' $update -entry-requests=$requests"
 git add -A
 git commit -q -m "chore(daemon): move the waiting line's convert_probe into entry $id"
 (cd packages/daemon && go test -count=1 ./internal/api/ -run '^TestNoFrozenRowNamesAnEntry$' >"$scratch/frozen.txt" 2>&1) ||
