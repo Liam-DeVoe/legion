@@ -545,17 +545,20 @@ func (r *providerErrorLive) refusalGoesAgain() {
 	}
 	r.note("the content filter ended the turn with no HTTP status and the daemon armed %v: %q",
 		armed.Attrs["wait"], cause)
-	// The first send is the delivery's read mark, the instant the shim acknowledged its prompt,
-	// which the provider error keeps while it takes the task back (supervise's takeBackPending). The
-	// send after the wait marks the task again, so the mark is read before that wait is over. Both
-	// ends of the gap are the daemon's own instants, as in ladderWalks, and neither is the moment
-	// this step read it.
-	first := r.claim(token)
-	if first.Pending == nil || first.Pending.Task != task || first.Pending.DeliveredAt == nil {
-		t.Fatalf("%s holds pending %+v after the refused turn, want the task with its first send's read mark",
-			token, first.Pending)
+	// The first send is the start of the turn the content filter ended: the daemon's own record of
+	// it, which names the delivery the error names too. It is a record the daemon wrote once, so no
+	// later send can stand in for it, and it is no moment this step read: both ends of the gap are
+	// the daemon's own instants, as in ladderWalks. The turn starts after its prompt went out, so
+	// the gap it gives is no longer than the one from the send itself.
+	started := r.daemon.firstAfter(from, func(record loggedRecord) bool {
+		return record.Message == "supervise: a turn started" && record.Attrs["claim"] == string(token) &&
+			record.Attrs["delivery"] == errored.Attrs["delivery"]
+	})
+	if started == nil {
+		t.Fatalf("the daemon recorded no start of the turn of delivery %v that the content filter ended",
+			errored.Attrs["delivery"])
 	}
-	sent := *first.Pending.DeliveredAt
+	sent := started.at
 
 	again := r.awaitLogFrom("the refused task sent again", from, ladderDelays[0]+ladderTolerance+time.Minute, func(record loggedRecord) bool {
 		return record.Message == "supervise: the wait after a provider error is over; the task goes again" &&
