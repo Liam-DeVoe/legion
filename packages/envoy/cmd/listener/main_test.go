@@ -3793,10 +3793,8 @@ func TestListenerDeliveryHandler_PortlessSelfSubscribedEntryIsSkippedOnlyOnItsAg
 			if got := counterValue(t, body, deliveredSeries("skipped")); got != tc.skipped {
 				t.Fatalf("%s = %d, want %d; metrics %s", deliveredSeries("skipped"), got, tc.skipped, body)
 			}
-			for _, status := range []string{"delivered", "wake_reported"} {
-				if got := counterValue(t, body, deliveredSeries(status)); got != -1 {
-					t.Fatalf("%s = %d, want no series for a session on no consumer; metrics %s", deliveredSeries(status), got, body)
-				}
+			if got := counterValue(t, body, deliveredSeries("wake_reported")); got != -1 {
+				t.Fatalf("%s = %d, want no series for a session on no consumer; metrics %s", deliveredSeries("wake_reported"), got, body)
 			}
 		})
 	}

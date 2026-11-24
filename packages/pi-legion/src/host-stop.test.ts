@@ -11,7 +11,7 @@ import type { Subprocess } from "bun";
 // `session_shutdown`: Oh My Pi runs pi-envoy's stop from its exit callbacks, and the claim has not
 // heard of that stop when the daemon refuses its ready. The claim's exit waits for the stop's
 // DELETE (`ompHostStop`, `exitAfterHostStop`), and Oh My Pi then ends the process itself, with 143.
-// With no stop begun, the claim exits at once with 1, as before. The rows below take real time
+// With no stop begun, the claim exits at once with 1. The rows below take real time
 // because the process, its signal and Oh My Pi's handler are real; each waits on what the process
 // writes, never on a set delay. The bound on the wait is held by the rows of
 // `claim-session.test.ts` and `controller-session.test.ts`, on fake timers.

@@ -58,8 +58,8 @@ export function ompHostStop(): Promise<void> | undefined {
  * host's stop has begun (`hostStop`), the exit waits for that stop to end, at most
  * `HOST_STOP_GRACE_MS`. An exit in the middle of the stop would cut pi-envoy's role release and
  * its DELETE short, and the session's role claims would stay held until the listener's reaper
- * finds the holder gone. When no stop has begun, it exits at once, inside this call, as before:
- * an exit that throws (a test's stand-in) throws to the caller.
+ * finds the holder gone. When no stop has begun, it exits at once, inside this call: an exit that
+ * throws (a test's stand-in) throws to the caller.
  *
  * In Oh My Pi the host ends the process itself when its stop has ended (143 after a SIGTERM). So
  * this exit runs after the wait only when the process still lives then, or at the bound.

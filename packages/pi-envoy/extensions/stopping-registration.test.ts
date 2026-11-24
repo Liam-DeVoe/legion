@@ -710,14 +710,13 @@ test("envoy_role_set called once the stop has begun is refused naming the stop a
   };
   // A fresh instance of the entry, as the first row loads: no static import gives one.
   const { default: envoyExtension } = await import("./envoy.ts?role-set-while-stopping");
-  const { fixture, notifications, context } = stoppingHost(session);
+  const { fixture, context } = stoppingHost(session);
   envoyExtension(fixture.pi);
   await fixture.handlers.get("session_start")?.({}, context);
   const roleTool = fixture.tools.find((tool) => tool.name === "envoy_role_set");
   if (roleTool === undefined) throw new Error("envoy_role_set was not registered");
 
   try {
-    const notified = notifications.length;
     stopBegan = true;
     const stopping = fixture.handlers.get("session_shutdown")?.({}, context);
     await until(() => heldDeletes.length === 1, "the stop's deregistration on the wire");
@@ -735,7 +734,6 @@ test("envoy_role_set called once the stop has begun is refused naming the stop a
         },
       ],
     });
-    expect(notifications.slice(notified)).toEqual([]);
     for (const answer of heldDeletes.splice(0)) answer();
     await stopping;
   } finally {

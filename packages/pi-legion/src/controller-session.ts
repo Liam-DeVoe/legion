@@ -690,9 +690,6 @@ export function createControllerSession(
         landed = true;
       });
     } catch (error) {
-      // A re-claim the session's stop overtook shows no failure, as the start command's claim
-      // shows none (`startCommand`).
-      if (stopped.signal.aborted) return;
       notify(
         progress.registered
           ? `legion: re-claiming the controller for this session failed (${messageFor(error)}). The session keeps its controller registration, so the \`legion\` tool's set_status still works, but until a re-claim succeeds controller wakes and merges will not reach this session.`
@@ -701,8 +698,9 @@ export function createControllerSession(
       );
     } finally {
       const { ui } = context;
-      // Once the session's stop has begun, the re-claim shows nothing: no notice it held for its
-      // outcome either, such as its wait notices or the start claim's hand-over.
+      // Once the session's stop has begun, the re-claim drops every notice it held for its
+      // outcome: its failure notice, its wait notices and the start claim's hand-over. The stop
+      // ends the process itself.
       if (stopped.signal.aborted) notices.splice(0);
       if (landed) {
         const kept = notices.filter(({ message }) => !waitNotices.has(message));

@@ -104,10 +104,11 @@ func consumeWake(t *testing.T, delivery *wakeDelivery, spec ConsumerSpec, pool s
 // no fact. The consumer acknowledges it with no transaction, so it runs no handler and leaves no
 // processed_events row. The control is a role report of INFRA's own role, consumed the same way:
 // it runs the handler once and leaves its row. An agent report names a session and no project,
-// and a listener_ready report names neither, so both decode as before. The daemon's project is
-// INFRA, whose token is infra. A role is read in either form of its name: the token alone, or a
-// project and then the token. A role of INFRA named under INFRA is a wake of its token. In the new
-// form, a role of another project is no fact, and so is a role named under another project.
+// and a listener_ready report names neither, so both are wakes whatever project the daemon serves
+// (row (d)). The daemon's project is INFRA, whose token is infra. A role is read in either form of
+// its name: the token alone, or a project and then the token. A role of INFRA named under INFRA is
+// a wake of its token. Named as a project and then the token, a role of another project is no
+// fact, and so is a role named under another project.
 func TestAWakeReportForAnotherProjectIsNoFact(t *testing.T) {
 	at := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
 	millis := strconv.FormatInt(at.UnixMilli(), 10)

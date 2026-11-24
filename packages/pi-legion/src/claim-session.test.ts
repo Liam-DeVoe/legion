@@ -270,7 +270,7 @@ function hostStopRunning(steps: string[]) {
 // stopped its process. In RPC mode the SIGTERM runs pi-envoy's stop (its role release, then its
 // DELETE) and emits no `session_shutdown`, so the claim session has not heard of the stop when the
 // daemon refuses its `claims/ready`. The exit that the refusal makes waits for the host's stop to
-// end, at most its bound, and keeps its status. With no stop begun, it exits at once, as before.
+// end, at most its bound, and keeps its status. With no stop begun, it exits at once.
 describe("a claim the daemon refuses while the host's stop runs", () => {
   it("exits only after the stop's DELETE, with status 1", async () => {
     const steps: string[] = [];

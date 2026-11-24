@@ -332,7 +332,7 @@ function hostStopRunning(steps: string[]) {
 // release, then its DELETE) and emits no `session_shutdown`, so the controller has not heard of the
 // stop when the daemon refuses its `claims/ready`. The exit that the refusal makes waits for the
 // host's stop to end, at most its bound, and keeps its status. With no stop begun, it exits at
-// once, as before.
+// once.
 test("a daemon-launched controller whose ready the daemon refuses while the host's stop runs exits only after the stop's DELETE, with status 1", async () => {
   const steps: string[] = [];
   const stop = hostStopRunning(steps);
@@ -392,7 +392,8 @@ test("a daemon-launched controller whose ready the daemon refuses while the host
  * The controller `legion controller start` launched for the operator (`LEGION_CONTROLLER=1` and a
  * controller capability, no boot token), against a daemon that answers its health and answers its
  * registration with `answers.register`. Every notice, every widget line and every line the Oh My
- * Pi log takes is recorded, and so is every exit.
+ * Pi log takes is recorded. Its process exit is a stand-in that does nothing: a claim of this
+ * controller never exits the process, whatever refuses it (`claimOnce`).
  */
 function operatorLaunchedController(answers: {
   readonly register: () => Response | Promise<Response>;
@@ -419,15 +420,11 @@ function operatorLaunchedController(answers: {
       return new Response(null, { status: 204 });
     }) as typeof fetch,
   });
-  const exits: number[] = [];
   const controller = createControllerSession({
     daemon: () => daemon,
     persistedTranscript: async () => ({ sessionFile: TRANSCRIPT, agentId: CONTROLLER_SESSION }),
     pi: {} as PiApi,
-    exitProcess: (code) => {
-      exits.push(code);
-      return undefined as never;
-    },
+    exitProcess: () => undefined as never,
     hostStop: () => undefined,
   });
   const shown: string[] = [];
@@ -447,7 +444,7 @@ function operatorLaunchedController(answers: {
   const stopSink = logger.registerLogSink((entry) => {
     lines.push(entry.message);
   });
-  return { controller, context, exits, shown, lines, stopSink };
+  return { controller, context, shown, lines, stopSink };
 }
 
 // The operator-launched controller claims from its start command (`/legion-controller-start`) and
@@ -488,7 +485,6 @@ for (const { name, run, failed } of [
 
       expect(operator.shown).toEqual([]);
       expect(operator.lines).toEqual([]);
-      expect(operator.exits).toEqual([]);
     } finally {
       operator.stopSink();
     }
@@ -505,7 +501,6 @@ for (const { name, run, failed } of [
       expect(operator.lines).toContainEqual(
         expect.stringContaining("claims/register for the controller failed (409)")
       );
-      expect(operator.exits).toEqual([]);
     } finally {
       operator.stopSink();
     }

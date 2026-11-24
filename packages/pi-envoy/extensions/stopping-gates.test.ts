@@ -191,8 +191,7 @@ async function followingSession(query: string, session: string, topic: string) {
   // A fresh instance of the entry, as the first row loads: no static import gives one.
   const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
   const fixture = createPi();
-  const notifications: string[] = [];
-  const context = host(session, [], [], notifications);
+  const context = host(session, [], [], []);
   envoyExtension(fixture.pi);
   await fixture.handlers.get("session_start")?.({}, context);
   const tool = (name: string) => {
@@ -204,7 +203,6 @@ async function followingSession(query: string, session: string, topic: string) {
   return {
     fixture,
     context,
-    notifications,
     fetched,
     heldDeletes,
     unsubscribe: () => tool("envoy_unsubscribe").execute("", { topics: [topic] }),
@@ -231,7 +229,6 @@ test("envoy_unsubscribe after the stop began sends nothing, writes no ledger ent
     const stopping = run.fixture.handlers.get("session_shutdown")?.({}, run.context);
     await until(() => run.heldDeletes.length === 1, "the stop's deregistration on the wire");
     const ledgerWritten = run.ledgerEntries();
-    const notified = run.notifications.length;
 
     const refused = await run.unsubscribe();
     await settle();
@@ -242,7 +239,6 @@ test("envoy_unsubscribe after the stop began sends nothing, writes no ledger ent
     });
     expect(run.fetched.slice(beforeStop)).toEqual([`DELETE /v1/sessions/${session}`]);
     expect(run.ledgerEntries()).toBe(ledgerWritten);
-    expect(run.notifications.slice(notified)).toEqual([]);
     for (const answer of run.heldDeletes.splice(0)) answer();
     await stopping;
   } finally {

@@ -3696,12 +3696,12 @@ const knownRecordWriteTimeout = 1 * time.Second
 // stays shut, live sessions' heartbeats among them, which costs more than the 404 a send meets for
 // a session whose process is already gone.
 //
-// Every 200 this route answers is answered here, and nothing else is: a branch added later that
-// accepts a registration - cybermonklabs/legion#4194's registration that asked for no consumer and
-// is given one (sessionDelivery.consumerFor) - must answer through this function, so it writes the
-// record before its 200 as every other does; and a refusal - the delivery refusals, the 503s above,
-// and any refusal added later - must not, so a refused registration writes no record of a session
-// it did not register. Whichever of this change and #4194 lands second keeps both rules.
+// Every 200 this route answers is answered here, and nothing else is: a branch that accepts a
+// registration, the registration that asked for no consumer and is given one
+// (sessionDelivery.consumerFor) among them, answers through this function, so it writes the record
+// before its 200 as every other does; and a refusal - the delivery refusals, the 503s above, and
+// any refusal added later - must not, so a refused registration writes no record of a session it
+// did not register.
 func answerRegistration(w http.ResponseWriter, r *http.Request, d *listenerDeps, record session.KnownSession, answer listenerwire.SubscribeResponse, logger *logging.Logger) {
 	ctx, cancel := d.clk().WithTimeout(r.Context(), knownRecordWriteTimeout)
 	defer cancel()

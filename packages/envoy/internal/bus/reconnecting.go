@@ -29,8 +29,8 @@ var ErrReconnecting = errors.New("NATS is reconnecting")
 // ErrReconnecting's under this package's prefix, so a caller that wraps it adds no `bus:` of its
 // own. The text of nats.ErrReconnectBufExceeded is `nats: outbound buffer limit exceeded`, and a
 // reader of an answer or a log line reads that as a client that sent too much, where the bus is
-// only reconnecting. It still unwraps to nats.go's error, so a caller that reads that error, such
-// as kvwatch's lostConnection or cistore's kvErrorLasts, reads it as before.
+// only reconnecting. It unwraps to nats.go's error, so a caller that reads that error, such as
+// kvwatch's lostConnection or cistore's kvErrorLasts, reads it as nats.go's own.
 type reconnectingSend struct {
 	refusal error
 }

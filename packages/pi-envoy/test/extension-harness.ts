@@ -304,7 +304,7 @@ export const natsStandInConnect = async (options: {
     }
   };
   connectWith("stand-in-nonce");
-  // Parked only where a test asks for it: every other connect answers at once, as before.
+  // Parked only where a test asks for it: every other connect answers at once.
   if (natsState.heldConnect !== undefined) await natsState.heldConnect;
   if (natsState.realConnect) {
     return realConnect(options as unknown as Parameters<typeof realConnect>[0]);

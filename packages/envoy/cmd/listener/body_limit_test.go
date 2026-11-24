@@ -173,16 +173,16 @@ type bodyLimitRow struct {
 // Every listener route that reads a request body reads it to a limit, set above the largest real
 // request of that route, and answers a body past it 413 with an error that names the limit, in bytes
 // and in MiB, having done nothing else: no store write, no publish, no consumer. A body at the limit,
-// and the largest real request, are served as before. The /v1 routes share one limit, 4 MiB: the
-// largest real request is a send or a publish whose message and payload each come near NATS's
-// 1 MiB max payload, about 2 MiB, since the envelope carries the payload and only a one-line
-// summary of the message. Each webhook route has its own. The rows are every route that reads a
-// body: /v1/messages/send and publish, /v1/interests/subscribe and unsubscribe, /v1/roles/set, the
-// two Legion agent PUTs, and the GitHub, Slack and Ghost Wispr webhooks. The listener's other
-// routes read no body. A /v1 body is read to the limit whole, past its first JSON value too: a
-// small send followed by more than the limit of spaces is refused as a body past it. A body past
-// the limit is refused whatever it holds: one that is not JSON, sent with its Content-Length and
-// without one (chunked), is answered 413 as well, and not 400.
+// and the largest real request, are served as any request under the limit is. The /v1 routes share
+// one limit, 4 MiB: the largest real request is a send or a publish whose message and payload each
+// come near NATS's 1 MiB max payload, about 2 MiB, since the envelope carries the payload and only
+// a one-line summary of the message. Each webhook route has its own. The rows are every route that
+// reads a body: /v1/messages/send and publish, /v1/interests/subscribe and unsubscribe,
+// /v1/roles/set, the two Legion agent PUTs, and the GitHub, Slack and Ghost Wispr webhooks. The
+// listener's other routes read no body. A /v1 body is read to the limit whole, past its first JSON
+// value too: a small send followed by more than the limit of spaces is refused as a body past it.
+// A body past the limit is refused whatever it holds: one that is not JSON, sent with its
+// Content-Length and without one (chunked), is answered 413 as well, and not 400.
 func TestARequestBodyOverTheLimitIsRefused(t *testing.T) {
 	rig := newBodyLimitRig(t)
 	const (
