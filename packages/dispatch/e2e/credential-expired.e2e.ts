@@ -6,7 +6,7 @@ import {
   setPendingCredentialRequests,
 } from "./fake-broker-helpers";
 import { expectInboxCount } from "./inbox-threads";
-import { expectInstant } from "./instants";
+import { endsInZeroMs, expectInstant } from "./instants";
 import { expect, test } from "./test";
 import { withAlice } from "./users";
 
@@ -25,18 +25,14 @@ import { withAlice } from "./users";
  */
 
 /** When the expired rows' deadlines passed: an hour before this run, at a millisecond that ends
- *  in zero, rounded as `stall` rounds its moment in claim-unresponsive.e2e.ts. The Inbox first
- *  reads its list of credential requests from the landing (`GET /api/v1/landing`), which reads
- *  the broker's list and writes each moment again as Go writes it, as the real broker does
- *  itself. Go drops a trailing zero of the milliseconds (`…:27.13Z` for 130 ms). The Inbox then
- *  reads the list again every 15 s (`CREDENTIAL_POLL_INTERVAL_MS`, web/src/features/credentials/
- *  pending.ts) from `GET /api/v1/credential-requests`, which relays the fake broker's bytes
- *  unchanged (`…:27.130Z`). So the page can write one moment in either spelling, and the Inbox
- *  rows compare the moment their `<time>` names, with expectInstant, and not its spelling. A
- *  comparison of the strings failed whenever the milliseconds ended in zero, unless that poll
- *  came inside the assertion's wait. The zero makes every run meet Go's spelling, and not only
- *  one run in ten. */
-const deadlineAt = Math.floor((Date.now() - 3_600_000) / 10) * 10;
+ *  in zero (endsInZeroMs). The Inbox first reads its list of credential requests from the
+ *  landing (`GET /api/v1/landing`), which reads the broker's list and writes each moment again
+ *  as Go writes it, as the real broker does itself. The Inbox then reads the list again every
+ *  15 s (`CREDENTIAL_POLL_INTERVAL_MS`, web/src/features/credentials/pending.ts) from
+ *  `GET /api/v1/credential-requests`, which relays the fake broker's bytes unchanged. So the
+ *  page can write one moment in either spelling, and the Inbox rows compare the moment their
+ *  `<time>` names, with expectInstant, and not its spelling. */
+const deadlineAt = endsInZeroMs(Date.now() - 3_600_000);
 /** That deadline as the fake broker writes it, with three digits of milliseconds. Dispatch
  *  relays the machine-code lookup from the broker unchanged, so the machine-login page's
  *  `<time>` carries this string. */

@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -208,30 +210,27 @@ func TestLandingBoardInboxAndDocumentPagesAnswerWhatTheirRoutesAnswer(t *testing
 // and holds the two to the same values. TestLandingAnswersWhatThePerResourceRoutesAnswer compares
 // this part too, but on a server with no broker, where both sides are null.
 //
-// The fake broker answers both reads with one body, which is what the real broker writes: a
-// wire.PendingResponse that encoding/json marshalled. It holds one row that is pending and one row
-// that expired. Both rows are secret requests, because a machine login carries no approve_url and
-// no session ids, and this row must set every field. assertEveryFieldSet reads the fields from the
-// type, so a field that the type gets later, and that this row does not set, fails here: a field
-// left zero is the same zero on both sides, or is omitted on both, and so it passes whatever the
-// landing does with it. Each time is at a millisecond that ends in zero, a value whose spelling Go
-// makes shorter (".12" for ".120"). The row compares each time as the moment it names, so that a
-// different spelling is no failure and a different moment is one, and it compares each other value
-// exactly.
+// The list holds one row that is pending and one row that expired, and every field of both is
+// set. Both rows are secret requests, because a machine login carries no approve_url and no
+// session ids. The fake broker spells each time with three digits of milliseconds
+// (`2026-11-24T09:30:15.120Z`), as the e2e fake broker (packages/dispatch/e2e/fake-broker.ts)
+// serves the times that Date.toISOString wrote. Each time is at a millisecond that ends in zero,
+// which Go spells shorter (`.12Z`). The route relays the broker's spelling unchanged and the
+// landing writes Go's, so the row passes only because it compares each time as the moment it
+// names.
 //
 // That the route's body is the broker's bytes as sent is the row of
 // TestCredentialRouteForwardsBrokerSuccessBodyAndAuth, so what the route answers here is what the
 // broker wrote.
 func TestLandingCredentialRequestsAreTheValuesTheRouteRelays(t *testing.T) {
 	t.Parallel()
-	id := func(value string) *string { return &value }
 	sent := wire.PendingResponse{Pending: []wire.PendingEntry{
 		{
 			RecordID:    "rec-pending",
 			Kind:        "agent_secret",
 			Identifiers: []string{"GITHUB_TOKEN", "NPM_TOKEN"},
 			RequestedAt: time.Date(2026, 11, 24, 9, 30, 15, int(120*time.Millisecond), time.UTC),
-			Session:     wire.RecordSessionResp{Request: id("ses-request-1"), Enrollment: id("ses-enrolled-1")},
+			Session:     wire.RecordSessionResp{Request: new("ses-request-1"), Enrollment: new("ses-enrolled-1")},
 			ApproveURL:  "https://secrets.example.com/approve/rec-pending",
 			State:       "pending",
 			ExpiresAt:   time.Date(2026, 11, 24, 9, 45, 15, int(120*time.Millisecond), time.UTC),
@@ -241,32 +240,45 @@ func TestLandingCredentialRequestsAreTheValuesTheRouteRelays(t *testing.T) {
 			Kind:        "agent_secret",
 			Identifiers: []string{"PYPI_TOKEN"},
 			RequestedAt: time.Date(2026, 11, 23, 16, 2, 7, int(450*time.Millisecond), time.UTC),
-			Session:     wire.RecordSessionResp{Request: id("ses-request-2"), Enrollment: id("ses-enrolled-2")},
+			Session:     wire.RecordSessionResp{Request: new("ses-request-2"), Enrollment: new("ses-enrolled-2")},
 			ApproveURL:  "https://secrets.example.com/approve/rec-expired",
 			State:       "expired",
 			ExpiresAt:   time.Date(2026, 11, 23, 16, 17, 7, int(450*time.Millisecond), time.UTC),
 		},
 	}}
 	assertEveryFieldSet(t, "PendingResponse", reflect.ValueOf(sent))
-	body, err := json.Marshal(sent)
+	encoded, err := json.Marshal(sent)
 	if err != nil {
 		t.Fatalf("encode the broker's pending list: %v", err)
 	}
-
-	// The path and the query that cipher.Client.Pending sends for alice. A read that asks for
-	// anything else gets no list, so neither side can agree with the other by a different read.
-	const pendingQuery = "approver=alice&state=pending&state=expired"
-	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/v1/pending" || r.URL.RawQuery != pendingQuery {
-			t.Errorf("the broker was asked %s %s, want GET /v1/pending?%s", r.Method, r.URL.RequestURI(), pendingQuery)
-			http.NotFound(w, r)
-			return
+	// The values of sent, with each RFC 3339 time that Go wrote spelled again with three digits of
+	// milliseconds. A time of sent that the body does not hold so, or that Go spells the same way,
+	// would leave the moment comparison below unexercised, so it fails here.
+	const brokerTime = "2006-01-02T15:04:05.000Z07:00"
+	body := regexp.MustCompile(`"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z"`).ReplaceAllStringFunc(string(encoded),
+		func(quoted string) string {
+			at, err := time.Parse(time.RFC3339Nano, strings.Trim(quoted, `"`))
+			if err != nil {
+				t.Fatalf("read the time %s of the broker's pending list: %v", quoted, err)
+			}
+			return `"` + at.Format(brokerTime) + `"`
+		})
+	for _, entry := range sent.Pending {
+		for _, at := range []time.Time{entry.RequestedAt, entry.ExpiresAt} {
+			spelled := at.Format(brokerTime)
+			if spelled == at.Format(time.RFC3339Nano) || !strings.Contains(body, `"`+spelled+`"`) {
+				t.Fatalf("the broker's body must spell %s as %s, which Go spells shorter: %s",
+					at.Format(time.RFC3339Nano), spelled, body)
+			}
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(body)
-	}))
-	t.Cleanup(broker.Close)
-	handler := newCredentialTestHandler(t, broker.URL)
+	}
+
+	// The query that cipher.Client.Pending sends for alice. Each read is held to it, so neither
+	// side can agree with the other by a different read.
+	const pendingQuery = "approver=alice&state=pending&state=expired"
+	broker := newFakeBrokerRig(t)
+	broker.bodyByRoute["GET /v1/pending"] = body
+	handler := newCredentialTestHandler(t, broker.server.URL)
 
 	// Any page does: the shell, which carries the list, is the same on each page.
 	carried := readLanding(t, handler, "/api/v1/landing?page=inbox").Shell["credential_requests"]
@@ -274,8 +286,15 @@ func TestLandingCredentialRequestsAreTheValuesTheRouteRelays(t *testing.T) {
 		t.Fatalf("the landing's shell.credential_requests is null: its read of the broker failed, or answered after %v",
 			landingServiceBound)
 	}
-	assertSameJSONMoments(t, "shell.credential_requests", carried,
-		readRouteBody(t, handler, "/api/v1/credential-requests?approver=me"))
+	if broker.lastQuery != pendingQuery {
+		t.Fatalf("the landing asked the broker for ?%s, want ?%s", broker.lastQuery, pendingQuery)
+	}
+	relayed := readRouteBody(t, handler, "/api/v1/credential-requests?approver=me")
+	if broker.lastQuery != pendingQuery || broker.calls != 2 {
+		t.Fatalf("the broker was asked %d times, the last for ?%s, want 2 reads of ?%s",
+			broker.calls, broker.lastQuery, pendingQuery)
+	}
+	assertSameJSONMoments(t, "shell.credential_requests", carried, relayed)
 }
 
 // A page the route does not know is refused by name, and so is a page that needs a parameter the
@@ -861,13 +880,7 @@ func assertSameJSON(t *testing.T, part string, landing json.RawMessage, route []
 // nothing about whether the landing composed the right answer.
 func assertSameJSONExcept(t *testing.T, part string, landing json.RawMessage, route []byte, ignored ...string) {
 	t.Helper()
-	var carried, answered any
-	if err := json.Unmarshal(landing, &carried); err != nil {
-		t.Fatalf("decode the landing's %s %s: %v", part, landing, err)
-	}
-	if err := json.Unmarshal(route, &answered); err != nil {
-		t.Fatalf("decode the route behind %s %s: %v", part, route, err)
-	}
+	carried, answered := decodeLandingPart(t, part, landing, route)
 	for _, member := range ignored {
 		for _, value := range []any{carried, answered} {
 			object, isObject := value.(map[string]any)
@@ -890,14 +903,21 @@ func assertSameJSONExcept(t *testing.T, part string, landing json.RawMessage, ro
 // Each difference is named by its path in the part, so a failure says which key or value differs.
 func assertSameJSONMoments(t *testing.T, part string, landing json.RawMessage, route []byte) {
 	t.Helper()
-	var carried, answered any
+	carried, answered := decodeLandingPart(t, part, landing, route)
+	assertSameJSONValue(t, part, carried, answered)
+}
+
+// decodeLandingPart is a part of the landing and the body of its route, each decoded as JSON, and
+// fails when either is not.
+func decodeLandingPart(t *testing.T, part string, landing json.RawMessage, route []byte) (carried, answered any) {
+	t.Helper()
 	if err := json.Unmarshal(landing, &carried); err != nil {
 		t.Fatalf("decode the landing's %s %s: %v", part, landing, err)
 	}
 	if err := json.Unmarshal(route, &answered); err != nil {
 		t.Fatalf("decode the route behind %s %s: %v", part, route, err)
 	}
-	assertSameJSONValue(t, part, carried, answered)
+	return carried, answered
 }
 
 // assertSameJSONValue is assertSameJSONMoments for one decoded value at path, and for each value
@@ -905,7 +925,7 @@ func assertSameJSONMoments(t *testing.T, part string, landing json.RawMessage, r
 func assertSameJSONValue(t *testing.T, path string, carried, answered any) {
 	t.Helper()
 	differs := func() {
-		t.Errorf("%s: the landing carries %s, the route answers %s", path, jsonText(carried), jsonText(answered))
+		t.Errorf("%s: the landing carries %s, the route answers %s", path, asJSON(t, carried), asJSON(t, answered))
 	}
 	switch answer := answered.(type) {
 	case map[string]any:
@@ -916,14 +936,14 @@ func assertSameJSONValue(t *testing.T, path string, carried, answered any) {
 		}
 		for _, key := range slices.Sorted(maps.Keys(answer)) {
 			if _, held := object[key]; !held {
-				t.Errorf("%s.%s: the route answers %s, and the landing has no such key", path, key, jsonText(answer[key]))
+				t.Errorf("%s.%s: the route answers %s, and the landing has no such key", path, key, asJSON(t, answer[key]))
 				continue
 			}
 			assertSameJSONValue(t, path+"."+key, object[key], answer[key])
 		}
 		for _, key := range slices.Sorted(maps.Keys(object)) {
 			if _, held := answer[key]; !held {
-				t.Errorf("%s.%s: the landing carries %s, and the route has no such key", path, key, jsonText(object[key]))
+				t.Errorf("%s.%s: the landing carries %s, and the route has no such key", path, key, asJSON(t, object[key]))
 			}
 		}
 	case []any:
@@ -955,15 +975,6 @@ func sameMoment(first, second string) bool {
 	}
 	secondTime, err := time.Parse(time.RFC3339Nano, second)
 	return err == nil && firstTime.Equal(secondTime)
-}
-
-// jsonText is a decoded value written as JSON again, for a failure message.
-func jsonText(value any) string {
-	text, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Sprintf("%v", value)
-	}
-	return string(text)
 }
 
 // assertEveryFieldSet fails for each field of value, and of each struct, pointer and list that

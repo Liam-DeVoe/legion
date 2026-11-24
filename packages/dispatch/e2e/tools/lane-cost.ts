@@ -206,11 +206,12 @@ function ran(job: Job): job is RanJob {
   return job.conclusion !== "skipped" && Boolean(job.started_at) && Boolean(job.completed_at);
 }
 
-/** A job's name after its caller's: `shard (1)` of `dispatch-browser / shard (1)`. */
-function legOf(name: string): string {
+/** A job's name split at its caller's: `dispatch-browser` and `shard (1)` of
+ *  `dispatch-browser / shard (1)`. */
+function partsOf(name: string): { caller: string; leg: string } {
   const at = name.indexOf(" / ");
   if (at < 0) fail(`job ${JSON.stringify(name)} names no leg after "dispatch-browser / "`);
-  return name.slice(at + " / ".length);
+  return { caller: name.slice(0, at), leg: name.slice(at + " / ".length) };
 }
 
 /** The run as GitHub gives it: at its latest attempt, or at `attempt`. */
@@ -247,8 +248,9 @@ export function laneReading(info: WorkflowRun, listed: readonly Job[]): LaneRead
   for (const job of jobs) {
     const started = instant(job.started_at);
     const completed = instant(job.completed_at);
-    perJob.set(legOf(job.name), Math.trunc((completed - started) / 1000));
-    callers.add(job.name.slice(0, job.name.indexOf(" / ")));
+    const { caller, leg } = partsOf(job.name);
+    perJob.set(leg, Math.trunc((completed - started) / 1000));
+    callers.add(caller);
     firstStart = Math.min(firstStart, started);
     lastEnd = Math.max(lastEnd, completed);
     queue += (started - instant(job.created_at)) / 1000;

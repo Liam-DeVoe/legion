@@ -10,11 +10,10 @@ name: Dispatch browser nightly
 # output), so the merge group runs it on the tree a change lands as. The full lane's jobs are
 # dispatch-browser.yaml's, whose notes name them and the machines they take
 # (.github/ci-notes/dispatch-browser.md#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows);
-# full-lane run 45306966549 at dfc51f65 (2026-11-24) ran them as seven jobs on eight machines,
-# and its three attempts cost 2,662, 2,450 and 2,494 machine-seconds for 1,732 rows, 1.42 to
-# 1.54 s a row, where the default branch's twelve-job lane cost a median of 3,763 s for 1,682
-# rows, 2.24 s a row, over that day's 3 green merge-queue runs to 02:17:35Z. This run covers a
-# day with no merge group, and is what runs the full lane on main's tip
+# they are seven jobs on eight machines, where the default branch's lane runs twelve, and
+# .github/ci-notes/dispatch-browser.md#what-the-job-set-costs-and-the-machine-time-ceiling-the-run-holds-it-to
+# measures what both lanes cost.
+# This run covers a day with no merge group, and is what runs the full lane on main's tip
 # (.github/workflows/dispatch-browser.yaml, which
 # holds every step). The re-record job's own head, below, says what it guards and why it is here
 # rather than in a file of its own.

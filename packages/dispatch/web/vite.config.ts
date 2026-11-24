@@ -208,7 +208,7 @@ export default defineConfig({
     // The entry - the one `assets/index-*.js` that dist/index.html names - is 499,485 bytes,
     // measured with `bun run build:web` and a 39-character `DISPATCH_BUILD` at `4935c4af` (the
     // same at the merges 4548096d and e15ee5e4) on 2026-11-23; the build id is in the entry, so
-    // CI's 40-character commit writes one byte more. That is where the default branch's own build
+    // CI's 40-character commit writes one byte more. On that day the default branch's own build
     // at `d795b25c` writes 1,144,188, before dispatch://INFRA-1109
     // split the shell: the Inbox and its peek, the ask card, the search bar, the Create issue
     // dialog, the shortcut sheet, the reference-preview layer, the event-refresh map, the headless

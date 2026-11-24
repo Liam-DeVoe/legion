@@ -95,30 +95,26 @@ ci.yaml runs every suite it holds. The three cost 2,662, 2,450 and 2,494 s, each
 for 1,732 rows: 1.537, 1.415 and 1.440 machine-seconds a row, in own times of 1,235, 1,191 and
 1,216 s - each attempt's binaries job, longest leg and merge job, end to end - and wall times of
 1,425, 1,198 and 1,223 s. Attempts 1 and 3 read no flaky row, and attempt 2 one of its 1,732
-(credential-expired.e2e.ts:115, on chromium, a row that compared a time's spelling and now
-compares its moment). The same lane on the default branch that day, every green merge-queue full
-lane of ci.yaml up to 02:17:35Z, is 3 runs of twelve jobs for 1,682 rows that cost 3,740 to
-3,816 s, a median of 3,763 s and 2.2372 s a row at the median of their per-row figures. So the
-three attempts cost 0.707, 0.651 and 0.663 of that median, and spend 0.687, 0.632 and 0.644 of
-its row's machine time. The pull-request lane at the same commit is run 45306887784, read over
-three attempts the same way: 839, 725 and 857 s over five jobs for 290 rows, in own times of 538,
-451 and 541 s.
+(credential-expired.e2e.ts:115 at dfc51f65, on chromium, a row that compared a time's spelling
+and now compares its moment). The same lane on the default branch that day, every green
+merge-queue full lane of ci.yaml up to 02:17:35Z, is 3 runs of twelve jobs for 1,682 rows that
+cost 3,740 to 3,816 s, a median of 3,763 s and 2.2372 s a row at the median of their per-row
+figures. So the three attempts cost 0.707, 0.651 and 0.663 of that median, and spend 0.687,
+0.632 and 0.644 of its row's machine time. The pull-request lane at the same commit is run
+45306887784, read over three attempts the same way: 839, 725 and 857 s over five jobs for 290
+rows, in own times of 538, 451 and 541 s.
 
 That cost is now held to a budget by the run itself, at the merge job's step "Reading five, the
 lane's machine time": the jobs of a lane, this merge job apart, may cost that lane's committed
 ceiling less that job's own worst case. Both are written in
 .github/scripts/dispatch-browser-run-reads.sh (`bound` and `merge_maximum` in its `machine-time`
-branch); the worst case is the 54 s of job 138031009105 (run 45261148766, attempt 2, at
-e15ee5e4), the most of the 38 merge jobs of pull request #3513's ci.yaml runs created since
-2026-11-22, read from the jobs API on 2026-11-24. It replaces the 45 s of job 137694934103 (run
-45151841335, attempt 2), the most of the ten merge jobs of that pull request's runs of
-2026-11-23 up to 13:04Z, which replaced the 44 s of job 132733634671, the most a merge job of its
-runs of 2026-11-15 up to 17:44Z read.
+branch). The worst case, `merge_maximum`, is 54 s, job 138031009105 (run 45261148766 attempt 2),
+as that branch records with the merge jobs it was read over and the figures it replaced.
 The readings above, taken as the budget takes them, which is each lane less its own merge job,
-are the merge job's lines of the three attempts, 2,597, 2,661 and 2,634 s (merge jobs of 38, 45
-and 40 s) against the 3,156 s that run read, and the pull-request lane's 682 s at 5e22df0a
-(45130649093, 19 s) against the 856 s it read; all are inside the budget, which is 3,146 s on the
-full lane and 846 s on the pull-request lane from this commit on.
+are what the merge job's "Reading five" line printed at dfc51f65: 2,629, 2,410 and 2,446 s for
+the three attempts of run 45306966549 (merge jobs of 33, 40 and 48 s), and 821, 690 and 821 s
+for the three attempts of run 45306887784 (merge jobs of 18, 35 and 36 s). All are inside the
+budget, which is 3,146 s on the full lane and 846 s on the pull-request lane.
 
 That ceiling is a coarse guard and no reading of what dispatch://INFRA-1109 delivers: no job can
 read another run, so a figure written here cannot be a ratio against the day's default branch,
@@ -1702,9 +1698,10 @@ a pull of another digest here leaves the browser step to pull its own inside its
 
 A seed in the last two minutes of a UTC day waits for midnight and seeds again
 (packages/dispatch/e2e/visual-day.ts): at most 2 min, and one more seed, which with the
-stack's start took under 7 s in job 135974266127, the run whose two failed rows the wait is
-for, over the 66 s and 81 s that green runs of the step "Browser-test dispatch dashboard against
-its baselines" took (jobs 135832072234 and 135974266127), inside 4 minutes.
+stack's start took under 7 s in job 135974266127, whose reverse-order step, since removed,
+failed the two rows the wait is for. The green runs of the step "Browser-test dispatch
+dashboard against its baselines" took 66 s and 81 s (jobs 135832072234 and 135974266127), so
+with the wait and the seed added the step stays inside 4 minutes.
 
 ## Why each visual row stops its page's writes, and runs once
 
@@ -1816,21 +1813,16 @@ hours the x64 pool held this 35-second job for about 35 minutes (run 44126172228
 The budget is measured. Over the 32 concluded `dispatch-browser / merge` jobs of the last
 43 completed ci.yaml runs, read from the jobs API on 2026-11-08, the job's maximum is
 34 s: job 128737694112 of run 42481906495, 12:57:25Z to 12:57:59Z. The 37 s this comment
-carried before was measured on another branch and is replaced by that sample. The merge
-jobs of pull request #3513's runs of 2026-11-15 up to 17:44Z read at most 44 s whole (job
-132733634671, run 43687205491), the figure `merge_maximum` took off the lane's bound until the
-ten merge jobs of its runs of 2026-11-23 up to 13:04Z read up to 45 s whole (job 137694934103,
-run 45151841335 attempt 2), and that 45 s until its 38 merge jobs since 2026-11-22 read up to
-54 s whole (job 138031009105, run 45261148766 attempt 2), which it takes now. Over those 38 and
-the 10 merge jobs of main's 65 merge-queue runs listed since main's #5175 merged
-(2026-11-23T21:37:21Z), 48 jobs read from the jobs API on 2026-11-24 up to 01:06Z, the steps
-without a budget sum to 48 s at their maxima: checkout 14 s, `bun install` 8 s, the merge of the
-blob reports 4 s, setup-bun, the upload of the merged report and "Reading three" 3 s each, Set
-up job and the blob download 2 s each, and every other step 1 s, but for the refused-download
-step, which every one of the 48 skipped. Given the 1 s below, the sum is 49 s, and
-180 + 49 = 229 s is 3 min 49 s, so the rule gives the same 4 minutes as the older sample below.
-What made job 138031009105 the longest is its checkout, 14 s, and "Reading one, the rows",
-11 s, the most that step took over the 48, and its log holds no rate-limit wait.
+carried before was measured on another branch and is replaced by that sample. The worst case
+the lane's bound takes off now is `merge_maximum`, 54 s whole, job 138031009105 (run
+45261148766 attempt 2), the most of the 38 merge jobs of pull request #3513 that the
+`machine-time` branch of .github/scripts/dispatch-browser-run-reads.sh records with the
+figures it replaced. Over those 38 and the 10 merge jobs of main's 65 merge-queue runs listed
+since main's #5175 merged (2026-11-23T21:37:21Z), 48 jobs read from the jobs API on 2026-11-24
+up to 01:06Z, the steps without a budget sum to 48 s at their maxima: checkout 14 s,
+`bun install` 8 s, the merge of the blob reports 4 s, setup-bun, the upload of the merged report
+and "Reading three" 3 s each, Set up job and the blob download 2 s each, and every other step
+1 s, but for the refused-download step, which every one of the 48 skipped.
 
 Each step's own maximum over the 2026-11-08 sample, summed, is 40 s: Set up job 2 s, checkout 9 s,
 setup-bun 3 s, `bun install` 7 s, Download every leg's blob report 2 s, Take the newest

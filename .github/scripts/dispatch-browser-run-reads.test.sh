@@ -527,17 +527,12 @@ check "with its own conclusion" "$(is "$(field 19 .conclusion)" failure)"
 check "and the full lane's shard (1) is not in it" "$(is "$(jq -r '[.[] | select(.id == 11)] | length' "$work/out.json")" 0)"
 
 echo "case: the alone leg is the bare job name, and a shard leg's number is read whole"
-# The alone job ran a matrix of three projects, one leg each, and its leg was read out of the
-# brackets after the job name; it runs the three on one machine now and writes one blob report,
-# so the leg is the word itself (dispatch://INFRA-1109). The leg is read off the name after the
-# caller's prefix, and both callers' names must read the same leg: a leg absent from reading
-# one's list is a leg whose missing blob nothing reports. The shard capture wanted a leading
-# space until dispatch://INFRA-1109, where the `alone` test beside it did not, and this case held
-# a job named with no prefix to the same leg as a prefixed one. Since main's #5175 a name with
-# no caller's prefix is no job of this lane at all, as `lint` is not, so the two unprefixed jobs
-# here are dropped, and what held the two shapes to one leg is the other caller's prefix: its
-# alone and shard jobs read the legs this caller's do. The shard capture still takes a run of
-# digits rather than one, so a tenth leg would be read whole.
+# The leg is read off the name after the caller's prefix, so both callers' jobs read the same
+# leg: a leg absent from reading one's list is a leg whose missing blob nothing reports. The
+# alone job runs its three projects on one machine and writes one blob report, so its leg is the
+# word itself, with nothing read out of brackets (dispatch://INFRA-1109). A bare `alone` or
+# `shard (1)`, with no caller's prefix, is no job of this lane, as `lint` is not, so the two
+# unprefixed jobs here are dropped. A shard number is read whole, so a tenth leg is `shard-10`.
 fixture 0
 page "21|dispatch-browser / alone|success" "22|alone|success" \
   "23|dispatch-browser / shard (10)|success" "24|shard (1)|success" \

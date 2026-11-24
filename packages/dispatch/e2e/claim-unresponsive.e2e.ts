@@ -9,7 +9,7 @@ import {
   mintAgentToken,
   patchIssue,
 } from "./api";
-import { expectInstant } from "./instants";
+import { endsInZeroMs, expectInstant } from "./instants";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -57,11 +57,8 @@ async function seedClaim(title: string): Promise<{ issueKey: string; token: stri
  *  holds the record and says the session is unresponsive, with the heartbeat it was last seen
  *  at. Returns that heartbeat. */
 async function stall(msAgo: number): Promise<number> {
-  // A millisecond ending in zero, every run: the server spells the moment as Go does, which
-  // drops that trailing zero (`…:32.15Z` for 150 ms), and the page's `datetime` is that
-  // spelling. Rounding here exercises the difference on every run rather than one in ten,
-  // so expectInstant's comparison of moments is what the assertions below rest on.
-  const lastSeen = Math.floor((Date.now() - msAgo) / 10) * 10;
+  // The page's `datetime` is the server's spelling of this moment.
+  const lastSeen = endsInZeroMs(Date.now() - msAgo);
   await setSessionLastSeen(holder.session_id, lastSeen);
   await setSessionState(holder.session_id, "unresponsive");
   return lastSeen;

@@ -286,11 +286,11 @@ case "$mode" in
     # and reading one would count rows no blob of this lane holds. After the prefix, the name
     # must be one of this workflow's seven jobs, with a shard leg's number in brackets after it.
     #
-    # The leg is read from the name after that prefix. `shard (2)` becomes `shard-2` and the
-    # `alone` job, which has no matrix and so no brackets, becomes `alone`, under either caller's
-    # prefix: a leg absent from reading one's list is a leg whose missing blob nothing reports,
-    # and the shard capture once required a leading space where the `alone` test did not
-    # (dispatch://INFRA-1109), so both are now read off the one shape the prefix leaves.
+    # The leg is read from the name after that prefix, so both callers' jobs read the same leg:
+    # `shard (2)` becomes `shard-2`, and the `alone` job, which has no matrix and so no brackets,
+    # becomes `alone`. A leg absent from reading one's list is a leg whose missing blob nothing
+    # reports. A bare `alone` or `shard (1)`, with no caller's prefix, is no job of this lane, and
+    # a shard number is read whole (`shard (10)` becomes `shard-10`).
     # `binaries`, `merge`, `multiprocess`, `embedder` and `visual` are this workflow's other five
     # jobs: they pass the name filter and get a null leg, so reading one passes them over and
     # reading three names them as holding no row. `binaries` is in that filter because every
