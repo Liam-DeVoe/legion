@@ -282,6 +282,11 @@ type editCommentInput struct {
 	Blocks       []itemblocks.Carried `json:"blocks"`
 }
 
+// editComment is PATCH /api/v1/comments/{id}. The command bar's undo of an edit makes the edit
+// conditional (goingCondition.ExpectBody, on the request's context): the comment must still hold
+// the body the edit it undoes wrote when this edit takes the comment's owner lock, or it is
+// refused, 409 COMMENT_CHANGED, with nothing written. It answers the comment as the edit left it,
+// with the body the edit replaced beside it (commentEdited), which that undo writes back.
 func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	if !requireUUIDPath(w, r, "comment") {
 		return
@@ -309,6 +314,11 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	condition := goingConditionOf(r)
+	if refusal := condition.writeBackRefusal(condition.ExpectBody != nil, "body it expects the comment to hold"); refusal != nil {
+		s.writeHandlerError(w, refusal)
+		return
+	}
 	var carried *refs.CarriedEdit
 	if input.Blocks != nil {
 		if input.BaseRevision == nil {
@@ -329,6 +339,11 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	// caller but the author of a comment that stands.
 	comment, ok := s.lockedCommentForCorrection(w, r, tx, actor, "edit")
 	if !ok {
+		return
+	}
+	if condition.ExpectBody != nil && comment.Body != *condition.ExpectBody {
+		writeError(w, codeCommentChanged, http.StatusConflict,
+			"the comment holds other words now than the edit expected, so nothing was written")
 		return
 	}
 	// The owner lock above decided this comment is edited, a closed issue's included, so its
@@ -400,13 +415,34 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	edited := func(trees bool) commentEdited {
+		return commentEdited{shapedComment: newShapedComment(comment, trees), Previous: editedPostBody{Body: previousBody}}
+	}
+	// What the edit answers it replaced and left, handed to the command bar's landing of this
+	// request, which records it in this transaction (goingRecordAnswer).
+	goingRecordAnswer(r.Context(), http.StatusOK, func() any { return edited(false) })
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	s.publish(r.Context(), *event)
 	s.storeDisplayTrees(r.Context(), comment.ID, input.Body)
-	WriteJSON(w, http.StatusOK, newShapedComment(comment, wantsDisplayTrees(r)))
+	WriteJSON(w, http.StatusOK, edited(wantsDisplayTrees(r)))
+}
+
+// editedPostBody is the body an edit of a comment or an issue message replaced, as the post held it
+// when the edit took its owner's lock, which the edit answers beside the post it left
+// (commentEdited, messageEdited). A caller that undoes the edit reads it here: what it reads of
+// the post before or after the edit may have moved on either side of the edit's own transaction.
+type editedPostBody struct {
+	Body string `json:"body"`
+}
+
+// commentEdited is what PATCH /api/v1/comments/{id} answers: the comment as the edit left it, and
+// beside it previous, the body the edit replaced (editedPostBody).
+type commentEdited struct {
+	shapedComment
+	Previous editedPostBody `json:"previous"`
 }
 
 // recordOrphanedCommentAnchor records on the comment's row what a document write just found:

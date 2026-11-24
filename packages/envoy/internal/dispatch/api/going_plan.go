@@ -32,6 +32,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -71,7 +72,9 @@ const goingFramePlan = "plan"
 // the person in every mode (goingRowWaits). Changed is a row that waits again because its item
 // changed after the person saw it. Token is a document's token as that read answered it
 // (goingObservation.token), which the undo of the row's edit holds to the token the edit's route
-// answered it found, to know the content read is the content the edit replaced.
+// answered it found, to know the content read is the content the edit replaced. Deleted is a row
+// whose comment or issue message its author deleted (goingObservation.deleted): its value now is
+// the delete's mark with no body, and nobody approves it.
 type goingRowShown struct {
 	Item    string          `json:"item,omitempty"`
 	Issue   string          `json:"issue,omitempty"`
@@ -81,6 +84,7 @@ type goingRowShown struct {
 	Claim   *goingHolder    `json:"claim,omitempty"`
 	Waits   []string        `json:"waits,omitempty"`
 	Changed bool            `json:"changed,omitempty"`
+	Deleted bool            `json:"deleted,omitempty"`
 }
 
 // same reports whether other reads the item as shown does: the same value now and the same holder
@@ -281,7 +285,8 @@ type goingQuerier interface {
 }
 
 // readGoingPlan is plan number of run with its rows, its latest plan where number is 0, and nil
-// for a plan the run does not hold.
+// for a plan the run does not hold. A row of a comment or an issue message deleted since shows the
+// delete's mark (maskDeletedPosts).
 func readGoingPlan(ctx context.Context, q goingQuerier, run string, number int) (*goingPlanStored, error) {
 	var plan goingPlanStored
 	err := q.QueryRow(ctx, `
@@ -305,7 +310,78 @@ func readGoingPlan(ctx context.Context, q goingQuerier, run string, number int) 
 	if err != nil {
 		return nil, fmt.Errorf("read the plan's rows: %w", err)
 	}
+	held := make([]*goingPlanRowStored, 0, len(plan.rows))
+	for index := range plan.rows {
+		held = append(held, &plan.rows[index])
+	}
+	if err := maskDeletedPosts(ctx, q, held); err != nil {
+		return nil, err
+	}
 	return &plan, nil
+}
+
+// maskDeletedPosts puts, in the place of the value now of each of rows that edits or deletes a
+// comment or an issue message its author deleted since, the delete's mark and no body
+// (goingDeletedPostNow), and marks the row deleted, whatever state the row is in: the plan's read
+// of the post holds its words, and no read of a deleted post gives them again (INFRA-1523 R3) - a
+// delete row once it ran among them. One statement reads every post the rows name.
+func maskDeletedPosts(ctx context.Context, q goingQuerier, rows []*goingPlanRowStored) error {
+	byPost := map[string][]*goingPlanRowStored{}
+	var comments, messages []string
+	for _, row := range rows {
+		kind := goingPostTools[row.tool]
+		id, err := uuid.Parse(row.shown.Item)
+		if kind == "" || err != nil {
+			continue
+		}
+		if byPost[id.String()] == nil {
+			if kind == "comment" {
+				comments = append(comments, id.String())
+			} else {
+				messages = append(messages, id.String())
+			}
+		}
+		byPost[id.String()] = append(byPost[id.String()], row)
+	}
+	if len(byPost) == 0 {
+		return nil
+	}
+	read, err := q.Query(ctx, `
+		select id::text, author, deleted_at, deleted_by from comments where id = any($1::uuid[]) and deleted_at is not null
+		union all
+		select id::text, author, deleted_at, deleted_by from messages where id = any($2::uuid[]) and deleted_at is not null
+	`, comments, messages)
+	if err != nil {
+		return fmt.Errorf("read the deleted posts of the plan's rows: %w", err)
+	}
+	defer read.Close()
+	for read.Next() {
+		var id string
+		var author, deletedBy []byte
+		var deletedAt time.Time
+		if err := read.Scan(&id, &author, &deletedAt, &deletedBy); err != nil {
+			return fmt.Errorf("read the deleted posts of the plan's rows: %w", err)
+		}
+		var writer model.Actor
+		if err := json.Unmarshal(author, &writer); err != nil {
+			return fmt.Errorf("read the author of deleted post %s: %w", id, err)
+		}
+		var by *model.Actor
+		if len(deletedBy) > 0 && string(deletedBy) != "null" {
+			by = &model.Actor{}
+			if err := json.Unmarshal(deletedBy, by); err != nil {
+				return fmt.Errorf("read who deleted post %s: %w", id, err)
+			}
+		}
+		mark, err := json.Marshal(goingDeletedPostNow(writer, deletedAt, by))
+		if err != nil {
+			return err
+		}
+		for _, row := range byPost[id] {
+			row.shown.Now, row.shown.Deleted = mark, true
+		}
+	}
+	return read.Err()
 }
 
 // goingPlanRowColumns is the columns of a plan's row as scanGoingPlanRow decodes them.
@@ -347,7 +423,7 @@ type goingPlanKey struct {
 
 // readGoingPlanRows is the rows of each plan keys names, in one read, each plan's in row order: a
 // page of plans (listMyGoingPlans) reads every plan's rows in one round trip, as readGoingPlan
-// reads one plan's.
+// reads one plan's, a row of a post deleted since showing the delete's mark (maskDeletedPosts).
 func readGoingPlanRows(ctx context.Context, q goingQuerier, keys []goingPlanKey) (map[goingPlanKey][]goingPlanRowStored, error) {
 	byPlan := make(map[goingPlanKey][]goingPlanRowStored, len(keys))
 	if len(keys) == 0 {
@@ -377,6 +453,16 @@ func readGoingPlanRows(ctx context.Context, q goingQuerier, keys []goingPlanKey)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the plans' rows: %w", err)
+	}
+	rows.Close()
+	var held []*goingPlanRowStored
+	for key := range byPlan {
+		for index := range byPlan[key] {
+			held = append(held, &byPlan[key][index])
+		}
+	}
+	if err := maskDeletedPosts(ctx, q, held); err != nil {
+		return nil, err
 	}
 	return byPlan, nil
 }
@@ -424,9 +510,10 @@ func goingJSONEqual(a, b json.RawMessage) bool {
 // goingReadRow reads what a row of tool with arguments changes, as the person doer acts for
 // (login): the call prepared as its write will be, and what the plan shows of its item - the
 // item, the issue it is or belongs to, the fields the change writes and their value now, the
-// holder of that issue's claim, and why the row waits in every mode. sendIssue is the issue a
-// send to an agent session is posted on (going_messages.go), "" for none. A call the tool's schema
-// or translation refuses, and a read the person may not make, answers its error.
+// holder of that issue's claim, why the row waits in every mode, and, for a comment or an issue
+// message, whether its author deleted it. sendIssue is the issue a send to an agent session is
+// posted on (going_messages.go), "" for none. A call the tool's schema or translation refuses, and
+// a read the person may not make, answers its error.
 func (s *server) goingReadRow(ctx context.Context, doer GoingDoer, login, tool string, arguments map[string]any, sendIssue string) (goingRowShown, error) {
 	caller := GoingCaller{Catalogue: s.going, Doer: doer, knownSession: s.goingKnownSession, sendIssue: sendIssue}
 	prepared, err := caller.prepare(ctx, tool, arguments)
@@ -438,7 +525,7 @@ func (s *server) goingReadRow(ctx context.Context, doer GoingDoer, login, tool s
 	if err != nil {
 		return goingRowShown{}, err
 	}
-	shown := goingRowShown{Item: before.target, Issue: before.issue, Fields: before.fields, Token: before.token}
+	shown := goingRowShown{Item: before.target, Issue: before.issue, Fields: before.fields, Token: before.token, Deleted: before.deleted}
 	if shown.Issue == "" && strings.HasPrefix(prepared.route.Pattern, "/api/v1/issues/{key}") {
 		shown.Issue = prepared.call.path["key"]
 	}
@@ -875,6 +962,11 @@ func (a *AgentListener) planCall(ctx context.Context, request agentwire.CallRequ
 			refusal.Message = fmt.Sprintf("change %d: %s", index, refusal.Message)
 			return agentwire.CallAnswer{}, refusal
 		}
+		if shown.Deleted {
+			return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused,
+				"change %d (%s): its author deleted that %s, and a deleted post takes no edit and no delete: propose no change of it",
+				index, change.Tool, goingPostTools[change.Tool])
+		}
 		if change.Tool == "dispatch_issue_update" {
 			why, err := goingReopenRefusal(ctx, goingReader{doer: doer}, arguments)
 			if err != nil {
@@ -1012,16 +1104,24 @@ func appendGoingPlanFrame(ctx context.Context, tx pgx.Tx, run string, plan int, 
 
 // callAnswer is the plan as a plan call answers it (agentwire.PlanAnswer): its rows, and each row
 // approved and not yet run as a row to run now, as a claim of the run would answer it
-// (goingPendingRows), with the step of a call that already began it.
+// (goingPendingRows), with the step of a call that already began it. A row of a comment or an
+// issue message carries no value now: the plan's read of the post is its person's to see, and the
+// run is given a post's words only by its own reads, each of which records the post as the run's
+// (recordGoingRunPosts), so the plan never puts in the run's steps the words of a post whose later
+// delete would not withdraw it.
 func (p *goingPlanStored) callAnswer() agentwire.CallAnswer {
 	if p == nil {
 		return agentwire.CallAnswer{}
 	}
 	answer := agentwire.PlanAnswer{Plan: p.plan, Rows: make([]agentwire.PlanRowRead, 0, len(p.rows))}
 	for _, row := range p.rows {
+		now := row.shown.Now
+		if goingPostTools[row.tool] != "" {
+			now = nil
+		}
 		answer.Rows = append(answer.Rows, agentwire.PlanRowRead{
 			Row: row.row, Tool: row.tool, Arguments: row.arguments, Item: row.shown.Item, Fields: row.shown.Fields,
-			Now: row.shown.Now, Waits: row.shown.Waits,
+			Now: now, Waits: row.shown.Waits,
 		})
 		if row.state == "approved" || row.state == "running" {
 			run := agentwire.PlanRun{PlanRow: agentwire.PlanRow{Plan: p.plan, Row: row.row}, Tool: row.tool, Arguments: row.arguments}
@@ -1260,8 +1360,10 @@ type goingPlanRejectInput struct {
 // their page showed; a row the body names that is no waiting row of the plan, a value its tool's
 // schema refuses, or a value naming a new issue of the plan ("$N") that the row may not name,
 // 400 GOING_PLAN_VALUES; the last in the person's words (goingNewIssueApprovalRefusal), which
-// name rows and new issues as the page does. The plan of a withdrawn run (goingRunWithdrawnOf) is
-// 409 GOING_RUN_WITHDRAWN, with nothing written (writeGoingRunWithdrawn).
+// name rows and new issues as the page does. A ticked row whose comment or issue message its
+// author deleted after the plan read it is 409 POST_DELETED, with nothing written: it shows no word
+// of the post, and nothing changes a deleted one. The plan of a withdrawn run (goingRunWithdrawnOf)
+// is 409 GOING_RUN_WITHDRAWN, with nothing written (writeGoingRunWithdrawn).
 func (s *server) approveGoingPlan(w http.ResponseWriter, r *http.Request) {
 	login, run, plan, ok := s.planRoute(w, r)
 	if !ok {
@@ -1358,6 +1460,13 @@ func (s *server) approveGoingPlan(w http.ResponseWriter, r *http.Request) {
 			return
 		case err != nil:
 			s.writeGoingPlanReadError(w, goingRowLabel(row), err)
+			return
+		case now.Deleted:
+			// Nothing edits or deletes a post its author deleted, and its row shows no words of it:
+			// the person unticks it to approve the rest.
+			writeError(w, codePostDeleted, http.StatusConflict, fmt.Sprintf(
+				"%s: this %s was deleted after the plan read it, so the change cannot run. Untick it to approve the rest.",
+				goingRowLabel(row), goingPostTools[row.tool]))
 			return
 		}
 		encoded, err := json.Marshal(arguments)

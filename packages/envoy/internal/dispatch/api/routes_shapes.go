@@ -839,7 +839,7 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/messages/{id}/history": {
 		Status: http.StatusOK, Response: postHistoryRead{}, Params: postHistoryQuery{},
 	},
-	"PATCH /api/v1/messages/{id}": {Status: http.StatusOK, Response: model.Message{}, Request: editMessageInput{}},
+	"PATCH /api/v1/messages/{id}": {Status: http.StatusOK, Response: messageEdited{}, Request: editMessageInput{}},
 	"DELETE /api/v1/messages/{id}": {
 		Status: http.StatusOK, Response: model.Message{}, Request: actorInput{}, OptionalRequest: true,
 	},
@@ -984,7 +984,7 @@ var routeShapes = map[string]routeShape{
 		},
 	},
 	"POST /api/v1/comments/{id}/accept": {Status: http.StatusOK, Response: acceptedComment{}, Request: actorInput{}, OptionalRequest: true},
-	"PATCH /api/v1/comments/{id}":       {Status: http.StatusOK, Response: shapedComment{}, Request: editCommentInput{}},
+	"PATCH /api/v1/comments/{id}":       {Status: http.StatusOK, Response: commentEdited{}, Request: editCommentInput{}},
 	"DELETE /api/v1/comments/{id}": {
 		Status: http.StatusOK, Response: model.Comment{}, Request: actorInput{}, OptionalRequest: true,
 	},

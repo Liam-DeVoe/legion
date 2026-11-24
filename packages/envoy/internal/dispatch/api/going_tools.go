@@ -80,6 +80,8 @@ const (
 	goingCommentReopenRoute = http.MethodPost + " /api/v1/comments/{id}/reopen"
 	goingCommentResolve     = http.MethodPost + " /api/v1/comments/{id}/resolve"
 	goingCommentRejectRoute = http.MethodPost + " /api/v1/comments/{id}/reject"
+	goingCommentEditRoute   = http.MethodPatch + " /api/v1/comments/{id}"
+	goingMessageEditRoute   = http.MethodPatch + " /api/v1/messages/{id}"
 	goingFollowRoute        = http.MethodPut + " /api/v1/asks/{id}/followers/{session_id}"
 	goingUnfollowRoute      = http.MethodDelete + " /api/v1/asks/{id}/followers/{session_id}"
 	goingIssueUploadRoute   = http.MethodPost + " /api/v1/issues/{key}/artifacts"
@@ -120,14 +122,15 @@ const (
 	// rejected while it is still open.
 	goingUndoReverse goingUndoKind = "reverse"
 	// goingUndoWriteBack writes the value the write found back over it: an issue's fields, an
-	// ask's text, a document's content.
+	// ask's text, a document's content, a comment's or an issue message's body.
 	goingUndoWriteBack goingUndoKind = "write_back"
 	// goingUndoCloseCreated closes an issue the run created, posting nothing on it.
 	goingUndoCloseCreated goingUndoKind = "close_created"
 	// goingUndoNotUndone is a write that stays as it is, named "sent, not undone": one that
 	// reached a person or a session at once (a message, a broadcast, an answer, a review), or one
-	// Dispatch serves no reverse of and whose value before no read keeps. Each table entry of this
-	// kind says which, beside it.
+	// Dispatch serves no reverse of and whose value before no read keeps. A delete of a comment or
+	// an issue message is named "deleted, not undone": nothing restores a deleted post. Each table
+	// entry of this kind says which, beside it.
 	goingUndoNotUndone goingUndoKind = "not_undone"
 )
 
@@ -474,16 +477,21 @@ var goingWriteTools = map[string]goingWriteTool{
 	// The four corrections of a post: an edit replaces its body, a delete removes it. Each names
 	// its own post, so the one placeholder binds to the tool's own argument. An edit re-indexes the
 	// new body, which is the one edge family a body writes; a delete clears the body, so it writes
-	// no edge at all and removes the ones the post had. None is undone: no route edits a post under
-	// a condition on the body it holds, so a write back could replace words its author wrote
-	// since, and no route restores a deleted post.
+	// no edge at all and removes the ones the post had. Each reads the post before it, its author
+	// and its body, which its row shows (goingObserver.postEdited, postDeleted). An edit is written
+	// back: its route answers the body it replaced (commentEdited, messageEdited), and the undo
+	// writes that body back through the same route under a condition that the post still holds
+	// the body the edit left (goingCondition.ExpectBody), so words its author wrote since are kept.
+	// A delete is not undone: no route restores a deleted post, so it waits for the person in
+	// both modes, as every change of text does (going_modes.go), and is named deleted, not undone.
 	"dispatch_edit_comment": {
 		Routes: []goingToolRoute{{
 			Method: http.MethodPatch, Pattern: "/api/v1/comments/{id}",
 			Path: map[string]string{"id": "comment"}, Relations: []string{"mentions"},
-			Translate: goingTranslateEditPost,
+			Translate:  goingTranslateEditPost,
+			UndoRoutes: []string{goingCommentEditRoute},
 		}},
-		Undo: goingUndoNotUndone, Class: goingClassText, Event: "comment.edited",
+		Observe: goingObserver.postEdited, Undo: goingUndoWriteBack, Class: goingClassText, Event: "comment.edited",
 	},
 	"dispatch_delete_comment": {
 		Routes: []goingToolRoute{{
@@ -491,15 +499,16 @@ var goingWriteTools = map[string]goingWriteTool{
 			Path:      map[string]string{"id": "comment"},
 			Translate: goingTranslateDeletePost,
 		}},
-		Undo: goingUndoNotUndone, Class: goingClassText, Event: "comment.deleted",
+		Observe: goingObserver.postDeleted, Undo: goingUndoNotUndone, Class: goingClassText, Event: "comment.deleted",
 	},
 	"dispatch_edit_message": {
 		Routes: []goingToolRoute{{
 			Method: http.MethodPatch, Pattern: "/api/v1/messages/{id}",
 			Path: map[string]string{"id": "message"}, Relations: []string{"mentions"},
-			Translate: goingTranslateEditPost,
+			Translate:  goingTranslateEditPost,
+			UndoRoutes: []string{goingMessageEditRoute},
 		}},
-		Undo: goingUndoNotUndone, Class: goingClassText, Event: "message.edited",
+		Observe: goingObserver.postEdited, Undo: goingUndoWriteBack, Class: goingClassText, Event: "message.edited",
 	},
 	"dispatch_delete_message": {
 		Routes: []goingToolRoute{{
@@ -507,7 +516,7 @@ var goingWriteTools = map[string]goingWriteTool{
 			Path:      map[string]string{"id": "message"},
 			Translate: goingTranslateDeletePost,
 		}},
-		Undo: goingUndoNotUndone, Class: goingClassText, Event: "message.deleted",
+		Observe: goingObserver.postDeleted, Undo: goingUndoNotUndone, Class: goingClassText, Event: "message.deleted",
 	},
 	// A send to one session, which reaches it when it is sent, so it stays. A send to a session
 	// that works on an issue is posted on that issue (going_messages.go) as a message that targets

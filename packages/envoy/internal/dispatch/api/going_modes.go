@@ -166,6 +166,20 @@ func (s *server) goingRowEvent(ctx context.Context, tool string, prepared goingP
 		if err := document("", owner, path["slug"]); err != nil {
 			return nil, err
 		}
+	case pattern == "/api/v1/messages/{id}":
+		// An edit or a delete of an issue message: its event carries the message's own thread, the
+		// message it answers and the session it targets, as its create's did
+		// (messageCorrectionEvent), not the message itself as a reply's in_reply_to.
+		var inReplyTo, target string
+		err := s.deps.Store.Pool.QueryRow(ctx, `
+			select coalesce(in_reply_to::text, ''), coalesce(target, '') from messages where id::text = $1
+		`, path["id"]).Scan(&inReplyTo, &target)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("read the thread of message %s: %w", path["id"], err)
+		}
+		set("id", path["id"])
+		set("in_reply_to", inReplyTo)
+		set("target", target)
 	case strings.HasPrefix(pattern, "/api/v1/messages/{id}"):
 		set("in_reply_to", path["id"])
 	case strings.HasPrefix(pattern, "/api/v1/agents/{session_id}"):

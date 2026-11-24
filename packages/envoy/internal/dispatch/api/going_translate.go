@@ -248,14 +248,18 @@ func goingIssuePath(key string, below ...string) string {
 	return "/api/v1/issues/" + url.PathEscape(key) + goingBelow(below)
 }
 
-// goingAskPath, goingCommentPath and goingArtifactPath are the same for an ask, a comment and a
-// document by id.
+// goingAskPath, goingCommentPath, goingMessagePath and goingArtifactPath are the same for an ask,
+// a comment, a message and a document by id.
 func goingAskPath(id string, below ...string) string {
 	return "/api/v1/asks/" + url.PathEscape(id) + goingBelow(below)
 }
 
 func goingCommentPath(id string) string {
 	return "/api/v1/comments/" + url.PathEscape(id)
+}
+
+func goingMessagePath(id string) string {
+	return "/api/v1/messages/" + url.PathEscape(id)
 }
 
 func goingArtifactPath(id string, below ...string) string {

@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -141,6 +142,9 @@ type goingObservation struct {
 	// note is what the write's line says of a write its route answered changed nothing, where the
 	// line has nothing else to say: a create that named an issue Dispatch already holds.
 	note string
+	// deleted is a read before of a comment or an issue message its author deleted, whose value
+	// is the delete's mark and no part of its body (goingPostNow).
+	deleted bool
 }
 
 // goingFields is the one field a write changes as an observation lists it, none for "".
@@ -183,6 +187,16 @@ var goingWriteFields = map[string]string{
 	"dispatch_project":           "project",
 	"dispatch_architecture_sync": "architecture",
 	"dispatch_handoff_write":     "handoff",
+	"dispatch_edit_comment":      "body",
+	"dispatch_delete_comment":    "body",
+	"dispatch_edit_message":      "body",
+	"dispatch_delete_message":    "body",
+}
+
+// goingPostTools is the kind of post each tool that corrects one edits or deletes, by tool.
+var goingPostTools = map[string]string{
+	"dispatch_edit_comment": "comment", "dispatch_delete_comment": "comment",
+	"dispatch_edit_message": "message", "dispatch_delete_message": "message",
 }
 
 // goingIssueFields are the issue's own fields each argument of an update writes, by argument. The
@@ -469,6 +483,125 @@ func (o goingObserver) uploaded(ctx context.Context, prepared goingPrepared, ans
 	if upload.PreviousVersion != nil {
 		observed.stood = goingJSONOrNull(goingUploadBefore{ID: upload.Artifact.ID, Name: upload.Artifact.Name, Version: *upload.PreviousVersion})
 	}
+	return observed, nil
+}
+
+// postEdited reads the comment or the issue message an edit names before it, its author and its
+// body (post), and after it what the edit's route answered it replaced and left (commentEdited,
+// messageEdited): the body it left (value) and the one it found under the post's owner lock
+// (stood), which another writer may have changed between the read before and the edit. An answer
+// that does not say what body the edit replaced leaves what it replaced unknown, so the undo
+// writes nothing back.
+func (o goingObserver) postEdited(ctx context.Context, prepared goingPrepared, answer []byte, _ int, before goingObservation) (goingObservation, error) {
+	if answer == nil {
+		return o.post(ctx, prepared.action, prepared.call.path["id"])
+	}
+	observed := goingObservation{target: before.target, fields: before.fields, issue: before.issue}
+	var edited struct {
+		ID       string `json:"id"`
+		Body     string `json:"body"`
+		Previous *struct {
+			Body *string `json:"body"`
+		} `json:"previous"`
+	}
+	if err := json.Unmarshal(answer, &edited); err != nil {
+		return observed, fmt.Errorf("read the edit's answer: %w", err)
+	}
+	if edited.Previous == nil || edited.Previous.Body == nil {
+		return observed, errors.New("the edit's answer does not say what body it replaced")
+	}
+	observed.target = cmp.Or(edited.ID, observed.target)
+	observed.value = map[string]any{"body": edited.Body}
+	observed.stood = goingJSONOrNull(map[string]any{"body": *edited.Previous.Body})
+	return observed, nil
+}
+
+// postDeleted reads the comment or the issue message a delete names before it, its author and its
+// body (post), and after it nothing: the delete leaves no body, and nothing undoes it.
+func (o goingObserver) postDeleted(ctx context.Context, prepared goingPrepared, answer []byte, _ int, before goingObservation) (goingObservation, error) {
+	if answer == nil {
+		return o.post(ctx, prepared.action, prepared.call.path["id"])
+	}
+	return goingObservation{target: before.target, fields: before.fields, issue: before.issue}, nil
+}
+
+// goingPostNow is a comment's or an issue message's value as a row of a plan that edits or
+// deletes it shows it (goingRowShown.Now): its author, and its body while it stands, or, once its
+// author deleted it, when and by whom, and no part of its body, as every read of a deleted post
+// answers it (dispatch://INFRA-1523, R3). A plan's read of a post deleted since is put in this
+// same shape where it is read off the store (maskDeletedPosts).
+type goingPostNow struct {
+	Author    goingHolder  `json:"author"`
+	Body      *string      `json:"body,omitempty"`
+	DeletedAt *time.Time   `json:"deleted_at,omitempty"`
+	DeletedBy *goingHolder `json:"deleted_by,omitempty"`
+}
+
+// goingDeletedPostNow is the value of a post of author deleted at at by by (nil for nobody named):
+// the delete's mark and no body. The time is in UTC, so a read through the post's route and one off
+// the store write the same value.
+func goingDeletedPostNow(author model.Actor, at time.Time, by *model.Actor) goingPostNow {
+	deleted := at.UTC()
+	now := goingPostNow{Author: goingHolder{Kind: author.Kind, ID: author.ID}, DeletedAt: &deleted}
+	if by != nil {
+		now.DeletedBy = &goingHolder{Kind: by.Kind, ID: by.ID}
+	}
+	return now
+}
+
+// goingPostRead is the part of a comment's or a message's read a row of a plan shows.
+type goingPostRead struct {
+	ID        string       `json:"id"`
+	IssueKey  *string      `json:"issue_key"`
+	Author    model.Actor  `json:"author"`
+	Body      string       `json:"body"`
+	DeletedAt *time.Time   `json:"deleted_at"`
+	DeletedBy *model.Actor `json:"deleted_by"`
+}
+
+// post reads the comment or the issue message id that tool edits or deletes (goingPostTools),
+// through the route a person reads it with: the post and its issue, the one field body, and its
+// value as the row shows it (goingPostNow) - its author and its body, or, for a post its author
+// deleted (deleted), the delete's mark and no body. A message is read with its conversation,
+// which its route answers for any message of it.
+func (o goingObserver) post(ctx context.Context, tool, id string) (goingObservation, error) {
+	observed := goingObservation{target: id, fields: goingFields(goingWriteFields[tool])}
+	var read goingPostRead
+	if goingPostTools[tool] == "message" {
+		var thread struct {
+			Message goingPostRead   `json:"message"`
+			Replies []goingPostRead `json:"replies"`
+		}
+		if err := o.read.get(ctx, goingMessagePath(id), &thread); err != nil {
+			return observed, err
+		}
+		at := slices.IndexFunc(append([]goingPostRead{thread.Message}, thread.Replies...), func(post goingPostRead) bool {
+			return strings.EqualFold(post.ID, id)
+		})
+		switch {
+		case at < 0:
+			return observed, fmt.Errorf("the conversation of message %s does not hold it", id)
+		case at == 0:
+			read = thread.Message
+		default:
+			read = thread.Replies[at-1]
+		}
+	} else {
+		var thread struct {
+			Comment goingPostRead `json:"comment"`
+		}
+		if err := o.read.get(ctx, goingCommentPath(id), &thread); err != nil {
+			return observed, err
+		}
+		read = thread.Comment
+	}
+	observed.target, observed.issue = cmp.Or(read.ID, id), deref(read.IssueKey)
+	if read.DeletedAt != nil {
+		observed.value, observed.deleted = goingDeletedPostNow(read.Author, *read.DeletedAt, read.DeletedBy), true
+		return observed, nil
+	}
+	body := read.Body
+	observed.value = goingPostNow{Author: goingHolder{Kind: read.Author.Kind, ID: read.Author.ID}, Body: &body}
 	return observed, nil
 }
 

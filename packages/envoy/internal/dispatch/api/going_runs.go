@@ -61,19 +61,20 @@ var goingRunColumns = `r.id::text, coalesce(r.conversation_id, r.id)::text, r.co
 // page of History makes no read of its own for each run.
 // The answer of an issue's update, create or claim carries the whole issue - a page of 50 runs of
 // three issue updates read some 220 to 250 KB that way, against 24 KB before the read took
-// answers - so of those three it reads only the members goingUndoer.plan reads: the item's key or
-// id (goingMadeID), what an update found (previous) and each field previous names as it left it,
-// the place it ranked the issue at and the advances revision (goingIssueUpdated), a create's title
-// and status (issueCreated), a claim's claim_changed, claim and previous_claim (claimed), and the
-// last_seq each answers, which the undo decodes and refuses where it does not decode
-// (goingUndoer.recorded). Every other answer is small, and is read whole.
+// answers - and an edit of a comment or an issue message carries the whole post with the body it
+// replaced, so of those five it reads only the members goingUndoer.plan reads: the item's key or
+// id (goingMadeID), what an update or an edit found (previous) and each field previous names as it
+// left it - an edit's body - the place it ranked the issue at and the advances revision
+// (goingIssueUpdated), a create's title and status (issueCreated), a claim's claim_changed, claim
+// and previous_claim (claimed), and the last_seq each answers, which the undo decodes and refuses
+// where it does not decode (goingUndoer.recorded). Every other answer is small, and is read whole.
 const goingRunUndoColumns = `r.author_login, (
 		select coalesce(jsonb_agg(jsonb_build_object('step', c.step, 'call', c.call, 'tool', c.tool, 'arguments', c.arguments,
 		  'approval', c.approval, 'method', c.method, 'path', c.path, 'status', c.status, 'body', c.body, 'recovery', c.recovery)), '[]'::jsonb)
 		from (
 			select distinct on (l.step, l.call) l.step, l.call, coalesce(p.change->>'tool', '') as tool, p.change->'arguments' as arguments,
 			  p.approval, l.method, l.path, coalesce((l.answer->>'status')::int, 0) as status,
-			  case when coalesce(p.change->>'tool', '') in ('dispatch_issue_update', 'dispatch_issue', 'dispatch_claim')
+			  case when coalesce(p.change->>'tool', '') in ('dispatch_issue_update', 'dispatch_issue', 'dispatch_claim', 'dispatch_edit_comment', 'dispatch_edit_message')
 			         and jsonb_typeof(l.answer->'body') = 'object' then (
 			    select coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) from jsonb_each(l.answer->'body') e
 			    where e.key in ('id', 'key', 'title', 'status', 'previous', 'rank_place', 'advances_revision', 'claim_changed', 'claim', 'previous_claim', 'last_seq')

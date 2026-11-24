@@ -2,15 +2,15 @@ package api
 
 // going_conditions.go is how a request the command bar sends in-process is made conditional. An
 // undo's write back (going_undo.go) - an issue's fields, an ask's parts, a document's content, a
-// claim taken back or released, a thread reopened or resolved again, a created issue closed -
-// puts its value back only where the item still holds what the undone write left, and every
-// upload the bar sends is conditional too: a create alone, which makes a document only where its
-// owner holds none of the name, or, for a row of a plan whose approval showed the document or file
-// of its name and whose read before finds it as the approval showed it, a write over that very
-// artifact at the version the read found, refused where another writer wrote it since (a row whose
-// read finds anything else under the name waits for its person again: AgentListener.rowUpload).
-// Each is a compare-and-set its route decides under the lock it takes for the write, never a read
-// and then a write.
+// comment's or an issue message's body, a claim taken back or released, a thread reopened or
+// resolved again, a created issue closed - puts its value back only where the item still holds
+// what the undone write left, and every upload the bar sends is conditional too: a create alone,
+// which makes a document only where its owner holds none of the name, or, for a row of a plan
+// whose approval showed the document or file of its name and whose read before finds it as the
+// approval showed it, a write over that very artifact at the version the read found, refused
+// where another writer wrote it since (a row whose read finds anything else under the name waits
+// for its person again: AgentListener.rowUpload). Each is a compare-and-set its route decides
+// under the lock it takes for the write, never a read and then a write.
 //
 // The condition rides on the request's context (goingSend.condition, withGoingCondition), never
 // in its body. No client off the network can set a context, so none can make a route conditional
@@ -81,6 +81,10 @@ type goingCondition struct {
 	// COMMENT_CHANGED. While false it is left out of the request's digest (goingSend.digest), so a
 	// request that carries none digests as a build without the field records it.
 	ExpectOpen bool `json:",omitempty"`
+	// ExpectBody is PATCH /api/v1/comments/{id}'s and PATCH /api/v1/messages/{id}'s: the body the
+	// post must hold, or the edit is refused, 409 COMMENT_CHANGED or MESSAGE_CHANGED. While nil it
+	// is left out of the request's digest (goingSend.digest), as ExpectOpen is.
+	ExpectBody *string `json:",omitempty"`
 }
 
 // goingArtifactVersion is an artifact and the number of its latest version, as a read found them.

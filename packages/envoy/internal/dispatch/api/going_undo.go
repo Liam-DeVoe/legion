@@ -8,12 +8,16 @@ package api
 //
 //   - write_back reads the item's value now (going_observe.go) and writes back the value the call
 //     found, field by field, only where the value now is the one the call left; a later value
-//     another writer left is kept and named, with who changed that field after the call landed;
+//     another writer left is kept and named, with who changed that field after the call landed -
+//     an issue's fields, an ask's parts, a document's content, a comment's or an issue message's
+//     body, of which a post deleted since is kept, named deleted, with no word of its body;
 //   - reverse calls the row's reverse route (goingToolRoute.UndoRoutes): a claim released or taken
 //     back, a follow unfollowed, a resolved thread reopened and a reopened one resolved again, an
 //     opened ask retracted, and a suggestion of the run that is still open rejected;
 //   - close_created closes the issue the call created, with no message and no comment;
-//   - not_undone names the call "sent, not undone": a message, a broadcast, a review.
+//   - not_undone names the call "sent, not undone": a message, a broadcast, a review; and a delete
+//     of a comment or an issue message "deleted, not undone", since nothing restores a deleted
+//     post.
 //
 // What a call found and left is read off what its route recorded beside its landing, in the
 // transaction of the change (goingRecordAnswer), never off a read made since, so a run whose
@@ -55,6 +59,19 @@ const goingUndoReason = "Undone from the command bar."
 // goingSentNotUndone is what an undo says of a call it does not undo: a message, a broadcast, a
 // review, or any other write that reached a person or a session, or that no route takes back.
 const goingSentNotUndone = "sent, not undone"
+
+// goingDeletedNotUndone is what an undo says of a delete of a comment or an issue message, which
+// nothing restores (goingNotUndoneWords).
+const goingDeletedNotUndone = "deleted, not undone"
+
+// goingNotUndoneWords is what an undo says of a call of tool, whose undo is not_undone: a delete
+// of a post is deleted, not undone, and every other write sent, not undone.
+func goingNotUndoneWords(tool string) string {
+	if tool == "dispatch_delete_comment" || tool == "dispatch_delete_message" {
+		return goingDeletedNotUndone
+	}
+	return goingSentNotUndone
+}
 
 // The undo's own refusals of one call.
 const (
@@ -410,7 +427,8 @@ func (u goingUndoer) undo(ctx context.Context, write goingLandedWrite) goingUndo
 // two never differ. A call that names no row of the run's plan, or whose tool the table no longer
 // holds, is refused, 409 GOING_UNDO_UNKNOWN. A call whose tool states no undo, or of which only
 // the requests it sends before its own landed - a close's reason, a message - is named sent, not
-// undone: no undo takes a message back, and nothing else of the change stands. A call whose route
+// undone (a delete of a post deleted, not undone, goingNotUndoneWords): no undo takes a message
+// back or restores a deleted post, and nothing else of the change stands. A call whose route
 // recorded nothing that says what it found and left is refused, 409 GOING_UNDO_AFTER_UNREAD, and
 // one whose route found a value the row's read did not see, 409 GOING_UNDO_BEFORE_UNREAD: nothing
 // is put back. A call its record says changed nothing is undone by nothing (kind), and a kind this
@@ -430,7 +448,7 @@ func (u goingUndoer) plan(ctx context.Context, write goingLandedWrite) goingUndo
 	line.Undo = tool.Undo
 	if tool.Undo == goingUndoNotUndone {
 		return goingNotTried(func() goingUndoLine {
-			line.Outcome = goingWriteOutcome{OK: true, Status: http.StatusOK, Message: goingSentNotUndone}
+			line.Outcome = goingWriteOutcome{OK: true, Status: http.StatusOK, Message: goingNotUndoneWords(write.tool)}
 			return goingLineOf(line, nil)
 		})
 	}
@@ -484,6 +502,8 @@ func (u goingUndoer) kind(line goingUndoLine, undone goingUndone) goingUndoPlan 
 		return u.issueFields(line, undone)
 	case line.Undo == goingUndoWriteBack && undone.tool == "dispatch_edit_ask":
 		return u.askFields(line, undone)
+	case line.Undo == goingUndoWriteBack && (undone.tool == "dispatch_edit_comment" || undone.tool == "dispatch_edit_message"):
+		return u.postBody(line, undone)
 	case line.Undo == goingUndoReverse && undone.tool == "dispatch_claim":
 		return u.claim(line, undone)
 	case line.Undo == goingUndoReverse && undone.tool == "dispatch_follow":
@@ -870,6 +890,21 @@ func (u goingUndoer) askPartWriter(ctx context.Context, id, part string, landed 
 	`, id, part, landed)
 }
 
+// postBodyWriter is who wrote the body the comment or the issue message id holds after the edit
+// that landed at landed (goingUndone.landedAt): the actor of the post's newest edit (kind
+// "comment" or "message", its comment.edited or message.edited) written by a transaction begun
+// after the landing's - its created_at, that transaction's now(), is later; the edit's own event
+// carries the landing's moment and is never one. nil where none is. The type list is the one
+// events_post_text_changes indexes, so the planner reads that index.
+func (u goingUndoer) postBodyWriter(ctx context.Context, kind, id string, landed time.Time) *model.Actor {
+	return u.eventActor(ctx, `
+		select actor from events
+		where type in ('comment.deleted', 'comment.edited', 'message.deleted', 'message.edited') and type = $1
+		  and payload->>'id' = $2 and created_at > $3
+		order by id desc limit 1
+	`, kind+".edited", id, landed)
+}
+
 // documentVersionWriter is who wrote version, the version the document is at now, after the edit
 // that landed at landed: the actor of the document's artifact.version of that number written by a
 // transaction begun after the landing's (created_at later), read on the document's owner - its
@@ -1150,6 +1185,61 @@ func (u goingUndoer) askFields(line goingUndoLine, undone goingUndone) goingUndo
 		return nil, goingCondition{Expect: expect}
 	}
 	return u.writeBack(line, undone, read, goingAskEditRoute, map[string]string{"id": undone.target}, restoreOf, conditionOf, []string{"ASK_CHANGED"})
+}
+
+// postBody writes back the body an edit of a comment or an issue message replaced, through the
+// edit route, while the post still holds the body the edit left: the edit expects that body
+// (goingCondition.ExpectBody), decided under the post's owner lock, so words written since are
+// kept and named with who wrote them after the edit (postBodyWriter), and the route's 409
+// COMMENT_CHANGED or MESSAGE_CHANGED is the post changed between the undo's read and its write. A
+// post its author deleted since is kept as the delete left it, named deleted and by whom, with no
+// word of its body: nothing restores a deleted post, and no read of one gives its words again; the
+// route's 409 POST_DELETED is a delete made between the read and the write.
+func (u goingUndoer) postBody(line goingUndoLine, undone goingUndone) goingUndoPlan {
+	kind := goingPostTools[undone.tool]
+	route, changed := goingCommentEditRoute, codeCommentChanged
+	if kind == "message" {
+		route, changed = goingMessageEditRoute, codeMessageChanged
+	}
+	// deleted is the delete's mark where the read below found the post deleted.
+	var deleted *goingPostNow
+	read := func(ctx context.Context, _ []string) (map[string]any, error) {
+		current, err := u.observer.post(ctx, undone.tool, undone.target)
+		if err != nil {
+			return nil, err
+		}
+		now, _ := current.value.(goingPostNow)
+		if current.deleted || now.Body == nil {
+			deleted = &now
+			return map[string]any{}, nil
+		}
+		return map[string]any{"body": *now.Body}, nil
+	}
+	restoreOf := func(ctx context.Context, _ string, held, before, after json.RawMessage) (any, goingUndoField, error) {
+		switch {
+		case deleted != nil:
+			var by *model.Actor
+			if deleted.DeletedBy != nil {
+				by = &model.Actor{Kind: deleted.DeletedBy.Kind, ID: deleted.DeletedBy.ID}
+			}
+			return nil, goingUndoField{Message: fmt.Sprintf("the %s was deleted after this run, by %s, so no words were put back",
+				kind, goingWriterText(by))}, nil
+		case !goingSameJSON(held, after):
+			return nil, goingKeptField(held, u.postBodyWriter(ctx, kind, undone.target, undone.landedAt)), nil
+		}
+		return goingJSONOrNullRaw(before), goingUndoField{}, nil
+	}
+	conditionOf := func(restored map[string]json.RawMessage) (map[string]any, goingCondition) {
+		// A body the record does not hold as text leaves the write back with no condition, which
+		// its route refuses with nothing written (GOING_CONDITION_MISSING).
+		var body string
+		if json.Unmarshal(restored["body"], &body) != nil {
+			return nil, goingCondition{}
+		}
+		return nil, goingCondition{ExpectBody: &body}
+	}
+	return u.writeBack(line, undone, read, route, map[string]string{"id": undone.target}, restoreOf, conditionOf,
+		[]string{changed, codePostDeleted})
 }
 
 // writeBack is a write back of the fields one call changed, by one PATCH through route, its
