@@ -1163,11 +1163,12 @@ export default function envoyExtension(hostApi: PiApi): void {
         });
       }
     }
-    // The stored cards the transcript records as waiting and shows no write of, which a restart
-    // or a session change cut short, are held again for the first settled check. Their frames
-    // were answered `done` once they were recorded, and a copy the relay sends again is that held
-    // card (`UnwrittenFrames.sendCard`). This comes after the release above, so no card of the
-    // session left stands under a frame's keys.
+    // The held cards the transcript records as waiting and shows no write of, which a restart or
+    // a session change cut short, are held again, each to be handed as its record says: a stored
+    // card at the first settled check, an inert card (a late BTW) at the first settled heartbeat.
+    // Their frames were answered `done` once they were recorded, and a copy the relay sends again
+    // is that held card (`UnwrittenFrames.sendCard`). This comes after the release above, so no
+    // card of the session left stands under a frame's keys.
     unwritten.requeueStored(heldStoredCards(entries));
     if (unwritten.waitsOnStored()) checkStoredCards();
   };
@@ -1662,15 +1663,17 @@ export default function envoyExtension(hostApi: PiApi): void {
         error: messageFor(error),
       });
     },
-    // A stored card goes to the transcript of the session it is for, which is the session the host
-    // is on: `sendCard` hands or holds a card only for that session.
+    // A card held for a settled host (a stored card, or an inert card held while the host is
+    // busy) goes to the transcript of the session it is for, which is the session the host is on:
+    // `sendCard` hands or holds a card only for that session. The record says how the card is
+    // handed, so a restore hands it again the same way (`heldStoredCards`).
     recordStored: (addressed, card) => {
       if (hostSessionID() !== addressed) throw new Error("the host is on another session");
       pi.appendEntry(STORED_CARD_ENTRY, storedCardRecord(card));
     },
     recordStoredFailed: (identity, error) => {
       logger.warn(
-        "envoy: a stored card could not be recorded in the session file; its frame waits until the session's store holds it",
+        "envoy: a held card could not be recorded in the session file; its frame waits until the host writes the card",
         { eventID: identity.event_id, error: messageFor(error) }
       );
     },
@@ -2171,7 +2174,8 @@ export default function envoyExtension(hostApi: PiApi): void {
     }
     // A relay frame's claim answers the listener as the claim ends: `done` once it settles (the
     // host wrote the frame, or handled it with nothing to write, the ledger recording it first, or
-    // the transcript records the stored card that shows it, which a restart holds again),
+    // the transcript records the held card that shows it, a stored card or an inert card held
+    // while the host is busy, which a restart holds again),
     // `nak` once it is released with nothing recorded (the host dropped the frame unwritten: a
     // session change, an interrupt that withdrew a person's turn), so the listener sends it again.
     // A release while this call still runs answers only once the call returns: a throw is the
@@ -2301,8 +2305,11 @@ export default function envoyExtension(hostApi: PiApi): void {
         claim.settle();
       } else if (rendered.delivery?.mode === "btw" && relayed.late === true) {
         // A BTW that arrives late (delivered before, or stored before this connection's epoch
-        // began) never starts a side turn: it is one inert card, as a replayed BTW is, written to
-        // the transcript and done then. Its answer, if any, is on Dispatch.
+        // began) never starts a side turn: it is one inert card, as a replayed BTW is. Its answer,
+        // if any, is on Dispatch. A settled host writes the card at once, and its frame is done
+        // then. A busy host is handed it at its first settled heartbeat. Until then the card's
+        // record in the transcript holds it, and its frame is done once that record is written,
+        // so late BTWs held through a long turn hold no place in the relay (`UnwrittenFrames`).
         noteBtw(identity?.event_id);
         unwritten.sendCard(
           cardSession(),

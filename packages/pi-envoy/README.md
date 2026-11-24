@@ -146,7 +146,8 @@ the session subscribes before it registers: its own agent subject, the stored co
 messages to a role it holds, and every followed topic, in stream order. No session receives from
 any other NATS subscription. The
 session answers each frame `received` as it decodes, `done` once Oh My Pi wrote the card or turn
-to the session file (its `message_end`) and no sooner, and `nak` when the host lets the frame go
+to the session file (its `message_end`), or once the transcript records a card held for a settled
+host (below), and no sooner, and `nak` when the host lets the frame go
 unwritten, so a frame not written when the session stops, or published while it was down or
 disconnected, comes again and is shown once, for up to 72 hours. A
 `notifications.team.<name>` topic is stored and delivered like any other followed topic.
@@ -223,6 +224,17 @@ extension records it there as it hands it over (`handCard`), so Dispatch's live 
 under either storage, before the turn that reads it. Its `details` carry the hand-over state
 `inert` and its urgency, and no card id, so no wake follows it and no unread count names it.
 
+A BTW that arrives late (delivered before, or stored before the connection's epoch began) starts
+no side turn: it is one inert card, a steer that starts no turn. A host that streams would steer
+it into the running turn, so the extension hands it only to a settled host too. One that comes
+during a turn is held, and handed at the first heartbeat that finds the host settled. While it is
+held, the extension records it in the session's transcript with the same entry, which says the
+card is handed `inert` (`deliver_as`), and answers its frame `done` once that record is written.
+So late BTWs held through a long turn hold no place of the relay's frames in flight. A restore
+holds such a card again and hands it inert, never as a `low` card. A record an earlier build wrote
+names no hand-over and holds a `low` card. A held inert card whose record cannot be written keeps
+its claim, and the stream keeps its copy, until the host writes the card.
+
 ## Session identity
 
 Run `/whoami` to copy the active session ID to the clipboard. OMP copies through its host
@@ -243,7 +255,10 @@ any compaction summary, it sends the `dispatch-first` skill, whose text never ch
 sends what people wrote to the session in the last 72
 hours that Dispatch delivered to it: answers to its asks, replies on them and in its comment
 threads, comments on its documents and routed issues, mentions, and messages, newest first and
-word for word. A subagent reads its parent's list. The list stays under 8,000 characters (at most 7,999): the oldest
+word for word. Each item's words (the ask's question, the options chosen, Dispatch's words beside a
+decline and the person's own words) come in blocks of their own after the item's two lines that
+name the time, the person and the item, so no words close their block or stand as a line of the
+list's own. A subagent reads its parent's list. The list stays under 8,000 characters (at most 7,999): the oldest
 items that do not fit are left out, and its last line says how many and that `dispatch answers`
 prints them all. It is read on every request and waits at most 800 ms for Dispatch. Past that,
 or when the read fails, the read gives the last list read, with the time it was read and why
