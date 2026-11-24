@@ -66,7 +66,7 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 			"A `before_merge` check reads yes at the head you test when a pass of it counts at that commit and no fail does, whichever role recorded the pass",
 			"`implementerProof` (`{how}` alone)",
 			"record a fail of it with `dispatch result --issue <issue> --check <block id> --role tester --verdict fail --commit <head sha>`, its `observed` naming why no pass of the implementer stands at that head, with the state and the results your read showed there: a fail the implementer recorded, a pass and a fail that make the head not known, or no result at all, which you say only where the read shows none",
-			"The daemon reads no handoff's `failures`: your fail is what sends the issue back to the implementer, and a pass of yours already at that head does not stand in its way, since a pass and a fail at one head make the check not known.",
+			"The daemon reads no handoff's `failures`: your fail is what sends the issue back to the first implementation step before yours, or to the earlier step your completion's `return_to` names, and a pass of yours already at that head does not stand in its way, since a pass and a fail at one head make the check not known.",
 			"read CI for everything static", "try to break it", "dispatch handoff-write --issue <issue> --phase test"}},
 		{"reviewer", claim.RoleReviewer, false, []string{"core/common.md", "core/reviewer.md", "mechanics/headless.md", "reviewer.md"}, []string{"reviewer.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
 			"Retro commits nothing, so nothing of retro's sits above the head your `approve` names", "`pullRequest.head` is the commit the pull request stands on"}},

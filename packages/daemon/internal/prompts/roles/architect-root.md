@@ -207,7 +207,7 @@ step `acceptance:owner`: the pass of the step before it moves the issue to `acce
 default steps, the reviewer's verdict `approve`). That step's notice of it comes to you for the
 root, and for another issue when neither its own architect nor an architect between it and the root
 holds its role. You then read `dispatch results --issue <issue>` at the head that step passed, the
-tester's handoff where the task has a tester step, and the reviewer's `review` handoff of that head
+tester's handoff where a tester step comes before yours, and the reviewer's `review` handoff of that head
 where a reviewer step comes before yours, never a review on GitHub (the daemon refuses a sign-off
 while an issue beneath it is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance
 waits for its last round, `skill://legion-architect`, section 4). A task with no `acceptance:owner`

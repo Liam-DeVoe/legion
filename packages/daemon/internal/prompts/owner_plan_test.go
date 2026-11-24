@@ -424,7 +424,9 @@ func holdsAndRetires(t *testing.T, part, text string, want, gone []string) {
 // Each part is read alone, never in the composition, so one part's words cannot stand for
 // another's. This shows the text is loaded, never that an owner follows it.
 func TestTheAgentsAreToldNoOrder(t *testing.T) {
-	evidence := "the tester's handoff where a tester step comes before yours, and the reviewer's approval of the head by SHA where a reviewer step comes before yours"
+	// The reviewer's evidence is its `review` handoff of the head its completion's verdict names (B: a
+	// review on GitHub decides nothing), where main's text named its approval of the head by SHA.
+	evidence := "the tester's handoff where a tester step comes before yours, and the reviewer's `review` handoff of that head"
 	retiredEvidence := "the tester's handoff where the task has a tester step"
 	for _, tc := range []struct {
 		part       string
@@ -772,7 +774,9 @@ func TestTheSentencesTheLastAcceptanceRoundShowedFalseAgreeWithTheDaemon(t *test
 	}{
 		{
 			"go/architect-common.md", func(t *testing.T) string { return goPart(t, "architect-common.md") },
-			[]string{"An approved head that GitHub holds blocked, on a check or a review the base requires, keeps the issue in `reviewing` until that merge state comes clean."},
+			// B ends the round at `blocked` once the head's checks have concluded (classify's
+			// mergeStateEndsRound), where main kept a blocked approved head in `reviewing`.
+			[]string{"and at `blocked` once every check run GitHub reported on that head has concluded"},
 			[]string{"ends the round whatever CI says"},
 		},
 		{
@@ -994,7 +998,7 @@ func TestTheMergeForwardPartsReadTheTasksOwnSteps(t *testing.T) {
 				"The reviewer tells you what it decided, and tells the phase's worker too where a worker holds the phase.",
 				"A reviewer step after yours reviews the new head when it runs.",
 				// The round that waits on GitHub's merge state, read at a conflicting head.
-				"an approval of a head whose conflict is confirmed then ends the round, the task's later steps go on at that head, and once the issue enters `merging` the daemon asks the merger to merge the base forward, with a `checks-red` notice.",
+				"the reviewer's `approve` of a head whose conflict is confirmed then ends the round, the task's later steps go on at that head, and once the issue enters `merging` the daemon asks the merger to merge the base forward, with a `checks-red` notice.",
 			},
 			[]string{
 				"the issue stands in `accepting`, `retro` or `merging` (`merge-next`)",

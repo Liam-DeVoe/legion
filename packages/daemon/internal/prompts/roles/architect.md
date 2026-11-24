@@ -137,10 +137,10 @@ which the daemon's `holdsRole` decides, the child's notices come to you
 
 Where this child's task holds your step `acceptance:owner`, the pass of the step before it moves
 the child to `accepting` (in the default steps, the reviewer's verdict `approve`), where no worker
-runs and the acceptance is yours (`skill://legion-architect`, section 6): read
-`dispatch results --issue <issue>` at the head that step passed, the tester's handoff where the
-task has a tester step, and the reviewer's `review` handoff of that head where it has a reviewer
-step, never a review on GitHub
+holds the phase and the acceptance is yours (`skill://legion-architect`, section 6): read
+`dispatch results --issue <issue>` at the head that step passed, the tester's handoff where a
+tester step comes before yours, and the reviewer's `review` handoff of that head where a reviewer
+step comes before yours, never a review on GitHub
 (the daemon refuses a sign-off while an issue beneath it is still in the workflow,
 `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
 `skill://legion-architect`, section 4). A task with no `acceptance:owner` step has no
