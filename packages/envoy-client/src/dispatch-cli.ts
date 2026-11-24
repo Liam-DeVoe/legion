@@ -357,9 +357,12 @@ export async function runDispatchCli(
   // Markdown `--path` file of the same bytes refuses it, the size first, then the first U+0000 or
   // byte that is not UTF-8 (`documentBytesRefusal`), whether or not the bytes read are UTF-8; a
   // text the strict read decoded, and one given inline, can fail only for its size or a U+0000
-  // (`documentFieldRefusal`). A text given in argv can be neither past 1 MiB, since Linux holds one
-  // argument to 128 KiB, nor hold a U+0000; an in-process caller's can, and is refused here as a
-  // text read from a file is, so the dry run and the call refuse it alike with Dispatch off too.
+  // (`documentFieldRefusal`). A text given in argv holds no U+0000 on any kernel. Linux holds one
+  // argument to MAX_ARG_STRLEN, 32 pages, which is 128 KiB on 4 KiB pages and 2 MiB on 64 KiB
+  // pages, so with 4 KiB pages argv carries no text past 1 MiB, and with 64 KiB pages it can. An
+  // in-process caller's text can be either on any kernel. Inline text is checked here however it
+  // is given, so nothing here depends on the page size: such a text is refused as a text read from
+  // a file is, and the dry run and the call refuse it alike with Dispatch off too.
   // Any other field read from a file or stdin is no document, so it is refused only for bytes that
   // are not UTF-8 (an `unstorable` parse), at their first U+0000 or byte that is not UTF-8
   // (`unstorableBytes`); a U+0000 in its UTF-8 goes to Dispatch, which answers it. Bytes that are

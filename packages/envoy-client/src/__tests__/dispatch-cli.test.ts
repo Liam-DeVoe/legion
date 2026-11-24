@@ -721,8 +721,9 @@ interface RefusedBytes {
 /** For each row, expects `dispatch artifact` to refuse its bytes alike (`refusedAlike`) in `env`,
  *  read from `--content-file <file>` and from stdin under `content`, given inline as `--content`
  *  under `content` where the bytes are UTF-8, and from a markdown `--path` file under `file`. The
- *  inline text is an in-process caller's: argv carries no U+0000 and no argument past 128 KiB, but
- *  a caller of `runDispatchCli` can hand it either. */
+ *  inline text is an in-process caller's: argv carries no U+0000 on any kernel, and no argument
+ *  past MAX_ARG_STRLEN, 32 pages, which is 128 KiB on 4 KiB pages, so with such pages no text past
+ *  1 MiB, but a caller of `runDispatchCli` can hand it either, whatever the page size. */
 async function uploadRefusedEveryWay(
   rows: readonly RefusedBytes[],
   env: Record<string, string | undefined> = omp

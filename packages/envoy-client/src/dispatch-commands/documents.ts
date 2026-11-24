@@ -720,10 +720,12 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // Such a file's bytes are checked here (documentFileBytes) and refused there, before anything is
   // asked, past the bytes one document may hold and then for its first U+0000 or byte that is not
   // UTF-8, in the upload's order and words, so the bytes the file round trip is asked about below
-  // are the bytes sent; any other file is not read here. The bytes checked and sent are those the
-  // CLI read where it read them (`uploadBytes`: AskGate's, else the Markdown file's it checked once
-  // the flags were read, `runDispatchCli`), copied once into a plain buffer of their own, which a
-  // Blob takes; the file is read here only where the caller holds none of its bytes.
+  // are the bytes sent. A file documentFileRead passes with no bytes (one Dispatch stores as its
+  // bytes, or a FIFO, a device or a socket) is not read here, is asked nothing, and goes up as the
+  // file. The bytes checked and sent are those the CLI read where it read them (`uploadBytes`:
+  // AskGate's, else the Markdown file's it checked once the flags were read, `runDispatchCli`),
+  // copied once into a plain buffer of their own, which a Blob takes; the file is read here only
+  // where the caller holds none of its bytes.
   const file = path === undefined ? undefined : uploadedFile(input.cwd, path);
   const heldBytes = input.uploadBytes === undefined ? undefined : new Uint8Array(input.uploadBytes);
   const documentBytes = file === undefined ? undefined : await documentFileBytes(file, heldBytes);
@@ -749,8 +751,8 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // with a refusal every replacement makes. Under a name the owner does not hold, --force uploads a
   // new document, and its upload makes the refusals the check did not ask for. A text the check
   // leaves unchecked - a Dispatch without the route, or a file or blank text whose check got no
-  // answer - goes up, and the upload makes its own refusal. A file Dispatch stores as its bytes is
-  // asked nothing.
+  // answer - goes up, and the upload makes its own refusal. A file documentFileRead passes with no
+  // bytes (one Dispatch stores as its bytes, or a FIFO, a device or a socket) is asked nothing.
   //
   // Inline text is asked through the call's own client, which asks again after a failed attempt,
   // since a failed check of text that is not blank refuses the upload. A file goes up whatever its
@@ -868,8 +870,10 @@ function endedSentence(text: string): string {
  * first U+0000 or byte that is not UTF-8, and then takes the call's file check
  * (`storedFileCheck`), which asks the file round trip for its refusal alone: the round trip
  * refuses, in the upload's own words, what the upload of that file is refused for, and the
- * call throws that refusal before it uploads. Any other file, and a name alone, is asked nothing,
- * by the call as by the dry run. Both checks ask for a new document's refusals only without
+ * call throws that refusal before it uploads. A file `documentFileRead` passes with no bytes (one
+ * Dispatch stores as its bytes, or a FIFO, a device or a socket) is not read here, and the call
+ * uploads the file itself; such a file, and a name alone, is asked nothing, by the call as by the
+ * dry run. Both checks ask for a new document's refusals only without
  * `--force`, as the call's do, so every refusal the dry run gets is the call's. With `--force` they
  * ask for none of them, so a dry run under a name the owner does not hold passes, with no warning,
  * a text the call's upload, which makes a new document, refuses for one of them. It reads nothing

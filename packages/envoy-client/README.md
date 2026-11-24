@@ -1184,10 +1184,13 @@ same bytes is, in that upload's order and words (`documentBytesRefusal`) under `
 past 1 MiB with `CAP_EXCEEDED` first, then the first U+0000 or byte that is not UTF-8. Text the
 strict read decoded is UTF-8, and so is text given inline, so only its size or a U+0000 can
 refuse it, and only such text is checked again in its UTF-8 (`documentFieldRefusal`). A value
-given inline in argv is neither: Linux holds one argument to 128 KiB, Bun hands the command its
-argv already decoded, each byte that is not UTF-8 written as U+FFFD, and no argument holds a
-U+0000. A program that calls `runDispatchCli` itself can hand it either, and such inline text is
-refused as the same text read from `--content-file` is.
+given inline in argv holds no U+0000 on any kernel, and Bun hands the command its argv already
+decoded, each byte that is not UTF-8 written as U+FFFD. Linux holds one argument to
+`MAX_ARG_STRLEN`, 32 pages, which is 128 KiB on 4 KiB pages and 2 MiB on 64 KiB pages
+(`include/uapi/linux/binfmts.h`), so with 4 KiB pages argv carries no text past 1 MiB, and with
+64 KiB pages it can. A program that calls `runDispatchCli` itself can hand it either on any
+kernel. The check runs on inline text however it is given, so such text is refused as the same
+text read from `--content-file` is, whatever the page size.
 For a string or enum field, the command refuses `--<field> -` and `--<field>=-` with exit 2,
 and its refusal names `--<field>-file`. The one exception is `dispatch artifact --path`, whose value
 names a local file. `dispatch --help` lists the commands, `dispatch <command> --help` its flags and
@@ -1266,8 +1269,8 @@ in time, a failure, or a Dispatch without the route, which answers 404 or 405), 
 the file, and its upload makes its own refusal. Since the file goes up whatever the round trip
 failed with, the call asks it with the dry run's own client options (`askOnceWithinDryRun`):
 once, within the same 5 s, with no wait before asking a route again. A file Dispatch stores as
-its bytes is asked nothing, by the call as by the dry run. What only the call checks, since it
-needs more than the
+its bytes, or a FIFO, a device or a socket, is asked nothing, by the call as by the dry run. What
+only the call checks, since it needs more than the
 text, stays the call's: whether the owner holds the name, the token of a replacement, a
 replacement's own rules, a block pointer's target, whether a check proved by CI holds a recorded
 result, and the issue's state. The call checks the text, inline or a file's, before it reads

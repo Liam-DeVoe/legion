@@ -131,10 +131,13 @@ export function documentBytesRefusal(field: string, bytes: Uint8Array): Error | 
  * Dispatch stores: the refusal of the text's UTF-8 (`fileTextBytes`, which for a text read is the
  * bytes it was read from) by `documentBytesRefusal`. The strict read decodes UTF-8 alone, and a
  * text given in the argument is a string, which encodes to UTF-8, so only the text's size or a
- * U+0000 can refuse it. A text given in argv can be neither past the bytes one document holds,
- * since Linux holds one argument to 128 KiB, nor hold a U+0000; an in-process caller of
- * `runDispatchCli` can give either. The text is encoded and scanned again only where its UTF-8 is
- * past the bytes one document holds or it holds a U+0000.
+ * U+0000 can refuse it. A text given in argv holds no U+0000 on any kernel. Linux holds one
+ * argument to MAX_ARG_STRLEN, 32 pages, which is 128 KiB on 4 KiB pages and 2 MiB on 64 KiB pages
+ * (include/uapi/linux/binfmts.h), so with 4 KiB pages argv carries no text past the bytes one
+ * document holds, and with 64 KiB pages it can. An in-process caller of `runDispatchCli` can give
+ * either on any kernel. The check runs on the text however it is given, so what it refuses does
+ * not depend on the page size. The text is encoded and scanned again only where its UTF-8 is past
+ * the bytes one document holds or it holds a U+0000.
  */
 export function documentFieldRefusal(field: string, text: string): Error | undefined {
   return Buffer.byteLength(text, "utf8") > MARKDOWN_DOCUMENT_MAX_BYTES || text.includes("\u0000")
@@ -218,11 +221,11 @@ export async function documentFileRead(
 
 /**
  * The bytes of an upload's `--path` file `file` that Dispatch stores as a Markdown document, as
- * `documentFileRead` checks them, or undefined for a file Dispatch stores as its bytes. `held` are
- * the bytes the CLI read of the file where it read them (`ExecuteDispatchToolInput.uploadBytes`,
- * `DryRunContext.uploadBytes`), which are checked in place of a read. The refusal of the text, and
- * the error of a read that failed, are thrown, so the call and its dry run answer them before
- * anything is asked.
+ * `documentFileRead` checks them, or undefined for a file it does not read: one Dispatch stores as
+ * its bytes, or a FIFO, a device or a socket. `held` are the bytes the CLI read of the file where
+ * it read them (`ExecuteDispatchToolInput.uploadBytes`, `DryRunContext.uploadBytes`), which are
+ * checked in place of a read. The refusal of the text, and the error of a read that failed, are
+ * thrown, so the call and its dry run answer them before anything is asked.
  */
 export async function documentFileBytes(
   file: BunFile,
@@ -401,13 +404,13 @@ async function storedFileCheck(
  * call and its dry run alike (`artifactCommand`, `artifactDryRun`), so the two refuse a text alike:
  * inline `content` takes storedTextCheck, asked through `textClient`; a `--path` file's `bytes`, as
  * `documentFileBytes` answers them, take storedFileCheck, asked through `fileClient`; and an upload
- * holding neither - a file Dispatch stores as its bytes, or a name alone - is asked nothing
- * (undefined). The call hands its own client for inline text, since a failed check of such text
- * refuses the upload, so the check asks again as every request of the call does; for a file it
- * hands a client that asks once within DRY_RUN_DEADLINE_MS (`askOnceWithinDryRun`), since the
- * file goes up whatever its check failed with. The dry run hands its own client for both. The
- * check is returned unasked, so its caller decides what becomes of an error building a client
- * throws.
+ * holding neither - a file `documentFileRead` passes with no bytes (one Dispatch stores as its
+ * bytes, or a FIFO, a device or a socket), or a name alone - is asked nothing (undefined). The
+ * call hands its own client for inline text, since a failed check of such text refuses the upload,
+ * so the check asks again as every request of the call does; for a file it hands a client that
+ * asks once within DRY_RUN_DEADLINE_MS (`askOnceWithinDryRun`), since the file goes up whatever
+ * its check failed with. The dry run hands its own client for both. The check is returned unasked,
+ * so its caller decides what becomes of an error building a client throws.
  */
 export function artifactTextCheck(upload: {
   readonly tool: string;
