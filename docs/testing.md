@@ -391,8 +391,11 @@ The clock of a unit test:
   of rows that check what a frame of the page did not do, such as
   `web/src/features/issue-page/IssueTree.test.tsx`'s `nextFrame`.
   `web/src/__tests__/real-clock-waits.test.ts` reads every unit test file and test helper with the
-  TypeScript parser, and fails every call in them that reaches a wait of real time by a name,
-  whatever its delay or its callback:
+  TypeScript parser: a `*.test.ts(x)`, a file of a `__tests__` folder, and a `*-fixture.ts(x)`,
+  `*-fixtures.ts(x)` or `*.coverage.ts(x)` helper; its own row fails when a file of any other name
+  imports `bun:test`, Testing Library or a module of a `__tests__` folder.
+  It fails every call in them that reaches a wait of real time by a name, whatever its delay or
+  its callback:
   a `setTimeout`, a `setInterval`, a `setImmediate` or a `requestAnimationFrame`, global or a
   member of any object such as `window.setTimeout` or `window.requestAnimationFrame`, by its name
   or by a key, a string literal or a `const` of the file bound to one (`globalThis[key]`);
@@ -437,7 +440,7 @@ The clock of a unit test:
   `requestAnimationFrame` and no `setImmediate`, global, of `window` or of `node:timers`, and each
   runs on the real loop's next turns, since happy-dom runs a frame as a `setImmediate`.
   Apart from the kept ones, a row uses no `Bun.sleep`, no timer of the real clock and no wait timed
-  by `performance.now()`, and it asserts no `Date.now()` difference.
+  by `performance.now()`, and it asserts no `Date.now()` difference of the real clock.
   A row that waits for a product timer installs the fake clock (`onFakeClock` from
   `web/src/__tests__/fake-clock.ts`, or `jest.useFakeTimers()`) and moves it with `tick` or `jump`
   from that file.

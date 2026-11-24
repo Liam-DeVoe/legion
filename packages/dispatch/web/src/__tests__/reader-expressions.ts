@@ -10,12 +10,16 @@ import {
 import { githubIssuePath, trailingRun, whitespaceOnly } from "../features/refs/Unfurl";
 
 /**
- * Every regular expression the text readers of `features/refs` run over a body, with the name
+ * Every regular expression that the one-pass rows' reads run over a text at least as long as the
+ * row's floor (`stepsAtNAndFourN` in `one-pass.ts`), with the name
  * `features/refs/reader-expressions.test.ts` proves it reads a text in one pass under: the
  * reference grammar runs over a whole body, a `dispatch://` reference read from it is parsed with
  * the next five, a dashboard address with the seventh, and a GitHub URL's path is read with the
  * eighth. The last two are what the unfurl cards read a body with between its references and
- * after each one.
+ * after each one. The same reads reach more expressions of `routes.ts`, which those rows run over
+ * no text that long and this list does not hold, among them the patterns `parseNodeReference`
+ * runs over a reference's target for a project's or an agent's artifact, an item or the log, and
+ * the other patterns that read an address's page path.
  *
  * `expectOnePass` (`one-pass.ts`) holds a reader to this list: a row fails when the read it
  * counts runs an expression the list does not hold, because a step count cannot see an expression

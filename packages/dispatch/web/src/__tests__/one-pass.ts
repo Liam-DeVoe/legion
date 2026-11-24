@@ -20,8 +20,10 @@ const checkedExpressions = new Set(
 
 /** The steps of this folder's text readers (`features/refs/reader-steps.ts`) that `read` takes
  *  on a text of `n` and on one of four times `n`, what `read` answered on the longer one, and the
- *  regular expressions it ran there over a text of at least `n` characters, a quarter of the
- *  read's own (`expressionsRunBy`). */
+ *  regular expressions it ran there over a text of at least `n` characters (`expressionsRunBy`).
+ *  `n` is the row's own count of the units its text repeats, not of characters: a unit is one
+ *  character in some rows (`")"`), two in others (`")_"`) and a scheme of 7 to 11 in `Unfurl`'s,
+ *  so the floor is a quarter of the longer read's text or less, down to about a forty-fourth. */
 export function stepsAtNAndFourN<Answer>(
   read: (n: number) => Answer,
   n: number

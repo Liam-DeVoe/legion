@@ -13,7 +13,7 @@ import { afterOnFakeClock, onFakeClock } from "./fake-clock";
  * clock", then the reason), and docs/testing.md, "The clock of a unit test", is the rule.
  *
  * This reads every unit test file and test helper under `web/src` - a `*.test.ts(x)`, a file of a
- * `__tests__` folder, a `*-fixture.ts(x)` or `*-fixtures.ts(x)` helper - for every call that
+ * `__tests__` folder, a `*-fixture(s).ts(x)` or `*.coverage.ts(x)` helper - for every call that
  * reaches a wait of real time by a name, whatever its delay and whatever its callback is: a
  * `setTimeout`, a `setInterval`, a `setImmediate` or a `requestAnimationFrame`, global or a member
  * of any object (`window.setTimeout`, `globalThis.setInterval`, `window.requestAnimationFrame`),
@@ -29,17 +29,20 @@ import { afterOnFakeClock, onFakeClock } from "./fake-clock";
  * by a name, and states one exact boundary, below. So a wait is found under every name,
  * destructure or `bind` it is given, and where it is handed on: a declaration or an assignment
  * whose value is one of those, a member of one, another such name, or a choice of one (`const
- * later = setTimeout`, `options.wait ?? setTimeout`), a parameter's default, and a destructure,
- * renamed, nested or with a default, from `Bun`, from "bun" or a timers module bound whole, by an
- * import, an `import(…)` or a `require(…)` (`const { sleep } = Bun`, `const { setTimeout: delay }
- * = await import("node:timers/promises")`), and of a `setTimeout` from any object; such a module
- * bound whole by `import(…)` or `require(…)`, whose members count as a namespace import's do; the
- * `call` and the `apply` of a wait, and its `bind`, whose answer is such a name; and every
- * reference to a wait that the file hands on out of its view, which whatever it reaches may start:
- * passed to another call or a `new` (`[50].map(Bun.sleep)`, `act(setTimeout)`), stored in an
- * object, an array, a member, a class's field or a JSX prop, returned, thrown, yielded, or
- * exported (`export const pause = Bun.sleep`, `export { setTimeout as later }`), each found at
- * the reference as a call is (`placeOf`). The scan does not follow a holder of waits handed to
+ * later = setTimeout`, `options.wait ?? setTimeout`), a parameter's default, the default of a
+ * name a destructure binds, of a parameter, a `for … of` or a `catch` too (`async function
+ * settle({ sleep = Bun.sleep }: Options)`), and a destructure, renamed, nested or with a default,
+ * from `Bun`, from "bun" or a timers module bound whole, by an import, an `import(…)` or a
+ * `require(…)` (`const { sleep } = Bun`, `const { setTimeout: delay } = await
+ * import("node:timers/promises")`), and of a `setTimeout` from any object; such a module bound
+ * whole by `import(…)` or `require(…)`, whose members count as a namespace import's do; the `call`
+ * and the `apply` of a wait, and its `bind`, whose answer is such a name; and every reference to a
+ * wait that the file hands on out of its view, which whatever it reaches may start: passed to
+ * another call or a `new` (`[50].map(Bun.sleep)`, `act(setTimeout)`), stored in an object, an
+ * array, a member, a class's field, by a parameter property's default too (`constructor(private
+ * wait = setTimeout)`), or a JSX prop, returned, thrown, yielded, or exported (`export const pause
+ * = Bun.sleep`, `export { setTimeout as later }`), each found at the reference as a call is
+ * (`placeOf`). The scan does not follow a holder of waits handed to
  * another function or stored inside a value, and a wait reached only through one: a holder is
  * `Bun`, "bun" or a timers module bound whole, or a timers module's `scheduler`, as in `nap(Bun)`
  * and `{ bun: Bun }`. An exported holder is found where the file exports it, since an export is no
@@ -57,16 +60,17 @@ import { afterOnFakeClock, onFakeClock } from "./fake-clock";
  * ways alone. One is `afterOnFakeClock` (`fake-clock.ts`), which refuses the real clock itself: a
  * row that stands in for an answer that takes time to come sets its timer there, and the
  * `setTimeout` inside that helper's own body is passed by its file and its function's name. The
- * other is a marker, which works as the jest-dom one of `check-fireevent-reasons.sh` does, by the
- * architect's ruling: the comment block directly above the statement that holds the wait, with no
+ * other is a marker: the comment block directly above the statement that holds the wait, with no
  * blank line between, holds the words "stays on the real clock" and after them, anywhere in that
  * block, a reason of at least `REASON_WORDS` words of letters. The statement is the first one, the
  * declaration or the class member that starts after the block, as the parser gives it, and the
  * waits it covers are those it holds, however deep: the wait's own statement, a `test(...)` call
  * whose body holds the wait, or a helper whose doc comment holds the marker and whose body holds
  * the wait (`/** … stays on the real clock … *\/ function nextFrame() {…}`). One marker covers
- * one wait: a statement that holds two waits or more passes none of them under its marker, so each
- * carries a marker of its own, and a comment that only mentions the real clock passes nothing. The
+ * one wait, as a jest-dom marker of `check-fireevent-reasons.sh` covers one read, by the
+ * architect's ruling: a statement that holds two waits or more passes none of them under its
+ * marker, so each carries a marker of its own, and a comment that only mentions the real clock
+ * passes nothing. The
  * file is read by the TypeScript parser, so a call is found however it is spelled or wrapped
  * (inside `act(...)`, across lines), and a comment or a string that spells one is none. A zero-delay
  * timer is a wait of real time too: what has run by its turn - a timer of the product's, a render,
@@ -81,8 +85,8 @@ import { afterOnFakeClock, onFakeClock } from "./fake-clock";
  * calls: a product function the row tests that sets a timer itself is the product's code, not a
  * wait of the row's. The act-rule inputs (`*.fixture.ts` and `*.fixture.tsx`, which the scan's
  * `sourceFiles` skips by name) are left out, since they are written to break rules. A file that
- * imports `bun:test` or Testing Library is a test file or a helper whatever its name, and the scan
- * holds itself to reading every such file.
+ * imports `bun:test`, Testing Library or a module of a `__tests__` folder is a test file or a
+ * helper whatever its name, and the scan holds itself to reading every such file.
  */
 
 const webSource = fileURLToPath(new URL("..", import.meta.url));
@@ -143,6 +147,7 @@ function isTestFile(path: string): boolean {
   return (
     /\.test\.tsx?$/.test(path) ||
     /-fixtures?\.tsx?$/.test(path) ||
+    /\.coverage\.tsx?$/.test(path) ||
     path.split("/").includes("__tests__")
   );
 }
@@ -375,9 +380,9 @@ function bindTo(target: ts.BindingName | ts.Expression, source: Is, names: WaitN
 }
 
 /** Every place `file` binds a name: an import, `import … = require(…)`, a declaration, a
- *  parameter's default, an assignment, and the first parameter of a callback that the `then` of a
- *  module's promise hands the module, each with what its value stands for, read from `names` as
- *  they stand when it is asked. */
+ *  parameter's default, the default of a name a destructure binds, an assignment, and the first
+ *  parameter of a callback that the `then` of a module's promise hands the module, each with what
+ *  its value stands for, read from `names` as they stand when it is asked. */
 function bindings(file: ts.SourceFile, names: WaitNames): Binding[] {
   const found: Binding[] = [];
   const standsFor =
@@ -408,6 +413,14 @@ function bindings(file: ts.SourceFile, names: WaitNames): Binding[] {
       (ts.isVariableDeclaration(node) || ts.isParameter(node)) &&
       node.initializer !== undefined
     ) {
+      found.push({ source: standsFor(node.initializer), target: node.name });
+    } else if (
+      ts.isBindingElement(node) &&
+      ts.isObjectBindingPattern(node.parent) &&
+      node.initializer !== undefined
+    ) {
+      // The default of a name, or of a nested destructure, binds it wherever the destructure
+      // takes its value from: a parameter, a `for … of` and a `catch` hand it none the scan reads.
       found.push({ source: standsFor(node.initializer), target: node.name });
     } else if (ts.isBinaryExpression(node) && assignments.has(node.operatorToken.kind)) {
       found.push({ source: standsFor(node.right), target: node.left });
@@ -572,8 +585,9 @@ function passesOn(parent: ts.Node, at: ts.Node): boolean {
  *  kept where it is called, a member of it is read, it is read or compared (`reads`, a comparison,
  *  one of `readers`), an assignment writes to it, or a declaration, an assignment, a parameter's
  *  default or a destructure binds it to a name the scan follows (`waitNames`) - unless that
- *  declaration is exported. It is handed on anywhere else: passed to a call or a `new`, stored in
- *  an object, an array, a member, a class's field or a JSX prop, returned, thrown or yielded. */
+ *  declaration is exported, or that parameter is a parameter property, whose default goes into a
+ *  field. It is handed on anywhere else: passed to a call or a `new`, stored in an object, an
+ *  array, a member, a class's field or a JSX prop, returned, thrown or yielded. */
 function placeOf(reference: ts.Node): Place {
   let at = reference;
   while (passesOn(at.parent, at)) at = at.parent;
@@ -601,7 +615,10 @@ function placeOf(reference: ts.Node): Place {
       ? "exported"
       : "kept";
   }
-  if (ts.isParameter(parent)) return followed(parent.name) ? "kept" : "handed";
+  if (ts.isParameter(parent)) {
+    if (ts.isParameterPropertyDeclaration(parent, parent.parent)) return "handed";
+    return followed(parent.name) ? "kept" : "handed";
+  }
   if (ts.isBindingElement(parent)) {
     return ts.isObjectBindingPattern(parent.parent) && followed(parent.name) ? "kept" : "handed";
   }
@@ -739,11 +756,16 @@ test("the scan reads the unit suite and finds the waits it keeps", () => {
   expect(waits.some((wait) => wait.reasoned)).toBe(true);
 });
 
-test("the scan reads every file that imports bun:test or Testing Library", () => {
+// A file that imports `bun:test`, Testing Library or a module of a `__tests__` folder is a test
+// file or a test helper, as the `*.coverage.ts` lists are, which import
+// `__tests__/composer-census/coverage.ts`; the scan reads each by its name.
+test("the scan reads every file that imports bun:test, Testing Library or a __tests__ module", () => {
   const unread = sources
     .filter((path) => !isTestFile(path))
     .filter((path) =>
-      /from "(?:bun:test|@testing-library\/[\w-]+)"/.test(readFileSync(path, "utf8"))
+      /from "(?:bun:test|@testing-library\/[\w-]+|[^"]*\/__tests__\/[^"]*)"/.test(
+        readFileSync(path, "utf8")
+      )
     )
     .map((path) => relative(webSource, path));
   expect(unread, "a test helper the scan does not read by its name").toEqual([]);
@@ -989,6 +1011,25 @@ test("a name or a destructure that one of the waits is given is found where it i
   ]);
 });
 
+// docs/testing.md, "The clock of a unit test", says the scan finds any name or destructure a wait
+// is given, and a reference to one that the file stores. The first review of
+// cybermonklabs/legion#4523 found five spellings, each waiting 50 ms, of which the scan found
+// none: the default of a name destructured from a parameter, an arrow's too, from a `for … of`
+// and from a `catch`, none of which hands the destructure a value the scan reads; and a parameter
+// property's default, which the constructor stores in a field and the scan read as a parameter it
+// follows. Each is found once, the field's at the reference as any value stored is, and passes
+// under the marker; so is the default of a nested destructure of a parameter.
+test("a destructure's default in a parameter, a for of or a catch, and a parameter property's default, are found", () => {
+  refusedAndKept([
+    "async function settle({ ms = 50, sleep = Bun.sleep }: Options) {\n  await sleep(ms);\n}",
+    "const settle = ({ nap = Bun.sleep }) => nap(50);",
+    "for (const { wait = setTimeout } of options) {\n  wait(run, 50);\n}",
+    "try {\n  run();\n} catch ({ wait = setTimeout }) {\n  wait(run, 50);\n}",
+    "class Clock {\n  constructor(private wait = setTimeout) {}\n  start() {\n    this.wait(run, 50);\n  }\n}",
+    "async function settle({ timers: { sleep } = Bun }: Options) {\n  await sleep(50);\n}",
+  ]);
+});
+
 // A timers module or "bun" bound whole by a dynamic `import`, a `require` or an `import … =
 // require` is what a namespace import binds, and its members start the waits that one's do; so do
 // the members of one loaded in place.
@@ -1191,7 +1232,7 @@ test("a wait passes under the marker words and a reason after them, and under no
   expect(unmarked.map(reasoned)).toEqual(unmarked.map(() => [false]));
 });
 
-// The architect ruled that the marker works as the jest-dom one does: one marker covers one wait.
+// The architect ruled that one marker covers one wait, as a jest-dom marker covers one read.
 // It covers the statement directly below it, or the helper whose doc comment holds it, and passes
 // the one wait that statement holds; a statement that holds two passes neither, and each carries a
 // marker of its own, on the statement that holds it. A marker over the statement before the

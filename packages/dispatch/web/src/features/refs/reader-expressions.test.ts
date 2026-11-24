@@ -19,9 +19,9 @@ function verdict(expression: { readonly flags: string; readonly source: string }
   return checkSync(expression.source, expression.flags, { checker: "automaton", timeout: null });
 }
 
-// Every expression the text readers run over a body (`__tests__/reader-expressions.ts`), which
-// `expectOnePass` holds each one-pass row's reader to (`composer-references.test.ts`,
-// `Unfurl.test.tsx`, `text-references.test.ts`).
+// Every expression the one-pass rows' reads run over a text at least as long as their floor
+// (`__tests__/reader-expressions.ts`), which `expectOnePass` holds each one-pass row's reader to
+// (`composer-references.test.ts`, `Unfurl.test.tsx`, `text-references.test.ts`).
 test.each(
   readerExpressions
 )("the expression of %s reads a text in one pass", (_name, expression) => {
@@ -70,7 +70,8 @@ test.each([
   expect([...expressionsRunBy(() => run("abb"))]).toEqual(["/b+$/"]);
 });
 
-// The floor a one-pass row records from (`n`, a quarter of its read's text): an expression run
+// The floor a one-pass row records from (`n` characters, where `n` is the row's own count of the
+// units its text repeats, so a quarter of its longer read's text or less): an expression run
 // over a shorter text, such as the `/[A-Z]/g` happy-dom runs over a tag name it meets for the
 // first time, is no reading of the body and is left out; one run over a text as long as the
 // floor is recorded.
