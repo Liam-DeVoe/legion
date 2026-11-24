@@ -69,7 +69,7 @@ airlock-arm:
   - &o6 [.github/actions/airlock-arm/**, *tu] # own, and the test user's fence
 go-envoy-held:
   - &ew [*pe, *gw, *dgo] # pkg+mod go test ./... in packages/envoy, infra/host
-  - [*dsp, *tsp, *cc, *bun] # pkg+ws dispatch-two-builds in packages/dispatch
+  - [*dsp, *tsp, *cc, *bun, scripts/e2e/lib/held-port.py] # pkg+ws dispatch-two-builds in packages/dispatch
   - [*di, packages/daemon/docker/legion-testpg, &its packages/daemon/internal/intake/testdata/**, *tpn] # test envoy-smoke
   - '**/*.md' # test the corpus tests read every tracked markdown file (git ls-files)
   - &o7 .github/actions/go-envoy-held/** # own
@@ -115,7 +115,7 @@ scripts:
   - [*cl, *tsp, *cc, *tf] # pkg+ws verify-build in packages/claude-envoy
   - [*bun, *pd, *pe, *gw, *plug, *dsp, *sk] # test changie; private-names-port go build; race-unit.sh
   - [*am, *bj, *gi, *k8m] # test semantic-line-breaks, biome
-  - [*bd, *tgt] # test check-ci-images.test.sh
+  - [*bd, *tgt, .github/ci-notes/README.md] # test check-ci-images.test.sh, check-workflow-files.test.sh
   - &gh [*wiw, *o1, *o2, *o3, *o4, *o5, *o6, *o7, *o8, *o9, *dbo, *dow, *cip, *biw, *cio, *ctl, *tfo, *o10, .github/actions/*-check/**, .github/scripts/*.test.sh, .github/scripts/testdata/**, .github/actions/scripts/**, .github/actions/go-envoy/**, .github/actions/text-checks/**] # own harnesses; test go-test-step-expansion
 go-envoy:
   - *ew # pkg+mod go test in packages/envoy, infra
@@ -128,7 +128,7 @@ go-envoy:
   - *gh # test spec-check guard; own go-envoy/**
 text-checks: # credential_argument_test.go reads every text file
   - [*cc, *cl, *tsp, *plug, *dsp, *pd, *pe] # pkg+test internal/textcheck
-  - [*scr, *sk, docs/**, deploy/**, *b4, *dsa, *ag, .claude-plugin/**, .superpowers/**] # test
+  - [*scr, *sk, docs/**, deploy/**, *b4, *dsa, *ag, .claude-plugin/**, .superpowers/**, .github/ci-notes/**] # test
   - ['!docs/plans/**', '!docs/superpowers/**'] # no text check reads them
   - [*b3, *pins, *di, *gi, .mcp.json, *omp, '*.md', LICENSE, *bj, *b2, *gw, *b1] # test
   - [*gh, *bd, *tgt] # test; own text-checks/**

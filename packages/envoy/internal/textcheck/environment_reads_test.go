@@ -14,10 +14,14 @@ import (
 	"testing"
 )
 
-// storetestImport is the one package under internal/dispatch that reads the process environment
-// for itself: the Postgres fixture of Dispatch's tests (DISPATCH_TEST_DATABASE_URL), which only
-// test files may import.
-const storetestImport = "github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+// testFixtures are the packages under internal/dispatch that read the process environment for
+// themselves, each by its import path and the directory it lives in, and which only test files may
+// import: storetest, the Postgres fixture of Dispatch's tests (DISPATCH_TEST_DATABASE_URL), and
+// corpustest, the corpus tests' reader of their directories of markdown and of CORPUS_SHARD.
+var testFixtures = map[string]string{
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest": "dispatch/store/storetest/",
+	"github.com/sjawhar/envoy/internal/dispatch/corpustest":      "dispatch/corpustest/",
+}
 
 // environmentReaders are the functions that read the process environment, by package.
 var environmentReaders = map[string][]string{
@@ -29,8 +33,9 @@ var environmentReaders = map[string][]string{
 // environment reader as "<path> <package>.<name>", whatever name the file imports the package
 // under, and each dot import of a reader's package as "<path> import . <package>": with the
 // package's names unqualified, a read cannot be told from a call to the file's own function, so
-// the import is the finding. It also returns the files that import storetest.
-func environmentReads(roots ...string) (reads, storetestImporters []string, err error) {
+// the import is the finding. It also returns each file that imports a test fixture, as
+// "<path> <import path>".
+func environmentReads(roots ...string) (reads, fixtureImporters []string, err error) {
 	fileSet := token.NewFileSet()
 	for _, root := range roots {
 		err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -50,13 +55,16 @@ func environmentReads(roots ...string) (reads, storetestImporters []string, err 
 			if err != nil {
 				return err
 			}
-			fixture := strings.Contains(filepath.ToSlash(path), "store/storetest/")
+			fixture := false
+			for _, directory := range testFixtures {
+				fixture = fixture || strings.Contains(filepath.ToSlash(path), directory)
+			}
 			// The name each environment-reading package has in this file.
 			packages := map[string]string{}
 			for _, spec := range file.Imports {
 				importPath, _ := strconv.Unquote(spec.Path.Value)
-				if importPath == storetestImport {
-					storetestImporters = append(storetestImporters, path)
+				if _, ok := testFixtures[importPath]; ok {
+					fixtureImporters = append(fixtureImporters, filepath.ToSlash(path)+" "+importPath)
 				}
 				if _, reads := environmentReaders[importPath]; !reads {
 					continue
@@ -94,7 +102,7 @@ func environmentReads(roots ...string) (reads, storetestImporters []string, err 
 			return nil, nil, fmt.Errorf("walk %s: %w", root, err)
 		}
 	}
-	return reads, storetestImporters, nil
+	return reads, fixtureImporters, nil
 }
 
 // writeFile writes contents under a test directory and returns its path.
@@ -114,15 +122,15 @@ func writeFile(t *testing.T, name, contents string) string {
 // other reference to the process environment under cmd/dispatch or internal/dispatch is a reader
 // the table, `envoy-dispatch settings` and the generated configuration reference do not list.
 func TestNoReaderBypassesTheSettingsTable(t *testing.T) {
-	reads, storetestImporters, err := environmentReads(filepath.Join("..", "..", "cmd", "dispatch"), filepath.Join("..", "dispatch"))
+	reads, fixtureImporters, err := environmentReads(filepath.Join("..", "..", "cmd", "dispatch"), filepath.Join("..", "dispatch"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"../../cmd/dispatch/settings.go os.LookupEnv"}; !slices.Equal(reads, want) {
 		t.Errorf("environment reads outside the settings table: %q, want only %q (processSettings). Add the variable as a row of the settings table (cmd/dispatch/settings.go) and hand its reader the value", reads, want)
 	}
-	if len(storetestImporters) > 0 {
-		t.Errorf("non-test files import %s, which reads DISPATCH_TEST_DATABASE_URL outside the settings table: %q", storetestImport, storetestImporters)
+	if len(fixtureImporters) > 0 {
+		t.Errorf("non-test files import a test fixture that reads the process environment outside the settings table: %q", fixtureImporters)
 	}
 }
 
