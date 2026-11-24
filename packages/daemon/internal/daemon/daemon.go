@@ -1555,8 +1555,8 @@ type supervision struct {
 	// replacement the round made (endRoundALaunchReplaced). The entry goes where the sweep ends the
 	// round (endPodUpdates), where the hook writes one of another round of the issue, and at the
 	// first sweep that finds no claim of the issue that has not retired (forgetLaunchRounds).
-	// Nothing of it is in the store: a restart forgets it, and the sweep then reads a pod a launch
-	// replaced as a pod gone, whose message names the same members. A mutex of its own, never held
+	// Nothing of it is in the store: a restart forgets it, and the sweep then ends the round as the
+	// replacement from the record the launch wrote in the store (finishReplacements). A mutex of its own, never held
 	// across a runtime call, because the hook runs on a launching machine's goroutine beside the
 	// sweep.
 	podUpdateLaunchMu       sync.Mutex

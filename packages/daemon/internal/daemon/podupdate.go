@@ -65,9 +65,11 @@ import (
 // Everything a round decides comes from the durable claim columns — the round, its reasons, when
 // it opened, when each worker was asked, when each answered, and when the operator's side was
 // told. A daemon restart therefore resumes a round exactly where it stood, and the same record
-// gives the same decision; the one other durable record a round reads is the decline row an
-// earlier round's keep of the pod wrote (store's idle_release_declines, podKeptForWork). This
-// pass keeps three things of its own in memory, and none of them goes in the store:
+// gives the same decision. Two other durable records a round reads: the decline row an earlier
+// round's keep of the pod wrote (store's idle_release_declines, podKeptForWork), and the record of
+// each replacement that may take a disk, from before the act until its notice is queued (store's
+// pod_replacements, podreplace.go). This pass keeps three things of its own in memory, and none of
+// them goes in the store:
 //
 //   - The pace at which it opens new rounds: when it last opened one, and the issues it has
 //     opened one for whose claims have not recorded it yet (podUpdateOpenings). It paces this
@@ -87,8 +89,8 @@ import (
 //     or another pod in its place, ends the round as that replacement, with its lines and its
 //     message (endRoundALaunchReplaced). The record also holds each launch the reading kept the
 //     pod for, so a second launch at once reads the first as a process in the pod. A daemon that
-//     has just booted has lost it, and reads a pod a launch replaced as a pod gone, whose message
-//     names the same members.
+//     has just booted has lost it; the record the launch wrote of the replacement in the store
+//     still stands, and the sweep ends the round as that replacement from it (finishReplacements).
 //
 // The sweep walks the issues in key order, decides each of them, and only then makes the pod
 // replacements those decisions left it, also in key order. A replacement waits its pod out — a
@@ -377,7 +379,7 @@ func (s *supervision) podPauseHolds(ctx context.Context, claims []supervise.Clai
 // replacement the round made (endRoundALaunchReplaced, podUpdateLaunchReplaced), with the line of
 // a replacement by issue and what the pod's launcher read before it, and not as a pod that went
 // without its round. A daemon that has just booted has lost that record, and ends such a round as
-// a pod gone, whose message names the members that had not answered.
+// that replacement from the record the launch wrote in the store before it (finishReplacements).
 //
 // Which reading that is, and when it comes, changes nothing the issue is told, because the
 // report is read from the round's own record rather than from where any claim's process is now.
@@ -1056,10 +1058,13 @@ type podReplacement struct {
 // after the read began (replacementDue).
 //
 // ReplacePod is called once, with the process of a claim that records this round's own pod. A
-// failed ReplacePod is logged and retried at the next sweep: nothing is ended, so the round
+// failed ReplacePod is logged and its record left for the next sweep, which finishes the
+// replacement where the runtime shows the suspension landed, and forgets the record and decides
+// the round afresh where it did not (finishReplacements): until then nothing is ended, so the round
 // still holds every answered worker's next task. A ReplacePod that keeps failing holds the round
 // past its bound, which only a person can end, so it is told to the operator's side once the
-// bound has come (tellLateRound) and names what holds the round. One round is told once.
+// bound has come (tellLateRound, failedReplacementReason) and names what holds the round. One
+// round is told once.
 //
 // A replacement made is logged on one line that holds for a round that ended either way, by its
 // answers or by its bound. It names each claim with a session that the round did not wait for
@@ -1076,18 +1081,14 @@ type podReplacement struct {
 //
 // Where the read found work that no branch or tag on origin holds, or failed, and the replacement
 // is made all the same, the issue's architect is told what it took (roundReplaced,
-// tellWorkspaceTaken). It is told with the replacement made and with no other: a replacement
-// refused or failed ends nothing.
+// finishReplacement), and the round ends only once that notice is queued. A replacement the last
+// word refused tells nobody, and its record goes.
 //
-// The call is bounded to one sweep interval. The suspension that displaces the pod has already
-// landed when it hits, so the next sweep reads the Sandbox suspended and naming that very pod as
-// the one it displaced, which is this round's own replacement in flight: PodDrift answers for it
-// as it does for a pod that is there and has not drifted, and that sweep reads the workspace again
-// and asks for the replacement again, which the runtime answers with nil for a pod that is no
-// longer the Sandbox's, and the round ends there. A read that can no longer be made in the going
-// pod ends the round as a keep instead, whose decline names that pod and holds nothing once
-// another pod is the issue's (podKeptForWork, pods.IdleDecline). Once the pod itself is gone, that
-// sweep reads it gone and the round ends there instead.
+// The call is bounded to one sweep interval. The suspension that displaces the pod may have landed
+// when the bound hits, or when the call fails otherwise. The record written before the call stands,
+// and the next sweep has the runtime read the act under the pod's launch turn before it decides the
+// issue (finishReplacements): a suspension that landed ends the round as this replacement, from the
+// read made before it, and the pod is read no more and never kept.
 func (s *supervision) replacePodForRound(ctx context.Context, replace podReplacement) {
 	issue, round, pod, reasons := replace.issue, replace.round, replace.pod, replace.reasons
 	// The read's moment is taken before the claims are read, so a turn that starts after the read
@@ -1746,7 +1747,7 @@ func (s *supervision) issuePodKept(group []supervise.Claim, round string, clock 
 // (endRoundOverAGonePod). The replacement's line names them as the members that had not answered
 // (unansweredMembers), says that the replacement was by issue and what the launcher's read found,
 // and where that read found work or failed the issue's architect is told what the replacement
-// took (roundReplaced, tellWorkspaceTaken). A replacement that the bound let through over a claim
+// took (roundReplaced, finishReplacement). A replacement that the bound let through over a claim
 // that had not answered (unansweredClaims) is logged on the bound's own line too, as
 // replacePodForRound logs it.
 //
@@ -2118,9 +2119,9 @@ func (s *supervision) forgetLaunchRounds(byIssue map[string][]supervise.Claim) {
 // launcher read of the workspace before the replacement (read); the bound's own line where the
 // bound let the replacement through (ended, what the launch read under the pod's launch turn); and,
 // where the read found work or failed, the architect's notice of what the replacement took
-// (tellWorkspaceTaken). It is not podWentWithoutItsRound's end, which tells the issue that its pod
+// (finishReplacement). It is not podWentWithoutItsRound's end, which tells the issue that its pod
 // went before its round was over: this round was over, and its own replacement took the pod. The
-// record goes with the end (endPodUpdates).
+// in-memory record goes with the end (endPodUpdates), and the end comes once the notice is queued.
 //
 // The read and the record are kept in memory, and the record in the store too: a daemon that
 // restarts between the launch and the sweep finishes the replacement from the store's record
