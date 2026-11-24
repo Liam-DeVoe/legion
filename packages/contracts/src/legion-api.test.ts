@@ -405,11 +405,12 @@ test("a served issue keeps each start that waits for its pod, by its role and it
   if (atStep?.phase !== "step") {
     throw new Error("state fixture lacks LEGION-240 at step");
   }
-  const starts = [
-    { role: "checker", token: "legion-legion-legion-240-checker" },
-    { role: "implementer", token: "legion-legion-legion-240-implementer" },
-    { role: "implementer", token: "legion-legion-legion-240-implementer-2" },
-  ];
+  // Built by `roleToken`, as the daemon builds a claim token: a token spelled from words would be
+  // a fixture secret of words (`fixtureSecret`).
+  const starts = (["checker", "implementer", "implementer-2"] as const).map((agent) => ({
+    role: agent === "checker" ? "checker" : "implementer",
+    token: roleToken("legion", "LEGION-240", agent),
+  }));
   atStep.startWaitsForPod = starts;
 
   expect(droppedFromState(state)).toBeUndefined();
@@ -983,7 +984,7 @@ test("the state golden carries an issue at step and the role of the deployment t
   const atStep = state.issues["LEGION-240"];
   expect([atStep?.phase, atStep?.stepRole]).toEqual(["step", "checker"]);
   expect(atStep?.startWaitsForPod).toEqual([
-    { role: "checker", token: "legion-legion-legion-240-checker" },
+    { role: "checker", token: roleToken("legion", "LEGION-240", "checker") },
   ]);
   expect(Object.keys(atStep?.workers ?? {})).toEqual([]);
   const held = state.issues["LEGION-241"];
