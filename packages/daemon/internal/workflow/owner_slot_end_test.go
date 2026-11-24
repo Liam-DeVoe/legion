@@ -38,10 +38,7 @@ func TestTheEndOfAnOwnersStepGivesItsSlotItsOwnApp(t *testing.T) {
 	}
 	written(t, 0)
 
-	apply := applyFacts(t, pool, engine)
-	if result := apply("step-1", ownersReport(root.Key, owner, claim.RoleImplementer, 1, "implement-LEGION-208")); result.Refusal != nil {
-		t.Fatalf("the owner's report of step 1 was refused: %+v", result.Refusal)
-	}
+	ownerReportsStep1(t, pool, engine, root.Key)
 	assertWalksAt(t, pool, engine, root.Key, phase.Testing, stepPlace(2))
 	written(t, 1)
 }
@@ -131,9 +128,7 @@ func TestTheEndOfTheOwnersRetroGivesItsSlotItsOwnApp(t *testing.T) {
 				assertWalksAt(t, pool, engine, root.Key, phase.Accepting, stepPlace(1))
 				move(t, pool, engine, root.Key, TriggerSignOff, record.TaskPlace{}, record.PhaseRow{})
 			case "implementer:owner":
-				if result := applyFacts(t, pool, engine)("step-1", ownersReport(root.Key, owner, claim.RoleImplementer, 1, "implement-LEGION-208")); result.Refusal != nil {
-					t.Fatalf("the owner's report of step 1 was refused: %+v", result.Refusal)
-				}
+				ownerReportsStep1(t, pool, engine, root.Key)
 			default:
 				move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 			}
