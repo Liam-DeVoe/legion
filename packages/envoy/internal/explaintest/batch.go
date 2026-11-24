@@ -116,11 +116,11 @@ func (r *RecordedTx) Holding(t testing.TB, marker string) Statement {
 // connection the pool hands out again.
 var preparedPlans atomic.Int64
 
-// explainExecuted runs EXPLAIN (ANALYZE, FORMAT format) of statement executed with args in tx,
-// under the plan-cache mode mode, which it sets with `set local` inside tx, and with the BUFFERS
-// option too where buffers is set, so each node carries the shared buffers it and the nodes under
-// it hit and read (Nodes). It answers the one "Plan" node for json and every line of the plan for
-// text.
+// explainExecuted runs EXPLAIN (options, FORMAT format) of statement executed with args in tx,
+// under the plan-cache mode mode, which it sets with `set local` inside tx. options is the EXPLAIN
+// options before the format, as explainGenericPlan takes them: "analyze", or "analyze, buffers" so
+// that each node carries the shared buffers it and the nodes under it hit and read (Nodes). It
+// answers the one "Plan" node for json and every line of the plan for text.
 //
 // The statement is prepared on tx's connection and explained through EXECUTE, because a
 // plan-cache mode is what Postgres does with a prepared statement: an EXPLAIN that binds its own
@@ -137,7 +137,7 @@ var preparedPlans atomic.Int64
 // answered as an error, which a control's caller reads as the control proving nothing
 // (RequireTheCheckFails). A failure of the test's own making, an argument pgx cannot write, still
 // fails t.
-func explainExecuted(t testing.TB, ctx context.Context, tx pgx.Tx, statement string, args []any, mode string, buffers bool, format string) ([]byte, error) {
+func explainExecuted(t testing.TB, ctx context.Context, tx pgx.Tx, statement string, args []any, mode, options, format string) ([]byte, error) {
 	t.Helper()
 	if _, err := tx.Exec(ctx, "set local plan_cache_mode = "+mode); err != nil {
 		t.Fatalf("set plan_cache_mode = %s: %v", mode, err)
@@ -167,10 +167,6 @@ func explainExecuted(t testing.TB, ctx context.Context, tx pgx.Tx, statement str
 	execute := "execute " + name
 	if len(literals) > 0 {
 		execute += "(" + strings.Join(literals, ", ") + ")"
-	}
-	options := "analyze"
-	if buffers {
-		options += ", buffers"
 	}
 	rows, err := tx.Query(ctx, "explain ("+options+", format "+format+") "+execute)
 	if err != nil {
@@ -219,7 +215,7 @@ func explainAfter(t testing.TB, ctx context.Context, db Beginner, before []State
 			t.Fatalf("%s: %v", setting, err)
 		}
 	}
-	return explainExecuted(t, ctx, tx, statement.SQL, statement.Args, mode, false, format)
+	return explainExecuted(t, ctx, tx, statement.SQL, statement.Args, mode, "analyze", format)
 }
 
 // ExplainBuffered explains statement (explainExecuted) under mode, with the BUFFERS option, in a
@@ -235,7 +231,7 @@ func ExplainBuffered(t testing.TB, ctx context.Context, db Beginner, statement S
 		t.Fatalf("begin the transaction a plan is read in: %v", err)
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
-	answer, err := explainExecuted(t, ctx, tx, statement.SQL, statement.Args, mode, true, format)
+	answer, err := explainExecuted(t, ctx, tx, statement.SQL, statement.Args, mode, "analyze, buffers", format)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, statement.SQL)
 	}

@@ -50,7 +50,7 @@ const (
 // `not (row(f.node_kind, f.node_id) = any(array(...)))` over `select row(o.kind, o.id) from own o`
 // in the out statement and `select row(t.kind, t.id) from targets t` in the in statement, the read
 // answers 503 REFERENCES_TIMEOUT on a slow machine, where the test fails at its status, and 200 on
-// a fast one, where it passes (oneRowPerNode's comment gives the times).
+// a fast one, where it passes.
 // TestTheReferencesInStatementLeavesTheIssuesOwnNodesOutByAnAntiJoin is the control that fails on
 // every machine: it holds the in statement's plan to the anti-join.
 func TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks(t *testing.T) {
@@ -113,7 +113,6 @@ func seedLinkedInto(t *testing.T) linkedIntoSeed {
 	t.Helper()
 	ctx := context.Background()
 	database := storetest.Open(t)
-	// The pool the server reads through sets jit = off on every session it opens.
 	served := storetest.Reopened(t, database, func(config *pgxpool.Config) {
 		config.ConnConfig.RuntimeParams["jit"] = "off"
 	})
