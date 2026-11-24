@@ -27,7 +27,10 @@
 #        UNKNOWN, a refused list of them reads UNKNOWN, and legion/worker that may create
 #        allowlistsynchronizers exits 1;
 #   (cm) Backup for GKE installed on a cluster of the pool (a CRD of gkebackup.gke.io) reads UNKNOWN,
-#        on the operator's cluster and another: a restore recreates a backup's workloads and RBAC.
+#        on the operator's cluster and another: a restore recreates a backup's workloads and RBAC;
+#   (cu) a list of CRDs, of workload allowlists, or of admission policies and their bindings answered
+#        with a proxy's error page (exit 0) reads UNKNOWN naming the list, exits 2, and the RBAC step
+#        does not pass, though legion/worker holds the right the list would show.
 
 # --- (ce) A webhook's backend: whoever may write its Service, the workload behind it, its endpoints
 # or its TLS Secret decides what the webhook does to the operator's next pod. ---
@@ -276,4 +279,47 @@ backup_row() {
 if row cm; then
   each backup_row operator other-cluster
   passed "(cm) Backup for GKE installed on the operator's cluster or another reads UNKNOWN"
+fi
+
+# --- (cu) A list jq cannot read, answered with exit 0: the check reads it UNKNOWN, never as a list of
+# nothing. Each world holds what the list would show (Kyverno's ClusterPolicy, an installed workload
+# allowlist, an admission policy's parameter) and legion/worker holds its right, so a run that
+# skipped the list would miss a finding and pass. Run by hand, the control is the script and its
+# parts as at cae4905130, whose with_rights read the CRDs' failed build as no rights and whose loops
+# read the other two lists as empty: each item passes the RBAC step and exits 0. ---
+unread_list_row() {
+  local dir="$world/clusters/operator-cluster" want
+  base_world
+  case "$1" in
+    crds)
+      jq -n '[{spec: {group: "kyverno.io", scope: "Cluster", names: {plural: "clusterpolicies", kind: "ClusterPolicy"}}}]' >"$dir/crds.json"
+      subject_grant operator-cluster "$(sa_subject legion worker)" create kyverno.io clusterpolicies "" "" ""
+      want="the API server's list of custom resource definitions is not JSON: "
+      ;;
+    allowlists)
+      jq -n '[{spec: {group: "auto.gke.io", scope: "Cluster", names: {plural: "workloadallowlists", kind: "WorkloadAllowlist"}}}]' >"$dir/crds.json"
+      echo '["example-node-agent"]' >"$dir/allowlists.json"
+      want="the API server's list of workload allowlists is not JSON, so whether Autopilot admits a privileged pod here is unknown: "
+      ;;
+    policies)
+      printf '%s.admissionregistration.k8s.io\n' mutatingadmissionpolicies mutatingadmissionpolicybindings mutatingwebhookconfigurations \
+        validatingadmissionpolicies validatingadmissionpolicybindings validatingwebhookconfigurations >"$dir/admission-resources"
+      jq -n '[{kind: "MutatingAdmissionPolicy", metadata: {name: "inject-sidecar"}, spec: {paramKind: {apiVersion: "v1", kind: "ConfigMap"}}},
+        {kind: "MutatingAdmissionPolicyBinding", metadata: {name: "inject-sidecar-binding"},
+         spec: {policyName: "inject-sidecar", paramRef: {name: "sidecar-params", namespace: "hooks"}}}]' >"$dir/admission-policies.json"
+      jq -n '{"/api/v1": {resources: [{name: "configmaps", kind: "ConfigMap", namespaced: true}]}}' >"$dir/raw.json"
+      subject_grant operator-cluster "$(sa_subject legion worker)" update "" configmaps "" hooks sidecar-params
+      want="the API server's list of admission policies and their bindings is not JSON, so a policy's parameter objects are not reviewed: "
+      ;;
+  esac
+  : >"$dir/garbage-$1"
+  run
+  want_status 2 "a list of $1 that is not JSON"
+  want_text "UNKNOWN live: RBAC on operator-cluster: $want" "a list of $1 that is not JSON"
+  ! has_prefix "PASS live: RBAC on operator-cluster" || fail "the RBAC step passed on a list of $1 that is not JSON"
+  ! has_prefix "UNKNOWN run: the run stopped" || fail "the run stopped mid-way on a list of $1 that is not JSON, where the step should read UNKNOWN"
+}
+if row cu; then
+  each unread_list_row crds allowlists policies
+  passed "(cu) a list of CRDs, workload allowlists, or admission policies and their bindings that is not JSON reads UNKNOWN naming it, exits 2, and the RBAC step does not pass"
 fi

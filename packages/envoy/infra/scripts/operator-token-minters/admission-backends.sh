@@ -34,7 +34,7 @@
 #   - Backup for GKE (a CRD of gkebackup.gke.io): a restore, chosen in Google Cloud by a holder of
 #     its restore rights, recreates a backup's workloads and RBAC in the cluster, so it is UNKNOWN.
 admission_power() {
-  local kube="$1" step="$2" guarded id url policies allowlist sns sname why
+  local kube="$1" step="$2" guarded id url policies allowlist sns sname why engines
   POWER_RIGHTS='[]'
   guarded="$(printf '%s\n' "${GUARDED[@]%%/*}" | jq -R -s -c 'split("\n") | map(select(length > 0)) | unique')"
   if ! kubectl --kubeconfig "$kube" get mutatingwebhookconfigurations,validatingwebhookconfigurations -o json >"$WORK/webhooks.json" 2>"$WORK/webhooks.err"; then
@@ -62,15 +62,19 @@ admission_power() {
   fi
   if ! kubectl --kubeconfig "$kube" get customresourcedefinitions -o json >"$WORK/crds.json" 2>"$WORK/crds.err"; then
     unknown "$step" "the API server refused the list of custom resource definitions (it needs list on customresourcedefinitions, container.customResourceDefinitions.list on GKE), so a policy engine's cluster-scoped resources are not reviewed: $(first_line "$WORK/crds.err")"
-  elif ! POWER_RIGHTS="$(with_rights "$POWER_RIGHTS" "$(jq -c '
+  elif ! engines="$(jq -c '
       def engine: . as $g | any("kyverno.io", "gatekeeper.sh", "kubewarden.io"; . as $e | $g == $e or ($g | endswith("." + $e)))
         or test("polic(y|ies)"; "i");
       [.items[]? | select(.spec.scope == "Cluster") | .spec.group as $g | select($g | engine)
       | .spec.names.plural as $p | ("create", "update", "patch")
       | {verb: ., group: $g, resource: $p, sub: "", ns: "", name: "", label: "\(.) \($p).\($g) cluster-wide, a policy engine'"'"'s resource"}
-      | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]' "$WORK/crds.json" 2>"$WORK/crds.err")")"; then
+      | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]' "$WORK/crds.json" 2>"$WORK/crds.err")" ||
+    ! is_rights "$engines"; then
+    # Read before with_rights joins it: a list jq cannot read, or reads as nothing, must be UNKNOWN,
+    # never the review going on without the policy engines' rights.
     unknown "$step" "the API server's list of custom resource definitions is not JSON: $(first_line "$WORK/crds.err")"
   else
+    POWER_RIGHTS="$(with_rights "$POWER_RIGHTS" "$engines")"
     ! jq -e 'any(.items[]?; .spec.group == "gkebackup.gke.io")' "$WORK/crds.json" >/dev/null ||
       unknown "$step" "Backup for GKE is installed (the gkebackup.gke.io API), so a restore can recreate a backup's workloads and RBAC here, chosen in Google Cloud by a holder of its restore rights, which this check does not read"
     if [ "${3:-}" = operator ] && jq -e 'any(.items[]?; .spec.group == "auto.gke.io" and .spec.names.plural == "workloadallowlists")' "$WORK/crds.json" >/dev/null; then
@@ -80,10 +84,13 @@ admission_power() {
         | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]')")"
       if ! kubectl --kubeconfig "$kube" get workloadallowlists.auto.gke.io -o json >"$WORK/allowlists.json" 2>"$WORK/allowlists.err"; then
         unknown "$step" "the API server refused the list of workload allowlists (it needs list on workloadallowlists.auto.gke.io), so whether Autopilot admits a privileged pod here is unknown: $(first_line "$WORK/allowlists.err")"
+      elif ! jq -r '.items[]?.metadata.name' "$WORK/allowlists.json" >"$WORK/allowlists.txt" 2>"$WORK/allowlists.err"; then
+        # Read before the loop: a list jq cannot read would loop over nothing and read as none installed.
+        unknown "$step" "the API server's list of workload allowlists is not JSON, so whether Autopilot admits a privileged pod here is unknown: $(first_line "$WORK/allowlists.err")"
       else
         while IFS= read -r allowlist; do
           unknown "$step" "the workload allowlist $allowlist is installed, so Autopilot admits the privileged workloads it names, which this check does not read"
-        done < <(jq -r '.items[]?.metadata.name' "$WORK/allowlists.json")
+        done <"$WORK/allowlists.txt"
       fi
     fi
   fi
@@ -97,12 +104,24 @@ admission_power() {
 # discovery lists, comma-separated) names, as admission_power says; GUARDED is the JSON array of the
 # guarded namespaces.
 param_rights() {
-  local policy kind api resource namespaced pns pname path namespaces
+  local policy kind api resource namespaced pns pname path namespaces more joined
   if ! kubectl --kubeconfig "$1" get "$3" -o json >"$WORK/policies.json" 2>"$WORK/policies.err"; then
     unknown "$2" "the API server refused the list of admission policies and their bindings (it needs list on $3), so a policy's parameter objects are not reviewed: $(first_line "$WORK/policies.err")"
     return
   fi
   # The unit separator, not a tab: read merges a run of tabs, and the namespace or name may be empty.
+  # The bindings are read before the loop: a list jq cannot read would loop over nothing and read as
+  # no parameter to review.
+  if ! jq -r '(.items // []) as $all
+    | $all[] | select(.kind | endswith("PolicyBinding")) | . as $b
+    | first($all[] | select((.kind + "Binding") == $b.kind and .metadata.name == $b.spec.policyName)) as $p
+    | select($p.spec.paramKind != null and $b.spec.paramRef != null)
+    | ["\($p.kind) \($p.metadata.name)", $p.spec.paramKind.apiVersion, $p.spec.paramKind.kind,
+       ($b.spec.paramRef.namespace // ""), ($b.spec.paramRef.name // "")] | join("\u001f")' "$WORK/policies.json" \
+    >"$WORK/policies.rec" 2>"$WORK/policies.err"; then
+    unknown "$2" "the API server's list of admission policies and their bindings is not JSON, so a policy's parameter objects are not reviewed: $(first_line "$WORK/policies.err")"
+    return
+  fi
   while IFS="$US" read -r policy api kind pns pname; do
     case "$api" in */*) path="/apis/$api" ;; *) path="/api/$api" ;; esac
     if ! kubectl --kubeconfig "$1" get --raw "$path" >"$WORK/raw.json" 2>"$WORK/raw.err" ||
@@ -114,18 +133,20 @@ param_rights() {
     # A namespaced kind whose paramRef names no namespace is read from the admitted object's own
     # namespace, so each guarded namespace's is asked; a cluster-scoped kind, cluster-wide.
     if [ "$namespaced" != true ]; then namespaces='[""]'; elif [ -n "$pns" ]; then namespaces="$(jq -n -c --arg n "$pns" '[$n]')"; else namespaces="$4"; fi
-    POWER_RIGHTS="$(with_rights "$POWER_RIGHTS" "$(jq -n -c --arg res "$resource" --argjson namespaces "$namespaces" --arg name "$pname" --arg policy "$policy" '
+    # Each policy's writes are built and joined on their own, so one that cannot be built reads
+    # UNKNOWN naming the policy and leaves the others; POWER_RIGHTS changes only when both succeed.
+    if ! more="$(jq -n -c --arg res "$resource" --argjson namespaces "$namespaces" --arg name "$pname" --arg policy "$policy" '
       ($res | split(".")) as $parts | ($parts[0]) as $r | ($parts[1:] | join(".")) as $g
       | [$namespaces[] as $ns
          # Update and patch by the name a paramRef gives, or unnamed for a paramRef.selector.
          | ({verb: "create", name: ""}, {verb: ("update", "patch"), name: $name})
          | {verb, group: $g, resource: $r, sub: "", ns: $ns, name,
             label: "\(.verb) \($res)\(if .name != "" then " " + .name else "" end)\(if $ns != "" then " in " + $ns else " cluster-wide" end), a parameter of the admission policy \($policy)"}
-         | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]')")"
-  done < <(jq -r '(.items // []) as $all
-    | $all[] | select(.kind | endswith("PolicyBinding")) | . as $b
-    | first($all[] | select((.kind + "Binding") == $b.kind and .metadata.name == $b.spec.policyName)) as $p
-    | select($p.spec.paramKind != null and $b.spec.paramRef != null)
-    | ["\($p.kind) \($p.metadata.name)", $p.spec.paramKind.apiVersion, $p.spec.paramKind.kind,
-       ($b.spec.paramRef.namespace // ""), ($b.spec.paramRef.name // "")] | join("\u001f")' "$WORK/policies.json")
+         | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]' 2>"$WORK/param.err")" ||
+      ! joined="$(with_rights "$POWER_RIGHTS" "$more" 2>>"$WORK/param.err")"; then
+      unknown "$2" "the writes to the parameters of the admission policy $policy could not be built, so who may write them is not reviewed: $(first_line "$WORK/param.err")"
+      continue
+    fi
+    POWER_RIGHTS="$joined"
+  done <"$WORK/policies.rec"
 }

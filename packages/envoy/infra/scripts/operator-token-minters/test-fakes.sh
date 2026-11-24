@@ -344,19 +344,24 @@ case "${args[*]}" in
     { if [ -e "$dir/webhooks.json" ]; then cat "$dir/webhooks.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
     ;;
   "get customresourcedefinitions -o json")
-    # The cluster's CRDs: the world's crds.json (each a CustomResourceDefinition), or none.
+    # The cluster's CRDs: the world's crds.json (each a CustomResourceDefinition), or none. A world
+    # marked garbage-crds answers a proxy's error page with exit 0, as garbage-serviceaccounts does
+    # (row cu); so do garbage-allowlists and garbage-policies below.
     [ ! -e "$dir/refuse-crds" ] || forbidden customresourcedefinitions.apiextensions.k8s.io 'list resource "customresourcedefinitions" in API group "apiextensions.k8s.io"' container.customResourceDefinitions.list
+    [ ! -e "$dir/garbage-crds" ] || { echo "<html>502 Bad Gateway</html>"; exit 0; }
     { if [ -e "$dir/crds.json" ]; then cat "$dir/crds.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
     ;;
   "get workloadallowlists.auto.gke.io -o json")
     # Autopilot's installed workload allowlists: the world's allowlists.json (names), or none.
     [ ! -e "$dir/refuse-allowlists" ] || forbidden workloadallowlists.auto.gke.io 'list resource "workloadallowlists" in API group "auto.gke.io"' container.thirdPartyObjects.list
+    [ ! -e "$dir/garbage-allowlists" ] || { echo "<html>502 Bad Gateway</html>"; exit 0; }
     { if [ -e "$dir/allowlists.json" ]; then cat "$dir/allowlists.json"; else echo '[]'; fi; } |
       jq '{apiVersion: "v1", kind: "List", items: [.[] | {apiVersion: "auto.gke.io/v1", kind: "WorkloadAllowlist", metadata: {name: .}}]}'
     ;;
   "get "*admissionpolic*" -o json")
     # The cluster's admission policies and their bindings: the world's admission-policies.json, or none.
     [ ! -e "$dir/refuse-policies" ] || forbidden validatingadmissionpolicies.admissionregistration.k8s.io 'list resource "validatingadmissionpolicies" in API group "admissionregistration.k8s.io"' container.thirdPartyObjects.list
+    [ ! -e "$dir/garbage-policies" ] || { echo "<html>502 Bad Gateway</html>"; exit 0; }
     { if [ -e "$dir/admission-policies.json" ]; then cat "$dir/admission-policies.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
     ;;
   "get pods -n "*" -o json")

@@ -492,10 +492,11 @@ args_without() {
   done
   printf '%s\n' "${keep[@]}"
 }
-# run_only ARGS...: the check with ARGS alone.
+# run_only ARGS...: the check with ARGS alone; run_script names another copy of the script to run, as
+# a row breaking one of its parts does (run_script=<copy> run).
 run_only() {
   status=0
-  output="$(env PATH="$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$temporary_dir" bash "$check" "$@" 2>&1)" || status=$?
+  output="$(env PATH="$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$temporary_dir" bash "${run_script:-$check}" "$@" 2>&1)" || status=$?
 }
 fail() {
   echo "FAIL: $*" >&2

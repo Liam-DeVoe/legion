@@ -51,7 +51,9 @@
 #        columns, as it does when a server or proxy that cannot make the Table answers with the
 #        Secrets whole, reads UNKNOWN for that namespace, and the RBAC step does not pass;
 #   (cs) a cluster whose principals and rights are each more than one argument of a command line
-#        holds is reviewed whole: they reach jq through files and its stdin, never its arguments.
+#        holds is reviewed whole: they reach jq through files and its stdin, never its arguments;
+#   (cv) a part that builds the custom resources' or the name-limited rights and fails, or prints
+#        nothing, reads UNKNOWN naming those rights, and the RBAC step does not pass.
 
 # --- (a) People, the system namespaces and the Workload Identity member alone. ---
 if row a; then
@@ -381,8 +383,15 @@ fi
 # after AIza that credential_prefix needs. ---
 pasted_canary="eyJhbGciOiJFZERTQSJ9.PASTED-CANARY-5c1e.sig"
 shaped_canary=PASTEDCANARY5C1E
+# shaped FLAG VALUE: a (cq) item of pasted_row, whose locals it sets: VALUE is of FLAG's form, so the
+# form alone would admit it, and shaped as a credential its issuer marks, so the run refuses it.
+shaped() {
+  args=("$1" "$2") canary="$shaped_canary" what="the $item given as $1" want="operator-token-minters: $1 is "
+  want_shape="; its value is shaped as a credential its issuer marks"
+}
 pasted_row() {
-  local own="$temporary_dir/co-$1" args=() full report want want_shape="" want_exit=2 where canary=PASTED-CANARY-5c1e what
+  local item="$1" own="$temporary_dir/co-$1" args=() full report want want_shape="" want_exit=2 where
+  local canary=PASTED-CANARY-5c1e what="a pasted credential ($1)"
   base_world
   mkdir -p "$own"
   report="$own/report.json"
@@ -393,20 +402,12 @@ pasted_row() {
     iam-preview) args=("--$1" "$pasted_canary") want="UNKNOWN code: IAM: --iam-preview entry 2 cannot be read" ;;
     report) report="$own/$pasted_canary" want="operator-token-minters: no finding and nothing unknown: exit 0" want_exit=0 ;;
     report-unwritable) report="$own/$pasted_canary/report.json" want="operator-token-minters: --report cannot be written" ;;
-    # (cq)'s: each value is of its flag's form, so the form alone would admit it.
-    ghp-token) args=(--signing-secret "ghp_${shaped_canary}0123456789abcdefghij") ;;
-    github-pat) args=(--signing-secret "github_pat_11${shaped_canary}abcdef_0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW") ;;
-    google-api-key) args=(--signing-secret "AIza${shaped_canary}0123456789abcdefghi") ;;
-    slack-token) args=(--signing-secret "xoxb-${shaped_canary}-1234567890-abcdefghij") ;;
-    aws-access-key-id) args=(--secret "AKIA${shaped_canary}") ;;
+    ghp-token) shaped --signing-secret "ghp_${shaped_canary}0123456789abcdefghij" ;;
+    github-pat) shaped --signing-secret "github_pat_11${shaped_canary}abcdef_0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW" ;;
+    google-api-key) shaped --signing-secret "AIza${shaped_canary}0123456789abcdefghi" ;;
+    slack-token) shaped --signing-secret "xoxb-${shaped_canary}-1234567890-abcdefghij" ;;
+    aws-access-key-id) shaped --secret "AKIA${shaped_canary}" ;;
     *) args=("--$1" "$pasted_canary") want="operator-token-minters: --$1 " ;;
-  esac
-  what="a pasted credential ($1)"
-  case "$1" in
-    ghp-token | github-pat | google-api-key | slack-token | aws-access-key-id)
-      canary="$shaped_canary" what="the $1 given as ${args[0]}" want="operator-token-minters: ${args[0]} is "
-      want_shape="; its value is shaped as a credential its issuer marks"
-      ;;
   esac
   mapfile -t full < <(full_args)
   status=0
@@ -427,6 +428,10 @@ if row co; then
     analysis-scope fleet service-agent guarded rbac-render iam-preview report report-unwritable
   passed "(co) a text pasted alone, as a name flag's value of another form or as a file flag's file is printed in neither stdout, stderr nor --report"
 fi
+
+# printed_secret_data: whether the run printed a token Secret's data, as the world holds it
+# (SECRET-DATA-CANARY-7f3a) or as the API server sends it, base64 (test-fakes.sh's secret_data_b64).
+printed_secret_data() { has_prefix "SECRET-DATA-CANARY-7f3a" || has_prefix "$(printf '%s' SECRET-DATA-CANARY-7f3a | base64)"; }
 
 # --- (cp) The token Secrets are listed in the Table form: the API server's response to each list
 # carries no data field, and no Secret's data is written to the work directory or printed. The fake
@@ -459,7 +464,7 @@ if row cp; then
     cp_failures+="the check asked the API server for token Secrets whole, data included: $(tr '\n' ';' <"$world/clusters/operator-cluster/secret-data-asked") "
   [ ! -e "$world/clusters/operator-cluster/secret-data-in-work" ] ||
     cp_failures+="a token Secret's data was in the run's work directory: $(sort -u "$world/clusters/operator-cluster/secret-data-in-work" | sed "s|^$own_tmp/||" | tr '\n' ' ') "
-  ! has_prefix "SECRET-DATA-CANARY-7f3a" || cp_failures+="the check printed a token Secret's data "
+  ! printed_secret_data || cp_failures+="the check printed a token Secret's data "
   [ -z "$cp_failures" ] || fail "$cp_failures"
   passed "(cp) the token Secrets of a guarded namespace are listed in the Table form: no response carries a data field, and no Secret's data is kept in the work directory or printed"
 fi
@@ -501,7 +506,7 @@ if row cr; then
   if [ ! -e "$responses" ] || ! jq -e -s 'any(.[].items[]?; has("data"))' "$responses" >/dev/null; then
     fail "the world's server sent no token Secret's data, so the row does not hold the case its comment names"
   fi
-  ! has_prefix "SECRET-DATA-CANARY-7f3a" || fail "the check printed a token Secret's data"
+  ! printed_secret_data || fail "the check printed a token Secret's data"
   passed "(cr) a list of token Secrets that kubectl prints without the Table's columns reads UNKNOWN for its namespace, and the RBAC step does not pass"
 fi
 
@@ -527,12 +532,41 @@ if row cs; then
     | {principal: $u, user: $u, groups: ["system:serviceaccounts", "system:serviceaccounts:\(.namespace)", "system:authenticated"]}]' \
     "$world/clusters/operator-cluster/serviceaccounts.json")"
   [ "${#principals}" -gt "$cap" ] || fail "the world's principals are ${#principals} characters, no more than the $cap a jq argument holds here, so the row tests nothing"
-  mapfile -t cs_args < <(full_args)
-  status=0
-  output="$(env PATH="$cap_bin:$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$temporary_dir" bash "$check" "${cs_args[@]}" 2>&1)" || status=$?
+  PATH="$cap_bin:$PATH" run
   ! has_prefix "UNKNOWN" || fail "a cluster whose principals and rights pass a command line's argument read UNKNOWN"
   want_status 0 "a cluster whose principals and rights pass a command line's argument"
   accounts="$(sed -n 's/^PASS live: RBAC on operator-cluster: [0-9]* principals (\([0-9]*\) ServiceAccounts outside the system namespaces.*/\1/p' <<<"$output")"
   [ "${accounts:-0}" -gt 150 ] || fail "the RBAC step reviewed ${accounts:-no} ServiceAccounts outside the system namespaces, not the world's 150 more"
   passed "(cs) a cluster whose principals and rights each pass a command line's argument is reviewed whole, and exits 0"
+fi
+
+# --- (cv) A part that builds a step's rights and fails, or prints nothing. A copy of the script
+# whose custom-rights.jq or named-rights.jq is `empty` (it prints nothing and exits 0) or an error
+# reads UNKNOWN naming the rights it could not build, exits 2, and the RBAC step does not pass: the
+# review never goes on without those rights. Run by hand, the control is the script and its parts as
+# at cae4905130, whose with_rights read an empty argument as no rights: each empty item and
+# custom-error pass the RBAC step and exit 0, and named-error stops the run mid-way. ---
+broken_rights_row() {
+  local copy="$temporary_dir/cv-$1" part want
+  case "$1" in
+    custom-*) part=custom-rights.jq want="the rights on the custom resources could not be built, so none is reviewed: " ;;
+    named-*) part=named-rights.jq want="the rights a role limits by name could not be built, so none is reviewed: " ;;
+  esac
+  base_world
+  mkdir -p "$copy"
+  cp "$check" "$copy/operator-token-minters.sh"
+  cp -r "$(dirname "$check")/operator-token-minters" "$copy/"
+  case "$1" in
+    *-empty) echo 'empty' >"$copy/operator-token-minters/$part" ;;
+    *-error) echo 'error("a part broken by the test")' >"$copy/operator-token-minters/$part" ;;
+  esac
+  run_script="$copy/operator-token-minters.sh" run
+  want_status 2 "$part broken ($1)"
+  want_text "UNKNOWN live: RBAC on operator-cluster: $want" "$part broken ($1)"
+  ! has_prefix "PASS live: RBAC on operator-cluster" || fail "the RBAC step passed with $part broken ($1)"
+  ! has_prefix "UNKNOWN run: the run stopped" || fail "the run stopped mid-way with $part broken ($1), where the step should read UNKNOWN"
+}
+if row cv; then
+  each broken_rights_row custom-empty custom-error named-empty named-error
+  passed "(cv) a part that builds the custom resources' or the name-limited rights and fails, or prints nothing, reads UNKNOWN naming it, exits 2, and the RBAC step does not pass"
 fi

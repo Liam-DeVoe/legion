@@ -137,7 +137,7 @@ else
   # Name-limited rights, which a review that names nothing never finds: impersonate each bound group
   # and user by name, bind and escalate every binding's role and patch and update every binding by
   # name, and update or patch each role bound to a reviewed principal.
-  named_rights
+  named_rights || unknown "$step" "$NAMED_ERROR"
   rights="$(with_rights "$rights" "$NAMED_RIGHTS")"
   fence_credits "$rights"
   # Every cluster has default/default, so a list that holds no ServiceAccount outside the system
