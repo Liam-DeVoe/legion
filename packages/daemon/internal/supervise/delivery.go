@@ -1182,11 +1182,11 @@ func renderedID(was string, news, held []byte) string {
 
 // rewritePending writes the pending delivery back under id with task as its text, and kept and
 // news as the decisions and the news it carries, then holds that delivery in memory: the one
-// persist-and-swap of a held task read again at its send (currentRootTask, currentNews), each of
-// which keeps its own rule for when to rewrite and when to retire. Its callers render the task's
-// text and its news together, so news is always what task names. The write comes first, so a
-// restart reads the task the send that follows carries, and a failed write leaves memory as the
-// record holds it.
+// persist-and-swap of a held task read again at its send (currentRootTask, currentNews,
+// currentWorkingCopy), each of which keeps its own rule for when to rewrite and when to retire.
+// Its callers render the task's text and its news together, so news is always what task names.
+// The write comes first, so a restart reads the task the send that follows carries, and a failed
+// write leaves memory as the record holds it.
 func (m *Machine) rewritePending(ctx context.Context, id, task string, kept, news []byte) error {
 	next := *m.claim.Pending
 	next.ID, next.Task, next.Kept, next.News = id, task, kept, news

@@ -277,7 +277,8 @@ func TestAnAnsweredRootsResumeAwaitedRootRaisesItsArchitectEntry(t *testing.T) {
 	row := raisedArchitectRow(t, pool, root.Key, 3)
 	answeredAt := fixedNow
 	answered := record.Awaiting{GateVersion: 3, Artifact: "artifact-root", AnsweredAt: &answeredAt,
-		AnsweredBy: record.AnsweredByApproval, AnsweredDetail: "version 3", AnsweredVersion: 3, AnsweredArtifact: "artifact-root"}
+		AnsweredBy: record.AnsweredByApproval, AnsweredDetail: "version 3", AnsweredVersion: 3, AnsweredArtifact: "artifact-root",
+		AnsweredStep: record.DesignStepSpec}
 	if !sameWait(row.EntryAwaiting, answered) {
 		t.Fatalf("%s's architect row after the resume keeps the wait %+v, want %+v: its task names the answer, which the root's record no "+
 			"longer holds, so a lost start is built again from it", root.Key, row.EntryAwaiting, answered)

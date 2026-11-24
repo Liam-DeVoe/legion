@@ -293,6 +293,21 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 			not: []string{"The approval of version", DesignApprovedWake},
 		},
 		{
+			// INFRA-3136 R29: the architect registered another document on the step after the
+			// approval that answered, which starts a fresh row (gateRegistered), and the person
+			// approved that document. No later approval of the document approved replaced it, and
+			// no changes request cleared it: the step holds another document, which is named.
+			name: "an approval that answered the wait, of a document the step no longer holds",
+			waiting: record.Awaiting{GateVersion: 3, Artifact: "artifact-208", AnsweredAt: &answered, AnsweredBy: record.AnsweredByApproval,
+				AnsweredDetail: "version 3", AnsweredVersion: 3, AnsweredArtifact: "artifact-208", AnsweredStep: record.DesignStepSpec},
+			step: record.DesignStepSpec,
+			gate: &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-other", LatestVersion: 4, ApprovedVersion: &later},
+			want: []string{"Your primary document version 3 on LEGION-208 was approved. That approval no longer stands: " +
+				"another document, artifact-other, is now registered as your primary document.",
+				"Your primary document is approved at version 4", DesignApprovedWake},
+			not: []string{"a later approval", "a later changes request", "The approval of version"},
+		},
+		{
 			name:    "a changes request with the gate closed",
 			waiting: record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByChanges, AnsweredDetail: "version 4: \"say more\"", AnsweredVersion: 4},
 			step:    record.DesignStepSpec,
@@ -314,6 +329,25 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 				ApprovedMark: record.EventMark{Seq: 9}},
 			want: []string{"asks for no revision now", "Your primary document is approved at version 3", DesignApprovedWake},
 			not:  []string{"revise the primary document as they ask"},
+		},
+		{
+			// INFRA-3136 R29: the changes request that answered was of a document the step no longer
+			// holds, and the person approved the document registered after it. An approval of
+			// another document than the one reviewed answers no review of it (SupersedingApproval,
+			// asked of the document the review was of), so the review stands, and the resume says
+			// that the step holds another document now.
+			name: "a changes request that answered the wait, of a document the step no longer holds",
+			waiting: record.Awaiting{GateVersion: 3, Artifact: "artifact-208", AnsweredAt: &answered, AnsweredBy: record.AnsweredByChanges,
+				AnsweredDetail: "version 3: \"split it\"", AnsweredVersion: 3, AnsweredArtifact: "artifact-208", AnsweredStep: record.DesignStepSpec,
+				Since: record.EventMark{Seq: 5}},
+			step: record.DesignStepSpec,
+			gate: &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-other", LatestVersion: 4, ApprovedVersion: &later,
+				ApprovedMark: record.EventMark{Seq: 9}},
+			want: []string{"A person requested changes to your primary document on LEGION-208 at version 3: \"split it\". " +
+				"Read the review, and revise the primary document as they ask. The review was of a document since replaced: " +
+				"another document, artifact-other, is now registered as your primary document.",
+				"Your primary document is approved at version 4", DesignApprovedWake},
+			not: []string{"asks for no revision now"},
 		},
 		{
 			name:    "a question nobody will answer any more",

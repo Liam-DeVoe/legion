@@ -58,23 +58,26 @@
 -- is still the person's word (workflow.SupersedingApproval) of a number rather than of the detail,
 -- which is display text. issues.awaiting_answered_artifact is the Dispatch artifact id of the
 -- document the act that answered was of, a review or a newer version
--- (record.Awaiting.AnsweredArtifact), written by the same answer, so the resume asks that review
--- of the gate of that document's step and names that document: under a deployment that gates
--- more than one step it need not be the step the resume speaks of, and a wait on a question
--- records no document of its own. awaiting_answered_version_at is the answer's moment
--- (awaiting_answered_at) the two were written with, and they are read only while the two moments
--- are equal (record's issueColumns): a daemon of an earlier release names
--- none of the three columns, so its write of a later answer leaves the old version and document
--- standing beside a new moment, and that answer reads as one with neither. None of the three is
--- part of issues_awaiting_shape, so that earlier daemon's write that clears a wait is not refused
--- for leaving them set.
+-- (record.Awaiting.AnsweredArtifact), and issues.awaiting_answered_step the design step whose gate
+-- row held that document at the answer (record.Awaiting.AnsweredStep), both written by the same
+-- answer, so the resume asks that review of the gate of that step and names that document: under
+-- a deployment that gates more than one step it need not be the step the resume speaks of, a wait
+-- on a question records no document of its own, and a registration of another document on that
+-- step afterwards leaves no row holding the document at all, so the step is recorded rather than
+-- looked up. awaiting_answered_version_at is the answer's moment (awaiting_answered_at) the three
+-- were written with, and they are read only while the two moments are equal (record's
+-- issueColumns): a daemon of an earlier release names none of the four columns, so its write of a
+-- later answer leaves the old version, document and step standing beside a new moment, and that
+-- answer reads as one with none of them. None of the four is part of issues_awaiting_shape, so
+-- that earlier daemon's write that clears a wait is not refused for leaving them set.
 --
 -- A wait answered by a changes request before this migration is given its version here, read
 -- once from the detail every release so far wrote for it (`version <n>: "<reason>"`, workflow's
 -- changesDetail), so it reads as it did; no daemon parses the detail after this. A wait an
 -- approval answered before it is given none, and its approval is asked at the version the gate
--- holds approved. No wait is given a document: an answer before it is read as of the document the
--- wait records, and an answer of a question wait as of the step the resume speaks of, as before.
+-- holds approved. No wait is given a document or a step: an answer before it is read as of the
+-- document the wait records and the step of the row that holds it, and an answer of a question
+-- wait as of the step the resume speaks of, as before.
 --
 -- There is no down file: migrations here are forward-only.
 alter table pending_task_deliveries add column resume jsonb;
@@ -83,7 +86,8 @@ alter table parked_decisions add column seq bigint,
   add column version integer;
 alter table issues add column awaiting_answered_version integer,
   add column awaiting_answered_version_at timestamptz,
-  add column awaiting_answered_artifact text;
+  add column awaiting_answered_artifact text,
+  add column awaiting_answered_step text;
 update issues
    set awaiting_answered_version = substring(awaiting_answered_detail from '^version ([0-9]+): ')::integer,
        awaiting_answered_version_at = awaiting_answered_at

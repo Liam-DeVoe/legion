@@ -65,8 +65,9 @@ const (
 const idleRigTick = 250 * time.Millisecond
 
 // unrenamed is the comparison a take of these rigs reads the bundle's repository and the pod's by
-// (repositories.same) where the rig configures no rename: names compared without regard to case.
-var unrenamed = newRepositories("LEGION", ghrepo.Renames{}).same
+// (ghrepo.Renames.Same, which production hands the take) where the rig configures no rename: names
+// compared without regard to case.
+var unrenamed = ghrepo.Renames{}.Same
 
 // idleWakeRig is the acceptance rig of INFRA-945's A3: the Go daemon on a real Postgres, a real
 // nats-server, a real Envoy listener and the Sandbox runtime over a fake Kubernetes API whose

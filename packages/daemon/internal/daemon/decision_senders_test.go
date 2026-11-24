@@ -97,8 +97,11 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 	{"asks for no revision now", "workflow.resumeTask"},
 	// A changes request the gate records as told after the wait began.
 	{"A person then requested changes to your", "workflow.resumeTask"},
-	// The approval that answered the wait, when the person's word has moved past it.
-	{"That approval no longer stands", "workflow.resumeTask"},
+	// The changes request that answered the wait, of a document its step no longer holds.
+	{"The review was of a document since replaced", "workflow.resumeTask"},
+	// The approval that answered the wait, when the person's word has moved past it, or its step
+	// holds another document now.
+	{"That approval no longer stands", "workflow.writeApprovalReplaced"},
 	// That approval, when it stands below a newer version.
 	{"The approval of version", "workflow.resumeTask"},
 	// The decisions kept while nobody in the tree could hear them.

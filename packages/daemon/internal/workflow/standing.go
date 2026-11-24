@@ -49,10 +49,20 @@ func WorkingCopy(issue record.Issue, dir func(record.Issue) string) Standing {
 		where = dir(issue)
 	}
 	if where == "" {
-		return Standing{lines: fmt.Sprintf(" %s: branch %s.", workingCopyLabel, claim.IssueBranch(issue.Key))}
+		return Standing{lines: workingCopyOpening(issue.Key) + "."}
 	}
-	return Standing{lines: fmt.Sprintf(" %s: branch %s, directory %s.", workingCopyLabel, claim.IssueBranch(issue.Key), where)}
+	return Standing{lines: workingCopyOpening(issue.Key) + workingCopyDirectory + where + "."}
 }
+
+// workingCopyOpening is how the working copy line of the issue key begins, up to its branch: the
+// part WorkingCopy writes and workingCopyLine finds the same way, whatever the directory.
+func workingCopyOpening(key string) string {
+	return " " + workingCopyLabel + ": branch " + claim.IssueBranch(key)
+}
+
+// workingCopyDirectory is what stands between the branch and the directory in a working copy line
+// that names one (WorkingCopy, workingCopyLine).
+const workingCopyDirectory = ", directory "
 
 // WorkingCopyAtSend is task, a worker's task as this package composed it (task, resumeText) and
 // as it is kept until its send, with its working copy line written again from issue, the record
@@ -60,13 +70,18 @@ func WorkingCopy(issue record.Issue, dir func(record.Issue) string) Standing {
 // (Config.WorkspaceDir), in the place of the line the task holds (workingCopyLine). It is the one
 // place a kept task's line is found and replaced, and the daemon asks it at every send of a
 // worker's task (supervise's Deps.WorkingCopy). A task that holds no working copy line of issue's
-// branch, as a task a release before that line composed holds none, is answered as it is.
+// branch, as a task a release before that line composed holds none, is answered as it is, and so
+// is a task whose line is already the one the record gives.
 func (e *Engine) WorkingCopyAtSend(task string, issue record.Issue) string {
 	start, end, ok := workingCopyLine(task, issue.Key)
 	if !ok {
 		return task
 	}
-	return task[:start] + WorkingCopy(issue, e.cfg.WorkspaceDir).lines + task[end:]
+	line := WorkingCopy(issue, e.cfg.WorkspaceDir).lines
+	if task[start:end] == line {
+		return task
+	}
+	return task[:start] + line + task[end:]
 }
 
 // workingCopyLine is where task holds the working copy line WorkingCopy writes for the issue key:
@@ -79,7 +94,7 @@ func (e *Engine) WorkingCopyAtSend(task string, issue record.Issue) string {
 // next sentence, the owner's part, the blank line before the news a send renders after it, or
 // nothing. A line that reads otherwise is no line of this package's, and ok is false.
 func workingCopyLine(task, key string) (start, end int, ok bool) {
-	opening := fmt.Sprintf(" %s: branch %s", workingCopyLabel, claim.IssueBranch(key))
+	opening := workingCopyOpening(key)
 	daemons := task
 	if owners := strings.Index(task, ownersOpening); owners >= 0 {
 		daemons = task[:owners]
@@ -92,11 +107,10 @@ func workingCopyLine(task, key string) (start, end int, ok bool) {
 	if strings.HasPrefix(task[rest:], ".") {
 		return start, rest + 1, true
 	}
-	const directory = ", directory "
-	if !strings.HasPrefix(task[rest:], directory) {
+	if !strings.HasPrefix(task[rest:], workingCopyDirectory) {
 		return 0, 0, false
 	}
-	for at := rest + len(directory); at < len(daemons); at++ {
+	for at := rest + len(workingCopyDirectory); at < len(daemons); at++ {
 		if task[at] == '.' && (at+1 == len(task) || task[at+1] == ' ' || task[at+1] == '\n') {
 			return start, at + 1, true
 		}

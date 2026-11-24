@@ -340,9 +340,10 @@ func placedAfter(root record.Issue, mark record.EventMark) bool {
 }
 
 // answerAwaitedGate answers a root waiting on a person with an event of its spec document that
-// reaches its gate, and reports whether it answered one. gateUnchanged says the event changed no
-// gate state: a review the person already followed with another, or an approval of a gate already
-// open.
+// reaches its gate, the row of gate.Issue that holds the event's document, and reports whether it
+// answered one. gateUnchanged says the event changed no gate state: a review the person already
+// followed with another, or an approval of a gate already open. The answer records the step of
+// that row beside the document (waitAnswer.step).
 //
 // A root waiting on its design gate (Awaiting.GateVersion, on the document Awaiting.Artifact, whose
 // events alone answer it, since another document's versions count from one) is answered by the
@@ -370,8 +371,8 @@ func placedAfter(root record.Issue, mark record.EventMark) bool {
 // every later read of that approval finds the gate already open, so nothing else would answer it
 // and the root would keep waiting with its gate open. An approval that changes no gate state has
 // no such claim, and answers only a wait it follows.
-func (e *Engine) answerAwaitedGate(ctx context.Context, tx pgx.Tx, key string, fact intake.DispatchArtifact, carried, gateUnchanged bool) (bool, error) {
-	issue, err := e.store.Issue(ctx, tx, key)
+func (e *Engine) answerAwaitedGate(ctx context.Context, tx pgx.Tx, gate record.DesignGate, fact intake.DispatchArtifact, carried, gateUnchanged bool) (bool, error) {
+	issue, err := e.store.Issue(ctx, tx, gate.Issue)
 	if err != nil || issue == nil || !issue.AwaitingPerson() || issue.Awaiting.AnsweredAt != nil {
 		return false, err
 	}
@@ -410,15 +411,15 @@ func (e *Engine) answerAwaitedGate(ctx context.Context, tx pgx.Tx, key string, f
 	// the version it is of: the one a changes request reviewed or an approval approved. A newer
 	// version is no review, and records no version.
 	reviewed := 0
-	switch {
-	case fact.Kind == intake.DispatchArtifactChangesRequested:
+	switch fact.Kind {
+	case intake.DispatchArtifactChangesRequested:
 		by, detail, reviewed = record.AnsweredByChanges, changesDetail(fact.Version, fact.Reason), fact.Version
-	case by == record.AnsweredByApproval:
+	case intake.DispatchArtifactApproved:
 		reviewed = fact.Version
 	}
 	e.logOnCommit(ctx, "workflow: a person's review or a newer spec version answered a root's wait", "issue", issue.Key,
 		"version", fact.Version, "event", fact.Kind, "ask", waiting.Ask, "waited_version", waiting.GateVersion)
-	return true, e.answerWait(ctx, tx, *issue, by, detail, fact.ArtifactID, reviewed)
+	return true, e.answerWait(ctx, tx, *issue, waitAnswer{by: by, detail: detail, document: fact.ArtifactID, step: gate.Step, reviewed: reviewed})
 }
 
 // answerRegisteredGate answers a root waiting on a person with what the registration's read of
@@ -495,7 +496,7 @@ func (e *Engine) answerRegisteredGate(ctx context.Context, tx pgx.Tx, fact intak
 	}
 	e.logOnCommit(ctx, "workflow: a registration answered a root's wait", "issue", issue.Key, "version", version, "event", by, "ask", waiting.Ask)
 	// Every act a registration answers with is of the document it registered.
-	return true, e.answerWait(ctx, tx, *issue, by, detail, fact.ArtifactID, reviewed)
+	return true, e.answerWait(ctx, tx, *issue, waitAnswer{by: by, detail: detail, document: fact.ArtifactID, step: gate.Step, reviewed: reviewed})
 }
 
 // changesDetail is how a changes request is named to the architect it resumes: its version and the
@@ -895,7 +896,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		if fact.Kind == intake.DispatchArtifactVersion || carried {
 			return nil
 		}
-		if _, err := e.answerAwaitedGate(ctx, tx, key, fact, carried, true); err != nil {
+		if _, err := e.answerAwaitedGate(ctx, tx, gate, fact, carried, true); err != nil {
 			return err
 		}
 		if fact.Kind != intake.DispatchArtifactChangesRequested {
@@ -924,7 +925,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		e.logOnCommit(ctx, "workflow: design gate changes requested", "issue", key, "artifact", fact.ArtifactID, "version", fact.Version)
 	}
 	// An approval of a gate already open changes no gate state, and answers only a wait it follows.
-	if _, err := e.answerAwaitedGate(ctx, tx, key, fact, carried, fact.Kind == intake.DispatchArtifactApproved && wasOpen); err != nil {
+	if _, err := e.answerAwaitedGate(ctx, tx, gate, fact, carried, fact.Kind == intake.DispatchArtifactApproved && wasOpen); err != nil {
 		return err
 	}
 	placeable, err := e.placeable(ctx, tx, key, fact)

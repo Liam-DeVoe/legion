@@ -190,7 +190,7 @@ func TestABundleRefusalWhoseCommitOutcomeStaysUnknownIsToldOnTheIssue(t *testing
 }
 
 // A rename is no move. A deployment that configures acme/widgets as renamed to acme/gadgets reads
-// the two names as one repository wherever it compares them (repositories.same), so a pod built
+// the two names as one repository wherever it compares them (ghrepo.Renames.Same), so a pod built
 // from the new name is a clone of the repository the saved work is of, as no pod built from the
 // old name is replaced for it either (repositoryDrift). The clone the pod holds has the saved
 // commits, and the bundle is sent to it, with nothing written on the issue.
@@ -212,9 +212,9 @@ func TestARenamedRepositorysBundleIsRestored(t *testing.T) {
 	}
 	correctRecord(t, pool, records, issue.Key, "acme/gadgets", "main", time.Now().UTC())
 
-	mapping := newRepositories("LEGION", ghrepo.MustRenames(ghrepo.MustRename("acme/widgets", "acme/gadgets")))
+	same := ghrepo.MustRenames(ghrepo.MustRename("acme/widgets", "acme/gadgets")).Same
 	var told []string
-	take := tellBundleRepositoryRefused(st, "legion", mapping.same,
+	take := tellBundleRepositoryRefused(st, "legion", same,
 		func(_ context.Context, _, body string) error {
 			told = append(told, body)
 			return nil

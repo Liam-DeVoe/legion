@@ -29,8 +29,11 @@ type Approval struct {
 // Supersession is what SupersedingApproval answers for a person's decision that is no longer
 // their word. By is the approval the gate records in its place, which a sender may name. It is
 // nil where the gate records no approval, so none replaced the decision: an approval that a later
-// changes request cleared (classify.ApplyDesignGateEvent). A sender names a version only where By
-// is set. Only an approval replaces a changes request, so By is always set for one.
+// changes request cleared (classify.ApplyDesignGateEvent), or one of a document the gate no longer
+// holds, its step holding another document with none approved. For an approval of a document the
+// gate no longer holds, a By that is set is the approval of that other document. A sender names a
+// version only where By is set. Only an approval replaces a changes request, so By is always set
+// for one.
 type Supersession struct {
 	By *Approval
 }

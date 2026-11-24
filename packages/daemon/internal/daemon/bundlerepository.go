@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -51,9 +52,9 @@ const bundleRefusalReadPause = time.Second
 // it, since the row is gone from workspace_bundles. So after such a take this reads whether that
 // table holds a refusal of the issue to this pod (store.Store.RefusedWorkspaceBundle). Where it
 // does, the refusal is told and answered as one that committed. Where it does not, the take's
-// error is answered, which names both tables the work can be in. The take's context has ended by
-// then, so the read and the write on the issue run under a bound of their own
-// (bundleRefusalReadBound). The read is tried again until it answers or that bound ends
+// error is answered, which the launcher logs beside both tables the work can be in. The take's
+// context has ended by then, so the read and the write on the issue run under a bound of their
+// own (bundleRefusalReadBound). The read is tried again until it answers or that bound ends
 // (refusalRead), since a store that did not answer the take's commit is the likeliest to refuse
 // the next connection too; where no try answers, the take's error is answered with the last
 // try's beside it.
@@ -122,12 +123,8 @@ func refusalRead(ctx context.Context, st *store.Store, issue, podUID string) (ru
 		if err == nil {
 			return refused, found, nil
 		}
-		pause := time.NewTimer(bundleRefusalReadPause)
-		select {
-		case <-ctx.Done():
-			pause.Stop()
+		if backoff.Sleep(ctx, bundleRefusalReadPause) != nil {
 			return runtime.WorkspaceBundle{}, false, err
-		case <-pause.C:
 		}
 	}
 }

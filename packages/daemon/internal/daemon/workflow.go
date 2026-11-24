@@ -1400,13 +1400,12 @@ func (w *workflowRuntime) narrowedNews(ctx context.Context, c supervise.Claim, d
 	if len(d.News) == 0 {
 		return task, nil, nil
 	}
-	var carried record.DeliveryNews
-	if err := json.Unmarshal(d.News, &carried); err != nil {
-		return "", nil, fmt.Errorf("decode the news the task held for %s carries: %w", c.Token, err)
+	carried, err := heldNews(c, d.News)
+	if err != nil {
+		return "", nil, err
 	}
 	carried.Task = task
 	narrowed := d
-	var err error
 	if narrowed.News, err = json.Marshal(carried); err != nil {
 		return "", nil, fmt.Errorf("encode the news the narrowed task held for %s carries: %w", c.Token, err)
 	}
@@ -1484,9 +1483,9 @@ func (w *workflowRuntime) workingCopy(ctx context.Context, c supervise.Claim, d 
 	if len(d.News) == 0 {
 		return task, d.News, nil
 	}
-	var carried record.DeliveryNews
-	if err := json.Unmarshal(d.News, &carried); err != nil {
-		return "", nil, fmt.Errorf("decode the news the task held for %s carries: %w", c.Token, err)
+	carried, err := heldNews(c, d.News)
+	if err != nil {
+		return "", nil, err
 	}
 	own := w.engine.WorkingCopyAtSend(carried.Task, *issue)
 	if own == carried.Task {

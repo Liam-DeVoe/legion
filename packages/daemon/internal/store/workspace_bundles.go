@@ -233,16 +233,13 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, project, issu
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, nil
 	}
 	if errors.Is(err, ErrCommitOutcomeUnknown) {
-		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("take the workspace bundle of %s for the pod %s: %w: the bundle's one restore attempt may be spent, and its work stays in the database, in workspace_bundles, or in workspace_bundles_refused where the take refused it for its repository", issue, podUID, err)
+		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("take the workspace bundle of %s for the pod %s: %w: the bundle's one restore attempt may be spent, and its work stays in the database", issue, podUID, err)
 	}
 	if err != nil {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("take the workspace bundle of %s for the pod %s to restore: %w", issue, podUID, err)
 	}
-	if err := json.Unmarshal(tips, &b.Tips); err != nil {
-		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("read the workspace bundle of %s: its tips: %w", issue, err)
-	}
-	if err := json.Unmarshal(bookmarks, &b.Bookmarks); err != nil {
-		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("read the workspace bundle of %s: its bookmarks: %w", issue, err)
+	if err := bundleFromJSON(&b, tips, bookmarks); err != nil {
+		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("read the workspace bundle of %s: %w", issue, err)
 	}
 	// The outcome the statement wrote is the answer: `sent` for the body above, and one of the
 	// two refusals for the pod it refused, whose attempt is spent all the same.
@@ -272,29 +269,27 @@ func (s *Store) RefusedWorkspaceBundle(ctx context.Context, issue, podUID string
 	type refusal struct {
 		bundle          runtime.WorkspaceBundle
 		tips, bookmarks []byte
-		found           bool
 	}
 	read, err := ReadOnly(ctx, s.pool, "read the refusal of the workspace bundle of "+issue+" to the pod "+podUID,
-		func(ctx context.Context, tx pgx.Tx) (refusal, error) {
+		func(ctx context.Context, tx pgx.Tx) (*refusal, error) {
 			var r refusal
 			err := tx.QueryRow(ctx, `select release_id, source_pod_uid, repo, at, head, tips, bookmarks
 				from workspace_bundles_refused where issue = $1 and refused_pod_uid = $2
 				order by id desc limit 1`, issue, podUID).Scan(&r.bundle.Release, &r.bundle.PodUID, &r.bundle.Repo,
 				&r.bundle.At, &r.bundle.Head, &r.tips, &r.bookmarks)
 			if errors.Is(err, pgx.ErrNoRows) {
-				return refusal{}, nil
+				return nil, nil
 			}
-			r.found = err == nil
-			return r, err
+			if err != nil {
+				return nil, err
+			}
+			return &r, nil
 		})
-	if err != nil || !read.found {
+	if err != nil || read == nil {
 		return runtime.WorkspaceBundle{}, false, err
 	}
-	if err := json.Unmarshal(read.tips, &read.bundle.Tips); err != nil {
-		return runtime.WorkspaceBundle{}, false, fmt.Errorf("read the refused workspace bundle of %s: its tips: %w", issue, err)
-	}
-	if err := json.Unmarshal(read.bookmarks, &read.bundle.Bookmarks); err != nil {
-		return runtime.WorkspaceBundle{}, false, fmt.Errorf("read the refused workspace bundle of %s: its bookmarks: %w", issue, err)
+	if err := bundleFromJSON(&read.bundle, read.tips, read.bookmarks); err != nil {
+		return runtime.WorkspaceBundle{}, false, fmt.Errorf("read the refused workspace bundle of %s: %w", issue, err)
 	}
 	return read.bundle, true, nil
 }
@@ -617,4 +612,15 @@ func bundleJSON(b runtime.WorkspaceBundle) (tips, bookmarks []byte, err error) {
 		return nil, nil, fmt.Errorf("its bookmarks: %w", err)
 	}
 	return tips, bookmarks, nil
+}
+
+// bundleFromJSON reads the two members bundleJSON renders back into b: its tips and its bookmarks.
+func bundleFromJSON(b *runtime.WorkspaceBundle, tips, bookmarks []byte) error {
+	if err := json.Unmarshal(tips, &b.Tips); err != nil {
+		return fmt.Errorf("its tips: %w", err)
+	}
+	if err := json.Unmarshal(bookmarks, &b.Bookmarks); err != nil {
+		return fmt.Errorf("its bookmarks: %w", err)
+	}
+	return nil
 }
