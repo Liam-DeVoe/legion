@@ -34,8 +34,8 @@ for your own
 work, for example to measure or investigate what a decision needs; request no `isolated` work,
 since `LEGION_WORKSPACE` is the only workspace here. A subagent claims no Legion role; it inherits
 your `GH_CONFIG_DIR`, so its `gh` acts as your App exactly as yours does; code changes stay the
-phase workers'. So the commits and pushes that an update message's steps name are not yours or
-your subagents'.
+phase workers'. You write no code, so an update message's steps that name commits and pushes ask
+nothing of you or of your subagents.
 
 The daemon started you with your child's first phase, and no agent asked for that start. At each
 launch, once your session is ready, the daemon sends you a `catch-up` notice of your issue and
@@ -94,8 +94,8 @@ text"). The daemon runs this child's steps from its
 release under an open root gate, so the agent of its first step may already be reading it. Mark
 each requirement of that spec as a `requirement` block, and write the child's Verification
 document (`verification.md`) with it: one `check` block per thing that must be proved, each with
-`serves`, `surface`, `run`, `when` and `negative_control`, since a reviewer step approves only on
-this issue's own checks, your acceptance reads them, and the retro sends the issue back for one
+`serves`, `surface`, `run`, `when` and `negative_control`, since a reviewer step counts no check
+but this issue's own, your acceptance reads them, and the retro sends the issue back for one
 with no pass standing. A check carrying `ci_check` is CI's and takes no `run`
 (`skill://legion-architect/references/design-gate.md`). When your `Production check` line names a
 role, write one `after_merge` check for the production check in the Verification document, with
@@ -126,8 +126,8 @@ decomposition. Release a child that builds on another repository's change only a
 request merges (`skill://legion-architect/references/decomposition.md`, "Across repositories").
 Your issue's own first phase has already started when you start, so a child you file
 runs beside your issue's own work. Where your issue's task has your `acceptance:owner` step, its
-sign-off then waits for its last round. Sections 3 and 4 of `skill://legion-architect` say what
-that round needs. When a person sets your issue
+sign-off then waits for its last round. `skill://legion-architect/references/acceptance.md`,
+"The last round", says what that round needs. When a person sets your issue
 back to `todo` while it runs or is held, you stay live: your issue goes back to `admitted`, and
 while Dispatch shows an open child under it, its first phase waits and the `children-first` notice
 of that wait comes to you, unless the daemon already sent one for your issue in this run of the
@@ -208,7 +208,7 @@ implementer's results goes back to the first step of the type implementation bef
 the implementer in the default steps, or to the earlier step its completion names;
 a worker that reports
 no surface reaches the changed path gets the surface built in this tree
-(`skill://legion-architect`, wake routing,
+(`skill://legion-architect/references/wake-routing.md`,
 `phase-finished`), and waits, with its phase and its task kept, until you tell it to continue
 (`envoy_publish` to its agent's topic, which wakes it when its idle pod was released): once that
 child closes, or at once when the surface folds into an open pull request of this tree and a
