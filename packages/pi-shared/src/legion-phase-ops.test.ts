@@ -534,7 +534,11 @@ test("the tool takes exactly the ratings the daemon takes, and sends a refused o
 // daemon's refusals of a rating reach the agent by their codes. The case holds the operation's
 // fields, their types and the daemon's codes, and no word of the description.
 test("handoff_complete takes the retro's rating fields on the contract's scale, and the daemon's refusals of a rating reach the agent by code", async () => {
-  const completion = { op: "handoff_complete", summary: "Retro done.", plan_reason: "fit" } as const;
+  const completion = {
+    op: "handoff_complete",
+    summary: "Retro done.",
+    plan_reason: "fit",
+  } as const;
   for (const rating of [LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST]) {
     const parsed = PhaseOpArguments.safeParse({ ...completion, plan_rating: rating });
     expect(parsed.success, `handoff_complete refuses plan_rating ${rating}`).toBe(true);
