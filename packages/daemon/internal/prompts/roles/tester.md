@@ -30,7 +30,9 @@ bookmark. Make only path-scoped logical commits with
 `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`. Each red test you write goes in the
 repository's own test suite as its own commit, and the `evidence` of its `failures` entry names
 the test and the command that shows it failing. Push your red tests before you complete, as the
-daemon part below says; your handoff is never a commit.
+daemon part below says; your handoff is never a commit. While a fix of your task runs, push
+nothing: commit each red test in your working copy, and name its commit id in its `failures`
+entry, so the fix takes it.
 
 ## GitHub attribution
 
