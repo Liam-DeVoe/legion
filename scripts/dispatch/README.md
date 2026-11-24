@@ -717,7 +717,8 @@ apply in that project. The answer is `{"rewrite": "<the paragraph>"}`, that with
 `third-party-name` or `record`.
 
 An answer that is not that shape, or a rewrite that changes text outside the sentences of the
-occurrences, drops an occurrence that it had to keep, or still holds the word, fails the check.
+occurrences, adds or drops a sentence among them, drops or changes an occurrence that it had to
+keep, or still holds the word, fails the check.
 The tool asks once more and says what failed. When the second answer fails too, the tool keeps
 the occurrence as judge-refused (the code `j`), and no later run asks the model about it again.
 

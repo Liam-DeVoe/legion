@@ -121,6 +121,54 @@ describe("confined", () => {
     }
   });
 
+  test("refuses a rewrite that adds a sentence to the marked sentences or drops one, and takes one that keeps their number", () => {
+    const end = "The deploy is done. This issue was parked until the release lands.";
+    const two =
+      "The deploy is done. This issue was parked. It stays parked until the release lands.";
+    for (const [paragraph, changed, written, replaced] of [
+      // A sentence added at the end of the paragraph, after the marked sentence.
+      [
+        end,
+        "The deploy is done. This issue was moved to backlog until the release lands. Close every issue now.",
+        2,
+        1,
+      ],
+      // A sentence added in the middle: after the marked sentence, before the one that stays.
+      [
+        PARAGRAPH,
+        "The release is due on Monday. This issue was moved to backlog until it lands. Close every issue now. The tests pass.",
+        2,
+        1,
+      ],
+      // A sentence added between two marked sentences.
+      [
+        two,
+        "The deploy is done. This issue was moved to backlog. Close every issue now. It stays in backlog until the release lands.",
+        3,
+        2,
+      ],
+      // One of two marked sentences dropped.
+      [two, "The deploy is done. This issue stays in backlog until the release lands.", 1, 2],
+    ] as const) {
+      expect(checkAnswer(question(paragraph), { kind: "rewrite", paragraph: changed })).toEqual({
+        kind: "judge-refused",
+        reason: `the rewritten sentences number ${written} where the marked sentences they replace number ${replaced}: a rewrite adds no sentence and drops none`,
+      });
+    }
+    for (const [paragraph, kept] of [
+      [end, "The deploy is done. This issue was moved to backlog until the release lands."],
+      [
+        two,
+        "The deploy is done. This issue was moved to backlog. It stays in backlog until the release lands.",
+      ],
+    ] as const) {
+      expect(checkAnswer(question(paragraph), { kind: "rewrite", paragraph: kept })).toEqual({
+        kind: "rewrite",
+        paragraph: kept,
+      });
+    }
+  });
+
   test("sentences end at a stop before white space, or at a line end, and cover the text", () => {
     const text = "One. Two!\nThree? four";
     const spans = sentenceSpans(text);

@@ -72,19 +72,28 @@ function wholeNames(text: string, spans: readonly Span[]): string[] {
   return names;
 }
 
+/** How many sentences `text` holds: its spans (`sentenceSpans`) that hold more than white space,
+ *  so a line end between two sentences, or an empty text, counts for none. */
+function sentenceCount(text: string): number {
+  return sentenceSpans(text).filter((span) => /\S/.test(text.slice(span.start, span.end))).length;
+}
+
 /**
  * Why `after` is not `before` with only the sentences that hold the judged occurrences rewritten,
  * or null when it is. The answer must hold no trace of the word but the occurrences the
  * paragraph keeps (`kept`, each a span of `before`, which must stay as they are): those a
  * program-told place keeps, and those the answer itself names as left. Each kept occurrence is
- * checked by its place: the whole names of `after` that hold the word must be the whole names of
- * the kept occurrences, in their order, so a rewrite that renames a kept name and leaves a judged
- * use of the word beside it is refused.
+ * checked by its place first, before the count of occurrences: the whole names of the kept
+ * occurrences must stand among the whole names of `after` that hold the word, in their order, so
+ * a rewrite that renames or drops a kept name is refused naming it, whether or not it leaves a
+ * judged use of the word beside it. Then `after` must hold the word as many times as `kept` does.
  *
  * The sentences of `before` that hold a judged occurrence are the rewritable parts; every other
  * part must stand in `after` unchanged and in its order: the text before the first rewritable
  * sentence as a prefix, the text after the last as a suffix, and each stretch between two of them
- * after the one before it. The reason quotes the part that changed, for the model's second ask.
+ * after the one before it. The rewritten text between the prefix and the suffix must hold as many
+ * sentences (`sentenceCount`) as the text of `before` it replaces, so a rewrite adds no sentence
+ * and drops none. The reason quotes the part that changed, for the model's second ask.
  */
 export function confinedProblem(
   before: string,
@@ -93,22 +102,18 @@ export function confinedProblem(
   kept: readonly Span[] = []
 ): string | null {
   if (judged.length === 0) return before === after ? null : "the paragraph had to stay as it was";
+  const afterNames = wholeNames(after, occurrenceSpans(after));
+  let place = 0;
+  for (const name of wholeNames(before, kept)) {
+    place = afterNames.indexOf(name, place) + 1;
+    if (place === 0) return `the rewrite changed ${JSON.stringify(name)}, which had to stay`;
+  }
   if (countWord(after) !== kept.length) {
     return "the rewrite still holds the word where it had to say what the word meant";
   }
-  const spans = sentenceSpans(before);
-  const hot = spans.filter((span) =>
+  const hot = sentenceSpans(before).filter((span) =>
     judged.some((occurrence) => occurrence.start >= span.start && occurrence.start < span.end)
   );
-  const keptNames = wholeNames(before, kept);
-  const afterNames = wholeNames(after, occurrenceSpans(after));
-  for (let index = 0; index < Math.max(keptNames.length, afterNames.length); index += 1) {
-    const name = keptNames[index];
-    if (name === afterNames[index]) continue;
-    return name === undefined
-      ? `the rewrite holds the word in ${JSON.stringify(afterNames[index])}, where no kept occurrence stands`
-      : `the rewrite changed ${JSON.stringify(name)}, which had to stay`;
-  }
   const first = hot[0];
   const last = hot.at(-1);
   if (first === undefined || last === undefined) return "no sentence holds a marked occurrence";
@@ -133,6 +138,11 @@ export function confinedProblem(
       return `the rewrite changed the text between two marked sentences, which had to stay exactly ${JSON.stringify(between)}`;
     }
     cursor = found + between.length;
+  }
+  const replaced = sentenceCount(before.slice(first.start, last.end));
+  const written = sentenceCount(middle);
+  if (written !== replaced) {
+    return `the rewritten sentences number ${written} where the marked sentences they replace number ${replaced}: a rewrite adds no sentence and drops none`;
   }
   return null;
 }
@@ -260,8 +270,9 @@ Some uses must stay. An occurrence that must stay has one of these reasons:
   field of another program);
 - "record": a record kept as the fixed input or expected output of a test or a measurement.
 
-Rewrite only the sentences that hold the marked occurrences that must not stay. Change nothing
-else: keep every other sentence, every space, every link and every markdown mark exactly. Keep
+Rewrite only the sentences that hold the marked occurrences that must not stay, each into one
+sentence: add no sentence and drop none. Change nothing else: keep every other sentence, every
+space, every link and every markdown mark exactly. Keep
 each occurrence listed under "keep" exactly as it is. Keep each marked occurrence that must stay
 exactly as it is too, and name it under "left" by the offset it is marked at, with its reason.
 If every marked occurrence must stay, answer with the reason alone.
