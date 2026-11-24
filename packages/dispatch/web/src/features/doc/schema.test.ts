@@ -74,7 +74,9 @@ test("the compiled manifest is the page's own, and it reads check.subject and ch
     ),
   });
 
-  expect(schemaCreatable(compiledBlockSchema)).toBe(schemaCreatable(withoutThem(compiledBlockSchema)));
+  expect(schemaCreatable(compiledBlockSchema)).toBe(
+    schemaCreatable(withoutThem(compiledBlockSchema))
+  );
   expect(schemaCreatable(compiledBlockSchema)).toBeLessThan(version);
   expect(schemaCreatable(raisedByOne(compiledBlockSchema))).toBe(version);
   expect(schemaCreatable(withoutThem(raisedByOne(compiledBlockSchema)))).toBeLessThan(version);

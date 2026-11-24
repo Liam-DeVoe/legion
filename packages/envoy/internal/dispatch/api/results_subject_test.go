@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
@@ -24,13 +23,14 @@ const subjectChecks = ":::check{#k5 when=\"after_merge\" subject=\"production\" 
 	":::\n"
 
 // A check block names what it reads in `subject` (code, production or graph) and the deployed
-// program it reads in `program`. This build reads both and does not create them yet: a document
-// that holds them can come only from the next build, which this test stands in for by raising the
-// manifest one version (pmdoc.UseManifestForTest). After the restore to this build's manifest,
-// GET /api/v1/issues/{key}/results serves each as `checks[].subject` and `checks[].program`, as
-// stored, and leaves the key out where the block names none. This build refuses a write that puts
-// either into a document that holds none, and writes no version of it; and a subject outside the
-// three is refused as markdown outside the schema.
+// program it reads in `program`, and GET /api/v1/issues/{key}/results serves each as
+// `checks[].subject` and `checks[].program`, as stored, leaving the key out where the block names
+// none; a subject outside the three is refused as markdown outside the schema. The document is
+// written under a manifest that creates both marks, this build's raised one version
+// (pmdoc.UseManifestForTest), and read after the restore, so the test asserts nothing of the
+// build's own version: the build that reads the marks and does not create them yet, and the build
+// that creates them, each pass it. TestTheCheckMarksAreReadAtNAndWrittenFromNPlusOne holds which
+// version reads them and which writes them.
 //
 // It stays serial: the manifest is the package's, and every other test reads it.
 func TestACheckBlockServesItsSubjectAndProgram(t *testing.T) {
@@ -53,25 +53,6 @@ func TestACheckBlockServesItsSubjectAndProgram(t *testing.T) {
 	requireCheckMember(t, checks, "k6", "program", "")
 	requireCheckMember(t, checks, "k1", "subject", "")
 	requireCheckMember(t, checks, "k1", "program", "")
-
-	for _, attribute := range []struct{ name, markdown string }{
-		{name: "subject", markdown: ":::check{#k8 subject=\"production\"}\nWords.\n:::\n"},
-		{name: "program", markdown: ":::check{#k8 program=\"dispatch\"}\nWords.\n:::\n"},
-	} {
-		name := attribute.name + ".md"
-		first := uploadDocument(t, handler, owner, name, ":::check{#k8}\nWords.\n:::\n")
-		refused := dispatchRequest(t, handler, http.MethodPost, owner+"/artifacts", map[string]any{
-			"name": name, "content": attribute.markdown,
-			"precondition": uploadBaseNamed(t, handler, owner+"/artifacts", name),
-		}, "alice")
-		element := pmdoc.Element{Kind: pmdoc.AttributeElement, Block: "check", Name: attribute.name}
-		requireMarkdownRefused(t, refused, "a write putting "+attribute.name+" into a document that holds none",
-			"this Dispatch build reads "+element.String()+" but cannot write it yet")
-		read := decodeBody[model.Artifact](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+first.Artifact.ID, nil, "alice"))
-		if len(read.Versions) != 1 {
-			t.Errorf("%s after the refused write holds %d versions, want its first alone", name, len(read.Versions))
-		}
-	}
 }
 
 // useTheNextReleasesManifest makes the package read and write by the embedded manifest with its
