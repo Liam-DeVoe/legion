@@ -184,13 +184,17 @@ func TestThePlanStepAgentWayBackPutsEachClaimInItsTokensRole(t *testing.T) {
 	}
 }
 
-// A database that ran 20261117213545 in its first form holds every row that form found at the empty
-// string: that form added the column and named no row. An upgrade over it does not run
-// 20261117213545 again, since that version is already recorded, so every such row still holds the
+// A database that ran the step agent migration in its first form holds every row that form found
+// at the empty string: that form added the column and named no row. An upgrade over it does not run
+// the migration again, since its version is already recorded, so every such row still holds the
 // empty string after it. A step that is not the owner's reads as the name its row holds
 // (plan.StoredAgentName), so such a row reads as no name. The names record.NameAgents gives the
 // steps of a version written over such rows are held by record's
-// TestAStepWithNoKeyTakesANameWhereItsPlacesRowHoldsNone.
+// TestAStepWithNoKeyTakesANameWhereItsPlacesRowHoldsNone. The first form ran under the number the
+// migration had then, 20261117213545, which no migration of this release carries: a database that
+// recorded it runs planStepAgentVersion again, whose `add column` stops on the column that form
+// added. So the form is recorded here under planStepAgentVersion, the one number under which its
+// rows reach this release's reads.
 func TestTheStepAgentMigrationsFirstFormLeavesItsRowsUnnamedAfterTheUpgrade(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -199,7 +203,7 @@ func TestTheStepAgentMigrationsFirstFormLeavesItsRowsUnnamedAfterTheUpgrade(t *t
 	for _, statement := range []string{
 		// The whole of the first form's statement.
 		`alter table plan_steps add column agent text not null default ''`,
-		`insert into schema_version (version) values (20261117213545)`,
+		fmt.Sprintf(`insert into schema_version (version) values (%d)`, planStepAgentVersion),
 	} {
 		if _, err := store.Pool().Exec(ctx, statement); err != nil {
 			t.Fatalf("run the first form of the step agent migration, %s: %v", statement, err)

@@ -98,7 +98,7 @@ func (id AgentID) Key() (string, bool) {
 // names its agent by (the record's PlanStep.AgentName, and the store's read of a plan's agents for
 // an issue pod's slots). A step of the key owner names none, since its agent is the tree's
 // architect, whose token names the tree and no name on the issue. Every other step holds its name,
-// which 20261117213545 gave every step a release before the stored names wrote, except where the
+// which 20261123203837 gave every step a release before the stored names wrote, except where the
 // first form of that migration ran: a row it left holds "" and reads as no name, and the third pass
 // of record.NameAgents leaves such a step to its fourth.
 func StoredAgentName(key, stored string) string {

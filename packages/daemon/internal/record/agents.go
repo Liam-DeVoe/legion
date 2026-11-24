@@ -67,7 +67,7 @@ func KeySessionsOf(claims []IssueClaim) KeySessions {
 //  3. Each step with no key takes the name of the latest earlier row of its task, place and role
 //     with no key, where that row holds one, unless pass 2 or an earlier step of this pass gave
 //     that name, or a key holds it. A row that holds no name gives none: the first form of
-//     20261117213545 left every row it found at the empty string, and a step named "" has no
+//     20261123203837 left every row it found at the empty string, and a step named "" has no
 //     claim token, so such a step is named by pass 4.
 //  4. Each agent still with no name, in the order of its first step, takes the role of that first
 //     step, cut to 32 bytes (claim.RoleAgentName), where no agent of steps has that name, no key

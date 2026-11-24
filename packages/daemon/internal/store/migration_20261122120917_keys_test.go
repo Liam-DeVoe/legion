@@ -184,7 +184,7 @@ func TestAKeysClaimFromBeforeTheUpgradeKeepsItsNameAfterVersionsLeaveTheKeyOut(t
 // records.
 //
 // The controls, each left as it was: the tree's architect, whose owner's rows hold no name;
-// LEGION-210's tester, whose key's row holds no name, as the first form of 20261117213545 left
+// LEGION-210's tester, whose key's row holds no name, as the first form of 20261123203837 left
 // every row; LEGION-211's implementer, of an issue with no rows, since an agent is its issue's own;
 // and the suspend of LEGION-209's implementer, which is no start. The way back then drops the
 // column and takes the agent off each start, and the roll forward records each agent again.

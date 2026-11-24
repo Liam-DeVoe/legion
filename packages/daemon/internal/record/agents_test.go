@@ -377,7 +377,7 @@ func TestAnAgentPassesOverANameAnotherRoleHeld(t *testing.T) {
 
 // A step with no key takes a name even where the latest earlier row of its task, place and role
 // holds none: its role, or a name of its own where another agent of the version holds the role.
-// The first form of the migration that added plan_steps.agent, 20261117213545, left every row it
+// The first form of the migration that added plan_steps.agent, 20261123203837, left every row it
 // found at the empty string, and a row that holds no name now reads as no name
 // (PlanStep.AgentName), so a database that ran that form holds such rows of steps that are not
 // the owner's. A step named "" has no claim token (StepToken). The control: rows that hold names
