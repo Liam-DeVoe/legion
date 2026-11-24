@@ -560,11 +560,13 @@ import {
   installationRateWait,
   json,
   lastTryError,
+  ompSkillName,
   ompText,
   parse,
   parseJson,
   RATE_LIMITED,
   Refused,
+  readFrontmatter,
   required,
   type Sent,
   STORE_QUIET_MS,
@@ -592,7 +594,6 @@ import {
   CopyIndex,
   dirOf,
   factsOf,
-  frontmatter,
   type Gh,
   type GhResult,
   GitBlob,
@@ -5732,18 +5733,15 @@ function mustBeFile(file: string, what: string): void {
     throw new Refused(`${what} ${file} is not a file`);
 }
 
-/** The skill in `dir` as build-tasks reads it: its SKILL.md's frontmatter name (its directory's
- *  name when it gives none) and description, the file read as Oh My Pi reads it (`ompText`).
- *  Refuses a directory with no SKILL.md. */
+/** The skill in `dir` as build-tasks reads it: its SKILL.md's name and description as Oh My Pi
+ *  reads them (common.ts's `ompText`, `readFrontmatter` and `ompSkillName`: its frontmatter name,
+ *  trimmed, else its directory's name). Refuses a directory with no SKILL.md. */
 function taskSkill(dir: string): { name: string; description: string } {
   const skillFile = path.join(dir, "SKILL.md");
   mustBeFile(skillFile, "--skill's SKILL.md");
-  const fields = frontmatter(ompText(readFileSync(skillFile))) ?? {};
+  const fields = readFrontmatter(ompText(readFileSync(skillFile)));
   return {
-    name:
-      typeof fields.name === "string" && fields.name !== ""
-        ? fields.name
-        : path.basename(path.resolve(dir)),
+    name: ompSkillName(fields, path.basename(path.resolve(dir))),
     description: typeof fields.description === "string" ? fields.description : "",
   };
 }

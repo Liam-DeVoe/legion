@@ -31,7 +31,6 @@ import {
   installerPins,
   KEEP_RULES_VERSION,
   keepsEntry,
-  lenientFields,
   listCopies,
   listedManifest,
   MANIFEST_KINDS,
@@ -4440,10 +4439,12 @@ describe("the pure parts", () => {
       "Line one.\nLine two.\n",
     ],
     [
-      "not valid YAML, read leniently",
+      // Oh My Pi quotes the plain scalar that holds `: `, which still leaves the block no YAML,
+      // and then reads each `key: value` line alone: the continuation line is no field.
+      "not valid YAML, read one line at a time as Oh My Pi reads it",
       "name: alpha\ndescription: Use when: the alpha list\n  is needed.",
       "alpha",
-      "Use when: the alpha list is needed.",
+      "Use when: the alpha list",
     ],
     [
       "no name: the directory's",
@@ -4470,32 +4471,33 @@ describe("the pure parts", () => {
     });
   });
 
-  test("lenient fields read quoted, folded, literal and list values of a block YAML refuses", () => {
-    const block = [
-      "name: alpha: one",
-      'description: "over',
-      '  two lines"',
-      "single: 'it''s'",
-      "folded: >",
-      "  a",
-      "  b",
-      "literal: |-",
-      "  x",
-      "  y",
-      "flow: [a, 'b', \"c\"]",
-      "block:",
-      "  - d",
-      "  - e",
-    ].join("\n");
-    expect(lenientFields(block)).toEqual({
-      name: "alpha: one",
-      description: "over two lines",
-      single: "it's",
-      folded: "a b\n",
-      literal: "x\ny",
-      flow: ["a", "b", "c"],
-      block: ["d", "e"],
-    });
+  // Catches: a copy named by a reading of its frontmatter other than Oh My Pi's
+  // (packages/utils/src/frontmatter.ts at the pin), which lists it under another name: installed
+  // under the copies' name (context.ts), the capture owed a hint Oh My Pi never asked for, and the
+  // copies list named it wrongly.
+  test.each([
+    [
+      "an HTML comment before the opening ---, which Oh My Pi drops",
+      "<!-- A made-up note. -->\n---\nname: other\ndescription: One.\n---\n# Body\n",
+      { name: "other", nameFrom: "frontmatter", description: "One.", fault: "" },
+    ],
+    [
+      "a closing line that starts --- (----)",
+      "---\nname: other\ndescription: One.\n----\n# Body\n",
+      { name: "other", nameFrom: "frontmatter", description: "One.", fault: "" },
+    ],
+    [
+      "an opening line that starts --- (---x)",
+      "---x\nname: other\ndescription: One.\n---\n# Body\n",
+      { name: "other", nameFrom: "frontmatter", description: "One.", fault: "" },
+    ],
+    [
+      "a block closed by ..., which Oh My Pi does not close, so it has none",
+      "---\nname: other\ndescription: One.\n...\n# Body\n",
+      { name: "dir", nameFrom: "directory", description: "", fault: "no frontmatter" },
+    ],
+  ])("a SKILL.md with %s is named as Oh My Pi names it", (_shape, text, fields) => {
+    expect(skillFields("skills/dir", "acme/skills", text)).toMatchObject(fields);
   });
 
   test.each([

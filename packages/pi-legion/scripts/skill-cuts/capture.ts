@@ -208,6 +208,7 @@ import {
   json,
   ompText,
   pastLimit,
+  readFrontmatter,
   STORE_QUIET_MS,
   splitFrontmatter,
   textOf,
@@ -222,7 +223,6 @@ import {
   type InstalledSkill,
   legionRole,
   type RepoSource,
-  readFrontmatter,
 } from "./context";
 import { sessionHeadSql } from "./countsql";
 import { type Gateway, isResponsesBody, type MessagesBody, type RequestBody } from "./gateway";
@@ -783,7 +783,7 @@ function descriptionReader(database: string): DescriptionReader {
  * `scanSkillsFromDir` are the same there as at rig.sh's v18.18.6-sami.20261117-013345): the body
  * and the frontmatter of `parseFrontmatter` with its defaults, which are common.ts's
  * `splitFrontmatter` with `repair` (leading HTML comments dropped, the body trimmed) and
- * context.ts's `readFrontmatter` (its keys camelCase at every depth), compared with
+ * `readFrontmatter` (its keys camelCase at every depth), compared with
  * `Bun.deepEquals` as Oh My Pi compares them. So a profile that installs one text twice, once
  * under `<namespace>/<name>`, lists it once, under the copy admitted first. Only a name installed
  * more than once can lose a copy, so only the copies of such a name are read.

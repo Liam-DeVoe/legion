@@ -116,10 +116,12 @@ import {
   GhRetries,
   ghLimiter,
   installationRateWait,
+  ompSkillName,
   ompText,
   parseJson,
   pastLimit,
-  splitFrontmatter,
+  Refused,
+  readFrontmatter,
   textOf,
   timeLimit,
 } from "./common";
@@ -386,118 +388,8 @@ export function gitBlobId(bytes: Uint8Array): string {
   return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 }
 
-/** An ambiguous plain scalar of a frontmatter line, as Oh My Pi finds one. */
-const PLAIN_SCALAR_KEY_VALUE = /^(\s*[A-Za-z_][\w-]*:\s+)(\S.*?)(\s*)$/;
-/** The first characters of a value that is no plain scalar. */
-const FLOW_OR_EXPLICIT_VALUE_START = new Set(['"', "'", "[", "{", "|", ">", "!", "&", "*", "#"]);
-
-/** `text`'s frontmatter block parsed as one YAML mapping, tabs read as two spaces, or null. */
-function yamlRecord(text: string): Record<string, unknown> | null {
-  const loaded: unknown = Bun.YAML.parse(text.replaceAll("\t", "  "));
-  if (typeof loaded !== "object" || loaded === null || Array.isArray(loaded)) return null;
-  return { ...loaded };
-}
-
-/**
- * `text` with each `<!--` … `-->` span dropped, as one pass of Oh My Pi's
- * `replace(/<!--[\s\S]*?-->/g, "")` drops them in packages/utils/src/frontmatter.ts at the tag
- * v18.18.6-sami.20261117-013345, so the runner reads the description Oh My Pi reads: a span runs
- * from a `<!--` to the first `-->` that starts after it, and the scan goes on after that `-->`, so
- * the text a drop joins together is not read again (`<!<!---->--` gives `<!--`, as Oh My Pi's pass
- * does). A `<!--` with no `-->` after it stays. This is no sanitizer: its output is frontmatter
- * text for a YAML parse and is never rendered as HTML.
- */
-function dropComments(text: string): string {
-  let kept = "";
-  let at = 0;
-  for (;;) {
-    const open = text.indexOf("<!--", at);
-    if (open === -1) break;
-    const close = text.indexOf("-->", open + 4);
-    if (close === -1) break;
-    kept += text.slice(at, open);
-    at = close + 3;
-  }
-  return kept + text.slice(at);
-}
-
-/** `value` with each kebab-case key of each mapping in it, at every depth, in camelCase (`foo-bar`
- *  as `fooBar`; a key it then shares takes the later value), as Oh My Pi's
- *  `normalizeFrontmatterKeys` gives a skill's frontmatter (packages/utils/src/frontmatter.ts at
- *  the pin). A YAML parse gives plain mappings, lists and scalars alone. */
-function camelKeys(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(camelKeys);
-  if (typeof value !== "object" || value === null) return value;
-  return Object.fromEntries(
-    Object.entries(value).map(([key, inner]) => [
-      key.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase()),
-      camelKeys(inner),
-    ])
-  );
-}
-
-/**
- * The frontmatter of a SKILL.md's text, read as Oh My Pi's `parseFrontmatter` reads a skill's
- * with its defaults (packages/utils/src/frontmatter.ts of cybermonklabs/oh-my-pi at the tag
- * v18.18.6-sami.20261119-162325, the build the runner pins, the same file as at
- * v18.18.6-sami.20261117-013345): the block common.ts's `splitFrontmatter` finds with
- * `repair` (CRLF as LF, leading HTML comments before the opening `---` dropped), the comments
- * inside it dropped; parsed as YAML with each tab replaced by two spaces; when that fails, parsed
- * again with each plain scalar that holds `: ` quoted (`quoteAmbiguousPlainScalars`); when that
- * fails too, each `key: value` line read on its own, a value that does not parse as YAML kept as
- * its text. Kebab-case keys become camelCase, at every depth (`camelKeys`). A text with no block
- * has none (`{}`).
- */
-export function readFrontmatter(content: string): Record<string, unknown> {
-  const { block: raw } = splitFrontmatter(content, true);
-  if (raw === undefined) return {};
-  const block = dropComments(raw);
-  let read: Record<string, unknown> | null | undefined;
-  try {
-    read = yamlRecord(block);
-  } catch {
-    let quoted = false;
-    const repaired = block
-      .split("\n")
-      .map((line) => {
-        const match = PLAIN_SCALAR_KEY_VALUE.exec(line);
-        const value = match?.[2]?.trimEnd() ?? "";
-        if (!value.includes(": ") || FLOW_OR_EXPLICIT_VALUE_START.has(value[0] ?? "")) return line;
-        quoted = true;
-        return `${match?.[1]}${JSON.stringify(value)}${match?.[3]}`;
-      })
-      .join("\n");
-    try {
-      read = quoted ? yamlRecord(repaired) : undefined;
-    } catch {
-      read = undefined;
-    }
-    if (read === undefined) {
-      read = {};
-      for (const line of block.split("\n")) {
-        const match = /^([\w-]+):\s*(.*)$/.exec(line);
-        if (match?.[1] === undefined) continue;
-        const raw = (match[2] ?? "").trim();
-        let value: unknown = raw;
-        if (raw !== "") {
-          try {
-            const parsed: unknown = Bun.YAML.parse(raw);
-            if ((parsed !== null && typeof parsed !== "object") || Array.isArray(parsed)) {
-              value = parsed;
-            }
-          } catch {
-            // The value's own text stands.
-          }
-        }
-        read[match[1]] = value;
-      }
-    }
-  }
-  return camelKeys(read ?? {}) as Record<string, unknown>;
-}
-
-/** The frontmatter of the SKILL.md text `text`, as Oh My Pi reads it for the listing
- *  (`readFrontmatter`): its `description` ("" when it has none), and whether it is hidden from the
+/** The frontmatter of the SKILL.md text `text`, as Oh My Pi reads it for the listing (common.ts's
+ *  `readFrontmatter`): its `description` ("" when it has none), and whether it is hidden from the
  *  listing, which Oh My Pi does for `hide: true` or `disable-model-invocation: true`
  *  (extensibility/skills.ts at the pinned tag). load.ts's `sessionDescription` reads the session's
  *  copy with it, and build.ts the copies of a repository. */
@@ -2166,9 +2058,12 @@ export async function buildContext(
         if (!namespacedDirs.includes(parent)) namespacedDirs.push(parent);
       }
       const armDir = fromArm(skill);
+      // Where the copy comes from, as the refusal below names it.
+      let from: string;
       if (armDir !== undefined) {
         cpSync(armDir, dir, { recursive: true, verbatimSymlinks: true });
         skillRecords.push({ name: listed, from: "arm" });
+        from = `the arm's text, ${armDir}`;
       } else {
         const key = cacheKey(skill.repo, skill.commit, skill.path);
         const cached = await builds.entry("skill", key, async (dest) => {
@@ -2191,8 +2086,22 @@ export async function buildContext(
           name: listed,
           from: { repo: skill.repo, commit: skill.commit, path: skill.path, key },
         });
+        from = `${skill.path} of ${skill.repo} at ${skill.commit}`;
       }
-      skills.push({ name: listed, dir, ...skillFrontmatter(dir) });
+      // Oh My Pi names the copy by its frontmatter `name`, else its directory's (common.ts's
+      // `ompSkillName`), and lists it, asks its hint and finds its collisions under that name: a
+      // copy it names otherwise than the profile does would be listed under a name the capture
+      // owes nothing of. A load under another name rewrote the `name:` line (load.ts's
+      // `renamedSkill`), so its copy passes; an arm text whose own `name:` is not the case
+      // skill's is refused here.
+      const text = ompText(readFileSync(path.join(dir, "SKILL.md")));
+      const named = ompSkillName(readFrontmatter(text), skill.name);
+      if (named !== skill.name) {
+        throw new Refused(
+          `case ${c.id}: the profile's skill ${listed} is installed from ${from}, whose SKILL.md's frontmatter names it ${named}, and Oh My Pi names a skill by its frontmatter name, not ${skill.name}, the name the profile gives it${armDir === undefined ? "" : ": an arm's text must keep the case skill's name"}`
+        );
+      }
+      skills.push({ name: listed, dir, ...skillTextFrontmatter(text) });
     }
   } finally {
     for (const release of releases) release();

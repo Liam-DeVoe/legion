@@ -96,9 +96,9 @@
  *    repository's, so a large repository's walk, the small repositories and the searches share
  *    them; the output is the same, byte for byte, as one repository at a time.
  * 2. Skills. Each `SKILL.md` blob outside a configured `excludePaths` prefix of its repository: its
- *    frontmatter `name` (else its directory's name) and `description`, read from the blob. The
- *    frontmatter is read as YAML (Bun.YAML); one that is not valid YAML is read by `lenientFields`
- *    (top-level `key: value`, plain or quoted, folded `>` or literal `|` blocks, flow lists).
+ *    name and `description`, read from the blob as Oh My Pi reads them (common.ts's
+ *    `readFrontmatter` and `ompSkillName`: its frontmatter `name`, trimmed, else its directory's
+ *    name), so that each copy is listed under the name Oh My Pi lists it under.
  * 3. Shared names. Each name in two or more repositories, and each name twice in one repository,
  *    forks and archived copies included and marked.
  * 4. Manifests, read whole from the trees, by path (`MANIFEST_KINDS`). Each gives installer rows:
@@ -224,15 +224,19 @@ import { z } from "zod";
 import { mapLimit } from "../skill-scenarios/production-dispatch";
 import {
   firstLine,
+  frontmatterFields,
   GhRetries,
   ghLimiter,
   installationRateWait,
   MAX_RATE_RETRIES,
+  ompSkillName,
   ompText,
   parseJson,
   RATE_LIMITED,
   type ResetIo,
+  readFrontmatter,
   schemaFaults,
+  splitFrontmatter,
   splitIncluded,
   textOf,
   timeLimit,
@@ -1684,118 +1688,6 @@ async function readRepositoryStep(
 // ---------------------------------------------------------------------------------------------
 // frontmatter and skills
 
-/** The YAML frontmatter block of a markdown text, or undefined when it has none. The text is one
- *  read as Oh My Pi reads a file (common.ts's `ompText`, which every blob, cached text and file
- *  read here goes through), so it starts with no byte order mark. */
-function frontmatterBlock(text: string): string | undefined {
-  const lines = text.split(/\r?\n/);
-  if (lines[0]?.trimEnd() !== "---") return undefined;
-  const end = lines.findIndex((line, index) => index > 0 && /^(---|\.\.\.)\s*$/.test(line));
-  return end < 0 ? undefined : lines.slice(1, end).join("\n");
-}
-
-/** A block scalar's text (`|` or `>`, with its chomping indicator) from its lines. */
-function blockScalar(header: string, lines: readonly string[]): string {
-  const chomp = header.includes("-") ? "strip" : header.includes("+") ? "keep" : "clip";
-  const content = [...lines];
-  let trailing = 0;
-  while (content.length > 0 && (content[content.length - 1] ?? "").trim() === "") {
-    content.pop();
-    trailing++;
-  }
-  const indent = Math.min(
-    ...content.filter((line) => line.trim() !== "").map((line) => /^ */.exec(line)?.[0].length ?? 0)
-  );
-  const stripped = content.map((line) => (line.trim() === "" ? "" : line.slice(indent)));
-  let body = "";
-  if (header.startsWith("|")) {
-    body = stripped.join("\n");
-  } else {
-    for (const line of stripped) {
-      if (line === "") body += "\n";
-      else body += body === "" || body.endsWith("\n") ? line : ` ${line}`;
-    }
-  }
-  if (body === "" || chomp === "strip") return body;
-  return chomp === "keep" ? body + "\n".repeat(trailing + 1) : `${body}\n`;
-}
-
-/** A quoted scalar's line breaks folded as YAML folds them: one break a space, n breaks n-1. */
-function foldQuoted(text: string): string {
-  return text.replace(/[ \t]*\n[ \t]*(\n[ \t]*)*/g, (run) => {
-    const breaks = run.split("\n").length - 2;
-    return breaks > 0 ? "\n".repeat(breaks) : " ";
-  });
-}
-
-/** One top-level value of `lenientFields`: its text after `key:` and its continuation lines. */
-function lenientValue(first: string, more: readonly string[]): unknown {
-  if (/^[|>][-+0-9]*$/.test(first)) return blockScalar(first, more);
-  const joined = [first, ...more.map((line) => line.trim())].join("\n").trim();
-  if (first.startsWith('"')) {
-    const inner = foldQuoted(/^"((?:[^"\\]|\\.)*)"/s.exec(joined)?.[1] ?? joined.slice(1));
-    const parsed = parseJson(`"${inner.replace(/\n/g, "\\n").replace(/\t/g, "\\t")}"`);
-    return typeof parsed === "string" ? parsed : inner;
-  }
-  if (first.startsWith("'")) {
-    return foldQuoted(/^'((?:[^']|'')*)'/s.exec(joined)?.[1] ?? joined.slice(1)).replace(
-      /''/g,
-      "'"
-    );
-  }
-  if (first.startsWith("[")) return strings(joined.replace(/\s*\n\s*/g, " "));
-  if (first === "" && more.some((line) => /^\s*-\s/.test(line))) {
-    return more
-      .map((line) => /^\s*-\s+(.*)$/.exec(line)?.[1])
-      .filter((item): item is string => item !== undefined)
-      .map((item) => unquote(item.trim()));
-  }
-  return [first, ...more.map((line) => line.trim())]
-    .map((line) => line.replace(/\s+#.*$/, ""))
-    .filter((line) => line !== "")
-    .join(" ");
-}
-
-/**
- * The top-level fields of a frontmatter block that is not valid YAML, read leniently: each line
- * `key: value` at the left margin starts a field, and the indented or blank lines after it continue
- * it. A value is plain (its lines joined by spaces), double- or single-quoted (over lines, folded),
- * a folded `>` or literal `|` block with its chomping indicator, a flow list `[a, b]` or a block
- * list of `- item` lines.
- */
-export function lenientFields(block: string): Record<string, unknown> {
-  const lines = block.split(/\r?\n/);
-  const fields: Record<string, unknown> = {};
-  let index = 0;
-  while (index < lines.length) {
-    const key = /^([A-Za-z_][\w-]*):(?:[ \t]+(.*)|[ \t]*)$/.exec(lines[index] ?? "");
-    index++;
-    if (key === null) continue;
-    const more: string[] = [];
-    while (index < lines.length && /^(\s+\S|\s*$)/.test(lines[index] ?? "")) {
-      more.push(lines[index] ?? "");
-      index++;
-    }
-    fields[key[1] ?? ""] = lenientValue((key[2] ?? "").trim(), more);
-  }
-  return fields;
-}
-
-const YamlMapping = z.record(z.string(), z.unknown());
-
-/** The frontmatter fields of a markdown text: YAML, else `lenientFields`; undefined with none. */
-export function frontmatter(text: string): Record<string, unknown> | undefined {
-  const block = frontmatterBlock(text);
-  if (block === undefined) return undefined;
-  try {
-    const parsed = YamlMapping.safeParse(Bun.YAML.parse(block));
-    if (parsed.success) return parsed.data;
-  } catch {
-    // Not valid YAML (a description holding `: ` unquoted is common): read it leniently below.
-  }
-  return lenientFields(block);
-}
-
 /** A skill copy: one `SKILL.md` of one repository at the commit read. */
 export interface SkillCopy {
   readonly repository: string;
@@ -1820,12 +1712,14 @@ export type SkillFields = Pick<
   "name" | "nameFrom" | "description" | "descriptionBytes" | "fault"
 >;
 
-/** A skill's name and description from its `SKILL.md` text, its directory's name standing in for
- *  a missing frontmatter name. */
+/** A skill's name and description from its `SKILL.md` text as Oh My Pi reads them (common.ts's
+ *  `splitFrontmatter`, `frontmatterFields` and `ompSkillName`), its directory's name standing in
+ *  for a missing frontmatter name, and the repository's name for a skill at its root. A
+ *  description that is no text is given as its text (`String`). */
 export function skillFields(dir: string, repository: string, text: string): SkillFields {
-  const fields = frontmatter(text);
   const fallback = dir === "" ? (repository.split("/")[1] ?? repository) : path.posix.basename(dir);
-  if (fields === undefined) {
+  const { block } = splitFrontmatter(text, true);
+  if (block === undefined) {
     return {
       name: fallback,
       nameFrom: "directory",
@@ -1834,13 +1728,14 @@ export function skillFields(dir: string, repository: string, text: string): Skil
       fault: "no frontmatter",
     };
   }
-  const name = typeof fields.name === "string" ? fields.name.trim() : "";
+  const fields = frontmatterFields(block);
+  const named = ompSkillName(fields, "");
   const raw = fields.description;
   const description =
     typeof raw === "string" ? raw : raw === undefined || raw === null ? "" : String(raw);
   return {
-    name: name === "" ? fallback : name,
-    nameFrom: name === "" ? "directory" : "frontmatter",
+    name: named === "" ? fallback : named,
+    nameFrom: named === "" ? "directory" : "frontmatter",
     description,
     descriptionBytes: Buffer.byteLength(description, "utf8"),
     fault: raw === undefined ? "no description" : "",
@@ -2543,8 +2438,11 @@ function parseOmpConfig(text: string): ParsedManifest {
   };
 }
 
+/** An agent definition's skill loads, its frontmatter read as Oh My Pi reads it (common.ts's
+ *  `readFrontmatter`, as context.ts reads the agent a session ran as): `autoloadSkills`
+ *  (`autoload-skills` too, a kebab-case key read in camelCase), and Claude Code's `skills`. */
 function parseAgent(file: string, text: string): ParsedManifest {
-  const fields = frontmatter(text) ?? {};
+  const fields = readFrontmatter(text);
   const agent = typeof fields.name === "string" ? fields.name : path.posix.basename(file, ".md");
   const autoload = strings(fields.autoloadSkills);
   const claude = strings(fields.skills);

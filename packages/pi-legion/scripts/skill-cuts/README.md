@@ -258,6 +258,12 @@ My Pi did store is cached, so a run made again asks for the others alone. A prof
 installs one text twice, once as `<namespace>/<name>`, lists it once: Oh My Pi admits the bare
 copies first, then each namespace's, and drops a copy whose body and frontmatter are those of a
 copy of its name it admitted before, so the capture lists that copy nowhere and owes it no hint.
+Oh My Pi names each copy by its SKILL.md's frontmatter `name`, trimmed, else its directory's name,
+and the runner reads every SKILL.md's frontmatter as Oh My Pi does (`common.ts`'s
+`readFrontmatter`), `copies` among them, so each copy is installed under the name Oh My Pi lists it
+under. A capture whose installed copy Oh My Pi would name otherwise (an arm text that renames the
+case's skill, say) is refused (exit 2, or that task's failure in `load`) as the copy is installed,
+naming the case, the copy's source and both names.
 Oh My Pi asks for temperature 0, but sends no temperature to Opus 4.7 on, Sonnet, Fable and Mythos
 5 on or Haiku 5.5 on, which take none, so their hints run at the API's default of 1. `gateway.ts`
 sends each body to its API's route (the key as `x-api-key`, or as
@@ -1452,6 +1458,7 @@ spend collector.
 0 done (a control held); 1 failed (every reply of a reader refused, a control that did not hold, a
 call, a load test's task or an `--after-case` command that failed, or `behaviour` results that show
 a drop no stage makes); 2 refused before any model call or store read (among the refusals, an
-`--out` inside a git or jj checkout, from `behaviour`'s stage commands, `load` and `build-cases`);
+`--out` inside a git or jj checkout, from `behaviour`'s stage commands, `load` and `build-cases`),
+or as a case's capture installs a copy Oh My Pi would name otherwise than its profile does;
 3 stopped (the budget is spent, the peak memory passed 1 GiB, 1.5 GiB for `copies`, or the listing
 rule dropped more than half of a load's tasks); 4 stopped by build-cases' stop rule.

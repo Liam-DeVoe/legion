@@ -1289,7 +1289,7 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
     "skills/quiet/SKILL.md":
       "---\nname: quiet\ndescription: Use for quiet work.\ndisable-model-invocation: true\n---\n\n# quiet\n",
     // A description that holds `: `, which strict YAML refuses: Oh My Pi reads the block again with
-    // it quoted, so `hide: true` is still true (context.ts's readFrontmatter).
+    // it quoted, so `hide: true` is still true (common.ts's readFrontmatter).
     "skills/shy/SKILL.md":
       "---\nname: shy\ndescription: Use when: the work is shy.\nhide: true\n---\n\n# shy\n",
   },
