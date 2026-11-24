@@ -1242,7 +1242,7 @@ func (r *outbox) status(ctx context.Context, row record.OutboxRow, payload recor
 	}
 	issue, err := r.dispatch.GetIssue(ctx, row.Issue)
 	if err != nil {
-		return fmt.Errorf("read Dispatch issue %s before status write: %w", row.Issue, err)
+		return statusReadFailed(row.Issue, err)
 	}
 	proceed, err := rule.firstAttempt(ctx, r, row, payload, issue)
 	if err != nil || !proceed {
@@ -1291,6 +1291,14 @@ func (r *outbox) status(ctx context.Context, row record.OutboxRow, payload recor
 		return &statusWriteFailure{err: refused, wrote: statusWrites{status: true}}
 	}
 	return nil
+}
+
+// statusReadFailed is the error the status executor (outbox.status) ends with where its read of
+// issue, which opens every status write, fails with err. A refusal of that read is what a
+// message-refused notice gives as Dispatch's answer (statusWriteRefused), so the golden samples
+// build theirs with it too (goldenReadRefused), in the daemon's own words.
+func statusReadFailed(issue string, err error) error {
+	return fmt.Errorf("read Dispatch issue %s before status write: %w", issue, err)
 }
 
 // statusWriteReads bounds how often one status row reads its issue again after Dispatch refused
@@ -1983,9 +1991,17 @@ func (r *outbox) message(ctx context.Context, row record.OutboxRow, payload reco
 		}
 	}
 	if err := r.dispatch.PostMessage(ctx, row.Issue, payload.Posted(row.ID)); err != nil {
-		return fmt.Errorf("post Dispatch message for %s: %w", row.Issue, err)
+		return messagePostFailed(row.Issue, err)
 	}
 	return nil
+}
+
+// messagePostFailed is the error the message executor (outbox.message) ends with where Dispatch
+// refuses or fails the post of a message on issue with err. A refusal of that post is what a
+// message-refused notice gives as Dispatch's answer (messagePostRefused), so the golden samples
+// build theirs with it too (goldenPostRefused), in the daemon's own words.
+func messagePostFailed(issue string, err error) error {
+	return fmt.Errorf("post Dispatch message for %s: %w", issue, err)
 }
 
 // messageArtifact puts on the issue the document a message links. It reads the issue's artifacts

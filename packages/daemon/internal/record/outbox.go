@@ -683,7 +683,7 @@ type Notice struct {
 	// when the daemon read the approval, that it queued nothing, and the issue whose todo brings the
 	// root back.
 	ApprovalSeq      int64  `json:"approval_seq,omitempty"`
-	StatusChangedSeq int64  `json:"status_changed_seq,omitempty"`
+	StatusChangedSeq int64  `json:"status_change_seq,omitempty"`
 	NotQueued        bool   `json:"not_queued,omitempty"`
 	SetTodo          string `json:"set_todo,omitempty"`
 	// What holds an update round past its bound (update-stalled).

@@ -338,11 +338,26 @@ func stepRef(key string, step record.DesignStep) string {
 // outbox's parkDecision relays no such notice to the controller: kept, it would take the place of
 // the newer decision kept under the same document's ref, and of the claim a start holds on it. A
 // gate that records no request, or no gate of the notice's document, says nothing against it.
+//
+// The gate records the whole reason, and the notice carries it cut to texts.OneAct
+// (ChangesRequestedNotice), so the notice is of the told request where it names the told version
+// and its reason is the told reason's head at that bound, or the whole told reason, which a row
+// an older daemon queued carries.
 func ChangesSuperseded(gates map[record.DesignStep]record.DesignGate, issue string, notice record.Notice) bool {
 	for step, gate := range gates {
-		if stepRef(issue, step) == notice.Ref {
-			return gate.ToldChangesVersion != nil && (*gate.ToldChangesVersion != notice.Version || gate.ToldChangesReason != notice.Reason)
+		if stepRef(issue, step) != notice.Ref {
+			continue
 		}
+		switch {
+		case gate.ToldChangesVersion == nil:
+			return false
+		case *gate.ToldChangesVersion != notice.Version:
+			return true
+		case notice.Reason == gate.ToldChangesReason:
+			return false
+		}
+		head, _ := texts.Bound(gate.ToldChangesReason, texts.OneAct)
+		return notice.Reason != head
 	}
 	return false
 }

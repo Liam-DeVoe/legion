@@ -299,11 +299,11 @@ func TestASettlementOfAnotherHeadWakesNoReleasedWorker(t *testing.T) {
 			}
 		}, late: ofRun("head1", 1, 1, "build")},
 		{name: "a settlement of the head older than the one that woke the pod",
-			newer: wokeBy(ofRun("head1", 5, 2), false, "head1", "passed every check"), wakes: 1, late: ofRun("head1", 4, 1, "build")},
+			newer: wokeBy(ofRun("head1", 5, 2), false, "head: head1", "passed: 1\n"), wakes: 1, late: ofRun("head1", 4, 1, "build")},
 		{name: "a settlement of the head naming fewer checks than the one that woke the pod, after a reopen",
 			newer: wokeBy(withLint, true, "head1", "lint"), wakes: 1, late: ofRun("head1", 5, 1)},
 		{name: "a settlement of the head with an older commit status than the one that woke the pod, after a reopen",
-			newer: wokeBy(withStatus(2, record.CommitStatusSuccess, wakeAt.Add(-time.Minute)), true, "head1", "passed every check"),
+			newer: wokeBy(withStatus(2, record.CommitStatusSuccess, wakeAt.Add(-time.Minute)), true, "head: head1", "passed: 1\n", "passed_statuses: 1\n"),
 			wakes: 1, late: withStatus(1, record.CommitStatusFailure, wakeAt.Add(-2*time.Minute))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -107,6 +107,31 @@ func TestAnInterruptedTasksNoteIsTheEndThatCutItsLastTurn(t *testing.T) {
 	}
 }
 
+// The out-of-memory note is written for a role of an issue pod (texts' list names those roles
+// alone as its readers): the container that runs every role of the issue, another role's work
+// that can have filled it, and the worker guide to read before heavy work. The controller runs
+// alone in a pod of its own, so a task of its that an end marked out of memory takes back is sent
+// again behind the note of its turn cut off and no out-of-memory note. The sandbox runtime marks
+// no end of the controller's pod; the fake marks this one, so the delivery holds the mark and
+// only the message decides.
+func TestTheControllersTaskAnOutOfMemoryEndTookBackCarriesNoOutOfMemoryNote(t *testing.T) {
+	h := newHarnessOf(t, controllerClaim())
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: "Legion controller start"})
+	h.must(StreamTurnStart{Claim: h.token})
+
+	h.must(RuntimeObservation{Observation: runtime.Observation{
+		Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(), OutOfMemory: true,
+	}})
+	h.relaunched()
+	resent := h.wantPrompts(2)[1].Message
+	wantSays(t, resent, "kind: relaunch-note\n", "\ntask_turn: true\n", "Legion controller start")
+	wantSaysNot(t, resent, "out-of-memory-note", "OOMKilled")
+	if p := h.store.load(h.token).Pending; p == nil || !p.Interrupted || !p.OutOfMemory {
+		t.Fatalf("stored task %+v, want it taken back and marked out of memory, as any role's", p)
+	}
+}
+
 // The interrupted turn ran, so the agent read its task, and the task keeps that read mark while it
 // waits for the relaunch: for a claim that has served no run, it is what attributes a completion
 // reported before the re-send's acknowledgement to the task's run (ServingRun), where a task that

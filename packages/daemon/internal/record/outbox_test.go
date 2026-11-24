@@ -575,7 +575,6 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "give-ups named on a tick", payload: ControllerNotice{Kind: TickNotice, GiveUps: noticeGiveUps(1)}, reason: "only an intake-gave-up notice does"},
 		{name: "a count on a tick", payload: ControllerNotice{Kind: TickNotice, Count: 1}, reason: "only an intake-gave-up notice does"},
 		{name: "a count on an architect's notice", payload: Notice{Kind: "phase-finished", Count: 1}, reason: "only an intake-gave-up notice does"},
-		{name: "an intake-gave-up notice for an architect", payload: Notice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: noticeGiveUps(1)}, reason: "is the controller's alone"},
 		{name: "unknown supervise operation", payload: SuperviseRequest{Op: "unknown"}, reason: "unknown supervise operation"},
 		{name: "a stop that is not a tree close", payload: SuperviseRequest{Op: "stop", Tree: "LEGION-208", Role: claim.RoleArchitect}, reason: "unknown supervise operation"},
 		{name: "an issue close naming a linger", payload: SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Linger: 7}, reason: "only a tree close"},

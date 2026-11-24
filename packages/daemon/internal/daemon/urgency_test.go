@@ -533,7 +533,7 @@ func designLow() []urgencyCase {
 		{texts.Held, ctl, texts.Variant{Hold: texts.HoldEscalation}, texts.Med},
 		{texts.Held, ctl, texts.Variant{Hold: texts.HoldFailure}, texts.Med},
 		{texts.Held, ctl, texts.Variant{Hold: texts.HoldCarried}, texts.Med},
-		// child-status for todo, for a join and for a child that starts planning; the other changes,
+		// child-status for todo, for a join and for a child that starts its first phase; the other changes,
 		// the adopted root's own architect's among them, are med.
 		{texts.ChildStatus, arch, texts.Variant{Change: texts.ChangeTodo}, texts.Low},
 		{texts.ChildStatus, arch, texts.Variant{Change: texts.ChangeJoined}, texts.Low},

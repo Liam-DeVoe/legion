@@ -922,11 +922,11 @@ func TestAMessagePostDispatchRefusesIsFinishedAndItsArchitectTold(t *testing.T) 
 	row := mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "READY #42 at head\n\nthe rest of the packet"}, time.Now())
 	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: "CAP_EXCEEDED",
 		Message: "body block 2 (paragraph) is 1 characters over the 32000-character block limit (32001/32000)"}
-	if !permanentRefusal(row, fmt.Errorf("post Dispatch message for LEGION-208: %w", refusal)) {
+	if !permanentRefusal(row, messagePostFailed("LEGION-208", refusal)) {
 		t.Fatal("a CAP_EXCEEDED post is retried, want it finished refused")
 	}
 	outage := &dispatch.Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE", Message: "Dispatch is down"}
-	if permanentRefusal(row, fmt.Errorf("post Dispatch message for LEGION-208: %w", outage)) {
+	if permanentRefusal(row, messagePostFailed("LEGION-208", outage)) {
 		t.Fatal("a 503 post is finished refused, want it retried")
 	}
 	notice := messagePostRefused("LEGION-208", record.MessagePost{Body: "READY #42 at head\n\nthe rest of the packet"}, refusal)

@@ -142,7 +142,7 @@ type ParkedDecisionRecord struct {
 	At               time.Time            `json:"at,omitzero"`
 	Version          int                  `json:"version,omitempty"`
 	ApprovalSeq      int64                `json:"approval_seq,omitempty"`
-	StatusChangedSeq int64                `json:"status_changed_seq,omitempty"`
+	StatusChangedSeq int64                `json:"status_change_seq,omitempty"`
 	Status           string               `json:"status,omitempty"`
 	NotQueued        bool                 `json:"not_queued,omitempty"`
 	SetTodo          string               `json:"set_todo,omitempty"`
@@ -423,6 +423,11 @@ type PauseActor struct {
 // sentence and no step; R8 of dispatch://INFRA-3686 keeps each as a field, and the record adds the
 // project key as its issue. Both keys keep main's shape, omitempty, though the outbox refuses a
 // notice of this kind that counts or names none.
+//
+// It has no urgency rule (rules.go), so it is Med for the controller, its one reader. Each
+// message it names stays given up, its fact unapplied, until a replay or a discard closes it, and
+// the controller must replay or discard it (replay_give_up, discard_give_up): it is no text to
+// leave for a later turn.
 type IntakeGaveUpRecord struct {
 	NoticeHead
 	Count   int      `json:"count,omitempty"`

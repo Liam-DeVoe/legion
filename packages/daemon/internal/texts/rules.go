@@ -8,11 +8,6 @@ import (
 // This file holds the urgency rule of each notice and role-message kind that is not Med for
 // every reader, and the variant words those rules read. Every other kind has no rule, and so is
 // Med for every reader (UrgencyOf).
-//
-// An intake-gave-up notice is one of those: it has no rule, so it is Med for the controller, its
-// one reader. Each message it names stays given up, its fact unapplied, until a replay or a
-// discard closes it, and the controller must replay or discard it (replay_give_up,
-// discard_give_up): it is no text to leave for a later turn.
 
 // The variant words of a child-status notice: the change of the child that it tells. The
 // payload key is change (Variant.Change).
@@ -83,7 +78,7 @@ func heldUrgency(reader claim.Role, v Variant) Urgency {
 }
 
 // childStatusUrgency is Low for the architect where a child moved to todo, joined the tree or
-// starts planning, and Med for every other change.
+// starts its first phase, and Med for every other change.
 func childStatusUrgency(reader claim.Role, v Variant) Urgency {
 	if reader != claim.RoleArchitect {
 		return Med

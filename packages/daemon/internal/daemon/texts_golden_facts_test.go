@@ -358,7 +358,7 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"version", "reason"}},
 	{kind: texts.ParkedDecision, variants: []string{"refused-handover"}, from: "workflow/gate.go:refuseHandover at 40b01992 (the version approved, " +
 		"the approval at Dispatch event <n>, the change of <KEY>'s status by event <m> after it, Legion did not queue <KEY> as the person's handover, set <KEY> to todo)",
-		keys: []string{"version", "approval_seq", "status_changed_seq", "not_queued", "set_todo"}},
+		keys: []string{"version", "approval_seq", "status_change_seq", "not_queued", "set_todo"}},
 	{kind: texts.UpdateStalled, from: "daemon/podupdate.go:tellUpdateStalled (the round, the pod)",
 		keys: []string{"issue", "holds", "update.round"}},
 	{kind: texts.UpdateStalled, variants: []string{"drift"}, from: "daemon/podupdate.go:tellUpdateStalled (the round's pod, its drift)",

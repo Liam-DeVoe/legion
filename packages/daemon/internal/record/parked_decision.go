@@ -110,7 +110,7 @@ func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps
 // them again.
 func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue string, root Issue, nobodyHears bool,
 	decision ParkedDecision, version int, steps []DesignStep) (RelayOutcome, error) {
-	return relayParkedDecision(ctx, tx, store, issue, root, nobodyHears, decision, version, nil, steps)
+	return relayParkedDecision(ctx, tx, store, issue, root, nobodyHears, decision, ParkedDecisionNoticeOf(issue, root.Key, decision, version), steps)
 }
 
 // HandoverRefusal is why a person's approval of a parked root's primary document queued nothing
@@ -132,13 +132,13 @@ type HandoverRefusal struct {
 // nothing (RefusedHandoverNoticeOf).
 func RelayRefusedHandover(ctx context.Context, tx pgx.Tx, store Store, issue string, root Issue,
 	decision ParkedDecision, version int, refusal HandoverRefusal, steps []DesignStep) (RelayOutcome, error) {
-	return relayParkedDecision(ctx, tx, store, issue, root, true, decision, version, &refusal, steps)
+	return relayParkedDecision(ctx, tx, store, issue, root, true, decision, RefusedHandoverNoticeOf(issue, root.Key, decision, version, refusal), steps)
 }
 
-// relayParkedDecision is RelayParkedDecision, whose notice names refusal where it is not nil
-// (RelayRefusedHandover).
+// relayParkedDecision is the rule RelayParkedDecision states, which keeps decision and sends the
+// controller notice, the parked-decision notice its caller built of decision.
 func relayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue string, root Issue, nobodyHears bool,
-	decision ParkedDecision, version int, refusal *HandoverRefusal, steps []DesignStep) (RelayOutcome, error) {
+	decision ParkedDecision, notice texts.ParkedDecisionRecord, steps []DesignStep) (RelayOutcome, error) {
 	waiting, err := WaitsForSlot(ctx, tx, store, root, steps)
 	if err != nil {
 		return RelayNone, err
@@ -164,15 +164,11 @@ func relayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 	if waiting {
 		return RelayKept, nil
 	}
-	rec := ParkedDecisionNoticeOf(issue, root.Key, decision, version)
-	if refusal != nil {
-		rec = RefusedHandoverNoticeOf(issue, root.Key, decision, version, *refusal)
-	}
-	notice, err := ControllerNoticeOf(rec)
+	queued, err := ControllerNoticeOf(notice)
 	if err != nil {
 		return RelayNone, err
 	}
-	row, err := NewOutboxRow(issue, notice, decision.At)
+	row, err := NewOutboxRow(issue, queued, decision.At)
 	if err != nil {
 		return RelayNone, err
 	}

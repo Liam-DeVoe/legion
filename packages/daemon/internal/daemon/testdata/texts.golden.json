@@ -10023,7 +10023,7 @@
         "status": "backlog",
         "at": "2026-11-18T10:52:00Z",
         "approval_seq": 1300,
-        "status_changed_seq": 1311,
+        "status_change_seq": 1311,
         "not_queued": true,
         "set_todo": "ALPHA-1214"
       }
@@ -10048,7 +10048,7 @@
         "status": "icebox",
         "at": "2027-04-07T18:07:00Z",
         "approval_seq": 2300,
-        "status_changed_seq": 2312,
+        "status_change_seq": 2312,
         "not_queued": true,
         "set_todo": "BRAVO-2214"
       }

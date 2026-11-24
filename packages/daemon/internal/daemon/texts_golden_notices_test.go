@@ -521,7 +521,7 @@ func (b *goldenBuild) notices(r goldenRendering) {
 
 // goldenPostRefused is the error the outbox's post of body on issue ends with where Dispatch
 // refuses the body for a block over its bound, word for word: the message executor's wrapper
-// (outbox.message) around Dispatch's answer, 400 CAP_EXCEEDED with Dispatch's own words for the
+// (messagePostFailed) around Dispatch's answer, 400 CAP_EXCEEDED with Dispatch's own words for the
 // bound the body broke. Those words are dispatchbody.Check's, the check of the message route
 // (packages/envoy/internal/dispatch/api/messages.go:validateCreateMessage, whose refusal
 // server.go:blockBoundError answers with that code), made over the body as the outbox posts it,
@@ -536,8 +536,7 @@ func goldenPostRefused(t *testing.T, issue, body string) error {
 	if over == nil || dispatchbody.IsDecisionBlock(over) {
 		t.Fatalf("Dispatch refuses no bound of the body posted on %s (its check answers %v), so it does not answer its post CAP_EXCEEDED", issue, over)
 	}
-	return fmt.Errorf("post Dispatch message for %s: %w", issue,
-		&dispatch.Error{Status: http.StatusBadRequest, Code: "CAP_EXCEEDED", Message: over.Error()})
+	return messagePostFailed(issue, &dispatch.Error{Status: http.StatusBadRequest, Code: "CAP_EXCEEDED", Message: over.Error()})
 }
 
 // goldenLineFeeds writes each CR LF, and then each lone carriage return, as a line feed, as the
@@ -545,7 +544,7 @@ func goldenPostRefused(t *testing.T, issue, body string) error {
 var goldenLineFeeds = strings.NewReplacer("\r\n", "\n", "\r", "\n")
 
 // goldenReadRefused is the error a status row on issue ends with where Dispatch refuses the issue
-// read that opens it, word for word: the status executor's wrapper (outbox.status) around
+// read that opens it, word for word: the status executor's wrapper (statusReadFailed) around
 // Dispatch's answer when it holds no such issue, 404 NOT_FOUND with the message "not found" (GET
 // /api/v1/issues/{key}: api/issue_queries.go:readIssue answers pgx.ErrNoRows, which
 // api/handler_errors.go:writeHandlerError writes so). dispatch.PermanentRefusal takes that as
@@ -554,8 +553,7 @@ var goldenLineFeeds = strings.NewReplacer("\r\n", "\n", "\r", "\n")
 // such refusal: the daemon reads the issue again and writes again (writeStatus), and the row
 // retries on its backoff.
 func goldenReadRefused(issue string) error {
-	return fmt.Errorf("read Dispatch issue %s before status write: %w", issue,
-		&dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "not found"})
+	return statusReadFailed(issue, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "not found"})
 }
 
 // goldenChildWait is a parent whose own first phase waits for its 30 open children: 25 released
@@ -638,7 +636,7 @@ func (b *goldenBuild) controllerNotices(r goldenRendering) {
 		refusal := record.HandoverRefusal{ApprovalSeq: int64(1000*r.n + 300), StatusChangedSeq: int64(1000*r.n + 310 + r.n), Status: []string{"backlog", "icebox"}[r.n-1]}
 		b.notice(r, "refused-handover", ctl, record.RefusedHandoverNoticeOf(r.key(214), r.key(214), approval, 3+r.n, refusal),
 			goldenWant("issue", r.key(214), "decision", string(record.DecisionDesignApproved), "root", r.key(214), "ref", approval.Ref, "actor", person,
-				"at", r.at(82), "version", 3+r.n, "approval_seq", refusal.ApprovalSeq, "status_changed_seq", refusal.StatusChangedSeq,
+				"at", r.at(82), "version", 3+r.n, "approval_seq", refusal.ApprovalSeq, "status_change_seq", refusal.StatusChangedSeq,
 				"status", refusal.Status, "not_queued", true, "set_todo", r.key(214)))
 	}
 

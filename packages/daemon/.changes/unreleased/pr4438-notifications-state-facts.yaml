@@ -157,7 +157,7 @@ body: |-
   `issue` beside its `count` and its `giveUps`, and a `parked-decision` of a person's approval that
   a later change of its parked root's status kept from queuing the root names, in place of a
   reason, the approval's Dispatch event (`approval_seq`), the event that changed the root's status
-  (`status_changed_seq`), the status the root stood at (`status`), that it queued nothing
+  (`status_change_seq`), the status the root stood at (`status`), that it queued nothing
   (`not_queued: true`) and the issue whose `todo` brings the root back (`set_todo`). The update ask
   names each of its five steps in their order (`push_to`,
   `background_work`, `evidence`, `answer`, `then`), what to do with background work that ends after

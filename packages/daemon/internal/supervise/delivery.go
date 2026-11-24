@@ -113,9 +113,10 @@ type Delivery struct {
 	// (Delivery.Carried, unsentNews).
 	Prompted bool
 	// OutOfMemory says the end that cut a turn of this task off was its pod running out of memory
-	// (runtime.Observation.OutOfMemory), so the task is sent behind the out-of-memory note
-	// (texts.NewOutOfMemoryNote) as well as behind the note of its interruption from then on
-	// (message). The task text stays as the workflow wrote it.
+	// (runtime.Observation.OutOfMemory), so the task of a role of an issue pod is sent behind the
+	// out-of-memory note (texts.NewOutOfMemoryNote) as well as behind the note of its interruption
+	// from then on (message), and the controller's behind no such note. The task text stays as the
+	// workflow wrote it.
 	OutOfMemory bool
 	// SendFailures, LastSendFailureAt and LastSendError are the diagnosis record of this task's
 	// sends that came back from their own send goroutine without reaching a turn (table.go's
@@ -300,7 +301,12 @@ type sentences struct{ abandoned, ended bool }
 //
 // Behind the interruption, when its end was the pod running out of memory, comes the
 // out-of-memory note (texts.NewOutOfMemoryNote) — the agent reads that its turn was cut off, then
-// why, then the task. A task a provider error took back carries its own note last of all
+// why, then the task. The note is written for a role of an issue pod, as the one list names its
+// readers: it says that the container ran every role of the issue, that another role's work can
+// have filled the pod, and that an issue pod runs no heavy build. The controller runs alone in a
+// pod of its own and reads no worker guide, so its task carries no such note, whatever the
+// delivery's mark says (the runtime marks no end of the controller's pod: sandbox's outOfMemory).
+// A task a provider error took back carries its own note last of all
 // (ProviderErrorNote, as the delivery holds it rendered), so the agent reads what the provider
 // did and then the task; each of these says something the others do not.
 //
@@ -371,7 +377,7 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	case d.Interrupted && !oldTurn:
 		parts = append(parts, partText(CutTurnNote(c.Issue, c.EndedWork.Cause)))
 	}
-	if d.Interrupted && d.OutOfMemory && !oldTurn {
+	if d.Interrupted && d.OutOfMemory && !oldTurn && c.Role != claim.RoleController {
 		parts = append(parts, partText(texts.NewOutOfMemoryNote(c.Issue)))
 	}
 	if d.ProviderErrorNote != "" {

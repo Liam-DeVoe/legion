@@ -269,6 +269,62 @@ func TestALateChangesRequestLeavesTheNewerParkedDecision(t *testing.T) {
 	}
 }
 
+// A person's changes request whose reason is longer than texts.OneAct is no request the person
+// replaced: the design-changes-requested notice carries the reason cut to its first 4,000 UTF-16
+// units (workflow.ChangesRequestedNotice), while the gate records the whole reason as the request
+// it told (record.DesignGate.ToldChangesReason). Here alice requests changes at version 3 with a
+// reason of 4,001 units on a stopped tree, and the notice reaches the controller as a
+// parked-decision and is kept for the root's next architect start, as a short reason's is. A row
+// an older daemon queued, whose notice carried the whole reason, is that request too.
+func TestALongChangesRequestOnAStoppedTreeIsRelayedAndKept(t *testing.T) {
+	at := time.Date(2026, 11, 24, 9, 30, 0, 0, time.UTC)
+	reason := strings.Repeat("r", texts.OneAct+1)
+	cut, err := record.NoticeOf(workflow.ChangesRequestedNotice("LEGION-1", record.DesignStepSpec, 3, reason, "user:alice", at))
+	if err != nil {
+		t.Fatalf("build the changes-requested notice: %v", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		notice record.Notice
+	}{
+		{"the notice this release queues, its reason cut", cut},
+		{"a row an older daemon queued with the whole reason", record.Notice{Kind: "design-changes-requested", Issue: "LEGION-1", Version: 3, Reason: reason,
+			Actor: "user:alice", Ref: "dispatch://LEGION-1/spec"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			noticeTree(t, pool, records, true)
+			told := 3
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+				return records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-1", Step: record.DesignStepSpec, ArtifactID: "artifact-1",
+					LatestVersion: 3, ToldChangesVersion: &told, ToldChangesReason: reason, ToldChangesBy: "user:alice", ToldChangesMark: record.EventMark{Seq: 12, At: at}})
+			}); err != nil {
+				t.Fatalf("seed the gate that told the request: %v", err)
+			}
+			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+			architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
+			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: &holderPublisher{},
+				supervisor: sup, project: "legion", now: time.Now}
+			row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", tc.notice, time.Now()))
+			if err := runner.notice(ctx, row, tc.notice); err != nil {
+				t.Fatalf("relay the changes request: %v", err)
+			}
+
+			if told := parkedDecisions(t, pool); len(told) != 1 || told[0].Version != 3 || told[0].Decision != record.DecisionDesignChangesRequested ||
+				told[0].Reason != reason[:texts.OneAct] || told[0].Words["reason"].Rest != 1 {
+				t.Fatalf("parked-decision notices = %+v, want the one of the request at version 3 with the first %d units of its reason and the count 1 of the rest",
+					told, texts.OneAct)
+			}
+			if kept := keptDecisions(t, pool, records, "LEGION-1"); len(kept) != 1 || kept[0].Ref != "dispatch://LEGION-1/spec" ||
+				kept[0].Decision != record.DecisionDesignChangesRequested || kept[0].Actor != "user:alice" {
+				t.Fatalf("kept %+v, want the changes request kept for LEGION-1's next architect start", kept)
+			}
+		})
+	}
+}
+
 // The parked-decision notice goes where every controller notice goes: the outbox's next run
 // publishes it on the project's controller topic, as "parked-decision on <issue>".
 func TestAParkedDecisionIsPublishedOnTheControllerTopic(t *testing.T) {
