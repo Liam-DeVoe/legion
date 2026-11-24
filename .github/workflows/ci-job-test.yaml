@@ -730,10 +730,11 @@ jobs:
       - name: Typecheck the approval-eval statistics
         run: bunx tsc --noEmit -p scripts/approval-eval
 
-      # scripts/e2e/lib is no workspace either: its tsconfig.json holds the plan ratings read's
-      # test, whose answer is typed to the contract, and the root package pins its TypeScript and
-      # Bun types. The test itself runs in the test job's bun test of scripts/e2e/lib.
-      - name: Typecheck the plan ratings read test
+      # scripts/e2e/lib is no workspace either. Its tsconfig.json holds the plan ratings read's
+      # test, whose answer is typed to the contract, and the step models comparator with its test.
+      # The root package pins their TypeScript and Bun types. The tests themselves run in the test
+      # job's bun test of scripts/e2e/lib.
+      - name: Typecheck the e2e read tools and their tests
         run: bunx tsc --noEmit -p scripts/e2e/lib
 
       - name: Report ci-ok when this job decides a merge-group run
