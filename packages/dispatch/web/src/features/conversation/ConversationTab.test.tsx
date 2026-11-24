@@ -1590,6 +1590,14 @@ function phoneOverCommentA(
   });
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
   return {
+    /** Answers the comments again without `Comment A`, which leaves the list. */
+    dropCommentA: async () => {
+      stub.lists.comments = [];
+      await act(() => queryClient.invalidateQueries({ queryKey: ["comments", "CORE-1"] }));
+      await waitFor(() =>
+        expect(view.container.querySelector('[data-turn="comment:comment-a"]')).toBe(null)
+      );
+    },
     restore: () => {
       view.unmount();
       createComment.mockRestore();
@@ -1734,6 +1742,52 @@ test("on a phone, Cancel reply over a docked draft of its own keeps both, and th
     expect(docked.value).toBe("Docked draft");
     expect(within(composer).queryByText(/is kept/)).not.toBeInTheDocument();
     expect(createComment).toHaveBeenCalledTimes(1);
+  } finally {
+    phone.restore();
+  }
+});
+
+// Once the comment a reply put away answers leaves the list, the docked composer draws that reply
+// itself, with Discard my draft (`parkedNotice`). The press takes the offer away, and with it the
+// button that held the focus: the docked composer's text box takes the focus then, with no scroll
+// and the caret at the end of the draft it holds, as a composer's field takes the focus its own
+// offers leave (`handFocusOn`).
+test("on a phone, Discard my draft on a reply put away whose comment left the list hands the focus to the docked composer's box, with no scroll and the caret at the end", async () => {
+  const user = userEvent.setup();
+  const createComment = spyOn(api, "createComment").mockResolvedValue(comment("comment-b"));
+  const phone = phoneOverCommentA(createComment);
+
+  try {
+    await screen.findByText("Comment A");
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    const docked = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await user.click(docked);
+    await user.paste("Docked draft");
+    const dialog = await writeInThread(user, phone.turn(), "Reply meant for A");
+    await user.click(within(dialog).getByRole("button", { name: "Cancel reply" }));
+    await user.click(within(dialog).getByRole("button", { name: "Back" }));
+    await phone.dropCommentA();
+    const discard = within(composer).getByRole("button", { name: "Discard my draft" });
+    const focuses = spyOn(docked, "focus");
+
+    try {
+      await user.click(discard);
+      expect({
+        caret: [docked.selectionStart, docked.selectionEnd],
+        focuses: focuses.mock.calls,
+        inTheBox: document.activeElement === docked,
+        offered: within(composer).queryByRole("button", { name: "Discard my draft" }) !== null,
+        text: docked.value,
+      }).toEqual({
+        caret: ["Docked draft".length, "Docked draft".length],
+        focuses: [[{ preventScroll: true }]],
+        inTheBox: true,
+        offered: false,
+        text: "Docked draft",
+      });
+    } finally {
+      focuses.mockRestore();
+    }
   } finally {
     phone.restore();
   }

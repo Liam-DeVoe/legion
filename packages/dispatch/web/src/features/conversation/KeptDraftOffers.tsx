@@ -95,6 +95,27 @@ export function DraftOffer({
 }
 
 /**
+ * Commits `press`, a press of an offer (`DraftOffer`) that takes the offer away and with it the
+ * button that held the focus, at once (`flushSync`), so the page holds what the press left; and
+ * where the focus went with the button (`focusLost`), hands it to the control `next` names in that
+ * page, with no scroll. A text box takes it with the caret at the end of what it holds: a draft
+ * taken in is ready to go on. The caret is set first and the focus restores it, so no engine
+ * scrolls to show it. A host that moved the focus itself, or took `next`'s control away, keeps
+ * that. A composer's offers hand it to its field (`KeptDraftOffers`), and so does the reply the
+ * Conversation's docked composer draws for a phone thread (`ConversationTab`); the margin's kept
+ * drafts hand it along their list (`MarginKeptDrafts`).
+ */
+export function handFocusOn(press: () => void, next: () => HTMLElement | null): void {
+  flushSync(press);
+  const control = next();
+  if (control === null || !focusLost()) return;
+  if (control instanceof HTMLTextAreaElement) {
+    control.setSelectionRange(control.value.length, control.value.length);
+  }
+  control.focus({ preventScroll: true });
+}
+
+/**
  * What a composer offers beside its field that the field does not hold (`useKeptDrafts`): an
  * edit written over a body the comment no longer holds (`changed`), a draft a margin compose
  * kept for other words of its document (`offered`), and each reply it keeps whose comment or
@@ -138,19 +159,10 @@ export function KeptDraftOffers({
    *  refuses - leaves out, so the offer waits until the reader drops it. */
   readonly onTakeOffered: (() => void) | undefined;
 }): ReactNode {
-  /** Each press below takes its offer away, and with it the button that held the focus. The press
-   *  is committed at once (`flushSync`), so the field holds what it took in, and where the focus
-   *  went with the button (`focusLost`), the field takes it, with no scroll and the caret at the
-   *  end of what it holds: a draft taken in is ready to go on. The caret is set first and the
-   *  focus restores it, so no engine scrolls to show it. A host that moved the focus itself, or
-   *  took the composer away with Discard my edit, the composer's Discard (`onClose`), keeps that. */
-  const intoField = (press: () => void) => () => {
-    flushSync(press);
-    const box = field.current;
-    if (box === null || !focusLost()) return;
-    box.setSelectionRange(box.value.length, box.value.length);
-    box.focus({ preventScroll: true });
-  };
+  /** Each press below takes its offer away, and the field takes the focus it leaves
+   *  (`handFocusOn`). A host that moved the focus itself, or took the composer away with Discard
+   *  my edit, the composer's Discard (`onClose`), keeps that. */
+  const intoField = (press: () => void) => () => handFocusOn(press, () => field.current);
   return (
     <>
       {/* An edit written over a body the comment no longer holds: the field shows the comment as

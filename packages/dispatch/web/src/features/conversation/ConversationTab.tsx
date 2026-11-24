@@ -95,7 +95,7 @@ import {
   useHeldSends,
   useHeldSendsUnder,
 } from "./held-sends";
-import { DraftOffer } from "./KeptDraftOffers";
+import { DraftOffer, handFocusOn } from "./KeptDraftOffers";
 import { GoneReply, KeptReply } from "./KeptReply";
 import { MentionComposer } from "./MentionComposer";
 import { ReplyButton } from "./ReplyButton";
@@ -105,6 +105,7 @@ import { capabilitiesForTarget, TargetedMessageCard } from "./TargetedMessageCar
 import {
   ConversationTurns,
   type KeyedThread,
+  REPLY_BOX,
   turnFocusRing,
   turnMarks,
   useTurnKeys,
@@ -1186,7 +1187,9 @@ export function ConversationTab({
   // composer draws the reply itself, for the reader to read or copy, with Discard my draft. It
   // offers no Use it here: the docked field holds a draft of its own, which is why the reply was
   // put away rather than carried there (`usePhoneThread`'s `cancelReply`), and Use it here would
-  // write over it.
+  // write over it. Discard my draft takes the offer away, and the docked composer's text box
+  // (`REPLY_BOX`), in the box `docked` holds, takes the focus it leaves (`handFocusOn`).
+  const docked = useRef<HTMLDivElement>(null);
   let parkedNotice: ReactNode;
   if (phone.parked !== undefined && phone.replyTo !== null) {
     parkedNotice = listed.has(phone.replyTo.id) ? (
@@ -1196,7 +1199,14 @@ export function ConversationTab({
     ) : (
       <DraftOffer
         body={phone.parked.body}
-        drop={{ label: "Discard my draft", press: phone.dropParked }}
+        drop={{
+          label: "Discard my draft",
+          press: () =>
+            handFocusOn(
+              phone.dropParked,
+              () => docked.current?.querySelector<HTMLTextAreaElement>(REPLY_BOX) ?? null
+            ),
+        }}
         lead={<GoneReply actor={phone.replyTo.actor} parentKind={phone.replyTo.parentKind} />}
         replacement={phone.parked.replacement}
       />
@@ -1359,7 +1369,7 @@ export function ConversationTab({
           and message replies, so it shows and sends there as on an open one (`closed` hides only
           the kinds a closed issue refuses). `contents`, so the composer's own box stays the one
           that sticks. The thread composer's Cancel reply puts its draft here (`intake`). */}
-        <div className="contents" hidden={phoneThread !== undefined}>
+        <div className="contents" hidden={phoneThread !== undefined} ref={docked}>
           <MentionComposer
             closed={isClosed}
             docked
