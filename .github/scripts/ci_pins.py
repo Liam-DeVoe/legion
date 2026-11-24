@@ -34,9 +34,9 @@ RACE_FILL_SCRIPTS = [("envoy-infra", "packages/envoy/infra/scripts/race-unit.sh"
 
 DARWIN_VETS = [
     (".github/actions/lint/typecheck/action.yml", "Vet the Go daemon for darwin", "packages/daemon"),
-    (".github/actions/go-envoy/envoy-go-checks/action.yml", "Vet envoy for darwin, its tagged tests included",
+    (".github/actions/go-envoy/envoy-go-build/action.yml", "Vet envoy for darwin, its tagged tests included",
      "packages/envoy"),
-    (".github/actions/go-envoy/envoy-infra-go/action.yml", "Vet envoy-infra for darwin, its live-test tags included",
+    (".github/actions/go-envoy/envoy-infra-build/action.yml", "Vet envoy-infra for darwin, its live-test tags included",
      "packages/envoy/infra"),
 ]
 

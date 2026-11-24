@@ -51,7 +51,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 envoy="$(dirname "$here")"
-go_test="$(dirname "$(dirname "$envoy")")/.github/scripts/go-test.sh"
+repo="$(dirname "$(dirname "$envoy")")"
 hooked="$envoy/internal/testnats/testdata/hooked"
 nats_server='github.com/nats-io/nats-server/v2'
 
@@ -247,7 +247,7 @@ empty="$(awk '
 # -modfile of a module with no workspace is one of the flags it hands go test.
 run_forced_order_tests() {
   if [ -n "$jsonfile" ]; then
-    "${go_cmd[@]:0:${#go_cmd[@]}-1}" "$go_test" --jsonfile "$jsonfile" --packages "$*" -- "${flags[@]}" -count=1 -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder'
+    "${go_cmd[@]:0:${#go_cmd[@]}-1}" "$repo/.github/scripts/go-test.sh" --jsonfile "$jsonfile" --packages "$*" -- "${flags[@]}" -count=1 -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder'
     return
   fi
   "${go_cmd[@]}" test "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder' "$@"
