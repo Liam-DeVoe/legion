@@ -32,8 +32,8 @@
 #          concludes as it did: success exits 0, anything else exits 1. A run that ends with no
 #          verdict of this attempt (a job of it listed, none left open, LARGE_PR_HOLD_ENDED_READS
 #          reads in a row) fails too, so a run that never reaches ci.yaml's ci-ok cannot hold the
-#          head pending until this job's timeout; a run whose caller has not started yet (it waits
-#          in its concurrency group while an older approval's run cancels) is waited for.
+#          head pending until this job's timeout; a run whose caller has not started yet (it can
+#          wait in a concurrency group, as ci.yaml's own) is waited for.
 #
 # Its inputs, from the step's env:
 #   label: GH_TOKEN, and GITHUB_EVENT_PATH and GITHUB_REPOSITORY as Actions sets them.
@@ -163,8 +163,8 @@ hold() {
       # No verdict of this attempt yet. GitHub creates ci.yaml's ci-ok only once its needs have
       # ended, so a moment with every other job completed and no verdict is normal; the same
       # reading several reads in a row is a run that will not reach one. A run with no job of
-      # CALLER listed yet has not started it: the caller waits in its concurrency group while an
-      # older approval's run cancels, and this job waits with it.
+      # CALLER listed yet has not started it: a caller can wait in a concurrency group (ci.yaml's
+      # own, or one a later change adds), and this job waits with it.
       if [ "$listed" -gt 0 ] && [ "$open" -eq 0 ]; then
         ended=$((ended + 1))
         if [ "$ended" -ge "$ended_reads" ]; then

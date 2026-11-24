@@ -232,9 +232,9 @@ check "fails rather than hold the head pending to its timeout" "$(is "$status" 1
 check "after three reads in a row" "$(is "$(reads_made)" 3)"
 check "says why" "$(contains "$out" 'no job of this approval-time run is open and approval / ci-ok has not concluded on attempt 1, 3 reads in a row')"
 
-echo "case: the caller has not started, waiting in its concurrency group for an older run to cancel"
+echo "case: the caller has not started, waiting in a concurrency group"
 # Test pull request #5347: a second approval's run (45392143357) listed no job of the caller for
-# 39 s while the first one's run cancelled.
+# 39 s while a run-level group held it behind the first.
 reset
 reads "$self" "$self" "$self" "$self" "$self;approval / changes|in_progress|-|1" \
   "$self;approval / changes|completed|success|1;approval / ci-ok|completed|success|1"

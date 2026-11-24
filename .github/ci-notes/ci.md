@@ -1626,13 +1626,20 @@ all (.github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of
 check run carries the expression's text. The name repeats the job's whole condition besides, so
 it reads `ci-ok` only where the job runs even if it were evaluated.
 
-A newer approval's suites cancel the older one's, whose head is the same or older, through a
-group on the `approval` job alone. A group on the whole run held the newer run with no job, so
-with no pending ci-ok, until the older run had finished cancelling: 39 s on #5347 (run
-45392143357 created 12:17:56Z, its ci-ok job 12:18:35Z). With the group on the job, the newer
-run's ci-ok is created with the run, and the older run's ci-ok fails once its suites are
-cancelled, under the newer one. Every other review's run starts no job, so a comment posted
-during the approval-time run cancels nothing.
+No approval-time run is cancelled: the workflow holds no concurrency group, on a job or on the
+run. A ci-ok an older approval's run left at a head, cancelled or failed, stays beside the newer
+run's, and GitHub's rollup reads FAILURE with both there. Test pull request #5347 showed it both
+ways: at 3a30f85f12a a run-level group cancelled the older run (ci-ok check runs 138437935113
+cancelled, 138438707923 success), and at 9749b52fcd2 a group on the `approval` job cancelled its
+suites (138468630340 failure, 138469054547 success); both heads read FAILURE. A run-level group
+also held the newer run with no job, so with no pending ci-ok, for 39 s while the older run
+cancelled (run 45392143357, created 12:17:56Z, its ci-ok job 12:18:35Z). So each approval's run
+runs to its verdict. A second approval of the same head runs the suites again, and both verdicts
+stand; an approval of a newer head leaves the older head's run to finish. To run an approval-time
+run again after a failure that was not the change's, re-run its failed jobs
+(`gh run rerun <run> --failed`): a later attempt of a job replaces its own check run (the k28
+probe of INFRA-1066, ci-ok-reconcile.sh's header), where another approval would add a second
+verdict and leave the failed one on the head. Every other review's run starts no job.
 
 What it leaves as it was:
 
@@ -1642,7 +1649,7 @@ What it leaves as it was:
 - ci.yaml's ci-ok reads a runner shutdown off check runs named for its own jobs
   (.github/scripts/runner-shutdown.sh), and under this caller each is named `approval / <job>`,
   so a job the platform killed in an approval-time run reads as a failure, not as cancelled.
-  Approve again, or re-run that job, to run it again.
+  Re-run that run's failed jobs to run it again.
 - `full-ci` and the lane labels decide nothing here: the approval's run selects by paths alone,
   as the queue does.
 

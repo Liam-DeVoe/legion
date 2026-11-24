@@ -55,15 +55,12 @@ jobs:
 
   approval:
     if: ${{ github.event.review.state == 'approved' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'large-pr') }}
-    # A newer approval of the pull request cancels the older one's suites, whose head is the same
-    # or older. On this job, not on the run: a run-level group holds the newer run with no job at
-    # all until the older run has finished cancelling, 39 s on test pull request #5347 (run
-    # 45392143357 created 12:17:56Z, its ci-ok job 12:18:35Z), and in that time the head has no
-    # pending ci-ok. Here the newer run's ci-ok is created with the run, and the older run's ci-ok
-    # fails once its suites are cancelled (large-pr-lanes.sh hold), under the newer one.
-    concurrency:
-      group: large-pr-lanes-approval-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
+    # No concurrency group, on this job or the run: no approval-time run is ever cancelled. A
+    # cancelled or failed ci-ok of an older approval's run stays on the head beside the newer
+    # run's, and GitHub's rollup reads FAILURE: test pull request #5347 at 3a30f85f12a (ci-ok
+    # check runs 138437935113 cancelled, 138438707923 success) and at 9749b52fcd2 (138468630340
+    # failure, 138469054547 success). So each approval's run runs to its verdict, and a run whose
+    # verdict was a flake is re-run (`gh run rerun --failed`), which replaces its check runs.
     # GitHub refuses a run whose calling job grants less than any job of the called workflow
     # declares, whatever that job's `if:`: these are the scopes ci.yaml's jobs declare, together.
     permissions:
