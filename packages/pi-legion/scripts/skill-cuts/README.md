@@ -320,7 +320,9 @@ with `label` `need` or `near-miss` and `source` `written`, or `session` with its
 `pathHash`. A profile file is the other skills installed beside the skill (the `Profile` of
 `cases.ts`), a `context` (a case's: `devbox`, the default, `legion:<project>:<role>` or
 `subagent:<agent>`, whose profile carries the subagent's recorded system prompt and tools), and
-for Claude Code a `claude` plugin layout: `{marketplace, plugins: [{name, skills}], skillPlugin}`.
+for Claude Code a `claude` plugin layout: `{marketplace, plugins: [{name, skills}], skillPlugin}`;
+a profile that is a declared install, not one rebuilt from a recorded session, also holds
+`listing` (below, after the listing rule).
 The layout names each skill but the project skills. A project skill is a skill of the profile's
 `sessionRepository` (the repository the session's working directory was a checkout of, at the
 commit the profile's build read it at) whose path is `<level>/.claude/skills/<name>` or
@@ -426,6 +428,37 @@ decides such a load. The skill's verdict is made twice, with and without the tas
 could not be measured, both in the summary's `verdicts`. Where they agree it stands, its reason
 giving how many tasks were not measured; where they differ there is no verdict (`no verdict:
 depends on tasks whose listing could not be measured`, with both results).
+
+A profile marks a declared listing with `listing`, whose `source` says what the install was built
+from; a declared listing with no `source`, or a blank one, is refused:
+
+```json
+{
+  "skills": [{ "repo": "acme/skills", "commit": "<sha>", "path": "skills/beta", "name": "beta" }],
+  "plugins": [],
+  "contextFiles": [],
+  "claude": {
+    "marketplace": "acme-market",
+    "plugins": [{ "name": "acme-tools", "skills": ["beta"] }],
+    "skillPlugin": "acme-tools"
+  },
+  "listing": {
+    "kind": "declared",
+    "source": "sjawhar/dotfiles at <sha>: the Claude Code settings' enabledPlugins and marketplaces, each plugin's manifest at its pinned version, and claude-envoy's links of our skills"
+  }
+}
+```
+
+No store holds a Claude Code session, so a Claude Code task has no recorded listing, and its
+listing could never be measured. The architects decided (INFRA-4849, R7, option d) that a Claude
+Code task's profile is the declared Claude Code install at the count's end time, and that such a
+profile counts as measured. So the listing rule reads no listing measure for a task whose profile
+declares its listing, and never drops it: the profile is the declared install, and no recorded
+listing confirms it. The verdict counts the task among those measured, and the last part of its
+reason is `listing declared, not recorded for <n> of its <m> tasks: their profile is the declared
+install, and no recorded listing confirms it`. In the summary, each such task's
+`listing` is `{state: "declared", source, why}`, and `listing.declared` counts them, as the rule's
+line does. A load none of whose profiles declares its listing writes no `declared` count.
 
 ### `copies`
 

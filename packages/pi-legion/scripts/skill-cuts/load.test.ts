@@ -872,6 +872,31 @@ function saveCaptures(
   }
 }
 
+/** Saves under `out` each task's Claude Code capture, where the command reads it back: F2's body
+ *  with the task's text as its one message, and the fields of its record that the load test
+ *  reads, `record`'s over them. */
+function saveClaudeCaptures(
+  out: string,
+  lines: readonly { id: string; text: string }[],
+  record: Record<string, unknown> = {}
+): void {
+  for (const { id, text } of lines) {
+    const files = loadCapturePaths(out, "claude", id);
+    writeTree(path.dirname(files.body), {
+      [path.basename(files.body)]: JSON.stringify({
+        ...F2,
+        messages: [{ role: "user", content: [{ type: "text", text }] }],
+      }),
+      [path.basename(files.record)]: JSON.stringify({
+        requestHeaders: { "anthropic-version": "2023-06-01" },
+        listed: "Use for the alpha checklist.",
+        harness: { head: null, replaced: [] },
+        ...record,
+      }),
+    });
+  }
+}
+
 /** A capture's context record that installed no copy of a skill (context.ts's `installedCopies`
  *  reads its `skills`). */
 const NO_COPIES = { skills: [] };
@@ -1239,21 +1264,7 @@ describe("skill-cuts load answers skill reads as the behaviour replay does", () 
       ],
     };
     if (host === "omp") saveCaptures(out, [{ id, text: NEED }], { context });
-    else {
-      const files = loadCapturePaths(out, "claude", id);
-      writeTree(path.dirname(files.body), {
-        [path.basename(files.body)]: JSON.stringify({
-          ...F2,
-          messages: [{ role: "user", content: [{ type: "text", text: NEED }] }],
-        }),
-        [path.basename(files.record)]: JSON.stringify({
-          requestHeaders: { "anthropic-version": "2023-06-01" },
-          listed: "Use for the alpha checklist.",
-          harness: { head: null, replaced: [] },
-          context,
-        }),
-      });
-    }
+    else saveClaudeCaptures(out, [{ id, text: NEED }], { context });
     const args = [
       "load",
       ...["--config", made.config, "--key-file", made.keyFile, "--skill", skill],
@@ -1600,15 +1611,30 @@ describe("skill-cuts load answers skill reads as the behaviour replay does", () 
 // measure of each task's profile in the tasks file's build-tasks summary.
 describe("skill-cuts load applies the listing rule", () => {
   const NEED_2 = "List the alpha steps of the made-up project.";
-  /** A load test under `scratch/<name>`: alpha against `lines` (session tasks of store_a unless
-   *  written), each in BETA_PROFILE's context with its capture saved, and the arguments that run
-   *  it; the stand-in answers a run of each text with a read of skill://alpha in its first `reads`
-   *  runs. */
+  const NEED_3 = "Name the alpha owner of the made-up project.";
+  /** A load test under `scratch/<name>` on `on.host` (Oh My Pi unless given): alpha against
+   *  `lines` (session tasks of store_a unless written), each in the context of the profile file
+   *  its line names (one of `on.profiles`, by its name beside the tasks file), else of
+   *  `on.profile` (BETA_PROFILE unless given), which `--profile` names, with its capture saved;
+   *  and the arguments that run it. The stand-in answers a run of each text with a load of alpha
+   *  in its first `reads` runs. */
   const listingTest = (
     name: string,
-    lines: readonly { id: string; text: string; label: TaskLabel; written?: true }[],
-    reads: ReadonlyMap<string, number>
+    lines: readonly {
+      id: string;
+      text: string;
+      label: TaskLabel;
+      written?: true;
+      profile?: string;
+    }[],
+    reads: ReadonlyMap<string, number>,
+    on: {
+      host?: Host;
+      profile?: Record<string, unknown>;
+      profiles?: Record<string, Record<string, unknown>>;
+    } = {}
   ) => {
+    const host = on.host ?? "omp";
     const dir = path.join(scratch, name);
     const made = setup(dir);
     const skill = path.join(dir, "alpha");
@@ -1617,30 +1643,36 @@ describe("skill-cuts load applies the listing rule", () => {
     writeFileSync(
       tasks,
       lines
-        .map(({ id, text, label, written }) =>
-          JSON.stringify(
-            written
+        .map(({ id, text, label, written, profile }) =>
+          JSON.stringify({
+            ...(written
               ? { id, text, label, source: "written" }
-              : { id, text, label, source: "session", store: "store_a", pathHash: pathHash(id) }
-          )
+              : { id, text, label, source: "session", store: "store_a", pathHash: pathHash(id) }),
+            ...(profile === undefined ? {} : { profile }),
+          })
         )
         .map((line) => `${line}\n`)
         .join("")
     );
     const profile = path.join(dir, "profile.json");
-    writeFileSync(profile, JSON.stringify(BETA_PROFILE));
+    writeFileSync(profile, JSON.stringify(on.profile ?? BETA_PROFILE));
+    for (const [file, written] of Object.entries(on.profiles ?? {})) {
+      writeFileSync(path.join(dir, file), JSON.stringify(written));
+    }
     const out = path.join(dir, "out");
-    saveCaptures(out, lines);
+    if (host === "omp") saveCaptures(out, lines);
+    else saveClaudeCaptures(out, lines);
+    const loads = host === "omp" ? READ_ALPHA : SKILL_ALPHA;
     const answered = new Map<string, number>();
     answer = (body) => {
       const text = texts(body.messages).find((each) => reads.has(each)) ?? "";
       const n = (answered.get(text) ?? 0) + 1;
       answered.set(text, n);
-      return n <= (reads.get(text) ?? 0) ? READ_ALPHA : TEXT;
+      return n <= (reads.get(text) ?? 0) ? loads : TEXT;
     };
     const args = [
       ...["load", "--config", made.config, "--key-file", made.keyFile, "--skill", skill],
-      ...["--tasks", tasks, "--host", "omp", "--profile", profile, "--out", out],
+      ...["--tasks", tasks, "--host", host, "--profile", profile, "--out", out],
       ...["--omp", path.join(dir, "no-omp-runs-here"), "--scratch", path.join(dir, "scratch")],
       ...["--cache-dir", path.join(dir, "cache")],
     ];
@@ -1650,7 +1682,14 @@ describe("skill-cuts load applies the listing rule", () => {
   const summaryOf = (out: string) =>
     z
       .looseObject({
-        tasks: z.array(z.looseObject({ id: z.string(), made: z.number(), dropped: z.unknown() })),
+        tasks: z.array(
+          z.looseObject({
+            id: z.string(),
+            made: z.number(),
+            dropped: z.unknown(),
+            listing: z.unknown(),
+          })
+        ),
         listing: z.unknown(),
         verdict: z.unknown(),
         verdicts: z.unknown(),
@@ -1836,6 +1875,200 @@ describe("skill-cuts load applies the listing rule", () => {
       .looseObject({ listing: z.unknown(), dispatch: z.unknown() })
       .parse(JSON.parse(readFileSync(path.join(out, "summary.json"), "utf8")));
     expect(summary.dispatch).toEqual({ carryBlock: 2, assumed: 1, legionRole: 1, transcript: 0 });
+  });
+
+  // The architects' option d (INFRA-4849 R7): no store holds a Claude Code session, so a Claude
+  // Code task's listing is never measured against a recorded one; its profile is the declared
+  // Claude Code install, which the profile marks (load.ts's DeclaredListing), and counts as
+  // measured.
+  /** BETA_PROFILE with a Claude Code layout: beta in acme-tools, which the tested skill joins. */
+  const CLAUDE_BETA_PROFILE = {
+    ...BETA_PROFILE,
+    claude: {
+      marketplace: "acme-market",
+      plugins: [{ name: "acme-tools", skills: ["beta"] }],
+      skillPlugin: "acme-tools",
+    },
+  };
+  /** What the made-up declared install was built from. */
+  const DECLARED_SOURCE = `acme/dotfiles at ${COMMIT}: the made-up Claude Code settings' enabled plugins and marketplaces, each plugin's manifest at its pinned version`;
+  /** CLAUDE_BETA_PROFILE as a declared install. */
+  const DECLARED_PROFILE = {
+    ...CLAUDE_BETA_PROFILE,
+    listing: { kind: "declared", source: DECLARED_SOURCE },
+  };
+  /** The listing standing the summary gives each task of a declared profile. */
+  const DECLARED_STANDING = {
+    state: "declared",
+    source: DECLARED_SOURCE,
+    why: "listing declared, not recorded: its profile is the declared install, and no recorded listing confirms it",
+  };
+  /** A Claude Code `Skill` call of alpha, which loads it. */
+  const SKILL_ALPHA: ReplyBlock[] = [
+    { type: "tool_use", id: "toolu_skill", name: "Skill", input: { skill: "alpha" } },
+  ];
+  /** Two Claude Code tasks whose sessions no store holds; the stand-in loads alpha in 2 of 3 runs
+   *  of each, so the near-miss task is a fault. */
+  const CLAUDE_TASKS: { id: string; text: string; label: TaskLabel; written?: true }[] = [
+    { id: "need-1", text: NEED, label: "need" },
+    { id: "near-1", text: NEAR, label: "near-miss", written: true },
+  ];
+  const CLAUDE_READS = new Map([
+    [NEED, 2],
+    [NEAR, 2],
+  ]);
+
+  test("a Claude Code load whose every task's profile declares its listing gets the verdict its loads give, its reason saying listing declared, not recorded with the count", async () => {
+    const { tasks, out, args } = listingTest("declared-all", CLAUDE_TASKS, CLAUDE_READS, {
+      host: "claude",
+      profile: DECLARED_PROFILE,
+    });
+    // As build-tasks gives a Claude Code task's measure: not measurable.
+    writeTasksSummary(tasks, { "need-1": measureItem(null) }, measureItem(null));
+    const ran = await cli(args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const reason =
+      "a description fault: tasks near-1; listing declared, not recorded for 2 of its 2 tasks: their profile is the declared install, and no recorded listing confirms it";
+    expect(ran.stdout).toContain(`the skill alpha: ${reason}`);
+    expect(ran.stdout).not.toContain("could not be measured");
+    expect(ran.stdout).toContain(
+      `the listing rule (${tasks}.summary.json): 0 tasks' listings measured, 0 not measurable, 0 tasks dropped, each missing more than 10% of the names its session's recorded listing holds, 0 installed names their recorded listing gave them (fromRecorded); listing declared, not recorded for 2 tasks, which count as measured; `
+    );
+    const summary = summaryOf(out);
+    expect(summary.verdict).toEqual({ descriptionFault: true, reason });
+    const fault = { descriptionFault: true, reason: "a description fault: tasks near-1" };
+    expect(summary.verdicts).toEqual({ withUnmeasured: fault, withoutUnmeasured: fault });
+    expect(summary.listing).toEqual({
+      summary: `${tasks}.summary.json`,
+      measured: 0,
+      notMeasurable: 0,
+      dropped: 0,
+      fromRecorded: 0,
+      declared: 2,
+    });
+    expect(summary.tasks.map((task) => [task.id, task.made, task.listing])).toEqual([
+      ["need-1", 3, DECLARED_STANDING],
+      ["near-1", 3, DECLARED_STANDING],
+    ]);
+  });
+
+  test("the same Claude Code load under a profile that does not declare its listing keeps no verdict, since no task's listing could be measured", async () => {
+    const { tasks, out, args } = listingTest("declared-control", CLAUDE_TASKS, CLAUDE_READS, {
+      host: "claude",
+      profile: CLAUDE_BETA_PROFILE,
+    });
+    writeTasksSummary(tasks, { "need-1": measureItem(null) }, measureItem(null));
+    const ran = await cli(args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const reason =
+      "no verdict: depends on tasks whose listing could not be measured (2 of its 2 tasks): with them, a description fault: tasks near-1; without them, no verdict: no task's listing was measured";
+    expect(ran.stdout).toContain(`the skill alpha: ${reason}`);
+    expect(ran.stdout).not.toContain("listing declared");
+    const summary = summaryOf(out);
+    expect(summary.verdict).toEqual({ descriptionFault: null, reason });
+    expect(summary.listing).toEqual({
+      summary: `${tasks}.summary.json`,
+      measured: 0,
+      notMeasurable: 2,
+      dropped: 0,
+      fromRecorded: 0,
+    });
+  });
+
+  test("in a load that mixes them, a task whose profile declares its listing counts as measured and is not dropped for a measure that misses names, and each other task keeps its own standing", async () => {
+    const { tasks, out, args } = listingTest(
+      "declared-mix",
+      [
+        { id: "need-1", text: NEED, label: "need", profile: "declared.json" },
+        { id: "need-2", text: NEED_2, label: "need" },
+        { id: "need-3", text: NEED_3, label: "need" },
+        { id: "near-1", text: NEAR, label: "near-miss", written: true },
+      ],
+      new Map([
+        [NEED, 2],
+        [NEED_2, 2],
+        [NEED_3, 2],
+        [NEAR, 2],
+      ]),
+      {
+        host: "claude",
+        profile: CLAUDE_BETA_PROFILE,
+        profiles: { "declared.json": DECLARED_PROFILE },
+      }
+    );
+    // need-1's and need-3's measures each miss 2 of 10 names: the rule drops need-3, and reads no
+    // measure of need-1, whose profile declares its listing.
+    const misses = measureItem(10, ["beta", "gamma"]);
+    writeTasksSummary(
+      tasks,
+      { "need-1": misses, "need-2": measureItem(10), "need-3": misses },
+      measureItem(null)
+    );
+    const from = recorder.requests.length;
+    const ran = await cli(args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const dropped =
+      "listing-misses: its rebuilt listing misses 2 of the 10 names of the recorded session listing (20.0%), more than 10%: beta, gamma";
+    expect(ran.stdout).toContain(
+      `task need-3 (need, from a session): dropped, not run: ${dropped}`
+    );
+    expect(sentWith(from, NEED_3)).toBe(0);
+    expect(sentWith(from, NEED)).toBe(3);
+    expect(ran.stdout).toContain(
+      `the listing rule (${tasks}.summary.json): 1 tasks' listings measured, 1 not measurable, 1 tasks dropped, each missing more than 10% of the names its session's recorded listing holds, 0 installed names their recorded listing gave them (fromRecorded); listing declared, not recorded for 1 tasks, which count as measured; `
+    );
+    // need-1 is in the verdict without the tasks whose listing could not be measured, beside
+    // need-2; near-1 alone is not measured.
+    const reason =
+      "no verdict: depends on tasks whose listing could not be measured (1 of its 3 tasks): with them, a description fault: tasks near-1; without them, no description fault in 2 tasks; listing declared, not recorded for 1 of its 3 tasks: their profile is the declared install, and no recorded listing confirms it";
+    expect(ran.stdout).toContain(`the skill alpha: ${reason}`);
+    const summary = summaryOf(out);
+    expect(summary.verdict).toEqual({ descriptionFault: null, reason });
+    expect(summary.verdicts).toEqual({
+      withUnmeasured: { descriptionFault: true, reason: "a description fault: tasks near-1" },
+      withoutUnmeasured: { descriptionFault: false, reason: "no description fault in 2 tasks" },
+    });
+    expect(summary.listing).toEqual({
+      summary: `${tasks}.summary.json`,
+      measured: 1,
+      notMeasurable: 1,
+      dropped: 1,
+      fromRecorded: 0,
+      declared: 1,
+    });
+    expect(summary.tasks.map((task) => [task.id, task.made, task.dropped, task.listing])).toEqual([
+      ["need-1", 3, null, DECLARED_STANDING],
+      ["need-2", 3, null, { state: "measured", recorded: 10, missing: 0 }],
+      ["need-3", 0, dropped, { state: "dropped", reason: dropped }],
+      [
+        "near-1",
+        3,
+        null,
+        {
+          state: "not measurable",
+          why: "the made-up session records no system prompt, and the store holds no subagent of it",
+        },
+      ],
+    ]);
+  });
+
+  test("a profile that declares its listing says what the install was built from: one with no source, or a blank one, is refused", () => {
+    const dir = path.join(scratch, "declared-profile");
+    mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "profile.json");
+    writeFileSync(file, JSON.stringify(DECLARED_PROFILE));
+    expect(loadProfile(file, "claude", "alpha").profile.listing).toEqual({
+      kind: "declared",
+      source: DECLARED_SOURCE,
+    });
+    const refused = `the profile ${file} is refused: listing.source: `;
+    writeFileSync(file, JSON.stringify({ ...CLAUDE_BETA_PROFILE, listing: { kind: "declared" } }));
+    expect(() => loadProfile(file, "claude", "alpha")).toThrow(refused);
+    writeFileSync(
+      file,
+      JSON.stringify({ ...CLAUDE_BETA_PROFILE, listing: { kind: "declared", source: " " } })
+    );
+    expect(() => loadProfile(file, "claude", "alpha")).toThrow(`${refused}is blank`);
   });
 });
 

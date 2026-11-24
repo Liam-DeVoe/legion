@@ -22,12 +22,14 @@
  * - A profile file (`loadProfile`) is one JSON object: cases.ts's `Profile` (the other skills
  *   installed beside it, each a `ProfileSkill`; the Oh My Pi plugins; the context files; an
  *   appended system prompt), the `context` (a case's: `devbox`, the default,
- *   `legion:<project>:<role>` or `subagent:<agent>`), and for Claude Code `claude`, the plugin
- *   layout (ClaudeLayout). `--profile` is the profile of each task that names none; a task that
- *   names none when no `--profile` is given is refused. A profile skill with a `namespace` (a
- *   copy of another source that Oh My Pi lists as `<namespace>/<name>`) is that name in every
- *   check, so it may share the tested skill's name; a Claude Code profile that holds one is
- *   refused, since its layout places skills by their bare name.
+ *   `legion:<project>:<role>` or `subagent:<agent>`), for Claude Code `claude`, the plugin
+ *   layout (ClaudeLayout), and `listing` for a profile that is a declared install rather than one
+ *   rebuilt from a recorded session (DeclaredListing). `--profile` is the profile of each task
+ *   that names none; a task that names none when no `--profile` is given is refused. A profile
+ *   skill with a `namespace` (a copy of another source that Oh My Pi lists as
+ *   `<namespace>/<name>`) is that name in every check, so it may share the tested skill's name;
+ *   a Claude Code profile that holds one is refused, since its layout places skills by their
+ *   bare name.
  *
  * For each task the host's first request is captured once, in the rebuilt context of the task's
  * own profile (its skills, its plugins with capture.ts's stand-ins, its context files, its
@@ -197,12 +199,16 @@
  * session's; `taskListings`), and a task with no summary beside its file is not measurable. A task
  * whose rebuilt listing misses more than MAX_LISTING_MISSING_PERCENT of the names its session's
  * recorded listing holds (score.ts's `listingStanding`) is dropped before any run, its reason in
- * the summary's task and the counts in its `listing`; it is not run and no verdict reads it. Where
- * the rule drops more than half of the tasks, the command stops before any run and says so with
- * the numbers (exit 3): the architect decides such a load. The skill's verdict is made with and
- * without the tasks whose listing could not be measured (`listedOutcome`), both in the summary's
- * `verdicts`: where they agree it stands, with how many tasks were not measured; where they
- * differ there is no verdict, since it depends on those tasks. Beside the listing counts, the
+ * the summary's task and the counts in its `listing`; it is not run and no verdict reads it. A
+ * task whose profile declares its listing (DeclaredListing) has no recorded listing: the rule
+ * reads no measure for it and never drops it, and it counts as measured; the verdict's reason,
+ * the summary's task and `listing` counts, and the rule's line say `listing declared, not
+ * recorded` for it. Where the rule drops more than half of the tasks, the command stops before
+ * any run and says so with the numbers (exit 3): the architect decides such a load. The skill's
+ * verdict is made with and without the tasks whose listing could not be measured
+ * (`listedOutcome`), both in the summary's `verdicts`: where they agree it stands, with how many
+ * tasks were not measured; where they differ there is no verdict, since it depends on those
+ * tasks. Beside the listing counts, the
  * summary's `dispatch` and the listing rule's line count the tasks whose capture carries the
  * Envoy plugin's block of the skill, and of them those that rest on the assumption that their
  * session had Dispatch: a task holds no message of its session, so arms.ts's `dispatchOf` answers
@@ -382,11 +388,27 @@ const ClaudeLayout = z.strictObject({
   skillPlugin: Name,
 });
 
-/** A load test's profile: what the host installs beside the tested skill, and the context it runs
- *  in (a case's; `devbox` unless it names one). */
+/** A profile that is a declared install, not one rebuilt from a recorded session (the architects'
+ *  option d, INFRA-4849 R7): no store holds a Claude Code session, so a Claude Code task's profile
+ *  is the declared Claude Code install at the count's end time, and `source` says what it was
+ *  built from (the settings' enabled plugins and marketplaces, each plugin's manifest at its
+ *  pinned version, and the links that install our skills). No recorded listing confirms it: the
+ *  listing rule counts its tasks as measured (`taskListings`). */
+const DeclaredListing = z.strictObject({
+  kind: z.literal("declared"),
+  source: z.string().refine((text) => text.trim() !== "", "is blank"),
+});
+/** What the verdict's reason, the summary's task and the listing rule's line say of a task whose
+ *  profile declares its listing (DeclaredListing). */
+const LISTING_DECLARED = "listing declared, not recorded";
+
+/** A load test's profile: what the host installs beside the tested skill, the context it runs in
+ *  (a case's; `devbox` unless it names one), and, for a declared install, its listing
+ *  (DeclaredListing). */
 const LoadProfile = Profile.extend({
   context: Case.shape.context.default("devbox"),
   claude: ClaudeLayout.optional(),
+  listing: DeclaredListing.optional(),
 });
 type LoadProfile = z.infer<typeof LoadProfile>;
 
@@ -691,27 +713,54 @@ function summaryEvidence(
   );
 }
 
-/** Each task's standing by the listing measure of its profile (score.ts's `listingStanding`) in
- *  `evidence`, the tasks file's summary's (`summaryEvidence`), and the tasks whose measure marks
- *  names their profile took from the recorded listing (`tookFromRecorded`). With no summary
- *  beside the tasks file, each task is not measurable. */
+/** Where a load task stands by its listing: score.ts's ListingStanding of its listing measure, or
+ *  declared, for a task whose profile declares its listing (DeclaredListing), with what that
+ *  install was built from. */
+type TaskListing =
+  | ListingStanding
+  | { readonly state: "declared"; readonly source: string; readonly why: string };
+
+/** Each task's standing by its listing (TaskListing): declared for a task whose profile declares
+ *  its listing, whose listing measure is not read; else score.ts's `listingStanding` of the
+ *  measure of its profile in `evidence`, the tasks file's summary's (`summaryEvidence`), and not
+ *  measurable with no summary beside the tasks file. And the tasks whose measure marks names their
+ *  profile took from the recorded listing (`tookFromRecorded`), a declared one never. */
 function taskListings(
   tasksFile: string,
-  tasks: readonly Task[],
+  profiled: readonly ProfiledTask[],
   evidence: ReadonlyMap<string, readonly z.infer<typeof EvidenceItem>[] | undefined> | undefined
-): { readonly standings: Map<string, ListingStanding>; readonly taken: Set<string> } {
-  if (evidence === undefined) {
-    const why = `the tasks file has no build-tasks summary (${tasksFile}.summary.json) to give its listing measure`;
-    const standing: ListingStanding = { state: "not measurable", why };
-    return { standings: new Map(tasks.map((task) => [task.id, standing])), taken: new Set() };
-  }
+): { readonly standings: Map<string, TaskListing>; readonly taken: Set<string> } {
+  const standingOf = ({ task, profile }: ProfiledTask): TaskListing => {
+    const declared = profile.profile.listing;
+    if (declared !== undefined) {
+      return {
+        state: "declared",
+        source: declared.source,
+        why: `${LISTING_DECLARED}: its profile is the declared install, and no recorded listing confirms it`,
+      };
+    }
+    if (evidence === undefined) {
+      const why = `the tasks file has no build-tasks summary (${tasksFile}.summary.json) to give its listing measure`;
+      return { state: "not measurable", why };
+    }
+    return listingStanding(evidence.get(task.id));
+  };
   return {
-    standings: new Map(tasks.map((task) => [task.id, listingStanding(evidence.get(task.id))])),
+    standings: new Map(profiled.map((each) => [each.task.id, standingOf(each)])),
     taken: new Set(
-      tasks.flatMap((task) => (tookFromRecorded(evidence.get(task.id)) ? [task.id] : []))
+      profiled.flatMap(({ task, profile }) =>
+        profile.profile.listing === undefined && tookFromRecorded(evidence?.get(task.id))
+          ? [task.id]
+          : []
+      )
     ),
   };
 }
+
+/** How `listedOutcome` counts a task's listing: measured against its session's recorded listing,
+ *  declared (its profile is a declared install, DeclaredListing), which counts as measured, or not
+ *  measured. */
+type ListedAs = "measured" | "declared" | "not measured";
 
 /** A profile file as a load test read it: its absolute path, the SHA-256 of its bytes, its
  *  profile, and the skill the test looks for under it (for Claude Code, in the plugin its layout
@@ -1111,45 +1160,56 @@ export function skillOutcome(
 }
 
 /** The skill's verdict under the listing rule (the architect, 2026-11-22T03:04Z): made twice, from
- *  all `tasks` (`withUnmeasured`) and from those whose listing was measured
+ *  all `tasks` (`withUnmeasured`) and from those whose listing was measured or declared
  *  (`withoutUnmeasured`, no verdict when none was). Where no task is unmeasured, or the first is
  *  no verdict yet, it is the first; where the two agree, the first, its reason giving how many
- *  tasks were not measured; where they differ, no verdict, its reason giving both. */
+ *  tasks were not measured; where they differ, no verdict, its reason giving both. Where any
+ *  task's listing is declared (DeclaredListing), the verdict's reason ends with how many are. */
 export function listedOutcome(
   tasks: readonly {
     readonly id: string;
     readonly label: TaskLabel;
     readonly outcome: TaskOutcome;
-    readonly measured: boolean;
+    readonly listing: ListedAs;
   }[],
   wanted: number
 ): { verdict: LoadVerdict; withUnmeasured: LoadVerdict; withoutUnmeasured: LoadVerdict } {
   const withUnmeasured = skillOutcome(tasks, wanted);
-  const measured = tasks.filter((task) => task.measured);
+  const measured = tasks.filter((task) => task.listing !== "not measured");
   const withoutUnmeasured: LoadVerdict =
     measured.length === 0
       ? { descriptionFault: null, reason: "no verdict: no task's listing was measured" }
       : skillOutcome(measured, wanted);
   const unmeasured = tasks.length - measured.length;
+  const declared = tasks.filter((task) => task.listing === "declared").length;
+  const of = `of its ${tasks.length} tasks`;
+  /** The verdict `descriptionFault` with `reason`, which ends with the declared listings. */
+  const verdict = (descriptionFault: boolean | null, reason: string): LoadVerdict => ({
+    descriptionFault,
+    reason:
+      declared === 0
+        ? reason
+        : `${reason}; ${LISTING_DECLARED} for ${declared} ${of}: their profile is the declared install, and no recorded listing confirms it`,
+  });
   const both = { withUnmeasured, withoutUnmeasured };
   if (unmeasured === 0 || withUnmeasured.descriptionFault === null) {
-    return { verdict: withUnmeasured, ...both };
+    return { verdict: verdict(withUnmeasured.descriptionFault, withUnmeasured.reason), ...both };
   }
-  const count = `${unmeasured} of its ${tasks.length} tasks`;
+  const count = `${unmeasured} ${of}`;
   if (withoutUnmeasured.descriptionFault === withUnmeasured.descriptionFault) {
     return {
-      verdict: {
-        descriptionFault: withUnmeasured.descriptionFault,
-        reason: `${withUnmeasured.reason}; the listing of ${count} could not be measured, and without them the verdict is the same`,
-      },
+      verdict: verdict(
+        withUnmeasured.descriptionFault,
+        `${withUnmeasured.reason}; the listing of ${count} could not be measured, and without them the verdict is the same`
+      ),
       ...both,
     };
   }
   return {
-    verdict: {
-      descriptionFault: null,
-      reason: `no verdict: depends on tasks whose listing could not be measured (${count}): with them, ${withUnmeasured.reason}; without them, ${withoutUnmeasured.reason}`,
-    },
+    verdict: verdict(
+      null,
+      `no verdict: depends on tasks whose listing could not be measured (${count}): with them, ${withUnmeasured.reason}; without them, ${withoutUnmeasured.reason}`
+    ),
     ...both,
   };
 }
@@ -1604,7 +1664,7 @@ class LoadTest {
       path: this.skillDir,
       name,
     };
-    const { context, claude: _claude, systemPrompt, ...rest } = profile;
+    const { context, claude: _claude, listing: _listing, systemPrompt, ...rest } = profile;
     const recorded =
       systemPrompt === undefined || renamedFrom === null
         ? systemPrompt
@@ -2411,9 +2471,10 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   const profiled = taskProfiles(tasks, o, name);
   const injected = await injectedRefusal(profiled, o, own, name);
   if (injected !== undefined) throw new Refused(injected);
-  // Each task's standing by its listing measure, and the tasks the listing rule drops: never run.
+  // Each task's standing by its listing (its measure, or its profile's declared listing), and the
+  // tasks the listing rule drops: never run.
   const evidence = summaryEvidence(o.tasksFile, tasks);
-  const { standings: listings, taken } = taskListings(o.tasksFile, tasks, evidence);
+  const { standings: listings, taken } = taskListings(o.tasksFile, profiled, evidence);
   // Each task's daemon image item (context.ts's DAEMON_IMAGE_ITEM), which its capture reads, so
   // a Legion task's role prompt is composed at its daemon image's commit, as a behaviour case's
   // is. No other item of the evidence goes to the capture.
@@ -2429,6 +2490,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     )
   );
   const standings = [...listings.values()];
+  const declared = standings.filter((standing) => standing.state === "declared").length;
   const listingCounts = {
     summary: `${o.tasksFile}.summary.json`,
     measured: standings.filter((standing) => standing.state === "measured").length,
@@ -2437,7 +2499,12 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     // The tasks whose profile took names from their recorded listing (build.ts's fromRecorded):
     // their measure cannot see a miss of those names.
     fromRecorded: taken.size,
+    // Counted only where a task's profile declares its listing, so that a load with none writes
+    // the summary it wrote before such profiles were.
+    ...(declared === 0 ? {} : { declared }),
   };
+  const declaredWords =
+    declared === 0 ? "" : `; ${LISTING_DECLARED} for ${declared} tasks, which count as measured`;
   // Each task whose capture carries the Envoy plugin's block of the skill, by where the answer
   // that its session had Dispatch comes from (arms.ts's `dispatchOf`), counted beside the listing.
   const froms =
@@ -2599,18 +2666,13 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
    *  measured (`listedOutcome`), both in the summary. */
   const writeSummary = (): { verdict: LoadVerdict; usd: number } => {
     const listed = listedOutcome(
-      tasks.flatMap((task) =>
-        listingDrops.has(task.id)
-          ? []
-          : [
-              {
-                id: task.id,
-                label: task.label,
-                outcome: outcomeOf(task),
-                measured: listings.get(task.id)?.state === "measured",
-              },
-            ]
-      ),
+      tasks.flatMap((task) => {
+        if (listingDrops.has(task.id)) return [];
+        const state = listings.get(task.id)?.state;
+        const listing: ListedAs =
+          state === "measured" || state === "declared" ? state : "not measured";
+        return [{ id: task.id, label: task.label, outcome: outcomeOf(task), listing }];
+      }),
       o.runs
     );
     const verdict = listed.verdict;
@@ -2665,7 +2727,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   writeSummary();
   if (listingDrops.size * 2 > tasks.length) {
     throw new Stopped(
-      `the listing rule drops ${listingDrops.size} of the ${tasks.length} tasks of ${o.tasksFile}, more than half (${[...listingDrops.keys()].join(", ")}): the rebuilt listing of each misses more than ${MAX_LISTING_MISSING_PERCENT}% of the names its session's recorded listing holds, so the test stops before any run, and the architect decides such a load; ${listingCounts.measured} tasks' listings were measured and ${listingCounts.notMeasurable} could not be; written to ${summaryFile}`
+      `the listing rule drops ${listingDrops.size} of the ${tasks.length} tasks of ${o.tasksFile}, more than half (${[...listingDrops.keys()].join(", ")}): the rebuilt listing of each misses more than ${MAX_LISTING_MISSING_PERCENT}% of the names its session's recorded listing holds, so the test stops before any run, and the architect decides such a load; ${listingCounts.measured} tasks' listings were measured and ${listingCounts.notMeasurable} could not be${declaredWords}; written to ${summaryFile}`
     );
   }
 
@@ -2674,7 +2736,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     `the skill ${name} on ${o.host === "omp" ? "Oh My Pi" : "Claude Code"}, model ${settings.model}, thinking ${o.thinking}: ${count("need")} need and ${count("near-miss")} near-miss tasks, ${o.runs} runs each`
   );
   test.say(
-    `the listing rule (${listingCounts.summary}): ${listingCounts.measured} tasks' listings measured, ${listingCounts.notMeasurable} not measurable, ${listingCounts.dropped} tasks dropped, each missing more than ${MAX_LISTING_MISSING_PERCENT}% of the names its session's recorded listing holds, ${listingCounts.fromRecorded} installed names their recorded listing gave them (fromRecorded); ${dispatchCounts.carryBlock} tasks carry the Envoy plugin's block of the skill, ${dispatchCounts.assumed} of them on the assumption that their session had Dispatch`
+    `the listing rule (${listingCounts.summary}): ${listingCounts.measured} tasks' listings measured, ${listingCounts.notMeasurable} not measurable, ${listingCounts.dropped} tasks dropped, each missing more than ${MAX_LISTING_MISSING_PERCENT}% of the names its session's recorded listing holds, ${listingCounts.fromRecorded} installed names their recorded listing gave them (fromRecorded)${declaredWords}; ${dispatchCounts.carryBlock} tasks carry the Envoy plugin's block of the skill, ${dispatchCounts.assumed} of them on the assumption that their session had Dispatch`
   );
   const byFile = new Map<string, { profile: TaskProfile; ids: string[] }>();
   for (const { task, profile } of profiled) {
