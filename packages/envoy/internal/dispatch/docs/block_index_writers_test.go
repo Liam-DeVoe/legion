@@ -950,6 +950,11 @@ var indexPasses = map[string]string{
 	// sentinel beside them (refs.Replacement.ArtifactMentions). It reads no side of a projection to
 	// mend the other: both follow from the text.
 	"refs/rebuild.go#replaceInTx": "the source's text, read under the lock an edit of it takes, and the refs rows its reconcile moved",
+	// The head write of the blocks of a comment an item index writes, moves or removes
+	// (refs.ItemIndexing.Queue), which reads the store's comment_blocks rows and texts the index
+	// queued before it in the same transaction, as every writer's head write reads the store
+	// (graphstore.HeadRowsSQL).
+	"refs/item_blocks.go#queueBlockHeads": "the item index's own plan: the blocks it writes, moves and removes",
 	// The head projection's own writer that writes no store row: the fill of an issue's rows
 	// (graphcensus.FillIssueHeads), which reads the store under the issue's owner lock and head fill
 	// lock and writes the rows the store gives, as every writer's head write does

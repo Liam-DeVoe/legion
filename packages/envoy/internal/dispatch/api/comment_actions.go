@@ -324,10 +324,12 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The stamp queueStampedEvent queues with the event appends no event, so the id sequence
-	// still names comment.edited here.
+	// still names comment.edited here. The comment's own head rows hold its body and the time it
+	// was edited (graphstore.HeadRowsSQL), so they are written again whether or not a node write
+	// was planned.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, commentNode, graphstore.LatestEvent)
-		graphstore.QueueHeads(b, graphstore.HeldHeads(commentNode))
+		graphstore.QueueHeads(b, append(graphstore.HeldHeads(commentNode), graphstore.NodeKey{Kind: graphstore.KindComment, ID: comment.ID}))
 		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)

@@ -677,7 +677,8 @@ func (b *issueTreeBuilder) candidates() []refs.Target {
 // readFacts reads what each of targets states at the read's cut (refs.TreeFactsOf), each node's
 // row, each block's document_blocks row, and each node as the registry's loader of its kind
 // answers it for the reader (refs.ExcerptedNodes), which is the one test of whether the reader may
-// see it, for each target it has not read yet (read). A node of the walk whose row the walk read
+// see it, but a document or a version of the walk's or the others', which no answer holds
+// (unloaded), for each target it has not read yet (read). A node of the walk whose row the walk read
 // (docs' TreeNode.Row) takes its row from there, and every other node's is read
 // (refs.TreeNodeRows): the issue's own, its conversation's, the others' and the context's. A node
 // of the walk's conversation takes what its loader answered from the walk (docs' IssueTree's
@@ -736,7 +737,8 @@ func (b *issueTreeBuilder) readFacts(targets []refs.Target) error {
 	}
 	// A block's node and its document_blocks row are read in one statement
 	// (refs.BlockNodesAndRows), the node where the reader may see it and the row whether or not;
-	// every other node through its kind's loader.
+	// every other node through its kind's loader, but a document or a version the walk or the
+	// others took (unloaded), which no answer holds.
 	loaderTargets := make([]refs.Target, 0, len(unread))
 	var blocks []string
 	for _, target := range unread {
@@ -765,7 +767,7 @@ func (b *issueTreeBuilder) readFacts(targets []refs.Target) error {
 			b.loaded[target] = node
 			continue
 		}
-		if kind != refs.BlockNodeKind && refs.ResolvesNodeKind(kind) {
+		if kind != refs.BlockNodeKind && refs.ResolvesNodeKind(kind) && !b.unloaded(target) {
 			loaderTargets = append(loaderTargets, refs.Target{Kind: kind, ID: target.ID})
 		}
 	}
@@ -801,6 +803,17 @@ func (b *issueTreeBuilder) headRow(target refs.Target) (*refs.HeadRow, bool) {
 	}
 	head, held := b.heads.Rows[target]
 	return head, held
+}
+
+// unloaded is whether target is a node of the walk or of the others that no tree read answers and
+// that is no parent the answer names by its loaded node: a document or a version (excluded), which
+// keep never keeps and keep's effective parents pass over, and which parentOf names from its entry.
+// Its loader's answer would be read for nothing: for an issue of the most comments, the one
+// statement of its documents, 0.07 ms of the read's 5.35.
+func (b *issueTreeBuilder) unloaded(target refs.Target) bool {
+	entry, held := b.entries[target]
+	return held && entry.role != treeRoleContext &&
+		(target.Kind == graphstore.KindArtifact || target.Kind == graphstore.KindVersion)
 }
 
 // loaderKind is the kind the registry resolves the node target names by: a finding of a lens,
@@ -1271,6 +1284,15 @@ func (b *issueTreeBuilder) readMembers() error {
 	var comments, messages, asks, results []string
 	var itemBlocks []refs.Target
 	for _, target := range named {
+		// A comment's body and a comment block's text at its newest revision, which BlockTexts
+		// leaves out where that revision holds none, are its head row's where the read holds one.
+		if head, held := b.headRow(target); held && head.Item != nil &&
+			(target.Kind == graphstore.KindComment || target.Kind == refs.ItemComment.BlockKind()) {
+			if head.Item.Text != nil {
+				b.texts[target] = *head.Item.Text
+			}
+			continue
+		}
 		switch target.Kind {
 		case graphstore.KindComment:
 			comments = append(comments, target.ID)
@@ -1397,37 +1419,45 @@ func (b *issueTreeBuilder) readDecisions(answer []refs.Target) error {
 // whether it is converted and its tree, whose view it is (docs.ViewOf: view where the caller read
 // it already, as the walk of the issue read reads it for its own key, and read here where view is
 // nil), and while it has not converted the ids of its role documents, as the role predicates find
-// them.
+// them. Its tree (issue_trees, as issueTreeOf reads it) and its role documents are read in one
+// statement (issueTreeIssueStatement).
 func readIssueTreeIssue(ctx context.Context, q pgx.Tx, key string, view *string) (*model.IssueTreeIssue, error) {
 	state := &model.IssueTreeIssue{}
-	tree, err := issueTreeOf(ctx, q, key)
-	if err != nil {
-		return nil, err
+	var tree *string
+	documents := &model.IssueTreeDocuments{}
+	if err := q.QueryRow(ctx, issueTreeIssueStatement, key).Scan(&tree, &documents.Spec, &documents.Verification, &documents.Plan); err != nil {
+		return nil, fmt.Errorf("read the tree and the role documents of %s: %w", key, err)
 	}
-	if tree != "" {
-		state.Converted, state.Tree = true, &tree
+	if tree != nil {
+		state.Converted, state.Tree = true, tree
 	} else {
-		documents := &model.IssueTreeDocuments{}
-		if err := q.QueryRow(ctx, `
-			select (select a.id::text from artifacts a where a.issue_key = $1 and a.is_primary),
-			       (select a.id::text from artifacts a where a.issue_key = $1 and `+aliasedVerificationRole+`),
-			       (select a.id::text from artifacts a where a.issue_key = $1 and `+aliasedPlanRole+`)`,
-			key).Scan(&documents.Spec, &documents.Verification, &documents.Plan); err != nil {
-			return nil, fmt.Errorf("read the role documents of %s: %w", key, err)
-		}
 		state.Documents = documents
 	}
 	ancestor := ""
 	if view != nil {
 		ancestor = *view
-	} else if ancestor, err = docs.ViewOf(ctx, q, key); err != nil {
-		return nil, err
+	} else {
+		var err error
+		if ancestor, err = docs.ViewOf(ctx, q, key); err != nil {
+			return nil, err
+		}
 	}
 	if ancestor != "" {
 		state.ViewOf = &ancestor
 	}
 	return state, nil
 }
+
+// issueTreeIssueStatement is the tree artifact of the issue $1 (issue_trees, as issueTreeOf reads
+// it), null where it holds none, beside the ids of its role documents, as the role predicates find
+// them, each read only where the issue holds no tree: a converted issue's answer names none, and
+// Postgres runs a subquery of a case's arm only where the case takes it.
+var issueTreeIssueStatement = `
+	with tree as (select t.artifact_id::text as id from issue_trees t where t.issue_key = $1)
+	select (select tree.id from tree),
+	       case when not exists (select 1 from tree) then (select a.id::text from artifacts a where a.issue_key = $1 and a.is_primary) end,
+	       case when not exists (select 1 from tree) then (select a.id::text from artifacts a where a.issue_key = $1 and ` + aliasedVerificationRole + `) end,
+	       case when not exists (select 1 from tree) then (select a.id::text from artifacts a where a.issue_key = $1 and ` + aliasedPlanRole + `) end`
 
 // answered is every node the answer holds, in its order, the context last (ordered).
 func (b *issueTreeBuilder) answered() []refs.Target {

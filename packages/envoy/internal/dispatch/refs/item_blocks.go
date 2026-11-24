@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -522,15 +523,36 @@ func (i ItemIndexing) Block(blockID string) (nodeID, excerpt string, found bool)
 
 // Queue queues the index's writes on a write phase's batch: the item's state row taken first,
 // the blocks the body changed and removed, the block texts of a kind that records them, the
-// links its blocks hold, and last the statement that records the item indexed
-// (queueRecordIndexed).
+// head rows of a comment's blocks it wrote, moved or removed (queueBlockHeads), the links its
+// blocks hold, and last the statement that records the item indexed (queueRecordIndexed).
 func (i ItemIndexing) Queue(b *store.WriteBatch) {
 	i.queueStateLock(b)
 	if i.changed {
 		i.queueBlocks(b)
+		i.queueBlockHeads(b)
 	}
 	i.queueBlockRefs(b)
 	i.queueRecordIndexed(b)
+}
+
+// queueBlockHeads queues the head write of each block of a comment queueBlocks writes, moves or
+// removes (graphstore.QueueHeads): the head row of a current block of a comment holds its
+// comment_blocks row and its newest text (graphstore.HeadRowsSQL), and a removed block holds none.
+// The blocks of an ask or a message hold no such row.
+func (i ItemIndexing) queueBlockHeads(b *store.WriteBatch) {
+	if i.kind != ItemComment {
+		return
+	}
+	nodes := make([]graphstore.NodeKey, 0, len(i.written)+len(i.kept)+len(i.removed))
+	for _, rows := range [][]itemBlockRow{i.written, i.kept} {
+		for _, row := range rows {
+			nodes = append(nodes, graphstore.NodeKey{Kind: i.kind.BlockKind(), ID: string(i.kind) + "/" + i.itemID + "#" + row.id})
+		}
+	}
+	for _, id := range i.removed {
+		nodes = append(nodes, graphstore.NodeKey{Kind: i.kind.BlockKind(), ID: string(i.kind) + "/" + i.itemID + "#" + id})
+	}
+	graphstore.QueueHeads(b, nodes)
 }
 
 // queueRecordIndexed queues the statement that records the item indexed from the text whose sum

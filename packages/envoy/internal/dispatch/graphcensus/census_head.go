@@ -291,9 +291,10 @@ func headDigest(alias string) string {
 
 // headSides is the two sides of the head projection's census, each a select of (issue_key,
 // node_kind, node_address, digest): the rows issue_head_nodes holds, and the rows the store says it
-// should hold (graphstore.HeadRowsSQL) of every node graph_nodes holds and every node a row names,
-// the latter read at the default collation, as graph_nodes' are, so the store's side probes the
-// store's indexes by them.
+// should hold (graphstore.HeadRowsSQL) of every node graph_nodes holds, every block of a comment
+// (comment_blocks, whose nodes graph_nodes holds no row of) and every node a row names, the latter
+// read at the default collation, as graph_nodes' are, so the store's side probes the store's
+// indexes by them.
 var headSides = `
 	with head_stored as (
 		select stored.issue_key, stored.node_kind, stored.node_address, ` + headDigest("stored") + ` as digest
@@ -301,7 +302,9 @@ var headSides = `
 		where exists (select 1 from issue_head_marks mark where mark.issue_key = stored.issue_key)
 	), head_expected as (
 		select expected.issue_key, expected.kind as node_kind, expected.id as node_address, ` + headDigest("expected") + ` as digest
-		from (` + graphstore.HeadRowsSQL(`select kind, id from graph_nodes union select node_kind collate "default", node_address collate "default" from issue_head_nodes`) + `) expected
+		from (` + graphstore.HeadRowsSQL(`select kind, id from graph_nodes
+			union select '`+graphstore.KindCommentBlock+`', node_id from comment_blocks
+			union select node_kind collate "default", node_address collate "default" from issue_head_nodes`) + `) expected
 		where exists (select 1 from issue_head_marks mark where mark.issue_key = expected.issue_key)
 	)`
 

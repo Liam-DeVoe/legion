@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
 // The head read of an issue's tree reads the issue's rows of the head projection
@@ -52,6 +53,32 @@ type HeadRow struct {
 	// block loader's predicate reads it.
 	Seen  bool
 	Facts TreeFacts
+	// Item is what the row of a comment, or of a current block of one, holds of its conversation
+	// row; nil for every other node.
+	Item *HeadItem
+	// stored is, for a row that holds an Item, the graph_nodes row's state and visibility as a
+	// loader selects them (StoredRowOf), each nil where the store holds no row of the node.
+	stored StoredNode
+}
+
+// HeadItem is what a head row holds of a comment's row (issue_head_nodes' item_ columns), as the
+// comment loader reads it (loadCommentNodes), or of a current block of a comment, as the comment
+// block loader and BlockTexts read it (itemBlockNodes): the comment's issue and author; the
+// comment's body, or the block's text at its newest revision, nil where that revision holds none;
+// when the comment was written and last edited, or the block made and changed; the comment it
+// replies to, the block it replies to and its ask; the document its row names (artifact_id), and
+// the document and version it is written on; and of a block its changed revision (Version), its id,
+// its excerpt and its position.
+type HeadItem struct {
+	IssueKey                       *string
+	Author                         []byte
+	Text                           *string
+	MadeAt, ChangedAt              *time.Time
+	ReplyTo, RepliesToBlock, AskID *string
+	ArtifactID, DocumentID         *string
+	Version                        *int
+	BlockID, Excerpt               *string
+	Position                       *int
 }
 
 // headRowsStatement is the rows of the issue $1 the head projection holds while a mark names the
@@ -63,24 +90,126 @@ type HeadRow struct {
 // aside to find them: holding aside the 3,000 rows of an issue of the largest plan cost the read a
 // third of its time. It is built at each read, as the block loader's is (blockNodesStatement): the
 // registry the predicate reads is filled by the package's init, after its variables.
+//
+// It sends each row only what a read answers of it. Of the prose of a role document
+// (headProseSQL) it sends the row's place, its type, its state, its graph_nodes row's state and
+// visibility and its document, and none of its text, its authors, its document_blocks row or its
+// other values and relations. Of every other row it sends all of them, but the text sum and the
+// changed version of a block only where a check may type it (headCheckSQL), and the authors of the
+// version that first held a block only where the block states no authored_by of its own, whose
+// authors are its maker (HeadRow.BlockNode). Of a comment and of a current block of one it sends
+// the conversation columns too (headItemSQL).
+//
+// The test is a column of the rows, computed once a row in a subquery Postgres keeps (`offset
+// 0`): as a lateral it was inlined into each column that reads it, and run fourteen times a row.
 func headRowsStatement(rows string) string {
+	whole := func(column string) string { return `case when not heads.prose then ` + column + ` end` }
+	checked := func(column string) string {
+		return `case when not heads.prose and ` + headCheckSQL + ` then ` + column + ` end`
+	}
+	state := `'` + graphstore.AttributeState + `'`
 	return `
-	select heads.node_kind, heads.node_address, heads.parent_kind, heads.parent_address, heads.rank, heads.text,
+	with head_roles as (` + headRolesSQL + `)
+	select heads.node_kind, heads.node_address, heads.parent_kind, heads.parent_address, heads.rank, ` + whole(`heads.text`) + `,
 	       heads.made_at is not null, coalesce(heads.supertag, ''), ` + StoredRowOf("heads") + `,
-	       heads.made_at, heads.authors, heads.first_authors, heads.first_at,
-	       heads.document_id::text, heads.block_type, heads.text_sha256, heads.changed_version,
+	       heads.made_at, ` + whole(`heads.authors`) + `,
+	       case when not heads.prose and heads.authors is null then heads.first_authors end, ` + whole(`heads.first_at`) + `,
+	       heads.document_id::text, ` + whole(`heads.block_type`) + `, ` + checked(`heads.text_sha256`) + `, ` + checked(`heads.changed_version`) + `,
 	       heads.made_at is null or ` + VisibleKindRow(BlockNodeKind, "heads", "$2") + `,
-	       heads.value_kinds, heads.value_texts, heads.relation_kinds, heads.relation_to_kinds, heads.relation_to_ids
-	from (` + rows + `) heads
+	       case when not heads.prose then heads.value_kinds when ` + state + ` = any(heads.value_kinds) then array[` + state + `] else '{}' end,
+	       case when not heads.prose then heads.value_texts
+	            when ` + state + ` = any(heads.value_kinds) then array[heads.value_texts[array_position(heads.value_kinds, ` + state + `)]]
+	            else '{}' end,
+	       case when not heads.prose then heads.relation_kinds else '{}' end,
+	       case when not heads.prose then heads.relation_to_kinds else '{}' end,
+	       case when not heads.prose then heads.relation_to_ids else '{}' end,
+	       ` + headItemSQL + `
+	from (select heads.*, coalesce(` + headProseSQL() + `, false) as prose from (` + rows + `) heads offset 0) heads
 	where exists (select 1 from issue_head_marks mark where mark.issue_key = $1)`
 }
 
-// headDocumentsStatement is the slug, the issue and the band of each document $1 names, the
-// documents the head rows of a read name, each read by its key once.
+// headItemSQL is a head row's conversation columns (issue_head_nodes' item_ columns) as one record,
+// in the order headItemOf reads them, the author as its text, for the row of a comment and of a
+// comment's block, and null for every other: fourteen columns null on each of the 3,000 other rows
+// of an issue of the largest plan would be sent as 168 kB of null lengths. A record is sent in
+// binary with its fields as Postgres keeps them: a jsonb array of the same columns cost the 409
+// rows of an issue of the most comments 2 ms to build, a record a third of that.
+const headItemSQL = `case when heads.node_kind in ('` + graphstore.KindComment + `', '` + graphstore.KindCommentBlock + `') then row(
+	       heads.item_issue_key, heads.item_author::text, heads.item_text, heads.item_made_at, heads.item_changed_at,
+	       heads.item_reply_to, heads.item_replies_to_block, heads.item_ask_id, heads.item_artifact_id::text, heads.item_document_id::text,
+	       heads.item_version, heads.item_block_id, heads.item_excerpt, heads.item_position) end`
+
+// headItemOf is the item a head row's headItemSQL column holds, raw as Postgres sent it in binary,
+// scanned by plan (a record's, typeMap.PlanScan of pgtype.CompositeFields); nil for a null one.
+func headItemOf(plan pgtype.ScanPlan, raw []byte) (*HeadItem, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	var item HeadItem
+	var author *string
+	fields := pgtype.CompositeFields{&item.IssueKey, &author, &item.Text, &item.MadeAt, &item.ChangedAt, &item.ReplyTo,
+		&item.RepliesToBlock, &item.AskID, &item.ArtifactID, &item.DocumentID, &item.Version, &item.BlockID, &item.Excerpt, &item.Position}
+	if err := plan.Scan(raw, fields); err != nil {
+		return nil, fmt.Errorf("decode the conversation columns of a head row: %w", err)
+	}
+	if author != nil {
+		item.Author = []byte(*author)
+	}
+	return &item, nil
+}
+
+// headProseSQL is the test of a head row that a read answers nothing of but its place (R2, R16):
+// a block whose document_blocks row names a role document of the issue $1 - its spec, its
+// Verification document, its plan (head_roles) - whose supertag names no typed block the installed
+// schema declares, and whose text holds no `:::`, so its opening line opens no typed block
+// (TreeNodeType): its prose, which no query of the tree answers (the tree read's excluded, which
+// reads the band of the block's document). A read takes its place among its parent's children,
+// its type, which is its supertag, and its state, which a gone block is left out by. Of the 3,013
+// rows of an issue of the largest plan, half are such prose, and their texts, authors, values and
+// relations were half of the 2.0 MB its read was sent. It is built at each read: the schema can be
+// installed again.
+func headProseSQL() string {
+	names := pmdoc.TypedBlockNames()
+	typed := make([]string, len(names))
+	for index, name := range names {
+		typed[index] = `'` + strings.ReplaceAll(name, `'`, `''`) + `'`
+	}
+	notTyped := `true`
+	if len(typed) > 0 {
+		notTyped = `coalesce(heads.supertag, '') not in (` + strings.Join(typed, ", ") + `)`
+	}
+	return `heads.node_kind = '` + BlockNodeKind + `'
+		and heads.document_id = any((select head_roles.ids from head_roles)::uuid[])
+		and ` + notTyped + `
+		and position(':::' in coalesce(heads.text, '')) = 0`
+}
+
+// headRolesSQL is the role documents of the issue $1 headProseSQL reads, by their id: the documents
+// whose band (DocumentBandSQL) is the spec's, the Verification document's or the plan's.
+var headRolesSQL = `select coalesce(array_agg(a.id), '{}') as ids
+		from artifacts a
+		where a.issue_key = $1 and ` + DocumentBandSQL("a") + ` in ('` +
+	string(RankBandSpec) + `', '` + string(RankBandVerification) + `', '` + string(RankBandPlan) + `')`
+
+// headCheckSQL is the test of a head row a check may type, whose text sum and changed version a
+// read answers (a check's): its supertag is check, or its text opens a check somewhere. Every other
+// block's 64-byte sum goes unread.
+const headCheckSQL = `(heads.supertag = '` + graphstore.BlockTypeCheck + `' or position(':::` + graphstore.BlockTypeCheck + `' in coalesce(heads.text, '')) > 0)`
+
+// headDocumentsStatement is, of each document $1 names, its slug, its issue and its band, and what a
+// conversation item's node reads of its document (documentColumns: its project, its session, its
+// kind and whether it is primary); and of each issue $2 names, its project: the documents the head
+// rows of a read name, by their blocks' rows and by their comments' and comment blocks' items
+// (HeadItem), and the issues those items belong to, each read by its key once. The two were two
+// statements, the second sent by the read of the comment page (ConversationPageNodesOfHeads).
 var headDocumentsStatement = `
-	select a.id::text, a.slug, a.issue_key, ` + DocumentBandSQL("a") + `
+	select 'artifact', a.id::text, a.slug, a.issue_key, ` + DocumentBandSQL("a") + `, a.project_key, a.session_id, a.kind, a.is_primary
 	from artifacts a
-	where a.id = any($1::uuid[])`
+	where a.id = any($1::uuid[])
+	union all
+	select 'issue', i.key, null, null, null, i.project_key, null, null, null
+	from issues i
+	where i.key = any($2::text[])`
 
 // headRowsWhole is every row of the issue $1, one range of issue_head_nodes' primary key: what a
 // view reads.
@@ -94,7 +223,10 @@ const headRowsWhole = `select * from issue_head_nodes whole where whole.issue_ke
 // each comment of the page, is a range of its own read through the key (a lateral subquery Postgres
 // keeps, `offset 0`): as a join, Postgres reckons each pair to keep a ninth of the issue's blocks,
 // and over an issue of 46,000 blocks it read every row of the table rather than the 1,460 the
-// pairs bound.
+// pairs bound. The blocks at $6 or above are bounded by a subquery of $6, which Postgres reads as
+// a value it does not know when it plans: given $6 itself it reckoned, off the addresses of the
+// 9,252 comment blocks of an issue of the most comments, which all sort above it, that the range
+// kept 11,875 of its 6 blocks, and read the whole table (45 ms of a 51 ms statement).
 var headRowsSkeleton = `
 		select * from issue_head_nodes kinds where kinds.issue_key = $1 and kinds.node_kind < '` + BlockNodeKind + `'
 		union all
@@ -108,7 +240,7 @@ var headRowsSkeleton = `
 			  and blocks.node_address >= bounds.low and blocks.node_address < bounds.high
 			offset 0) blocks
 		union all
-		select * from issue_head_nodes blocks where blocks.issue_key = $1 and blocks.node_kind = '` + BlockNodeKind + `' and blocks.node_address >= $6
+		select * from issue_head_nodes blocks where blocks.issue_key = $1 and blocks.node_kind = '` + BlockNodeKind + `' and blocks.node_address >= (select $6::text)
 		union all
 		select comments.* from issue_head_nodes comments
 		where comments.issue_key = $1 and comments.node_kind = '` + string(ItemComment) + `' and comments.node_address = any($5::text[])
@@ -149,6 +281,10 @@ func (skeleton HeadSkeleton) bounds(issueKey string) (low, high []string, above 
 type HeadTree struct {
 	Rows     map[Target]*HeadRow
 	children map[Target][]TreeChild
+	// owners is, by its kind and its key, each document and each issue the conversation items of
+	// the rows name (HeadItem), as a comment's or a comment block's node reads them
+	// (headDocumentsStatement).
+	owners map[[2]string]headItemOwner
 }
 
 // HeadRows is the rows of the issue issueKey's tree the head projection holds, read for who, and
@@ -186,9 +322,11 @@ func HeadRows(ctx context.Context, q Queryer, who model.Actor, issueKey string, 
 	}
 	read := make([]HeadRow, 0, len(held))
 	var blocks []headBlock
-	var documents []string
+	var documents, issues []string
 	named := map[string]bool{}
 	var plans []pgtype.ScanPlan
+	var itemPlan pgtype.ScanPlan
+	itemColumn := headFirstArray + 5
 	for _, raw := range held {
 		var head HeadRow
 		var parentKind, parentID, document, blockType, textSHA256, state, visibility pgtype.Text
@@ -214,7 +352,23 @@ func HeadRows(ctx context.Context, q Queryer, who model.Actor, issueKey string, 
 				return nil, false, fmt.Errorf("read a head row of %s: %w", issueKey, err)
 			}
 		}
+		if itemPlan == nil {
+			itemPlan = typeMap.PlanScan(fields[itemColumn].DataTypeOID, fields[itemColumn].Format, pgtype.CompositeFields{})
+		}
+		if head.Item, err = headItemOf(itemPlan, raw[itemColumn]); err != nil {
+			return nil, false, fmt.Errorf("read the column %s of a head row of %s: %w", fields[itemColumn].Name, issueKey, err)
+		}
 		head.State, head.Visibility = state.String, visibility.String
+		if head.Item != nil {
+			if state.Valid {
+				held := state.String
+				head.stored.State = &held
+			}
+			if visibility.Valid {
+				held := visibility.String
+				head.stored.Visibility = &held
+			}
+		}
 		if parentKind.Valid && parentID.Valid {
 			head.Parent = Target{Kind: parentKind.String, ID: parentID.String}
 		}
@@ -230,17 +384,32 @@ func HeadRows(ctx context.Context, q Queryer, who model.Actor, issueKey string, 
 				documents = append(documents, document.String)
 			}
 		}
+		if item := head.Item; item != nil {
+			if item.IssueKey != nil && !named["issue "+*item.IssueKey] {
+				named["issue "+*item.IssueKey] = true
+				issues = append(issues, *item.IssueKey)
+			}
+			for _, document := range []*string{item.ArtifactID, item.DocumentID} {
+				if document != nil && !named[*document] {
+					named[*document] = true
+					documents = append(documents, *document)
+				}
+			}
+		}
 		head.Facts = headFacts(head.Rank, head.Text, valueKinds, valueTexts, relationKinds, relationToKinds, relationToIDs)
 		read = append(read, head)
 	}
-	if err := readHeadDocuments(ctx, q, issueKey, read, blocks, documents); err != nil {
+	owners, err := readHeadDocuments(ctx, q, issueKey, read, blocks, documents, issues)
+	if err != nil {
 		return nil, false, err
 	}
 	heads := make(map[Target]*HeadRow, len(read))
 	for index := range read {
 		heads[read[index].Node] = &read[index]
 	}
-	return newHeadTree(heads, read), true, nil
+	tree := newHeadTree(heads, read)
+	tree.owners = owners
+	return tree, true, nil
 }
 
 // drainHeadRows reads every row of the head rows statement off the connection as it arrives, each
@@ -284,12 +453,24 @@ func drainHeadRows(rows pgx.Rows) ([]pgconn.FieldDescription, [][][]byte, error)
 // others follow: value_texts, relation_kinds, relation_to_kinds and relation_to_ids.
 const headFirstArray = 19
 
-// headArraysAsText asks Postgres for the head rows' text arrays in its text form, every other
-// column as pgx asks for it: a text[] in binary carries a 20-byte header and a 4-byte length for
-// each element, so the five arrays of the 3,013 rows of an issue of the largest plan are 1,114 kB
-// in binary and 655 kB as text, of the 2,472 kB the rows are sent in, at about the same cost to
-// Postgres to write.
-var headArraysAsText = pgx.QueryResultFormatsByOID{pgtype.TextArrayOID: pgx.TextFormatCode}
+// headArraysAsText asks Postgres for the head rows' text arrays in its text form, and every column
+// of another type that a client reads apart from its text - timestamps, booleans, integers, jsonb
+// and the conversation record (headItemSQL), which can be read in binary alone - in binary; pgx asks
+// for every type the map does not name in text, and a text column is the same bytes either way. A
+// text[] in binary carries a 20-byte header and a 4-byte length for each element, so the five
+// arrays of the 3,013 rows of an issue of the largest plan are 1,114 kB in binary and 655 kB as
+// text, of the 2,472 kB the rows are sent in, at about the same cost to Postgres to write: sent in
+// binary with the rest, they cost that read 1.1 ms of database time. The other columns in binary
+// spare Postgres formatting them, about 1 ms of that read's statement and 0.5 ms of the 409 rows of
+// an issue of the most comments.
+var headArraysAsText = pgx.QueryResultFormatsByOID{
+	pgtype.TextArrayOID:   pgx.TextFormatCode,
+	pgtype.TimestamptzOID: pgx.BinaryFormatCode,
+	pgtype.BoolOID:        pgx.BinaryFormatCode,
+	pgtype.Int4OID:        pgx.BinaryFormatCode,
+	pgtype.JSONBOID:       pgx.BinaryFormatCode,
+	pgtype.RecordOID:      pgx.BinaryFormatCode,
+}
 
 // headTextsText is a text[] of a head row in Postgres's text form (array_out): `{a,b,…}`, an
 // element quoted, with `"` and `\` escaped by a backslash, where it is empty, is NULL in any case,
@@ -408,52 +589,55 @@ type headBlock struct {
 	row  BlockRow
 }
 
-// readHeadDocuments reads each of documents, the documents the head rows read name
-// (headDocumentsStatement), and gives each row of blocks its document's issue, and its
-// document_blocks row with the document's slug and band, where the document stands; a row whose
-// document no artifact stands for holds neither.
-func readHeadDocuments(ctx context.Context, q Queryer, issueKey string, read []HeadRow, blocks []headBlock, documents []string) error {
-	if len(documents) == 0 {
-		return nil
+// readHeadDocuments reads each of documents and of issues, the documents and the issues the head
+// rows read name (headDocumentsStatement), gives each row of blocks its document's issue, and its
+// document_blocks row with the document's slug and band, where the document stands - a row whose
+// document no artifact stands for holds neither - and answers each document and each issue that
+// stands as a conversation item's node reads it (headItemOwner), by its kind and its key.
+func readHeadDocuments(ctx context.Context, q Queryer, issueKey string, read []HeadRow, blocks []headBlock, documents, issues []string) (map[[2]string]headItemOwner, error) {
+	owners := map[[2]string]headItemOwner{}
+	if len(documents) == 0 && len(issues) == 0 {
+		return owners, nil
 	}
-	rows, err := q.Query(ctx, headDocumentsStatement, documents)
+	rows, err := q.Query(ctx, headDocumentsStatement, documents, issues)
 	if err != nil {
-		return fmt.Errorf("read the documents of the head rows of %s: %w", issueKey, err)
+		return nil, fmt.Errorf("read the documents of the head rows of %s: %w", issueKey, err)
 	}
-	type headDocument struct {
-		slug     string
-		issueKey *string
-		band     string
-	}
-	found := make(map[string]headDocument, len(documents))
+	bands := make(map[string]string, len(documents))
 	for rows.Next() {
-		var id string
-		var document headDocument
-		if err := rows.Scan(&id, &document.slug, &document.issueKey, &document.band); err != nil {
+		var kind, id string
+		var band *string
+		var owner headItemOwner
+		if err := rows.Scan(&kind, &id, &owner.slug, &owner.issueKey, &band, &owner.project, &owner.session, &owner.kind, &owner.primary); err != nil {
 			rows.Close()
-			return fmt.Errorf("read a document of the head rows of %s: %w", issueKey, err)
+			return nil, fmt.Errorf("read a document of the head rows of %s: %w", issueKey, err)
 		}
-		found[id] = document
+		owners[[2]string{kind, id}] = owner
+		if band != nil {
+			bands[id] = *band
+		}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read the documents of the head rows of %s: %w", issueKey, err)
+		return nil, fmt.Errorf("read the documents of the head rows of %s: %w", issueKey, err)
 	}
 	for _, block := range blocks {
-		document, held := found[block.row.Document]
+		document, held := owners[[2]string{"artifact", block.row.Document}]
 		if !held {
 			continue
 		}
 		head := &read[block.read]
 		head.IssueKey = document.issueKey
 		row := block.row
-		row.Slug = document.slug
-		if document.band != "" {
-			row.Band = document.band[0]
+		if document.slug != nil {
+			row.Slug = *document.slug
+		}
+		if band := bands[block.row.Document]; band != "" {
+			row.Band = band[0]
 		}
 		head.Block = &row
 	}
-	return nil
+	return owners, nil
 }
 
 // newHeadTree is rows, read, with the children of each parent among them, as the children read

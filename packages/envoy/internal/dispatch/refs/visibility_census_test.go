@@ -588,6 +588,24 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		}
 		return err
 	})
+	// The same page read off head rows that hold none of its comments: the asks and the messages
+	// go through the loaders, which bind their predicates, and the comments' nodes are built from
+	// their rows, which bind none.
+	record("ConversationPageNodesOfHeads", "ConversationPageNodesOfHeads of "+conversed, func() error {
+		page, err := ReadCommentPage(ctx, database.Pool, conversed, time.Now(), nil, 200)
+		if err != nil {
+			return err
+		}
+		nodes, held, err := ConversationPageNodesOfHeads(ctx, recorder, who, conversed, time.Now(), page, newHeadTree(map[Target]*HeadRow{}, nil))
+		switch {
+		case err != nil:
+		case !held:
+			err = fmt.Errorf("the conversation page of %s, which holds no comment, is not read off the head rows", conversed)
+		case len(nodes) == 0:
+			err = fmt.Errorf("the conversation page of %s lists no node: with no item that passes R2's test the read never reaches the loaders that bind their predicates", conversed)
+		}
+		return err
+	})
 	// The tree is reserved for its author at its root issue: the author reads its plan node and
 	// that node's needs, and another reader reads no node of it.
 	planned := seedPlanOrder(t, ctx, database)

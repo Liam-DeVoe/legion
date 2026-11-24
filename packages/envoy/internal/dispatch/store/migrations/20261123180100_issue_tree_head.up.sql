@@ -2,9 +2,9 @@
 -- that says an issue's rows may be read.
 --
 -- It is dated after every type migration of its release. While it is pending, the census reads
--- its triggers on graph_nodes, graph_tuples and document_blocks as a change of those tables, and a
--- type migration after it in the same deploy could no longer be admitted as a bounded write
--- (pgmigrate's census).
+-- its triggers on graph_nodes, graph_tuples, document_blocks, comments, comment_blocks and
+-- comment_block_texts as a change of those tables, and a type migration after it in the same deploy
+-- could no longer be admitted as a bounded write (pgmigrate's census).
 --
 -- The tree read with no version (GET /api/v1/issues/{key}/tree) answers the head of an issue's
 -- tree. Walking the tuple log for it probes graph_tuples several times a node, and over a tree of
@@ -41,6 +41,20 @@
 --   relation_kinds,    every relation it states now, ordered by kind, far end kind and far end id.
 --   relation_to_kinds,
 --   relation_to_ids
+--   item_issue_key,    for a comment, what the comment loader reads of its row: its issue, its
+--   item_author,       author, its body, when it was written and last edited, the comment it
+--   item_text,         replies to, the block it replies to, its ask, its document (artifact_id), the
+--   item_made_at,      document it is written on (its anchor's, else artifact_id) and the version
+--   item_changed_at,   it is written at (its anchor's, else written_version); for a current block of
+--   item_reply_to,     a comment (kind comment_block, its comment_blocks row's node_id, a node the
+--   item_replies_to_block, store holds no graph_nodes row of), what the comment block loader reads:
+--   item_ask_id,       its comment's issue, author and document, its text at its newest revision,
+--   item_artifact_id,  when it was made and changed, its changed revision, its block id, its
+--   item_document_id,  excerpt and its position. Null for every other node.
+--   item_version,
+--   item_block_id,
+--   item_excerpt,
+--   item_position
 --
 -- The primary key reads one issue's rows in one range, and the read with no view reads its
 -- skeleton in ranges of it: one for each kind of node but the blocks and the comments, one for
@@ -53,22 +67,25 @@
 -- (graphstore.QueueHeads).
 --
 -- Every writer of a node or of a tuple out of a node of an issue's tree writes the node's rows in
--- its own transaction, from what the store holds there. issue_head_marks names each issue whose
--- rows may be read: the write that makes an issue's first node marks it, and the backfill marks an
--- issue once it has filled its rows from the store, in the transaction that holds the issue's
--- owner lock. The head read reads the rows of an issue it names and walks the tuples of any other.
+-- its own transaction, from what the store holds there, and so does every writer of a comment's
+-- row, of its blocks' rows and of their texts. issue_head_marks names each issue whose rows may be
+-- read: the write that makes an issue's first node marks it, and the backfill marks an issue once
+-- it has filled its rows from the store, in the transaction that holds the issue's owner lock. The
+-- head read reads the rows of an issue it names and walks the tuples of any other.
 --
 -- Rolling deploy. Both tables are new and hold no row. The release before names neither, and a
--- write it makes leaves the rows of the nodes it writes behind the store: the trigger below takes
+-- write it makes leaves the rows of the nodes it writes behind the store: the triggers below take
 -- the mark of each issue such a write reaches away in the write's own transaction, so no issue
 -- stays marked over rows a process of the release before left behind, during the roll or after a
 -- rollback and a roll forward. The block index's tick fills such an issue again. Three tables carry
--- that trigger, the three whose rows a head row projects and the release before writes: graph_nodes
--- (a node's supertag, state, visibility, made_at, made_by), graph_tuples (its place, its values,
--- its relations, its authors) and document_blocks (a block's document, type, text sum and changed
--- version), each for an insert, a delete and, on graph_nodes and on the columns of document_blocks
--- a head row reads, an update, since the release before writes all three and inserts and deletes
--- document_blocks rows in its index pass. Rolling back past this migration is an image rollback
+-- that trigger: graph_nodes (a node's supertag, state, visibility, made_at, made_by), graph_tuples
+-- (its place, its values, its relations, its authors) and document_blocks (a block's document,
+-- type, text sum and changed version), each for an insert, a delete and, on graph_nodes and on the
+-- columns of document_blocks a head row reads, an update, since the release before writes all three
+-- and inserts and deletes document_blocks rows in its index pass; the three tables of a comment's
+-- row, its blocks and their texts (comments, comment_blocks, comment_block_texts), whose columns the
+-- rows of a comment and of its blocks hold, carry triggers of their own deferred to the end of the
+-- write's transaction (issue_head_items_drop). Rolling back past this migration is an image rollback
 -- alone: the tables left behind are read by nothing that release runs, and the rollback script
 -- drops them with the triggers.
 create table issue_head_nodes (
@@ -96,6 +113,20 @@ create table issue_head_nodes (
   relation_kinds text[] not null,
   relation_to_kinds text[] not null,
   relation_to_ids text[] not null,
+  item_issue_key text,
+  item_author jsonb,
+  item_text text,
+  item_made_at timestamptz,
+  item_changed_at timestamptz,
+  item_reply_to text,
+  item_replies_to_block text,
+  item_ask_id text,
+  item_artifact_id uuid,
+  item_document_id uuid,
+  item_version integer,
+  item_block_id text,
+  item_excerpt text,
+  item_position integer,
   primary key (issue_key, node_kind, node_address)
 );
 
@@ -217,3 +248,82 @@ create trigger document_blocks_head_marks
   on document_blocks
   for each row when (current_setting('dispatch.head_rows', true) is distinct from 'kept')
   execute function issue_head_marks_drop();
+
+-- issue_head_items_drop takes away the mark of every issue whose tree holds a comment, or a block
+-- of one, that a write of comments, comment_blocks or comment_block_texts writes, for a write the
+-- head rows are not kept for: the comment's own issue, its row's issue_key before and after the
+-- write, which holds the rows of its blocks too, and each issue that holds a row of the comment
+-- (issue_head_nodes_node). The four triggers below are deferred to the end of the write's
+-- transaction, so the function reads dispatch.head_rows as the transaction left it: a writer of
+-- this release writes the head rows of what it writes (graphstore.QueueHeads) in the same
+-- transaction, and that statement sets it; a writer of a release before sets nothing, and its
+-- writes of a comment's blocks and their texts write no node, no tuple and no document_blocks row,
+-- which the three triggers above would see. An update fires them only where it sets a column the head rows read, and the
+-- update trigger of comments only where a value the head rows read moves: a reopen, a
+-- resolution, the anchor's orphaned or block_id, or the row's node address moves none. Each
+-- issue's head fill lock is taken in share mode before its mark is deleted, in the order of the
+-- locks' hash, as issue_head_marks_drop takes them and for the same reasons.
+create function issue_head_items_drop() returns trigger
+language plpgsql as $$
+declare
+  held text;
+begin
+  if current_setting('dispatch.head_rows', true) is not distinct from 'kept' then
+    return null;
+  end if;
+  if tg_table_name = 'comments' then
+    for held in
+      select found.issue_key from (
+        select new.issue_key
+        union
+        select old.issue_key
+        union
+        select head.issue_key from issue_head_nodes head
+        where head.node_kind = 'comment' and head.node_address = coalesce(new.id, old.id)::text
+      ) found (issue_key)
+      where found.issue_key is not null
+      order by hashtext('issue:' || found.issue_key), found.issue_key
+    loop
+      perform pg_advisory_xact_lock_shared(1212498244, hashtext('issue:' || held));
+      delete from issue_head_marks mark where mark.issue_key = held;
+    end loop;
+  else
+    for held in
+      select item.issue_key from comments item
+      where item.id = coalesce(new.comment_id, old.comment_id) and item.issue_key is not null
+    loop
+      perform pg_advisory_xact_lock_shared(1212498244, hashtext('issue:' || held));
+      delete from issue_head_marks mark where mark.issue_key = held;
+    end loop;
+  end if;
+  return null;
+end
+$$;
+
+create constraint trigger comments_head_marks
+  after insert or delete on comments
+  deferrable initially deferred
+  for each row execute function issue_head_items_drop();
+
+create constraint trigger comments_head_marks_update
+  after update of issue_key, author, body, created_at, edited_at, reply_to, replies_to_block, ask_id, artifact_id,
+    anchor, written_version on comments
+  deferrable initially deferred
+  for each row
+  when ((old.issue_key, old.author, old.body, old.created_at, old.edited_at, old.reply_to, old.replies_to_block,
+         old.ask_id, old.artifact_id, old.anchor->>'artifact_id', old.anchor->>'version', old.written_version)
+        is distinct from
+        (new.issue_key, new.author, new.body, new.created_at, new.edited_at, new.reply_to, new.replies_to_block,
+         new.ask_id, new.artifact_id, new.anchor->>'artifact_id', new.anchor->>'version', new.written_version))
+  execute function issue_head_items_drop();
+
+create constraint trigger comment_blocks_head_marks
+  after insert or delete or update of comment_id, block_id, node_id, position, excerpt, made_at, changed_revision,
+    changed_at on comment_blocks
+  deferrable initially deferred
+  for each row execute function issue_head_items_drop();
+
+create constraint trigger comment_block_texts_head_marks
+  after insert or delete or update of comment_id, block_id, revision, text on comment_block_texts
+  deferrable initially deferred
+  for each row execute function issue_head_items_drop();

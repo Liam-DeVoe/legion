@@ -252,10 +252,14 @@ func walkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.Tre
 		return IssueTree{}, err
 	}
 	lifted := walk.liftHidden()
-	ancestors, err := refs.IssueAncestors(ctx, q, issueKey)
+	// The issues above it, parent first, and whether it is a view are read in one statement
+	// (viewChainStatement, as ViewOf reads it): the chain from the issue up, whose rows past the
+	// issue's own are refs.IssueAncestors' issues, in its order and to its depth.
+	chain, err := readViewChain(ctx, q, issueKey, 1)
 	if err != nil {
 		return IssueTree{}, fmt.Errorf("read the issues above %s: %w", issueKey, err)
 	}
+	ancestors := chainAncestors(chain)
 	above, err := refs.TreePlacedAbove(ctx, q, issueKey, ancestors, cut)
 	if err != nil {
 		return IssueTree{}, err
@@ -279,9 +283,7 @@ func walkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.Tre
 		Hidden: walk.hidden, index: map[refs.Target]int{}}
 	// Whether the issue is a view is no fact of the tree: it is read from the issue's record as it
 	// stands (ViewOf), as every reader of it reads it, whatever the cut.
-	if tree.ViewOf, err = ViewOf(ctx, q, issueKey); err != nil {
-		return IssueTree{}, err
-	}
+	tree.ViewOf = viewOfIssue(chain)
 	walk.nodes[walk.issue] = TreeNode{Kind: walk.issue.Kind, ID: walk.issue.ID, Type: graphstore.SupertagIssue}
 	walk.take(&tree, walk.issue)
 	if first := walk.ordered(walk.issue); len(first) > 0 && walk.nodes[first[0]].Type == memoType {
@@ -461,10 +463,12 @@ func (w *treeWalk) facts(ctx context.Context, q Queryer, nodes []refs.Target) (m
 }
 
 // readConversation reads the issue's conversation at the walk's cut (refs.ConversationNodes), the
-// comments of the comment page alone on a walk of the skeleton (refs.ConversationPageNodes): each
-// item and each of its blocks as a node of the walk, the blocks of each item in their order, and
-// the parent each item's loader names. Every item, and every block of one, is a node part_of may
-// place a node under, so each starts a subtree of its own.
+// comments of the comment page alone on a walk of the skeleton (refs.ConversationPageNodes), read
+// off the issue's head rows where the walk reads them and they hold the page
+// (refs.ConversationPageNodesOfHeads): each item and each of its blocks as a node of the walk, the
+// blocks of each item in their order, and the parent each item's loader names. Every item, and
+// every block of one, is a node part_of may place a node under, so each starts a subtree of its
+// own.
 //
 // It reads as the server sees the store: no ask, comment or message is a node the store takes
 // reserved for its author (graphstore.AdmitAuthorOnly), so no reader's predicate leaves one out,
@@ -472,9 +476,15 @@ func (w *treeWalk) facts(ctx context.Context, q Queryer, nodes []refs.Target) (m
 func (w *treeWalk) readConversation(ctx context.Context, q Queryer) error {
 	var conversation []refs.ExcerptedNode
 	var err error
-	if w.skeleton != nil {
+	held := false
+	if w.skeleton != nil && w.heads != nil {
+		conversation, held, err = refs.ConversationPageNodesOfHeads(ctx, q, model.Actor{}, w.issue.ID, w.cut.At, w.skeleton.Comments, w.heads)
+	}
+	switch {
+	case err != nil || held:
+	case w.skeleton != nil:
 		conversation, err = refs.ConversationPageNodes(ctx, q, model.Actor{}, w.issue.ID, w.cut.At, w.skeleton.Comments)
-	} else {
+	default:
 		conversation, err = refs.ConversationNodes(ctx, q, model.Actor{}, w.issue.ID, w.cut.At)
 	}
 	if err != nil {

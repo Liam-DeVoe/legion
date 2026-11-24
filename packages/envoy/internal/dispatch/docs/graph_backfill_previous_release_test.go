@@ -424,9 +424,17 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // graphcensus.BlockRowsStatement, above, changes its plan and not its rows. With the word taken
 // out the statements give 12211e11e636debb9207fa401899ed8f2b0b773b78fec3e24718a19f725ecd04, and with
 // the head projection's predicates and statement taken out as well, the digest recorded before.
+//
+// It moved a third time, from 3ddf78835ff68e4647d98580cbd6b7ff370c1369234f8eb0996b9bee56a064b1,
+// when the head rows came to hold what the tree read's comment page reads: the head-rows statement
+// that refs.CommentWrite.Queue sends (graphstore.QueueHeads) reads each comment's row and each
+// comment block's row and text beside the node, and writes those columns of issue_head_nodes, and it
+// claims the rows kept as the other statements do. It still writes issue_head_nodes alone, so it
+// marks no document, writes no other comment and moves no revision fence; no other marking
+// statement changed with it.
 var markingStatementDigests = map[int]string{
 	1: "2d31bf086bf3f1960b792517ad5744f180da731f220cb4c48a838b2bf8a03700",
-	2: "3ddf78835ff68e4647d98580cbd6b7ff370c1369234f8eb0996b9bee56a064b1",
+	2: "876f8ff389464b286100702428b8fb5218b74f78f43e0345e549f82f1cf553cb",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks
