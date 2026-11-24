@@ -297,5 +297,5 @@ func BackstopClaim(role claim.Role, target, token claim.Token, serving, generati
 	if role == "" || target == "" || token != target {
 		return false
 	}
-	return role == claim.RoleArchitect || serving == generation
+	return role == claim.RoleArchitect // control b: a worker's backstop is never armed
 }
