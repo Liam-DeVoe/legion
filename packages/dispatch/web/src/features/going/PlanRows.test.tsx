@@ -12,6 +12,7 @@ import { ApiError, api, type WriteBounds } from "../../api/client";
 import { goingPlanQuery } from "../../api/queries";
 import type { GoingPlanAnswer, GoingPlanRow, GoingRun, GoingUndoAnswer } from "../../api/types";
 import { linkText, pageQuietText } from "../../theme/classes";
+import { issue as issueFixture } from "../margin/margin-fixture";
 import { clockWords } from "../search/blocks/block-cells";
 import {
   goingState,
@@ -159,8 +160,10 @@ function shownText(element: HTMLElement): string {
 }
 
 // Each change row's item is an issue chip, which reads its issue's summary: the one read every
-// reference to the issue shares.
+// reference to the issue shares. A message on an issue reads the issue itself, for whom Dispatch
+// delivers it to: by default an issue that routes its messages nowhere and that nobody claims.
 let summaries: { mockRestore: () => void } | undefined;
+let issues: { mockRestore: () => void } | undefined;
 beforeEach(() => {
   summaries = spyOn(api, "getIssueSummary").mockImplementation(async (key: string) => ({
     documents: [],
@@ -169,12 +172,19 @@ beforeEach(() => {
     status: "in_progress",
     title: `The issue ${key}`,
   }));
+  issues = spyOn(api, "getIssue").mockImplementation(async (key: string) => ({
+    ...issueFixture,
+    claim: null,
+    key,
+    route: null,
+  }));
 });
 
 afterEach(() => {
   cleanup();
   resetGoingStore();
   summaries?.mockRestore();
+  issues?.mockRestore();
 });
 
 test("a change row names its item and each field in the page's words, the values as the page shows them", async () => {
@@ -553,7 +563,20 @@ test("a new issue row shows New, its title, its fields on one line and its spec 
   }
 });
 
+// A message on an issue's conversation names whom Dispatch delivers it to (review m5): the session
+// or role the issue sends its messages to and the session that holds its claim, read from the
+// issue (`eventDestinations`, outbox/publisher.go); with neither, it says no agent takes them.
 test("message rows say whom they reach and how, show the whole text, and say they cannot be undone", async () => {
+  const read = spyOn(api, "getIssue").mockImplementation(async (key: string) =>
+    key === "DEMO-2"
+      ? {
+          ...issueFixture,
+          claim: { actor: { id: "s-9", kind: "session" }, at: new Date().toISOString() },
+          key,
+          route: "role:planner",
+        }
+      : { ...issueFixture, claim: null, key, route: null }
+  );
   const restore = await openPlan(
     planOf([
       row(0, {
@@ -585,12 +608,20 @@ test("message rows say whom they reach and how, show the whole text, and say the
         tool: "dispatch_message",
         waits: ["message"],
       }),
+      row(3, {
+        arguments: { body: "The split is yours.", issue: "DEMO-2" },
+        class: "message",
+        issue: "DEMO-2",
+        item: "DEMO-2",
+        tool: "dispatch_message",
+        waits: ["message"],
+      }),
     ])
   );
   try {
     renderWithQueries(<Card />);
     await screen.findByTestId("going-plan-card-rows");
-    expect(screen.getByTestId("going-plan-title")).toHaveTextContent("Send 3 messages");
+    expect(screen.getByTestId("going-plan-title")).toHaveTextContent("Send 4 messages");
     const toSession = drawnRow(0);
     // The issue a message is on is that issue's chip, as an answer names it.
     const toSessionLine = within(toSession).getByTestId("going-plan-message");
@@ -609,10 +640,19 @@ test("message rows say whom they reach and how, show the whole text, and say the
     expect(
       within(within(broadcast).getByTestId("going-plan-sessions")).getAllByRole("listitem")
     ).toHaveLength(4);
-    expect(within(drawnRow(2)).getByTestId("going-plan-message")).toHaveTextContent(
-      "Message on DEMO-1"
+    // No route and no claim: only the agents that follow the issue are told of it, and the row says so.
+    await waitFor(() =>
+      expect(within(drawnRow(2)).getByTestId("going-plan-message")).toHaveTextContent(
+        /^Message on DEMO-1.* · to the agents that follow it$/u
+      )
     );
-    for (const number of [0, 1, 2]) {
+    // The role it routes to, and the session that holds its claim.
+    await waitFor(() =>
+      expect(within(drawnRow(3)).getByTestId("going-plan-message")).toHaveTextContent(
+        /^Message to the planner and .+ on DEMO-2/u
+      )
+    );
+    for (const number of [0, 1, 2, 3]) {
       expect(within(drawnRow(number)).getByTestId("going-plan-final")).toHaveTextContent(
         "Cannot be undone once sent"
       );
@@ -621,6 +661,7 @@ test("message rows say whom they reach and how, show the whole text, and say the
     }
   } finally {
     restore();
+    read.mockRestore();
   }
 });
 

@@ -11,7 +11,7 @@ import type {
 import { newSendKey } from "../../lib/send-key";
 import { type PanelEvent, type PanelKeys, type PanelPlace, panelNext } from "./panel-states";
 import { type RunFrames, STARTED_RUN, stateOfRecord, withRunFrame } from "./run-frames";
-import { type RunState, runEnded, runNext } from "./run-states";
+import { endWords, type RunState, runEnded, runNext } from "./run-states";
 
 /**
  * The command bar's conversation, which outlives every open of the bar: where it is on the screen
@@ -239,6 +239,18 @@ export function useGoingValue<T>(select: (of: GoingState) => T): T {
  *  said. */
 export function shownState(run: RunEntry): RunState {
   return run.read > 0 ? run.frames.state : stateOfRecord(run.record.state, run.record.stop_reason);
+}
+
+/** The reason `run` stopped or failed with: its end frame's, else its record's; "" for none. */
+export function endReason(run: RunEntry): string {
+  return run.frames.end?.reason ?? run.record.stop_reason ?? "";
+}
+
+/** Whether how `run` ended offers Continue (`endWords`): a bound, a refusal of part of what it
+ *  found that its end offers Continue on, or its person's own Stop; never a stop its grant ended
+ *  or a refusal of the person's words alone. */
+export function offersContinue(run: RunEntry): boolean {
+  return endWords(shownState(run), endReason(run), run.record.level, "")?.action === "continue";
 }
 
 /** The open conversation's newest run. */
@@ -578,9 +590,9 @@ export function stopRun(id: string, login: string | undefined): void {
   );
 }
 
-/** Continue on a run a bound of its level stopped: a follow-up of its conversation with a new
- *  budget of `level`, else of the stopped run's own level ("Continue in Deep" names Deep). It
- *  answers whether the follow-up started. */
+/** Continue on a run whose end offers it (`offersContinue`: a bound of its level, or its person's
+ *  Stop): a follow-up of its conversation with a new budget of `level`, else of the stopped run's
+ *  own level ("Continue in Deep" names Deep). It answers whether the follow-up started. */
 export function continueRun(
   id: string,
   context: GoingContextInput,
@@ -588,7 +600,11 @@ export function continueRun(
   level?: GoingRun["level"]
 ): Promise<boolean> {
   const run = state.runs.get(id);
-  if (run === undefined || runNext(shownState(run), "continue").send !== "continue") {
+  if (
+    run === undefined ||
+    !offersContinue(run) ||
+    runNext(shownState(run), "continue").send !== "continue"
+  ) {
     return Promise.resolve(false);
   }
   return startRun("Continue", context, login, { continues: id, level: level ?? run.record.level });

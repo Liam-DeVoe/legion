@@ -61,6 +61,102 @@ const SHIMMER = "motion-safe:animate-pulse";
 /** An issue key, as the server names the items of a step (`going/agent/labels.go`). */
 const ISSUE_KEY = /^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*$/;
 
+/** The first word of a header the model wrote beside its calls, where it is a verb in "-ing"
+ *  ("Reading the telescope's issues…"), and the rest of the header after it. */
+const LEADING_PARTICIPLE = /^([A-Z][a-z]*(?:-[a-z]+)*ing)\b(.*)$/su;
+
+/** Words in "-ing" that start a header without being a verb in its present tense, which keep
+ *  their form however the calls under them end. */
+const NOT_PARTICIPLES: Readonly<Record<string, true>> = {
+  anything: true,
+  being: true,
+  bring: true,
+  ceiling: true,
+  during: true,
+  evening: true,
+  everything: true,
+  king: true,
+  morning: true,
+  nothing: true,
+  ring: true,
+  sing: true,
+  something: true,
+  spring: true,
+  sting: true,
+  string: true,
+  swing: true,
+  thing: true,
+  wing: true,
+};
+
+/** Verbs whose past form is not the "-ing" form's stem and "-ed". */
+const IRREGULAR_PAST: Readonly<Record<string, string>> = {
+  beginning: "began",
+  bringing: "brought",
+  building: "built",
+  buying: "bought",
+  choosing: "chose",
+  digging: "dug",
+  doing: "did",
+  drawing: "drew",
+  finding: "found",
+  getting: "got",
+  giving: "gave",
+  going: "went",
+  having: "had",
+  holding: "held",
+  keeping: "kept",
+  leaving: "left",
+  making: "made",
+  putting: "put",
+  reading: "read",
+  running: "ran",
+  seeing: "saw",
+  seeking: "sought",
+  sending: "sent",
+  setting: "set",
+  splitting: "split",
+  taking: "took",
+  telling: "told",
+  thinking: "thought",
+  writing: "wrote",
+};
+
+/** The past form of a verb in "-ing", in lower case: an irregular verb's own ("reading" →
+ *  "read"), else its stem and "-ed", which already has a doubled consonant ("planning" →
+ *  "planned") or the stem a silent "e" left ("comparing" → "compared"), with a "y" after a
+ *  consonant turned to "ied" ("verifying" → "verified") and "ee" taking "d" ("agreeing" →
+ *  "agreed"). */
+function pastForm(participle: string): string {
+  const irregular = IRREGULAR_PAST[participle];
+  if (irregular !== undefined) return irregular;
+  const stem = participle.slice(0, -3);
+  if (/[^aeiou]y$/u.test(stem)) return `${stem.slice(0, -1)}ied`;
+  return stem.endsWith("ee") ? `${stem}d` : `${stem}ed`;
+}
+
+/**
+ * A header the model wrote beside calls that have all ended, in the past tense (design v3, rule
+ * 2): its "…" dropped, so it does not read as work still going on, and a first word that is a
+ * verb in "-ing" put in its past form, "Reading the telescope's issues…" → "Read the telescope's
+ * issues". A header that starts any other way keeps its words.
+ */
+export function pastHeader(header: string): string {
+  const words = header.replace(/\s*(?:…|\.\.\.)$/u, "");
+  const leading = LEADING_PARTICIPLE.exec(words);
+  const first = leading?.[1]?.toLowerCase();
+  if (
+    leading === null ||
+    first === undefined ||
+    first.length < 5 ||
+    NOT_PARTICIPLES[first] === true
+  ) {
+    return words;
+  }
+  const past = pastForm(first);
+  return `${past.charAt(0).toUpperCase()}${past.slice(1)}${leading[2] ?? ""}`;
+}
+
 /**
  * An elapsed time in its smallest useful units: "48 s", "1 min 48 s", "2 h 5 min". It is Happy's
  * `elapsedTimeFormat`, in the words the bar writes a time in.
@@ -375,17 +471,15 @@ function StepList({
       {headed(steps).map((group) => (
         <div className="space-y-0.5" key={group.first}>
           {group.header === "" ? null : (
-            // Once every call of the run ended, the header drops the "…" the model may have ended
-            // it with, so it does not read as work still going on.
+            // Once every call of the run ended, the header is in the past tense (`pastHeader`),
+            // so it does not read as work still going on.
             <p
               className={`truncate text-[13px] ${textMutedOnSurface}`}
               data-testid="going-step-words"
             >
               <TimedWords
                 text={
-                  group.steps.some((step) => step.running)
-                    ? group.header
-                    : group.header.replace(/\s*(?:…|\.\.\.)$/u, "")
+                  group.steps.some((step) => step.running) ? group.header : pastHeader(group.header)
                 }
               />
             </p>
@@ -464,13 +558,12 @@ function FoldLine({
  * folds into one grey line, "Worked for 1 min 48 s · read 14 items, searched twice ›", as Happy's
  * section is summed up once it is over; a click opens them, and its mark turns to say so. The
  * line counts what the end of a stopped run counts ("read 14 items so far"), and says what the
- * run's plan did once it ran (`planWords`, "applied 3 changes"). The line of a run that stopped
- * or failed starts open (`opened`): its steps are what it found so far.
+ * run's plan did once it ran (`planWords`, "applied 3 changes"). The steps are the work, never
+ * the result, so the line starts closed whatever the run's end (design v3, rule 3).
  */
 export function StepSection({
   folded,
   live,
-  opened = false,
   planWords,
   since,
   steps,
@@ -481,8 +574,6 @@ export function StepSection({
   readonly steps: readonly RunStep[];
   /** Whether the run works, so that its newest line carries its timer. */
   readonly live: boolean;
-  /** Whether the folded line starts open, until the person closes or opens it. */
-  readonly opened?: boolean;
   /** What the run's plan did once its rows ran, said in place of "proposed a plan". */
   readonly planWords?: string;
   /** When the person asked for the run, in this page's clock: what its timer counts from. */
@@ -494,9 +585,7 @@ export function StepSection({
   readonly workedMs: number | undefined;
 }): ReactNode {
   const [olderOpen, setOlderOpen] = useState(false);
-  // Undefined until the person presses the line, so a run that comes to a stop opens it then.
-  const [pressedOpen, setPressedOpen] = useState<boolean>();
-  const workedOpen = pressedOpen ?? opened;
+  const [workedOpen, setWorkedOpen] = useState(false);
   if (steps.length === 0) {
     return null;
   }
@@ -504,7 +593,7 @@ export function StepSection({
     return (
       <div className="space-y-1" data-testid="going-steps-section">
         <FoldLine
-          onToggle={() => setPressedOpen(!workedOpen)}
+          onToggle={() => setWorkedOpen((open) => !open)}
           open={workedOpen}
           testId="going-steps-fold"
           words={<WorkedLine plan={planWords} steps={steps} workedMs={workedMs} />}

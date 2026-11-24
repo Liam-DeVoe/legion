@@ -6,10 +6,10 @@
  */
 
 /** Where a run stands: none started yet (idle), working, waiting for the person's approval of its
- *  plan, done, stopped where its end offers Continue (`stopped_bound`: at a bound of its level, or
- *  where the model's provider refused part of what it found once it had withheld some), stopped
- *  with nothing to continue (`stopped_person`: by its person, its grant, or the provider's refusal
- *  of its words alone), or failed. */
+ *  plan, done, stopped at a pause the server offers Continue on (`stopped_bound`: at a bound of
+ *  its level, or where the model's provider refused part of what it found once it had withheld
+ *  some), stopped otherwise (`stopped_person`: by its person, whose own Stop offers Continue, by
+ *  its grant, or by the provider's refusal of its words alone, which offer nothing), or failed. */
 export type RunState =
   | "idle"
   | "working"
@@ -61,8 +61,9 @@ export function runEnded(state: RunState): boolean {
  * The next state of a run in `state` on `event`. A working run stops at once on Stop or on Esc in
  * the empty box, and sends its stop; one that waits for its plan stops on Stop alone, since Esc
  * there only closes the bar. Approval runs a waiting plan. Continue starts the follow-up of a run
- * a bound stopped. Closing the bar changes nothing: the run goes on in the server, and a plan
- * that waits shows in the Inbox. An ended run stays as it ended.
+ * a bound or a stop stopped; whether its end offers Continue is its end's to say (`endWords`).
+ * Closing the bar changes nothing: the run goes on in the server, and a plan that waits shows in
+ * the Inbox. An ended run stays as it ended.
  */
 export function runNext(state: RunState, event: RunEvent): RunTransition {
   switch (state) {
@@ -107,6 +108,7 @@ export function runNext(state: RunState, event: RunEvent): RunTransition {
           return { state };
       }
     case "stopped_bound":
+    case "stopped_person":
       return event === "continue" ? { send: "continue", state: "working" } : { state };
     default:
       return { state };
@@ -215,11 +217,11 @@ export const NO_MODEL_WORDS = "Answers are off on this Dispatch: it has no answe
  * (`didSoFar`, "read 14 items") and Continue, with Continue in Deep below Deep. A stop the model's
  * provider refused says what it refused to read, as its reason says (`providerRefusedWords`), and
  * what the person can do: Continue, or ask in other words, where its end offered Continue, else
- * ask in other words. A Stop keeps what it did and says what that was,
- * "Stopped · kept what it did: read 1 item", with Try again; one its grant ended says why, and
- * offers nothing a lapsed grant would refuse again. A failure is one sentence and Try again, or
- * the sentence of state 13 for a Dispatch with no answering model. Undefined for a run that has
- * not stopped or failed.
+ * ask in other words. A Stop is the person's own pause, so it says what the run did before it,
+ * "Stopped · read 1 item", and offers Continue; one its grant ended says why, and offers nothing
+ * a lapsed grant would refuse again. A failure is one sentence and Try again, or the sentence of
+ * state 13 for a Dispatch with no answering model. Undefined for a run that has not stopped or
+ * failed.
  */
 export function endWords(
   state: RunState,
@@ -270,13 +272,10 @@ export function endWords(
         };
       }
       return {
-        action: "retry",
+        action: "continue",
         continueInDeep: false,
         noModel: false,
-        text:
-          didSoFar === ""
-            ? "Stopped · kept what it did"
-            : `Stopped · kept what it did: ${didSoFar}`,
+        text: didSoFar === "" ? "Stopped · kept what it did" : `Stopped · ${didSoFar}`,
       };
     }
     case "failed": {

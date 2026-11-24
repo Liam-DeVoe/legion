@@ -10,6 +10,7 @@ import {
   kindLabel,
   optionId,
   ownerWords,
+  plainSnippet,
   stepActive,
 } from "./search-model";
 
@@ -100,6 +101,35 @@ test("a hit that is the issue itself shows its title once: the marked snippet wh
   expect(issueHitTitle(issue, "API: rate limit headers")).toBeUndefined();
   // The headline started at the first word that matched: the whole title shows instead.
   expect(issueHitTitle(issue, "rate limit headers")).toBe("API: rate limit headers");
+});
+
+// Rule 1: no marker text. A snippet is a window cut from a document's Markdown and Proof's
+// directives, so its row's second line takes the markup out - a directive's fence and its
+// attributes, a link's address, list and table marks, emphasis - and keeps the words a person
+// wrote, with the words the search matched still marked (review N2, 13-filing-line).
+test("a hit's snippet reads as plain words, its matches still marked", () => {
+  const words = (snippet: string) =>
+    plainSnippet(snippet)
+      .map((part) => part.text)
+      .join("");
+  expect(words('table. ::: :::plan_task{#t1 serves="A page is…')).toBe("table. A page is…");
+  expect(words(":::decision{#d2}\nWe keep **one** [chip](/issues/CORE-1) per `item`.\n:::")).toBe(
+    "We keep one chip per item."
+  );
+  expect(words("## Steps\n- Read the [spec](https://example.com/spec\n| a | b |\n|---|---|")).toBe(
+    "Steps Read the spec a b"
+  );
+  expect(words("keep snake_case and *stars* apart")).toBe("keep snake_case and stars apart");
+  expect(
+    plainSnippet(
+      'serves="<mark>astrolabe</mark> work" :::plan_task{#t1 serves="The <mark>astrolabe</mark>"}'
+    )
+  ).toEqual([
+    { mark: false, text: 'serves="' },
+    { mark: true, text: "astrolabe" },
+    { mark: false, text: ' work" The ' },
+    { mark: true, text: "astrolabe" },
+  ]);
 });
 
 test("uses the first positive websearch term for document highlighting", () => {

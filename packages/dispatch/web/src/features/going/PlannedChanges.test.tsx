@@ -8,6 +8,7 @@ import { renderWithQueries } from "../../__tests__/query-provider";
 import { answerRoute } from "../../__tests__/send-answers";
 import { ApiError, api, type WriteBounds } from "../../api/client";
 import type { GoingPlanAnswer, GoingPlanRow, GoingRun } from "../../api/types";
+import { issue as issueFixture } from "../margin/margin-fixture";
 import { ConversationView } from "./ConversationView";
 import { resetGoingStore, setPlace, startRun } from "./going-store";
 import { PlannedChanges } from "./PlannedChanges";
@@ -130,8 +131,10 @@ function drawnRows(within_: HTMLElement): (string | null)[] {
 }
 
 // Each change row's item is an issue chip, which reads its issue's summary: the one read every
-// reference to the issue shares.
+// reference to the issue shares. A message on an issue reads the issue itself, for whom Dispatch
+// delivers it to: here an issue that routes its messages nowhere and that nobody claims.
 let summaries: { mockRestore: () => void } | undefined;
+let issues: { mockRestore: () => void } | undefined;
 beforeEach(() => {
   summaries = spyOn(api, "getIssueSummary").mockImplementation(async (key: string) => ({
     documents: [],
@@ -140,12 +143,19 @@ beforeEach(() => {
     status: "todo",
     title: `The issue ${key}`,
   }));
+  issues = spyOn(api, "getIssue").mockImplementation(async (key: string) => ({
+    ...issueFixture,
+    claim: null,
+    key,
+    route: null,
+  }));
 });
 
 afterEach(() => {
   cleanup();
   resetGoingStore();
   summaries?.mockRestore();
+  issues?.mockRestore();
 });
 
 test("a plan with rows on the page and in the card shows each in its place, once", async () => {

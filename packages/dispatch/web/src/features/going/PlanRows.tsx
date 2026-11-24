@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import {
   Fragment,
   type KeyboardEvent,
@@ -10,6 +11,7 @@ import {
 } from "react";
 import { Link, useInRouterContext } from "react-router-dom";
 
+import { issueQuery } from "../../api/queries";
 import type { GoingPlanAnswer, GoingPlanRow, GoingUndoLine } from "../../api/types";
 import { Pill, pillShapeClassName } from "../../components/Pill";
 import { QueryError } from "../../components/QueryError";
@@ -36,6 +38,7 @@ import {
   secondaryButtonCompact,
   secondaryButtonPaired,
   successText,
+  surfaceBg,
   textMutedOnSurface,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
@@ -50,6 +53,7 @@ import { issueStatuses } from "../project/board-model";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { TimedWords } from "../refs/dispatch-time";
 import { ItemChip } from "../refs/ItemChip";
+import { sessionOfAddress } from "../refs/routes";
 import { objectOf, textOf } from "./fields";
 import { draftOf, type PlanDraft, setDraft, useGoing, useGoingValue } from "./going-store";
 import {
@@ -97,13 +101,28 @@ import type { PlanAnswering } from "./usePlan";
 
 /** Each mark of a row as it draws (design v2, state 7): a ring while it waits its turn, a
  *  spinner while it runs, a check once it ran, a cross where it failed, a dash where it did not
- *  run, and a grey arrow back, never a check, once Undo took its change back. Motion stops where
- *  the person asked for less. */
+ *  run, and a grey revert arrow - a hooked arrow back, which no spinner looks like - never a
+ *  check, once Undo took its change back. Motion stops where the person asked for less. */
 const MARK_GLYPHS: Readonly<Record<Exclude<RowMark, "waits">, ReactNode>> = {
   done: <span className={successText}>✓</span>,
   failed: <span className={dangerText}>✕</span>,
   not_run: <span className={textMutedOnSurface}>–</span>,
-  reverted: <span className={textMutedOnSurface}>↺</span>,
+  reverted: (
+    <svg
+      aria-hidden="true"
+      className={`inline-block size-3.5 ${textMutedOnSurface}`}
+      data-testid="going-plan-reverted-mark"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.75"
+      viewBox="0 0 16 16"
+    >
+      <path d="M6 3.5 3 6.5l3 3" />
+      <path d="M3 6.5h6.5a3.5 3.5 0 0 1 0 7H7" />
+    </svg>
+  ),
   running: (
     <span className="inline-block size-3 rounded-full border-2 border-current border-t-transparent motion-safe:animate-spin" />
   ),
@@ -648,11 +667,53 @@ function Quote({ text }: { readonly text: string }): ReactNode {
 }
 
 /**
+ * Who a message on an issue's conversation reaches, as Dispatch delivers one (`eventDestinations`,
+ * `outbox/publisher.go`): the session or the role the issue sends its messages to (its route), and
+ * the session that holds its claim, read from the issue as it stands - "Message to ‹session› on
+ * DEMO-15". Where the issue has neither, only the sessions that follow the issue's topic are told
+ * of it, and it waits on the issue for whoever opens it: "Message on DEMO-15 · to the agents that
+ * follow it". Until the issue
+ * is read the row names the issue alone.
+ */
+function IssueMessageTo({ issue }: { readonly issue: string }): ReactNode {
+  const read = useQuery(issueQuery(issue)).data;
+  const chip = <ItemSlot item={issue} />;
+  if (read === undefined) {
+    return <>Message on {chip}</>;
+  }
+  const route = read.route ?? "";
+  const routed = sessionOfAddress(route);
+  const holder = read.claim?.actor;
+  const claimant = holder?.kind === "session" && holder.id !== routed ? holder.id : undefined;
+  const reached: ReactNode[] = [];
+  if (routed !== undefined) {
+    reached.push(
+      <AgentName key="route" kind="static" sessionId={routed} storedTitle={undefined} />
+    );
+  } else if (route.startsWith("role:")) {
+    reached.push(<Fragment key="route">the {route.slice("role:".length)}</Fragment>);
+  }
+  if (claimant !== undefined) {
+    reached.push(
+      <AgentName key="claim" kind="static" sessionId={claimant} storedTitle={undefined} />
+    );
+  }
+  if (reached.length === 0) {
+    return <>Message on {chip} · to the agents that follow it</>;
+  }
+  return (
+    <>
+      Message to {reached[0]}
+      {reached.length > 1 ? <> and {reached[1]}</> : null} on {chip}
+    </>
+  );
+}
+
+/**
  * A message row (R7): whom it reaches and how - "Message to ‹session› on DEMO-15 · as a BTW", a
  * broadcast's "Message to 4 sessions · as an aside" with the sessions under it, a message on an
- * issue's conversation, "Message on DEMO-15 · to its conversation", where every reader of the
- * issue reads it - and the whole text as a quote. While it waits it says that a message cannot be
- * undone once sent (R6).
+ * issue's conversation by whom Dispatch delivers it to (`IssueMessageTo`) - and the whole text as
+ * a quote. While it waits it says that a message cannot be undone once sent (R6).
  */
 function MessageBody({
   row,
@@ -681,15 +742,10 @@ function MessageBody({
         )}
       </>
     );
+  } else if (onIssue === "") {
+    to = "Message in its conversation";
   } else {
-    to =
-      onIssue === "" ? (
-        "Message in its conversation"
-      ) : (
-        <>
-          Message on <ItemSlot item={onIssue} /> · to its conversation
-        </>
-      );
+    to = <IssueMessageTo issue={onIssue} />;
   }
   return (
     <div className="space-y-1">
@@ -1132,9 +1188,10 @@ function useRanAt(plan: GoingPlanAnswer | undefined): number | undefined {
  * The plan card of the bar and the side panel. While its plan waits (design v3, state 6): a
  * title made from the plan's rows and its approval mode, linked to its setting; the rows no page
  * on the screen draws, with "2 changes show on this page" for the rest; and the plan's Approve and
- * Discard. A row the page draws (`PlannedChanges`) shows there and not here, so the rows of one
- * plan can show in both places, each once, and Approve approves the ticked rows of both. While the
- * plan waits, the box's ↑ moves the focus onto the card's rows (`usePlanCardKeys`).
+ * Discard, pinned at the foot of the view while the card is taller than it. A row the page draws
+ * (`PlannedChanges`) shows there and not here, so the rows of one plan can show in both places,
+ * each once, and Approve approves the ticked rows of both. While the plan waits, the box's ↑
+ * moves the focus onto the card's rows (`usePlanCardKeys`).
  *
  * Once approved (design v2, state 7), its title follows its rows, "Applying 1 of 3…" then
  * "Applied 3 changes · 16:42", the time its last row ran (`useRanAt`) or its run ended
@@ -1335,7 +1392,19 @@ export function PlanCard({
           ))}
         </ul>
       )}
-      <PlanControls answering={answering} draft={draft} enterApproves />
+      {waiting ? (
+        // Approve and Discard stay at the foot of the view while the card is taller than it
+        // (design v3, state 6): the card shows from its question down, and its one primary
+        // action never sits below the fold. Once the card's end is in view they stand there.
+        <div
+          className={`sticky bottom-0 z-10 -mx-3 -mb-3 rounded-b-lg border-t px-3 py-3 ${borderDefault} ${surfaceBg}`}
+          data-testid="going-plan-actions"
+        >
+          <PlanControls answering={answering} draft={draft} enterApproves />
+        </div>
+      ) : (
+        <PlanControls answering={answering} draft={draft} enterApproves />
+      )}
       {undo}
       {refusal}
     </section>

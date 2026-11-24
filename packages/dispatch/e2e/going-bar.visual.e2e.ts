@@ -330,9 +330,15 @@ const barRows: readonly BarRow[] = [
       await expect(bar(page).locator("#search-option-continue")).toHaveText(
         "Continue: What waits on the observatory dome"
       );
-      await expect(bar(page).getByRole("group", { name: "Recent" }).getByRole("option")).toHaveText(
-        [/^\S+ Raise the observatory dome$/, /^\S+ Polish the eyepiece$/]
-      );
+      // Each recent item is its kind's icon and its chip: its key, its status's dot and its
+      // title, which the chip reads after it draws its key, so the shot waits for the titles.
+      const recent = bar(page).getByRole("group", { name: "Recent" }).getByRole("option");
+      await expect(recent.getByTestId("item-chip-title")).toHaveText([
+        "Raise the observatory dome",
+        "Polish the eyepiece",
+      ]);
+      // New put the cursor back in the box, so its focus shows and typing lands in it.
+      await expect(searchBox(page)).toBeFocused();
       // The box is on top; History and the move are in the foot, and Close is Esc there alone.
       await expect(bar(page).getByTestId("going-header")).toHaveCount(0);
       await expect(
@@ -421,7 +427,8 @@ const barRows: readonly BarRow[] = [
       await expect(run.getByTestId("going-step-label").first()).toHaveText(
         /^Looked for a way to \S/
       );
-      await expect(run.getByTestId("going-step-words")).toContainText("Reading the telescope");
+      // Both calls under the model's words ended, so its header reads in the past tense.
+      await expect(run.getByTestId("going-step-words")).toHaveText("Read the telescope's issues");
       // No call runs while the model streams, so the run ends with "Thinking…" and its timer
       // rather than a step line carrying it; the timer is masked in the shot, so it is read here.
       await expect(run.getByTestId("going-step-timer")).toHaveCount(0);
@@ -648,6 +655,12 @@ const barRows: readonly BarRow[] = [
       await expect(planCard(page).getByTestId("going-plan-document")).toHaveText(
         new RegExp(`^Suggest a change to spec on ${dome}(?!\\d)`)
       );
+      // The card is taller than the view: it shows from its question down, its Approve and
+      // Discard pinned at the view's foot, and the hint under the box says Enter approves.
+      await expect(newestRun(page).getByTestId("going-run-words")).toBeInViewport();
+      await expect(planCard(page).getByTestId("going-plan-approve")).toBeInViewport();
+      await expect(planCard(page).getByTestId("going-plan-reject")).toBeInViewport();
+      await expect(bar(page).getByTestId("going-box-hint")).toHaveText("↵ Approve");
       await shoot(page, "06-plan-bar");
       await keepAtTheSide(page);
       await expect(planRows(planCard(page))).toHaveCount(5);
@@ -656,6 +669,11 @@ const barRows: readonly BarRow[] = [
           .getByTestId("item-chip")
           .filter({ hasNot: page.getByTestId("item-chip-status") })
       ).toHaveCount(0);
+      // The panel scrolls as the bar does: the question at its top, nothing cut under its header,
+      // and Approve pinned at its foot.
+      await expect(newestRun(page).getByTestId("going-run-words")).toBeInViewport();
+      await expect(planCard(page).getByTestId("going-plan-approve")).toBeInViewport();
+      await expect(sidePanel(page).getByTestId("going-box-hint")).toHaveText("↵ Approve");
       await shoot(page, "06-plan-panel");
       await planCard(page).getByTestId("going-plan-reject").click();
       await expect(planCard(page)).not.toHaveAttribute("data-state", "waiting", {
@@ -778,9 +796,10 @@ const barRows: readonly BarRow[] = [
     // The first is scripted to call a tool in each of Fast's six model calls, the first of them
     // slow, so it stops at its step limit; the second reads one issue in a slow turn and then
     // streams without end, and the row stops it with Escape; the third is answered 500 twice,
-    // the call and its one retry, so it fails. The three end in one card with one next step, and
-    // the steps of each run that stopped fold into one line, open, which counts what the bound's
-    // card counts: what the run found so far shows above its card.
+    // the call and its one retry, so it fails. The three end in one card with one next step -
+    // Continue at the bound and after the Stop, Try again after the failure - and the steps of
+    // each run that stopped fold into one closed line, which counts what the bound's card counts
+    // (design v3, rule 3: fold the work, never the result).
     reach: async (page, seed) => {
       const bounded = "read every telescope issue one by one";
       const stopped = "keep reading the telescope mount";
@@ -810,9 +829,9 @@ const barRows: readonly BarRow[] = [
       );
       await expect(newestRun(page).getByTestId("going-steps-fold")).toHaveAttribute(
         "aria-expanded",
-        "true"
+        "false"
       );
-      await expect(newestRun(page).getByTestId("going-step")).toHaveCount(6);
+      await expect(newestRun(page).getByTestId("going-step")).toHaveCount(0);
       await expect(newestRun(page).getByTestId("going-run-state")).toHaveText(
         "Stopped at Fast's step limit · read 6 items so far"
       );
@@ -829,9 +848,10 @@ const barRows: readonly BarRow[] = [
         timeout: RUN_STEPS_MS,
       });
       await expect(newestRun(page).getByTestId("going-run-state")).toHaveText(
-        "Stopped · kept what it did: read 1 item"
+        "Stopped · read 1 item"
       );
-      await expect(newestRun(page).getByTestId("going-run-action")).toHaveText("Try again");
+      await expect(newestRun(page).getByTestId("going-run-continue")).toHaveText(/^Continue/);
+      await expect(newestRun(page).getByTestId("going-run-action")).toHaveCount(0);
       await expect(newestRun(page).getByTestId("going-steps-fold")).toHaveAccessibleName(
         /^Worked for \d+ s · read 1 item$/
       );

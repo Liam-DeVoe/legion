@@ -2,8 +2,10 @@ import { type FocusEvent, type ReactNode, useId, useRef, useState } from "react"
 
 import type { Project } from "../../api/types";
 import {
+  bgTransparent,
   borderDefault,
   card,
+  focusWithinBorder,
   inputClasses,
   selectedCardBorder,
   surfaceMutedHoverBg,
@@ -127,11 +129,11 @@ function FilterMenu({
 
 /**
  * The four narrowings the bar offers, each one pill as tall as the box, naming its field and
- * its value: "Project Any ▾", "Status Any ▾", the author typed into its own pill, and "Updated
- * since Any time ▾", whose menu offers Today, Last 7 days, Last 30 days and Last 90 days, and a
- * day of the person's own. Once chosen, a narrowing's pill reads back what was chosen in those
- * words (`Project INFRA`) with ×, and pressing it drops that narrowing alone and brings its menu
- * back.
+ * its value: "Project Any ▾", "Status Any ▾", "Author Anyone", whose author is typed into the pill,
+ * and "Updated since Any time ▾", whose menu offers Today, Last 7 days, Last 30 days and Last 90
+ * days, and a day of the person's own. Once chosen, a narrowing's pill reads back what was chosen
+ * in those words (`Project INFRA`) with ×, and pressing it drops that narrowing alone and brings
+ * its menu back.
  *
  * The author is typed rather than picked: an item's author is a person's login or a session id,
  * and no list holds both. It is taken when the person presses Enter or leaves the box, so a
@@ -203,21 +205,26 @@ export function SearchFilterBar({
         />
       ) : null}
       {filters.author === undefined ? (
-        <input
-          aria-label="Author"
-          className={`${pill} w-40 outline-none`}
-          onBlur={takeAuthor}
-          onChange={(event) => setAuthor(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              takeAuthor();
-            }
-          }}
-          placeholder="Author Anyone"
-          type="search"
-          value={author}
-        />
+        // The pill names its field in the dark words the other pills use and takes the author
+        // after it, its "Anyone" in the grey of their values (review M6), so the four read alike.
+        <label className={`${pill} w-52 cursor-text ${focusWithinBorder}`}>
+          <span className={textPrimaryOnSurface}>Author</span>
+          <input
+            aria-label="Author"
+            className={`min-w-0 flex-1 outline-none ${bgTransparent}`}
+            onBlur={takeAuthor}
+            onChange={(event) => setAuthor(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                takeAuthor();
+              }
+            }}
+            placeholder="Anyone"
+            type="search"
+            value={author}
+          />
+        </label>
       ) : null}
       {filters.updatedSince === undefined ? (
         <FilterMenu

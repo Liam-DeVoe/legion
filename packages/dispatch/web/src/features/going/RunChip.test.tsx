@@ -209,11 +209,12 @@ test("the chip is a pill of its own, apart from the page: a background, a border
     }
     expect(chip).toHaveClass("border", "rounded-full", "shadow-md");
     // The shell floats the chip over the 24 px band at the top of the page (`app.tsx`), in a row
-    // of no height. The chip keeps the height of its words, 16 px lines and a 1 px pad, rather
-    // than stretching, and takes no 44 px floor (`data-run-chip`), so it stays inside that band.
-    expect(chip).toHaveClass("self-start", "leading-4");
+    // of no height. The chip keeps the height of its words, 14 px lines and no pad, 8 px below
+    // the screen's top (review n6), rather than stretching, and takes no 44 px floor
+    // (`data-run-chip`), so it stays inside that band.
+    expect(chip).toHaveClass("self-start", "mt-2", "leading-[14px]");
     expect(chip).toHaveAttribute("data-run-chip");
-    expect(screen.getByTestId("going-chip-open")).toHaveClass("py-px");
+    expect(screen.getByTestId("going-chip-open")).toHaveClass("py-0");
   } finally {
     runs.restore();
   }

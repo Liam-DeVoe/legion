@@ -8,6 +8,7 @@ import {
   goingState,
   movePanel,
   newestRun,
+  offersContinue,
   shownState,
   startRun,
   stopRun,
@@ -25,15 +26,17 @@ export interface Asking {
    *  can come before the plan is read: until then Enter answers nothing and starts no run. */
   readonly runWaits: boolean;
   /** Enter with `words` in the box: approves the waiting plan from an empty box, revises it in
-   *  words, continues a run a bound of its level stopped from an empty box (design v2, state 9),
-   *  or starts a run of the words, which records `line`, the line on top Enter was pressed on,
-   *  where the words were sent from it; answers whether it did any. */
+   *  words, continues from an empty box a run whose end offers Continue - a bound of its level, or
+   *  the person's own Stop (design v3, state 9) - or starts a run of the words, which records
+   *  `line`, the line on top Enter was pressed on, where the words were sent from it; answers
+   *  whether it did any. */
   readonly enter: (words: string, line?: GoingLine) => boolean;
   /** Esc in the box: stops the run that works where the box is empty, else moves the
    *  conversation as Esc does (`panelNext`). */
   readonly escape: (words: string) => void;
   readonly stop: () => void;
-  /** Continue on a run a bound stopped: a follow-up of `level`, else of the run's own level. */
+  /** Continue on a run a bound or its person stopped: a follow-up of `level`, else of the run's
+   *  own level. */
   readonly onContinue: (run: string, level?: GoingRun["level"]) => void;
   /** Retry under an answer: the same `words` as Enter in the box takes them, so it never starts a
    *  conversation beside the open one's waiting plan: a revision of the plan that waits, nothing
@@ -47,7 +50,7 @@ export interface Asking {
  * side, with the page's `context`: Enter approves a plan that waits (R4: Enter approves) or, with
  * words, says what to change of it; with no plan waiting, it starts a run of the words, a
  * follow-up of the conversation where its newest run has ended, and in the empty box it continues
- * a run a bound of its level stopped (R10, Continue ↵). Esc in the empty box while the run works
+ * a run whose end offers Continue (R10, Continue ↵). Esc in the empty box while the run works
  * stops the run (R1, R10). Each run started here is a run History lists, so History is read
  * again once it starts.
  */
@@ -80,7 +83,7 @@ export function useAsk(context: GoingContextInput): Asking {
     }
     const newest = newestRun();
     if (said === "") {
-      if (newest === undefined || shownState(newest) !== "stopped_bound") return false;
+      if (newest === undefined || !offersContinue(newest)) return false;
       listed(continueRun(newest.id, context, login));
       return true;
     }

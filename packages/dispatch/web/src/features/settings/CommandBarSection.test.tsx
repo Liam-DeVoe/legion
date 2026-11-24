@@ -21,7 +21,7 @@ function renderSection(): void {
   );
 }
 
-test("the approval mode is Ask by default, and choosing Auto-review writes it to Dispatch and says it was saved", async () => {
+test("the approval mode is Ask by default, and choosing Auto-review writes it to Dispatch and says Saved beside it", async () => {
   const user = userEvent.setup();
   const read = spyOn(api, "myGoingSettings").mockResolvedValue({ mode: "ask" });
   const put = answerRoute<(input: GoingSettings, bounds: WriteBounds) => Promise<GoingSettings>>(
@@ -42,6 +42,9 @@ test("the approval mode is Ask by default, and choosing Auto-review writes it to
       "A review of the plan lets through the plain changes your words ask for."
     );
     expect(screen.getByTestId("going-settings-saved").textContent).toBe("");
+    expect(screen.queryByTestId("going-settings-saved-mark")).toBeNull();
+    // The section says what the bar does in one sentence; each radio's line says the rest.
+    expect(screen.getByText("The bar plans its changes before it makes any.")).toBeInTheDocument();
 
     await user.click(review);
 
@@ -51,6 +54,10 @@ test("the approval mode is Ask by default, and choosing Auto-review writes it to
     await waitFor(() =>
       expect(screen.getByTestId("going-settings-saved")).toHaveTextContent("Saved: Auto-review.")
     );
+    // The choice saves as it is made, so "Saved" stands beside the mode it saved (review: Settings).
+    const mark = screen.getByTestId("going-settings-saved-mark");
+    expect(mark).toHaveTextContent("✓ Saved");
+    expect(mark.parentElement).toContainElement(screen.getByText("Auto-review"));
   } finally {
     cleanup();
     read.mockRestore();

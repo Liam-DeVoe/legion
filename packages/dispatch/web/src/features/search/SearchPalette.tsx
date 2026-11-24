@@ -67,9 +67,15 @@ import {
 import { NO_MODEL_WORDS } from "../going/run-states";
 import { useAsk } from "../going/useAsk";
 import { statusText } from "../project/board-model";
+import { ItemChip } from "../refs/ItemChip";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { referenceTriggerProps } from "../refs/RefPreview";
-import { buildProjectPath, type DispatchReferenceRoute, nodeRouteFromHref } from "../refs/routes";
+import {
+  buildProjectPath,
+  type DispatchReferenceRoute,
+  nodeRouteFromHref,
+  parseIssuePath,
+} from "../refs/routes";
 import { useFollowInPlace } from "../refs/useFollowInPlace";
 import { appKeymap, DIALOG_SCOPE, type KeymapAction, useKeymap } from "../shell/keymap";
 import { KeyHints } from "../shell/ShortcutHelp";
@@ -88,6 +94,7 @@ import {
   issueHitTitle,
   optionId,
   ownerWords,
+  plainSnippet,
   searchOperators,
   searchResultKind,
   stepActive,
@@ -317,10 +324,13 @@ function PaletteOption({
   );
 }
 
-/** A hit, on one line as the line on top is (design v3, state 1): its kind's icon, its owner's
- *  key, then its words at the size of the line on top - the issue's title for a hit that is the
- *  issue itself, else the owner's name and the snippet the server marked - and the issue's status
- *  at its end, the one place the row says it. A hit of a done issue reads muted. */
+/** A hit (design v3, state 1): its kind's icon, its owner's key and its words at the size of the
+ *  line on top, and the issue's status at its end, the one place the row says it. A hit that is
+ *  the issue itself is one line, its title. Any other hit names its owner - the issue's title,
+ *  and the document's name where it is one of the issue's - on the first line, and its snippet in
+ *  plain words on a second, grey line under it (`plainSnippet`): a snippet is cut from a
+ *  document's Markdown and Proof's directives, and no marker text shows (rule 1). The words the
+ *  search matched stay marked. A hit of a done issue reads muted. */
 function ResultOption({
   active,
   onSelect,
@@ -330,12 +340,10 @@ function ResultOption({
   onSelect: () => void;
   result: SearchResult;
 }): ReactNode {
-  // The server reads the hit's snippet for display and marks the words that matched in the
-  // tree it sends (`snippet_tree`): `ts_headline` returns a body whole when it fits its
-  // 24-word window and cuts a longer one to that window around the match, and the server
-  // balances that cut before it reads it, so nothing here parses or marks anything. The
-  // sentinels the server leaves in `snippet` itself come out for the literal text a preview
-  // falls back to where no tree reached it.
+  // The server reads a hit's snippet for display and marks the words that matched in the tree
+  // it sends (`snippet_tree`), which a hit that is the issue itself draws as its title. The
+  // sentinels the server leaves in `snippet` itself come out for the literal text a title falls
+  // back to where no tree reached it.
   const source = snippetSegments(result.snippet)
     .map((segment) => segment.text)
     .join("");
@@ -351,6 +359,28 @@ function ResultOption({
   const itself = hitIsItsIssue(result);
   const title = itself ? issueHitTitle(result, source) : undefined;
   const words = muted ? textMutedOnSelectedCard : textPrimaryOnSurface;
+  const snippet = itself ? [] : plainSnippet(result.snippet);
+  const highlight = `rounded px-0.5 ${searchHitBg} ${searchHitText}`;
+  let named: ReactNode;
+  if (!itself) {
+    named = (
+      <span className={`min-w-0 flex-1 truncate text-sm ${words}`}>
+        {document === undefined ? owner.name : `${owner.name} · ${document}`}
+      </span>
+    );
+  } else if (title === undefined) {
+    named = (
+      <MarkdownPreview
+        className={`min-w-0 flex-1 text-sm ${words}`}
+        highlightClassName={highlight}
+        lines={1}
+        markdown={source}
+        tree={result.snippet_tree}
+      />
+    );
+  } else {
+    named = <span className={`min-w-0 flex-1 truncate text-sm ${words}`}>{title}</span>;
+  }
 
   return (
     <PaletteOption
@@ -367,22 +397,7 @@ function ResultOption({
       >
         {kind === undefined ? null : <SearchResultIcon kind={kind} />}
         <span className="shrink-0 text-xs font-semibold">{owner.key}</span>
-        {itself ? null : (
-          <span className="max-w-[40%] min-w-0 shrink-0 truncate text-xs">
-            {document === undefined ? owner.name : `${owner.name} · ${document}`}
-          </span>
-        )}
-        {title === undefined ? (
-          <MarkdownPreview
-            className={`min-w-0 flex-1 text-sm ${words}`}
-            highlightClassName={`rounded px-0.5 ${searchHitBg} ${searchHitText}`}
-            lines={1}
-            markdown={source}
-            tree={result.snippet_tree}
-          />
-        ) : (
-          <span className={`min-w-0 flex-1 truncate text-sm ${words}`}>{title}</span>
-        )}
+        {named}
         {status === undefined ? null : (
           <span
             className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${badgeLow.bg} ${badgeLow.text}`}
@@ -391,36 +406,90 @@ function ResultOption({
           </span>
         )}
       </div>
+      {snippet.length === 0 ? null : (
+        // Under the key, past the icon's 16 px and the 8 px gap after it.
+        <p
+          className={`mt-0.5 truncate pl-6 text-xs ${textMutedOnSelectedCard}`}
+          data-testid="search-hit-snippet"
+        >
+          {snippet.map((part, index) =>
+            part.mark ? (
+              // biome-ignore lint/suspicious/noArrayIndexKey: a part is its place in the one snippet, which never changes for one hit
+              <mark className={highlight} key={index}>
+                {part.text}
+              </mark>
+            ) : (
+              part.text
+            )
+          )}
+        </p>
+      )}
       {result.ask === undefined ? null : <AskHitStatus ask={result.ask} muted={muted} />}
     </PaletteOption>
   );
 }
 
-/** An action, project, recent item or Continue row: a label and an optional trailing hint. */
+/** The glyph of a conversation of the bar, which Continue opens: two speech bubbles. */
+function ConversationIcon(): ReactNode {
+  return (
+    <svg
+      aria-hidden="true"
+      className="size-4 shrink-0"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth={1.75}
+      viewBox="0 0 24 24"
+    >
+      <path d="M4 5h11v8H8l-4 3z" />
+      <path d="M15 9h5v8l-3-2h-6v-2" />
+    </svg>
+  );
+}
+
+/** An action, project, recent item or Continue row: its icon where it has one (`icon`), its label
+ *  - or `body`, which draws it, as a recent issue's chip does - and an optional trailing hint. */
 function CommandOption({
   active,
+  body,
   hint,
+  icon,
   id,
   label,
   onSelect,
 }: {
   active: boolean;
+  body?: ReactNode;
   hint: ReactNode;
+  icon?: ReactNode;
   id: string;
   label: string;
   onSelect: () => void;
 }): ReactNode {
   return (
-    <PaletteOption
-      active={active}
-      id={id}
-      layout="flex items-center justify-between gap-4"
-      onSelect={onSelect}
-    >
-      <span className={`min-w-0 truncate text-sm ${textPrimaryOnSurface}`}>{label}</span>
+    <PaletteOption active={active} id={id} layout="flex items-center gap-3" onSelect={onSelect}>
+      {icon === undefined ? null : (
+        <span className={`flex shrink-0 ${textMutedOnSurface}`}>{icon}</span>
+      )}
+      {body === undefined ? (
+        <span className={`min-w-0 flex-1 truncate text-sm ${textPrimaryOnSurface}`}>{label}</span>
+      ) : (
+        <span className="flex min-w-0 flex-1">{body}</span>
+      )}
       {hint}
     </PaletteOption>
   );
+}
+
+/** What a recent item's row draws (design v3, state 1; review n1), as Raycast's recent items
+ *  show their kind: an issue by its kind's icon and its chip - its key, its status's dot and its
+ *  title - and a project document by its icon and its name. */
+function recentLook(item: RecentItem): { readonly body?: ReactNode; readonly icon: ReactNode } {
+  const issue = parseIssuePath(item.path)?.key;
+  return issue === undefined
+    ? { icon: <SearchResultIcon kind="document" /> }
+    : { body: <ItemChip issue={issue} />, icon: <SearchResultIcon kind="issue" /> };
 }
 
 /**
@@ -539,7 +608,9 @@ interface CommandSection {
   id: string;
   label: string;
   options: readonly {
+    body?: ReactNode;
     hint: ReactNode;
+    icon?: ReactNode;
     label: string;
     row: ActionRow | ProjectRow | RecentRow;
   }[];
@@ -559,10 +630,12 @@ function CommandGroup({
   }
   return (
     <ListGroup heading id={section.id} label={section.label}>
-      {section.options.map(({ hint, label, row }) => (
+      {section.options.map(({ body, hint, icon, label, row }) => (
         <CommandOption
           active={row.id === activeId}
+          body={body}
           hint={hint}
+          icon={icon}
           id={row.id}
           key={row.id}
           label={label}
@@ -672,6 +745,15 @@ function PaletteDialog({
   // Words sent while the run worked go once it no longer works.
   useSendQueued(asking.enter);
   const [history, setHistory] = useState(false);
+  // New leaves the header, and the button pressed with it, so once the search is back the cursor
+  // goes into the box, where typing then lands (review n2); the box shows again only once History
+  // has gone too, so this waits for that render.
+  const focusAfterNew = useRef(false);
+  useLayoutEffect(() => {
+    if (!focusAfterNew.current) return;
+    focusAfterNew.current = false;
+    inputRef.current?.focus();
+  });
   const login = whoAmI.data?.login;
   // The filing Enter on File as a new issue starts, which outlives this open (`filing.ts`): it is
   // the line's first row while it is out or once it failed, and the bar closes once it is filed.
@@ -930,7 +1012,12 @@ function PaletteDialog({
         {
           id: RECENT_GROUP_ID,
           label: "Recent",
-          options: recentRows.map((row) => ({ hint: null, label: row.item.label, row })),
+          options: recentRows.map((row) => ({
+            ...recentLook(row.item),
+            hint: null,
+            label: row.item.label,
+            row,
+          })),
         },
         {
           id: ACTIONS_GROUP_ID,
@@ -1227,6 +1314,7 @@ function PaletteDialog({
               onNew={() => {
                 newConversation();
                 setHistory(false);
+                focusAfterNew.current = true;
               }}
             />
           ) : null}
@@ -1324,6 +1412,7 @@ function PaletteDialog({
                     <CommandOption
                       active={activeRow?.id === continueRow.id}
                       hint={null}
+                      icon={<ConversationIcon />}
                       id={continueRow.id}
                       label={continueRow.label}
                       onSelect={() => selectRow(continueRow)}

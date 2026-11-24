@@ -26,7 +26,7 @@ body: |-
   by its word, and its Discard stands as tall as Approve. A working run with no call running ends
   with "Thinking…" and its timer, its step lines read larger and darker, and the fold line is grey.
   A bound, a Stop and a failure end in one grey card with one next step under what the run found
-  so far: a Stop reads "Stopped · kept what it did: read 1 item" with Try again. A run the model's
+  so far, its steps folded: a Stop reads "Stopped · read 1 item" with Continue. A run the model's
   provider stopped reads "The model's provider refused to read part of what this run found", then
   "Continue, or ask in other words" with Continue (and no Continue in Deep) where its end offers
   Continue, else "Ask in other words"; never as a level's limit. A History row of such a run says
@@ -50,4 +50,12 @@ body: |-
   and a refused filing names the near copy. A run's step that sets a project's default repository
   names it ("to none" for a clear), and a filing that fails says why in words, never a status or
   a model service's own: "Dispatch could not file it just now", "Dispatch stopped before it filed
-  the issue", or a failed run's sentence, such as "Dispatch could not reach the model".
+  the issue", or a failed run's sentence, such as "Dispatch could not reach the model". While a
+  plan waits, the view shows its card from the question down with Approve and Discard pinned at
+  its foot and "↵ Approve" under the box, in the bar and the panel alike; a hit's snippet reads as
+  plain words on a grey second line; a stopped run's steps fold closed with its answer so far
+  above its card, and a Stop reads "Stopped · read 1 item" with Continue; a header over ended
+  calls reads in the past tense; a long plan title counts ("Change 4 items and send 1 message");
+  a message on an issue names the agent it reaches or says none takes it; an undone run's fold
+  line says what Undo left; Recent rows show the item's chip; New puts the cursor back in the box;
+  the chip sits clear of the screen's top; and Settings says "Saved" beside the mode it saved.

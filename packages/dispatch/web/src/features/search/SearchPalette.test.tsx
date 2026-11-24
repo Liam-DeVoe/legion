@@ -235,6 +235,10 @@ test("groups the hits by kind with marked snippets, names each hit's issue once,
     expect(document).toHaveTextContent("LEGION-2");
     expect(document).toHaveTextContent("Navigation instruments · spec.md");
     expect(document).toHaveAttribute("data-status", "done");
+    // Its snippet stands on a second, grey line of its own, its match marked (review N2).
+    const snippet = within(document as HTMLElement).getByTestId("search-hit-snippet");
+    expect(snippet).toHaveTextContent("The astrolabe measures altitude.");
+    expect(within(snippet).getByText("astrolabe", { selector: "mark" })).toBeTruthy();
     expect(comment).toHaveTextContent("LEGION-2");
     expect(comment).toHaveTextContent("Navigation instruments");
     // A hit that is the issue itself names its key, and its text is its title with the words
@@ -1519,6 +1523,14 @@ test("each filter is one pill naming its field and its value, and Updated since 
     const status = screen.getByRole("button", { name: "Status" });
     expect(status).toHaveTextContent("StatusAny");
     expect(screen.getByRole("button", { name: "Project" })).toHaveTextContent("ProjectAny");
+    // Author names its field in the words Status does, and takes the author after it, "Anyone"
+    // standing in its box until one is typed (review M6).
+    const author = screen.getByRole("searchbox", { name: "Author" });
+    expect(author).toHaveAttribute("placeholder", "Anyone");
+    const authorPill = author.closest("label") as HTMLElement;
+    expect(within(authorPill).getByText("Author").className).toBe(
+      within(status).getByText("Status").className
+    );
     const since = screen.getByRole("button", { name: "Updated since" });
     expect(since).toHaveTextContent("Updated sinceAny time");
     expect(since.className).toBe(status.className);
@@ -1632,9 +1644,20 @@ test("the empty box lists Continue on the last hour's conversation, then at most
       screen.getByRole("option", { name: "Continue: Who looks after the comet" })
     ).toBeTruthy();
     const recent = within(screen.getByRole("group", { name: "Recent" })).getAllByRole("option");
-    expect(recent.map((row) => row.textContent)).toEqual(
-      items.slice(0, 5).map((item) => item.label)
+    // Each recent issue shows its kind's icon and its chip - its key, its status's dot and its
+    // title - as Raycast's recent items show their kind (review n1).
+    await waitFor(() =>
+      expect(
+        recent.map((row) => within(row).queryByTestId("item-chip-title")?.textContent)
+      ).toEqual(items.slice(0, 5).map((item) => `Instrument ${item.label.split(" ")[0]}`))
     );
+    for (const row of recent) {
+      expect(row.querySelector("svg")).not.toBeNull();
+    }
+    expect(
+      screen.getByRole("option", { name: "Continue: Who looks after the comet" })
+    ).toBeTruthy();
+    expect(document.getElementById("search-option-continue")?.querySelector("svg")).not.toBeNull();
     expect(screen.queryByRole("group", { name: "Actions" })).toBeNull();
     expect(optionIds()).not.toContain(CLOSE_ROW);
     expect(box).toHaveAttribute("aria-activedescendant", "search-option-continue");
@@ -1999,6 +2022,8 @@ test("New brings the search back, in the same box", async () => {
     const search = screen.getByRole("combobox", { name: "Search" });
     expect(search).toBe(box);
     expect(search).toHaveAttribute("placeholder", "Search or ask…");
+    // The cursor is back in the box, so typing lands in it (review n2).
+    expect(search).toHaveFocus();
     expect(screen.getByTestId("search-filters-button")).toBeInTheDocument();
   } finally {
     bar.restore();
@@ -2096,7 +2121,7 @@ test("words that wait revise the plan the run ends waiting on", async () => {
   }
 });
 
-test("while a plan waits the box reads Say what to change…, words in it say Enter sends them, and ↑ in the empty box moves into the card", async () => {
+test("while a plan waits the box reads Say what to change…, the hint under it says Enter approves or sends the words, and ↑ in the empty box moves into the card", async () => {
   const user = userOnFakeClock();
   const bar = answerTheBar();
   const read = spyOn(api, "goingPlan").mockResolvedValue(
@@ -2129,7 +2154,7 @@ test("while a plan waits the box reads Say what to change…, words in it say En
 
     const box = talkBox();
     expect(box).toHaveAttribute("placeholder", "Say what to change…");
-    expect(screen.queryByTestId("going-box-hint")).toBeNull();
+    expect(screen.getByTestId("going-box-hint")).toHaveTextContent("↵ Approve");
     await user.type(box, "keep it");
     expect(screen.getByTestId("going-box-hint")).toHaveTextContent(
       "↵ sends your words instead of approving"

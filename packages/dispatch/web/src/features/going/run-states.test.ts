@@ -70,16 +70,17 @@ const rows: readonly Row[] = [
   ["stopped_bound", "bound", "stopped_bound"],
   ["stopped_bound", "continue", "working", "continue"],
   ["stopped_bound", "bar_closed", "stopped_bound"],
-  // The person's Stop is final.
+  // The person's Stop is a pause of their own: Continue starts a follow-up, and nothing else
+  // moves it. Whether its end offers Continue is its end's to say (`endWords`).
   ["stopped_person", "step", "stopped_person"],
   ["stopped_person", "propose_plan", "stopped_person"],
   ["stopped_person", "approve", "stopped_person"],
   ["stopped_person", "stop", "stopped_person"],
   ["stopped_person", "esc", "stopped_person"],
   ["stopped_person", "bound", "stopped_person"],
-  ["stopped_person", "continue", "stopped_person"],
+  ["stopped_person", "continue", "working", "continue"],
   ["stopped_person", "bar_closed", "stopped_person"],
-  // So is a failure.
+  // A failure is final.
   ["failed", "step", "failed"],
   ["failed", "propose_plan", "failed"],
   ["failed", "approve", "failed"],
@@ -222,18 +223,19 @@ test("a bound reads as a pause at the run's level with what it did so far, and o
   );
 });
 
-// A Stop keeps what it did and says what that was, with Try again as its one next step (design
-// v3, rule 7): "kept what it did" alone said nothing of what it kept, and gave nothing to do.
-test("a Stop keeps what it did, says what that was, offers Try again, and never repeats the reason's code", () => {
+// A Stop is the person's own pause (design v3, state 9; review n4): it says what the run did
+// before it, "Stopped · read 1 item" - "kept what it did: read 1 item" read as if the reading kept
+// something - and offers Continue, never Try again, since the person stopped it on purpose.
+test("a Stop says what the run did before it, offers Continue, and never repeats the reason's code", () => {
   expect(endWords("stopped_person", "STOPPED: its person stopped it", "standard", "")).toEqual({
-    action: "retry",
+    action: "continue",
     continueInDeep: false,
     noModel: false,
     text: "Stopped · kept what it did",
   });
   expect(
     endWords("stopped_person", "STOPPED: its person stopped it", "standard", "read 1 item")?.text
-  ).toBe("Stopped · kept what it did: read 1 item");
+  ).toBe("Stopped · read 1 item");
   // A stop its grant ended says why, and offers no Try again that the lapsed grant would refuse.
   expect(
     endWords("stopped_person", "SESSION_ENDED: the person this run acts for signed out", "fast", "")

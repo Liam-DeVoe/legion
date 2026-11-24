@@ -20,6 +20,7 @@ import {
   specSentences,
   undoneChangeLabel,
   undoneTitle,
+  undoneWords,
   undoWords,
   valueWords,
   withChangesUnticked,
@@ -113,6 +114,32 @@ test("the card's title is a sentence made from its rows", () => {
       row(1, { arguments: { ask: "ask-1" }, class: "ask_answer", tool: "dispatch_resolve_ask" }),
     ])
   ).toBe("Send 1 message and make 1 other change");
+});
+
+// Past two kinds of change the sentence runs to a second line, the last key alone on it (review
+// n3): the title counts instead, the changes of items in one count and the messages in their own.
+test("past two kinds of change, the title counts items and messages", () => {
+  expect(
+    planTitle([
+      newIssue(0, "Fit a motor"),
+      update(1, "DEMO-2", { labels: ["optics"], priority: 2 }),
+      row(2, {
+        arguments: { artifact: "spec", issue: "DEMO-5" },
+        class: "document",
+        issue: "DEMO-5",
+        tool: "dispatch_suggest",
+      }),
+      message(3),
+      update(4, "DEMO-6", { status: "done" }),
+    ])
+  ).toBe("Change 4 items and send 1 message");
+  expect(
+    planTitle([
+      newIssue(0, "North half"),
+      update(1, "DEMO-3", { priority: 1 }),
+      update(2, "DEMO-4", { status: "done" }),
+    ])
+  ).toBe("Change 3 items");
 });
 
 test("each field is named as the issue page names it", () => {
@@ -548,6 +575,40 @@ test("a run Dispatch says was undone reads Undone at that time, or Partly undone
   expect(cardTitle(ran, [undoLine({ row: 0 })], undefined, { at, left: true })).toBe(
     "Undone · 1 change reverted"
   );
+});
+
+// The line the steps fold into says what the run did last: once its plan's changes were undone,
+// "applied 3 changes" no longer stands, so it says what the Undo left (architect's review of
+// 07-undone), in the card's words.
+test("once its plan was undone, the fold line says what the Undo reverted and what stays", () => {
+  const ran: GoingPlanAnswer = {
+    ...sentPlan("done", ["done", "done"]),
+    rows: [...(sentPlan("done", ["done", "done"]).rows ?? []), { ...message(2), state: "done" }],
+  };
+  const lines = [
+    undoLine({ row: 0 }),
+    undoLine({ row: 1 }),
+    undoLine({ row: 2, tool: "dispatch_message", undo: "not_undone" }),
+  ];
+  expect(undoneWords(ran, lines, false)).toBe("undid 2 changes; 1 message sent, not undone");
+  expect(
+    undoneWords(
+      ran,
+      [
+        undoLine({ row: 0 }),
+        undoLine({
+          outcome: { code: "GOING_UNDO_CHANGED", message: "kept", ok: false, status: 409 },
+          row: 1,
+        }),
+      ],
+      true
+    )
+  ).toBe("undid 1 of 2 changes; 1 message sent, not undone");
+  // Without this page's answer, Dispatch's word on what is left says it.
+  const changes = sentPlan("done", ["done", "done"]);
+  expect(undoneWords(changes, undefined, false)).toBe("undid 2 changes");
+  expect(undoneWords(changes, undefined, true)).toBe("undid part of 2 changes");
+  expect(undoneWords(sentPlan("done", ["failed"]), undefined, false)).toBeUndefined();
 });
 
 test("a row that no longer waits says how it stands: a message's result, a failure, a row not run", () => {

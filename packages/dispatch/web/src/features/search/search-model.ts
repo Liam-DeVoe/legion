@@ -1,4 +1,5 @@
 import { SEARCH_OPERATORS, SEARCH_RESULT_KINDS } from "@legion/contracts";
+import { type SnippetSegment, snippetSegments } from "@legion/contracts/dispatch-snippet";
 import type { SearchOperator, SearchOwner, SearchResult, SearchResultKind } from "../../api/types";
 
 /** `value` as a result kind, or `undefined` where this dashboard knows no such kind. Every
@@ -84,6 +85,82 @@ export function hitIsItsIssue(result: SearchResult): boolean {
 export function issueHitTitle(result: SearchResult, snippetText: string): string | undefined {
   const title = result.owner.title ?? "";
   return snippetText.trim() === title.trim() ? undefined : title;
+}
+
+/** Characters of Unicode's private use area that stand for the server's `<mark>` and `</mark>`
+ *  while a snippet's markup is taken out (`plainSnippet`), so a match keeps its highlight. */
+const MARK_OPEN = "\uE000";
+const MARK_CLOSE = "\uE001";
+
+/** The quoted values of a directive's attributes, the one part of them written for a person; a
+ *  value the snippet's window cut runs to its end. */
+const QUOTED = /"([^"]*)(?:"|$)/gu;
+
+/** Each piece of markup a snippet's text can hold, in the order `plainSnippet` takes them out,
+ *  and what each leaves. */
+const MARKUP: readonly (readonly [RegExp, string | ((match: string, inner: string) => string)])[] =
+  [
+    // A directive's fence - ":::plan_task", or a bare ":::" - leaves nothing.
+    [/:{3,}[ \t]*[A-Za-z][\w-]*/gu, " "],
+    [/:{3,}/gu, " "],
+    // An inline directive's name, ":ref" of ":ref[DEMO-1]".
+    [/(^|[\s(]):[A-Za-z][\w-]*(?=[[{])/gu, "$1"],
+    // A directive's attributes, closed or cut, leave their quoted values.
+    [
+      /\{([^{}]*)(?:\}|$)/gu,
+      (_match, inner) => ` ${[...inner.matchAll(QUOTED)].map((value) => value[1]).join(" ")} `,
+    ],
+    // An image or a link leaves its words; what a cut link leaves of its address goes, and so
+    // does a lone bracket. An address holds no space, so a cut one ends at the first.
+    [/!?\[([^\]]*)\]\([^)\s]*\)?/gu, "$1"],
+    [/\[([^\]]*)\]\[[^\]]*\]/gu, "$1"],
+    [/\]\([^)\s]*\)?/gu, ""],
+    [/[[\]]/gu, ""],
+    // An autolink leaves its address; any other tag, nothing.
+    [/<((?:https?|mailto):[^>\s]*)>/gu, "$1"],
+    [/<\/?[A-Za-z][^>]*>/gu, ""],
+    // A heading's, a quote's and a list item's mark at a line's start; a table's rule, a rule
+    // between sections, and the pipes between a table's cells.
+    [/(^|\n)[ \t]*(?:#{1,6}|>|[-*+]|\d+[.)])[ \t]+/gu, "$1"],
+    [/(^|\n)[ \t|:-]{3,}(?=\n|$)/gu, "$1"],
+    [/\|/gu, " "],
+    // Strong, strike-through and code marks, then a single star or underscore that opens or
+    // closes emphasis - never one inside a word, as in "snake_case".
+    [/\*\*|__|~~|`+/gu, ""],
+    [/(^|[\s(])[*_]+(?=\S)/gu, "$1"],
+    [/(\S)[*_]+(?=[\s).,;:!?]|$)/gu, "$1"],
+    // A backslash escape leaves the character it escapes.
+    [/\\([^\w\s])/gu, "$1"],
+  ];
+
+/**
+ * A hit's snippet as plain words for the second line of its row (design v3, rule 1: no marker
+ * text): the server's snippet is a window cut from a document's Markdown and Proof's directives
+ * (`:::plan_task{#t1 serves="…"}`), so its fences, attributes, links, tags, list and table marks
+ * and emphasis come out, leaving the words a person wrote, on one line. The words the search
+ * matched stay marked.
+ */
+export function plainSnippet(snippet: string): SnippetSegment[] {
+  let text = snippetSegments(snippet)
+    .map((segment) => (segment.mark ? `${MARK_OPEN}${segment.text}${MARK_CLOSE}` : segment.text))
+    .join("");
+  for (const [pattern, leaves] of MARKUP) {
+    text =
+      typeof leaves === "string" ? text.replace(pattern, leaves) : text.replace(pattern, leaves);
+  }
+  const segments: SnippetSegment[] = [];
+  let mark = false;
+  for (const part of text
+    .replace(/\s+/gu, " ")
+    .trim()
+    .split(/([\uE000\uE001])/u)) {
+    if (part === MARK_OPEN || part === MARK_CLOSE) {
+      mark = part === MARK_OPEN;
+    } else if (part !== "") {
+      segments.push({ mark, text: part });
+    }
+  }
+  return segments;
 }
 
 /** Mirrors the server's first positive websearch token for document deep links. */

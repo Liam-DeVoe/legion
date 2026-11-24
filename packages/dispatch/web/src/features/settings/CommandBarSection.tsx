@@ -9,6 +9,7 @@ import {
   card,
   focusVisibleRing,
   radioRing,
+  successText,
   textMutedOnCanvas,
   textMutedOnSurface,
   textPrimaryOnCanvas,
@@ -19,8 +20,8 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 type Mode = GoingSettings["mode"];
 
-/** The two approval modes, in the order the section lists them, each with its label and the line
- *  that says what it does, which the saved notice repeats. */
+/** The two approval modes, in the order the section lists them, each with its label, which the
+ *  saved notice names it by, and the line that says what it does. */
 const MODES: readonly { readonly mode: Mode; readonly label: string; readonly does: string }[] = [
   { does: "Every change of a plan waits for your approval.", label: "Ask", mode: "ask" },
   {
@@ -89,10 +90,9 @@ export function CommandBarSection(): ReactNode {
       <h2 className={`text-xl font-semibold ${textPrimaryOnCanvas}`} id="command-bar-heading">
         Command bar
       </h2>
+      {/* One sentence: each radio's own line says what its mode does (review n8). */}
       <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
-        The bar plans its changes before it makes any. In Ask, every change of a plan waits for your
-        approval. In Auto-review, a review of the plan against your words lets through the plain
-        changes they ask for, and the rest wait for you.
+        The bar plans its changes before it makes any.
       </p>
       {settings.isPending ? (
         <p className={`mt-4 ${textMutedOnCanvas}`}>Loading the setting…</p>
@@ -137,17 +137,25 @@ export function CommandBarSection(): ReactNode {
                   >
                     {label}
                   </label>
+                  {saved === mode ? (
+                    // The choice saves as it is made, with no Save button, so the mode it saved
+                    // says so beside its name (review: Settings); the status line below is the
+                    // same notice for a screen reader.
+                    <span
+                      aria-hidden="true"
+                      className={`ml-2 text-xs font-medium ${successText}`}
+                      data-testid="going-settings-saved-mark"
+                    >
+                      ✓ Saved
+                    </span>
+                  ) : null}
                   <p className={`text-xs ${textMutedOnSurface}`} id={`${ids}-${mode}`}>
                     {does}
                   </p>
                 </div>
               </div>
             ))}
-            <p
-              className={`text-xs ${textMutedOnSurface}`}
-              data-testid="going-settings-saved"
-              role="status"
-            >
+            <p className="sr-only" data-testid="going-settings-saved" role="status">
               {saved === undefined
                 ? null
                 : `Saved: ${MODES.find((one) => one.mode === saved)?.label ?? saved}.`}

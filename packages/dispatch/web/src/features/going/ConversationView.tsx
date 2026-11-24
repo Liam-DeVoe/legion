@@ -32,6 +32,7 @@ import { AnswerBlock } from "../search/blocks/AnswerBlock";
 import {
   asksPerson,
   dropQueued,
+  endReason,
   newConversation,
   newestRun,
   type QueuedWords,
@@ -42,7 +43,7 @@ import {
   useGoingValue,
 } from "./going-store";
 import { PlanCard } from "./PlanRows";
-import { appliedWords } from "./plan-rows";
+import { appliedWords, undoneWords } from "./plan-rows";
 import { RunUndo } from "./RunUndo";
 import { type EndWords, endWords, type RunState, runEnded } from "./run-states";
 import { foldWords, RunTimer, StepSection } from "./step-section/StepSection";
@@ -63,6 +64,10 @@ const STATE_TEXT: Readonly<Record<RunState, string>> = {
 
 /** How near the foot of the conversation, in pixels, the person's scroll still follows it. */
 const FOOT_SLACK = 24;
+
+/** The attribute of the turn the conversation's scroll follows no further than: the newest
+ *  run's, while its plan waits (design v3, state 6). */
+const FOLLOW_ANCHOR = "data-follow-anchor";
 
 /** The line in place of "Done" under a run the person started from the line Do that ended done
  *  with no plan (`changedNothing`): whatever its answer says, nothing was changed. */
@@ -220,22 +225,25 @@ function AnswerFoot({
 /**
  * How a run that stopped or failed ended (design v2, state 9, rule 7), as one grey card whatever
  * the end - a bound, a Stop or a failure look alike, a pause and not an alarm - under what the run
- * found so far (its steps, opened above it): one sentence (`endWords`) and, on the conversation's
- * newest run (`actions`), its one next step. A bound reads "Stopped at Standard's time limit ·
- * read 14 items so far", then Continue (↵, which Enter in the empty box also does) and, below
- * Deep, "Continue in Deep" at the same height; the model's provider refusing part of what the run
- * found reads "…, Continue, or ask in other words", with Continue alone. A Stop reads "Stopped ·
- * kept what it did: read 1 item", then Try again. A failure is its sentence and Try again, or
- * "Start a new conversation" where this one grew too long. A Dispatch with no answering model
- * says so in the one sentence of state 13, and offers nothing.
+ * found so far (its steps folded into one line, then any answer it wrote): one sentence
+ * (`endWords`) and, on the conversation's newest run (`actions`), its one next step. A bound
+ * (`bound`) reads "Stopped at Standard's time limit · read 14 items so far", then Continue (↵,
+ * which Enter in the empty box also does) and, below Deep, "Continue in Deep" at the same height;
+ * the model's provider refusing part of what the run found reads "…, Continue, or ask in other
+ * words", with Continue alone. A Stop reads "Stopped · read 1 item", then Continue (↵), since the
+ * person stopped it on purpose. A failure is its sentence and Try again, or "Start a new
+ * conversation" where this one grew too long. A Dispatch with no answering model says so in the
+ * one sentence of state 13, and offers nothing.
  */
 function RunEnd({
   actions,
+  bound,
   onContinue,
   onRetry,
   words,
 }: {
   readonly actions: boolean;
+  readonly bound: boolean;
   readonly onContinue: (level?: GoingRun["level"]) => void;
   readonly onRetry: () => void;
   readonly words: EndWords;
@@ -295,7 +303,7 @@ function RunEnd({
     <div
       className={`space-y-2 rounded-lg border p-3 ${borderDefault} ${surfaceMutedBg}`}
       data-action={action}
-      data-testid={action === "continue" ? "going-run-bound" : "going-run-end"}
+      data-testid={bound ? "going-run-bound" : "going-run-end"}
     >
       <p
         className={`text-sm ${textSecondaryOnSurface}`}
@@ -318,18 +326,21 @@ interface WholeBlock {
 
 /** One run of the conversation: the person's words, its steps, the answer with its items as
  *  chips and blocks, its plan - as the card of the newest run (the one `answering` is given for),
- *  folded to one line in an older one - how it ended, with Continue on a bound and Try again on a
- *  failure, "Nothing changed" in place of "Done" on a run of the line Do that proposed no plan,
- *  and Undo of a run with no plan that changed something. Its steps' fold line, its answer and
- *  its plan's card come in that order, as the answer (state 4) then the applied plan (state 7)
- *  do. Once its plan's rows ran, its fold line says so ("applied 3 changes") in place of
- *  "proposed a plan", which is no longer the last thing it did. Once Dispatch says its changes
- *  were undone and none is left to take back, its answer, which speaks of them, turns grey and
- *  the line under it reads "Undone"; where an undo landed and a change is left, it reads "Partly
- *  undone" and Undo is still offered: the card says what was taken back. A run that stopped or
- *  failed shows what it found so far, its steps opened, above how it ended. `asks` is whether its
- *  answer asks the person a question and waits for their answer; `onShowAll` opens one of its
- *  tables whole over the bar or the panel. */
+ *  folded to one line in an older one - how it ended, with Continue on a bound or a Stop and Try
+ *  again on a failure, "Nothing changed" in place of "Done" on a run of the line Do that proposed
+ *  no plan, and Undo of a run with no plan that changed something. Its steps' fold line, its
+ *  answer and its plan's card come in that order, as the answer (state 4) then the applied plan
+ *  (state 7) do. Once its plan's rows ran, its fold line says so ("applied 3 changes") in place of
+ *  "proposed a plan", which is no longer the last thing it did; once they were undone, it says
+ *  what the Undo left ("undid 2 changes; 1 message sent, not undone"). Once Dispatch says its
+ *  changes were undone and none is left to take back, its answer, which speaks of them, turns
+ *  grey and the line under it reads "Undone"; where an undo landed and a change is left, it reads
+ *  "Partly undone" and Undo is still offered: the card says what was taken back. A run that
+ *  stopped or failed keeps its steps folded, as an answered run does, and shows any answer it
+ *  wrote above how it ended (rule 3: fold the work, never the result). The newest run's turn,
+ *  while its plan waits, is where the conversation's scroll stops (`FOLLOW_ANCHOR`). `asks` is
+ *  whether its answer asks the person a question and waits for their answer; `onShowAll` opens
+ *  one of its tables whole over the bar or the panel. */
 function RunTurn({
   answering,
   asks,
@@ -358,30 +369,39 @@ function RunTurn({
   const landed = undoneAt(run.record);
   const left = run.record.undoable;
   const undone = landed !== undefined && !left;
-  const pressed = useGoingValue((of) => of.undone.has(run.id));
+  // What this page's Undo of the run answered, where it was pressed here.
+  const lines = useGoingValue((of) => of.undone.get(run.id));
+  const pressed = lines !== undefined;
   // A call with no words draws no line, and nor does a change of an approved plan, which its
   // row's tick on the plan's card shows.
   const steps = run.frames.steps.filter((step) => step.label !== "" && step.kind !== "write");
-  const ended = endWords(
-    state,
-    run.frames.end?.reason ?? run.record.stop_reason ?? "",
-    run.record.level,
-    foldWords(steps)
-  );
+  const ended = endWords(state, endReason(run), run.record.level, foldWords(steps));
+  const shownPlan = plan.plan;
+  let planWords: string | undefined;
+  if (shownPlan !== undefined) {
+    planWords =
+      pressed || landed !== undefined
+        ? undoneWords(shownPlan, lines, left)
+        : appliedWords(shownPlan);
+  }
   return (
-    <li className="space-y-2" data-run={run.id} data-state={state} data-testid="going-run">
+    <li
+      className="space-y-2"
+      data-run={run.id}
+      data-state={state}
+      data-testid="going-run"
+      {...(newest && shownPlan?.state === "waiting" ? { [FOLLOW_ANCHOR]: "" } : {})}
+    >
       <Words testId="going-run-words" words={run.record.words} />
       {waitsForSteps ? <Thinking since={run.since} /> : null}
       <StepSection
-        // The steps fold into one line once the run no longer works (design v3, rule 3) - its
-        // answer or its plan came, or it stopped or failed, whose end then counts what that line
-        // counts (state 9) - and stay folded while the rows of its approved plan run, which the
-        // plan's card shows as its rows' ticks (state 7). The line of a run that stopped or
-        // failed starts open: its steps are what it found so far (state 9).
+        // The steps fold into one line, closed, once the run no longer works (design v3, rule 3)
+        // - its answer or its plan came, or it stopped or failed, whose end then counts what that
+        // line counts (state 9) - and stay folded while the rows of its approved plan run, which
+        // the plan's card shows as its rows' ticks (state 7).
         folded={PLAN_SENT[run.frames.plan?.state ?? ""] === true || !working}
         live={working}
-        opened={ended !== undefined}
-        planWords={plan.plan === undefined ? undefined : appliedWords(plan.plan)}
+        planWords={planWords}
         since={run.since}
         steps={steps}
         workedMs={workedMs(run)}
@@ -448,6 +468,7 @@ function RunTurn({
       ) : ended !== undefined ? (
         <RunEnd
           actions={newest}
+          bound={state === "stopped_bound"}
           onContinue={(level) => onContinue(run.id, level)}
           onRetry={() => onRetry(run.record.words)}
           words={ended}
@@ -512,14 +533,47 @@ function QueuedTurn({ queued }: { readonly queued: QueuedWords }): ReactNode {
   );
 }
 
+/** How far down `element` scrolls for the turn that holds `FOLLOW_ANCHOR` to stand at its top,
+ *  under the conversation's own top padding, as the first turn stands; undefined where no turn
+ *  holds it. */
+function anchorTop(element: HTMLElement): number | undefined {
+  const anchor = element.querySelector(`[${FOLLOW_ANCHOR}]`);
+  if (anchor === null) return undefined;
+  const padding = Number.parseFloat(getComputedStyle(element).paddingTop) || 0;
+  const below = anchor.getBoundingClientRect().top - element.getBoundingClientRect().top;
+  return Math.max(0, below + element.scrollTop - padding);
+}
+
+/** Where the conversation follows to: its foot, or, while a plan waits, no further down than its
+ *  turn's top, so its card shows from its question down, with its Approve pinned at the foot of
+ *  the view, rather than from the middle, under the line its steps fold into, cut in half under
+ *  the header (design v3, states 6 and 8). The bar and the panel scroll alike. */
+function followTop(element: HTMLElement): number {
+  const anchored = anchorTop(element);
+  return anchored === undefined ? element.scrollHeight : Math.min(element.scrollHeight, anchored);
+}
+
+/** Whether anything is scrolled out of view above: nothing is where the view stands at the
+ *  anchor's turn, whose top then sits where the first turn's does. */
+function cutAbove(element: HTMLElement): boolean {
+  const anchored = anchorTop(element);
+  return (
+    element.scrollTop > 0 && (anchored === undefined || Math.abs(element.scrollTop - anchored) > 1)
+  );
+}
+
 /**
  * The scroll of the conversation (design v2, state 8): it follows new output - `output` counts
- * what came - while the person is at its foot. Once they scroll up it stays where they are, and
- * `behind` turns true at the next output, for the "↓ New reply" pill; `follow` takes them back to
- * the foot and follows again. `cut` says whether anything is scrolled out of view above, where
- * the conversation fades out under its header rather than show a bubble cut in half.
+ * what came, and `anchor` names the plan that waits, "" for none - while the person is at its
+ * foot, or, while a plan waits, at its turn's top (`followTop`). Once they scroll elsewhere it
+ * stays where they are, and `behind` turns true at the next output, for the "↓ New reply" pill;
+ * `follow` takes them back and follows again. `cut` says whether anything is scrolled out of view
+ * above, where the conversation fades out under its header rather than show a bubble cut in half.
  */
-function useFollow(output: number): {
+function useFollow(
+  output: number,
+  anchor: string
+): {
   readonly behind: boolean;
   readonly cut: boolean;
   readonly follow: () => void;
@@ -530,17 +584,17 @@ function useFollow(output: number): {
   const following = useRef(true);
   const [behind, setBehind] = useState(false);
   const [cut, setCut] = useState(false);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: each new output is the reason to follow it
+  // biome-ignore lint/correctness/useExhaustiveDependencies: each new output, and a plan that comes to wait, is the reason to follow it
   useLayoutEffect(() => {
     const element = scroller.current;
     if (element === null) return;
     if (following.current) {
-      element.scrollTop = element.scrollHeight;
-      setCut(element.scrollTop > 0);
+      element.scrollTop = followTop(element);
+      setCut(cutAbove(element));
     } else {
       setBehind(true);
     }
-  }, [output]);
+  }, [output, anchor]);
   return {
     behind,
     cut,
@@ -548,14 +602,17 @@ function useFollow(output: number): {
       following.current = true;
       setBehind(false);
       const element = scroller.current;
-      if (element !== null) element.scrollTop = element.scrollHeight;
+      if (element !== null) element.scrollTop = followTop(element);
     },
     onScroll: () => {
       const element = scroller.current;
       if (element === null) return;
-      const atFoot = element.scrollHeight - element.scrollTop - element.clientHeight <= FOOT_SLACK;
+      const anchored = anchorTop(element);
+      const atFoot =
+        element.scrollHeight - element.scrollTop - element.clientHeight <= FOOT_SLACK ||
+        (anchored !== undefined && Math.abs(element.scrollTop - anchored) <= FOOT_SLACK);
       following.current = atFoot;
-      setCut(element.scrollTop > 0);
+      setCut(cutAbove(element));
       if (atFoot) setBehind(false);
     },
     scroller,
@@ -566,19 +623,20 @@ function useFollow(output: number): {
  * The open conversation, as the bar over the page and the panel at the side both draw it (design
  * v2, states 2 to 9): one column, newest at the bottom, that fills the space its surface gives it
  * and scrolls inside it, following new output until the person scrolls up, when "↓ New reply"
- * brings them back. Each run in order, its question first in a grey bubble, "Thinking…" with a
- * timer until its first step or answer comes, its steps live as they arrive (`StepSection`),
- * "Reconnecting…" while its stream is dropped, its answer with each issue it names as a chip, its
- * blocks with their captions, its plan's card - an old turn's folded to one line - and how each
- * ended, with "Done", "Waits for your answer" or, for a run of the line Do that proposed no plan,
- * "Nothing changed: no plan was proposed." and Copy and Retry under an answer, Continue at a
- * bound and Try again after a failure; then the question of a run whose start is out, and the
- * words that wait for the newest run. A table's "Show all" opens it whole over the bar or the
- * panel that draws the conversation, and its Back or Esc closes it.
+ * brings them back; while the newest run's plan waits, it follows no further than that run's
+ * question, so its card reads from the top. Each run in order, its question first in a grey
+ * bubble, "Thinking…" with a timer until its first step or answer comes, its steps live as they
+ * arrive (`StepSection`), "Reconnecting…" while its stream is dropped, its answer with each issue
+ * it names as a chip, its blocks with their captions, its plan's card - an old turn's folded to
+ * one line - and how each ended, with "Done", "Waits for your answer" or, for a run of the line
+ * Do that proposed no plan, "Nothing changed: no plan was proposed." and Copy and Retry under an
+ * answer, Continue at a bound or a Stop and Try again after a failure; then the question of a run
+ * whose start is out, and the words that wait for the newest run. A table's "Show all" opens it
+ * whole over the bar or the panel that draws the conversation, and its Back or Esc closes it.
  * `answering` is the newest run's plan as the surface that draws this answers it, so Enter in that
  * surface's box and the card's Approve are one answer; `onRetry` starts a new run of a run's
- * words, as that surface's box starts one; `onContinue` continues a run a bound stopped, at
- * `level` where one is given.
+ * words, as that surface's box starts one; `onContinue` continues a run a bound or its person
+ * stopped, at `level` where one is given.
  */
 export function ConversationView({
   answering,
@@ -608,10 +666,12 @@ export function ConversationView({
     going.queued !== undefined && going.queued.run === newestRun(going)?.id
       ? going.queued
       : undefined;
+  const waiting = answering.plan?.state === "waiting" ? answering.plan : undefined;
   const scroll = useFollow(
     runs.reduce((sum, run) => sum + run.read + 1, 0) +
       (starting === undefined ? 0 : 1) +
-      (queued === undefined ? 0 : 1)
+      (queued === undefined ? 0 : 1),
+    waiting === undefined ? "" : `${waiting.run}:${waiting.plan}`
   );
   const wholeRun = whole === undefined ? undefined : going.runs.get(whole.run);
   const wholeBlock = whole === undefined ? undefined : wholeRun?.frames.blocks[whole.block];

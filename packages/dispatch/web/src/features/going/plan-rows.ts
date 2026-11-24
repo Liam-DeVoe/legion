@@ -610,6 +610,12 @@ function listed(parts: readonly string[]): string {
   return `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
 }
 
+/** How many changes one part of a title counts: the items it names where it names them by key,
+ *  else its rows. */
+function clauseCount(clause: TitleClause): number {
+  return clause.keyed && clause.items.size > 0 ? clause.items.size : clause.count;
+}
+
 /**
  * The plan card's title (design v3, state 6): a sentence made from its rows, "Change DEMO-10",
  * "File 2 issues and move 3", "Send 1 message". Each kind of change is one part, in the order the
@@ -617,7 +623,9 @@ function listed(parts: readonly string[]): string {
  * their issues, an issue named by its key where the part names one; messages are sent; a
  * suggested change to a document is suggested, as its row says ("Suggest a change to spec on
  * DEMO-15"), and any other change of a document edits it; and the rest made. A part that counts
- * the same thing as the one before it leaves out its noun.
+ * the same thing as the one before it leaves out its noun. Past two kinds the sentence no longer
+ * fits one line, so it counts instead: "Change 4 items and send 1 message", every change of an
+ * item in one count and the messages, which change no item, in their own.
  */
 export function planTitle(rows: readonly GoingPlanRow[]): string {
   const clauses = new Map<string, TitleClause>();
@@ -653,6 +661,18 @@ export function planTitle(rows: readonly GoingPlanRow[]): string {
         add("make", "change", "changes", false, "");
     }
   }
+  if (clauses.size > 2) {
+    const sent = clauses.get("send");
+    const changed = [...clauses.values()]
+      .filter((clause) => clause !== sent)
+      .reduce((sum, clause) => sum + clauseCount(clause), 0);
+    return capitalized(
+      listed([
+        ...(changed === 0 ? [] : [`change ${counted(changed, "item", "items")}`]),
+        ...(sent === undefined ? [] : [`send ${counted(sent.count, "message", "messages")}`]),
+      ])
+    );
+  }
   let noun = "";
   const parts = [...clauses.values()].map((clause, index) => {
     const [only] = clause.items;
@@ -660,7 +680,7 @@ export function planTitle(rows: readonly GoingPlanRow[]): string {
       noun = "";
       return `${clause.verb} ${only}`;
     }
-    const count = clause.keyed && clause.items.size > 0 ? clause.items.size : clause.count;
+    const count = clauseCount(clause);
     const other = clause.verb === "make" && index > 0 ? "other " : "";
     const said =
       clause.one === noun
@@ -756,6 +776,41 @@ export function appliedWords(plan: GoingPlanAnswer): string | undefined {
   if (plan.state !== "done") return undefined;
   const done = (plan.rows ?? []).filter((row) => row.state === "done").length;
   return done === 0 ? undefined : `applied ${counted(done, "change", "changes")}`;
+}
+
+/**
+ * What a run's Undo left of its plan, for the line its steps fold into once its changes were
+ * undone (design v3, state 7), in place of "applied 3 changes", which is no longer what stands:
+ * the changes it reverted, then what stays, in the card's words - "undid 2 changes; 1 message
+ * sent, not undone", or "undid 1 of 2 changes" where another writer's value stayed or a revert
+ * was refused. `lines` is what this page's Undo answered; without them, for a run Dispatch says
+ * was undone before this page pressed its Undo, `left` says whether a change is still left to
+ * take back ("undid part of 2 changes"). Undefined where no row of the plan ran.
+ */
+export function undoneWords(
+  plan: GoingPlanAnswer,
+  lines: readonly GoingUndoLine[] | undefined,
+  left: boolean
+): string | undefined {
+  const ran = (plan.rows ?? []).filter((row) => row.state === "done");
+  const messages = ran.filter((row) => rowKind(row) === "message").length;
+  const changes = ran.length - messages;
+  let undid = "";
+  if (lines !== undefined) {
+    const reversible = lines.filter((line) => line.undo !== "not_undone");
+    const reverted = reversible.filter((line) => line.outcome.ok).length;
+    if (reversible.length > 0) {
+      undid =
+        reverted === reversible.length
+          ? `undid ${counted(reverted, "change", "changes")}`
+          : `undid ${reverted} of ${counted(reversible.length, "change", "changes")}`;
+    }
+  } else if (changes > 0) {
+    undid = `undid ${left ? "part of " : ""}${counted(changes, "change", "changes")}`;
+  }
+  const sent = messages === 0 ? "" : `${counted(messages, "message", "messages")} sent, not undone`;
+  const words = [undid, sent].filter((part) => part !== "").join("; ");
+  return words === "" ? undefined : words;
 }
 
 /**

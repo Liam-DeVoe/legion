@@ -163,28 +163,61 @@ test("a failure reads one sentence in the end card and Try again, which runs the
   }
 });
 
-// A Stop ends in the same card: what it kept, in words, and Try again.
-test("a Stop says what it kept and offers Try again, in the end card", async () => {
+// A Stop ends in the same card (design v3, state 9; review n4): what the run did before it, in
+// words, and Continue, since the person stopped it on purpose. Its steps fold closed above the
+// card, as an answered run's do: they are the work, never the result.
+test("a Stop says what the run did and offers Continue, in the end card, its steps folded", async () => {
   const user = userEvent.setup();
-  const retried: string[] = [];
+  const continued: (readonly [string, GoingRun["level"] | undefined])[] = [];
   const restore = await showRun(
     "stopped",
     [
       ["tool", { items: ["DEMO-2"], kind: "read", label: "Read DEMO-2", step: 2, tool: "read" }],
       ["end", { offers: [], reason: "STOPPED: its person stopped it", state: "stopped" }],
     ],
-    { onRetry: (words) => retried.push(words) }
+    { onContinue: (run, level) => continued.push([run, level]) }
   );
   try {
     const card = await screen.findByTestId("going-run-end");
-    expect(within(card).getByTestId("going-run-state").textContent).toBe(
-      "Stopped · kept what it did: read 1 item"
+    expect(within(card).getByTestId("going-run-state").textContent).toBe("Stopped · read 1 item");
+    expect(within(card).queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(within(card).queryByTestId("going-run-continue-deep")).toBeNull();
+    expect(screen.getByTestId("going-steps-fold")).toHaveAttribute("aria-expanded", "false");
+    expect(stepWords()).toEqual([]);
+    await user.click(within(card).getByTestId("going-run-continue"));
+    expect(continued).toEqual([["r-1", undefined]]);
+  } finally {
+    restore();
+  }
+});
+
+// A bound stops a run: what the agent found so far - the answer it wrote - stands above the card,
+// and its steps fold into one closed line under the question, as an answered run's do (design
+// v3, rule 3: fold the work, never the result).
+test("a bound shows the answer found so far above its card, its steps folded", async () => {
+  const restore = await showRun("stopped", [
+    ["tool", { items: ["DEMO-2"], kind: "read", label: "Read DEMO-2", step: 2, tool: "read" }],
+    ["reply", { labels: [], text: "DEMO-2 waits on its mount.", tools: [] }],
+    [
+      "end",
+      {
+        offers: ["continue"],
+        reason: "CALL_BUDGET: the run made its 6 model calls",
+        state: "stopped",
+      },
+    ],
+  ]);
+  try {
+    const bound = await screen.findByTestId("going-run-bound");
+    await waitFor(() =>
+      expect(screen.getByTestId("going-run-answer").textContent).toBe("DEMO-2 waits on its mount.")
     );
-    // What it found so far stands above the card, its steps open.
-    expect(screen.getByTestId("going-steps-fold")).toHaveAttribute("aria-expanded", "true");
-    expect(stepWords()).toEqual(["Read DEMO-2"]);
-    await user.click(within(card).getByRole("button", { name: "Try again" }));
-    expect(retried).toEqual(["where is DEMO-15"]);
+    const fold = screen.getByTestId("going-steps-fold");
+    expect(fold).toHaveAttribute("aria-expanded", "false");
+    expect(stepWords()).toEqual([]);
+    const answer = screen.getByTestId("going-run-answer");
+    expect(fold.compareDocumentPosition(answer)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(answer.compareDocumentPosition(bound)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   } finally {
     restore();
   }
@@ -219,9 +252,12 @@ test("a bound is a grey card with what the run did so far, Continue and Continue
     expect(within(bound).getByTestId("going-run-state").textContent).toBe(
       "Stopped at Standard's time limit · read 5 items so far"
     );
-    // One line above the card, open, its steps what the run found so far; a click closes it.
+    // One line above the card, closed; a click opens the steps.
     const fold = screen.getByTestId("going-steps-fold");
     expect(fold).toHaveAccessibleName("Worked for 1 s · read 5 items");
+    expect(fold).toHaveAttribute("aria-expanded", "false");
+    expect(stepWords()).toEqual([]);
+    await user.click(fold);
     expect(fold).toHaveAttribute("aria-expanded", "true");
     expect(screen.queryByTestId("going-steps-older")).toBeNull();
     expect(stepWords()).toEqual([
@@ -231,9 +267,6 @@ test("a bound is a grey card with what the run did so far, Continue and Continue
       "Read DEMO-5",
       "Read DEMO-6",
     ]);
-    await user.click(fold);
-    expect(fold).toHaveAttribute("aria-expanded", "false");
-    expect(stepWords()).toEqual([]);
     // Continue in Deep stands beside Continue at the same height.
     expect(within(bound).getByTestId("going-run-continue-deep").className).toContain("py-[7px]");
     await user.click(within(bound).getByTestId("going-run-continue"));
@@ -831,6 +864,7 @@ test("a tool frame after its call frame, or before its reply frame, draws one li
 });
 
 test("no running line stays once the run ended: a call its end cut draws no line", async () => {
+  const user = userEvent.setup();
   const restore = await showRun("stopped", [
     ["call", { kind: "read", label: "Reading DEMO-15", step: 2, text: "Checking.", tool: "read" }],
     ["tool", { items: ["DEMO-15"], kind: "read", label: "Read DEMO-15", step: 2, tool: "read" }],
@@ -841,14 +875,16 @@ test("no running line stays once the run ended: a call its end cut draws no line
     await waitFor(() =>
       expect(screen.getByTestId("going-run-state").textContent).toContain("Stopped")
     );
-    // The stopped run's steps fold into one line, open as what it found so far, which counts
-    // only the call that ended.
+    // The stopped run's steps fold into one closed line, which counts only the call that ended,
+    // and opens on a click.
     const fold = screen.getByTestId("going-steps-fold");
     expect(fold).toHaveAccessibleName("Worked for 1 s · read 1 item");
-    expect(fold).toHaveAttribute("aria-expanded", "true");
+    expect(fold).toHaveAttribute("aria-expanded", "false");
+    await user.click(fold);
     expect(stepLines()).toEqual([["Read DEMO-15", "false"]]);
-    // The prose stays as the header of the call it heads; the stopped run has no timer.
-    expect(screen.getByTestId("going-step-words").textContent).toBe("Checking.");
+    // The prose stays as the header of the call it heads, in the past tense now that the call
+    // ended; the stopped run has no timer.
+    expect(screen.getByTestId("going-step-words").textContent).toBe("Checked.");
     expect(screen.queryByTestId("going-step-timer")).toBeNull();
   } finally {
     restore();
@@ -1097,6 +1133,78 @@ test("Retry under an older answer while the newest run's plan waits revises that
   }
 });
 
+// Design v3, state 6: while the newest run's plan waits, the conversation follows no further than
+// that run's question, so its card reads from the top, with Approve and Discard pinned at the foot
+// of the view - in the bar and the panel alike - rather than from its middle, the line its steps
+// fold into cut in half under the header (06-plan-panel). Nothing above the question shows then,
+// so nothing fades out under the header.
+test("while the newest run's plan waits, the conversation follows no further than its question, and the card's actions are pinned", async () => {
+  const waiting: GoingPlanAnswer = {
+    ...appliedPlan,
+    rows: (appliedPlan.rows ?? []).map((row) => ({ ...row, result: null, state: "waiting" })),
+    run: "r-2",
+    state: "waiting",
+  };
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((id, onFrame) => {
+    if (id === "r-1") {
+      onFrame("reply", { labels: [], text: "DEMO-15 is in the release.", tools: [] });
+      onFrame("end", { offers: [], reason: "", state: "done" });
+    } else {
+      onFrame("plan", { plan: 1, state: "waiting" });
+      onFrame("end", { offers: [], reason: "", state: "waiting" });
+    }
+    return new Promise<void>(() => {});
+  });
+  const read = spyOn(api, "goingPlan").mockImplementation(async () => waiting);
+  // The view stands 100 px down the window and the waiting run's turn 700 px down the
+  // conversation, moving up as it scrolls, as a browser lays them out; every other box at the
+  // window's top.
+  const box = (top: number): DOMRect => ({
+    bottom: top + 100,
+    height: 100,
+    left: 0,
+    right: 700,
+    toJSON: () => ({}),
+    top,
+    width: 700,
+    x: 0,
+    y: top,
+  });
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    if (this.dataset.testid === "going-conversation-view") return box(100);
+    const scrolled =
+      document.querySelector<HTMLElement>('[data-testid="going-conversation-view"]')?.scrollTop ??
+      0;
+    return box(this.dataset.run === "r-2" ? 700 - scrolled : 0);
+  });
+  openConversation({
+    id: "c-1",
+    newest_at: new Date().toISOString(),
+    runs: [
+      record("waiting", 1000, { continues: "r-1", id: "r-2", words: "raise DEMO-10" }),
+      record("done"),
+    ],
+  });
+  try {
+    renderWithQueries(<AskedConversation />);
+    const view = screen.getByTestId("going-conversation-view");
+    Object.defineProperty(view, "scrollHeight", { configurable: true, value: 2000 });
+    Object.defineProperty(view, "clientHeight", { configurable: true, value: 400 });
+    const actions = await screen.findByTestId("going-plan-actions");
+    expect(view.scrollTop).toBe(600);
+    expect(view).not.toHaveAttribute("data-cut");
+    expect(actions.className.split(" ")).toEqual(expect.arrayContaining(["sticky", "bottom-0"]));
+    expect(within(actions).getByTestId("going-plan-approve")).toBeInTheDocument();
+    expect(within(actions).getByTestId("going-plan-reject")).toBeInTheDocument();
+  } finally {
+    boxes.mockRestore();
+    stream.mockRestore();
+    read.mockRestore();
+  }
+});
+
 // Copy gives the words a reader sees: a time the agent wrote as a link to its instant is copied
 // as the words it shows, never as its address.
 test("Copy of an answer gives each time in it as the words it shows, never its link", async () => {
@@ -1172,7 +1280,8 @@ const appliedFrames: readonly (readonly [string, unknown])[] = [
 // plan". The card's Undo says what it takes back. Once pressed, the run's record is read again,
 // and where Dispatch says its undo landed and nothing is left to take back, the answer, which
 // speaks of the changes, turns grey and the line under it reads "Undone"; the card's title says
-// what was taken back, so no second line under the answer says it again.
+// what was taken back, so no second line under the answer says it again, and the fold line says
+// what the Undo did, "undid 1 change", where "applied 1 change" no longer stands.
 test("an applied plan's run says what it applied, and after Undo greys its answer and reads Undone", async () => {
   const user = userEvent.setup();
   const read = spyOn(api, "goingPlan").mockImplementation(async () => appliedPlan);
@@ -1224,6 +1333,7 @@ test("an applied plan's run says what it applied, and after Undo greys its answe
     await waitFor(() =>
       expect(screen.getByTestId("going-run-state")).toHaveTextContent(/^Undone$/u)
     );
+    await waitFor(() => expect(fold).toHaveAccessibleName(/· read 1 item, undid 1 change$/u));
     // The answer keeps its words, in grey, and no line under it says when.
     expect(answered.textContent).toBe(appliedAnswer);
     expect(answered).toHaveAttribute("data-undone", "true");

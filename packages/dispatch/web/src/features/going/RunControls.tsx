@@ -152,8 +152,9 @@ export function LevelControl(): ReactNode {
         aria-expanded={open}
         aria-haspopup="menu"
         // One width whatever the mode is named, so the box beside it never moves as the mode
-        // changes (design v3, state 12).
-        className={`inline-flex min-h-11 w-20 items-center justify-between rounded-lg px-2 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 ${textSecondaryOnSurface} ${surfaceMutedHoverBg}`}
+        // changes (design v3, state 12), with the caret right after the label and the room left
+        // after it, never across the button from a short label.
+        className={`inline-flex min-h-11 w-20 items-center justify-start gap-1 rounded-lg px-2 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 ${textSecondaryOnSurface} ${surfaceMutedHoverBg}`}
         data-testid="going-level-button"
         onClick={() => (open ? setMenu(undefined) : openMenu())}
         // Down and Up open the menu as Enter and Space do.
@@ -378,14 +379,15 @@ export function boxWords({
 }
 
 /** What Enter does where the box's words do not say it (design v2, Keys, "Bar, a plan waits"):
- *  with words in the box while a plan waits, Enter sends them instead of approving; before the
- *  plan is read, Enter does nothing yet. */
+ *  while a plan waits, Enter in the empty box approves it, which the hint says so the card's
+ *  Approve need not be in view, and with words in the box it sends them instead of approving;
+ *  before the plan is read, Enter does nothing yet. */
 export function boxHint(
   asking: Pick<Asking, "planWaits" | "runWaits">,
   words: string
 ): string | undefined {
   if (asking.planWaits) {
-    return words.trim() === "" ? undefined : "↵ sends your words instead of approving";
+    return words.trim() === "" ? "↵ Approve" : "↵ sends your words instead of approving";
   }
   return asking.runWaits ? "Reading the plan…" : undefined;
 }

@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { onFakeClock, tick } from "../../../__tests__/fake-clock";
 import { dangerText, textMutedOnSurface, textSecondaryOnSurface } from "../../../theme/classes";
 import type { RunStep } from "../run-frames";
-import { elapsedTimeWords, foldWords, StepSection, workedWords } from "./StepSection";
+import { elapsedTimeWords, foldWords, pastHeader, StepSection, workedWords } from "./StepSection";
 
 // A run's steps as the bar draws them (design v2, states 3 and 4): one line for each call, the
 // running ones in the present tense with a shimmer and the ended ones in the past tense, the
@@ -130,7 +130,7 @@ test("a running call's line is its present words with a shimmer, and the newest 
 
 // A run that works with no call running - its model writes, or decides what to call next - reads
 // as working, not idle (design v3, state 3): its lines end with "Thinking…" and the run's timer,
-// which no step line then carries; the header over calls that all ended drops its "…".
+// which no step line then carries; the header over calls that all ended goes past tense.
 test("a working run with no call running ends with Thinking and the timer, not a timer on an ended line", async () => {
   await onFakeClock(async () => {
     render(
@@ -152,9 +152,7 @@ test("a working run with no call running ends with Thinking and the timer, not a
     expect(timer.textContent).toBe("0 s");
     await tick(3000);
     expect(timer.textContent).toBe("3 s");
-    expect(screen.getByTestId("going-step-words").textContent).toBe(
-      "Reading the telescope's issues"
-    );
+    expect(screen.getByTestId("going-step-words").textContent).toBe("Read the telescope's issues");
     // Each ended line reads darker than the header, at 13 px.
     for (const line of screen.getAllByTestId("going-step")) {
       expect(line.className).toContain("text-[13px]");
@@ -179,6 +177,23 @@ test("while a call runs, its header keeps the words the model wrote, and no Thin
   expect(screen.getByTestId("going-step-words").textContent).toBe("Reading…");
   expect(screen.queryByTestId("going-steps-thinking")).toBeNull();
   expect(screen.getAllByTestId("going-step-timer")).toHaveLength(1);
+});
+
+// Rule 2: a step is in the present tense while it runs and in the past tense once it ends, and so
+// is the header the model wrote over its calls (review M5): its first word, a verb in "-ing", takes
+// its past form, regular or not, and a header that starts any other way keeps its words.
+test("a header over calls that ended takes the past tense of its first verb, and keeps any other words", () => {
+  expect(pastHeader("Reading the telescope's issues…")).toBe("Read the telescope's issues");
+  expect(pastHeader("Checking the children of DEMO-1.")).toBe("Checked the children of DEMO-1.");
+  expect(pastHeader("Comparing the two specs...")).toBe("Compared the two specs");
+  expect(pastHeader("Planning the split…")).toBe("Planned the split");
+  expect(pastHeader("Verifying the dates…")).toBe("Verified the dates");
+  expect(pastHeader("Finding who holds it…")).toBe("Found who holds it");
+  expect(pastHeader("Cross-checking the labels…")).toBe("Cross-checked the labels");
+  // Words in "-ing" that are no verb, and headers that start with any other word, keep theirs.
+  expect(pastHeader("Nothing else waits on it…")).toBe("Nothing else waits on it");
+  expect(pastHeader("Let me read OPS-2 first.")).toBe("Let me read OPS-2 first.");
+  expect(pastHeader("OPS-2 is reading as done…")).toBe("OPS-2 is reading as done");
 });
 
 test("calls that run at once each have a line, and past three the rest fold into and 2 more…", () => {
@@ -280,15 +295,16 @@ test("the model's prose heads its calls as one grey line, and folds with them", 
       workedMs={undefined}
     />
   );
-  // The first two calls folded, and their header with them; the others stand under theirs.
+  // The first two calls folded, and their header with them; the others stand under theirs, in the
+  // past tense once its calls ended.
   expect(screen.getAllByTestId("going-step-words").map((line) => line.textContent)).toEqual([
-    children,
+    "Checked the children of DEMO-1.",
   ]);
   expect(labels()).toEqual(["Read DEMO-3", "Read DEMO-4", "Read DEMO-5", "Reading DEMO-6…"]);
   await user.click(screen.getByTestId("going-steps-older"));
   expect(screen.getAllByTestId("going-step-words").map((line) => line.textContent)).toEqual([
-    first,
-    children,
+    "Read the issue first.",
+    "Checked the children of DEMO-1.",
   ]);
 });
 

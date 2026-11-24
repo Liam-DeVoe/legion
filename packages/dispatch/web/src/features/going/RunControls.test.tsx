@@ -3,7 +3,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { goingState } from "./going-store";
-import { BoxFrame, BoxRow, ConversationHeader } from "./RunControls";
+import { BoxFrame, BoxRow, boxHint, ConversationHeader } from "./RunControls";
 
 // The mode control (design v3, state 12): a small text button at the left of the box that names
 // the mode the next run takes, and its menu of the three modes, each with one line on what it is
@@ -108,6 +108,18 @@ test("the mode button keeps one width, and the menu's focused mode wears the pag
       expect.arrayContaining(["outline-none", "focus-visible:ring-2", "focus:bg-slate-100"])
     );
   }
+});
+
+// While a plan waits, the hint under the box says what Enter does (design v3, Keys; review N1):
+// in the empty box it approves, which the hint says wherever the card's Approve has scrolled to,
+// and with words in the box it sends them instead; before the plan is read it does nothing yet.
+test("the hint under the box says Enter approves a plan that waits, and sends words instead of approving", () => {
+  const waits = { planWaits: true, runWaits: true };
+  expect(boxHint(waits, "")).toBe("↵ Approve");
+  expect(boxHint(waits, "  ")).toBe("↵ Approve");
+  expect(boxHint(waits, "keep it")).toBe("↵ sends your words instead of approving");
+  expect(boxHint({ planWaits: false, runWaits: true }, "")).toBe("Reading the plan…");
+  expect(boxHint({ planWaits: false, runWaits: false }, "")).toBeUndefined();
 });
 
 // A project's chip shows its key alone, as the design draws a chip, so it stays whole beside
