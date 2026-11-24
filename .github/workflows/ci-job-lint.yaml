@@ -138,18 +138,10 @@ jobs:
           # shellcheck disable=SC2046 # the file is the package list, split on purpose
           .github/scripts/release-push.sh fold-orphans $(<.github/changelog-packages)
 
-      # A citation under .github is one token, a path and a name, never a line: a line number
-      # drifts with every edit of the cited file, and a rename anywhere in the repository can
-      # break a name, so this job, which every change runs, holds them
-      # (.github/ci-notes/ci.md#a-citation-names-a-symbol-never-a-line). Its test runs first.
-      - name: Test the citation check
-        run: .github/scripts/ci-citations.test.sh
-
-      - name: Check every citation under .github is a token whose file holds its name
-        run: .github/scripts/ci_citations.py
-
-      # No setup-go cache: gofmt needs none, and the notices step below keeps its own (go-notices),
-      # keyed on the Go version this step installs.
+      # No setup-go cache: gofmt needs none, nor does the citation check's go run of its scanner,
+      # which compiles only standard-library packages (4 s from an empty build cache, measured on
+      # a development machine), and the notices step below keeps its own (go-notices), keyed on
+      # the Go version this step installs.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -159,10 +151,11 @@ jobs:
           cache: false
 
       # The skill-scenario rig's daemon-pane.go belongs to no module (it runs with `go run -overlay`
-      # inside packages/daemon), so it is formatted here with the daemon.
+      # inside packages/daemon), so it is formatted here with the daemon, and so is the citation
+      # check's Go scanner, .github/scripts/ci_citations_code.go, which `go run` runs alone.
       - name: Check the Go daemon's formatting
         run: |
-          unformatted=$(gofmt -l packages/daemon packages/pi-legion/scripts/skill-scenarios/daemon-pane.go)
+          unformatted=$(gofmt -l packages/daemon packages/pi-legion/scripts/skill-scenarios/daemon-pane.go .github/scripts/ci_citations_code.go)
           if [ -n "$unformatted" ]; then
             echo "::error::gofmt -l lists files that are not gofmt-formatted; run gofmt -w on them:"
             echo "$unformatted"
@@ -174,6 +167,19 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      # A citation under .github is one token, a path and a name, never a line: a line number
+      # drifts with every edit of the cited file, and a rename anywhere in the repository can
+      # break a name, so this job, which every change runs, holds them
+      # (.github/ci-notes/ci.md#a-citation-names-a-symbol-never-a-line). Its test runs first.
+      # After the install and setup-go: the check reads each cited TypeScript and JavaScript
+      # file through the typescript package under node_modules, with Bun, and each cited Go file
+      # through go/scanner, with go run.
+      - name: Test the citation check
+        run: .github/scripts/ci-citations.test.sh
+
+      - name: Check every citation under .github is a token whose file holds its name
+        run: .github/scripts/ci_citations.py
 
       # The frozen install above does not refuse a workspace `version` the lockfile does not hold.
       # --lockfile-only writes the lockfile the manifests imply and installs nothing, so a

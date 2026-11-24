@@ -1519,19 +1519,35 @@ no job of the file it calls starts, and the run the check names (`test / test`) 
 A line number names whatever line a later edit moves there, and nothing reads a citation of a
 file the citing change does not touch, so a line-number citation in the CI's own files drifted
 with the next merge that edited the cited file (dispatch://INFRA-4017). A citation under .github
-is therefore one exact token: a backtick, the path of a tracked file from the repository root as
-git ls-files prints it, a hash, a name, a backtick, as in `.github/workflows/ci.yaml#browser_image`.
-Several names are several tokens, each with its path.
+is therefore one exact token on one line: a backtick, the path of a tracked file from the
+repository root as git ls-files prints it, a hash, a name, a backtick, as in
+`.github/workflows/ci.yaml#browser_image`. Several names are several tokens, each with its path.
 
 .github/scripts/ci_citations.py reads every tracked text file under .github as plain text, and
 claims this much and no more:
-- a token whose path is no tracked file fails, and so does a token whose name its file does not
-  hold. An identifier must be a whole word of the file's code with its comments removed, in one
-  pass that steps over the file's strings, so a rename fails the change that makes it even when
-  a comment keeps the old name. Any other name, such as a quoted test title, must be text of the
-  file that is not part of a longer word;
+- a token whose path is no tracked file fails, and so does a token whose name its file's code
+  does not hold. The code is the cited file as its language's own scanner reads it: Python's
+  tokenize, the typescript package's parser for TypeScript and JavaScript (one bun run of
+  .github/scripts/ci_citations_code.ts), go/scanner for Go (one go run of
+  .github/scripts/ci_citations_code.go), and for shell, YAML and the other hash-comment kinds a
+  pass that removes a hash comment outside quotes. So a rename fails the change that makes it
+  even when a comment keeps the old name. In Python, TypeScript, JavaScript and Go an identifier
+  must be one of the file's identifier tokens, so a string or a Python docstring that keeps the
+  old name holds nothing either. Any other name, such as a quoted test title, must be text of
+  the code whose ends run into no longer word: a letter, a digit, an underscore or a hyphen
+  right beside an end that is one of those means a longer word, so setup-go is held by neither
+  setup-golang nor setup-go-x;
+- a code span that starts with a path word and goes on with a hash, a colon or two colons and a
+  name, and is no token, fails: a citation in that span is either a token, which is held, or
+  refused, never skipped. A token wrapped onto a second line is refused rather than joined, for
+  a token is one line so that a search for it finds every citation of its name, and where a wrap
+  fell, at a space or inside a word, and what comment marker it added, is a guess. A path word
+  followed by a space alone is a command, such as `.github/scripts/release-push.sh release`, and
+  is read as prose;
 - a line number written beside a path word fails, in each spelling its docstring lists, a line
-  that wraps between the path and the number included;
+  that wraps between the path and the number included. A spelling it does not list passes: a
+  colon and a space before the number, an @ before it, "ln" or "around line" are none of them.
+  The rule is the listed spellings, not every way to write a line;
 - a backticked text that is no token fails only where it stands beside a path word: right after
   it (after nothing, a possessive, a comma, a colon or an opening parenthesis, on the path's line
   or wrapped onto the next), or followed by in, of or from and the path word, because either is
@@ -1544,10 +1560,12 @@ claims this much and no more:
 A path word is the path of a tracked file, the end of one that holds a slash or a dot, or a
 capitalised file name such as CODEOWNERS. A backticked text with a hash in it that is no citation
 reads as a token whose path names no file, so it is written without the backticks or reworded.
-Nothing outside .github is read: when this was written the rest of the tree held 1,320 strings of
-the token's shape, none a citation and none naming a tracked file by its root path. The
-check runs in the lint job, which every pull request and merge group runs, since a rename can be
-in any file of the repository, and its test, .github/scripts/ci-citations.test.sh, runs just
+A name is chosen so that the rename of what the citation means fails it: a word every such file
+holds, such as a YAML key like if: or a shell case's command word, is no such name, while the
+case arm itself, as in `.github/scripts/release-push.sh#release)`, is one. Nothing outside
+.github is read. The check runs in the lint job, which every pull request and merge group runs,
+since a rename can be in any file of the repository, after the job's setup-go and its bun
+install, which its scanners need, and its test, .github/scripts/ci-citations.test.sh, runs just
 before it.
 
 ## A lane label turns on one slow suite on a pull request

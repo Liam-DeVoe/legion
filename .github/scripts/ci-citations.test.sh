@@ -3,13 +3,21 @@
 # names and refuses a citation of any other shape there:
 # - a token whose name its file holds passes and is counted; after a rename in that file it
 #   fails, naming the path and the name; a name that only a comment of the file holds fails, and
-#   so do a text name that is the start of a longer word and an identifier that is a prefix;
+#   so do a text name that a longer word holds at either end, a hyphen included, and an
+#   identifier that is a prefix;
 # - a token whose path is no tracked file fails: a path never tracked, a file name without its
-#   root path, a file deleted, a file renamed with git mv; and a file added elsewhere under the
-#   same name changes no token;
-# - the cited file's comments are removed in one pass that steps over its strings, so a comment
-#   marker inside a string removes nothing (the shape of the playwright config that review
-#   6033494723 found), in TypeScript, shell and Python;
+#   root path, a file deleted, a file renamed with git mv, a file written and never added; and a
+#   file added elsewhere under the same name changes no token, while a bare path word that then
+#   names two files is shown as written;
+# - each cited file is read by its language's own scanner, which steps over its strings, so a
+#   comment marker inside a string removes nothing (the shape of the playwright config that
+#   review 6033494723 found): TypeScript by its parser, which steps over a template's expression
+#   and a regular expression and keeps JSX text; Python by tokenize, Go by go/scanner, which ends
+#   a raw string at its backtick; and in all three an identifier must be an identifier token, so
+#   a string or a docstring holds none; shell and YAML lose their hash comments;
+# - a scanner program that fails fails the check, naming its command;
+# - a code span that starts with a path word and goes on with a hash or a colon and a name, and
+#   is no token, is refused, a token wrapped onto a second line included;
 # - each spelling of a line number beside a path word is refused, and so is a token whose name
 #   is a line number;
 # - a backticked text that is no token, right after a path word (a possessive, a parenthesis or
@@ -26,7 +34,9 @@
 #
 # Each case builds a miniature git repository under a temporary directory and symlinks the real
 # script into it, so the script under test is the file CI runs: it resolves its root from its own
-# path, which the symlink puts at the fixture root, and it reads no symlink.
+# path, which the symlink puts at the fixture root, and it reads no symlink. The scanner programs
+# it runs are the ones beside the real script, with this repository's typescript package, so the
+# harness needs bun install run, Bun and Go, as the lint job has them.
 #
 # Run from anywhere: .github/scripts/ci-citations.test.sh
 # CI runs it in the lint job, before the check itself.
@@ -51,9 +61,10 @@ tok() { printf '%s%s%s%s%s' "$bt" "$1" "$h" "$2" "$bt"; }
 
 # fixture <name>: a git repository holding the script and the files the cases cite. Echoes its
 # root. packages/app/main_test.go defines TestReadsTheConfig, runs a test titled "the agent
-# rows", names TestOldName only in a comment and holds the string setup-golang;
+# rows", names TestOldName only in a comment and holds the strings setup-golang and setup-go-x;
 # playwright.config.ts, run.sh and tool.py each hold a comment marker inside a string ahead of
-# a name.
+# a name; guard.test.ts, note.tsx, tool.py, scan.go and ci.yaml hold the shapes each language's
+# case reads.
 fixture() {
   local root="$work/$1"
   mkdir -p "$root/.github/scripts" "$root/.github/ci-notes" "$root/.github/docker" "$root/.github/workflows" \
@@ -64,6 +75,7 @@ package app
 
 // TestOldName was renamed.
 var tool = "setup-golang"
+var other = "setup-go-x"
 func TestReadsTheConfig(t *testing.T) { runtime.Caller(0); t.Run("the agent rows", nil) }
 EOF
   cat > "$root/packages/app/playwright.config.ts" <<'EOF'
@@ -73,19 +85,59 @@ const HOME = "http://localhost:3000"; const ROW_TIMEOUT = 5000;
 export default { projects: [{ name: "iphone" }] };
 /* The end of the projects. */
 EOF
+  # A template whose expression holds a comment, then a regular expression that holds one
+  # backtick, which a stripper that reads it as a template's opening reads the rest of the file
+  # as: the shape of pi-legion's skills-guard.test.ts that review 6038895115 found.
+  cat > "$root/packages/app/guard.test.ts" <<EOF
+const b = 1;
+const LINE = ${bt}a \${b /* TS_ONLY_IN_A_TEMPLATE_COMMENT */} c${bt};
+const TICK = /${bt}/;
+// TS_ONLY_AFTER_A_REGEX
+const LABEL = "TS_ONLY_IN_A_STRING";
+export const AFTER_THE_REGEX = 1;
+EOF
+  cat > "$root/packages/app/note.tsx" <<'EOF'
+export const Note = () => <p>// the jsx text after a slash pair</p>;
+EOF
   cat > "$root/packages/app/run.sh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "a # in a string"; held_after_hash=1
 # only_in_a_comment
 EOF
   cat > "$root/packages/app/tool.py" <<'EOF'
+"""PY_ONLY_IN_A_MODULE_DOCSTRING is named in this docstring alone."""
+import os
 MARK = "# in a string"; HELD_AFTER_MARK = 1
 # PY_ONLY_IN_A_COMMENT
+
+
+def reads():
+    """PY_ONLY_IN_A_DOCSTRING is named in this docstring alone."""
+    return os.path.join("PY_ONLY_IN_A_STRING")
+EOF
+  # A raw string that ends in a backslash, which no Go escape is: a stripper that reads it as
+  # one reads the rest of the file as the string.
+  cat > "$root/packages/app/scan.go" <<EOF
+package app
+
+var raw = ${bt}\\${bt}
+
+// GO_ONLY_AFTER_A_RAW_STRING
+var label = "GO_ONLY_IN_A_STRING"
+
+func Scanned() {}
 EOF
   printf 'FROM scratch\nRUN true\n' > "$root/.github/docker/browser.Dockerfile"
   printf '* @owner\n' > "$root/.github/CODEOWNERS"
   printf 'dist/\n' > "$root/.gitignore"
-  printf 'jobs:\n  x:\n    runs-on: ubuntu-24.04\n' > "$root/.github/workflows/ci.yaml"
+  cat > "$root/.github/workflows/ci.yaml" <<'EOF'
+jobs:
+  x:
+    runs-on: ubuntu-24.04
+    # yaml-only-in-a-comment
+    steps:
+      - run: echo "a # b" && yaml-held-after-hash
+EOF
   echo "$root"
 }
 
@@ -107,10 +159,15 @@ notes() { # notes <root>: the fixture's citing Markdown file under .github, from
 }
 
 # refused <line> <text>: true when the output refuses notes.md at that line with a message
-# containing the text, for check.
+# containing the text, for check. Here-strings, not a pipe: test-lib.sh's contains says why.
 refused() {
-  grep -F -- ".github/ci-notes/notes.md$c$1: " <<<"$out" | grep -qF -- "$2" && echo true || echo false
+  local at
+  at=$(grep -F -- ".github/ci-notes/notes.md$c$1: " <<<"$out" || true)
+  grep -qF -- "$2" <<<"$at" && echo true || echo false
 }
+
+# clean <line>: true when the output names no problem of notes.md at that line, for check.
+clean() { is "$(grep -cF -- ".github/ci-notes/notes.md$c$1: " <<<"$out")" 0; }
 
 app="packages/app/main_test.go"
 pw="packages/app/playwright.config.ts"
@@ -133,7 +190,7 @@ check "fails" "$(is "$status" 1)"
 check "names the path and the name" "$(refused 1 "${bt}$app${bt} holds no ${bt}TestReadsTheConfig${bt}")"
 check "and holds the other two" "$(is "$(grep -c 'holds no' <<<"$out")" 1)"
 
-echo "case: a name only a comment holds, a text that starts a longer word or an identifier prefix fails"
+echo "case: a name only a comment holds, a text a longer word holds at either end or an identifier prefix fails"
 root=$(fixture comments)
 notes "$root" <<EOF
 $(tok "$app" TestOldName)
@@ -141,13 +198,17 @@ $(tok "$app" TestOldName)
 $(tok "$app" setup-go)
 
 $(tok "$app" TestReads)
+
+$(tok "$app" setup-go-x)
 EOF
 track "$root"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "on the name its comment alone holds" "$(refused 1 "holds no ${bt}TestOldName${bt}")"
-check "on the text that starts a longer word" "$(refused 3 "holds no ${bt}setup-go${bt}")"
+check "on the text that setup-golang and setup-go-x hold, a hyphen being a word's" \
+  "$(refused 3 "holds no ${bt}setup-go${bt}")"
 check "on the identifier that is a prefix" "$(refused 5 "holds no ${bt}TestReads${bt}")"
+check "and holds the text that a hyphen ends nowhere" "$(clean 7)"
 
 echo "case: a token whose path is no tracked file fails"
 root=$(fixture untracked)
@@ -159,18 +220,23 @@ $(tok main_test.go TestReadsTheConfig)
 $(tok packages/app/run.sh held_after_hash)
 
 $(tok "$app" TestReadsTheConfig)
+
+$(tok packages/app/written_test.go TestWritten)
 EOF
 track "$root"
 git -C "$root" rm -qf packages/app/run.sh
 git -C "$root" mv "$app" packages/app/reads_test.go
+# On disk and never added, so only git's list can say it is no tracked file.
+printf 'package app\n\nfunc TestWritten(t *testing.T) {}\n' > "$root/packages/app/written_test.go"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "on a path never tracked" "$(refused 1 "${bt}packages/app/gone_test.go${bt} names no tracked file")"
 check "on a file name without its root path" "$(refused 3 "${bt}main_test.go${bt} names no tracked file")"
 check "on a deleted file" "$(refused 5 "${bt}packages/app/run.sh${bt} names no tracked file")"
 check "on a file git mv renamed" "$(refused 7 "${bt}$app${bt} names no tracked file")"
+check "on a file written and never added" "$(refused 9 "${bt}packages/app/written_test.go${bt} names no tracked file")"
 
-echo "case: a file added elsewhere under the same name changes no token"
+echo "case: a file added elsewhere under the same name changes no token, and a bare path word then names two"
 root=$(fixture shadowed)
 notes "$root" <<EOF
 $(tok "$app" TestReadsTheConfig) and $(tok .github/workflows/ci.yaml runs-on)
@@ -178,10 +244,23 @@ EOF
 track "$root"
 run_check "$root"
 before=$out
+cat >> "$root/.github/ci-notes/notes.md" <<EOF
+
+The job is ci.yaml's ${bt}x${bt}.
+EOF
+run_check "$root"
+check "a bare path word that names one file is shown by its root path" \
+  "$(refused 3 "write it as $(tok .github/workflows/ci.yaml x)")"
 mkdir -p "$root/packages/zz"
 cp "$root/.github/workflows/ci.yaml" "$root/packages/zz/ci.yaml"
 printf 'package zz\n' > "$root/packages/zz/main_test.go"
 git -C "$root" add -A
+run_check "$root"
+check "after the copy it names two, and is shown as written" "$(refused 3 "write it as $(tok ci.yaml x)")"
+check "while the tokens beside it still hold" "$(clean 1)"
+notes "$root" <<EOF
+$(tok "$app" TestReadsTheConfig) and $(tok .github/workflows/ci.yaml runs-on)
+EOF
 run_check "$root"
 check "passes" "$(is "$status" 0)"
 check "with the same count as before" "$(is "$out" "$before")"
@@ -203,6 +282,126 @@ check "fails on the two names only a comment holds" "$(is "$(grep -c 'holds no' 
 check "the shell comment" "$(refused 5 "holds no ${bt}only_in_a_comment${bt}")"
 check "the Python comment" "$(refused 7 "holds no ${bt}PY_ONLY_IN_A_COMMENT${bt}")"
 check "and holds every name after a marker inside a string" "$(is "$(grep -c 'notes.md.[123]: ' <<<"$out")" 0)"
+
+echo "case: TypeScript is read by its own parser, so a regular expression or a template opens no string"
+root=$(fixture typescript)
+ts="packages/app/guard.test.ts"
+notes "$root" <<EOF
+$(tok "$ts" TS_ONLY_IN_A_TEMPLATE_COMMENT)
+
+$(tok "$ts" TS_ONLY_AFTER_A_REGEX)
+
+$(tok "$ts" TS_ONLY_IN_A_STRING)
+
+$(tok "$ts" AFTER_THE_REGEX) and $(tok "$ts" '"TS_ONLY_IN_A_STRING"')
+
+$(tok packages/app/note.tsx 'the jsx text after a slash pair') and $(tok packages/app/note.tsx Note)
+EOF
+track "$root"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "on a name only a comment inside a template's expression holds" \
+  "$(refused 1 "holds no ${bt}TS_ONLY_IN_A_TEMPLATE_COMMENT${bt}")"
+check "on a name only the comment after a regular expression holding a backtick holds" \
+  "$(refused 3 "holds no ${bt}TS_ONLY_AFTER_A_REGEX${bt}")"
+check "on an identifier only a string holds" "$(refused 5 "holds no ${bt}TS_ONLY_IN_A_STRING${bt}")"
+check "and holds the code after the regular expression, and the string by its quotes" "$(clean 7)"
+check "and holds JSX text that starts with a slash pair, which is no comment" "$(clean 9)"
+
+echo "case: Python is read by tokenize, so an identifier no NAME token holds fails"
+root=$(fixture python)
+py="packages/app/tool.py"
+notes "$root" <<EOF
+$(tok "$py" PY_ONLY_IN_A_MODULE_DOCSTRING)
+
+$(tok "$py" PY_ONLY_IN_A_DOCSTRING)
+
+$(tok "$py" PY_ONLY_IN_A_STRING)
+
+$(tok "$py" reads), $(tok "$py" HELD_AFTER_MARK) and $(tok "$py" os.path.join)
+EOF
+track "$root"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "on a name only the module's docstring holds" "$(refused 1 "holds no ${bt}PY_ONLY_IN_A_MODULE_DOCSTRING${bt}")"
+check "on a name only a function's docstring holds" "$(refused 3 "holds no ${bt}PY_ONLY_IN_A_DOCSTRING${bt}")"
+check "on a name only a string holds" "$(refused 5 "holds no ${bt}PY_ONLY_IN_A_STRING${bt}")"
+check "and holds two NAME tokens and a dotted name of the code" "$(clean 7)"
+
+echo "case: Go is read by go/scanner, so a raw string ends at its backtick and an identifier must be one"
+root=$(fixture go)
+go="packages/app/scan.go"
+notes "$root" <<EOF
+$(tok "$go" GO_ONLY_AFTER_A_RAW_STRING)
+
+$(tok "$go" GO_ONLY_IN_A_STRING)
+
+$(tok "$go" Scanned) and $(tok "$go" '"GO_ONLY_IN_A_STRING"')
+EOF
+track "$root"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "on a name only the comment after a raw string that ends in a backslash holds" \
+  "$(refused 1 "holds no ${bt}GO_ONLY_AFTER_A_RAW_STRING${bt}")"
+check "on an identifier only a string holds" "$(refused 3 "holds no ${bt}GO_ONLY_IN_A_STRING${bt}")"
+check "and holds the code after it, and the string by its quotes" "$(clean 5)"
+
+echo "case: YAML loses its hash comments, and keeps the text after a hash inside a quoted string"
+root=$(fixture yaml)
+notes "$root" <<EOF
+$(tok .github/workflows/ci.yaml yaml-only-in-a-comment)
+
+$(tok .github/workflows/ci.yaml yaml-held-after-hash)
+EOF
+track "$root"
+run_check "$root"
+check "fails on the name only a comment holds" "$(refused 1 "holds no ${bt}yaml-only-in-a-comment${bt}")"
+check "and holds the name after a hash inside a string" "$(clean 3)"
+
+echo "case: a scanner program that fails fails the check, naming its command"
+root=$(fixture scanner)
+notes "$root" <<EOF
+$(tok "$pw" ROW_TIMEOUT)
+EOF
+track "$root"
+mkdir -p "$work/scanner-bin"
+printf '#!/usr/bin/env bash\necho "bun: no such runtime" >&2\nexit 3\n' > "$work/scanner-bin/bun"
+chmod +x "$work/scanner-bin/bun"
+PATH="$work/scanner-bin:$PATH" run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the command, its exit and what it printed" \
+  "$(contains "$out" "^ci_citations.py: ${bt}bun .github/scripts/ci_citations_code.ts${bt} over 1 files exited 3 and printed the code of 0, so they hold no name: bun: no such runtime$")"
+
+echo "case: a code span that starts with a path and goes on as a citation is a token or is refused"
+root=$(fixture spans)
+notes "$root" <<EOF
+${bt}.github/workflows/ci.yaml${c}no_such_output${bt}
+
+${bt}ci.yaml${c}${c}x${bt}
+
+${bt}ci.yaml ${h}x${bt}
+
+The rows are ${bt}$app${h}the agent
+rows${bt}, wrapped.
+
+The rows are ${bt}$app${h}the agent
+${h} rows${bt}, wrapped in a comment.
+
+${bt}ci.yaml${c}12${bt}
+EOF
+track "$root"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "refuses a colon between the path and the name" \
+  "$(refused 1 "cites .github/workflows/ci.yaml in a form that is no citation token: write it as $(tok .github/workflows/ci.yaml no_such_output)")"
+check "refuses two colons" "$(refused 3 "write it as $(tok .github/workflows/ci.yaml x)")"
+check "refuses a space before the hash" "$(refused 5 "write it as $(tok .github/workflows/ci.yaml x)")"
+check "refuses a token that wraps onto the next line, naming it joined" \
+  "$(refused 7 "a citation token is one line: write it as $(tok "$app" 'the agent rows') on one line")"
+check "and one wrapped past a comment marker" \
+  "$(refused 10 "a citation token is one line: write it as $(tok "$app" 'the agent rows') on one line")"
+check "leaves a line number after a colon to the line-number rule" "$(refused 13 'by a line number')"
+check "and refuses each once" "$(is "$(grep -c 'notes.md' <<<"$out")" 6)"
 
 echo "case: a line number beside a path word is refused, in every spelling"
 root=$(fixture lines)

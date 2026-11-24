@@ -20,7 +20,7 @@
 # dispatch of any ref but exactly refs/heads/main apart, no other job may carry one, the ci-ok
 # job's reconcile step must carry its one if:, the changes job's ref step must test the ref with
 # the shell's case-sensitive `=`, and a PUSH_WORKFLOWS workflow's
-# on.push.paths must equal its filter, no `.github/workflows/ci.yaml#if:` may test for a push event or compare
+# on.push.paths must equal its filter, no if: condition of ci.yaml may test for a push event or compare
 # github.ref with a branch ref, every job's if: but those two jobs' must hold the term that skips
 # it on a re-run attempt of a merge-group run and theirs must not, ci-caches.yaml's save of a
 # cache family must carry
@@ -4102,7 +4102,7 @@ mkdir -p "$root/pkg"
 printf '//go:build !race && !windows\n\npackage pkg\n\nfunc TestKappa(t *testing.T) {}\n' > "$root/pkg/x_test.go"
 out=$(derived "$root" "pkg")
 check "refuses rather than guessing what the race build compiles" \
-  "$(contains "$out" 'RAISED: .*x_test.go: .//go:build !race && !windows. names race in a form ci_job_reads.py does not read')"
+  "$(contains "$out" 'RAISED: .*x_test.go'"$colon"' `//go:build !race && !windows` names race in a form ci_job_reads.py does not read')"
 
 echo "case: the lane names a package that is not there"
 out=$(derived "$work/race-unattributable" "pkg/gone")

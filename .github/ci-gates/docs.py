@@ -49,7 +49,7 @@ GATE = gate("docs", "docs", runs=[
         ("cmd/cipherd", "`packages/envoy/cmd/cipher-refgen/config.go#brokerMain` and `packages/envoy/cmd/cipher-refgen/config.go#readConfig`"),
         ("internal/cipher/helper", "`packages/envoy/cmd/cipher-refgen/pages.go#helperDir`, `packages/envoy/cmd/cipher-refgen/codes.go#checkHelperRefusals`"),
         ("cmd/cipher", "`packages/envoy/cmd/cipher-refgen/pages.go#cliDir`, `packages/envoy/cmd/cipher-refgen/codes.go#checkExitCodes`"),
-        ("internal/cipher/approval", "`packages/envoy/cmd/cipher-refgen/routes.go#resolve` and `packages/envoy/cmd/cipher-refgen/routes.go#pageAnswerers`: resolve's g.in of the pageAnswerers directory parses it through `packages/envoy/cmd/cipher-refgen/bodies.go#pkg`"),
+        ("internal/cipher/approval", "`packages/envoy/cmd/cipher-refgen/routes.go#resolve` and `packages/envoy/cmd/cipher-refgen/routes.go#pageAnswerers`: resolve's g.in of the pageAnswerers directory parses it through `packages/envoy/cmd/cipher-refgen/bodies.go#func (g *graph) pkg`"),
         ("internal/cipher/proxy", "`packages/envoy/cmd/cipher-refgen/recorder.go#airlockDir` and `packages/envoy/cmd/cipher-refgen/recorder.go#checkRefusalWrites`"),
     ) for path in files_but_tests(f"{ENVOY}/{directory}")],
 ) + setup_go(DOCS_JOB, f"{DAEMON}/go.mod", DOCS_SITE)

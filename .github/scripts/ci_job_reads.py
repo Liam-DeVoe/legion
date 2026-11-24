@@ -1983,7 +1983,7 @@ PRIVATE_NAMES_PORT_BUILD = script_run(
 # filter selects the job for the same change.
 GUIDE_LAYOUT_READS = reads(
     ("scripts/semantic-line-breaks.guides.test.ts", at(TOOLING_JOB, GUIDES_STEP)),
-    ("scripts/semantic-line-breaks.ts", "`scripts/semantic-line-breaks.guides.test.ts#SCRIPT` and `scripts/semantic-line-breaks.guides.test.ts#run` spawns it"),
+    ("scripts/semantic-line-breaks.ts", "`scripts/semantic-line-breaks.guides.test.ts#Bun.spawnSync` spawns it as `scripts/semantic-line-breaks.guides.test.ts#SCRIPT`"),
     ("AGENTS.md", "`scripts/semantic-line-breaks.guides.test.ts#the root guide, the e2e README and the Kubernetes doc keep the layout` and `scripts/semantic-line-breaks.guides.test.ts#GUIDES` runs the checker over GUIDES"),
     ("scripts/e2e/README.md", "`scripts/semantic-line-breaks.guides.test.ts#the root guide, the e2e README and the Kubernetes doc keep the layout` and `scripts/semantic-line-breaks.guides.test.ts#GUIDES` runs the checker over GUIDES"),
     ("docs/kubernetes.md", "`scripts/semantic-line-breaks.guides.test.ts#the root guide, the e2e README and the Kubernetes doc keep the layout` and `scripts/semantic-line-breaks.guides.test.ts#GUIDES` runs the checker over GUIDES"),

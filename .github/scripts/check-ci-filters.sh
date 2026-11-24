@@ -132,7 +132,7 @@
 #      matches. Such a pattern holds its filter to nothing, so a change to the files it means
 #      starts no job. Its other half, a filter pattern matching nothing its job reads, has no
 #      subject left: a computed filter selects exactly what its job reads.
-#  10. an `.github/workflows/ci.yaml#if:`, a job's or a step's, that tests `github.event_name == 'push'` or
+#  10. an if: condition of ci.yaml, a job's or a step's, that tests `github.event_name == 'push'` or
 #      `github.event_name != 'push'`, or that compares `github.ref` with a single-quoted
 #      `'refs/heads/...'` literal with `==` or `!=` (either operand first), naming the file, the
 #      job, the

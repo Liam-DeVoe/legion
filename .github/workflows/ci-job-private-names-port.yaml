@@ -14,7 +14,7 @@ name: CI job private-names-port
 # the two are held to one verdict and one class.
 #
 # It is a job because of what that comparison costs the filters: the harness builds ./cmd/legion
-# out of packages/daemon (`.github/scripts/check-private-names-port.test.sh#./cmd/legion) ||`), so
+# out of packages/daemon (`.github/scripts/check-private-names-port.test.sh#go build -o "$engine" ./cmd/legion`), so
 # the filter that selects it has to name the whole closure of that build - `go list -deps
 # ./cmd/legion`. While the step
 # was the test job's, that closure sat on the `test` filter, and a change to any package of the
@@ -28,7 +28,7 @@ name: CI job private-names-port
 #     against, and the daemon sources the build reads, the rule file leakguard embeds among them;
 #   * setup-go on packages/daemon/go.mod, the module the build runs in. The harness refuses
 #     without a `go` on PATH and fails the run when the binary does not build
-#     (`.github/scripts/check-private-names-port.test.sh#go is required` and `.github/scripts/check-private-names-port.test.sh#./cmd/legion) ||`).
+#     (`.github/scripts/check-private-names-port.test.sh#go is required` and `.github/scripts/check-private-names-port.test.sh#the legion binary did not build`).
 # No Bun, no Oh My Pi, no uv, no tmux, no database and no container image: the harness starts a
 # `go build` and the binary it built, and makes every fixture with git, which the runner image
 # carries. It restores no Actions cache either, as the test job that carried this step restored

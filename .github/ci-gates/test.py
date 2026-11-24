@@ -17,7 +17,7 @@ GATE = gate("test", "test", runs=[
      "resolves the font file's path, lists that directory and reads the package.json and LICENSE.txt in it"),
     ("scripts/third-party-notices.ts", "`scripts/third-party-notices.test.ts#thirdPartyNotices` and `scripts/third-party-notices.test.ts#the command lists every package any of its metafiles names, one bundle's alone included` imports it and runs it"),
     ("scripts/semantic-line-breaks.test.ts", at("test", "Test the semantic line-break checker")),
-    ("scripts/semantic-line-breaks.ts", "`scripts/semantic-line-breaks.test.ts#SCRIPT` and `scripts/semantic-line-breaks.test.ts#run` spawns it"),
+    ("scripts/semantic-line-breaks.ts", "`scripts/semantic-line-breaks.test.ts#Bun.spawnSync` spawns it as `scripts/semantic-line-breaks.test.ts#SCRIPT`"),
     ("scripts/priorities-seed.test.ts", at("test", "Test the priorities seed")),
     ("scripts/priorities-seed.ts", "`scripts/priorities-seed.test.ts#seedPriorities` imports it"),
     ("scripts/e2e/**", f"{at('test', 'bun test scripts/e2e/lib')} (`scripts/e2e/lib/script-functions.test.ts#readers` scans scripts/e2e/*.sh and lib/*); "
@@ -44,7 +44,7 @@ GATE = gate("test", "test", runs=[
     (f"{DAEMON}/internal/controller/liveness.go", "`scripts/e2e/lib/controller-liveness-verdict.test.ts#the texts the verdict counts are the daemon's own`"),
     (f"{DAEMON}/internal/supervise/machine.go", "`scripts/e2e/lib/controller-liveness-verdict.test.ts#the texts the verdict counts are the daemon's own`"),
     (f"{DAEMON}/internal/intake/consume.go", "`scripts/e2e/lib/stage4b-consumers.test.ts#deletes every durable consumer the daemon opens for the project`"),
-    (f"{DAEMON}/internal/capabilities/testdata/web-search-open-planner.json", "`scripts/e2e/lib/stage4b-capabilities.test.ts#row`"),
+    (f"{DAEMON}/internal/capabilities/testdata/web-search-open-planner.json", '`scripts/e2e/lib/stage4b-capabilities.test.ts#"web-search-open-planner.json"`'),
     (f"{DAEMON}/internal/runtime/sandbox/testdata/golden/root.json", "`scripts/e2e/lib/stage4b-pods.test.ts#golden`"),
     (f"{DAEMON}/internal/runtime/sandbox/testdata/golden/root-operator-route.json", "`scripts/e2e/lib/stage4b-pods.test.ts#operatorRoute`"),
     (".github/actions/install-changie/**", f"{at('test', './.github/actions/install-changie')}, which "

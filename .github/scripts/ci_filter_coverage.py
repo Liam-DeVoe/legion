@@ -1,7 +1,7 @@
 """The engine of check-ci-filters.sh, whose header says what it proves and why. ci_job_reads.py,
 beside it, is the data it reads: each ci.yaml gate's go commands and static reads, and the files
 tests read outside their packages. ci_workflow_rules.py, also beside it, holds the rules that
-read none of that - what no `.github/workflows/ci.yaml#if:` may say, what every job's `if:` must say, what
+read none of that - what no if: condition of ci.yaml may say, what every job's `if:` must say, what
 ci-caches.yaml must save for the entries ci.yaml restores, and that ci.yaml is the only workflow
 of this repository running on a merge group - and main() runs them.
 
@@ -289,7 +289,7 @@ def at(job: str, step: str, workflow: str = WORKFLOW) -> str:
 
 # ---------------------------------------------------------------- the workflow documents
 # The prefix of a `uses:` that names a reusable workflow of this repository. A job of ci.yaml
-# that carries one keeps its id, its `needs: changes` and its whole `.github/workflows/ci.yaml#if:` and holds
+# that carries one keeps its id, its `needs: changes` and its whole if: condition and holds
 # its steps in the called file, which runs them inside the caller's own run. So the rules that
 # read a job's steps, its go commands or its cache restores read a set of documents - ci.yaml
 # and every file its jobs call - rather than ci.yaml alone, and each of them names the file it
@@ -1658,7 +1658,7 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
     # could move what it compiles, naming what does.
     # Each index is keyed by the ci.yaml job the gate names, which is the job that runs the
     # steps wherever they are: a job that calls a reusable workflow keeps its id, its
-    # `needs: changes` and its whole `.github/workflows/ci.yaml#if:` and holds its steps in the called file,
+    # `needs: changes` and its whole if: condition and holds its steps in the called file,
     # whose own job ids are its to choose. The caller job has no run: step of its own, so the
     # two never answer for each other.
     skipped = {key for key, names in gated.items() if names and names <= set(excluded)}

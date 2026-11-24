@@ -5,23 +5,36 @@ shape there.
 A citation names what it means inside a file, never a line of it: a line number names whatever
 line a later edit moves there, and nothing reads a citation of a file the citing change does not
 touch (.github/ci-notes/ci.md#a-citation-names-a-symbol-never-a-line). So a citation is one
-exact token: a backtick, the path of a tracked file from the repository root as git ls-files
-prints it (no ./ and no leading /), a hash, a name, a backtick. This docstring's own two are
-`.github/workflows/ci.yaml#browser_image` and `.github/scripts/ci_citations.py#held`. Several
+exact token on one line: a backtick, the path of a tracked file from the repository root as git
+ls-files prints it (no ./ and no leading /), a hash, a name, a backtick. This docstring's own two
+are `.github/workflows/ci.yaml#browser_image` and `.github/scripts/ci_citations.py#held`. Several
 names are several tokens, each with its path.
 
 What this check claims, and all it claims:
-- A token whose path is no tracked file fails. A token whose name is an identifier (a letter or
-  an underscore, then letters, digits, underscores and dots) fails unless the file's code holds
-  it as a whole word with the file's comments removed, so a renamed symbol whose old name lives
-  on in a comment still fails. A token with any other name fails unless the file holds it as
-  text, not inside a longer word. A token whose name is a line number fails.
+- A token whose path is no tracked file fails, and so does a token whose name is a line number.
+- A token whose name the file's code does not hold fails. The code is the file as its language's
+  own scanner reads it (below), so a renamed symbol whose old name lives on in a comment fails.
+  In Python, TypeScript, JavaScript and Go a name that is an identifier (letters, digits and
+  underscores, and no digit first) must be one of the file's identifier tokens, so a string or
+  a docstring that keeps the old name holds nothing either. Any other name is held where the
+  code holds that text and neither end of it runs on into a longer word: a name that starts
+  with a letter, a digit, an underscore or a hyphen has none of those right before it, and one
+  that ends with one has none right after it. So the name setup-go is held by neither
+  setup-golang nor setup-go-x.
+- A code span that starts with a path word and goes on with a hash, a colon or two colons and a
+  name, and is no token, fails: such as ci.yaml:x or ci.yaml::x in backticks, or a token that
+  wraps onto the next line. A token is one line so that a search for it finds every citation of
+  a name; a wrapped one is refused rather than joined, since where the wrap fell, at a space or
+  inside a word, and what comment marker it added, is a guess. A path word followed by a space
+  alone is a command, as `release-push.sh release` is, and is read as prose.
 - A line number written beside a path word, in a spelling this check knows, fails: a colon, an
   L or a hash and the number right after the path, the path at the end of a line and the number
   at the start of the next, and the words line or lines with a number beside the path (before
   it, after it, in parentheses, after a possessive or a comma). In the same line, or the next
   one, so does a bare colon and number after an opening parenthesis, "at", "and" or a comma,
-  and an l. or a hash and a number in parentheses, and the word line run into its number.
+  and an l. or a hash and a number in parentheses, and the word line run into its number. A
+  spelling it does not know passes, such as a colon and a space before the number, an @ before
+  it, "ln" or "around line": the rule is these spellings and no others.
 - A backticked text that is no token fails only where it stands beside a path word, in one of
   two forms: right after the path word, with nothing between them or a possessive, a comma, a
   colon or an opening parenthesis, on the path's line or wrapped onto the next; or followed by
@@ -39,22 +52,23 @@ The scope is every tracked text file under .github/, read as plain text: no comm
 heredoc or Markdown structure of the citing file is parsed, so a citation counts wherever it
 stands. A tracked symlink is skipped, being another file's text, which is read at its own path
 when that is under .github/; a file that is not UTF-8 is no text. Nothing outside .github/ is
-read, held or refused. Measured on 2026-11-24: outside .github/ the tree held 1,320 strings of
-the token's shape, tmux formats, owner/repo#n references, Markdown anchors, template literals and
-HTML entities among them, and none a citation; not one names a tracked file by its root path,
-and one names the end of one (a Markdown anchor in a TypeScript test). Under .github/ the 7
-strings of that shape that were no citation were reworded, and every one left is a citation
-token this check holds.
+read, held or refused.
 
-How the comments of a cited file are removed: in one pass from left to right that steps over
-string literals, so neither a comment marker inside a string nor a quote inside a comment
-starts anything. Python through its tokenize module; Go, TypeScript and JavaScript with '...',
-"..." and backtick strings stepped over and line and block comments removed; CSS with its block
-comments, outside '...' and "..."; Lean with its -- and /- -/ comments; go.mod and go.work
-with their line comments; shell, YAML, TOML, jq, Dockerfiles, CODEOWNERS, ignore files and an
-extension-free script that starts with #! with a hash comment at a line's start or after
-whitespace, outside '...' and "..."; any other file, Markdown, JSON and lock files among them,
-as it is written.
+How the code of a cited file is read, each language by its own scanner:
+- Python through its tokenize module: its NAME tokens are its identifiers, and a name that is
+  no identifier is held against its tokens with every comment and every string removed, a
+  docstring being a string. A file tokenize refuses holds no name.
+- TypeScript, TSX, JavaScript, .mjs and .cjs through the typescript package's parser, in one bun
+  run of .github/scripts/ci_citations_code.ts over every such file a token cites: its
+  identifiers, and its text with its comments removed and its strings, templates and regular
+  expressions kept.
+- Go through go/scanner, in one go run of .github/scripts/ci_citations_code.go over every Go file
+  a token cites: its identifiers, and its text with its comments removed and its strings kept.
+- Shell, YAML, TOML, jq, Dockerfiles, CODEOWNERS, ignore files and an extension-free script that
+  starts with #!: a hash comment at a line's start or after whitespace removed, outside '...' and
+  "...".
+- Any other file, Markdown, JSON and lock files among them, as it is written.
+A bun or go run that fails fails the check, naming the command and what it printed.
 
 Usage: ci_citations.py   (no arguments)
 
@@ -70,6 +84,11 @@ import sys
 import tokenize
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+# The scanner programs beside this file. A test links this file into a fixture, which moves ROOT
+# there and leaves the programs, and the typescript package they load, in this repository.
+SCANNERS = os.path.dirname(os.path.realpath(__file__))
+TS_SCANNER = ".github/scripts/ci_citations_code.ts"
+GO_SCANNER = ".github/scripts/ci_citations_code.go"
 SCOPE = ".github/"
 BACKTICK = "\x60"
 
@@ -79,25 +98,32 @@ def token(path, name):
     return BACKTICK + path + "#" + name + BACKTICK
 
 
+def by_line(path):
+    """The refusal of a citation of path by a line number."""
+    return f"cites {BACKTICK}{path}{BACKTICK} by a line number; write it as {token(path, 'Name')}"
+
+
 # The token, with the backtick written as \x60 for the reason token() gives.
 TOKEN = re.compile(r"\x60([^\x60\s#]+)#([^\x60\n]+)\x60")
-IDENTIFIER = re.compile(r"^[A-Za-z_][\w.]*$")
 LINE_NAME = re.compile(r"^L?\d+(?:\s*[-,:]\s*L?\d+)*$")
 # A word that may be a path: path characters after none of them, behind any ./ ../ or /. A word
 # inside a URL is never one, as each part of a URL's path follows a slash.
 CANDIDATE = re.compile(r"(?<![\w.@/~$%+-])((?:\.\.?/)*/?)([\w@%+-][\w.@%+/-]*|\.[\w@%+-][\w.@%+/-]*)")
 # A code span, which may wrap onto one more line as a comment or a paragraph wraps it.
 CODE_SPAN = re.compile(r"(\x60+)([^\x60\n]+(?:\n[^\x60\n]+)?)\1(?!\x60)")
-WRAP = re.compile(r"[ \t]*\n[ \t]*(?:#+|//+|\*|--)?[ \t]*")
 
-# Whitespace that may wrap onto the next line, past the next line's comment marker.
-GAP = r"(?:[ \t]+|[ \t]*\n[ \t]*(?:#+|//+|\*|--)?[ \t]*)"
+# A line break in a comment or a paragraph, past the next line's comment marker: the one place
+# the three patterns below that read across a wrap take it from.
+LINE_BREAK = r"[ \t]*\n[ \t]*(?:#+|//+|\*|--)?[ \t]*"
+WRAP = re.compile(LINE_BREAK)
+# Whitespace, which may wrap onto the next line.
+GAP = rf"(?:[ \t]+|{LINE_BREAK})"
 GAP0 = f"(?:{GAP})?"
 NUMBERS = rf"\d+(?:{GAP0}(?:-|–|to|and|,){GAP0}\d+)*\b"
 # A line number right after a path word, which may be closed by a backtick or a quote.
 AFTER_PATH = re.compile(
     rf"(?:[\x60\"]|'(?!s\b))?"
-    rf"(?::L?\d|#L?\d|:[ \t]*\n[ \t]*(?:#+|//+|\*|--)?[ \t]*\d|{GAP}L\d+\b"
+    rf"(?::L?\d|#L?\d|:{LINE_BREAK}\d|{GAP}L\d+\b"
     rf"|(?:'s|’s)?,?{GAP0}\(?[ \t]*(?:(?:at|on|in){GAP})?[Ll]ines?{GAP}\d)")
 # A line number written before a path word that starts where this match ends.
 BEFORE_PATH = re.compile(rf"\b[Ll]ines?{GAP}{NUMBERS}{GAP}(?:of|in){GAP}(?:the{GAP})?[\x60\"']?$")
@@ -110,13 +136,135 @@ NAME_AFTER = re.compile(rf"(?:\"|'(?!s\b))?(?:'s|’s|,|:)?{GAP0}\(?[ \t]*")
 # What may stand between a backticked text and the path word after it: in, of or from.
 NAME_FIRST = re.compile(rf"{GAP}(?:in|of|from){GAP}(?:the{GAP})?[\"']?")
 
-SLASH_KINDS = {"go", "ts", "tsx", "js", "mjs", "cjs"}
+TS_KINDS = {"ts", "tsx", "js", "mjs", "cjs"}
 HASH_KINDS = {"sh", "bash", "yaml", "yml", "toml", "jq", "Dockerfile", "Makefile", "CODEOWNERS",
               "gitignore", "dockerignore", "shellcheckrc"}
+# The tokens of a Python file that are no code: its comments and every part of every string.
+PYTHON_TEXT = {getattr(tokenize, kind) for kind in ("COMMENT", "STRING", "FSTRING_START", "FSTRING_MIDDLE",
+                                                    "FSTRING_END", "TSTRING_START", "TSTRING_MIDDLE",
+                                                    "TSTRING_END") if hasattr(tokenize, kind)}
+
+
+class ScanFailed(Exception):
+    """A scanner program's run that failed, so no file it was given has code to hold a name in."""
+
+
+# ---- the code of a cited file -----------------------------------------------------------------
+
+def held(name, code):
+    """Whether code holds name with neither end of it running on into a longer word: where the
+    name starts with a letter, a digit, an underscore or a hyphen, none of those stands right
+    before it, and where it ends with one, none stands right after it."""
+    pattern = re.escape(name)
+    if re.match(r"[\w-]", name):
+        pattern = r"(?<![\w-])" + pattern
+    if re.search(r"[\w-]$", name):
+        pattern += r"(?![\w-])"
+    return re.search(pattern, code) is not None
+
+
+class Code:
+    """The code of a cited file as its language's scanner reads it: the text a name is held
+    against, and for Python, TypeScript, JavaScript and Go the identifier tokens that an
+    identifier must be one of."""
+
+    def __init__(self, text, identifiers=None):
+        self.text = text
+        self.identifiers = identifiers
+
+    def holds(self, name):
+        if self.identifiers is not None and name.isidentifier():
+            return name in self.identifiers
+        return held(name, self.text)
+
+
+def kind_of(path, body):
+    base = os.path.basename(path)
+    if base == "Dockerfile" or base.endswith(".Dockerfile"):
+        return "Dockerfile"
+    if "." in base[1:]:
+        return base.rsplit(".", 1)[1]
+    if base.startswith("."):
+        return base[1:]
+    return "sh" if body.startswith("#!") else base
+
+
+def string_end(body, i):
+    """The index after the string literal whose quote is body[i], or the newline it meets first,
+    so a stray quote can hide no more than its line."""
+    quote, j = body[i], i + 1
+    while j < len(body):
+        if body[j] == "\\":
+            j += 2
+        elif body[j] == quote:
+            return j + 1
+        elif body[j] == "\n":
+            return j
+        else:
+            j += 1
+    return len(body)
+
+
+def strip_hash(body):
+    """A # comment at a line's start or after whitespace, outside '...' and "..."."""
+    out, i, n = [], 0, len(body)
+    while i < n:
+        ch = body[i]
+        if ch in "'\"":
+            j = string_end(body, i)
+            out.append(body[i:j])
+            i = j
+        elif ch == "#" and (i == 0 or body[i - 1] in " \t\n"):
+            j = body.find("\n", i)
+            i = n if j < 0 else j
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def python_code(body):
+    """A Python file's NAME tokens, and its text with every comment and string blanked; or why
+    tokenize reads no code in it."""
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(body).readline))
+    except (tokenize.TokenError, SyntaxError) as error:
+        return f"tokenize refuses it ({error})"
+    starts = [0] + [m.end() for m in re.finditer("\n", body)]
+    text = list(body)
+    for t in tokens:
+        if t.type in PYTHON_TEXT:
+            start = starts[t.start[0] - 1] + t.start[1]
+            end = starts[t.end[0] - 1] + t.end[1]
+            text[start:end] = re.sub(r"[^\n]", " ", body[start:end])
+    return Code("".join(text), {t.string for t in tokens if t.type == tokenize.NAME})
+
+
+def scanned_code(runner, program, paths, **env):
+    """The Code of each path from one run of a scanner program over them all, which takes the
+    paths on stdin and prints each one's code and then its identifiers, one a line, each followed
+    by a NUL byte. program is its path from the repository root, which names it in a refusal; the
+    file run is the one beside this script."""
+    if not paths:
+        return []
+    shown = " ".join([*runner, program])
+    try:
+        done = subprocess.run([*runner, os.path.join(SCANNERS, os.path.basename(program))], cwd=ROOT,
+                              input="".join(p + "\0" for p in paths).encode(), capture_output=True,
+                              env={**os.environ, **env})
+    except OSError as error:
+        raise ScanFailed(f"{BACKTICK}{shown}{BACKTICK} did not start ({error}), so the "
+                         f"{len(paths)} files it reads hold no name") from error
+    fields = done.stdout.decode("utf-8", "replace").split("\0")[:-1]
+    if done.returncode != 0 or len(fields) != 2 * len(paths):
+        printed = " ".join(done.stderr.decode("utf-8", "replace").split())[:2000]
+        raise ScanFailed(f"{BACKTICK}{shown}{BACKTICK} over {len(paths)} files exited {done.returncode} "
+                         f"and printed the code of {len(fields) // 2}, so they hold no name: {printed}")
+    return [Code(text, set(identifiers.split("\n"))) for text, identifiers in zip(fields[::2], fields[1::2])]
 
 
 class Repo:
-    """The tracked files, and the files a path word names among them."""
+    """The tracked files, the files a path word names among them, and the code of each cited one."""
 
     def __init__(self):
         out = subprocess.run(["git", "-C", ROOT, "ls-files", "-z"], capture_output=True, check=True).stdout
@@ -132,7 +280,8 @@ class Repo:
                 # name is a path word only with a dot in it or a capital first letter.
                 if "/" in tail or "." in tail or tail[:1].isupper():
                     self.named.setdefault(tail, set()).add(f)
-        self.cache = {}
+        # path: its Code, or why it holds no name.
+        self.code = {}
 
     def names(self, word):
         """The tracked files a word names: the file at that path, or those whose path ends so."""
@@ -143,230 +292,155 @@ class Repo:
         found = self.names(word)
         return next(iter(found)) if len(found) == 1 else word
 
-    def code(self, path):
-        if path not in self.cache:
+    def load(self, paths):
+        """Reads the code of each cited path before any token is held, so that each scanner
+        program runs once: every TypeScript and JavaScript file in one bun run, every Go file in
+        one go run."""
+        scripts, go = [], []
+        for path in sorted(paths):
             try:
                 with open(os.path.join(ROOT, path), encoding="utf-8") as f:
-                    self.cache[path] = code_of(path, f.read())
-            except (OSError, UnicodeDecodeError):
-                self.cache[path] = None
-        return self.cache[path]
-
-
-# ---- comment removal: one pass from left to right that steps over string literals --------------
-
-def kind_of(path, body):
-    base = os.path.basename(path)
-    if base == "Dockerfile" or base.endswith(".Dockerfile"):
-        return "Dockerfile"
-    if "." in base[1:]:
-        return base.rsplit(".", 1)[1]
-    if base.startswith("."):
-        return base[1:]
-    return "sh" if body.startswith("#!") else base
-
-
-def string_end(body, i, multiline):
-    """The index after the string literal whose quote is body[i]. A string that may not span
-    lines ends at a newline it meets first, so a stray quote can hide no more than its line."""
-    quote, j = body[i], i + 1
-    while j < len(body):
-        if body[j] == "\\":
-            j += 2
-        elif body[j] == quote:
-            return j + 1
-        elif body[j] == "\n" and not multiline:
-            return j
-        else:
-            j += 1
-    return len(body)
-
-
-def strip_comments(body, line, block, quotes, multiline=""):
-    """body without the comments a line marker and a block pair open, outside quotes. A block
-    comment leaves its newlines, so a line of the code is where it was."""
-    out, i, n = [], 0, len(body)
-    while i < n:
-        ch = body[i]
-        if ch in quotes:
-            j = string_end(body, i, ch in multiline)
-            out.append(body[i:j])
-            i = j
-        elif line and body.startswith(line, i):
-            j = body.find("\n", i)
-            i = n if j < 0 else j
-        elif block and body.startswith(block[0], i):
-            j = body.find(block[1], i + len(block[0]))
-            end = n if j < 0 else j + len(block[1])
-            out.append("\n" * body.count("\n", i, end))
-            i = end
-        else:
-            out.append(ch)
-            i += 1
-    return "".join(out)
-
-
-def strip_lean(body):
-    """Lean's -- comments and its /- -/ comments, which nest, outside "..." strings."""
-    out, i, n, depth = [], 0, len(body), 0
-    while i < n:
-        if depth:
-            if body.startswith("/-", i):
-                depth, i = depth + 1, i + 2
-            elif body.startswith("-/", i):
-                depth, i = depth - 1, i + 2
+                    body = f.read()
+            except (OSError, UnicodeDecodeError) as error:
+                self.code[path] = f"it is no UTF-8 text ({error})"
+                continue
+            kind = kind_of(path, body)
+            if kind in TS_KINDS:
+                scripts.append(path)
+            elif kind == "go":
+                go.append(path)
+            elif kind == "py":
+                self.code[path] = python_code(body)
+            elif kind in HASH_KINDS:
+                self.code[path] = Code(strip_hash(body))
             else:
-                out.append("\n" if body[i] == "\n" else "")
-                i += 1
-        elif body[i] == '"':
-            j = string_end(body, i, True)
-            out.append(body[i:j])
-            i = j
-        elif body.startswith("--", i):
-            j = body.find("\n", i)
-            i = n if j < 0 else j
-        elif body.startswith("/-", i):
-            depth, i = 1, i + 2
-        else:
-            out.append(body[i])
-            i += 1
-    return "".join(out)
+                self.code[path] = Code(body)
+        self.code.update(zip(scripts, scanned_code(["bun"], TS_SCANNER, scripts)))
+        self.code.update(zip(go, scanned_code(["go", "run"], GO_SCANNER, go, GOWORK="off")))
 
 
-def strip_hash(body):
-    """A # comment at a line's start or after whitespace, outside '...' and "..."."""
-    out, i, n = [], 0, len(body)
-    while i < n:
-        ch = body[i]
-        if ch in "'\"":
-            j = string_end(body, i, False)
-            out.append(body[i:j])
-            i = j
-        elif ch == "#" and (i == 0 or body[i - 1] in " \t\n"):
-            j = body.find("\n", i)
-            i = n if j < 0 else j
-        else:
-            out.append(ch)
-            i += 1
-    return "".join(out)
+# ---- the citing files -------------------------------------------------------------------------
+
+class Citing:
+    """A citing file's text: its tokens, the text with each token blanked so that the rules after
+    the tokens' own read the text around them, its lines, its path words and its code spans."""
+
+    def __init__(self, body, repo):
+        self.tokens = list(TOKEN.finditer(body))
+        masked = list(body)
+        for m in self.tokens:
+            masked[m.start():m.end()] = " " * (m.end() - m.start())
+        self.text = "".join(masked)
+        self.starts = [0] + [m.end() for m in re.finditer("\n", body)]
+        # (start, end, word) of each path word.
+        self.words = []
+        for m in CANDIDATE.finditer(self.text):
+            word = m.group(2).rstrip(".")
+            if word and repo.names(word):
+                self.words.append((m.start(), m.start(2) + len(word), word))
+        # (start, end, text with its wrap joined) of each code span, paired from left to right as
+        # Markdown pairs them, so a closing backtick is never read as an opening one.
+        self.spans = [(m.start(), m.end(), WRAP.sub(" ", m.group(2))) for m in CODE_SPAN.finditer(self.text)]
+        self.opens = [s for s, _, _ in self.spans]
+
+    def line(self, offset):
+        return bisect.bisect_right(self.starts, offset)
+
+    def line_end(self, number):
+        return self.starts[number] - 1 if number < len(self.starts) else len(self.text)
+
+    def span_at(self, offset):
+        """The index of the code span that holds offset, or None."""
+        i = bisect.bisect_right(self.opens, offset) - 1
+        return i if i >= 0 and offset < self.spans[i][1] else None
 
 
-def strip_python(body):
-    try:
-        comments = [t for t in tokenize.generate_tokens(io.StringIO(body).readline) if t.type == tokenize.COMMENT]
-    except (tokenize.TokenError, SyntaxError):
-        return strip_hash(body)
-    lines = body.split("\n")
-    for t in reversed(comments):
-        row, col = t.start
-        lines[row - 1] = lines[row - 1][:col] + lines[row - 1][t.end[1]:]
-    return "\n".join(lines)
-
-
-def code_of(path, body):
-    """A file's text without its comments, where its kind has a comment syntax."""
-    kind = kind_of(path, body)
-    if kind == "py":
-        return strip_python(body)
-    if kind in SLASH_KINDS:
-        return strip_comments(body, "//", ("/*", "*/"), "'\"\x60", multiline="\x60")
-    if kind == "css":
-        return strip_comments(body, "", ("/*", "*/"), "'\"")
-    if kind in ("mod", "work"):
-        return strip_comments(body, "//", None, "\"\x60", multiline="\x60")
-    if kind == "lean":
-        return strip_lean(body)
-    if kind in HASH_KINDS:
-        return strip_hash(body)
-    return body
-
-
-def held(name, code):
-    """Whether a file's code holds a name: an identifier as a whole word, other text not inside a
-    longer word at either end that is a word character."""
-    if code is None:
-        return False
-    pattern = re.escape(name)
-    whole = IDENTIFIER.match(name) is not None
-    if whole or re.match(r"\w", name):
-        pattern = r"(?<!\w)" + pattern
-    if whole or re.search(r"\w$", name):
-        pattern += r"(?!\w)"
-    return re.search(pattern, code) is not None
-
-
-# ---- the scan -----------------------------------------------------------------------------------
-
-def problems_in(body, repo, counted):
-    """(line, message) for each problem of one citing file's text."""
-    starts = [0] + [m.end() for m in re.finditer("\n", body)]
-
-    def line(offset):
-        return bisect.bisect_right(starts, offset)
-
-    def line_end(number):
-        return starts[number] - 1 if number < len(starts) else len(body)
-
-    # Each token is held, then blanked, so the rules below read the text around the tokens.
-    masked = list(body)
-    for m in TOKEN.finditer(body):
+def token_problems(citing, repo):
+    """Each token whose path is no tracked file, whose name is a line number, or whose name its
+    file's code does not hold."""
+    for m in citing.tokens:
         cited, name = m.group(1), m.group(2)
-        masked[m.start():m.end()] = " " * (m.end() - m.start())
-        counted["tokens"] += 1
+        here = citing.line(m.start())
         if cited not in repo.exact:
-            yield line(m.start()), f"{BACKTICK}{cited}{BACKTICK} names no tracked file"
+            yield here, f"{BACKTICK}{cited}{BACKTICK} names no tracked file"
         elif LINE_NAME.match(name.strip()):
-            yield line(m.start()), f"cites {BACKTICK}{cited}{BACKTICK} by a line number; write it as {token(cited, 'Name')}"
-        elif not held(name, repo.code(cited)):
-            yield line(m.start()), f"{BACKTICK}{cited}{BACKTICK} holds no {BACKTICK}{name}{BACKTICK}"
-    text = "".join(masked)
+            yield here, by_line(cited)
+        elif isinstance(repo.code[cited], str):
+            yield here, f"{BACKTICK}{cited}{BACKTICK} holds no name this check can read: {repo.code[cited]}"
+        elif not repo.code[cited].holds(name):
+            yield here, f"{BACKTICK}{cited}{BACKTICK} holds no {BACKTICK}{name}{BACKTICK}"
 
-    words = []
-    for m in CANDIDATE.finditer(text):
-        word = m.group(2).rstrip(".")
-        if word and repo.names(word):
-            words.append((m.start(), m.start(2) + len(word), word))
 
+def line_number_problems(citing, repo):
+    """Each line number written beside a path word, once a line for each file it names."""
     refused = set()
-    for start, end, word in words:
+    for start, end, word in citing.words:
         shown = repo.shown(word)
-        here = line(start)
-        window = text[starts[here - 1]:line_end(min(here + 1, len(starts)))]
-        if (AFTER_PATH.match(text, end) or BEFORE_PATH.search(text, max(0, start - 200), start)
+        here = citing.line(start)
+        window = citing.text[citing.starts[here - 1]:citing.line_end(min(here + 1, len(citing.starts)))]
+        if (AFTER_PATH.match(citing.text, end) or BEFORE_PATH.search(citing.text, max(0, start - 200), start)
                 or NEAR_PATH.search(window)) and (here, shown) not in refused:
             refused.add((here, shown))
-            yield here, (f"cites {BACKTICK}{shown}{BACKTICK} by a line number; "
-                         f"write it as {token(shown, 'Name')}")
+            yield here, by_line(shown)
 
-    # The code spans of the text, paired from left to right as Markdown pairs them, so a closing
-    # backtick is never read as an opening one.
-    spans = [(m.start(), m.end(), WRAP.sub(" ", m.group(2))) for m in CODE_SPAN.finditer(text)]
-    opens = [s for s, _, _ in spans]
-    for start, end, word in words:
+
+def span_problems(citing, repo):
+    """Each code span that starts with a path word and goes on with a hash, a colon or two colons
+    and a name, and so is a citation, and is no token: a token wraps no line, and any other form
+    of one is refused rather than skipped. A line number after the colon is the line-number
+    rule's."""
+    refused = set()
+    for start, _, word in citing.words:
+        i = citing.span_at(start)
+        if i is None or i in refused:
+            continue
+        s, e, inner = citing.spans[i]
+        cited = re.fullmatch(r"\s*['\"]?(?:\.\.?/)*/?" + re.escape(word) + r"\s*(?:#|::?)\s*(?!L?\d)(\S(?:.*\S)?)\s*",
+                             inner)
+        if not cited:
+            continue
+        refused.add(i)
+        shown, name = repo.shown(word), cited.group(1)
+        if "\n" in citing.text[s:e]:
+            yield citing.line(s), (f"this code span wraps {BACKTICK}{shown}{BACKTICK} and a name onto a second "
+                                   f"line, and a citation token is one line: write it as {token(shown, name)} "
+                                   f"on one line")
+        else:
+            yield citing.line(s), (f"{BACKTICK}{inner.strip()}{BACKTICK} cites {word} in a form that is no "
+                                   f"citation token: write it as {token(shown, name)}")
+
+
+def beside_problems(citing, repo):
+    """Each backticked text that is no token right after a path word, or before in, of or from
+    and one."""
+    spans, opens = citing.spans, citing.opens
+    for start, end, word in citing.words:
         shown = repo.shown(word)
         # The word, or the code span that holds it and nothing else; a word inside a longer span,
         # such as a command, is no path a name is written beside.
-        i = bisect.bisect_right(opens, start) - 1
-        if i >= 0 and start < spans[i][1]:
+        i = citing.span_at(start)
+        if i is not None:
             s, e, inner = spans[i]
             if not re.fullmatch(r"\s*['\"]?(?:\.\.?/)*/?" + re.escape(word) + r"\.?['\"]?\s*", inner):
                 continue
             start, end = s, e
         j = bisect.bisect_left(opens, end)
-        if j < len(spans) and NAME_AFTER.fullmatch(text, end, spans[j][0]) and spans[j][2].strip():
+        if j < len(spans) and NAME_AFTER.fullmatch(citing.text, end, spans[j][0]) and spans[j][2].strip():
             inner = spans[j][2].strip()
-            yield line(spans[j][0]), (f"{word} is followed by {BACKTICK}{inner}{BACKTICK}, which is no "
-                                      f"citation token: write it as {token(shown, inner)}, or reword the "
-                                      f"sentence so that the text does not follow the path")
+            yield citing.line(spans[j][0]), (f"{word} is followed by {BACKTICK}{inner}{BACKTICK}, which is no "
+                                             f"citation token: write it as {token(shown, inner)}, or reword the "
+                                             f"sentence so that the text does not follow the path")
         j = bisect.bisect_right(opens, start) - 1
         while j >= 0 and spans[j][1] > start:
             j -= 1
-        if j >= 0 and NAME_FIRST.fullmatch(text, spans[j][1], start) and spans[j][2].strip():
+        if j >= 0 and NAME_FIRST.fullmatch(citing.text, spans[j][1], start) and spans[j][2].strip():
             inner = spans[j][2].strip()
-            yield line(spans[j][0]), (f"{BACKTICK}{inner}{BACKTICK} is followed by {word}, and is no "
-                                      f"citation token: write it as {token(shown, inner)}, or reword "
-                                      f"the sentence")
+            yield citing.line(spans[j][0]), (f"{BACKTICK}{inner}{BACKTICK} is followed by {word}, and is no "
+                                             f"citation token: write it as {token(shown, inner)}, or reword "
+                                             f"the sentence")
 
+
+# ---- the scan ---------------------------------------------------------------------------------
 
 def scanned(repo):
     """Every tracked text file under .github/: no symlink, and UTF-8."""
@@ -386,23 +460,28 @@ def main(argv):
         print("ci_citations.py takes no arguments: it reads every tracked text file under .github/")
         return 2
     repo = Repo()
-    counted = {"tokens": 0}
-    files = holding = 0
+    citing = [(path, Citing(body, repo)) for path, body in scanned(repo)]
+    try:
+        repo.load({m.group(1) for _, c in citing for m in c.tokens if m.group(1) in repo.exact})
+    except ScanFailed as failure:
+        print(f"ci_citations.py: {failure}")
+        return 1
     found = []
-    for path, body in scanned(repo):
-        files += 1
-        before = counted["tokens"]
-        found.extend(f"{path}:{number}: {message}" for number, message in sorted(problems_in(body, repo, counted)))
-        holding += counted["tokens"] > before
+    for path, c in citing:
+        problems = [*token_problems(c, repo), *line_number_problems(c, repo), *span_problems(c, repo),
+                    *beside_problems(c, repo)]
+        found.extend(f"{path}:{number}: {message}" for number, message in sorted(problems))
+    tokens = sum(len(c.tokens) for _, c in citing)
+    holding = sum(1 for _, c in citing if c.tokens)
     for problem in found:
         print(problem)
     if found:
         return 1
-    if counted["tokens"] == 0:
-        print(f"found no citation token in the {files} text files under {SCOPE}: a scan that finds none "
-              "holds none, so this is a failure, not a pass")
+    if tokens == 0:
+        print(f"found no citation token in the {len(citing)} text files under {SCOPE}: a scan that finds "
+              "none holds none, so this is a failure, not a pass")
         return 1
-    print(f"{counted['tokens']} citation tokens in {holding} of the {files} text files under {SCOPE} "
+    print(f"{tokens} citation tokens in {holding} of the {len(citing)} text files under {SCOPE} "
           f"name text their files hold, and no citation there is of another shape")
     return 0
 

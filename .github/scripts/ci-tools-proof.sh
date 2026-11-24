@@ -327,7 +327,7 @@ LADDER_CEILING=150
 
 # How many fetches of one run may carry CI_TOOLS_PROOF_FULL_LADDER, read by `ladder-report`
 # over the log the stand-in wrote.
-# That variable is set at exactly one step's `.github/workflows/ci-job-tool-fallback.yaml#env:`, the head's install-crane step, so one install
+# That variable is set at exactly one step, `.github/workflows/ci-job-tool-fallback.yaml#CI_TOOLS_PROOF_FULL_LADDER: crane-head`, the head's install-crane step, so one install
 # keeps the pinned ladder. That one install makes four fetches through the stand-in: the
 # release asset behind the fault, which ci_tools__fetch_release reads
 # (`.github/scripts/ci-tools.sh#ci_tools__fetch_release`), and then the pull token, the blob request to the package
