@@ -140,14 +140,30 @@ func (a *Attributor) HeadAttributedTo(ctx context.Context, pool *store.Pool, iss
 
 // baseBranchMergedInQuery is BaseBranchMergedIn's statement: the linked rows of
 // headsAttributedQuery's second arm, held to one repository and to the merged state, in
-// BaseBranchMergedFor's order.
+// BaseBranchMergedFor's order, the newest merge first (newestMergeFirst).
 func baseBranchMergedInQuery(renames refs.Renames) string {
 	return `with recursive ` + linkedPullRequestTerms(renames) + `
 	select h.base_ref from linked_pulls l
 	` + linkedHeadJoin + `
 	where lower(l.repo) = lower($2) and h.state = 'merged'
-	order by h.event_at desc nulls last, h.number desc
+	order by h.merged_at desc nulls last, h.number desc
 	limit 1`
+}
+
+// mergeInQuery is MergeIn's statement: the rows baseBranchMergedInQuery reads, each pull request
+// once however many links name it, with every column of a merge (mergedColumns), in the same
+// order.
+func mergeInQuery(renames refs.Renames) string {
+	return `with recursive ` + linkedPullRequestTerms(renames) + `
+	select ` + mergedColumns + ` from (
+		select distinct on (h.repo, h.number)
+			h.repo, h.number, h.base_ref, h.head_sha, h.merge_commit_sha, h.merged_at, h.attribution_rule
+		from linked_pulls l
+		` + linkedHeadJoin + `
+		where lower(l.repo) = lower($2) and h.state = 'merged'
+		order by h.repo, h.number
+	) merged
+	order by ` + newestMergeFirst
 }
 
 // BaseBranchMergedIn is BaseBranchMergedFor for a repository issueKey does not resolve to: the

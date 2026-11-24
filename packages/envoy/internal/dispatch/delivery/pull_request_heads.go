@@ -65,12 +65,15 @@ type PullRequestHead struct {
 	URL                 string
 	EventAt             *time.Time
 	CheckedAt           *time.Time
-	// MergeCommitSHA is the commit GitHub made when this pull request merged. It is set only
-	// for a merged pull request, and only by a writer that read it; one that did not read it
-	// leaves it empty, which asks for nothing. It is written to no column of
-	// pull_request_heads: it exists to seed branch_commits with the one fact the merge itself
-	// proves, that the base branch held this commit (UpsertPullRequestHead).
+	// MergeCommitSHA is the commit GitHub made when this pull request merged, and MergedAt the
+	// time it merged. Each is set only for a merged pull request, and only by a writer that read
+	// it; one that did not read it leaves it empty, which keeps what the row holds
+	// (upsertHeadRow). The row stores both (merge_commit_sha, merged_at), which is how a read
+	// names the merge of the work and orders two merges by when each merged (MergeOfIssue), and
+	// the merge commit also seeds branch_commits with the one fact the merge itself proves, that
+	// the base branch held this commit (UpsertPullRequestHead).
 	MergeCommitSHA string
+	MergedAt       *time.Time
 }
 
 // PullRequestHeadState is the state a `pull_request` event leaves the row in: a pull request
@@ -374,13 +377,24 @@ const headWriteRollback = 2 * time.Second
 // exactly as it was, which is the one way this statement writes nothing and reports no error.
 // Only an applied write can have moved the row's attribution, so that is what
 // UpsertPullRequestHead tests before it appends an event.
+//
+// The merge commit and the merge time are written only for a merged row, and a write that
+// carries neither keeps what the row holds: an envelope of the release before this one carries
+// no merge time, and an edit of a merged pull request is a write too, so a write that carries
+// none says nothing about the merge, which never changes once made. An open row stores neither:
+// GitHub answers a merge_commit_sha for an open pull request too, its test merge (mergeCommitOf),
+// which is no merge.
 func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (bool, error) {
+	mergeCommit, mergedAt := "", (*time.Time)(nil)
+	if head.State == "merged" {
+		mergeCommit, mergedAt = head.MergeCommitSHA, head.MergedAt
+	}
 	tag, err := db.Exec(ctx, `
 		insert into pull_request_heads (
 			repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
-			title, url, event_at, checked_at, attribution_rule
+			title, url, event_at, checked_at, attribution_rule, merge_commit_sha, merged_at
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $14)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $14, $15, $16)
 		on conflict (repo, number) do update set
 			head_sha = excluded.head_sha,
 			head_ref = excluded.head_ref,
@@ -395,14 +409,17 @@ func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (b
 			event_at = coalesce(excluded.event_at, pull_request_heads.event_at),
 			checked_at = coalesce(excluded.checked_at, pull_request_heads.checked_at),
 			attribution_rule = case when excluded.checked_at is null
-				then pull_request_heads.attribution_rule else excluded.attribution_rule end
+				then pull_request_heads.attribution_rule else excluded.attribution_rule end,
+			merge_commit_sha = case when excluded.merge_commit_sha = ''
+				then pull_request_heads.merge_commit_sha else excluded.merge_commit_sha end,
+			merged_at = coalesce(excluded.merged_at, pull_request_heads.merged_at)
 		where excluded.event_at is null
 		   or pull_request_heads.event_at is null
 		   or excluded.event_at >= pull_request_heads.event_at
 	`,
 		head.Repo, head.Number, head.HeadSHA, head.HeadRef, head.BaseRef, head.State,
 		head.IssueKey, head.AttributionSource, head.Title, head.URL, head.EventAt, head.CheckedAt,
-		head.AttributionComplete, AttributionRuleVersion,
+		head.AttributionComplete, AttributionRuleVersion, mergeCommit, mergedAt,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%w: store the head of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
@@ -634,13 +651,13 @@ func HeadStoredAt(ctx context.Context, pool *store.Pool, repoFull, sha string) (
 // issue is measured against (api/results_comparison.go). An issue whose pull request merged
 // into an integration branch has reached that branch and no other, so a result of it at a
 // commit that branch's history carries stands at that branch. The repository's default branch
-// answers nothing about the work until the integration branch itself lands. The merged row
-// last updated answers: event_at is the pull request's updated_at as its newest event carried
-// it, which is the time of the merge only until a later event of that pull request (an edit, a
-// label) moves it. The rows are ordered by event_at descending with the rows carrying none
-// last, since a row with no event time is one whose envelope reported none and says less than
-// any row that did, and by the pull request's own number descending where two share a time, so
-// the answer does not turn on whichever row the planner returned first.
+// answers nothing about the work until the integration branch itself lands. The merged row that
+// merged last answers, by merged_at, the time GitHub merged it, and not by event_at, the pull
+// request's updated_at as its newest event carried it, which a later event of a pull request that
+// merged earlier (an edit, a label) moves past a later merge. The rows are ordered as MergeOfIssue
+// orders them (newestMergeFirst): a row whose merge time no write has carried yet comes after
+// every row whose time one has, and the pull request's own number descending breaks a tie, so the
+// answer does not turn on whichever row the planner returned first.
 //
 // The read is keyed by the issue and not by the result's commit because Legion merges with
 // squash: the commit that lands on the base branch is the one the squash makes, which is no
@@ -666,7 +683,7 @@ func BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey string)
 	err := pool.QueryRow(ctx, `
 		select base_ref from pull_request_heads
 		where issue_key = $1 and state = 'merged'
-		order by event_at desc nulls last, number desc
+		order by `+newestMergeFirst+`
 		limit 1
 	`, issueKey).Scan(&branch)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -732,9 +749,11 @@ const PullRequestHeadBatch = 200
 // keeps both where the write carries no read time). So a merged row is taken once per rule: the
 // refresh stamps it at AttributionRuleVersion whether or not GitHub's answer attributed it, and
 // it comes back only when a later build raises that constant, which is how a change to the
-// attribution reaches the merged rows already stored. The `checked_at is null` half of the
-// uncredited term keeps that bound: without it every merged row credited to nobody would come
-// back every pass for ever.
+// attribution reaches the merged rows already stored, and how a column a merged row gains is
+// filled: rule 6's refresh stores each merged row's merge commit and merge time from GitHub's
+// answer (headRow, upsertHeadRow). The `checked_at is null` half of the uncredited term keeps
+// that bound: without it every merged row credited to nobody would come back every pass for
+// ever.
 //
 // The arm is written as `(issue_key is null and checked_at is null) or attribution_rule < $3`
 // rather than the conjunction it is equal to — `(issue_key is null or attribution_rule < $3)
@@ -958,7 +977,8 @@ func (a *Attributor) attributeHead(ctx context.Context, pool *store.Pool, client
 // reached: the one builder both GitHub readers below write through, so the two cannot drift.
 // The rule that judged it is the write's own (UpsertPullRequestHead binds
 // AttributionRuleVersion). The list form of a pull request carries merged_at but not merged, so
-// a merge is read from whichever of the two GitHub sent.
+// a merge is read from whichever of the two GitHub sent; merged_at is also the time the row
+// stores for the merge, so the reconcile's refresh of a merged row fills it (upsertHeadRow).
 func headRow(repoFull string, payload pullRequestPayload, attributed headAttributionResult, checkedAt *time.Time) PullRequestHead {
 	return PullRequestHead{
 		Repo: repoFull, Number: payload.Number, HeadSHA: payload.Head.SHA, HeadRef: payload.Head.Ref,
@@ -966,6 +986,7 @@ func headRow(repoFull string, payload pullRequestPayload, attributed headAttribu
 		IssueKey: attributed.issueKey, AttributionSource: attributed.source,
 		AttributionComplete: attributed.complete, Title: payload.Title, URL: payload.HTMLURL,
 		EventAt: payload.UpdatedAt, CheckedAt: checkedAt, MergeCommitSHA: mergeCommitOf(payload),
+		MergedAt: payload.MergedAt,
 	}
 }
 
@@ -1222,7 +1243,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 		IssueKey: attributed.issueKey, AttributionSource: attributed.source,
 		AttributionComplete: attributed.complete, Title: payload["title"], URL: payload["url"],
 		EventAt: envelopeTime(payload["updated_at"]), CheckedAt: checkedAt,
-		MergeCommitSHA: payload["merge_commit_sha"],
+		MergeCommitSHA: payload["merge_commit_sha"], MergedAt: envelopeTime(payload["merged_at"]),
 	}, given)
 }
 
