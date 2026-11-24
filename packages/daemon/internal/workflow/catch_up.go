@@ -175,13 +175,6 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 	if ownStep != "" {
 		reason += fmt.Sprintf("; at a step of yours, which no worker does: %s at %s (do it as its owner-step notice says, then report it with complete_step)", issue.Key, ownStep)
 	}
-	asked, err := untoldMergeForward(ctx, tx, store, issue, launch)
-	if err != nil {
-		return err
-	}
-	if asked != nil {
-		reason += "; " + untoldAskWords(issue, *asked)
-	}
 	if relaunch != "" {
 		reason = relaunch + "\n\n" + reason
 	}
