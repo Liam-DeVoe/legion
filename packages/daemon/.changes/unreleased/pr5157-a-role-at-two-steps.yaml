@@ -25,7 +25,11 @@ body: |-
   and a wake or a resume names that agent's own; where the agent has none, the reviewer's task in
   reviewing, a wake's and a resume's included, and the task of a review step of a role the
   deployment defines carry ` Commit another agent's review read: <sha>.`, the commit read by the
-  review of the nearest earlier step of the role that another agent worked.
+  review of the nearest earlier step of the role that another agent worked, whose review read one.
+  A review step of a role the deployment defines records the commit its completion names only
+  where that commit is spelled as a head is, 40 lowercase hexadecimal characters, as the head of a
+  reviewer's footer must be; a completion that names any other commit leaves the step's commit
+  where it stood.
 
   One migration makes the key of the `phases` table the issue, the role and the step. A daemon of
   the release before cannot write that table, so every project's daemon on the database moves to
