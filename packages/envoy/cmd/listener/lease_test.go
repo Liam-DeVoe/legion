@@ -364,8 +364,10 @@ func TestLeaseReleasedRecordIsTakenAtTheNextPollKeepingServiceSince(t *testing.T
 // stop can have overrun (durableReceiver.Stop, after the hand-back's own release timed out at
 // handBackReleaseWait), and a record left unreleased is taken only once its TTL runs out, with
 // the ack wait's cap - a graceful stop delivering like a hard one. The rule: a loop that has
-// already stopped is read before ctx, so a stop that did everything it owed writes the release
-// whatever its context says, rather than letting Go pick between two ready channels.
+// already stopped is read again once ctx has ended (awaitDone's closedWithin selects over done
+// and ctx, then reads done again), so a stop that did everything it owed writes the release
+// whatever its context says, where the select alone would leave it to Go's pick between two ready
+// channels.
 func TestLeaseReleaseWritesWithAnExpiredContextAfterTheLoopStopped(t *testing.T) {
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()

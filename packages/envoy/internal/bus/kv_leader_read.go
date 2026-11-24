@@ -6,8 +6,10 @@
 // and the interest and role claim reapers, and internal/session's readForStop, for a conditional
 // stop), whether a claim takes a role from its holder or is written for its claimant
 // (RefreshFromLeader again: a soft claim's reads of the holder, and the claim route's read of its
-// claimant), the revision a write or a delete is fenced on (KeyValue.ReadStored, and store's
-// latestStored), whether a CI record's change is declined and the revision its retry writes at,
+// claimant), which client instance a delete names (RefreshFromLeader again: the registration view
+// of GET /v1/registry/<id>, whose caller names the id it reads in the delete that follows), the
+// revision a write or a delete is fenced on (KeyValue.ReadStored, and store's latestStored),
+// whether a CI record's change is declined and the revision its retry writes at,
 // and whether a settlement's claim still holds before it is published (internal/cistore's
 // Store.casState and Store.ClaimStillHeld, each passing context.Background, so RequestTimeout
 // alone bounds it), and which session holds a Legion controller's notice lane, which decides a

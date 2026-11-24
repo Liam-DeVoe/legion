@@ -162,9 +162,10 @@ func TestADeliveryExceptionOnALaneOnlyTheDeployedStreamCapturesIsStoredOnce(t *t
 // listeners each raise it for one stored message from their own durables, is stored once, under
 // exception.<reason>.<origin>.
 //
-// Judged on the subjects the client held, the first exception went to Publish, whose transport read
-// the subjects again and stored it under the exception's own dedupe key; that read was kept, so the
-// second was judged captured and stored under exception.<reason>.<origin>: two copies.
+// Judged on the subjects the client held, the first exception went over core NATS
+// (bus.Client.PublishAckOn, which reads no subjects), and the stream stored it under no message
+// id; no read was made, so the second was judged on the same subjects and stored the same way:
+// two copies.
 func TestADeliveryExceptionOnALaneAddedSinceTheLastReadIsStoredOnce(t *testing.T) {
 	const (
 		topic  = "notifications.x.z"

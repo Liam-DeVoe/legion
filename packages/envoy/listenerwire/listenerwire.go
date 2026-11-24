@@ -314,9 +314,12 @@ type PublishResponse struct {
 	// many of those are live now. They are pointers so that a count of zero is carried rather
 	// than omitted - "no other session subscribes" is the answer that matters most - and nil,
 	// left out, where there is no count to give: a listener whose known-session store does not
-	// answer, or whose interest copy cannot be served, sends neither; one whose session registry
-	// copy cannot be served sends recipients alone; and a role send sends neither, its answer
-	// naming its holder. An older client reads neither field.
+	// answer, or whose interest copy cannot be served, sends neither, and so does one that takes
+	// the publish over core NATS, since whether the stream stores it is then unknown, and one
+	// whose count's read of a controller notice lane's claim did not answer (the listener's
+	// recipientCounts); one whose session registry copy cannot be served sends recipients alone;
+	// and a role send sends neither, its answer naming its holder. An older client reads neither
+	// field.
 	Recipients          *int `json:"recipients,omitempty"`
 	RecipientsConnected *int `json:"recipients_connected,omitempty"`
 	// Duplicate reports that the stream already held another request's copy of this message,

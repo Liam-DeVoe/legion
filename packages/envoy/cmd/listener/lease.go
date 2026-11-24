@@ -478,11 +478,12 @@ func (l *lease) Successor() (taken, receiving bool, err error) {
 // clean-hand-back mark, since the deliver subject was already let go. A standby that takes it
 // moments later therefore settles for an ack wait, not for the hand-back delay.
 //
-// A loop that has already stopped is read before ctx: the receiver's own stop calls Release again
-// with the shutdown context a graceful stop can have run out of (durableReceiver.Stop, after
-// handBack's release timed out), and a select over a closed done and an ended ctx together would
-// pick either, skipping the write of half of those stops and leaving a standby to wait the record
-// out as an expired one.
+// A loop that has already stopped is read again at ctx's end (awaitDone, closedWithin): the wait
+// selects over done and ctx, and once ctx has ended it reads done again, so a loop stopped by then
+// reads stopped. The receiver's own stop calls Release again with the shutdown context a graceful
+// stop can have run out of (durableReceiver.Stop, after handBack's release timed out), and a
+// select over a closed done and an ended ctx picks either, so without that second read half of
+// those stops would skip the write and leave a standby to wait the record out as an expired one.
 func (l *lease) Release(ctx context.Context) error {
 	l.mu.Lock()
 	stop, done := l.stop, l.done

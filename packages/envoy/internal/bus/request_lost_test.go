@@ -348,11 +348,13 @@ func TestARoleReadLostWithItsConnectionFailsAtTheReconnectNotAtItsBound(t *testi
 // delete of a session's interest row (store's deleteInterest), each read of a session's record
 // through session.SessionRegistry.RefreshFromLeader (before its consumer is deleted, in the
 // interest and role claim reapers' test of a session the cache does not hold, in a soft claim's
-// reads of the holder it would take the role from, and in the claim route's read of its
-// claimant), the read of a role's claim that the session relay judges a role message by and the
-// kept lane's handover resolves the role's holder with (store.Registry.RoleClaimFromLeader), and
-// the read of a controller role's claim that decides whether a session's consumer filter keeps
-// the role's notice lane (store's roleClaimFromLeader, under store.Registry.ReadLaneHolders).
+// reads of the holder it would take the role from, in the claim route's read of its claimant,
+// and in the registration view of GET /v1/registry/<id>, whose caller decides a delete on the
+// client instance id it reads), the read of a role's claim that the session relay judges a role
+// message by and the kept lane's handover resolves the role's holder with
+// (store.Registry.RoleClaimFromLeader), and the read of a controller role's claim that decides
+// whether a session's consumer filter keeps the role's notice lane (store's roleClaimFromLeader,
+// under store.Registry.ReadLaneHolders).
 // cistore's two, the reads of a CI record main's #5132 added (Store.casState and
 // Store.ClaimStillHeld), are not waited for through BoundedOn: each passes context.Background, so
 // RequestTimeout alone bounds it (GetFromLeader), and one whose request died with its connection
