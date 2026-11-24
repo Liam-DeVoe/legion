@@ -363,14 +363,15 @@ func liveVisibleNode(kind, address string) string {
 // of kinds: the same one read of the node's row, with the predicate of the row's own kind over it
 // (VisibleRow), which compares each kind's author as that kind's entry states. The arm that binds
 // it keeps only sources of kinds the registry holds (storedSQL), so no row of a kind without a
-// predicate reaches it. The predicate is bound through the gate (authorOnlyGate) as kinds decides
-// it (NodeKinds.gate): not at all where the gate keeps the predicate of none of them, whole where
-// it keeps every one's, and otherwise behind the gate in SQL, tested on the row's own kind.
+// predicate reaches it. The predicate is bound where the gate (authorOnlyGate) keeps the predicate
+// of any of kinds (NodeKinds.gate), and not at all where it keeps none. It is bound whole, never
+// behind the gate in SQL: it reads only columns of the row liveNode already holds, so the gate
+// would spare it no probe and only add to every tuple its own test of the row's kind as the graph
+// addresses it (graphstore.AddressKindSQL).
 func liveVisibleNodeOf(kinds NodeKinds, kindExpr, address string) string {
-	bind, inSQL := kinds.gate()
 	visible := ""
-	if bind {
-		visible = visibleRow("live", backlinkSeen, inSQL)
+	if bind, _ := kinds.gate(); bind {
+		visible = VisibleRow("live", backlinkSeen)
 	}
 	return liveNode(kindExpr, address, visible)
 }

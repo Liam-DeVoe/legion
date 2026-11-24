@@ -457,7 +457,7 @@ const costLeaseWait = 5 * time.Minute
 // block_index_lease_test.go).
 func costHoldBlockIndex(t *testing.T, arm *costArm) func() {
 	t.Helper()
-	return holdBlockIndexLease(t, arm.pool.Acquire, arm.name, costLeaseWait, arm.server.Output.String)
+	return holdBlockIndexLease(t, arm.pool, arm.name, costLeaseWait, arm.server.Output.String)
 }
 
 // costRunBackfill runs `envoy-dispatch backfill-graph-store` on this child's arm and waits for

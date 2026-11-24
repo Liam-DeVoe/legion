@@ -382,13 +382,12 @@ func createPreviousGraphEdges(t *testing.T, database *store.Store) {
 	if _, err := database.Pool.Exec(context.Background(), "create view "+previousGraphEdges+" "+view); err != nil {
 		t.Fatalf("create the previous release's view: %v", err)
 	}
-	literals := func(values []string) string { return "'" + strings.Join(values, "', '") + "'" }
 	if _, err := database.Pool.Exec(context.Background(), `create view `+previousCountedEdges+` as
 		select from_kind, from_id, kind, to_kind, to_id from `+previousGraphEdges+`
 		union all
 		select from_kind, from_id, kind, to_kind, to_id from graph_edges
-		where kind in (`+literals(storeClassKinds)+`)
-		   or (kind in (`+literals(storeClassOwnKinds)+`) and from_kind in (`+literals(storeClassSources)+`))`); err != nil {
+		where kind in (`+store.QuoteLiterals(storeClassKinds)+`)
+		   or (kind in (`+store.QuoteLiterals(storeClassOwnKinds)+`) and from_kind in (`+store.QuoteLiterals(storeClassSources)+`))`); err != nil {
 		t.Fatalf("create the previous release's view with the class store beside it: %v", err)
 	}
 }

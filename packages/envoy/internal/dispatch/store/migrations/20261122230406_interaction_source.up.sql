@@ -9,13 +9,14 @@
 -- `going_requests`, so a later release's interaction node of another source is never swept at
 -- one hour.
 --
--- This declares the attribute on the interaction type, as 20261123174710 declares `words`,
--- `ends_at` and `frame` there: one `attribute` node, `interaction/source`, holding its kind, its
--- name, its store name and the next position among the type's attributes, and tied to the
--- `interaction` supertag by an `attribute_of` tuple, so a reader of the store reads what an
--- interaction holds from the store and not from Go. `source` is no base attribute, so it is stored
--- under its own name. The interaction type declares no block type, so the block schema the server
--- installs reads past the node and its version does not move.
+-- This declares the attribute on the interaction type: one `attribute` node, `interaction/source`,
+-- holding its kind, its name, its store name and its position among the type's attributes, 3,
+-- after the positions 0 to 2 that 20261123174710, a migration that runs after this file, declares
+-- for `words`, `ends_at` and `frame` the same way; and tied to the `interaction` supertag by an
+-- `attribute_of` tuple, so a reader of the store reads what an interaction holds from the store
+-- and not from Go. `source` is no base attribute, so it is stored under its own name. The
+-- interaction type declares no block type, so the block schema the server installs reads past the
+-- node and its version does not move.
 --
 -- Each statement is one insert of literal `values` rows, every row written out whole, as
 -- 20261123174710 writes its own: graph_nodes and graph_tuples are above the census's size limit in

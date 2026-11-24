@@ -13,8 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 )
@@ -25,7 +23,7 @@ import (
 const blockIndexLeaseNamespace int32 = 0x4C4F4F50
 
 // holdBlockIndexLease takes the block-index pass's own lease (docs.BlockIndexLease) on a
-// connection acquire answers, one of the test's own connections to the database the server
+// connection of leases, one of the test's own pools of connections to the database the server
 // serves, and answers the call that gives it back. duty.Exclusive takes that lease before every
 // pass and skips the pass where another session holds it, so no block-index pass runs while the
 // test holds it: what the test writes meanwhile is indexed by a tick after the lease is given
@@ -37,10 +35,10 @@ const blockIndexLeaseNamespace int32 = 0x4C4F4F50
 //
 // name is what every failure is about. wait bounds the wait for the lease, a hang guard on a wait
 // nothing healthy reaches; past it the test fails with the server's output (output).
-func holdBlockIndexLease(t *testing.T, acquire func(context.Context) (*pgxpool.Conn, error), name string, wait time.Duration, output func() string) func() {
+func holdBlockIndexLease(t *testing.T, leases duty.Leases, name string, wait time.Duration, output func() string) func() {
 	t.Helper()
 	ctx := context.Background()
-	conn, err := acquire(ctx)
+	conn, err := leases.Acquire(ctx)
 	if err != nil {
 		t.Fatalf("%s: take a connection for the block-index lease: %v", name, err)
 	}

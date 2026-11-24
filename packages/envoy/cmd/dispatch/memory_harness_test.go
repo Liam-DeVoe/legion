@@ -643,7 +643,7 @@ const blockIndexLeaseWait = 2 * time.Minute
 // work the lease only postpones; the two together leave the window clean.
 func (p *memoryServer) holdBlockIndexLease(t *testing.T) func() {
 	t.Helper()
-	return holdBlockIndexLease(t, p.database.Pool.Acquire, "this window's measurement", blockIndexLeaseWait, p.outputTail)
+	return holdBlockIndexLease(t, p.database.Pool, "this window's measurement", blockIndexLeaseWait, p.outputTail)
 }
 
 type response struct {

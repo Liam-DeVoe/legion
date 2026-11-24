@@ -257,20 +257,13 @@ func requireNoDeadlockBetweenOppositeOrders(t *testing.T, ctx context.Context, f
 }
 
 // writeNodesInOneTransaction is one Write of nodes alone, in a transaction it begins on db (the
-// pool, or a connection the caller holds) and commits: the bare call the race above puts against
-// itself, and each write requireOneChangedByRunBehindTheNodeRow makes for its run.
+// pool, or a connection the caller holds) and commits (pgx.BeginFunc): the bare call the race
+// above puts against itself, and each write requireOneChangedByRunBehindTheNodeRow makes for its
+// run.
 func writeNodesInOneTransaction(ctx context.Context, db interface {
 	Begin(context.Context) (pgx.Tx, error)
 }, nodes []Node) error {
-	tx, err := db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if err := Write(ctx, tx, nodes, nil); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error { return Write(ctx, tx, nodes, nil) })
 }
 
 // requireTheLowestNodeIsTakenFirst holds a write over several nodes to taking them in ascending

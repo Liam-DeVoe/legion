@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -195,7 +194,7 @@ func (s *server) readLiveGoingRun(ctx context.Context, id string) (model.Actor, 
 // predicate writes, `'end', 'error'`: a read that names the two as literals is one the planner
 // proves that partial index answers, where a bound array leaves a prepared statement's generic
 // plan nothing to prove it by.
-var goingTerminalNamesSQL = `'` + strings.Join(goingTerminalNames, `', '`) + `'`
+var goingTerminalNamesSQL = store.QuoteLiterals(goingTerminalNames)
 
 // goingNextFrame reads what a frame of the run $1 takes, once the run's node is held: the next
 // sequence, the frame's value at that sequence (graphstore.FrameValueSQL over the frame's name $2
@@ -642,9 +641,10 @@ var goingRowlessRuns = `
 // (goingRowlessRuns). Each run either read answers is taken by goRunGone through the sweep's one
 // loop over runs (eachGoingRun). After the first read's loop it reads the pass's context, and once
 // that has ended - before the read, during it or during its runs - it leaves the second read
-// unmade, and where that loop answered no error it answers the context's end named by the second
-// read, as that read's failure would have: a loop's error already names the end where the end cost
-// the loop its read or a run. It logs one line where it did anything: how many runs of the first
+// unmade and answers the context's end named by the second read, as that read's failure would
+// have, unless the loop's error already holds that end (errors.Is): it does where the end cost the
+// loop its read or stopped it before a run, and does not where the loop answered no error or only
+// runs' failures of their own. It logs one line where it did anything: how many runs of the first
 // read and nodes of the second it stated gone, and how many runs' rows it removed.
 func goRunsPastTheHour(ctx context.Context, pool *store.Pool) error {
 	var runsStated, rowlessStated, removed int
@@ -671,9 +671,9 @@ func goRunsPastTheHour(ctx context.Context, pool *store.Pool) error {
 		if err != nil {
 			failed = append(failed, err)
 		}
-		if ctx.Err() != nil {
-			if err == nil && index+1 < len(reads) {
-				failed = append(failed, fmt.Errorf("%s: %w", reads[index+1].name, ctx.Err()))
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			if index+1 < len(reads) && !errors.Is(err, ctxErr) {
+				failed = append(failed, fmt.Errorf("%s: %w", reads[index+1].name, ctxErr))
 			}
 			break
 		}

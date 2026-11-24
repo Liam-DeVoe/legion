@@ -134,8 +134,11 @@ func itemBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind ItemKi
 // message has no address, so its blocks resolve to no node: no reference names one, and an edge
 // at one is omitted as at any node that does not exist; GET /api/v1/messages/{id}/blocks reads
 // them under the conversation's read rule.
+//
+// Its predicate and its stored state and visibility are read in one probe of its `graph_nodes`
+// row rather than two (visibleStoredKind), as itemBlockNodes reads a comment's blocks.
 func loadMessageBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
-	storedJoin, storedColumns := storedNode("message_block", "b.node_id")
+	storedJoin, storedColumns, seen := visibleStoredKind("message_block", "b.node_id", "$2")
 	rows, err := q.Query(ctx, `
 		select b.node_id, b.block_id, b.excerpt, m.id::text, m.issue_key, coalesce(i.project_key, ''), m.author, m.created_at,
 		       `+storedColumns+`
@@ -144,7 +147,7 @@ func loadMessageBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind
 		left join issues i on i.key = m.issue_key
 		`+storedJoin+`
 		where b.node_id = any($1) and b.position is not null and m.issue_key is not null
-		and `+VisibleKind("message_block", "b.node_id", "$2"), ids, VisibilityArg(who))
+		and `+seen, ids, VisibilityArg(who))
 	if err != nil {
 		return fmt.Errorf("load message block nodes: %w", err)
 	}

@@ -442,23 +442,23 @@ const StoredState = storedNodeAlias + ".stored_state"
 // of the same row. That is a choice for a loader that answers a handful of nodes. The block
 // loader answers thousands - every block of an 8,001-block document, the 5,000 blocks a list of
 // links points from - where the second probe cost a read of 5,001 blocks a fifth of its time
-// (check c-read-cost), so it reads both from one probe (visibleStoredKind), as the loader of an
-// item's blocks does.
+// (check c-read-cost), so it reads both from one probe (visibleStoredKind), as the loaders of an
+// item's and a message's blocks do.
 func storedNode(kind, address string) (join, columns string) {
 	return StoredNodeJoin(`'`+StoredKindOf(kind)+`'`, address)
 }
 
 // visibleStoredKind is VisibleKind and storedNode of the node of kind whose id address names,
 // read in one probe of the node's `graph_nodes` row rather than two, for a loader that answers
-// many nodes at once: the block loader (loadBlockNodes) and the loader of an item's blocks
-// (itemBlockNodes). It answers the lateral join over that row the loader adds to its from list,
-// after every relation address names; the two columns that answer storedNode's state and
-// visibility from it (StoredRowOf), null where the store holds no row; and the predicate over
-// it, VisibleKind's test of the same row under the same key with the same comparison of its
-// author (VisibleKindRow), and true where the store holds no row, as VisibleKind reads such a
-// node. So the loader answers the same nodes with the same state and visibility as the pair it
-// replaces, and the join reads `visibility` once under each of the two markers, as that pair
-// does.
+// many nodes at once: the block loader (loadBlockNodes), the loader of an item's blocks
+// (itemBlockNodes) and the loader of a message's blocks (loadMessageBlockNodes). It answers the
+// lateral join over that row the loader adds to its from list, after every relation address
+// names; the two columns that answer storedNode's state and visibility from it (StoredRowOf),
+// null where the store holds no row; and the predicate over it, VisibleKind's test of the same row
+// under the same key with the same comparison of its author (VisibleKindRow), and true where the
+// store holds no row, as VisibleKind reads such a node. So the loader answers the same nodes with
+// the same state and visibility as the pair it replaces, and the join reads `visibility` once
+// under each of the two markers, as that pair does.
 //
 // The join ends in `offset 0`, which keeps it a probe of the primary key per row, as VisibleKind's
 // scalar sub-plan is (visibleWhere): a lateral subquery Postgres may pull up is a join it may hash
@@ -483,8 +483,10 @@ func visibleStoredKind(kind, address, param string) (join, columns, predicate st
 // lateral join to add to its from list, after every relation address names, and the two columns
 // to select off it, the state and then the visibility the store holds for the node, each null
 // where the store holds no row of it (StoredNode, setStored), the state named StoredState. Every
-// loader of the registry adds it for its own kind (storedNode), and a read outside this package
-// that answers rows of several kinds - api's person page - adds it with the kind as its own SQL.
+// loader of the registry but the loaders of blocks adds it for its own kind (storedNode), the
+// loaders of blocks reading the same two columns with the kind's predicate in one probe of the
+// row instead (visibleStoredKind), and a read outside this package that answers rows of several
+// kinds - api's person page - adds it with the kind as its own SQL.
 // It reads `visibility` once, opened by StoredNodeMarker.
 func StoredNodeJoin(kindExpr, address string) (join, columns string) {
 	return `left join lateral (select ` + StoredRowOf(`stored_node`) + ` from graph_nodes stored_node
@@ -660,18 +662,7 @@ func VisibleNode(kindExpr, idExpr, param string) string {
 // does the count of an arm whose tuples come out of nodes of several kinds (liveVisibleNodeOf). A
 // stale row of a standing kind is no row it admits (staleOfKindSQL), as VisibleKind holds one.
 func VisibleRow(alias, param string) string {
-	return visibleRow(alias, param, false)
-}
-
-// visibleRow is VisibleRow, with its test of the row's visibility behind the gate
-// (authorOnlyGate), tested on the row's own kind, where gated says so (liveVisibleNodeOf). The
-// staleness test stays beside the gate.
-func visibleRow(alias, param string, gated bool) string {
-	visible := visibleHeldRow(alias, authorIsOfRow(alias, param))
-	if gated {
-		visible = authorOnlyGate(alias+`.kind`, alias+`.id`, visible)
-	}
-	return VisibilityMarker + `the row's own kind */(` + visible +
+	return VisibilityMarker + `the row's own kind */(` + visibleHeldRow(alias, authorIsOfRow(alias, param)) +
 		` and not ` + staleOfKindSQL(alias+`.kind`, alias+`.id`) + `)`
 }
 
@@ -765,10 +756,10 @@ var storeAdmitsAuthor = sync.OnceValues(func() ([]string, string) {
 // every such node there is, so the gate spares the read visible's probe of `graph_nodes` for each
 // of them and changes no answer. This is the one statement of that reason, and every read that
 // binds a predicate only where its node can be reserved for its author binds it through this gate:
-// in SQL, here, for a node whose kind is a column of the read (andGatedEnd, liveVisibleNodeOf),
-// and in Go for one whose kind is a literal of the build or a column of kinds the read knows
-// (gateKeeps, NodeKinds.gate). The staleness test of a standing kind (staleOfKindSQL) is no
-// visibility test, and no part of the gate: every caller keeps it beside the gate.
+// in SQL, here, for a node whose kind is a column of the read (andGatedEnd), and in Go for one
+// whose kind is a literal of the build or a column of kinds the read knows (gateKeeps,
+// NodeKinds.gate). The staleness test of a standing kind (staleOfKindSQL) is no visibility test,
+// and no part of the gate: every caller keeps it beside the gate.
 func authorOnlyGate(kindExpr, idExpr, visible string) string {
 	_, admitted := storeAdmitsAuthor()
 	return `(` + graphstore.AddressKindSQL(kindExpr, idExpr) + ` not in (` + admitted + `) or ` + visible + `)`
