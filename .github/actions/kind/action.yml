@@ -37,10 +37,10 @@ description: >-
   pulls go to ghcr.io and the rig's registry alone, each named at the teardown, and its pods
   resolve no name but cluster.local's and the rig's stand-ins' (scripts/e2e/lib/kind-sandbox.sh).
 
-  The rig needs disk that the runner image's unused toolchains hold, and their deletion took 50 to
-  122 s in CI run 45300865457, so a step at the start renames them into one directory and deletes
-  that in the background, beside the set-up and the fetches, and the step before the fence waits
-  for it and fails if it failed.
+  Each test's compile is off the leg's path: .github/actions/kind/build, a step of ci.yaml before
+  the worker image's download, starts a `go test -c` of the leg's package in the background, which
+  the download and the set-up steps here run beside, and the step before the fence waits for it and
+  fails if it failed, so the test step finds its packages built and only links its binary.
 
   leak-guard is no kind test and brings up no rig, no fence and no cluster: it loads the archive
   into the runner's Docker and runs the leak guard's test (scripts/e2e/leak-guard-image-probe.sh)
@@ -72,43 +72,6 @@ runs:
           --volume "$GITHUB_WORKSPACE/scripts/e2e/leak-guard-image-probe.sh:/probe/leak-guard-image-probe.sh:ro" \
           "$KIND_WORKER_IMAGE" /probe/leak-guard-image-probe.sh
 
-    # The rig holds the worker image, several gigabytes, in Docker, in the registry and in the
-    # node's containerd while it loads it (internal/kindtest drops Docker's copies once the
-    # registry has them), so the runner image's Android SDK, .NET, Haskell and CodeQL toolchains,
-    # which no step here uses, go. Each directory is renamed into one directory of the root file
-    # system, which moves no byte (a directory elsewhere fails the step, since mv would copy it),
-    # and a background `sudo rm -rf` of that directory writes its exit status to a file when it
-    # ends, so the steps up to the fence run beside it. `df -h /` here and after the wait says what
-    # that gave, and the rig's measuring test logs it again before the rig and with the rig up.
-    # What the rig runs beside Go and git is the runner image's own, and nothing installs it:
-    # Docker, kubectl, zstd (gVisor's release is a .tar.zstd), curl, GNU tar and sha512sum, as
-    # actions/runner-images' Ubuntu2404-Readme.md lists them; the rig builds kind itself with
-    # `go install`. internal/kindtest fails naming any of them it cannot find on PATH.
-    - name: Start deleting the toolchains the rig does not use
-      if: inputs.leg != 'leak-guard'
-      shell: bash
-      env:
-        TRASH: /legion-kind-trash
-        DELETION: ${{ runner.temp }}/kind-toolchains-deletion
-      run: |
-        df -h /
-        sudo mkdir "$TRASH"
-        for dir in /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL; do
-          [ -e "$dir" ] || continue
-          if [ "$(stat -c %d "$dir")" != "$(stat -c %d "$TRASH")" ]; then
-            echo "::error::$dir is not on the file system of $TRASH, so mv would copy it"
-            exit 1
-          fi
-          sudo mv "$dir" "$TRASH/"
-        done
-        (
-          status=0
-          sudo rm -rf "$TRASH" || status=$?
-          echo "$status" >"$DELETION.part"
-          mv "$DELETION.part" "$DELETION.status"
-        ) >"$DELETION.log" 2>&1 </dev/null &
-        echo "deleting $TRASH in the background (process $!)"
-
     # A runtime group's setup packs this checkout's pi-envoy and pi-legion through
     # scripts/e2e/lib/pack-plugin.sh, which builds each bundle over the installed workspace.
     - name: Setup Bun
@@ -119,21 +82,6 @@ runs:
       if: startsWith(inputs.leg, 'runtime-')
       shell: bash
       run: bun install --frozen-lockfile
-
-    # Each test builds its package's test binary; the rig's library builds kind with `go install`,
-    # which reads only kind's own module; a runtime group's setup builds the checkout's
-    # agent-secrets in packages/envoy; and the tree rig (kind_tree_rig_live_test.go) builds the
-    # `legion` every pod's launcher and the fence's worker-shim are, and Dispatch, the Envoy
-    # listener and natsd from packages/envoy.
-    - id: setup-go
-      if: inputs.leg != 'leak-guard'
-      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-      with:
-        go-version-file: packages/daemon/go.mod
-        cache: false
-
-    - if: inputs.leg != 'leak-guard'
-      uses: ./.github/actions/install-gotestsum
 
     # The two tarballs the implementer's install fetches by the Claude Code pin's lock, its main
     # package and linux-x64's, which the rig's npm stand-in serves to the pods, so no pod reaches
@@ -153,6 +101,10 @@ runs:
     # Every fetch the rig makes, as the runner's user and before the rule below: kind's build,
     # gVisor's release held to its sha512, the node and registry images, and the kind network the
     # rule names (kind_sandbox_fetch), and every module the tests' builds read, through go.work.
+    # What the rig runs beside Go and git is the runner image's own, and nothing installs it:
+    # Docker, kubectl, zstd (gVisor's release is a .tar.zstd), curl, GNU tar and sha512sum, as
+    # actions/runner-images' Ubuntu2404-Readme.md lists them; the rig builds kind itself with
+    # `go install`. internal/kindtest fails naming any of them it cannot find on PATH.
     - name: Fetch what the rig runs
       if: inputs.leg != 'leak-guard'
       shell: bash
@@ -163,39 +115,42 @@ runs:
         kind_sandbox_fetch "$RUNNER_TEMP/kind-fetched"
         (cd packages/daemon && go mod download)
 
-    # The deletion the step at the start began, which the set-up and the fetches above ran beside:
-    # the test starts with that disk free, and a deletion that failed fails the leg here, with its
-    # output, rather than in its test. It ended in at most 122 s in CI run 45300865457; 10 minutes
-    # bounds a deletion that hangs.
-    - name: Wait for the toolchains' deletion
+    # The build of the leg's test binary that .github/actions/kind/build began before the download,
+    # which the download, the set-up and the fetches above ran beside: a build that failed fails the
+    # leg here, with its output, rather than in its test step. The test step's own build took at
+    # most 125 s in CI run 45309357623; 10 minutes bound a build that hangs.
+    - name: Wait for the build of the leg's test binary
       if: inputs.leg != 'leak-guard'
       shell: bash
       env:
-        DELETION: ${{ runner.temp }}/kind-toolchains-deletion
+        BUILD: ${{ runner.temp }}/kind-test-build
       run: |
         started=$SECONDS
-        if ! timeout 10m bash -c 'until [ -e "$1.status" ]; do sleep 1; done' wait "$DELETION"; then
-          echo "::error::the deletion of the runner's toolchains did not end within 10 minutes"
-          cat "$DELETION.log"
+        if ! timeout 10m bash -c 'until [ -e "$1.status" ]; do sleep 1; done' wait "$BUILD"; then
+          echo "::error::the build of the leg's test binary did not end within 10 minutes"
+          cat "$BUILD.log"
           exit 1
         fi
-        echo "waited $((SECONDS - started)) s for the deletion"
-        cat "$DELETION.log"
-        df -h /
-        status=$(cat "$DELETION.status")
+        echo "waited $((SECONDS - started)) s for the build"
+        cat "$BUILD.log"
+        status=$(cat "$BUILD.status")
         if [ "$status" != 0 ]; then
-          echo "::error::sudo rm -rf of the runner's toolchains exited $status"
+          echo "::error::go test -c of the leg's package exited $status"
           exit 1
         fi
 
     # From here each test step runs in the cgroup legion-test, as the runner's user, so it reads
     # and writes the checkout, the runner's temporary directory and the caches the steps above
-    # filled; its outbound connections reach loopback and the kind network's bridge alone.
+    # filled; its outbound connections reach loopback and the kind network's bridge alone. This
+    # step first prints the runner's free disk, `df -h /`: 83 GB of 145 in CI run 45309357623, of
+    # which the rig takes about 20, so no toolchain of the runner image is deleted.
     - id: fence
       name: Fence the test process to loopback and the kind network
       if: inputs.leg != 'leak-guard'
       shell: bash
-      run: .github/scripts/test-fence.sh fence --network kind
+      run: |
+        df -h /
+        .github/scripts/test-fence.sh fence --network kind
 
     # The rig's measuring test times each piece of the rig by name, then runs a Burstable Sandbox
     # under gVisor that clones a private repository from the fake GitHub and a gVisor pod that

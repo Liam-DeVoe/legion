@@ -341,7 +341,7 @@ jobs after it carry the five split ones' old names. dispatch-two-builds-same, a 
 alone, takes the defaults: an include entry would add back what the exclude takes out
 (.github/actions/go-envoy-held/<leg>).
 
-## The paths filter's own verdict for every filter, before the `full-ci` term
+## The paths filter's own verdict for every filter
 
 The paths filter's own verdict for every filter, before the `full-ci` term (`(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci'))`) rewrites
 the eleven outputs the twelve slow suites run behind. On a pull request without that
@@ -686,11 +686,18 @@ step after its build does, a merge group having no worker-image job, and brings 
 fence and no cluster; the action passes every other step over for it. Its 20 minutes hold the
 download's own 10, the load and the test (115 s in kind-image) and the checkout.
 
-Each rig leg renames the runner image's Android SDK, .NET, Haskell and CodeQL toolchains into one
-directory and deletes that in the background as its first step, and the step before the fence
-waits for it, fails if it failed and prints `df -h /`. Run first, the deletion took 50 to 122 s of
-each leg in CI run 45300865457; beside the set-up and the fetches, about 65 s, a leg waits only for
-the rest. The download stays before it, a timed step of this job.
+Each rig leg builds its test binary beside the download: .github/actions/kind/build, a step of
+this job before the download, sets up Go and gotestsum and starts in the background a `go test -c`
+of the package the leg's test step runs, with that step's build flags, and the step before the
+fence waits for it, prints its output and fails if it failed. The test step then finds every
+package and its vet in the build cache and only links the binary. That step's own build took 96
+to 125 s of each leg in CI run 45309357623, and the download 82 s in runtime-adopt and 115 s in
+tree-stage4b. In that run the runner had 83 GB of its 145 free and the rig took about 20, yet
+runtime-adopt waited 120 s for the background deletion of the runner image's unused toolchains, so
+that deletion is gone; the fence step prints `df -h /` for each run. In each test,
+internal/kindtest loads the worker image beside the cluster, Agent Sandbox, gVisor, the registry
+and the stand-ins, 88 to 149 s against about 54 for those five in that run, and joins it before
+the build FROM it.
 
 Each rig leg fetches what the rig runs first (kind's build, gVisor's release, the node and registry
 images, the kind network, the Go modules) and then runs its test step in a cgroup of its own, as
@@ -720,8 +727,12 @@ is. Each new leg repeats the set-up, the compile and the in-test rig, 6 to 10 mi
 burstable-and-sweep 20.9, its two tests one after the other. So those two tests went to a leg
 each, the deletion of the toolchains off each leg's path and the leak guard's test out of
 kind-image: at that run's times kind-image takes 6.5 minutes and the longest leg, tree-stage4b,
-about 19.3, about 26.8 for the chain. The merge queue runs the job, and a dispatched run with the
-input kind-and-agent-harness; a pull request never does, as
+about 19.3, about 26.8 for the chain. In CI run 45309357623 the chain was about 28.7 minutes:
+changes 0.2, ci-images 0.5, kind-image 7.6 and runtime-adopt 20.1 (tree-stage4b 19.9). So the
+test binary's build went before the download, the deletion went, and the worker image's load
+runs beside the rig's first pieces: at that run's times the longest leg, tree-stage4b, takes
+about 17.3 minutes and runtime-adopt about 16.0, about 25.9 for the chain. The merge queue runs
+the job, and a dispatched run with the input kind-and-agent-harness; a pull request never does, as
 #why-the-kind-rig-has-an-output-of-its-own says. Not fail-open: its tests were in no job that
 `changes` failing runs.
 
@@ -1330,7 +1341,7 @@ reads and requires on a merge group (that script's header). Both scripts run by 
 checkout's own path, the form every job that holds the list runs the check by;
 check-pr-text.sh runs check-private-names.sh from its own directory.
 
-## The merge queue's cancel act. Main's queue builds each group on top
+## The merge queue's cancel act
 
 The merge queue's cancel act. Main's queue builds each group on top of the group below it,
 so when a group fails, every group built on it can no longer merge: the queue takes that

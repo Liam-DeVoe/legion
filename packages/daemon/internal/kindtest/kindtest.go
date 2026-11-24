@@ -113,7 +113,10 @@ type Rig struct {
 
 type measurement struct {
 	piece string
-	took  time.Duration
+	// took is the piece's own time, and wall how long Start waited on it: all of took for a piece
+	// run alone, and for worker-image, which runs beside the pieces before it, what was left of it
+	// when they ended.
+	took, wall time.Duration
 }
 
 // Start brings the rig up for t and tears it down when t ends, failing t at the first piece that
@@ -123,6 +126,11 @@ type measurement struct {
 // (the pull of ImageEnv's image, or the load of ImageArchiveEnv's archive), stand-in-image (the
 // build FROM it), registry-push (Image into Registry) and image-load (Image into the node's
 // containerd).
+//
+// worker-image reads only its archive or its registry and this host's Docker, and was the
+// longest piece before stand-in-image (88 to 149 s in CI run 45309357623, against about 54 s for
+// cluster to stand-ins), so it runs on a goroutine of its own beside cluster, agent-sandbox,
+// gvisor, registry and stand-ins, timed from its own start, and is joined before stand-in-image.
 func Start(t *testing.T) *Rig {
 	t.Helper()
 	r := prepare(t)
@@ -133,6 +141,7 @@ func Start(t *testing.T) *Rig {
 		}
 		r.kind = filepath.Join(r.fetched, "kind")
 	})
+	load := r.startWorkerImage(t)
 	r.Measure(t, "cluster", func() {
 		port := freePort(t)
 		r.shell(t, "kind_sandbox_create", r.Name, r.work, strconv.Itoa(port))
@@ -160,8 +169,8 @@ func Start(t *testing.T) *Rig {
 		}
 		r.shell(t, "kind_sandbox_route_stand_ins", append([]string{r.Gateway, githubPort, sitesPort}, r.Sites.Hosts()...)...)
 	})
-	var worker, standIn string
-	r.Measure(t, "worker-image", func() { worker = r.loadWorkerImage(t) })
+	worker := load.join(t)
+	var standIn string
 	r.Measure(t, "stand-in-image", func() { standIn = r.buildStandInImage(t, worker) })
 	r.Measure(t, "registry-push", func() {
 		r.Image = r.push(t, standIn, "legion-worker-stand-ins")
@@ -175,6 +184,66 @@ func Start(t *testing.T) *Rig {
 	})
 	r.Measure(t, "image-load", func() { r.shell(t, "kind_sandbox_load_image", r.Image) })
 	return r
+}
+
+// workerLoad is Start's worker-image piece, which runs loadWorkerImage on a goroutine of its own
+// (startWorkerImage). That goroutine touches no t: what it did is read on the test's goroutine,
+// after done closes.
+type workerLoad struct {
+	rig         *Rig
+	done        chan struct{}
+	started     time.Time
+	took        time.Duration
+	image, note string
+	err         error
+	joined      bool
+}
+
+// startWorkerImage starts loadWorkerImage on a goroutine of its own, under t's context, which the
+// testing package cancels when t ends, before t's cleanups run. The cleanup it registers runs
+// before prepare's teardown, since cleanups run last registered first, and waits for the load to
+// end: when a piece on the test's goroutine fails before the join, the load is killed with the
+// context, and no docker load outlives the test or runs beside the teardown.
+func (r *Rig) startWorkerImage(t *testing.T) *workerLoad {
+	t.Helper()
+	ctx := t.Context()
+	load := &workerLoad{rig: r, done: make(chan struct{}), started: time.Now()}
+	go func() {
+		defer close(load.done)
+		load.image, load.note, load.err = loadWorkerImage(ctx)
+		load.took = time.Since(load.started)
+	}()
+	t.Cleanup(func() {
+		<-load.done
+		if load.joined {
+			return
+		}
+		outcome := load.note
+		if load.err != nil {
+			outcome = load.err.Error()
+		}
+		t.Logf("kind rig: worker-image ended after %s, beside a piece that failed: %s", load.took.Round(100*time.Millisecond), outcome)
+	})
+	return load
+}
+
+// join waits for the worker image's load and records it as the piece worker-image, timed from
+// its own start, with how long the test's goroutine waited for it after the pieces beside it.
+// Then it fails t with the load's error, on the test's goroutine, or returns the name Docker holds
+// the image under.
+func (l *workerLoad) join(t *testing.T) string {
+	t.Helper()
+	waiting := time.Now()
+	<-l.done
+	l.joined = true
+	if l.err == nil {
+		t.Log(l.note)
+	}
+	l.rig.record(t, "worker-image", l.took, time.Since(waiting))
+	if l.err != nil {
+		t.Fatal(l.err)
+	}
+	return l.image
 }
 
 // prepare holds the machine to what the rig needs, names the cluster and its files, and registers
@@ -205,21 +274,37 @@ func (r *Rig) Measure(t *testing.T, piece string, do func()) {
 	t.Helper()
 	started := time.Now()
 	defer func() {
-		took := time.Since(started).Round(100 * time.Millisecond)
-		r.measured = append(r.measured, measurement{piece: piece, took: took})
-		t.Logf("kind rig: %s took %s", piece, took)
+		took := time.Since(started)
+		r.record(t, piece, took, took)
 	}()
 	do()
 }
 
-// Report logs every piece measured so far, in order, and their sum.
+// record keeps and logs the measurement of piece: it took took, of which Start waited wall.
+func (r *Rig) record(t *testing.T, piece string, took, wall time.Duration) {
+	t.Helper()
+	took, wall = took.Round(100*time.Millisecond), wall.Round(100*time.Millisecond)
+	r.measured = append(r.measured, measurement{piece: piece, took: took, wall: wall})
+	if wall == took {
+		t.Logf("kind rig: %s took %s", piece, took)
+		return
+	}
+	t.Logf("kind rig: %s took %s beside the pieces before it, %s of it after they ended", piece, took, wall)
+}
+
+// Report logs every piece measured so far, in order, and how long they kept the rig waiting: their
+// sum, with only what was left of a piece run beside others when those ended.
 func (r *Rig) Report(t *testing.T) {
 	t.Helper()
 	var lines strings.Builder
 	var total time.Duration
 	for _, m := range r.measured {
-		fmt.Fprintf(&lines, "  %-16s %8.1fs\n", m.piece, m.took.Seconds())
-		total += m.took
+		fmt.Fprintf(&lines, "  %-16s %8.1fs", m.piece, m.took.Seconds())
+		if m.wall != m.took {
+			fmt.Fprintf(&lines, " (beside the pieces before it, %.1fs of it after they ended)", m.wall.Seconds())
+		}
+		lines.WriteByte('\n')
+		total += m.wall
 	}
 	fmt.Fprintf(&lines, "  %-16s %8.1fs", "all", total.Seconds())
 	t.Logf("kind rig measurements:\n%s", lines.String())
@@ -642,32 +727,43 @@ func (r *Rig) checkIssuer(t *testing.T) {
 }
 
 // loadWorkerImage puts the worker image under test into this host's Docker and returns the name
-// Docker holds it under: a pull of ImageEnv's reference, or a load of ImageArchiveEnv's archive.
-func (r *Rig) loadWorkerImage(t *testing.T) string {
-	t.Helper()
-	if image := os.Getenv(ImageEnv); image != "" {
-		if !strings.Contains(image, "@sha256:") {
-			t.Fatalf("%s must name the worker image by digest (<image>@sha256:<64 hex>), got %s", ImageEnv, image)
+// Docker holds it under, with a line for the test's log that says so: a pull of ImageEnv's
+// reference, or a load of ImageArchiveEnv's archive. It runs on a goroutine of its own beside
+// other pieces of Start, so it returns its failure rather than failing a test, and what it starts
+// is killed when ctx ends.
+func loadWorkerImage(ctx context.Context) (string, string, error) {
+	if reference := os.Getenv(ImageEnv); reference != "" {
+		if !strings.Contains(reference, "@sha256:") {
+			return "", "", fmt.Errorf("%s must name the worker image by digest (<image>@sha256:<64 hex>), got %s", ImageEnv, reference)
 		}
-		r.docker(t, "pull", "--quiet", image)
-		t.Logf("pulled the worker image %s", image)
-		return image
+		if out, err := exec.CommandContext(ctx, "docker", "pull", "--quiet", reference).CombinedOutput(); err != nil {
+			return "", "", fmt.Errorf("docker pull --quiet %s: %v: %s", reference, err, out)
+		}
+		return reference, "pulled the worker image " + reference, nil
 	}
 	archive := os.Getenv(ImageArchiveEnv)
 	var out string
+	var err error
 	if strings.HasSuffix(archive, ".zst") {
-		out = loadZstdArchive(t, archive)
+		out, err = loadZstdArchive(ctx, archive)
 	} else {
-		out = r.docker(t, "load", "--input", archive)
+		var printed []byte
+		printed, err = exec.CommandContext(ctx, "docker", "load", "--input", archive).CombinedOutput()
+		out = string(printed)
+		if err != nil {
+			err = fmt.Errorf("docker load --input %s: %v: %s", archive, err, out)
+		}
+	}
+	if err != nil {
+		return "", "", err
 	}
 	loaded := regexp.MustCompile(`(?m)^Loaded image(?: ID)?: (\S+)$`).FindStringSubmatch(out)
 	if loaded == nil {
-		t.Fatalf("docker load of %s named no image: %s", archive, out)
+		return "", "", fmt.Errorf("docker load of %s named no image: %s", archive, out)
 	}
-	t.Logf("loaded the worker image %s from %s", loaded[1], archive)
 	// The archive stays: each kind test of the job brings up a rig of its own, and each loads the
 	// image from it again.
-	return loaded[1]
+	return loaded[1], fmt.Sprintf("loaded the worker image %s from %s", loaded[1], archive), nil
 }
 
 // loadZstdArchive runs `zstd --decompress --stdout --long=31 archive | docker load` and returns
@@ -675,22 +771,21 @@ func (r *Rig) loadWorkerImage(t *testing.T) string {
 // copy of the multi-gigabyte image lands on the disk. --long=31 admits the long window the
 // kind-image job compresses with (.github/actions/kind/image). Each end of the pipe is closed in
 // this process once its command holds it, so a docker load that stops early ends zstd's writes
-// rather than leaving zstd blocked on a full pipe.
-func loadZstdArchive(t *testing.T, archive string) string {
-	t.Helper()
+// rather than leaving zstd blocked on a full pipe. Both are killed when ctx ends.
+func loadZstdArchive(ctx context.Context, archive string) (string, error) {
 	read, write, err := os.Pipe()
 	if err != nil {
-		t.Fatalf("a pipe from zstd to docker load: %v", err)
+		return "", fmt.Errorf("a pipe from zstd to docker load: %w", err)
 	}
 	var zstdErr, loadOut bytes.Buffer
-	unzstd := exec.Command("zstd", "--decompress", "--stdout", "--long=31", archive)
+	unzstd := exec.CommandContext(ctx, "zstd", "--decompress", "--stdout", "--long=31", archive)
 	unzstd.Stdout, unzstd.Stderr = write, &zstdErr
-	load := exec.Command("docker", "load")
+	load := exec.CommandContext(ctx, "docker", "load")
 	load.Stdin, load.Stdout, load.Stderr = read, &loadOut, &loadOut
 	if err := unzstd.Start(); err != nil {
 		read.Close()
 		write.Close()
-		t.Fatalf("zstd --decompress %s: %v", archive, err)
+		return "", fmt.Errorf("zstd --decompress %s: %w", archive, err)
 	}
 	write.Close()
 	loadStarted := load.Start()
@@ -698,15 +793,15 @@ func loadZstdArchive(t *testing.T, archive string) string {
 	if loadStarted != nil {
 		_ = unzstd.Process.Kill()
 		_ = unzstd.Wait()
-		t.Fatalf("docker load: %v", loadStarted)
+		return "", fmt.Errorf("docker load: %w", loadStarted)
 	}
 	loadErr := load.Wait()
 	unzstdErr := unzstd.Wait()
 	if loadErr != nil || unzstdErr != nil {
-		t.Fatalf("zstd --decompress --stdout --long=31 %s | docker load: zstd: %v %s; docker load: %v %s",
+		return "", fmt.Errorf("zstd --decompress --stdout --long=31 %s | docker load: zstd: %v %s; docker load: %v %s",
 			archive, unzstdErr, strings.TrimSpace(zstdErr.String()), loadErr, strings.TrimSpace(loadOut.String()))
 	}
-	return loadOut.String()
+	return loadOut.String(), nil
 }
 
 // buildStandInImage builds, FROM worker, the image every pod of a kind test starts, under the user

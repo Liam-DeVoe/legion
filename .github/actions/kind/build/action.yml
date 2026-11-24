@@ -1,0 +1,61 @@
+name: Start building the test binary of a kind leg
+description: >-
+  The steps of ci.yaml's kind job between its checkout and the download of the worker image: Go,
+  gotestsum, and a `go test -c` of the package that the leg's test step of .github/actions/kind
+  runs, started in the background as the runner's user, before the fence. The download and the
+  set-up steps of .github/actions/kind run beside it, and the leg's test step then finds every
+  package and its vet in the build cache and only links the test binary. That build took 96 to
+  125 s of each leg's test step in CI run 45309357623, and the download took 82 s in runtime-adopt
+  and 115 s in tree-stage4b. The step of .github/actions/kind before the fence waits for the
+  build and fails the leg if it failed. leak-guard runs no Go, so every step here is passed over
+  for it.
+inputs:
+  leg:
+    description: The leg of ci.yaml's kind job, the part of its check-run name after `kind / `.
+    required: true
+runs:
+  using: composite
+  steps:
+    # Each test builds its package's test binary, which the step below builds first; the rig's
+    # library builds kind with `go install`, which reads only kind's own module; a runtime group's
+    # setup builds the checkout's agent-secrets in packages/envoy; and the tree rig
+    # (kind_tree_rig_live_test.go) builds the `legion` every pod's launcher and the fence's
+    # worker-shim are, and Dispatch, the Envoy listener and natsd from packages/envoy.
+    - id: setup-go
+      if: inputs.leg != 'leak-guard'
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: packages/daemon/go.mod
+        cache: false
+
+    - if: inputs.leg != 'leak-guard'
+      uses: ./.github/actions/install-gotestsum
+
+    # The package each leg's test step of .github/actions/kind names with --packages, built with
+    # that step's build flags: none, since its -count, -timeout and -run choose only the run.
+    # `go test -c` compiles and vets what that step's `go test` compiles and vets, runs no test and
+    # writes no binary (-o /dev/null); the binary's link is the one part the build cache does not
+    # keep. The step moves into packages/daemon itself, as the test steps' working-directory does,
+    # because a step whose working-directory is a module is read as a run of its package's tests
+    # (.github/scripts/go_test_steps.py), and this one runs none. Its module downloads happen here,
+    # before the fence, and its exit status goes to a file when it ends.
+    - name: Start building the leg's test binary
+      if: inputs.leg != 'leak-guard'
+      shell: bash
+      env:
+        LEG: ${{ inputs.leg }}
+        BUILD: ${{ runner.temp }}/kind-test-build
+      run: |
+        case "$LEG" in
+          rig) package=./internal/kindtest/ ;;
+          runtime-*) package=./internal/runtime/sandbox/ ;;
+          shares | burstable | sweep | tree-*) package=./internal/daemon/ ;;
+          *) echo "::error::.github/actions/kind/build names no package for the leg $LEG"; exit 1 ;;
+        esac
+        (
+          status=0
+          cd packages/daemon && go test -c -o /dev/null "$package" || status=$?
+          echo "$status" >"$BUILD.part"
+          mv "$BUILD.part" "$BUILD.status"
+        ) >"$BUILD.log" 2>&1 </dev/null &
+        echo "building the test binary of $package in packages/daemon in the background (process $!)"
