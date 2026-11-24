@@ -39,15 +39,16 @@ type idleRigListener struct {
 }
 
 // startIdleRigListener runs a listener of machine id against natsURL until t ends, and returns it
-// once /healthz answers healthy.
-func startIdleRigListener(t *testing.T, natsURL, machine string) *idleRigListener {
+// once /healthz answers healthy. env is each NAME=VALUE the listener is started with beside the
+// rig's own, such as the session windows a test shortens.
+func startIdleRigListener(t *testing.T, natsURL, machine string, env ...string) *idleRigListener {
 	t.Helper()
-	return startIdleRigListenerOn(t, natsURL, machine, idleRigFreePort(t))
+	return startIdleRigListenerOn(t, natsURL, machine, idleRigFreePort(t), env...)
 }
 
 // startIdleRigListenerOn is startIdleRigListener on a port of the caller's choosing, so a
 // listener restarted mid-test comes back where every URL already handed out reaches it.
-func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *idleRigListener {
+func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int, env ...string) *idleRigListener {
 	t.Helper()
 	binary := testbuild.EnvoyBinary(t, "./cmd/listener")
 	// The listener's HOME is also where it runs, and the only path the test writes under it is
@@ -65,10 +66,11 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 	// The unplaceable window is ten seconds rather than the shipped minute: a copy stored on the
 	// agent subject of a session with no record is held for that window before the listener gives
 	// it up and reports the wake (cmd/listener's unplaceableAgentDelivery), so a pod woken that
-	// way comes back inside the rig's pod wait with room to spare.
-	cmd.Env = append(os.Environ(),
+	// way comes back inside the rig's pod wait with room to spare. What the caller names comes
+	// after the rig's own, so it takes the place of any of them it names again.
+	cmd.Env = append(append(os.Environ(),
 		"HOME="+home, "PORT="+fmt.Sprint(port), "ENVOY_LISTEN_HOST=127.0.0.1",
-		"ENVOY_MACHINE_ID="+machine, "NATS_URLS="+natsURL, "ENVOY_UNPLACEABLE_RETRY_WINDOW=10s")
+		"ENVOY_MACHINE_ID="+machine, "NATS_URLS="+natsURL, "ENVOY_UNPLACEABLE_RETRY_WINDOW=10s"), env...)
 	cmd.Stdout, cmd.Stderr = file, file
 	if err := cmd.Start(); err != nil {
 		cancel()
