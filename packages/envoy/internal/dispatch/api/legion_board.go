@@ -16,8 +16,9 @@
 //     slot holder for a root: a card's tree is the daemon's own `tree` where a read carried one
 //     (dispatch://INFRA-980 adds it) and the parent chain otherwise.
 //   - The columns are the spec's, in one ordered list (legionBoardColumnOrder), and a phase maps
-//     to exactly one of them (legionPhaseColumns), so the view and metric 2's "no role" bar agree
-//     on where `awaiting_person` and `held` go (the plan's D11).
+//     to exactly one of them (legion.PhaseColumns, which the metrics key their hours by too), so
+//     the view and metric 2's "no role" bar agree on where `awaiting_person` and `held` go (the
+//     plan's D11).
 package api
 
 import (
@@ -36,60 +37,21 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The board's columns. Queue holds the daemon's waiting line and, after it, the issues a blocker
-// link holds; Design the issues whose phase is still `admitted` that are on a card at all — the
-// slot holders, and the ones no card stands above, which are on no other issue's count
-// (legionBoardCompute); Retro `retro` alone; Merging `merging` and `awaiting_merge`; and Held the
-// phase metric 2 puts on the "no role" bar beside `awaiting_person` (the plan's D11).
-const (
-	legionColumnQueue        = "queue"
-	legionColumnDesign       = "design"
-	legionColumnPlanning     = "planning"
-	legionColumnImplementing = "implementing"
-	legionColumnTesting      = "testing"
-	legionColumnReviewing    = "reviewing"
-	legionColumnAccepting    = "accepting"
-	legionColumnRetro        = "retro"
-	legionColumnMerging      = "merging"
-	legionColumnAwaiting     = "awaiting_person"
-	legionColumnHeld         = "held"
-)
-
 // legionBoardColumnOrder is every column of the board, left to right, with the label the view
 // shows. Every answer carries all of them, empty where nothing is in them, so a page draws the
 // board from the body alone.
 var legionBoardColumnOrder = []struct{ id, label string }{
-	{legionColumnQueue, "Queue"},
-	{legionColumnDesign, "Design"},
-	{legionColumnPlanning, "Planning"},
-	{legionColumnImplementing, "Implementing"},
-	{legionColumnTesting, "Testing"},
-	{legionColumnReviewing, "Reviewing"},
-	{legionColumnAccepting, "Accepting"},
-	{legionColumnRetro, "Retro"},
-	{legionColumnMerging, "Merging"},
-	{legionColumnAwaiting, "Waiting on a person"},
-	{legionColumnHeld, "Held"},
-}
-
-// legionPhaseColumns is the column each phase the daemon reports falls in. A phase this does not
-// name (`done`, and any phase a later daemon adds) puts the issue on no card: the board shows the
-// work in flight, and a phase Dispatch has never heard of is not something it can place. Which
-// phases share a column is the board's own choice, made here: `retro` has a column of its own, as
-// it has a word of its own in the spec's tables ("Phase words in tables"), and Merging holds the
-// two phases those tables name merging, `merging` and `awaiting_merge`.
-var legionPhaseColumns = map[string]string{
-	legion.PhaseAdmitted:       legionColumnDesign,
-	legion.PhasePlanning:       legionColumnPlanning,
-	legion.PhaseImplementing:   legionColumnImplementing,
-	legion.PhaseTesting:        legionColumnTesting,
-	legion.PhaseReviewing:      legionColumnReviewing,
-	legion.PhaseAccepting:      legionColumnAccepting,
-	legion.PhaseRetro:          legionColumnRetro,
-	legion.PhaseMerging:        legionColumnMerging,
-	legion.PhaseAwaitingMerge:  legionColumnMerging,
-	legion.PhaseAwaitingPerson: legionColumnAwaiting,
-	legion.PhaseHeld:           legionColumnHeld,
+	{legion.ColumnQueue, "Queue"},
+	{legion.ColumnDesign, "Design"},
+	{legion.ColumnPlanning, "Planning"},
+	{legion.ColumnImplementing, "Implementing"},
+	{legion.ColumnTesting, "Testing"},
+	{legion.ColumnReviewing, "Reviewing"},
+	{legion.ColumnAccepting, "Accepting"},
+	{legion.ColumnRetro, "Retro"},
+	{legion.ColumnMerging, "Merging"},
+	{legion.ColumnAwaiting, "Waiting on a person"},
+	{legion.ColumnHeld, "Held"},
 }
 
 // legionNotConfiguredCode and legionNotConfiguredMessage are the one refusal a project with no
@@ -515,7 +477,7 @@ func (c *legionBoardCards) has(key string) bool {
 	if issue == nil {
 		return false
 	}
-	_, named := legionPhaseColumns[issue.phase]
+	_, named := legion.PhaseColumns[issue.phase]
 	held := false
 	switch {
 	case c.queued[key]:
@@ -617,7 +579,7 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 		if placed[key] {
 			continue
 		}
-		column, named := legionPhaseColumns[issue.phase]
+		column, named := legion.PhaseColumns[issue.phase]
 		if !named {
 			continue
 		}
@@ -631,12 +593,12 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 		cards[column] = append(cards[column], p.card(issue, blockers[key], 0))
 	}
 	for _, key := range queued {
-		cards[legionColumnQueue] = append(cards[legionColumnQueue], p.card(p.issues[key], blockers[key], uncarded[key]))
+		cards[legion.ColumnQueue] = append(cards[legion.ColumnQueue], p.card(p.issues[key], blockers[key], uncarded[key]))
 	}
 	// A root's count is known only once every issue has been placed, so the cards already made
 	// take theirs now.
 	for column, made := range cards {
-		if column == legionColumnQueue {
+		if column == legion.ColumnQueue {
 			continue
 		}
 		for index := range made {
@@ -653,7 +615,7 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 		columns = append(columns, legionBoardColumn{ID: column.id, Label: column.label, Cards: made})
 	}
 
-	header := legionBoardHeader{QueueLength: len(cards[legionColumnQueue])}
+	header := legionBoardHeader{QueueLength: len(cards[legion.ColumnQueue])}
 	// Slots in use are the daemon's own count where it reports one. dispatch://INFRA-980 makes
 	// admission.active list every issue that holds a slot, children included, so it is the
 	// authority; before that release the daemon lists roots there and only a root carries a slot,

@@ -451,7 +451,7 @@ func (f *filler) batch(ctx context.Context, safe int64) (batchResult, error) {
 	if computed {
 		reachArg = &reach
 	}
-	if err := tx.QueryRow(ctx, advanceCursorQuery, result.cursor, eventAt, reachArg, f.holderArg(), rulesVersion).
+	if err := tx.QueryRow(ctx, advanceCursorQuery, result.cursor, eventAt, reachArg, f.holderArg(), RulesVersion).
 		Scan(&result.reach); err != nil {
 		return batchResult{}, fmt.Errorf("keyword fill: move the cursor to event %d: %w", result.cursor, err)
 	}
@@ -539,7 +539,7 @@ func (f *filler) lockCursor(ctx context.Context, tx pgx.Tx) (cursor int64, curso
 		case !errors.Is(err, pgx.ErrNoRows) || attempt > 0:
 			return 0, nil, nil, fmt.Errorf("keyword fill: lock the cursor: %w", err)
 		}
-		if _, err := tx.Exec(ctx, createCursorQuery, f.holderArg(), rulesVersion); err != nil {
+		if _, err := tx.Exec(ctx, createCursorQuery, f.holderArg(), RulesVersion); err != nil {
 			return 0, nil, nil, fmt.Errorf("keyword fill: create the cursor: %w", err)
 		}
 	}
@@ -553,7 +553,7 @@ func (f *filler) empty(ctx context.Context, tx pgx.Tx) error {
 			return fmt.Errorf("keyword fill: empty the table of a reset log: %w", err)
 		}
 	}
-	if _, err := tx.Exec(ctx, createCursorQuery, f.holderArg(), rulesVersion); err != nil {
+	if _, err := tx.Exec(ctx, createCursorQuery, f.holderArg(), RulesVersion); err != nil {
 		return fmt.Errorf("keyword fill: start the cursor of a reset log: %w", err)
 	}
 	return nil
