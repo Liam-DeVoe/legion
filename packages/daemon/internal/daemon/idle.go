@@ -632,31 +632,43 @@ func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now tim
 		told = open
 	}
 	mark := store.IdleReleaseMark{Generation: view.Generation, Role: told}
-	rows := make([]store.IdleReleaseRow, 0, len(decision.Roles)+2)
-	add := func(payload record.OutboxPayload, boundary bool) error {
-		row, err := record.NewOutboxRow(view.Issue, payload, now)
-		if err != nil {
-			return fmt.Errorf("encode the %s of %s's release: %w", payload.OutboxKind(), view.Issue, err)
-		}
-		rows = append(rows, store.IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload, Boundary: boundary})
-		return nil
-	}
-	if err := add(record.IssueWorkspaceCheck{Tree: view.Tree, Generation: view.Generation,
+	rows := markRows{issue: view.Issue, act: "release", now: now, rows: make([]store.IdleReleaseRow, 0, len(decision.Roles)+2)}
+	if err := rows.add(record.IssueWorkspaceCheck{Tree: view.Tree, Generation: view.Generation,
 		TreeGeneration: view.Root.Generation, Role: mark.Role}, false); err != nil {
 		return store.IdleReleaseMark{}, err
 	}
 	for i, role := range decision.Roles {
-		if err := add(record.SuperviseRequest{Op: "release", Tree: view.Tree, Role: role,
+		if err := rows.add(record.SuperviseRequest{Op: "release", Tree: view.Tree, Role: role,
 			Generation: view.Generation, Reason: "the issue's pod has been idle for the release period"}, i == 0); err != nil {
 			return store.IdleReleaseMark{}, err
 		}
 	}
-	if err := add(record.IssueRelease{Tree: view.Tree, Generation: view.Generation,
+	if err := rows.add(record.IssueRelease{Tree: view.Tree, Generation: view.Generation,
 		TreeGeneration: view.Root.Generation}, false); err != nil {
 		return store.IdleReleaseMark{}, err
 	}
-	mark.Rows = rows
+	mark.Rows = rows.rows
 	return mark, nil
+}
+
+// markRows is the outbox rows of one release's or close's mark as the store writes them
+// (store.IdleReleaseMark.Rows), each encoded for issue at now; act names the act, "release" or
+// "close", in an error. Every builder of a mark's rows below adds its rows through it.
+type markRows struct {
+	issue, act string
+	now        time.Time
+	rows       []store.IdleReleaseRow
+}
+
+// add encodes payload as the mark's next row. boundary marks the row the store reads as the
+// release's boundary (store.IdleReleaseRow.Boundary).
+func (m *markRows) add(payload record.OutboxPayload, boundary bool) error {
+	row, err := record.NewOutboxRow(m.issue, payload, m.now)
+	if err != nil {
+		return fmt.Errorf("encode the %s of %s's %s: %w", payload.OutboxKind(), m.issue, m.act, err)
+	}
+	m.rows = append(m.rows, store.IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload, Boundary: boundary})
+	return nil
 }
 
 // leftPodCloseRows is the close of a pod whose issue left the workflow as outbox rows
@@ -680,12 +692,11 @@ func leftPodCloseRows(view pods.IdleView, decision workflow.IdleDecision, now ti
 		}
 	}
 	check.TurnStart = view.NewestTurnStart()
-	row, err := record.NewOutboxRow(view.Issue, check, now)
-	if err != nil {
-		return store.IdleReleaseMark{}, fmt.Errorf("encode the workspace check of %s's close: %w", view.Issue, err)
+	rows := markRows{issue: view.Issue, act: "close", now: now}
+	if err := rows.add(check, false); err != nil {
+		return store.IdleReleaseMark{}, err
 	}
-	return store.IdleReleaseMark{Generation: view.Generation, Close: true,
-		Rows: []store.IdleReleaseRow{{Kind: string(row.Kind), Payload: row.Payload}}}, nil
+	return store.IdleReleaseMark{Generation: view.Generation, Close: true, Rows: rows.rows}, nil
 }
 
 // launcherCheck is the workspace check the pod's launcher reads where no role process runs in the
@@ -730,28 +741,20 @@ func leftPodStopsAfterCheck(now, turnStart time.Time, pod string) func(pods.Idle
 // (record.IssueWorkspaceCheck.PodUID): the suspension takes that pod or nothing
 // (record.IssueSuspend.PodUID). A close of live roles binds none ("").
 func leftPodStopRows(view pods.IdleView, decision workflow.IdleDecision, now, turnStart time.Time, pod string) (store.IdleReleaseMark, error) {
-	mark := store.IdleReleaseMark{Generation: view.Generation, Close: true}
-	add := func(payload record.OutboxPayload) error {
-		row, err := record.NewOutboxRow(view.Issue, payload, now)
-		if err != nil {
-			return fmt.Errorf("encode the %s of %s's close: %w", payload.OutboxKind(), view.Issue, err)
-		}
-		mark.Rows = append(mark.Rows, store.IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload})
-		return nil
-	}
+	rows := markRows{issue: view.Issue, act: "close", now: now}
 	fence := &turnStart
 	reason := fmt.Sprintf("%s left the workflow, and its pod has been idle for the release period", view.Issue)
 	for _, role := range decision.Roles {
-		if err := add(record.SuperviseRequest{Op: "suspend", Tree: view.Tree, Role: role,
-			Generation: view.Generation, Reason: reason, TurnStart: fence}); err != nil {
+		if err := rows.add(record.SuperviseRequest{Op: "suspend", Tree: view.Tree, Role: role,
+			Generation: view.Generation, Reason: reason, TurnStart: fence}, false); err != nil {
 			return store.IdleReleaseMark{}, err
 		}
 	}
-	if err := add(record.IssueSuspend{Tree: view.Tree, Generation: view.Generation,
-		TreeGeneration: view.Root.Generation, TurnStart: fence, PodUID: pod}); err != nil {
+	if err := rows.add(record.IssueSuspend{Tree: view.Tree, Generation: view.Generation,
+		TreeGeneration: view.Root.Generation, TurnStart: fence, PodUID: pod}, false); err != nil {
 		return store.IdleReleaseMark{}, err
 	}
-	return mark, nil
+	return store.IdleReleaseMark{Generation: view.Generation, Close: true, Rows: rows.rows}, nil
 }
 
 // unownedReleaseRows is the release of a pod no claim owns as outbox rows. Its last act is the
@@ -780,28 +783,20 @@ func leftPodStopRows(view pods.IdleView, decision workflow.IdleDecision, now, tu
 // the cancel can read what this release did rather than guess it from a missing role; and the
 // generation of the issue the view was read at, as every mark carries.
 func unownedReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
-	mark := store.IdleReleaseMark{Generation: view.Generation, SuspendsNoRole: true}
-	add := func(payload record.OutboxPayload, boundary bool) error {
-		row, err := record.NewOutboxRow(view.Issue, payload, now)
-		if err != nil {
-			return fmt.Errorf("encode the %s of %s's release: %w", payload.OutboxKind(), view.Issue, err)
-		}
-		mark.Rows = append(mark.Rows, store.IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload, Boundary: boundary})
-		return nil
-	}
+	rows := markRows{issue: view.Issue, act: "release", now: now}
 	// pod is the pod the launcher's check reads, which binds the teardown (record.IssueRelease's
 	// PodUID): a release that reads nothing binds none.
 	pod := ""
 	if decision.Read {
 		check := launcherCheck(view)
 		pod = check.PodUID
-		if err := add(check, false); err != nil {
+		if err := rows.add(check, false); err != nil {
 			return store.IdleReleaseMark{}, err
 		}
 	}
-	if err := add(record.IssueRelease{Tree: view.Tree, Generation: view.Generation,
+	if err := rows.add(record.IssueRelease{Tree: view.Tree, Generation: view.Generation,
 		TreeGeneration: view.Root.Generation, PodUID: pod}, true); err != nil {
 		return store.IdleReleaseMark{}, err
 	}
-	return mark, nil
+	return store.IdleReleaseMark{Generation: view.Generation, SuspendsNoRole: true, Rows: rows.rows}, nil
 }
