@@ -4,16 +4,16 @@ import * as path from "node:path";
 import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { connect, nkeys } from "nats";
-import { natsSeedFromEnvironment } from "../envoy-settings";
-import { natsAuthOptions } from "../nats-auth";
-import type { BrokerNatsCredential, NatsCredential } from "../nats-credential";
 import {
   NATS_START_HOOK_MS,
   NATS_STOP_HOOK_MS,
   natsHookDeadline,
   natsServer,
   useNatsServerDirectory,
-} from "./nats-server";
+} from "../../test/nats-server";
+import { natsSeedFromEnvironment } from "../envoy-settings";
+import { natsAuthOptions } from "../nats-auth";
+import type { BrokerNatsCredential, NatsCredential } from "../nats-credential";
 
 // The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
 // is a hang guard, not a verdict, for every row of this file that states none of its own.

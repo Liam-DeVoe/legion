@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -12,7 +12,6 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isShellCommandReport } from "@legion/contracts";
-import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { processEnded } from "@legion/test-fixtures/process-end";
 import { procmgr } from "@oh-my-pi/pi-utils";
 import {
@@ -26,10 +25,6 @@ import {
   shellCommandShutdownReport,
   shellCommandWithheldReport,
 } from "./typed-shell";
-
-// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
-// is a hang guard, not a verdict, for every row of this file that states none of its own.
-setDefaultTimeout(HANG_GUARD_MS);
 
 /** A directory of this machine's own, so a command that prints its working directory proves the
  *  session's is the one it ran in. */

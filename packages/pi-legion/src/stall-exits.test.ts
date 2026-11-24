@@ -1,4 +1,4 @@
-import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -14,16 +14,11 @@ import {
   type StallWatchdogLog,
   type StallWatchdogTeller,
 } from "@legion/pi-shared/stall-watchdog";
-import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import type { LegionSessionKind } from "./classify";
 import { createStallTeller } from "./stall-evidence";
 // The import below is this file's merge-base check: on the merge base there is no `./stall-exits`,
 // so every test here fails to resolve rather than passing vacuously.
 import { createStallExits, type StallExitsRecord, stallExitsFile } from "./stall-exits";
-
-// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
-// is a hang guard, not a verdict, for every row of this file that states none of its own.
-setDefaultTimeout(HANG_GUARD_MS);
 
 const SECOND = 1_000;
 const MINUTE = 60 * SECOND;

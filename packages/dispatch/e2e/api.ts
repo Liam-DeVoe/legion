@@ -385,26 +385,19 @@ export function setGatedSteps(
   );
 }
 
-/** Maps `repo` (`owner/name`) to a project, as the Settings page does; `default: true` makes it the
- *  project's default repository. */
-export function putRepoProject(
-  repo: string,
-  input: Body<"/api/v1/settings/repo-projects/{owner}/{repo}", "put">,
-  login = "alice"
+/** `PUT /api/v1/projects/{key}/default-repository`: sets `project`'s default repository
+ *  (`owner/name`), as the Settings page's Projects table does, or clears it with `null`. An issue
+ *  of the project resolves to it when neither the issue nor an issue above it names a repository.
+ *  The call is a person's by default; the route refuses a project-scoped credential. */
+export function putProjectDefaultRepository(
+  project: string,
+  repo: string | null,
+  options: ApiOptions = {}
 ) {
   return put(
-    "/api/v1/settings/repo-projects/{owner}/{repo}",
-    { body: input, params: repoParams(repo) },
-    { login }
-  );
-}
-
-/** Removes `repo`'s mapping, as the Settings page's Delete does. */
-export function deleteRepoProject(repo: string, login = "alice") {
-  return del(
-    "/api/v1/settings/repo-projects/{owner}/{repo}",
-    { body: {}, params: repoParams(repo) },
-    { login }
+    "/api/v1/projects/{key}/default-repository",
+    { body: { repo }, params: { key: project } },
+    options
   );
 }
 
@@ -812,6 +805,18 @@ export function editComment(
   return patch("/api/v1/comments/{id}", { body: input, params: { id } }, options);
 }
 
+/** `DELETE /api/v1/comments/{id}`: the comment's author withdraws it. The row keeps its place in
+ *  its thread, its body is cleared, and every read of it carries `deleted_at` and `deleted_by`. */
+export function deleteComment(id: string, options: ApiOptions = {}) {
+  return del("/api/v1/comments/{id}", { body: {}, params: { id } }, options);
+}
+
+/** `GET /api/v1/comments/{id}/history`: every body an edit or a delete of the comment replaced,
+ *  newest first, each with the actor that replaced it and the time, beside the deletion mark. */
+export function getCommentHistory(id: string, options: ApiOptions = {}) {
+  return get("/api/v1/comments/{id}/history", { params: { id } }, options);
+}
+
 export function listComments(
   issue: string,
   artifact: string | undefined = undefined,
@@ -1043,6 +1048,29 @@ export function getMessage(issue: string, messageID: string, options: ApiOptions
     { params: { id: messageID, key: issue } },
     options
   );
+}
+
+/** `PATCH /api/v1/messages/{id}`: the author of an issue message replaces its body. Every read
+ *  of the message then carries `edited_at`. */
+export function editMessage(
+  id: string,
+  input: Body<"/api/v1/messages/{id}", "patch">,
+  options: ApiOptions = {}
+) {
+  return patch("/api/v1/messages/{id}", { body: input, params: { id } }, options);
+}
+
+/** `DELETE /api/v1/messages/{id}`: the author of an issue message withdraws it. The row keeps
+ *  its place in its thread, its body is cleared, and every read carries `deleted_at` and
+ *  `deleted_by`. */
+export function deleteMessage(id: string, options: ApiOptions = {}) {
+  return del("/api/v1/messages/{id}", { body: {}, params: { id } }, options);
+}
+
+/** `GET /api/v1/messages/{id}/history`: every body an edit or a delete of the message replaced,
+ *  newest first, each with the actor that replaced it and the time, beside the deletion mark. */
+export function getMessageHistory(id: string, options: ApiOptions = {}) {
+  return get("/api/v1/messages/{id}/history", { params: { id } }, options);
 }
 
 /** `GET /api/v1/messages/{id}/blocks`: the message's blocks in body order, each with its span in
