@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { dispatchPayloadKind } from "@legion/contracts";
 import { renderInbound } from "../delivery";
+import { parseFrameJSON } from "../frame-json";
 import {
   DISPATCH_PROPERTY_FRAMES,
   dispatchFramesDigest,
@@ -17,16 +18,17 @@ import {
 // The card is read as INFRA-764's review read it (Job legion-review5192-fz5wn): the frame
 // rendered by renderInbound on the session's own agent subject, the card showing PUB when it holds
 // "PUB" or "pub-1". The plugin before #5192 showed the whole payload of a Dispatch frame it read
-// no event of (parseDispatchFrame's raw value, its strings decoded); it now shows none of it, so
-// the oracle adds that value back for such a frame, and judges each frame as that plugin would
-// have shown it. The edge's rule is then held to the bar alone, without the plugin's change
-// behind it: the frames it passes show PUB in no card even to the earlier plugin.
+// no event of (parseDispatchFrame's raw value, read by its own keys, parseFrameJSON); it now shows
+// none of it, so the oracle adds that value back for such a frame, read the same way, and judges
+// each frame as that plugin would have shown it. The edge's rule is then held to the bar alone,
+// without the plugin's change behind it: the frames it passes show PUB in no card even to the
+// earlier plugin.
 //
 // The oracle can fail: over the frames #5192's head 297f438ae2 passed (passed_at_297f438ae2, the
 // same Go test run at that commit), it finds cards that show PUB, every one a payload the plugin
-// read no event of - 1,329 with this branch's plugin, and the 1,254 INFRA-764's review counted
-// with #5199's, which hides the 75 that show PUB from a "__proto__" key. The test asserts that
-// there is at least one and prints how many, not either number, which moves with the plugin's code.
+// read no event of - the 1,254 INFRA-764's review counted with #5199's reader, which leaves a
+// "__proto__" key out, and 1,329 with the reader before it. The test asserts that there is at
+// least one and prints how many, not either number, which moves with the plugin's code.
 
 type PropertyFixture = {
   readonly seed: readonly [number, number];
@@ -53,7 +55,7 @@ function rawShownPayload(frame: string): unknown {
   if (typeof envelope.payload !== "string") return undefined;
   let value: unknown;
   try {
-    value = JSON.parse(envelope.payload);
+    value = parseFrameJSON(envelope.payload);
   } catch {
     return envelope.payload;
   }

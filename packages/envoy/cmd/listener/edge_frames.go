@@ -175,20 +175,20 @@ func edgeFrameVerdict(repositories *edgeRepositories, sessionID string, projects
 		// on the session's own subject, and a kept or a taken copy of the session's own project's
 		// role keeps the previous holder's subject as its topic; both reach the session on its own
 		// agent subject. The role is read as the session relay, a takeover pass and the kept
-		// lane's walk read it (readRoleFrame): by the exact keys the plugins' transport reads,
-		// past a byte order mark and at any depth, so a frame the session's plugin reads as a
-		// role's message is judged by that role here, whatever encoding/json makes of its other
-		// fields. It holds a role lane to the project edgeTopicRule does (contracts.RoleClaimOf).
-		// A frame whose role mark readers disagree on - one under more than one "role" key, or
-		// under a key that differs from "role" only in case, which readRoleFrame passes over and
-		// encoding/json takes - is withheld first, as one whose topic they disagree on is above
-		// (exactFrameField). A role mark is judged by its role only where a role message's topic
-		// is (roleFrameVerdict): the plugin shows the frame by its topic, so a mark of the token's
-		// project on another project's event would pass that event. A message whose role that
-		// read cannot tell is no role message, as the relay sends it, and is judged by its topic
-		// below, and so is a role-marked frame roleFrameVerdict leaves to it; one encoding/json
-		// does not read (frameIsJSON) is withheld there, as it was when the edge read the topic
-		// with encoding/json.
+		// lane's walk read it (readRoleFrame): its topic, as the plugins' transport reads it, and
+		// its role mark, each by its exact key, past a byte order mark and at any depth, so a frame
+		// the relay tells a role message is judged by that role here, whatever encoding/json makes
+		// of its other fields. It holds a role lane to the project edgeTopicRule does
+		// (contracts.RoleClaimOf). A frame whose role mark readers disagree on - one under more
+		// than one "role" key, or under a key that differs from "role" only in case, which
+		// readRoleFrame passes over and encoding/json takes - is withheld first, as one whose topic
+		// they disagree on is above (exactFrameField). A role mark is judged by its role only
+		// where a role message's topic is (roleFrameVerdict): the plugin shows the frame by its
+		// topic, so a mark of the token's project on another project's event would pass that
+		// event. A message whose role that read cannot tell is no role message, as the relay sends
+		// it, and is judged by its topic below, and so is a role-marked frame roleFrameVerdict
+		// leaves to it; one encoding/json does not read (frameIsJSON) is withheld there, as it was
+		// when the edge read the topic with encoding/json.
 		if _, _, err := exactFrameField(data, "role"); err != nil {
 			return frameKeyWithheld(err)
 		}
@@ -248,8 +248,8 @@ func exactFrameTopic(data []byte) (string, bool, error) {
 // topic. The verdict beside false is a drop, so a caller that ignores the bool withholds the frame
 // rather than delivering it (framePass is frameAction's zero value).
 func roleFrameVerdict(frame roleFrame, projects []string) (frameVerdict, bool) {
-	topic, _ := frame.text("topic")
-	if mark, _ := frame.text("role"); mark != "" {
+	topic, _ := fieldText("topic", frame.topic)
+	if mark, _ := fieldText("role", frame.mark); mark != "" {
 		if markRole := store.RoleClaimKeyOf(mark); markRole != "" && !roleOfProjects(markRole, projects) {
 			return frameDrops(withheldProjectNotHeld), true
 		}
@@ -474,7 +474,8 @@ func exactJSONObject(doc []byte) (map[string]json.RawMessage, error) {
 	fields := map[string]json.RawMessage{}
 	folded := map[string]bool{}
 	ambiguous, prototype := false, false
-	_, err := topLevelJSONFields(doc, func(name string, raw json.RawMessage) {
+	_, err := topLevelJSONFields(doc, func(token, raw []byte) {
+		name := jsonKey(token)
 		if name == "__proto__" {
 			prototype = true
 			return
@@ -570,7 +571,8 @@ func exactJSONString(doc []byte, key string) (string, bool, error) {
 func exactJSONField(doc []byte, key string) (json.RawMessage, bool, error) {
 	var value json.RawMessage
 	found, ambiguous, prototype := false, false, false
-	_, err := topLevelJSONFields(doc, func(name string, raw json.RawMessage) {
+	_, err := topLevelJSONFields(doc, func(token, raw []byte) {
+		name := jsonKey(token)
 		if name == "__proto__" {
 			prototype = true
 			return

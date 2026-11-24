@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 )
@@ -73,7 +74,7 @@ func TestTheEdgeAndTheRelayReadAFramesFieldsAlike(t *testing.T) {
 				if relayErr != nil {
 					continue
 				}
-				if got, _ := frame.text(field.key); got != field.want {
+				if got, _ := fieldText(field.key, map[string]json.RawMessage{"topic": frame.topic, "role": frame.mark}[field.key]); got != field.want {
 					t.Fatalf("the relay reads the %s of %s as %q, the edge %q", field.key, tc.data, got, field.want)
 				}
 			}
