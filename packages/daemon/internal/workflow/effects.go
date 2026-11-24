@@ -1175,9 +1175,6 @@ func stepRunRow(rows []record.PhaseRow, now record.PhaseRow, role claim.Role, ta
 	switch found {
 	case record.RowOfTheStep:
 		row.LastHandoff = now.LastHandoff
-		if agent != "" && row.Claim != "" && row.Claim != agent {
-			row.ReviewedHead = record.ReviewedBefore(rows, role, task, place, agent)
-		}
 		return row, false
 	case record.RowOfNoStep:
 		row.StepTask, row.StepPlace = task, place
