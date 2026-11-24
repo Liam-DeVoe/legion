@@ -1325,7 +1325,7 @@ function Statement({
         <Because decision={decision} statement={statement} />
         {/* The constraints the statement names, as the outline draws them: out of the tab
             order, as the row's other controls are. */}
-        <LensLines body={false} node={node} tabStops={false} />
+        <LensLines node={node} tabStops={false} />
         <RowReport line={report} />
       </div>
       {/* No mark until its reads hold an answer; the row's third column keeps its width, so

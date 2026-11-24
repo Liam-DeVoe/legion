@@ -1,9 +1,8 @@
 import type { DisplayTree } from "../../../api/types";
 import { storeAddressReference } from "../../refs/store-address";
 import { wordsOf } from "../../refs/tree-fragment";
-import { chipWords } from "../node-row-chip";
 import { NODE_TYPE_NAMES, sentenceCase } from "../page-words";
-import { blank, type Draft, plainWords, storeKindOf } from "../tree-drafts";
+import { blank, type Draft, plainWords, storeKindOf, withShortAddresses } from "../tree-drafts";
 import type { TreeDraftContext } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 
@@ -27,7 +26,7 @@ export interface LensChip {
   /** The target's `dispatch://` address, as its own row carries it, but a check's id in the tree
    *  read where the read gives the check no address (`TreeDraftContext.referenceOf`). */
   readonly address: string;
-  /** The target's words, cut by `chipWords`; in a fact line, the words the line names it by. */
+  /** The target's words, whole; in a fact line, the words the line names it by. */
   readonly words: string;
   /** Set only where `words` are the page's and not the author's: the page's word for a lens,
    *  which names a lens whose kind has no words (`lensChipWords`). */
@@ -39,12 +38,12 @@ export interface LensChip {
   readonly visibility?: string;
 }
 
-/** One lens of the tree, as the chain of a focused lens draws it. */
+/** One lens of the tree, as the chain a lens draws names it. */
 export interface LensPlace {
   readonly kindWords: string;
-  /** The words the row it stands under draws its one line from, as that row's draft holds them
-   *  (`TreeDraftContext.lineOf`); `LensChain.tsx` cuts them as that row does. */
-  readonly onLine?: string;
+  /** The whole words of the node it stands under (`wholeWords`), where a step drafted that
+   *  node; `LensChain.tsx` draws them as they are. */
+  readonly onWords?: string;
   /** Its id in the tree read, where a step drafted it. */
   readonly id?: string;
 }
@@ -89,13 +88,13 @@ export function kindWords(words: string): string {
   return sentenceCase(words);
 }
 
-/** The words of a chip that names a lens: its kind's words `kind`, capitalised and cut as
- *  its tag is; where `kind` holds none, the page's word for a lens, which the chip marks as the
- *  page's (`chrome`). The outline's trigger chips and the chain's last chip are named alike. */
+/** The words of a chip that names a lens: its kind's words `kind`, capitalised and whole, as its
+ *  tag draws them; where `kind` holds none, the page's word for a lens, which the chip marks as
+ *  the page's (`chrome`). The outline's trigger chips and the chain's last chip are named alike. */
 export function lensChipWords(kind: string | undefined): Pick<LensChip, "chrome" | "words"> {
   return filled(kind)
-    ? { words: chipWords(kindWords(kind)) }
-    : { chrome: true, words: chipWords(kindWords(NODE_TYPE_NAMES.lens)) };
+    ? { words: kindWords(kind) }
+    : { chrome: true, words: kindWords(NODE_TYPE_NAMES.lens) };
 }
 
 /** Whether a stored string, or a fact line, has words to draw (`factText`). */
@@ -252,11 +251,11 @@ export function lensDrafts(
  *   whose `triggered_by` names it (`triggered`), only for a lens the read holds, each named by its
  *   kind's words as its tag is; and `lenses`, every lens of the answer by its address, one map
  *   shared by every lens.
- * - A risk: a chip for each check its `prevented_by` tuples name, named by that check's line
- *   (`chipWords(lineWords(node))`).
+ * - A risk: a chip for each check its `prevented_by` tuples name, named by that check's whole
+ *   words (`wholeWords`).
  * - Any draft with a `constrained_by` tuple, a statement above all: a chip for each constraint it
- *   names, by the constraint's words. A catalogue constraint is no row, so its chip is no link. A
- *   draft of another step gains lens facts only where it has such a chip.
+ *   names, by the constraint's whole words. A catalogue constraint is no row, so its chip is no
+ *   link. A draft of another step gains lens facts only where it has such a chip.
  */
 export function lensChips(
   draft: Draft,
@@ -269,7 +268,7 @@ export function lensChips(
       const address = target.supertag === "constraint" ? addressOf(target, context) : undefined;
       return address === undefined
         ? []
-        : [chipTo(target, address, { words: chipWords(constraintWords(target)) }, context)];
+        : [chipTo(target, address, { words: constraintWords(target) }, context)];
     })
   );
   if (draft.lens === undefined && constrainedBy.length === 0) return;
@@ -296,7 +295,7 @@ export function lensChips(
           chipTo(
             check,
             context.referenceOf(check) ?? check.id,
-            { words: chipWords(context.lineOf(check.id) ?? "") },
+            { words: wholeWords(check, context) },
             context
           )
         )
@@ -425,6 +424,21 @@ export function constraintWords(constraint: TreeAnswerNode): string {
   return wordsOf({ content: constraintRuns(constraint), type: "paragraph" });
 }
 
+/**
+ * The whole words `node` has, which a chip that names it and the chain entry of the row a lens
+ * stands under draw, with nothing cut: a lens's verdict, a risk's heading and a constraint's words
+ * as their rows draw them, and any other node's reading where the read sent one (`text_tree`),
+ * else its stored text. Each is read to plain words, a bare address written short, with one space
+ * between words; `""` where the node has none.
+ */
+export function wholeWords(node: TreeAnswerNode, context: TreeDraftContext): string {
+  const type = lensTypeOf(node, context);
+  if (type === "lens" || type === "risk") return plainWords(storedRowWords(node, type));
+  if (type === "constraint") return constraintWords(node);
+  if (node.text_tree === undefined) return plainWords(node.text);
+  return wordsOf(withShortAddresses(node.text_tree)).replace(/\s+/gu, " ").trim();
+}
+
 /** A constraint's words as the runs of one paragraph: a standard's `standard`, else a
  *  measurement's `<measurement>: <value>`, the `": "` a run of its own, and none where both are
  *  empty. `read` gives each stored string's runs, none where it holds no words: its plain words
@@ -499,10 +513,10 @@ function uniqueChips(chips: readonly LensChip[]): LensChip[] {
   return [...unique.values()];
 }
 
-/** Every lens of the answer by its address, for a focused lens's chain (`LensChain.tsx`): its
- *  kind's words as held, its id where a step drafted it, and its parent's line where a step
- *  drafted the parent. One map per build, shared by every lens: it reads which nodes were drafted
- *  and their lines, which the page's other reads change while the answer stands. */
+/** Every lens of the answer by its address, for the chain a lens draws (`LensChain.tsx`): its
+ *  kind's words as held, its id where a step drafted it, and the whole words of its parent where
+ *  a step drafted the parent. One map per build, shared by every lens: it reads which nodes were
+ *  drafted, which the page's other reads change while the answer stands. */
 const placeIndexes = new WeakMap<TreeDraftContext, ReadonlyMap<string, LensPlace>>();
 
 function lensPlaces(answer: TreeAnswer, context: TreeDraftContext): ReadonlyMap<string, LensPlace> {
@@ -512,11 +526,13 @@ function lensPlaces(answer: TreeAnswer, context: TreeDraftContext): ReadonlyMap<
   for (const lens of answer.nodes ?? []) {
     const address = lens.supertag === "lens" ? addressOf(lens, context) : undefined;
     if (address === undefined) continue;
-    const onLine = lens.parent === null ? undefined : context.lineOf(lens.parent.id);
+    const parent = lens.parent === null ? undefined : context.nodeOf(lens.parent.id);
+    const onWords =
+      parent !== undefined && context.drafted(parent.id) ? wholeWords(parent, context) : "";
     places.set(address, {
       ...(context.drafted(lens.id) ? { id: lens.id } : {}),
       kindWords: kindOf(lens, context),
-      ...(onLine === undefined ? {} : { onLine }),
+      ...(onWords === "" ? {} : { onWords }),
     });
   }
   placeIndexes.set(context, places);

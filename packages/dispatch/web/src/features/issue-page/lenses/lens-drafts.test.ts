@@ -14,7 +14,7 @@ import {
   nodeWords,
   type TreeNode,
 } from "../issue-tree";
-import { chipWords } from "../node-row-chip";
+import { NODE_TYPE_NAMES } from "../page-words";
 import { issueDetails, statementRef } from "../spec-filter/spec-fixtures";
 import { blockNodeId, treeContext } from "../tree-drafts";
 import {
@@ -27,7 +27,7 @@ import {
 import { type TreeWords, treeDraftsFrom } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 import { check } from "../verification-filter/verification-fixtures";
-import { type FactParts, factText, kindWords, type LensFacts } from "./lens-drafts";
+import { type FactParts, factText, kindWords, type LensFacts, lensChipWords } from "./lens-drafts";
 import { lensReadId } from "./lens-reads";
 
 /**
@@ -1050,7 +1050,7 @@ test("a store address inside a link's words reads as its node's name in that one
 
   expect((statement.tree?.content as DisplayTree[] | undefined)?.[0]?.content).toEqual([
     { text: "Two regions, until ", type: "text" },
-    { marks: link, text: chipWords(kindWords(PRE_MORTEM_WORDS)), type: "text" },
+    { marks: link, text: kindWords(PRE_MORTEM_WORDS), type: "text" },
     { text: " or ", type: "text" },
     { marks: link, text: "lens", type: "text" },
     { text: "; ", type: "text" },
@@ -1229,7 +1229,7 @@ test("an early warning's author's link whose words carry a mark is one chip", ()
 // A lens's row carries a chip for each lens its `triggered_by` names and for each lens whose
 // `triggered_by` names it, only for a lens the read holds, named by its kind's words as its tag
 // is, linked where a step drafted it, and with that lens's state and visibility. Every lens
-// shares one map of every lens of the answer, which a focused lens's chain reads.
+// shares one map of every lens of the answer, which the chain a lens draws reads.
 test("a trigger chip is drawn only for a lens the read holds", () => {
   const unseen = "f9000000-0000-4000-8000-000000000009";
   const { root } = drawn(
@@ -1275,27 +1275,27 @@ test("a trigger chip is drawn only for a lens the read holds", () => {
       id: SECOND,
       state: "proposed",
       visibility: "project",
-      words: chipWords(kindWords(PRE_MORTEM_WORDS)),
+      words: kindWords(PRE_MORTEM_WORDS),
     },
     {
       address: `dispatch://lens/${THIRD}`,
       state: "live",
       visibility: "author",
-      words: chipWords(kindWords(PRE_MORTEM_WORDS)),
+      words: kindWords(PRE_MORTEM_WORDS),
     },
   ]);
   expect(first.lenses).toBe(second.lenses);
   expect([...(first.lenses ?? new Map()).entries()]).toEqual([
     [
       `dispatch://lens/${FIRST}`,
-      { id: FIRST, kindWords: "trade-off analysis", onLine: "Words of r1." },
+      { id: FIRST, kindWords: "trade-off analysis", onWords: "Words of r1." },
     ],
     [
       `dispatch://lens/${SECOND}`,
       {
         id: SECOND,
         kindWords: PRE_MORTEM_WORDS,
-        onLine: "Words of r1.",
+        onWords: "Words of r1.",
       },
     ],
     [`dispatch://lens/${THIRD}`, { kindWords: PRE_MORTEM_WORDS }],
@@ -1303,16 +1303,16 @@ test("a trigger chip is drawn only for a lens the read holds", () => {
 });
 
 // A risk's row draws its heading, its early warning and its prevention, each read to
-// plain words, and a chip for each check its `prevented_by` names, named by that check's line
-// in the tree (`chipWords(lineWords(node))`) and linked to its row; a risk no check prevents has
-// none.
+// plain words, and a chip for each check its `prevented_by` names, named by that check's whole
+// text in the tree, not by the first block its row draws a line from, and linked to its row; a
+// risk no check prevents has none.
 test("a check's chip takes its words from its node", () => {
   const { root } = drawn(
     answer(
       [
         block("r1", "requirement", KEY, SPEC, 0),
         block("c1", "check", "r1", VERIFICATION, 0, {
-          text_tree: reading("C1. The index builds concurrently. Then it is checked."),
+          text_tree: reading("C1. The index builds concurrently.", "Then it is checked."),
         }),
         lens(FIRST, "r1"),
         bare("risk-b", "risk", FIRST, {
@@ -1355,10 +1355,13 @@ test("a check's chip takes its words from its node", () => {
         id: `${KEY}/verification-md#c1`,
         state: "live",
         visibility: "project",
-        words: chipWords(lineWords(checkRow)),
+        words: "C1. The index builds concurrently. Then it is checked.",
       },
     ],
   });
+  expect(lineWords(checkRow), "the check's row draws its first block as its line").toBe(
+    "C1. The index builds concurrently."
+  );
   expect(checkRow.reference).toBe(`dispatch://${KEY}/verification#b-c1`);
   expect(factsOf(rowOf(root, "risk-a")).preventedBy).toEqual([]);
 });
@@ -1495,8 +1498,8 @@ test("a lens on a comment's block stands under the comment", () => {
 });
 
 // A catalogue constraint the read brings in as context, and a constraint under anything but
-// the issue, draws no row; a statement's chip names a catalogue constraint by its words, cut as
-// a tag is, and links nothing. A lens kind is no row either.
+// the issue, draws no row; a statement's chip names a catalogue constraint by its whole words,
+// and links nothing. A lens kind is no row either.
 test("a catalogue constraint is no row and its chip has no link", () => {
   const catalogue = "f6000000-0000-4000-8000-000000000006";
   const standard = "WCAG 2.2 AA, success criterion 1.4.3 contrast minimum";
@@ -1533,8 +1536,73 @@ test("a catalogue constraint is no row and its chip has no link", () => {
     address: `dispatch://constraint/${catalogue}`,
     state: "live",
     visibility: "project",
-    words: chipWords(standard),
+    words: standard,
   });
+});
+
+// A chip, a tag and the chain's place draw their node's words whole, however long. Each case
+// holds words longer than the 32 characters part G cuts a chip at: a lens's kind, a constraint's
+// standard, a check's text over two blocks, a statement's text over two blocks and a risk's
+// heading.
+test("a lens chip, a check's chip, a constraint's chip and a lens's place hold whole words", () => {
+  const constraint = "d4000000-0000-4000-8000-000000000004";
+  const standard = "Web Content Accessibility Guidelines 2.2, success criterion 2.4.11";
+  const checkWords =
+    "C1. The migration builds the index without locking the table. Then it checks.";
+  const statementWords =
+    "The listener keeps each notice for a day and drops each older one. The next notice arrives.";
+  const heading = "Nobody reads the warning, and the table stays locked for a minute.";
+  const { root } = drawn(
+    answer(
+      [
+        block("r1", "requirement", KEY, SPEC, 0, {
+          text_tree: reading(
+            "The listener keeps each notice for a day and drops each older one.",
+            "The next notice arrives."
+          ),
+        }),
+        block("c1", "check", "r1", VERIFICATION, 0, {
+          text_tree: reading(
+            "C1. The migration builds the index without locking the table.",
+            "Then it checks."
+          ),
+        }),
+        bare(constraint, "constraint", KEY, { attributes: { standard } }),
+        lens(FIRST, "r1", "2026-11-05T09:00:00Z"),
+        lens(SECOND, "r1", "2026-11-05T10:00:00Z"),
+        bare("risk-a", "risk", FIRST, { attributes: { heading } }),
+        lens(THIRD, "risk-a", "2026-11-05T11:00:00Z"),
+        PRE_MORTEM,
+        TRADE_OFF,
+      ],
+      [
+        tuple("has_kind", FIRST, PRE_MORTEM.id),
+        tuple("has_kind", SECOND, PRE_MORTEM.id),
+        tuple("has_kind", THIRD, TRADE_OFF.id),
+        tuple("triggered_by", SECOND, FIRST),
+        tuple("prevented_by", "risk-a", "c1"),
+        tuple("constrained_by", "r1", constraint),
+      ]
+    )
+  );
+  const kind = kindWords(PRE_MORTEM_WORDS);
+  const first = factsOf(rowOf(root, FIRST));
+  const chips = [
+    ...factsOf(rowOf(root, blockNodeId("spec", "r1"))).constrainedBy,
+    ...factsOf(rowOf(root, "risk-a")).preventedBy,
+    ...first.triggered,
+    ...factsOf(rowOf(root, SECOND)).triggeredBy,
+  ];
+
+  expect(chips.map((chip) => chip.words)).toEqual([standard, checkWords, kind, kind]);
+  for (const chip of chips) expect(chip.words.length).toBeGreaterThan(32);
+  expect(lensChipWords(PRE_MORTEM_WORDS)).toEqual({ words: kind });
+  expect(lensChipWords("")).toEqual({ chrome: true, words: kindWords(NODE_TYPE_NAMES.lens) });
+  expect([...(first.lenses ?? new Map()).values()].map((place) => place.onWords)).toEqual([
+    statementWords,
+    statementWords,
+    heading,
+  ]);
 });
 
 // `?node=` with the id the 201 of an invocation gives (`lensReadId`) opens the path to that

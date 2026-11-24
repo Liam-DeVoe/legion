@@ -418,7 +418,7 @@ export function NodeRow({
               <ParentLink line={node.parentLine} tabStops={tabStops} />
             </p>
           )}
-          {oneLine ? null : <LensLines body={body} node={node} tabStops={tabStops} />}
+          {oneLine ? null : <LensLines node={node} tabStops={tabStops} />}
           {body ? (
             <NodeBody
               author={author}
@@ -430,7 +430,7 @@ export function NodeRow({
               tabStops={tabStops}
             />
           ) : null}
-          {focused ? <LensChain node={node} tabStops={tabStops} /> : null}
+          {oneLine ? null : <LensChain node={node} tabStops={tabStops} />}
           {focused ? (
             <RowActs node={node} ownAnswer={ownAnswer} tabStops={tabStops} writer={writer} />
           ) : null}
@@ -721,7 +721,9 @@ function Bullet({
  * unsure says of itself, on a second, smaller line (ruling 5). All of it is grey but the tag, the
  * reader's own name and a state that asks something of the reader. A node the model holds no
  * author for draws none here: its body says so (`NodeBody`, ruling 5). From 761 px up it is a
- * column as wide as its first line; on a phone it is one small line under the words (ruling 4).
+ * column as wide as its first line, and at most two fifths of the row; on a phone it is one small
+ * line under the words (ruling 4). A lens's tag is its kind's words whole, so it wraps inside
+ * that column or line, with its shape beside its first line.
  */
 export function RowMargin({
   author,
@@ -757,12 +759,17 @@ export function RowMargin({
       </div>
     );
   }
+  // A lens's tag is its kind's words, which run as long as the author wrote them: they wrap
+  // inside the column, and the shape stays beside their first line.
+  const kindTag = node.lens?.kind === undefined ? undefined : lensChipWords(node.lens.kind).words;
   return (
     <div className={`${NODE_ROW_LAYOUT.margin} ${pageQuietText}`} data-node-margin="">
       <div className={NODE_ROW_LAYOUT.marginLine} data-node-margin-line="">
         {UNTYPED[node.type] === true ? null : (
           <span
-            className={`inline-flex items-center gap-1 font-semibold whitespace-nowrap ${pageKindTag[tone]}`}
+            className={`inline-flex gap-1 font-semibold ${
+              kindTag === undefined ? "items-center whitespace-nowrap" : "min-w-0 items-start"
+            } ${pageKindTag[tone]}`}
             data-node-tag=""
           >
             {/* A `requirement` block of a document other than the spec is no statement: it says
@@ -770,14 +777,22 @@ export function RowMargin({
                 block outside the Verification document draws no state word (decision 152). */}
             {node.type === "requirement" && !isStatement(node) ? (
               <span {...pageChrome}>{BLOCK_TYPE_NAMES.requirement}</span>
-            ) : (
+            ) : kindTag === undefined ? (
               <>
                 <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.types[node.type]} />
-                {node.lens?.kind === undefined ? (
-                  <span {...pageChrome}>{NODE_TYPE_NAMES[node.type]}</span>
-                ) : (
-                  <span {...authorText}>{lensChipWords(node.lens.kind).words}</span>
-                )}
+                <span {...pageChrome}>{NODE_TYPE_NAMES[node.type]}</span>
+              </>
+            ) : (
+              <>
+                <span className="flex h-lh shrink-0 items-center">
+                  <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.types[node.type]} />
+                </span>
+                <span
+                  className="min-w-0 whitespace-normal [overflow-wrap:anywhere]"
+                  {...authorText}
+                >
+                  {kindTag}
+                </span>
               </>
             )}
           </span>

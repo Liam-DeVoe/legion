@@ -1,6 +1,5 @@
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import type { LineName } from "../web/src/features/issue-page/lenses/LensLines";
-import { chipWords } from "../web/src/features/issue-page/node-row-chip";
 import {
   CONTROL_LABELS,
   DECLARED_WORDS,
@@ -14,6 +13,7 @@ import {
 import { createComment, getIssueCoverage } from "./api";
 import { nextFrames } from "./frames";
 import { seedWholeIssue, type WholeIssueSeed } from "./issue-layout-seed";
+import { requirementText } from "./issue-layout-seed-text";
 import { gotoIssue, issuePage, issueRead, phase } from "./issue-page";
 import {
   DESKTOP,
@@ -453,7 +453,7 @@ test("lenses are drawn under their node with the chain that triggered them @phon
     const preMortem = await drawnId(page, ids.preMortem, "the pre-mortem");
 
     // (1) After statement 1's other children, the trade-off analysis, then the pre-mortem: each
-    // tagged by its kind's words, capitalised and cut as a chip is, whole in its body; each by
+    // tagged by its kind's words, capitalised and whole, with the focus on another row; each by
     // alice, with its time and its verdict, or the words that say it has none.
     const rows = await drawnRows(page);
     expect(
@@ -462,6 +462,8 @@ test("lenses are drawn under their node with the chain that triggered them @phon
         .map((row) => row.id),
       "under statement 1, after its other children, the trade-off analysis and then the pre-mortem"
     ).toEqual([tradeOff, preMortem]);
+    // The focus goes to statement 1, so each lens's tag is read on a row that has none.
+    await focusRow(page, statementOne);
     for (const lens of [
       {
         id: tradeOff,
@@ -484,14 +486,9 @@ test("lenses are drawn under their node with the chain that triggered them @phon
       const row = nodeRow(page, lens.id).first();
       await expect(
         row.locator("[data-node-tag]"),
-        `${lens.what}'s tag is not its kind's words, capitalised and cut`
-      ).toHaveText(chipWords(sentenceCase(lens.kind)));
+        `${lens.what}'s tag is not its kind's words, capitalised and whole`
+      ).toHaveText(sentenceCase(lens.kind));
       await expect(row.locator("[data-node-time]"), `${lens.what} draws no time`).toHaveText(/\S/u);
-      await focusRow(page, lens.id);
-      expect(
-        lineReading(await lensLines(row), "kind"),
-        `${lens.what}'s body does not draw its kind's words whole`
-      ).toEqual({ label: "", targets: [], words: sentenceCase(lens.kind) });
     }
 
     // (3) Each lens names the other by a chip, and a press on each chip goes to the other's row
@@ -503,7 +500,7 @@ test("lenses are drawn under their node with the chain that triggered them @phon
       "the pre-mortem does not read Triggered by with the trade-off analysis's chip"
     ).toEqual({
       label: LENS_WORDS.triggered_by,
-      targets: [{ node: ids.tradeOff, words: chipWords(sentenceCase(tradeOffWords)) }],
+      targets: [{ node: ids.tradeOff, words: sentenceCase(tradeOffWords) }],
       words: "",
     });
     expect(
@@ -511,7 +508,7 @@ test("lenses are drawn under their node with the chain that triggered them @phon
       "the trade-off analysis does not read Triggered with the pre-mortem's chip"
     ).toEqual({
       label: LENS_WORDS.triggered,
-      targets: [{ node: ids.preMortem, words: chipWords(sentenceCase(preMortemWords)) }],
+      targets: [{ node: ids.preMortem, words: sentenceCase(preMortemWords) }],
       words: "",
     });
     await markDocument(page);
@@ -561,15 +558,15 @@ test("lenses are drawn under their node with the chain that triggered them @phon
       lineReading(riskALines, "early_warning"),
       "risk A does not read Early warning: with its words"
     ).toEqual({ label: LENS_WORDS.early_warning, targets: [], words: lenses.riskA.early_warning });
-    // The chip names check 1 by the line its own row draws, not by its stored source.
+    // The chip names check 1 by its text, whole, which its own row draws, not by its stored source.
     const checkRow = rowOf(await drawnRows(page), await drawnId(page, ids.check1, "check 1"));
-    const checkLine = checkRow?.firstLine ?? checkRow?.words ?? "";
+    const checkWords = checkRow?.firstLine ?? checkRow?.words ?? "";
     expect(
       lineReading(riskALines, "prevented_by"),
       "risk A does not read Prevented by with check 1's chip"
     ).toEqual({
       label: LENS_WORDS.prevented_by,
-      targets: [{ node: ids.check1, words: chipWords(checkLine) }],
+      targets: [{ node: ids.check1, words: checkWords }],
       words: "",
     });
     expect(
@@ -590,12 +587,11 @@ test("lenses are drawn under their node with the chain that triggered them @phon
       .toBe(ids.check1);
 
     // (6) The pre-mortem's chain: one press reads it, and it draws the trade-off analysis, then
-    // the pre-mortem, each with the first line the outline draws for statement 1, which both
-    // stand under: the one line statement 1's own row draws while its branch is folded and no row
-    // holds the focus. Below 1024 px the outline an address names a node of is rooted at that
-    // node's parent (`IssueTree.tsx`'s `on`), so after check 1's chip statement 1 has no row: its
-    // own address draws its row at both widths, and the pre-mortem's address draws the
-    // pre-mortem's.
+    // the pre-mortem, each with the whole words of statement 1, which both stand under, though
+    // statement 1's own row draws one first line while its branch is folded and no row holds the
+    // focus. Below 1024 px the outline an address names a node of is rooted at that node's
+    // parent (`IssueTree.tsx`'s `on`), so after check 1's chip statement 1 has no row: its own
+    // address draws its row at both widths, and the pre-mortem's address draws the pre-mortem's.
     await landOn(page, plain, ids.statements[0] ?? "", "statement 1");
     // The landing has drawn the tree its address opens, and only a reader's press moves a fold
     // after it: open from 1024 px up, where the outline draws three levels, shut below.
@@ -629,12 +625,16 @@ test("lenses are drawn under their node with the chain that triggered them @phon
       preMortemRow.locator("[data-lens-chain] ol"),
       "Show the whole chain draws more than one chain"
     ).toHaveCount(1);
-    // The chain's read is held for the load, so the poll above settled what this reads.
+    // The chain's read is held for the load, so the poll above settled what this reads. The
+    // entries hold more than the one line statement 1's folded row draws.
+    expect(statementLine, "statement 1's folded row draws its whole words").not.toBe(
+      requirementText(1)
+    );
     for (const entry of await lensChainEntries(preMortemRow)) {
       expect(
         entry.line,
-        `the chain's ${entry.kind} does not name statement 1 by its first line`
-      ).toBe(statementLine);
+        `the chain's ${entry.kind} does not name statement 1 by its whole words`
+      ).toBe(requirementText(1));
     }
 
     // Every word of the page's own is declared, and a kind's words, which the catalogue
@@ -1282,7 +1282,7 @@ test("a constraint stands under the issue and a statement names it @phone", asyn
     const fiveRow = nodeRow(page, statementFive).first();
     const standardChip = {
       label: LENS_WORDS.constrained_by,
-      targets: [{ node: ids.standard, words: chipWords(lenses.standard.standard ?? "") }],
+      targets: [{ node: ids.standard, words: lenses.standard.standard ?? "" }],
       words: "",
     };
     expect(
@@ -1311,7 +1311,7 @@ test("a constraint stands under the issue and a statement names it @phone", asyn
       "statement 6's chip does not read the catalogue constraint's standard as words alone"
     ).toEqual({
       label: LENS_WORDS.constrained_by,
-      targets: [{ node: null, words: chipWords(catalogueStandard) }],
+      targets: [{ node: null, words: catalogueStandard }],
       words: "",
     });
 
@@ -1331,7 +1331,7 @@ test("a constraint stands under the issue and a statement names it @phone", asyn
       )
       .toEqual({
         label: LENS_WORDS.constrained_by,
-        words: [chipWords(lenses.standard.standard ?? "")],
+        words: [lenses.standard.standard ?? ""],
       });
 
     // (5) `?node=` with the measurement's id focuses its row.

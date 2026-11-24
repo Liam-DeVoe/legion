@@ -42,7 +42,7 @@ import type { Gate, TreeAnswerWatch } from "./issue-page-t-tree";
  *   words `[data-chip-name]`, and its stored words `[data-author-text]`), the focused row's act
  *   `[data-row-lens]`, the menu it opens (`role="menu"`, each `role="menuitem"` holding a kind's
  *   words `[data-lens-kind-words]` and its standard `[data-lens-kind-standard]`) with its line
- *   `[data-lens-menu-line]`, a focused lens's chain (`[data-lens-show-chain]`, each entry
+ *   `[data-lens-menu-line]`, a lens's chain (`[data-lens-show-chain]`, each entry
  *   `[data-lens-chain-entry]`), a row by the id the tree read gives its node
  *   (`data-node-read-id`).
  * - **The tree read**: what the page received of `GET /api/v1/issues/{key}/tree` - its newest
@@ -319,9 +319,9 @@ export interface LensLineChip {
 export interface LensLine {
   /** Its chips, in order. */
   readonly chips: readonly LensLineChip[];
-  /** Its label, the page's own words; empty on a line that draws none (`kind`, `reference`). */
+  /** Its label, the page's own words; empty on a line that draws none (`reference`). */
   readonly label: string;
-  /** Its `data-lens-line`: the `LENS_WORDS` key of its label, or `kind` or `reference`. */
+  /** Its `data-lens-line`: the `LENS_WORDS` key of its label, or `reference`. */
   readonly line: string;
   /** The stored words it draws outside its chips; empty on a line that draws none. */
   readonly words: string;
@@ -423,13 +423,13 @@ export function lensChipLinks(row: Locator, line: LineName): Locator {
   return row.locator(`${SELECTORS.lensLine}[data-lens-line="${line}"] ${SELECTORS.chip} a[href]`);
 }
 
-/** The control of a focused lens that reads its chain. */
+/** The control of a lens that reads its chain. */
 export function lensShowChain(row: Locator): Locator {
   return row.locator("[data-lens-show-chain]");
 }
 
 /** One entry of a drawn chain: its lens's kind's words, as the `lens_kind` node holds them, and
- *  the first line of the row that lens stands under; empty where it draws none. */
+ *  the whole words of the row that lens stands under; empty where it draws none. */
 export interface LensChainEntry {
   readonly kind: string;
   readonly line: string;

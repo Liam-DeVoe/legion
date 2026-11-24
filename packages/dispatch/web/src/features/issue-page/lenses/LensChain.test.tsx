@@ -11,10 +11,9 @@ import { answerRequests } from "../../../__tests__/network";
 import { pageKindBullet, pageKindTag } from "../../../theme/classes";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { node } from "../decisions-filter/decisions-fixtures";
-import { buildIssueTree, drawnLine, firstLineOf, type TreeNode } from "../issue-tree";
+import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { NodeRow } from "../NodeRow";
 import { NoTooltips } from "../NoTooltips";
-import { chipWords } from "../node-row-chip";
 import {
   authorKind,
   CONTROL_LABELS,
@@ -48,21 +47,20 @@ const FURTHER = "dispatch://lens/0c6f1d2e-5555-4a6b-9c1d-5e2f3a4b5c65";
 const ELSEWHERE = "dispatch://lens/0c6f1d2e-6666-4a6b-9c1d-5e2f3a4b5c66";
 const BEYOND = "dispatch://lens/0c6f1d2e-7777-4a6b-9c1d-5e2f3a4b5c67";
 
-/** The statement both lenses read: its words, longer than one line, and the one line its row
- *  draws of them, which the chain names it by. */
+/** The statement both lenses read: its words, longer than one line, which the chain names it by,
+ *  whole. */
 const STATEMENT = statementRef("r1");
 const STATEMENT_WORDS =
   "Store the notices for a day in the store the listener writes, and drop each one that is older than a day when the next notice of its issue arrives";
-const STATEMENT_LINE = drawnLine(firstLineOf(STATEMENT_WORDS));
 
 function facts(partial: Partial<LensFacts>): LensFacts {
   return { constrainedBy: [], preventedBy: [], triggered: [], triggeredBy: [], ...partial };
 }
 
-/** Every lens of the tree the focused pre-mortem stands in, by address. */
+/** Every lens of the tree the pre-mortem stands in, by address. */
 const PLACES: ReadonlyMap<string, LensPlace> = new Map([
-  [TRADE_OFF, { id: "lens/1111", kindWords: "trade-off analysis", onLine: STATEMENT_WORDS }],
-  [PREMORTEM, { id: "lens/2222", kindWords: "pre-mortem", onLine: STATEMENT_WORDS }],
+  [TRADE_OFF, { id: "lens/1111", kindWords: "trade-off analysis", onWords: STATEMENT_WORDS }],
+  [PREMORTEM, { id: "lens/2222", kindWords: "pre-mortem", onWords: STATEMENT_WORDS }],
 ]);
 
 /** The pre-mortem on the statement, triggered by the trade-off analysis. */
@@ -184,7 +182,7 @@ function showChain(view: RenderResult): HTMLButtonElement | null {
 async function drawnControl(view: RenderResult): Promise<HTMLButtonElement> {
   return waitFor(() => {
     const control = showChain(view);
-    if (control === null) throw new Error("the focused lens draws no control for its chain");
+    if (control === null) throw new Error("the lens draws no control for its chain");
     return control;
   });
 }
@@ -221,8 +219,9 @@ async function letRequestsSettle(): Promise<void> {
 }
 
 // The lens read is sent at a press of the control alone, never at the focus, which `j`
-// gives every row; once in a load, so a second press, and a press on the row focused again,
-// draw the held answer and send nothing.
+// gives every row, nor at drawing the row, which draws the control with or without the focus;
+// once in a load, so a second press, and a press on the row focused again, draw the held answer
+// and send nothing.
 test("the chain is read at a press and not at the focus", async () => {
   const user = userEvent.setup();
   const out = Promise.withResolvers<void>();
@@ -233,15 +232,17 @@ test("the chain is read at a press and not at the focus", async () => {
   const queryClient = testClient();
   const first = renderOnIssue(<LensRow drawn={premortem()} />, queryClient);
   try {
-    expect(showChain(first), "an unfocused lens draws the control").toBeNull();
-    const row = first.container.querySelector<HTMLElement>("[data-node-row]");
-    act(() => row?.focus());
+    // The row draws the control before it has the focus.
     const control = await drawnControl(first);
     expect(control.textContent).toBe(LENS_WORDS.show_chain);
     expect(control.hasAttribute("data-page-chrome")).toBe(true);
     expect(control.tabIndex, "the control is in the tab order").toBe(-1);
     await letRequestsSettle();
+    expect(asked, "drawing the row sent the lens read").toEqual([]);
+    act(() => first.container.querySelector<HTMLElement>("[data-node-row]")?.focus());
+    await letRequestsSettle();
     expect(asked, "the focus sent the lens read").toEqual([]);
+    expect(showChain(first), "the focus changed the control").toBe(control);
     expect(chainStatus(first)).toBeNull();
 
     await user.click(control);
@@ -293,8 +294,8 @@ test("the chain is read at a press and not at the focus", async () => {
 
 // The answer holds the chain this lens stands in and the chains of the lenses invoked on
 // it, which are its rows; only the first is drawn, in the answer's order, each lens by its
-// kind's words as held - the tree's, else the read's, else the page's word - and by the first
-// line of the row it stands under where the tree drew it.
+// kind's words as held - the tree's, else the read's, else the page's word - and by the whole
+// words of the row it stands under where the tree drew it.
 test("only the chain that holds the lens is drawn", async () => {
   const user = userEvent.setup();
   const asked = answerLensReads(() =>
@@ -316,8 +317,8 @@ test("only the chain that holds the lens is drawn", async () => {
     await waitFor(() => expect(chainAddresses(view)).toHaveLength(4));
     expect(asked).toEqual([PREMORTEM]);
     expect(chainEntries(view)).toEqual([
-      { address: TRADE_OFF, kind: "trade-off analysis", line: STATEMENT_LINE, marked: "author" },
-      { address: PREMORTEM, kind: "pre-mortem", line: STATEMENT_LINE, marked: "author" },
+      { address: TRADE_OFF, kind: "trade-off analysis", line: STATEMENT_WORDS, marked: "author" },
+      { address: PREMORTEM, kind: "pre-mortem", line: STATEMENT_WORDS, marked: "author" },
       { address: FOLLOW_UP, kind: "second opinion", line: null, marked: "author" },
       { address: UNNAMED, kind: NODE_TYPE_NAMES.lens, line: null, marked: "page" },
     ]);
@@ -332,7 +333,7 @@ test("only the chain that holds the lens is drawn", async () => {
 });
 
 // A chain the read cut at its depth names the lens it stopped at, last, by a chip of its
-// kind's words cut as the tag is, linked to its row where the tree drew one.
+// kind's words, whole as the tag is, linked to its row where the tree drew one.
 test("a stopped_at ends the chain with More lenses past this one", async () => {
   const user = userEvent.setup();
   answerLensReads(() =>
@@ -365,14 +366,14 @@ test("a stopped_at ends the chain with More lenses past this one", async () => {
   const further = new Map(PLACES).set(FURTHER, {
     id: "lens/5555",
     kindWords: furtherKind,
-    onLine: STATEMENT_WORDS,
+    onWords: STATEMENT_WORDS,
   });
   expect(await drawnEnd(further)).toEqual({
     href: "/issues/CORE-1?node=lens%2F5555",
     label: LENS_WORDS.more_lenses,
     labelMarked: true,
     more: true,
-    words: chipWords(kindWords(furtherKind)),
+    words: kindWords(furtherKind),
     wordsMarked: "author",
   });
   // A lens the tree drew no row for is named by the page's word for a lens, marked as the
@@ -454,18 +455,15 @@ test("a chain drawn stays drawn when a read again fails", async () => {
 });
 
 /**
- * What a reader reads of each line `drawn` draws on this issue's route, with its body open where
- * `body` holds: what the line is, its label in the page's words, the author's words it holds, and
- * each chip's words and where its link goes.
+ * What a reader reads of each line `drawn` draws on this issue's route: what the line is, its
+ * label in the page's words, the author's words it holds, and each chip's words and where its
+ * link goes.
  */
-function linesDrawn(drawn: TreeNode, body = false) {
+function linesDrawn(drawn: TreeNode) {
   const view = render(
     <MemoryRouter initialEntries={[`/issues/${KEY}`]}>
       <Routes>
-        <Route
-          element={<LensLines body={body} node={drawn} tabStops={false} />}
-          path="/issues/:key/*"
-        />
+        <Route element={<LensLines node={drawn} tabStops={false} />} path="/issues/:key/*" />
       </Routes>
     </MemoryRouter>
   );
@@ -680,42 +678,59 @@ describe("the lines under a row", () => {
     ]);
   });
 
-  // An open body draws a lens's kind's words whole, which its tag cuts, and a risk's
-  // prevention; a closed one draws neither.
-  test("an open body adds a lens's kind's words whole and a risk's prevention", () => {
+  // A lens draws no line for its kind, which its tag carries whole; a risk draws its
+  // prevention after its early warning, whether or not its row has the focus.
+  test("a lens draws no line for its kind and a risk draws its prevention", () => {
     const lens = node({
       id: "lens/5555",
       lens: facts({ kind: "risk review of the notice store's retention" }),
       reference: FURTHER,
       type: "lens",
     });
-    expect(linesDrawn(lens, true)).toEqual([
-      {
-        chips: [],
-        label: null,
-        line: "kind",
-        words: ["Risk review of the notice store's retention"],
-      },
-    ]);
     expect(linesDrawn(lens)).toEqual([]);
 
     const prevents = risk({ prevention: "Expire notices every hour" });
-    expect(linesDrawn(prevents, true).map(({ line }) => line)).toEqual([
+    expect(linesDrawn(prevents).map(({ line }) => line)).toEqual([
       "early_warning",
       "prevention",
       "prevented_by_nothing",
     ]);
-    expect(linesDrawn(prevents, true)[1]).toEqual({
+    expect(linesDrawn(prevents)[1]).toEqual({
       chips: [],
       label: LENS_WORDS.prevention,
       line: "prevention",
       words: ["Expire notices every hour"],
     });
-    expect(linesDrawn(prevents).map(({ line }) => line)).toEqual([
-      "early_warning",
-      "prevented_by_nothing",
-    ]);
   });
+});
+
+// A lens's tag and the chips of its lines name a lens by its kind's words, which can run to 129
+// characters: each is drawn whole and is not held to one line, so it wraps inside its column
+// instead of widening the page.
+test("a lens's tag and its chips draw a kind of 129 characters whole, and wrap", () => {
+  const kind =
+    "pre-mortem: imagine the work failed a year from now, then name each warning the team missed and say why nobody acted on it at all";
+  expect(kind).toHaveLength(129);
+  const drawn = node({
+    id: "lens/2222",
+    lens: facts({
+      kind,
+      triggeredBy: [{ address: TRADE_OFF, id: "lens/1111", words: kindWords(kind) }],
+    }),
+    reference: PREMORTEM,
+    type: "lens",
+  });
+  const view = renderOnIssue(<LensRow drawn={drawn} />);
+  try {
+    const tag = view.container.querySelector("[data-node-tag]");
+    const chip = view.container.querySelector("[data-node-chip] [data-chip-name]");
+    expect(tag?.textContent).toBe(kindWords(kind));
+    expect(chip?.textContent).toBe(kindWords(kind));
+    expect(tag?.className, "the tag holds one line").not.toContain("whitespace-nowrap");
+    expect(chip?.className, "the chip holds one line").not.toContain("whitespace-nowrap");
+  } finally {
+    view.unmount();
+  }
 });
 
 /** The tone, as `pageKindBullet` and `pageKindTag` name it, that `drawn`'s row draws its bullet

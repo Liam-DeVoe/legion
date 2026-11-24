@@ -4,7 +4,6 @@ import { parseIssuePath } from "../../refs/routes";
 import { storeAddressReference } from "../../refs/store-address";
 import { wordsOf } from "../../refs/tree-fragment";
 import { outlineRowPath } from "../issue-address";
-import { chipWords } from "../node-row-chip";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { storedReading } from "../stored-reading";
 import {
@@ -142,12 +141,11 @@ function storeIndex(answer: TreeAnswer, context: TreeDraftContext): StoreIndex {
   return index;
 }
 
-/** The name a row's words read `node` by: a lens by its kind's words as its chip names it
+/** The name a row's words read `node` by, whole: a lens by its kind's words as its chip names it
  *  (`lensChipWords`), a risk by its heading, a constraint by its words (`constraintWords`), a
  *  finding by its row's line (`TreeDraftContext.lineOf`), and the page's word for its kind where
- *  those hold none; each cut as a chip's words are (`chipWords`). Each is read as the one-line
- *  words read it, so an address in it reads as its kind's word or its short form, and no name
- *  holds another node's. */
+ *  those hold none. Each is read as the one-line words read it, so an address in it reads as its
+ *  kind's word or its short form, and no name holds another node's. */
 function nameOf(node: TreeAnswerNode, type: LensType, context: TreeDraftContext): string {
   if (type === "lens") return lensChipWords(addressesAsShortForms(kindOf(node, context))).words;
   const words =
@@ -156,7 +154,7 @@ function nameOf(node: TreeAnswerNode, type: LensType, context: TreeDraftContext)
       : type === "constraint"
         ? constraintWords(node)
         : (context.lineOf(node.id) ?? "");
-  return chipWords(words === "" ? NODE_TYPE_NAMES[type] : words);
+  return words === "" ? NODE_TYPE_NAMES[type] : words;
 }
 
 /** Whether the stored string `raw` can hold a store address: only a `dispatch://` span is one. */
