@@ -71,6 +71,11 @@ const readTime = "the moment the read was answered, which each read takes from i
 // searchTook is why a search's took_ms is volatile: it is how long that search ran.
 const searchTook = "how long the search ran, which each read times on its own clock"
 
+// postHistoryStatement is the one read of a post's kept bodies (postHistory): the lateral page of
+// post_body_history, in SQL the statement writes itself, which both history rows run on the
+// post the seed corrected once.
+const postHistoryStatement = `\bleft\s+join\s+lateral\s*\(\s*select\s+body,\s*edited_by,\s*edited_at\s+from\s+post_body_history\b`
+
 // readRowDrives is the drive of every read row of the table (readWritesNothing), keyed
 // "GET <pattern>" as readClasses is: the request that shows the row writes nothing a read may
 // not write and answers a read-only token as it answers that token's writer.
@@ -153,9 +158,11 @@ var readRowDrives = map[string]rowDrive{
 		statement: statementOf(`\bfrom\s+handoffs\s+where\s+issue_key\s*=\s*\$1\s+and\s+phase\b`)},
 	"GET /api/v1/issues/{key}/steps":        {target: "/api/v1/issues/$issue/steps", statement: statementOf(`\bfrom\s+workflow_tuples\s+t\s+join\s+workflow_nodes\s+n\b`)},
 	"GET /api/v1/issues/{key}/role-holders": {target: "/api/v1/issues/$issue/role-holders", statement: statementOf(`\bleft\s+join\s+issue_role_holders\b`)},
+	"GET /api/v1/issues/{key}/legion":       {target: "/api/v1/issues/$issue/legion", statement: statementOf(`\bfrom\s+workflow_tuples\s+t,\s*lateral\b`)},
 	"GET /api/v1/handoffs/{id}":             {target: "/api/v1/handoffs/$handoff", statement: statementOf(`\bfrom\s+handoffs\s+where\s+id\s*=\s*\$1\b`)},
 	"GET /api/v1/messages/{id}":             {target: "/api/v1/messages/$message", statement: statementOf(`\bwith\s+recursive\s+thread\s+as\b`)},
 	"GET /api/v1/messages/{id}/blocks":      {target: "/api/v1/messages/$message/blocks", statement: statementOf(`\bfrom\s+messages\s+m\s+left\s+join\s+message_bl`)},
+	"GET /api/v1/messages/{id}/history":     {target: "/api/v1/messages/$correctedMessage/history", statement: statementOf(postHistoryStatement)},
 	"GET /api/v1/inbox":                     {target: "/api/v1/inbox", statement: statementOf(`\bfrom\s+ask_followers\s+where\s+ask_id\s*=\s*any\b`)},
 	"GET /api/v1/me/answers":                {target: "/api/v1/me/answers", statement: statementOf(`\bwith\s+answered\s+as\b`)},
 	"GET /api/v1/me/replies": {target: "/api/v1/me/replies?state=inbox", statement: statementOf(`\bfrom\s+user_threads\s+u\b`),
@@ -191,6 +198,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/issues/{key}/comments": {target: "/api/v1/issues/$issue/comments", statement: statementOf(`\bfrom\s+comment_watermarks\b`)},
 	"GET /api/v1/comments/{id}":         {target: "/api/v1/comments/$comment", statement: statementOf(`\bfrom\s+comment_mentions\s+where\s+comment_id\b`)},
 	"GET /api/v1/comments/{id}/blocks":  {target: "/api/v1/comments/$comment/blocks", statement: statementOf(`\bleft\s+join\s+comment_block_state\b`)},
+	"GET /api/v1/comments/{id}/history": {target: "/api/v1/comments/$correctedComment/history", statement: statementOf(postHistoryStatement)},
 	// A document's own asks, comments and events are an unlinked project document's: the
 	// guide (an issue's document answers ARTIFACT_LINKED, naming its issue's routes).
 	"GET /api/v1/artifacts/{id}/asks":        {target: "/api/v1/artifacts/$guide/asks", statement: statementOf(`\bfrom\s+asks\s+a\b`)},
