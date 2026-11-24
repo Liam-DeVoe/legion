@@ -837,7 +837,7 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	// nats.ErrKeyNotFound is the bucket's own word that no record exists, and the answer for a
 	// record past the gone horizon (notGone). Any other error is a read that did not answer: it
 	// says nothing about the session, so it is neither a record nor the lack of one.
-	_, _, readErr := liveSessionEntry(context.Background(), cfg.sessions, sessionID, deliverySessionReadTimeout, notGone)
+	_, _, readErr := liveSessionEntry(context.Background(), cfg.sessions, sessionID, deliverySessionReadTimeout, notGone, cfg.sessions.Refresh)
 	cfg.attemptCache.Record(item.DedupeKey, sessionID)
 	deliveryTimer := metrics.NewTimer()
 	switch session.HandleAgentMessage(cfg.machineID, interestPtr, readErr) {
