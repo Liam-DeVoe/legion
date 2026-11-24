@@ -30,15 +30,14 @@ func (r reads) Thread(_ context.Context, id string) (dispatch.Thread, error) {
 	return thread, nil
 }
 
-// thread is the thread of the comment root, which author wrote, with each reply in order:
-// alternately its id and its author.
-func thread(root string, author intake.DispatchActor, replies ...any) dispatch.Thread {
-	t := dispatch.Thread{Root: dispatch.Comment{ID: root, Author: dispatch.Actor{Kind: author.Kind, ID: author.ID}, Body: "root"}}
-	for i := 0; i < len(replies); i += 2 {
-		by := replies[i+1].(intake.DispatchActor)
-		t.Replies = append(t.Replies, dispatch.Comment{ID: replies[i].(string), Author: dispatch.Actor{Kind: by.Kind, ID: by.ID}, Body: "reply"})
-	}
-	return t
+// thread is the thread of the comment root, which author wrote, with replies in order.
+func thread(root string, author intake.DispatchActor, replies ...dispatch.Comment) dispatch.Thread {
+	return dispatch.Thread{Root: by(root, author), Replies: replies}
+}
+
+// by is the comment id, which author wrote.
+func by(id string, author intake.DispatchActor) dispatch.Comment {
+	return dispatch.Comment{ID: id, Author: dispatch.Actor{Kind: author.Kind, ID: author.ID}, Body: "a comment"}
 }
 
 // Every kind of hand-off is classified before any model call: what the agent answers (a message
@@ -55,17 +54,17 @@ func TestEveryHandoffIsClassifiedBeforeAnyModelCall(t *testing.T) {
 	daemon := intake.DispatchActor{Kind: "session", ID: "legion-daemon:LEGION"}
 	reader := reads{asks: map[string]string{ownAsk: "ses_tester", othersAsk: "ses_reviewer"}, threads: map[string]dispatch.Thread{
 		// The agent's root, under it people's replies and one of the agent's own.
-		"r-own": thread("r-own", self, "c-5", person, "c-16", person, "c-17", self, "c-18", person),
+		"r-own": thread("r-own", self, by("c-5", person), by("c-16", person), by("c-17", self), by("c-18", person)),
 		// A person's root, the agent's reply, and a person's reply after it.
-		"r-person": thread("r-person", person, "c-19", self, "c-20", person),
+		"r-person": thread("r-person", person, by("c-19", self), by("c-20", person)),
 		// The agent's root, the reviewer's reply, and a person's reply after it.
-		"r-reviewed": thread("r-reviewed", self, "c-21", reviewer, "c-22", person),
+		"r-reviewed": thread("r-reviewed", self, by("c-21", reviewer), by("c-22", person)),
 		// A person's root, the loop's answer in the agent's session, and a person's reply after it.
-		"r-answered": thread("r-answered", person, "c-23", self, "c-24", person),
+		"r-answered": thread("r-answered", person, by("c-23", self), by("c-24", person)),
 		// The agent's root, and two people's replies under it.
-		"r-people": thread("r-people", self, "c-25", person, "c-26", person),
+		"r-people": thread("r-people", self, by("c-25", person), by("c-26", person)),
 		// A thread only people wrote in.
-		"r-nobody": thread("r-nobody", person, "c-27", person),
+		"r-nobody": thread("r-nobody", person, by("c-27", person)),
 	}}
 	reader.threads["r-answered"].Replies[0].Body = "Because B.\n\n<!-- legion-answer:0123456789abcdef0123456789abcdef -->"
 	comment := func(id string, ask *string, body string) map[string]any {

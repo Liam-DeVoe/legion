@@ -298,9 +298,9 @@ func TestRoleMessageToAStoppedRegisteredRoleGoesToItsNewestSession(t *testing.T)
 // and settle sent there, and that session's reply, which its daemon posts, answers each. A
 // session named outright is handed off as ever.
 //
-// The control is the code before D2, which read the registry for a role only once its newest
-// entry was `finished`: there the role message and the role mention settle failed "no holder for
-// role ..." with no session, and the listener is sent only the session mention.
+// The control is a resolution that reads the registry for a role only once its newest entry is
+// `finished`: there the role message and the role mention settle failed "no holder for role ..."
+// with no session, and the listener is sent only the session mention.
 func TestRoleMessageToARoleWhoseIssueStillRunsGoesToItsStoppedNewestSession(t *testing.T) {
 	listener := newStoppedAgentListener(t)
 	listener.roleRuns.Store(true)
@@ -418,9 +418,9 @@ func TestMentionOfAStoppedRegisteredAgentIsSentToItsSessionAndTakesItsReply(t *t
 // role read says its project answers, whose first worker is coming. Each role message and role
 // mention is published on the role's topic, which the listener keeps on the role's kept lane, and
 // recorded queued with the kept copy's envelope and no session. Their controls are the role with
-// no entry whose read says its project does not answer, which keeps the listener's answer as main
-// does with the loop off, and the code before D2, under which both kept rows failed "no holder for
-// role ..." and published nothing.
+// no entry whose read says its project does not answer, which keeps the listener's answer as with
+// no registry, and a resolution that keeps a role only for a released entry that is not finished,
+// under which both kept rows fail "no holder for role ..." and publish nothing.
 func TestTargetTheRegistryDoesNotNameKeepsTheListenersAnswer(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -442,7 +442,7 @@ func TestTargetTheRegistryDoesNotNameKeepsTheListenersAnswer(t *testing.T) {
 	}{
 		{name: "unregistered", session: unregisteredSession, role: unregisteredRole, roleKept: true},
 		// The role read's empty list says the project does not answer: its loop is off, so the
-		// role keeps the listener's answer, as main does.
+		// role keeps the listener's answer, as with no registry.
 		{name: "unregistered, project not answering", notAnswering: true, session: unregisteredSession, role: unregisteredRole},
 		{name: "registry unavailable", registryDown: true, session: stoppedAgent, role: registeredRole},
 		{

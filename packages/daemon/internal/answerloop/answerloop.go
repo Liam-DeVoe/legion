@@ -40,7 +40,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/conversation"
-	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -63,10 +62,9 @@ type Store interface {
 }
 
 // Dispatch is what the loop reads of Dispatch and writes there in the agent's name
-// (*dispatch.HTTPClient).
+// (*dispatch.HTTPClient): what Classify reads (Reader), and the replies.
 type Dispatch interface {
-	Ask(ctx context.Context, askID string) (dispatch.Ask, error)
-	Thread(ctx context.Context, commentID string) (dispatch.Thread, error)
+	Reader
 	ReplyToMessage(ctx context.Context, messageID string, attempt int, session, body string) error
 	ReplyToComment(ctx context.Context, commentID, target string, attempt int, session, body string) error
 	ReplyOnAsk(ctx context.Context, issue, askID, session, body string) error

@@ -274,8 +274,8 @@ func (s *edgeScope) showsIssue(issue string) bool {
 	if s == nil {
 		return true
 	}
-	project, ok := contracts.IssueProject(issue)
-	return ok && slices.Contains(s.projects, project)
+	_, ok := issueOfProjects(issue, s.projects)
+	return ok
 }
 
 // showsAgentConfirmed reports whether the scope shows a Legion agent registry entry with the agent's session confirmed by its stored record: the
@@ -294,8 +294,8 @@ func (s *edgeScope) showsAgentConfirmed(ctx context.Context, sessions *session.S
 	if s == nil {
 		return agent, true, nil
 	}
-	project, ok := contracts.IssueProject(agent.Issue)
-	if !ok || !slices.Contains(s.projects, project) {
+	project, ok := issueOfProjects(agent.Issue, s.projects)
+	if !ok {
 		return legionagents.Agent{}, false, nil
 	}
 	shown, err := sessionInProject(ctx, sessions, agent.SessionID, project)
@@ -460,6 +460,14 @@ type edgeHolderHidden struct {
 func (e *edgeHolderHidden) Error() string { return e.text }
 
 func (e *edgeHolderHidden) Unwrap() error { return e.err }
+
+// issueOfProjects is the project of issue's key (contracts.IssueProject), and whether it is one of
+// projects. It is the edge's rule for what a registry read says of an issue (showsIssue,
+// showsAgentConfirmed).
+func issueOfProjects(issue string, projects []string) (string, bool) {
+	project, ok := contracts.IssueProject(issue)
+	return project, ok && slices.Contains(projects, project)
+}
 
 // roleOfProjects reports whether role, named by its claim's key, works for one of projects: the
 // project its key gives (contracts.ParseRoleClaimKey) is one of them. It is the edge's rule for a

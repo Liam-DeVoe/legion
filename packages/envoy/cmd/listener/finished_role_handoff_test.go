@@ -107,7 +107,7 @@ func TestAPublishToAFinishedLegionRoleIsHandedToItsDaemonAndNotKept(t *testing.T
 //
 // The control is the same entry written released, with no `finished`: the daemon resumes that
 // session on the role's next wake, so the publish is kept for it, 202 kept unclaimed, and nothing
-// more is handed off. Before D2 the first publish was kept too.
+// more is handed off. A hand-off that waits for `finished` keeps the first publish too.
 func TestARoleEntryIsHandedOffWhetherOrNotTheDaemonWroteItFinished(t *testing.T) {
 	d, client := keptRoleDeps(t)
 	withFinishedHandoff(t, d)

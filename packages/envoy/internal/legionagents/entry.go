@@ -63,8 +63,9 @@ var (
 	projectTokenPattern = regexp.MustCompile(`^[a-z0-9]+$`)
 	// issueKeyPattern is a Dispatch issue key (claim.IsIssueKey, DISPATCH_KEY_PATTERN).
 	issueKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*-[0-9]+$`)
-	// roleTokenPattern is a workflow role's token: legion-<project>-<issue project>-<number>-<role>.
-	roleTokenPattern = regexp.MustCompile(`^legion-[a-z0-9]+-[a-z0-9]+-[0-9]+-(` + strings.Join(Roles, "|") + `)$`)
+	// roleTokenPattern is a workflow role's token: legion-<project>-<issue project>-<number>-<role>,
+	// each captured in that order (RoleTokenParts).
+	roleTokenPattern = regexp.MustCompile(`^legion-([a-z0-9]+)-([a-z0-9]+)-([0-9]+)-(` + strings.Join(Roles, "|") + `)$`)
 )
 
 // ErrInvalid is a session id, issue key, role token or entry the registry refuses. Each refusal
@@ -156,16 +157,15 @@ func RoleToken(project, issue, role string) string {
 	return "legion-" + project + "-" + strings.ToLower(issue) + "-" + role
 }
 
-// RoleTokenParts reads a role token ValidateRoleToken accepts back to the Legion project token and
-// the issue key RoleToken built it from: legion-<legion_project>-<issue lower-cased>-<role>, where
-// neither the project token nor the issue's project holds a hyphen (roleTokenPattern). A token of
-// any other shape reads as neither.
+// RoleTokenParts reads a role token back to the Legion project token and the issue key RoleToken
+// built it from: legion-<legion_project>-<issue lower-cased>-<role> (roleTokenPattern). A token
+// ValidateRoleToken refuses reads as neither.
 func RoleTokenParts(token string) (project, issue string) {
-	parts := strings.Split(strings.TrimPrefix(token, "legion-"), "-")
-	if len(parts) != 4 {
+	if ValidateRoleToken(token) != nil {
 		return "", ""
 	}
-	return parts[0], strings.ToUpper(parts[1]) + "-" + parts[2]
+	m := roleTokenPattern.FindStringSubmatch(token)
+	return m[1], strings.ToUpper(m[2]) + "-" + m[3]
 }
 
 // Validate refuses an entry the registry does not store. Both writes, one entry and a batch, refuse

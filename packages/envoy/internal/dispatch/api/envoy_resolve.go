@@ -266,7 +266,7 @@ func (s *server) registeredTarget(ctx context.Context, sessionID string, answer 
 //     for it (keepForRole);
 //   - anything else - a project that does not answer, a registry read that did not answer, a role
 //     that is no Legion workflow role - keeps the listener's own answer, exactly as with no
-//     registry, so a deployment whose daemon does not answer delivers as main does.
+//     registry.
 //
 // A role kept for its next holder pins no session, since none holds the role now: the delivery
 // publishes on the role's topic, which keeps the message on the role's kept lane for the role's

@@ -48,9 +48,9 @@ func withAuditHandoff(t *testing.T, d *listenerDeps) {
 // answers for one, and the role's first worker claims it. The hand-off replaces the 404
 // writeRoleHolderError gives, not the keep (plan 2.2). The control is a publish to auditLegionRole,
 // a role of the same issue whose newest entry is a stopped agent that is not released, under the
-// same answering project: it is handed off, whether or not its issue has left the workflow (D2 of
-// cybermonklabs/legion#2230), so the rig reaches the hand-off and only the missing entry keeps the
-// first publish. Before D2 that control was kept too.
+// same answering project: it is handed off, whether or not its issue has left the workflow, so the
+// rig reaches the hand-off and only the missing entry keeps the first publish. A hand-off that
+// waits for the role's entry to be finished keeps that control too.
 func TestAuditAPublishToALegionRoleWithNoEntryIsStillKeptForItsNextHolder(t *testing.T) {
 	d, client := keptRoleDeps(t)
 	withAuditHandoff(t, d)

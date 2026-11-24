@@ -253,6 +253,7 @@ func newRig(t *testing.T) *rig {
 		"replies": []any{map[string]any{"id": "c-3", "author": map[string]any{"kind": "user", "id": person.ID}, "body": "Why B?"}}}
 	r.dispatch = newStandIn(t, func(w http.ResponseWriter, req request) {
 		var read map[string]any
+		var body []byte
 		r.mu.Lock()
 		switch {
 		case req.Method == http.MethodGet && strings.HasPrefix(req.Path, "/api/v1/asks/"):
@@ -260,7 +261,9 @@ func newRig(t *testing.T) *rig {
 		case req.Method == http.MethodGet && strings.HasPrefix(req.Path, "/api/v1/comments/"):
 			read = r.thread
 		}
-		body, _ := json.Marshal(read)
+		if read != nil {
+			body, _ = json.Marshal(read)
+		}
 		r.mu.Unlock()
 		if read != nil {
 			w.Header().Set("Content-Type", "application/json")

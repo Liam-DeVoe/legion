@@ -18,7 +18,7 @@ import { asUser } from "./users";
  * is kept for that next holder: Dispatch publishes it on the role's topic through the listener's
  * publish route, which keeps it on the role's kept lane for an hour and wakes the role, and
  * records the attempt taken. The card says so, and offers no Retry. A role whose entry is not
- * released keeps the listener's no-holder failure, as it did before.
+ * released, of a project that does not answer, keeps the listener's no-holder failure.
  *
  * The sentence is spelt out here rather than imported from the SPA, so a change to the SPA's
  * wording fails a row here rather than passing with it.

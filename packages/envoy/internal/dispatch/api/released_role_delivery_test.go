@@ -18,11 +18,11 @@ import (
 // on the role's topic through the listener's publish route, which keeps it on the role's kept lane
 // and wakes the role, and records the attempt taken. A role whose newest entry is not released
 // goes to that entry's session while its project answers, whether its issue has left the workflow
-// or not (D2), and keeps the listener's no-holder answer while its project does not answer.
+// or not, and keeps the listener's no-holder answer while its project does not answer.
 //
-// The controls of D2's rows are the code before it, which kept a released role only while its
-// entry was not finished and sent a role to its newest session only once that entry was finished:
-// there "not released" and "released and finished" both fail "no holder for role ...".
+// The controls of the "not released" and "released and finished" rows are a resolution that keeps
+// a released role only while its entry is not finished and sends a role to its newest session only
+// once that entry is finished: there both fail "no holder for role ...".
 func TestRoleMessageToAReleasedRoleIsKeptForItsNextHolder(t *testing.T) {
 	noHolder := "no holder for role " + registeredRole
 	roleTarget := "role:" + registeredRole
