@@ -15,7 +15,7 @@
 #   CHECK <scenario>: FAIL: <reason>
 #   CHECK <scenario>: FAIL: the run missed the window it was meant to observe: <reason>
 #
-# and a FAIL exits 1. The `envoy-e2e-local` job of `ci.yaml` runs it.
+# and a FAIL exits 1. The `envoy-e2e-refill` leg of `ci.yaml`'s `envoy-held` job runs it.
 #
 # The listener's watcher finds a recreated bucket itself: it reads its bucket's stream every 2 s,
 # and a new stream starts a read of the new bucket at once. The reread and interrupt scenarios stop
