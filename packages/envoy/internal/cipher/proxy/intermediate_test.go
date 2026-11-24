@@ -504,6 +504,78 @@ func TestThePodRenewsWithTwoDaysLeft(t *testing.T) {
 	}
 }
 
+// shortRig is a pool authority whose stand-in pool answers every request with an intermediate of
+// life, starting the second it is issued, on a clock the row moves.
+func shortRig(t *testing.T, life time.Duration) *poolRig {
+	t.Helper()
+	hosts := []string{"s.airlock.test"}
+	clock := &steppedClock{now: time.Now().Truncate(time.Second)}
+	root := testRoot(t, "short root")
+	server := boundsPool(t, root, clock.Now, boundsAnswer{lifetime: life, names: hosts})
+	log := &syncBuffer{}
+	authority := NewPoolAuthority(AuthorityOptions{Clock: clock, Hosts: hosts, Log: slog.New(slog.NewJSONHandler(log, nil))})
+	return &poolRig{clock: clock, authority: authority, log: log, pool: Pool{Name: testPoolName, Endpoint: server.URL}}
+}
+
+// awaitNewCertificate waits for the authority to sign with another certificate than old (nil for
+// its first), and answers it.
+func (r *poolRig) awaitNewCertificate(t *testing.T, old *x509.Certificate) *x509.Certificate {
+	t.Helper()
+	var current *x509.Certificate
+	testwait.Until(t, "the authority to take another intermediate", func() (string, bool) {
+		current = r.authority.Certificate()
+		return r.log.String(), current != nil && (old == nil || !current.Equal(old))
+	})
+	return current
+}
+
+// TestAThreeDayIntermediateIsRenewedWithTwoDaysLeft: a pool may answer shorter than the 7 days a
+// pod asks for, and the pod asks for the next intermediate once 2 days remain whatever the life:
+// one of 3 days at a day after its start, not halfway through its life. A minute before that it
+// holds the first; at that moment it takes the next.
+func TestAThreeDayIntermediateIsRenewedWithTwoDaysLeft(t *testing.T) {
+	r := shortRig(t, 3*24*time.Hour)
+	r.run(t, IntermediateRenewBefore)
+	first := r.awaitNewCertificate(t, nil)
+	target := r.awaitSleeps(t, 1)
+	if want := first.NotBefore.Add(24 * time.Hour); !target.Equal(want) {
+		t.Fatalf("the loop sleeps until %v after the intermediate's start; want %v, when 2 of its 3 days remain", target.Sub(first.NotBefore), want.Sub(first.NotBefore))
+	}
+	r.clock.set(target.Add(-time.Minute))
+	if got := len(r.log.lines("proxy intermediate")); got != 1 {
+		t.Fatalf("a minute before 2 days remain the pod has taken %d intermediates; want the first alone", got)
+	}
+	r.clock.set(target)
+	r.awaitNewCertificate(t, first)
+}
+
+// TestAOneDayIntermediateIsRenewedNoSoonerThanTheFloor: an intermediate of 2 days or less has
+// less than 2 days left the moment it arrives, so the pod asks for the next at once, but no sooner
+// than intermediateRetryMax after it took the one it holds: a pool that answers short
+// intermediates is asked at most twelve times an hour, as a pool that fails is, and never in a
+// loop.
+func TestAOneDayIntermediateIsRenewedNoSoonerThanTheFloor(t *testing.T) {
+	r := shortRig(t, 24*time.Hour)
+	r.run(t, IntermediateRenewBefore)
+	first := r.awaitNewCertificate(t, nil)
+	taken := r.clock.Now()
+	target := r.awaitSleeps(t, 1)
+	if want := taken.Add(intermediateRetryMax); !target.Equal(want) {
+		t.Fatalf("the loop sleeps until %v after it took a 1-day intermediate; want %v, the floor", target.Sub(taken), intermediateRetryMax)
+	}
+	if got := len(r.log.lines("proxy intermediate")); got != 1 {
+		t.Fatalf("before the floor the pod has taken %d intermediates; want the first alone", got)
+	}
+	r.clock.set(target)
+	r.awaitNewCertificate(t, first)
+	if next := r.awaitSleeps(t, 2); !next.Equal(target.Add(intermediateRetryMax)) {
+		t.Fatalf("after the second 1-day intermediate the loop sleeps until %v after it; want %v, the floor again", next.Sub(target), intermediateRetryMax)
+	}
+	if got := len(r.log.lines("proxy intermediate")); got != 2 {
+		t.Errorf("one floor on the pod has taken %d intermediates; want 2, one per floor", got)
+	}
+}
+
 // TestWithNoRenewalMarginThePodKeepsItsFirstIntermediate is the negative control: with the margin
 // at 0 the loop sleeps until the end, so at 5 days and 1 minute it still signs with the first.
 func TestWithNoRenewalMarginThePodKeepsItsFirstIntermediate(t *testing.T) {

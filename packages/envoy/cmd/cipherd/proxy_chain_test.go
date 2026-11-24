@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -22,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/proxy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
@@ -105,6 +107,84 @@ func TestABrokerOnAPoolIsNotReadyUntilItHoldsAnIntermediate(t *testing.T) {
 			t.Fatalf("the stand-in was sent the credential %q; want none", got[:min(len(got), 12)])
 		}
 	}
+}
+
+// TestABrokerRenewsAThreeDayIntermediateWithTwoDaysLeft: the broker binary, on a pool that answers
+// 3-day intermediates and on the clock BROKER_PROXY_TEST_CLOCK_OFFSET_FILE moves, holds its first
+// intermediate a minute before 2 days of it remain, and takes the next once they do: a day after
+// the first's start, not halfway through its life.
+func TestABrokerRenewsAThreeDayIntermediateWithTwoDaysLeft(t *testing.T) {
+	clockFile := filepath.Join(t.TempDir(), "clock-offset")
+	setOffset := func(offset time.Duration) {
+		t.Helper()
+		next := clockFile + ".next"
+		if err := os.WriteFile(next, []byte(offset.String()+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(next, clockFile); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setOffset(0)
+	clock, err := proxy.NewOffsetFileClock(clockFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stand, err := proxyrulestest.NewCAStand(proxyrulestest.CAOptions{Now: clock.Now, MaxLifetime: 3 * 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := proxyrulestest.NewService(proxyrulestest.ServiceOptions{Plain: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(service.Close)
+	service.AnswerWith(stand.Answer)
+	broker := startBroker(t, brokerOptions{Env: append(localProxyEnv(t, storetest.URL(t)),
+		"BROKER_PROXY_CA_POOL="+testProxyPool,
+		"BROKER_PROXY_TEST_CA_URL="+service.URL(),
+		"BROKER_PROXY_TEST_CLOCK_OFFSET_FILE="+clockFile,
+	)})
+	var first *x509.Certificate
+	testwait.Until(t, "the broker's first intermediate", func() (string, bool) {
+		issued := stand.Issued()
+		if len(issued) > 0 {
+			first = issued[0]
+		}
+		return fmt.Sprint(len(issued)), first != nil
+	})
+	broker.AwaitRecord(t, "proxy intermediate", map[string]any{"serial": first.SerialNumber.Text(16)})
+	if life := first.NotAfter.Sub(first.NotBefore); life != 3*24*time.Hour {
+		t.Fatalf("the stand answered an intermediate of %v; want 3 days", life)
+	}
+	due := first.NotAfter.Add(-2 * 24 * time.Hour)
+	t.Logf("first intermediate %s, %s to %s; 2 days remain from %s, %v after its start",
+		first.SerialNumber.Text(16), first.NotBefore.UTC().Format(time.RFC3339), first.NotAfter.UTC().Format(time.RFC3339),
+		due.UTC().Format(time.RFC3339), due.Sub(first.NotBefore))
+
+	// A minute before: the broker reads its clock file at least once a second, so a few seconds
+	// on it has read the move and still holds the first.
+	setOffset(time.Until(due.Add(-time.Minute)))
+	time.Sleep(4 * time.Second)
+	if got := len(stand.Issued()); got != 1 {
+		t.Fatalf("a minute before 2 days remain the stand has issued %d intermediates; want the first alone", got)
+	}
+	t.Logf("clock at %s, a minute before: still the first intermediate alone", clock.Now().UTC().Format(time.RFC3339))
+
+	setOffset(time.Until(due.Add(time.Minute)))
+	var second *x509.Certificate
+	testwait.Until(t, "the broker to take its next intermediate once 2 days remain", func() (string, bool) {
+		issued := stand.Issued()
+		if len(issued) > 1 {
+			second = issued[1]
+		}
+		return fmt.Sprint(len(issued)), second != nil
+	})
+	broker.AwaitRecord(t, "proxy intermediate", map[string]any{"serial": second.SerialNumber.Text(16)})
+	t.Logf("clock at %s, a minute after: next intermediate %s, %s to %s",
+		clock.Now().UTC().Format(time.RFC3339), second.SerialNumber.Text(16),
+		second.NotBefore.UTC().Format(time.RFC3339), second.NotAfter.UTC().Format(time.RFC3339))
+	requireHealthy(t, broker.Addr)
 }
 
 // TestABrokerStartsOnAMountedIntermediateAndItsChain is the local half of k21's control: a

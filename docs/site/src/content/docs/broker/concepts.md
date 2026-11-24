@@ -1664,14 +1664,17 @@ deployment's settings name one of two ways (`packages/envoy/internal/cipher/prox
   registered-ID alternative name. Against those clients a leaked pod key is bounded by the
   intermediate's life, at most 7 days and 5 minutes, and not by its names. The `serverAuth` usage
   keeps the key from signing a certificate a verifier takes for e-mail or for a client. The pod
-  asks for the next intermediate when the one it holds has less than 2 days left, and goes on
-  asking with a backoff of 1 second doubling to 5 minutes until it gets one; an answer it refuses
-  counts as a failure. It goes on signing with the intermediate it held until a minute after the
-  new one's start, so after a renewal a command whose clock runs up to a minute behind the pool's
-  never meets an intermediate that is not yet valid. A pod's first intermediate, and the one after
-  an intermediate ended, have no earlier one to sign with, so they rely on the pool's
-  `backdateDuration: 300s`, which covers five minutes in every case. It logs one line for each
-  intermediate it takes, and one for each request that failed.
+  asks for the next intermediate when the one it holds has less than 2 days left, whatever its
+  life, but no sooner than 5 minutes after it took that one, so a pool that answers one of 2 days
+  or less, which has less than 2 days left the moment it arrives, is asked at most twelve times an
+  hour and never in a loop. It goes on asking with a backoff of 1 second doubling to 5 minutes
+  until it gets one; an answer it refuses counts as a failure. It goes on signing with the
+  intermediate it held until a minute after the new one's start, so after a renewal a command
+  whose clock runs up to a minute behind the pool's never meets an intermediate that is not yet
+  valid. A pod's first intermediate, and the one after an intermediate ended, have no earlier one
+  to sign with, so they rely on the pool's `backdateDuration: 300s`, which covers five minutes in
+  every case. It logs one line for each intermediate it takes, and one for each request that
+  failed.
 - **A mounted pair** (`BROKER_AIRLOCK_CA_CERT_FILE`, `BROKER_AIRLOCK_CA_KEY_FILE`), for a deployment
   without that service: an intermediate and then each authority up to and including its root, or a
   self-signed root alone. The broker refuses at start a chain that reaches no root, one whose life

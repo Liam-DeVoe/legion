@@ -299,10 +299,11 @@ type Config struct {
 	// its own intermediate, projects/<project>/locations/<location>/caPools/<pool>. With it set,
 	// each pod makes the intermediate's key in its own memory, asks the pool for a certificate of
 	// 7 days at most for it with the pod's own Workload Identity credential, signs every bound
-	// host's leaf with it, asks for the next with 2 days left, and answers GET /healthz 503
-	// NO_INTERMEDIATE while it holds none; BROKER_AIRLOCK_CA_CERT_FILE and
-	// BROKER_AIRLOCK_CA_KEY_FILE are then not read. Unset, that mounted pair is the proxy's
-	// authority. A value of any other shape refuses the start.
+	// host's leaf with it, asks for the next with 2 days left whatever its life, but no sooner
+	// than 5 minutes after it took that one, and answers GET /healthz 503 NO_INTERMEDIATE while
+	// it holds none; BROKER_AIRLOCK_CA_CERT_FILE and BROKER_AIRLOCK_CA_KEY_FILE are then not
+	// read. Unset, that mounted pair is the proxy's authority. A value of any other shape refuses
+	// the start.
 	ProxyCAPool string
 	// BROKER_PROXY_RELEASE_ROOTS_FILE: a PEM file of root certificates every release carries in
 	// addition to the root of the broker's own chain, so a command trusts a pod that signs under

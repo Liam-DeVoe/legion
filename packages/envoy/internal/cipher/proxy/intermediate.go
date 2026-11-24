@@ -96,13 +96,15 @@ func NewPoolAuthority(o AuthorityOptions) *Authority { return newAuthority(o) }
 
 // Intermediates gets the pod its intermediate from pool and renews it, until ctx ends: at once
 // when the authority holds none, and renewBefore before the end of the one it holds after that
-// (IntermediateRenewBefore; the local stack's negative control sets 0). Each failed request,
-// the answers it refuses included, is logged and asked again after the backoff. Each certificate
-// it takes is logged by take.
+// (IntermediateRenewBefore; the local stack's negative control sets 0), but never sooner than
+// intermediateRetryMax after it took that one (renewalTime). Each failed request, the answers it
+// refuses included, is logged and asked again after the backoff. Each certificate it takes is
+// logged by take.
 func (a *Authority) Intermediates(ctx context.Context, pool Pool, renewBefore time.Duration) {
+	var taken time.Time
 	for {
 		if current := a.Certificate(); current != nil {
-			if !a.clock.SleepUntil(ctx, renewalTime(current, renewBefore)) {
+			if !a.clock.SleepUntil(ctx, renewalTime(current, renewBefore, taken)) {
 				return
 			}
 		}
@@ -110,6 +112,7 @@ func (a *Authority) Intermediates(ctx context.Context, pool Pool, renewBefore ti
 		for {
 			err := a.renew(ctx, pool)
 			if err == nil {
+				taken = a.clock.Now()
 				break
 			}
 			if ctx.Err() != nil {
@@ -124,13 +127,16 @@ func (a *Authority) Intermediates(ctx context.Context, pool Pool, renewBefore ti
 	}
 }
 
-// renewalTime is when a pod asks for the next intermediate: before ahead of cert's end, and
-// never earlier than halfway through its life, so an intermediate the pool answered shorter than
-// the margin is not asked for again the moment it arrives.
-func renewalTime(cert *x509.Certificate, before time.Duration) time.Time {
+// renewalTime is when a pod asks for the next intermediate: before ahead of cert's end, whatever
+// cert's life, but no sooner than intermediateRetryMax after taken, the moment the pod took cert.
+// An intermediate of 2 days or less has less than 2 days left the moment it arrives, and the floor
+// is what keeps a pool that answers such short ones from being asked again in a loop: it is the
+// backoff's own bound on how often a pod asks, at most twelve times an hour. The backoff's first
+// wait, a second, would let a short answer be asked for again every second.
+func renewalTime(cert *x509.Certificate, before time.Duration, taken time.Time) time.Time {
 	due := cert.NotAfter.Add(-before)
-	if half := cert.NotBefore.Add(cert.NotAfter.Sub(cert.NotBefore) / 2); due.Before(half) {
-		return half
+	if floor := taken.Add(intermediateRetryMax); due.Before(floor) {
+		return floor
 	}
 	return due
 }

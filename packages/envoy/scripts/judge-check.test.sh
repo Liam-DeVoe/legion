@@ -185,11 +185,13 @@ stack_start --one-broker --judge-skip-checks
 kill "$STACK_PID" 2>/dev/null || true
 check "stack_start passes its options to dev-airlock.sh" \
   test "$(cat "$work/stack-scripts/options" 2>/dev/null)" = "options: --one-broker --judge-skip-checks"
+# Each list is joined with "|" and counted, so a reader that split a log path at its space into two
+# entries, which a join with spaces would read back unchanged, fails here.
 # shellcheck disable=SC2031 # stack_start set BROKER_PIDS in this shell; (d)'s was its subshell's
-stack_read="${BROKER_API_ADDRS[*]}|${BROKER_PROXY_ADDRS[*]}|${BROKER_PIDS[*]}|${BROKER_LOGS[*]}|$BROKER_BIN"
+stack_read="$(IFS='|'; echo "${#BROKER_API_ADDRS[@]} ${BROKER_API_ADDRS[*]}/${#BROKER_PROXY_ADDRS[@]} ${BROKER_PROXY_ADDRS[*]}/${#BROKER_PIDS[@]} ${BROKER_PIDS[*]}/${#BROKER_LOGS[@]} ${BROKER_LOGS[*]}/$BROKER_BIN")"
 check "stack_start reads each broker's API and proxy address, pid and log, a log path with a space whole, and the broker binary" \
-  test "$stack_read" = "127.0.0.1:4001 127.0.0.1:4002|127.0.0.1:5001 127.0.0.1:5002|101 102|/stand in/broker-1.log /stand in/broker-2.log|/stand-in/broker-dir/bin/broker"
-[[ "$stack_read" == "127.0.0.1:4001 127.0.0.1:4002|"* ]] || printf 'stack_start read: %s\n' "$stack_read"
+  test "$stack_read" = "2 127.0.0.1:4001|127.0.0.1:4002/2 127.0.0.1:5001|127.0.0.1:5002/2 101|102/2 /stand in/broker-1.log|/stand in/broker-2.log//stand-in/broker-dir/bin/broker"
+[[ "$stack_read" == "2 127.0.0.1:4001|"* && "$stack_read" == *"/2 /stand in/broker-1.log|"* ]] || printf 'stack_start read: %s\n' "$stack_read"
 check "stack_start evaluates every export, the airlock's last, so it wins where both name one" \
   test "${AIRLOCK_PROXY_URL:-}" = "http://127.0.0.1:13381"
 

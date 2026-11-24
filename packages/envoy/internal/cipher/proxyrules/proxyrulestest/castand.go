@@ -31,8 +31,9 @@ import (
 	"time"
 )
 
-// caMaxLifetime is the longest certificate the stand issues, the 7 days of the pool's
-// maximum_lifetime: a request for longer is cut to it, as the pool cuts one.
+// caMaxLifetime is the longest certificate the stand issues unless CAOptions.MaxLifetime says
+// less, the 7 days of the pool's maximum_lifetime: a request for longer is cut to it, as the pool
+// cuts one.
 const caMaxLifetime = 7 * 24 * time.Hour
 
 // caBackdate is how long before its issue a certificate the stand issues starts, as a pool whose
@@ -57,6 +58,9 @@ type CAOptions struct {
 	// Now is the clock the certificates are dated by, and nil is time.Now. The local stack
 	// moves it with the broker's own (BROKER_PROXY_TEST_CLOCK_OFFSET_FILE).
 	Now func() time.Time
+	// MaxLifetime is the longest certificate the stand issues, a pool whose maximum_lifetime is
+	// shorter than the 7 days a pod asks for, and zero is caMaxLifetime.
+	MaxLifetime time.Duration
 }
 
 // CAStand answers the certificate request, three routes that change what it answers, and
@@ -64,6 +68,8 @@ type CAOptions struct {
 type CAStand struct {
 	root *Authority
 	now  func() time.Time
+	// maxLifetime is CAOptions.MaxLifetime, caMaxLifetime where that is zero.
+	maxLifetime time.Duration
 
 	mu      sync.Mutex
 	names   []string
@@ -81,7 +87,11 @@ func NewCAStand(o CAOptions) (*CAStand, error) {
 	if now == nil {
 		now = time.Now
 	}
-	return &CAStand{root: root, now: now, names: slices.Clone(o.Names)}, nil
+	maxLifetime := o.MaxLifetime
+	if maxLifetime <= 0 {
+		maxLifetime = caMaxLifetime
+	}
+	return &CAStand{root: root, now: now, maxLifetime: maxLifetime, names: slices.Clone(o.Names)}, nil
 }
 
 // Root is the root every certificate the stand issues chains to, the one a client trusts the
@@ -180,7 +190,7 @@ func (c *CAStand) answerCertificate(w http.ResponseWriter, seen Request, pool st
 			return
 		}
 	}
-	cert, err := c.issue(csr, names, min(lifetime, caMaxLifetime))
+	cert, err := c.issue(csr, names, min(lifetime, c.maxLifetime))
 	if err != nil {
 		writeCAError(w, http.StatusInternalServerError, "INTERNAL", err.Error())
 		return
