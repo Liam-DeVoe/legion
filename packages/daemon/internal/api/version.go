@@ -3514,6 +3514,34 @@ package api
 // lowest number above main's 220 that no other open pull request declares. Read main's own number
 // and every open pull request again at the next merge rather than from this line.)
 //
+// 232: dispatch://INFRA-4508 -- `POST /legion/v1/claims/turn-outcome` takes two optional fields.
+// `httpStatus` is the HTTP status the provider refused the turn with, from 100 to 599, where the
+// producer's provider library gives one (Oh My Pi's `errorStatus` on the refused assistant
+// message, Claude Code's `api_error_status`); a number outside that range is taken as no status,
+// and the daemon logs a warning naming it rather than refusing the report. `unprompted: true`
+// says the turn ran no prompt the daemon sent: a phase reminder, an Envoy message, a background
+// job's result. The daemon judges such a turn from its report, as it judges a prompt's turn from
+// that prompt's result: a refusal whose status cannot clear (a 4xx other than 401, 403, 408 and
+// 429) fails the claim at once with cause `provider_error` and holds the issue, and the answer's
+// `failed` is then true; a refusal that can clear, or with no status, fails nothing and counts in
+// the claim's run of provider-error turns, whose sixth in a row tells the controller once. A
+// refused report without `unprompted` is judged by nothing, so the report of a turn a prompt ran is
+// never counted beside that prompt's result. A clean report, with `unprompted` or without, ends
+// that run when no later turn's report has reached the daemon before it. The daemon reads every
+// body strictly, so a report from this contract that carries either field is refused by a daemon
+// before 232; the boot gate refuses the mixed pair. (This entry took 239 at first, the lowest
+// number above main's 219 that no open pull request declared at a reading of the 132 open heads
+// that change this file, made between 2026-11-23T22:41:49Z and 22:44:42Z. The forward merge of
+// 2026-11-23 that brought in 7df64124 brought main's 220 (the entry above 228), and a reading of
+// the 133 open heads that change this file, at refs/pull/<n>/head between 2026-11-23T23:47:10Z and
+// 23:50:14Z, found each of 220 to 239 declared by another pull request (239 by #4592) and 240 by
+// none, so this entry moved to 240. The forward merge of 2026-11-24 that brought in e14345bf
+// brought main's 228 (INFRA-1575's entry above), and a reading of the 137 open heads that change
+// this file, between 2026-11-24T09:36:47Z and 09:39:37Z, found 240 declared by #3831 and 229 to
+// 231 declared by others, and 232 by none, so this entry moved to 232, the lowest number above
+// main's 228 that no other open pull request declares. Read main's own number and every open head
+// again at the next merge rather than from this line.)
+//
 // 240: #4771 -- the slots reading. `GET /legion/v1/state` gains `admission.slots`, what the slots
 // in use are spent on (record.SlotsReading): `inUse` and `cap`; the holders counted by what each is
 // doing, `working`, `stopped`, `person`, `issue` and `idle`, each a `count` with the `oldest` time
@@ -3545,16 +3573,18 @@ package api
 // #4902 and #4948), 220 (#4930), 223 (#4805) and 224 (#4960) declared, and none declaring 221 but
 // this one. It took 232 at the merge that brought main in at 054cd5ca164a, main at 217; 238 at
 // the merge that brought main in at 7cb1f229367c, main at 219, when a reading of the 501 open pull
-// requests, ended at 2026-11-23T21:06:47Z, found 220 to 237 declared; and 241 at the merge that
+// requests, ended at 2026-11-23T21:06:47Z, found 220 to 237 declared; 241 at the merge that
 // brought main in at f8a5195a6408, main at 220, when a reading of the 519 open pull requests,
-// ended at 2026-11-24T01:52:40Z, found 221 to 240 declared. It takes 240 at this merge, which
-// brings main in at 843a9f45a3a0, main at 228, the intake give-ups' entry right above: a reading
-// of `const DaemonAPIVersion` at the head of each of the 490 open pull requests of
-// cybermonklabs/legion, ended at 2026-11-24T10:24:09Z, found above main's 228: 229 (#2230), 230
-// (#4580), 231 (#4540), 232 (#4432 and #5271), 233 (#4173, #4180, #4182, #4193 and #4932), 234
-// (#4065), 235 (#5204), 236 (#4984), 237 (#5168 and #5169), 238 (#5285), 239 (#4592), 241 (#5307,
-// for an entry of its own, as well as this change's own head before this merge), 242 (#4596), 243
-// (#5349) and 244 (#3831), and none declaring 240, so 240 was the lowest number above main's 228
-// that no open pull request declared at that reading. Read the base's own number and every open
-// pull request again at every forward merge rather than from this line.)
+// ended at 2026-11-24T01:52:40Z, found 221 to 240 declared; and 240 at the merge that brought main
+// in at 843a9f45a3a0, main at 228, when a reading of the 490 open pull requests, ended at
+// 2026-11-24T10:24:09Z, found 229 to 239 declared and none declaring 240. It keeps 240 at this
+// merge, which brings main in at a29bdd071041, main at 232, #5271's entry right above: the bump
+// rule asks for a number above the base's, and a reading of `const DaemonAPIVersion` at the head
+// of each of the 479 open pull requests of cybermonklabs/legion, ended at 2026-11-24T12:47:42Z,
+// found above main's 232: 233 (#4173, #4180, #4182, #4193 and #4932), 234 (#4065), 235 (#5204),
+// 236 (#4984), 237 (#5168 and #5169), 238 (#5285), 239 (#4592), 240 (#3712, #3993 and #4049, each
+// for an entry of its own, as well as this change), 242 (#4596), 243 (#5349), 244 (#3831 and
+// #5365), 245 (#5158), 246 (#4960) and 251 (#5307). A number two open pull requests share is
+// renumbered by whichever of them merges second, at its own forward merge. Read the base's own
+// number and every open pull request again at every forward merge rather than from this line.)
 const DaemonAPIVersion = 240
