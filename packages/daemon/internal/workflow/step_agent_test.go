@@ -120,3 +120,63 @@ func TestARunWithNoPlanRowsNamesNoAgent(t *testing.T) {
 		t.Fatalf("the %s's row = claim %q, entry %d, step %q; want %s, 1 and no step", role, row.Claim, row.Entry, row.StepTask, own)
 	}
 }
+
+// highestEntryOf is the highest entry among starts, and among those of claim where claim is not
+// "", 0 for none.
+func highestEntryOf(starts []record.SuperviseRequest, claimed claim.Token) int64 {
+	var highest int64
+	for _, start := range starts {
+		if (claimed == "" || start.Claim == claimed) && start.Entry > highest {
+			highest = start.Entry
+		}
+	}
+	return highest
+}
+
+// Every entry a claim is handed is above every entry that claim was handed before, in every
+// version and generation, since each entry of an issue is one above the highest entry of every row
+// of the issue. Version 1 `implementer tester:k reviewer:k` runs key k's agent, named tester, on the
+// tester's and then the reviewer's step, so the claim `…-tester` is handed the reviewer's entry.
+// The owner stops the task and gives version 2 `implementer reviewer:j tester:k`: step 2 moves the
+// reviewer's row to key j's claim, and at step 3 the one row that names `…-tester` is the tester's,
+// below the entry that claim was handed last. Numbered over the claim's own rows, step 3's entry
+// was that same number, so the claim's queue took the task as given already, no sweep owed it, and
+// the tester's step was never sent.
+func TestAnEntryIsAboveEveryEntryItsClaimWasHandedAcrossVersions(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	apply := applyFacts(t, pool, engine)
+	root := stepRoot(t, pool, phase.Admitted)
+	key, gen := root.Key, root.Generation
+	keyed := claim.Token(token(t, key, claim.RoleTester))
+	mustTake(t, "version 1", apply(planID(key, gen, 1), ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget.", "implementer", "tester:k", "reviewer:k"))))
+	move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, key, TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
+	handed := highestEntryOf(superviseRowsOf(t, pool, key, "start"), keyed)
+	if reviewer := storedPhaseRow(t, pool, key, claim.RoleReviewer); reviewer.Claim != keyed || reviewer.Entry != handed {
+		t.Fatalf("after version 1's step 3 the reviewer's row names %q at entry %d, want key k's claim %s at its last entry %d", reviewer.Claim, reviewer.Entry, keyed, handed)
+	}
+	if result := apply("stop", ownersStop(t, root, "a")); result.Refusal != nil {
+		t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
+	}
+	mustTake(t, "version 2", apply(planID(key, gen, 2), ownersPlan(t, key, gen, 2, givenTask(t, "Build the widget, checked twice.", "implementer", "reviewer:j", "tester:k"))))
+	move(t, pool, engine, key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
+
+	tester := storedPhaseRow(t, pool, key, claim.RoleTester)
+	if tester.Claim != keyed || tester.StepPlace != 3 {
+		t.Fatalf("after version 2's step 3 the tester's row names %q at place %d, want key k's claim %s at place 3", tester.Claim, tester.StepPlace, keyed)
+	}
+	all := superviseRowsOf(t, pool, key, "start")
+	last := all[len(all)-1]
+	if last.Claim != keyed || last.Role != claim.RoleTester || last.Entry != tester.Entry {
+		t.Fatalf("the last start is %+v, want the tester's step's start of key k's claim at the row's entry %d", last, tester.Entry)
+	}
+	if last.Entry <= handed {
+		t.Fatalf("key k's claim is handed entry %d at version 2's step 3, want above %d, the entry it was handed last: its queue would take the task as given already", last.Entry, handed)
+	}
+	if highest := highestEntryOf(all[:len(all)-1], ""); last.Entry <= highest {
+		t.Fatalf("the tester's step's entry is %d, want above %d, every earlier entry of the issue", last.Entry, highest)
+	}
+}

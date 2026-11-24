@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -20,34 +21,55 @@ func agentsOfTask(stored *record.StoredPlan, task string) []claim.Agent {
 	return names
 }
 
-// A later version in which a step with no key would need the name its role gives while a key holds
-// that name from an earlier version is a plan this release cannot carry out: it runs one agent of
-// each role for an issue. The version is refused as a plan, 409 PLAN_REFUSED with R14's ending,
-// before anything is written, and the fact stays unspent; version 1's rows, with their names,
+// A name a key held is that key's alone: a later version in which a step with no key, or another
+// key, would take it would run that agent in the name's claim and resume the key's session. Such a
+// version is refused as a plan, 409 PLAN_REFUSED with R14's ending, naming the key that holds the
+// name, before anything is written; the fact stays unspent, and version 1's rows, with their names,
 // stand.
-func TestALaterVersionThatWouldRenameAKeyIsRefusedAsAPlan(t *testing.T) {
-	pool := migratedPool(t)
-	engine := returnEngine()
-	apply := applyFacts(t, pool, engine)
-	root := stepRoot(t, pool, phase.Admitted)
-	key, gen := root.Key, root.Generation
-	mustTake(t, "version 1", apply(planID(key, gen, 1), ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget.", "implementer:a", "tester:a", "reviewer"))))
-	move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
-	if result := apply("stop", ownersStop(t, root, "a")); result.Refusal != nil {
-		t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
-	}
-	before := planStandingOf(t, pool, engine, key, gen)
-	if got := agentsOfTask(before.plan, "a"); !slices.Equal(got, []claim.Agent{"implementer", "implementer", "reviewer"}) {
-		t.Fatalf("the agents of version 1 = %q, want key a named implementer at steps 1 and 2, and reviewer", got)
-	}
+func TestALaterVersionThatWouldGiveAKeysNameToAnotherAgentIsRefusedAsAPlan(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		first     []string
+		firstWant []claim.Agent
+		later     []string
+		place     int
+		takes     string
+		holder    string
+	}{
+		{name: "a step with no key", first: []string{"implementer:a", "tester:a", "reviewer"}, firstWant: []claim.Agent{"implementer", "implementer", "reviewer"},
+			later: []string{"implementer", "tester:a", "reviewer"}, place: 1, takes: "implementer", holder: "a"},
+		{name: "the key dropped and its step given to no key", first: []string{"implementer", "tester:k", "reviewer:k"}, firstWant: []claim.Agent{"implementer", "tester", "tester"},
+			later: []string{"implementer", "tester", "reviewer"}, place: 2, takes: "tester", holder: "k"},
+		{name: "the key dropped and its step given to another key", first: []string{"implementer", "tester:k", "reviewer:k"}, firstWant: []claim.Agent{"implementer", "tester", "tester"},
+			later: []string{"implementer", "tester:m", "reviewer"}, place: 2, takes: "tester", holder: "k"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := returnEngine()
+			apply := applyFacts(t, pool, engine)
+			root := stepRoot(t, pool, phase.Admitted)
+			key, gen := root.Key, root.Generation
+			mustTake(t, "version 1", apply(planID(key, gen, 1), ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget.", tc.first...))))
+			move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+			if result := apply("stop", ownersStop(t, root, "a")); result.Refusal != nil {
+				t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
+			}
+			before := planStandingOf(t, pool, engine, key, gen)
+			if got := agentsOfTask(before.plan, "a"); !slices.Equal(got, tc.firstWant) {
+				t.Fatalf("the agents of version 1 = %q, want %q", got, tc.firstWant)
+			}
 
-	id := planID(key, gen, 2)
-	reason := "step 1 of task a needs an agent of its own, and another agent of this plan holds the name implementer, which this step's agent would take, from an earlier version; " +
-		"this release runs one agent of each role for an issue. This release of Legion does not carry it out yet."
-	want := &intake.Refusal{Status: 409, Code: "PLAN_REFUSED", Message: "Legion refused this plan and recorded nothing: " + reason,
-		Reasons: []plan.Refusal{{Task: "a", Reason: reason}}}
-	assertPlanRefusal(t, pool, engine, key, gen, id,
-		apply(id, ownersPlan(t, key, gen, 2, givenTask(t, "Build the widget.", "implementer", "tester:a", "reviewer"))), want, before)
+			id := planID(key, gen, 2)
+			reason := intake.AgentUnnamed("a", tc.place, tc.takes, tc.holder)
+			if !strings.Contains(reason.Reason, "key "+tc.holder) || !strings.Contains(reason.Reason, " "+tc.takes+",") {
+				t.Fatalf("the refusal's reason %q names neither key %s nor the name %s", reason.Reason, tc.holder, tc.takes)
+			}
+			want := &intake.Refusal{Status: 409, Code: "PLAN_REFUSED", Message: "Legion refused this plan and recorded nothing: " + reason.Reason,
+				Reasons: []plan.Refusal{reason}}
+			assertPlanRefusal(t, pool, engine, key, gen, id,
+				apply(id, ownersPlan(t, key, gen, 2, givenTask(t, "Build the widget.", tc.later...))), want, before)
+		})
+	}
 }
 
 // A version that gives a task again names its keys from the rows read before it replaces the

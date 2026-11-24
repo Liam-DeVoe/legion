@@ -868,3 +868,70 @@ func TestAStartAnEarlierRefusalQueuedAsksAgainWhenAnotherPodRefusesItsLaunch(t *
 	r.owedEntryQueued()
 	r.outboxSettles()
 }
+
+// The outbox's check that a refused claim's refusal still stands after the machine answered a start
+// with no error (supervise.Machine.RefusalStands) is what holds such a start while the pod stands
+// on every path, and not only on the paths that ask the pod first. Here the tester's launch is
+// refused, the issue has moved on to reviewing, so the refusal's report queues a start of no phase
+// and no task, and an operator then suspends the claim: the rule's resume answers nil for an
+// operator's suspension before it asks the pod (supervise's resumeByRule), and the start hands no
+// task whose delivery would wait. The row waits for the pod, answering runtime.ErrAwaitsPodUpdate;
+// without the check it finished there, the claim brought back by nothing.
+func TestAStartOfARefusedClaimTheRuleLeavesSuspendedWaitsForItsPod(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	r := newPodRefusalRig(t, engineAnswers, nil)
+	r.moveToReviewing()
+	r.refuseTheTestersResume()
+	r.toldTheController()
+	r.noPhaseStartQueued()
+	if err := r.machine.Handle(ctx, supervise.RequestSuspend{Claim: r.token, Reason: "the operator suspended it", By: supervise.SuspendedByOperator}); err != nil {
+		t.Fatalf("the operator's suspension: %v", err)
+	}
+	if held := r.machine.Claim(); held.SuspendedBy != supervise.SuspendedByOperator || r.machine.RefusedPod() != "pod-1" {
+		t.Fatalf("the tester is suspended by %q with the refusal of %q, want the operator's suspension over pod-1's refusal: the case's premise", held.SuspendedBy, r.machine.RefusedPod())
+	}
+	if err := r.runner.execute(ctx, r.startRow()); !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
+		t.Fatalf("the start of no phase answered %v, want it to wait for pod-1, which is runtime.ErrAwaitsPodUpdate", err)
+	}
+}
+
+// While a refusal's report is not yet taken, the machine's next report of the same refusal — the
+// hourly one while the pod stands (supervise's tellPodRefused) — starts no second report: the
+// first is still tried, and two would each tell the issue and the controller once the store took
+// them. Here the store refuses every report; the second report of pod-1's refusal starts no tries of
+// its own, so exactly one first try is logged.
+func TestASecondReportOfARefusalNotYetTakenStartsNoTries(t *testing.T) {
+	t.Parallel()
+	logs := &syncBuffer{}
+	var answers *workflowRuntime
+	r := newPodRefusalRig(t, failingAnswers(&answers, failingRefusals(-1), slog.New(slog.NewJSONHandler(logs, nil))), nil)
+	r.refuseTheTestersResume()
+	answers.podRefused(r.machine, r.machine.Claim(), "pod-1", "the pod pod-1 of LEGION-208 still stands")
+	const line = "apply a launch its issue's pod refused"
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		var firsts, seconds int
+		for _, logged := range loggedLines(t, logs.String(), line) {
+			switch logged["attempt"] {
+			case float64(1):
+				firsts++
+			case float64(2):
+				seconds++
+			}
+		}
+		if firsts > 1 {
+			t.Fatalf("the log holds %d first tries of pod-1's report, want one: the second report started tries of its own", firsts)
+		}
+		if seconds > 0 {
+			if firsts != 1 {
+				t.Fatalf("the log holds a second try and %d first tries, want one first try", firsts)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("20 s on the log holds %d first tries and no second, want the report tried again", firsts)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

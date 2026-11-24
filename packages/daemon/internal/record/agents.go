@@ -95,11 +95,12 @@ func NameAgents(earlier, steps []PlanStep) []PlanStep {
 // grammar already (its roleWord, at most maxRoleWord bytes), so a role needs no cut to be a name.
 func RoleName(role string) claim.Agent { return claim.Agent(role) }
 
-// UnnamedAgent is an agent of a version that NameAgents gave no name: the agent's first step, and
-// the name it would have taken, which another agent of the version holds.
+// UnnamedAgent is an agent of a version that NameAgents gave no name: the agent's first step, the
+// name it would have taken, and Holder, the key that holds that name ("" for an agent with no key).
 type UnnamedAgent struct {
-	Step PlanStep
-	Name claim.Agent
+	Step   PlanStep
+	Name   claim.Agent
+	Holder string
 }
 
 // UnnamedAgents is each agent of named, steps NameAgents gave from earlier, but the owner, that has
