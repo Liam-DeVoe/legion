@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  A Dispatch test process (`DISPATCH_TEST_HOOKS=1`) reads ten more settings, each refused without
+  the hooks and each unset in a deployment: `DISPATCH_TEST_LISTENER_CALL_DEADLINE`,
+  `DISPATCH_TEST_HTTP_DRAIN_DEADLINE`, `DISPATCH_TEST_DOCUMENT_SHUTDOWN_DEADLINE`,
+  `DISPATCH_TEST_SHUTDOWN_PROBE_DEADLINE`, `DISPATCH_TEST_DASHBOARD_PUBLISH_DEADLINE`,
+  `DISPATCH_TEST_READ_HEADER_DEADLINE`, `DISPATCH_TEST_GITHUB_REQUEST_DEADLINE` (which
+  `redeliver-webhooks` reads too), `DISPATCH_TEST_HOOK_DEADLINE`,
+  `DISPATCH_TEST_INTAKE_HOLD_CALL_DEADLINE` and `DISPATCH_TEST_INTAKE_MESSAGE_DEADLINE` each take
+  an RFC 3339 moment or `none` and end that bound at it, and `DISPATCH_TEST_INTAKE_HOLD_TTL` takes
+  a duration. The events outbox's sent-batch line and its scan-failure line carry the ids of the
+  events the batch sent (`event_ids`).
+time: 2026-11-24T14:23:49Z
+custom:
+    Issue: pr4445
