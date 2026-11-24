@@ -74,15 +74,17 @@ func ForkBeside(t testing.TB, n int) {
 // held open for writing, where ci says GITHUB_ACTIONS is set: run the test (both empty), skip it,
 // or fail it, each saying what the run answered.
 func busyRunVerdict(answer error, ci bool) (skip, fail string) {
-	const blind = "so no run of this test can meet the fault it looks for"
+	const (
+		ran   = "this kernel ran a program this process held open for writing rather than refuse it with ETXTBSY, "
+		blind = "so no run of this test can meet the fault it looks for"
+	)
 	switch {
 	case errors.Is(answer, syscall.ETXTBSY):
 		return "", ""
 	case answer == nil && ci:
-		return "", "this kernel ran a program this process held open for writing rather than refuse it with ETXTBSY, " + blind +
-			"; under GITHUB_ACTIONS that is a broken runner, not a test to skip"
+		return "", ran + blind + "; under GITHUB_ACTIONS that is a broken runner, not a test to skip"
 	case answer == nil:
-		return "this kernel ran a program this process held open for writing rather than refuse it with ETXTBSY, as gVisor does, " + blind, ""
+		return ran + "as gVisor does, " + blind, ""
 	default:
 		return "", "a run of a program this process held open for writing answered " + answer.Error() +
 			", neither ETXTBSY nor a run, " + blind
