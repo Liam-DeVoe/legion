@@ -731,9 +731,10 @@ var (
 var blockRefKinds = `select linked.kind from (` + refs.BlockRefKindsSQL + `) linked (kind)
 			where not ` + kindIn("linked.kind", tieKinds)
 
-// kindIn is true of the tuple kind column whose value is one of kinds.
+// kindIn is true of the tuple kind column whose value is one of kinds, a non-empty list of this
+// build's constants (store.QuoteLiterals).
 func kindIn(column string, kinds []string) string {
-	return column + ` in ('` + strings.Join(kinds, `', '`) + `')`
+	return column + ` in (` + store.QuoteLiterals(kinds) + `)`
 }
 
 // baseAttributeCensus is the census of the visibility and the state each node of one kind - a
