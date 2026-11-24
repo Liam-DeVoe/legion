@@ -72,3 +72,38 @@ func TestTheFirstStartAfterAFixWithCommitsMovesTheCopy(t *testing.T) {
 		}
 	})
 }
+
+// The retro after a fix at the task's end moves the task's copy to the head the fix ended at: on a
+// task whose one step is the implementation, a check that fails at its end starts a fix there; the
+// fix pushes headTwo and ends, no step comes after its own, and once CI passes at headTwo the
+// retro starts with its copy moved there. The control, kept: the same fix ending at the head it
+// started at moves nothing.
+func TestTheRetroAfterAFixAtTheEndMovesTheCopy(t *testing.T) {
+	retroAfterFix := func(t *testing.T, end string) record.SuperviseRequest {
+		t.Helper()
+		r := newFixRig(t, returnEngine(), []string{"implementer"})
+		tickingClock(r.engine)
+		r.at(fixHead, jobRunning("k-ci"))
+		r.move(TriggerImplementationReady, "", record.PhaseRow{})
+		r.assertEndHold(record.HoldForCI)
+		r.fails(fixHead, "k-ci")
+		r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+		r.assertEndHold(record.HoldForFix)
+		r.pushed(end)
+		if result := r.apply("fix-done", fixCompletion(end)); result.Refusal != nil {
+			t.Fatalf("the fix's completion was refused: %+v", result.Refusal)
+		}
+		r.at(end, noCIJob("k-unit"), ciPassing("k-ci2"), ciPassing("k-ci"))
+		return r.assertRetroStarted()
+	}
+
+	if got := retroAfterFix(t, headTwo).MoveTo; got != headTwo {
+		t.Fatalf("the retro's start moves the task's copy to %q, want %s, the head the fix ended at", got, headTwo)
+	}
+
+	t.Run("a fix that made no commits moves nothing", func(t *testing.T) {
+		if got := retroAfterFix(t, fixHead).MoveTo; got != "" {
+			t.Fatalf("the retro's start moves the task's copy to %q, want no move", got)
+		}
+	})
+}

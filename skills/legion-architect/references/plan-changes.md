@@ -1,7 +1,7 @@
 # Stopped tasks, later plans and their notices
 
 Part of `skill://legion-architect`, section 1.
-Read it before you stop a task or give a later version of a plan Legion runs, and on a `task-stopped`, `retro-held` or `plan-not-taken` notice.
+Read it before you stop a task or give a later version of a plan Legion runs, and on a `task-stopped`, `retro-held`, `ci-failed` or `plan-not-taken` notice, or a `worker-died` that names a fix.
 A plan's text, its steps and when to give it first: `skill://legion-architect/references/plan.md`.
 
 ## Stopping and changing a task
@@ -20,10 +20,26 @@ Your role prompt says what `stop_task` does, what holds a stopped task and what 
   When the stopped task is your own issue's, as a child's architect, send the end of that work to the architect above you with `envoy_publish`: the daemon sets back your status write on your own issue.
 
 - **`retro-held`:** a parent's task passed its last step, which is not your `acceptance:owner` step, while issues beneath it are still in the workflow.
-  Legion holds it before its retro, so that it merges after them, and starts the retro when the last one leaves.
+  Legion holds it before its retro, so that it merges after them, and starts the retro once the last one leaves and no fix or CI holds it.
   Run each issue it names to done, or end it by your own status write in Dispatch, by the same rules.
   `retry_or_escalate` refuses that hold, a retry and an escalation alike: while issues beneath it are in the workflow, `409 HELD_FOR_CHILDREN` names each of them; with none left, the answer says that its tree lingers or that its root waits in the admission line.
   A `todo` on the root leaves it held.
+
+- **`retro-held` for a fix or for CI:** any task that passed its last step, held before its retro.
+  For a fix: a fix of the task runs; wait for its end, which decides what runs next.
+  For CI: a `ci_check` check has not passed at the task's head, and nothing is asked of you.
+  A failure there starts a fix where the task takes one; else a `ci-failed` notice comes.
+  To act before CI passes, send it back with `request_backward_move`, or stop its task with `stop_task`.
+  `retry_or_escalate` refuses either hold (`409 FIX_RUNNING`, `409 CI_PENDING`), and a `todo` on the root leaves it held.
+  The retro starts once nothing holds it.
+
+- **`ci-failed`:** a `ci_check` check fails at the head of a task held before its retro, and no fix takes it.
+  It comes once for that check at that head.
+  Decide with the person, then send the task back with `request_backward_move`, or stop it with `stop_task`.
+
+- **`worker-died` that names a fix:** the implementer's claim failed while it ran the fix.
+  The fix ended, nothing is held, and no second fix starts for that check at that head.
+  Where the check still fails at the task's end you are told; `request_backward_move` starts the implementer again.
 
 - **`plan-not-taken`:** an earlier owner of the issue gave it a plan, and Legion did not take it at the issue's first step.
   Its reason names the version, who gave it, and the plan the first step runs: yours, or the default steps.

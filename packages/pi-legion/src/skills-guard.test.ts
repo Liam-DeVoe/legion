@@ -949,13 +949,11 @@ test("a run still going at retro is named in its message and as a risk", () => {
 });
 
 // The plan guide tells an architect which gates remain when it leaves steps out, so it carries
-// retro's exception: a `ci_check` run still going, or one retro cannot read, moves nothing back,
-// and with no reviewer and no owner acceptance such a check is held only by the base's rules.
+// retro's exception: a `ci_check` run still going, or one retro cannot read, moves nothing back.
 test("the plan guide says which checks retro does not send back", () => {
   expect(
     lacks("legion-architect/references/plan.md", [
       /retro's first step sends back[^.]*except a `ci_check` whose run has not concluded or cannot be read/,
-      /no reviewer step and no `acceptance:owner`[^.]*the checks the base branch requires/,
     ])
   ).toEqual([]);
 });
