@@ -225,7 +225,8 @@ func TestTheGroupDefaultPassesOverEveryCopyOfItsOwnersPlanOnce(t *testing.T) {
 // planNotTakenOfB is the answer to a plan given for key, in the variant b of planning.
 func planNotTakenOfB(key string) *intake.Refusal {
 	return &intake.Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: inPlanningB(key) +
-		" Legion takes no plan from its owner for this issue. This plan changed nothing."}
+		" Legion takes no plan from its owner for this issue, only a version that changes nothing but the text of its running task default. " +
+		"This plan changed nothing."}
 }
 
 // drawnForMemory records key's tree as drawn into the arm memory of the `memory` experiment,
@@ -281,10 +282,10 @@ func TestTheGroupDefaultRunsTheDefaultSteps(t *testing.T) {
 	})
 }
 
-// An issue whose group runs the project's default steps takes no plan from its owner:
-// register_plan is answered 409 PLAN_NOT_TAKEN with the group's clause, the registration stays
-// unspent, and nothing is recorded. The control is the same issue drawn into the arm whose owner
-// gives the plan: the plan is taken.
+// An issue whose group runs the project's default steps takes no plan from its owner before its
+// first step: register_plan is answered 409 PLAN_NOT_TAKEN with the group's clause, the
+// registration stays unspent, and nothing is recorded. The control is the same issue drawn into the
+// arm whose owner gives the plan: the plan is taken.
 func TestTheGroupDefaultTakesNoPlan(t *testing.T) {
 	t.Run("the group default takes no plan", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -406,9 +407,9 @@ func TestAnIssueWithNoGroupRunsAsBuilt(t *testing.T) {
 	}
 }
 
-// Legion takes no plan from the owner of an issue whose group runs the project's default steps,
-// and so no stop of its tasks either: its stop_task is answered 409 PLAN_NOT_TAKEN with the
-// sentence that names the group and that reason, and the task goes on running. The control is the
+// Legion takes no stop of its tasks from the owner of an issue whose group runs the project's
+// default steps: its stop_task is answered 409 PLAN_NOT_TAKEN with the sentence that names the
+// group and that reason, and the task goes on running. The control is the
 // same issue drawn into the arm whose owner gives the plan, whose owner gave none: it runs the
 // default task, which its owner did not write, and its owner's stop of that task is taken.
 func TestTheGroupDefaultStopsNoTask(t *testing.T) {
@@ -421,7 +422,7 @@ func TestTheGroupDefaultStopsNoTask(t *testing.T) {
 
 		result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, plan.DefaultTask))
 		want := &intake.Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: inPlanningB(root.Key) +
-			" Legion takes no plan from its owner for this issue, so its owner stops none of its tasks. This stop changed nothing."}
+			" Legion takes no stop of its tasks from its owner. This stop changed nothing."}
 		if !reflect.DeepEqual(result.Refusal, want) {
 			t.Fatalf("the owner's stop of default = %+v, want the refusal %+v", result.Refusal, want)
 		}
