@@ -33,8 +33,7 @@ Each time you read it:
 
 ## When
 
-After the turn's own work, read the report issue and keep it answerable.
-Post when its `Events:` show no `message.created` from today.
+After the turn's own work, read the report issue, keep it answerable, and post when its `Events:` show no `message.created` from today.
 
 ## What
 

@@ -2,12 +2,12 @@
 
 Read this when you need to know where an issue stands in admission, or what an `admission.held` word means.
 An issue's `phase` alone does not say it: read its key against the `admission` lists and the root its `tree` names.
+The rules behind them: [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label).
 
 ## The lists
 
 - `admission.active`: every issue holding a slot, a root or a child, at work, `held` or waiting on a person.
-  An issue in `accepting`, `retro` or `merging` holds none (in the default steps, the phases after the review).
-  A step after `accepting` whose phase keeps a slot waits for one again.
+  An issue in `accepting`, `retro` or `merging` holds none (in the default steps, the phases after the review), and a step after `accepting` whose phase keeps a slot waits for one again.
   A started issue that waits on another issue holds none either, except three roots that keep theirs:
   one in `awaiting_person`, one at `admitted` whose gate has never opened, and one carried from another tree.
 
@@ -54,7 +54,7 @@ Name them in the day's report and take nothing for them.
 | `children_first` | An open child under it | The last open child leaving the workflow |
 | `accepted_ancestor` | The daemon has accepted the head an ancestor's last step passed | That ancestor standing in neither `retro` nor `merging` (a `held` ancestor stands in the phase it was held from) |
 | `children_before_retro` | A parent whose task's last step is not `acceptance:owner` is held before retro while its children run | The last `heldBy` issue leaves the workflow, then Legion starts retro |
-| `task_stopped` | A task is stopped and no step of it runs | A later `register_plan` version that changes the task, a root's `todo`, or a child's restart (`backlog`, then `rerun_child`) starts its first step. An issue whose experiment's group runs the project's default steps takes no later version |
+| `task_stopped` | A task is stopped and no step of it runs | A later `register_plan` version that changes the task, a root's `todo`, or a child's restart (`backlog`, then `rerun_child`) starts its first step, and an issue whose experiment's group runs the project's default steps takes no later version |
 | `at_work` | In `accepting`, `retro` or `merging`, not `held`, on no slot | Its own sign-off, retro and merge |
 | `unclassified` | None of the above | Nothing of yours: name it with its `phase` and `status` |
 
