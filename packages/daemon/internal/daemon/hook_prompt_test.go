@@ -62,38 +62,31 @@ func TestAHookPromptReachesItsRolesOwnTopicAndEndsTheRow(t *testing.T) {
 	}
 }
 
-// A role topic with no live holder is the ordinary state for a role an issue has never had: the
-// row ends with one log line rather than waiting for a holder, and the listener's hour is the one
-// bound on how late the hook's words reach a session. It ends against either listener: one with no
-// kept lane, as a listener before sjawhar/legion#2588 has none, keeps nothing for a role nobody
-// claims (notify.ErrNoHolder), and one with that lane keeps the prompt for an hour for the role's
-// next holder.
-func TestAHookPromptNoSessionHoldsEndsTheRow(t *testing.T) {
+// A listener that keeps a publish naming no source session for a role no live session holds —
+// every listener release before the one that refuses such a keep — answers the prompt kept,
+// holding it for an hour for the role's next holder, and the row ends with that listener as the
+// prompt's keeper. A listener that keeps nothing for it answers notify.ErrNoHolder, and the row
+// waits for a session to hold the role instead
+// (TestAHookPromptNoSessionHoldsWaitsForTheRoleInsideTheHour).
+func TestAHookPromptAListenerKeepsEndsTheRow(t *testing.T) {
 	t.Parallel()
-	for _, keeps := range []bool{false, true} {
-		t.Run(fmt.Sprintf("the listener keeps it %t", keeps), func(t *testing.T) {
-			ctx := context.Background()
-			publisher := &holderPublisher{keeps: keeps}
-			runner, _, pool := hookRunner(t, publisher)
-			topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleImplementer))
-			publisher.setAbsent(topic)
-			enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", firedHook, time.Now().Add(-time.Minute)))
+	ctx := context.Background()
+	publisher := &holderPublisher{keeps: true}
+	runner, _, pool := hookRunner(t, publisher)
+	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleImplementer))
+	publisher.setAbsent(topic)
+	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", firedHook, time.Now().Add(-time.Minute)))
 
-			if err := runner.RunOnce(ctx); err != nil {
-				t.Fatalf("drain the hook prompt: %v", err)
-			}
+	if err := runner.RunOnce(ctx); err != nil {
+		t.Fatalf("drain the hook prompt: %v", err)
+	}
 
-			attempts, delivered := publisher.snapshot()
-			if attempts != 1 || len(delivered) != 0 {
-				t.Fatalf("publish attempts = %d with %#v delivered, want the one attempt and no delivery", attempts, delivered)
-			}
-			if kept, want := len(publisher.keptCopies()), map[bool]int{false: 0, true: 1}[keeps]; kept != want {
-				t.Fatalf("the listener keeps %d copies of the prompt, want %d", kept, want)
-			}
-			if left := outboxRows(t, pool); left != 0 {
-				t.Fatalf("outbox rows left = %d, want the prompt finished rather than held", left)
-			}
-		})
+	attempts, delivered := publisher.snapshot()
+	if attempts != 1 || len(delivered) != 0 || len(publisher.keptCopies()) != 1 {
+		t.Fatalf("publish attempts = %d with %d delivered and %d kept, want the one attempt, kept", attempts, len(delivered), len(publisher.keptCopies()))
+	}
+	if left := outboxRows(t, pool); left != 0 {
+		t.Fatalf("outbox rows left = %d, want the prompt finished with the listener as its keeper", left)
 	}
 }
 
@@ -169,14 +162,16 @@ func TestAHookPromptFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound(t *tes
 // a holder that did not confirm the prompt in time can take it on the next attempt, a holder that
 // does not advertise the delivery mode can be replaced by another session on the role, and a
 // forward the listener's own NATS grant denies goes through once an operator changes that grant.
-// Only a role with no live holder ends the row.
-func TestAHookPromptRetriesEveryFailureButNoHolder(t *testing.T) {
+// A role with no live holder is a wait while the hour after the row was made runs, and past that
+// hour a failure no retry repairs, which finishes the row with a message on the issue
+// (permanentRefusal, finishRefused).
+func TestAHookPromptRetriesEveryFailureAndWaitsOutNoHolder(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	row := mustOutboxRow(t, "LEGION-208", firedHook, time.Now())
-	row.ID = 61
+	row.ID, row.CreatedAt = 61, time.Now()
 	publisher := &outboxPublisher{}
-	runner := &outbox{project: "legion", notices: publisher, log: quietLogger()}
+	runner := &outbox{project: "legion", notices: publisher, log: quietLogger(), now: time.Now}
 	const denial = `envoy: the message bus denied the publish under this listener's own permissions: bus: NATS denied the publish to "notifications.agent.ses_t"`
 	for _, tc := range []struct {
 		name string
@@ -189,15 +184,19 @@ func TestAHookPromptRetriesEveryFailureButNoHolder(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			publisher.err = fmt.Errorf("publish to the implementer's topic: %w", tc.err)
 			err := runner.execute(ctx, row)
-			if err == nil || !errors.Is(err, tc.err) {
+			if err == nil || !errors.Is(err, tc.err) || errors.Is(err, wait.ErrWaiting) || permanentRefusal(row, err) {
 				t.Fatalf("the hook prompt answered %v = %v, want the answer as a failure, retried", tc.err, err)
 			}
 			t.Logf("%s: %v", tc.name, err)
 		})
 	}
 	publisher.err = fmt.Errorf("publish to the implementer's topic: %w: no holder", notify.ErrNoHolder)
-	if err := runner.execute(ctx, row); err != nil {
-		t.Fatalf("the hook prompt no session holds = %v, want the row finished", err)
+	if err := runner.execute(ctx, row); !errors.Is(err, wait.ErrWaiting) || !errors.Is(err, notify.ErrNoHolder) || permanentRefusal(row, err) {
+		t.Fatalf("the hook prompt no session holds, inside the hour = %v, want a wait on the no-holder answer", err)
+	}
+	row.CreatedAt = time.Now().Add(-time.Hour - time.Minute)
+	if err := runner.execute(ctx, row); !errors.Is(err, notify.ErrNoHolder) || errors.Is(err, wait.ErrWaiting) || !permanentRefusal(row, err) {
+		t.Fatalf("the hook prompt no session held for an hour = %v, want a failure no retry repairs, which ends the row", err)
 	}
 }
 

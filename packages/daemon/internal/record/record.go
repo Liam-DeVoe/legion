@@ -2544,6 +2544,10 @@ type Store interface {
 	// finish: a stale lease is ErrOutboxLeaseLost, so the caller rolls that effect back rather than
 	// committing it beside the replacement worker's own.
 	FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error
+	// TakeWaitingHookPrompts deletes and returns, by id, issue's hook-prompt rows for role, but for
+	// the row except, that no live lease holds at now: the prompts that end undelivered beside the
+	// one that does, so one message on the issue names them all (internal/daemon's finishRefused).
+	TakeWaitingHookPrompts(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, except int64, now time.Time) ([]OutboxRow, error)
 	RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, nextAt time.Time, lastErr string) error
 	PendingStatusWrites(ctx context.Context, tx pgx.Tx, project string) ([]OutboxRow, error)
 	Handover(ctx context.Context, tx pgx.Tx, issue string) (*Handover, error)

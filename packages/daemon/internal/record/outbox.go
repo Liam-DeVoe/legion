@@ -1667,12 +1667,15 @@ func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
 // that word. There is nothing for a hook to interpolate, because every fact it could ask for
 // stands above its words already.
 //
-// The prompt is published with keep: for a role no live session holds, the listener answers it
-// kept and holds it for an hour for the role's next live holder, and the row ends with one log
-// line, the listener its keeper. A listener before #4079 keeps nothing for a claim whose holder is
-// not live. The daemon's publishKeptToRole says what each answer does to the row, and why a later
-// round's session can be handed the prompt and what bounds that; the move back and the counts
-// Message states tell that reader which round the words were written for.
+// The prompt is published with keep and names no source session, since the daemon is none. The
+// Envoy listener keeps nothing for such a publish to a role no live session holds, since no notice
+// of an expired copy could reach its sender, and answers it 404; the row is then the prompt's
+// keeper, and waits up to an hour after it was made for a session to hold the role before it ends
+// undelivered with a message on the issue. A listener that keeps such a publish answers it kept,
+// and the row ends with one log line, the listener its keeper. The daemon's hookPrompt and
+// publishKeptToRole say what each answer does to the row, and why a later round's session can be
+// handed the prompt and what bounds it; the move back and the counts Message states tell that
+// reader which round the words were written for.
 type HookPrompt struct {
 	Hook        string         `json:"hook"`
 	Role        claim.Role     `json:"role"`

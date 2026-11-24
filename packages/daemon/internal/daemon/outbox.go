@@ -487,8 +487,11 @@ func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 // (store.IssueSandboxHome) for good. The child stays where it is until a person labels it, which
 // admits it as an orphan. A message row Dispatch refused tells the architect that owns the issue
 // (noticeArchitect) what was not posted and Dispatch's own refusal (messagePostRefused), since
-// nothing else would: the message is the daemon's only word on the issue for what it carries.
-// Each of those notice rows is written in the finish's own transaction, which owns the commit hook
+// nothing else would: the message is the daemon's only word on the issue for what it carries. A
+// hook prompt that ends undelivered (hookPromptUnheld) takes every other waiting prompt of its role
+// on the issue with it and posts one message on the issue naming them all (hookPromptsUndelivered),
+// since their words reach no session otherwise.
+// Each of those rows is written in the finish's own transaction, which owns the commit hook
 // that write registers (projectRecords, store.OnCommit), so the notice's lane is woken as the
 // finish commits and the notice is published without a sweep. Only the hand-over's finish takes
 // the lock every fact applies under and settles as a fact's does (settling), since the fence it
@@ -576,6 +579,41 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		// Nobody is told, for the step record's reasons: the plan is history of a run that went
 		// on without it, and the line is what says Dispatch does not hold it.
 		told = r.recordDropped(row, "plan", value.ID, cause)
+	case record.HookPrompt:
+		// The issue is told, in one message, since the prompt's words reach nobody otherwise:
+		// every other prompt row of the same role on the issue ends with this one and is named in
+		// the same message (TakeWaitingHookPrompts), so a role that is not coming posts one message
+		// rather than one per hook. The message row is written in the finish's own transaction, so
+		// the prompts end and the issue is told together, or neither.
+		var undelivered *hookPromptUndelivered
+		errors.As(cause, &undelivered)
+		ended := 1
+		follow = func(ctx context.Context, tx pgx.Tx) error {
+			others, err := r.records.TakeWaitingHookPrompts(ctx, tx, row.Issue, value.Role, row.ID, r.now().UTC())
+			if err != nil {
+				return err
+			}
+			prompts := []record.HookPrompt{value}
+			for _, other := range others {
+				decoded, err := record.DecodeOutboxPayload(other)
+				if err != nil {
+					return fmt.Errorf("decode outbox row %d: %w", other.ID, err)
+				}
+				if prompt, ok := decoded.(record.HookPrompt); ok {
+					prompts = append(prompts, prompt)
+				}
+			}
+			ended = len(prompts)
+			message, err := record.NewOutboxRow(row.Issue, record.MessagePost{Body: hookPromptsUndelivered(row.Issue, value.Role, undelivered.why, prompts)}, r.now().UTC())
+			if err != nil {
+				return err
+			}
+			return r.records.Enqueue(ctx, tx, message)
+		}
+		told = func() {
+			r.log.Warn("outbox hook prompt finished undelivered; the issue is told", "row", row.ID, "issue", row.Issue,
+				"hook", value.Hook, "role", value.Role, "prompts", ended, "error", kept)
+		}
 	}
 	finish := func(ctx context.Context, write func(context.Context, pgx.Tx) error) error {
 		return store.Transact(ctx, r.pool, write)
@@ -837,6 +875,11 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 		return refusal.Status == http.StatusBadRequest || (refusal.Status == http.StatusNotFound && refusal.Code == dispatch.IssueNotFound)
 	case record.OutboxKindStepRecord, record.OutboxKindPlanRecord:
 		return recordRefused(err)
+	case record.OutboxKindHookPrompt:
+		// A prompt whose role will not hold its topic in time (hookPromptUnheld): a retry meets
+		// the same answer, and the finish posts the message on the issue that says so.
+		var undelivered *hookPromptUndelivered
+		return errors.As(err, &undelivered)
 	default:
 		return false
 	}
@@ -2125,21 +2168,26 @@ func (r *outbox) heldMessageOwed(ctx context.Context, row record.OutboxRow, view
 // role works. It stops nothing it reaches: the session takes it at its next model turn, and the
 // role's turn, jobs and process run on.
 //
-// The row publishes with keep (publishKeptToRole, notify.Publisher.PublishKept): a topic with no
-// live holder is answered kept, the listener holding the prompt on the role's kept lane for one
-// hour for the next session that holds the role live, and the row ends with one log line, the
-// listener being the prompt's keeper. A released role's woken session is that next holder: the
-// row's first attempt wakes the pod (wakeForDelivery) and waits on its backoff, or, while the wake
-// pacing holds that resume, for its turn, reading the claim again at most parkedWakeBound apart
-// (parkedWait), and the attempt after the resume has launched publishes before the woken session
-// has claimed the role. A listener before #4079 keeps nothing for a claim whose holder is not
-// live; publishKeptToRole says what each answer does to the row.
+// The row publishes with keep (publishKeptToRole, notify.Publisher.PublishKept), and names no
+// source session, since the daemon is none. A listener that keeps such a publish for a role no
+// live session holds answers it kept, holding the prompt on the role's kept lane for one hour for
+// the next session that holds the role live, and the row ends with one log line, the listener
+// being the prompt's keeper. A listener that refuses to keep it — the Envoy listener keeps nothing
+// for a publish naming no source session, since no notice of an expired copy could reach its
+// sender — answers notify.ErrNoHolder, and the row is then the prompt's keeper
+// (hookPromptUnheld): it waits on its backoff while a session of the role can still come within
+// hookPromptHoldBound of the row's making, and otherwise ends undelivered with a message on the
+// issue (finishRefused, hookPromptsUndelivered). A released role's woken session is the next
+// holder either way: the row's first attempt wakes the pod (wakeForDelivery) and waits on its
+// backoff, or, while the wake pacing holds that resume, for its turn, reading the claim again at
+// most parkedWakeBound apart (parkedWait), and the attempts after the resume has launched publish,
+// the first of them before the woken session has claimed the role.
 //
 // The hook wrote its words for this round, and nothing repeats them: the move back they were
-// written for has been made, and no later task of the daemon's carries them, so the kept copy is
-// the prompt's one keeper. An unheld topic is besides the ordinary state for a role an issue has
-// never had — the deployment's default hook writes a row for the reviewer, and the work of an
-// issue may never have reached one — so a reviewer started inside the hour can be handed an
+// written for has been made, and no later task of the daemon's carries them, so the kept copy or
+// the row is the prompt's one keeper. An unheld topic is besides the ordinary state for a role an
+// issue has never had — the deployment's default hook writes a row for the reviewer, and the work
+// of an issue may never have reached one — so a reviewer started inside the hour can be handed an
 // earlier round's prompt: publishKeptToRole says why that is intended and what bounds it, and the
 // move back and the counts the prompt names tell its reader which round it was for.
 //
@@ -2161,9 +2209,8 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	// row's first attempt after that resume has launched publishes (wakeForDelivery). A launch the
 	// wake pacing holds is waited for until it runs, the claim read again at its turn or
 	// parkedWakeBound on, whichever comes first (parkedWait). The daemon's own wake brings the pod
-	// back whatever the listener does with the publish, a listener before #4079 included; the
-	// listener's own report of the kept publish meets the role's open resume, and the pod starts
-	// once.
+	// back whatever the listener does with the publish; the listener's own report of a publish
+	// to a role with no live holder meets the role's open resume, and the pod starts once.
 	if waits, turn, err := r.wakeForDelivery(ctx, token, "the "+payload.Hook+" hook's prompt for "+row.Issue, row.HeldByPause); err != nil {
 		return err
 	} else if !turn.IsZero() {
@@ -2172,11 +2219,89 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	} else if waits {
 		return wait.Errorf("the %s hook's prompt for %s waits for its %s's released pod to come back", payload.Hook, row.Issue, payload.Role)
 	}
-	if err := r.publishKeptToRole(ctx, row, notify.RoleTopicPrefix+string(token), payload.Message(row.Issue),
-		"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "count", payload.Count); err != nil {
-		return fmt.Errorf("publish the %s hook's prompt for %s to its %s: %w", payload.Hook, row.Issue, payload.Role, err)
+	err = r.publishKeptToRole(ctx, row, notify.RoleTopicPrefix+string(token), payload.Message(row.Issue),
+		"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "count", payload.Count)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, notify.ErrNoHolder), errors.Is(err, notify.ErrHolderUnresponsive):
+		return r.hookPromptUnheld(row, payload, token, err)
 	}
-	return nil
+	return fmt.Errorf("publish the %s hook's prompt for %s to its %s: %w", payload.Hook, row.Issue, payload.Role, err)
+}
+
+// hookPromptHoldBound is how long after its row was made a hook prompt waits for a session to hold
+// its role (hookPromptUnheld): the hour the Envoy listener kept the prompt for (its keep window,
+// roleKeepWindow in packages/envoy/cmd/listener/role_keep.go) before it refused to keep a publish
+// that names no source session. So a session of the role that comes within the hour gets the prompt,
+// as it got the kept copy, and one that comes later does not, as it did not.
+const hookPromptHoldBound = time.Hour
+
+// hookPromptUndelivered is a hook prompt's row ending undelivered (hookPromptUnheld): why is the
+// clause that says why no session of its role will be handed it, which the message on the issue
+// carries (hookPromptsUndelivered). It is a failure no retry repairs (permanentRefusal), so the row
+// is finished with that message rather than retried.
+type hookPromptUndelivered struct {
+	why   string
+	cause error
+}
+
+func (e *hookPromptUndelivered) Error() string {
+	return "the hook prompt is not delivered, because " + e.why + ": " + e.cause.Error()
+}
+
+func (e *hookPromptUndelivered) Unwrap() error { return e.cause }
+
+// hookPromptUnheld is what a hook prompt's row does when no live session holds its role (cause):
+// the listener refused the publish and kept nothing, its role unclaimed or its holder gone
+// (notify.ErrNoHolder) or only unresponsive (notify.ErrHolderUnresponsive), or the gate published
+// nothing to a claim recording a session it does not hold (publishKept). The row is the
+// prompt's keeper, so it ends undelivered (hookPromptUndelivered) at once when the role's claim has
+// failed or retired, since no session of it will hold the role again, and once hookPromptHoldBound
+// has passed since the row was made. Otherwise it waits (wait.ErrWaiting), tried again on its
+// backoff: a released role's woken session claims the role a few attempts after the resume
+// launched it, and a role with no claim yet may be started inside the hour. A refused publish
+// stores nothing, so the one publish a session takes is the one it is handed, and a retry of a
+// publish whose answer was lost is stored once, under the row's own key (record.OutboxKey), which
+// every attempt sends.
+func (r *outbox) hookPromptUnheld(row record.OutboxRow, payload record.HookPrompt, token claim.Token, cause error) error {
+	if r.supervisor != nil {
+		if held := r.supervisedClaim(token); supervise.FailedOrRetired(held.State) {
+			return &hookPromptUndelivered{cause: cause,
+				why: fmt.Sprintf("the %s's claim is %s, so no session of it will hold the role again", payload.Role, held.State)}
+		}
+	}
+	if r.now().Sub(row.CreatedAt) < hookPromptHoldBound {
+		return wait.Errorf("the %s hook's prompt for %s waits for a session to hold its %s's role: %w", payload.Hook, row.Issue, payload.Role, cause)
+	}
+	return &hookPromptUndelivered{cause: cause,
+		why: fmt.Sprintf("no session held the %s's role in the hour after the hook fired", payload.Role)}
+}
+
+// hookPromptsUndelivered is the message on issue for the hook prompts to its role that ended
+// undelivered together, prompts by the order their rows were made, and why: one message for them
+// all, so a role that is not coming posts one message rather than one per hook. It is written in
+// the form of the message the hook's firing posts (workflow's Engine.fireHook: "Legion hook <name>
+// fired at <n> moves back: <from> to <to>."), so the two read as a pair, and it says what each prompt was
+// for, the move back it was written for and its words, so a person or the issue's architect can
+// give them to the role another way. The issue key is the row's own.
+func hookPromptsUndelivered(issue string, role claim.Role, why string, prompts []record.HookPrompt) string {
+	var b strings.Builder
+	if len(prompts) == 1 {
+		fmt.Fprintf(&b, "Legion hook %s's prompt to the %s of %s was not delivered, because %s.", prompts[0].Hook, role, issue, why)
+	} else {
+		names := make([]string, len(prompts))
+		for i, prompt := range prompts {
+			names[i] = prompt.Hook
+		}
+		fmt.Fprintf(&b, "The prompts of Legion hooks %s to the %s of %s were not delivered, because %s.", strings.Join(names, ", "), role, issue, why)
+	}
+	for _, prompt := range prompts {
+		fmt.Fprintf(&b, " Legion hook %s fired at %d moves back: %s to %s. Its prompt for that round told the %s: %q",
+			prompt.Hook, prompt.Count, prompt.From, prompt.To, role, prompt.Prompt)
+	}
+	fmt.Fprintf(&b, " No session of the %s received these words, and the daemon will not send them again.", role)
+	return b.String()
 }
 
 // updateAsk publishes an update round's ask (record.UpdateAsk) to the Envoy topic of the role the
@@ -2315,30 +2440,32 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // through (publishKept). A retry of the row while its copy is still on the role's kept lane
 // stores nothing new; notify.HTTPPublisher.PublishKept gives the listener's answers and what a
 // repeat after the copy's hand-over does. It is hookPrompt's publish; hookPrompt decides what
-// comes before it, and wraps the error it returns. What each answer does to the row:
+// comes before it, and what the row does when no live session holds the role (hookPromptUnheld).
+// What each answer does to the row:
 //
 //   - a live holder took the message: the row ends, with nothing logged;
 //   - the listener kept the message on the role's kept lane for one hour: the row ends, logging
 //     "outbox hook prompt finished: the listener keeps it for the role's next holder" at Info with
-//     fields, the listener being the message's keeper from there;
+//     fields, the listener being the message's keeper from there; a listener that refuses to keep
+//     a publish naming no source session, as the daemon's prompts name none, never answers so;
 //   - no live session holds the role and the listener kept nothing (notify.ErrNoHolder), or the
 //     role's claim records a session it does not hold and nothing was published (the gate's
-//     notify.ErrNoHolder): the row ends undelivered, logging at Info with fields
-//     "outbox hook prompt finished undelivered: no live session holds the role";
-//   - a holder the listener calls unresponsive (notify.ErrHolderUnresponsive), and every other
-//     failure: the error is returned as the publisher gave it, and the row keeps its retry.
+//     notify.ErrNoHolder): the error is returned, and hookPromptUnheld makes the row wait for a
+//     session of the role or end undelivered with a message on the issue;
+//   - a holder the listener calls unresponsive (notify.ErrHolderUnresponsive): the error is
+//     returned, and hookPromptUnheld treats it as it treats notify.ErrNoHolder;
+//   - every other failure: the error is returned as the publisher gave it, and the row keeps its
+//     retry.
 //
-// The row is not held for a holder as an architect's notice is held, so the kept copy is the
-// message's one keeper, and it can reach a later session than the one it was written for: for a
-// role nobody claims, the listener hands it to the first session that claims the role inside the
-// hour, which can be a later round's. That is intended — the role's topic names the issue's role,
-// not one session of it — and the hour bounds it: the listener drops a copy no live holder took
-// inside its hour (roleKeepWindow, packages/envoy/cmd/listener/role_keep.go), so no session is
-// handed one older than that, and a forwarded copy carries when it was kept (Envoy's
-// contracts.Envelope.KeptAt) beside what the message names of its round, so its reader judges
-// which round it was for. An unheld topic of a role that never claims it — a session that has not
-// registered, or one that failed — holds no row either: the row ends, and the kept copy is
-// dropped once its hour ends.
+// The row is not held for a holder as an architect's notice is held, and it can reach a later
+// session than the one it was written for: for a role nobody claims, the listener hands a kept
+// copy to the first session that claims the role inside the hour, and a waiting row reaches the
+// first session that holds the role inside the hour after the row was made (hookPromptHoldBound),
+// which can be a later round's. That is intended — the role's topic names the issue's role, not
+// one session of it — and the hour bounds it: the listener drops a copy no live holder took inside
+// its hour (roleKeepWindow, packages/envoy/cmd/listener/role_keep.go), and a row ends at its own,
+// so no session is handed a prompt older than that, and the message names its move back and its
+// counts, so its reader judges which round it was for.
 //
 // Five other executors publish to a role's topic, each with its own rules for what the publisher
 // answers: updateAsk, through publishToRole, ends the row for a topic with no holder and retries
@@ -2360,11 +2487,7 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // this function alone.
 func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, topic, message string, fields ...any) error {
 	keeps, err := r.publishKept(ctx, topic, message, message, record.OutboxKey(row.ID))
-	switch {
-	case errors.Is(err, notify.ErrNoHolder):
-		r.log.Info("outbox hook prompt finished undelivered: no live session holds the role", fields...)
-		return nil
-	case err == nil && keeps:
+	if err == nil && keeps {
 		r.log.Info("outbox hook prompt finished: the listener keeps it for the role's next holder", fields...)
 	}
 	return err

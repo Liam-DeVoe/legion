@@ -3488,6 +3488,23 @@ func (s *Postgres) FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, 
 	return nil
 }
 
+func (s *Postgres) TakeWaitingHookPrompts(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, except int64, now time.Time) ([]OutboxRow, error) {
+	rows, err := tx.Query(ctx, `delete from outbox where kind = $1 and issue = $2 and payload->>'role' = $3 and id <> $4
+		and (lease_until is null or lease_until <= $5) returning `+outboxColumns,
+		string(OutboxKindHookPrompt), issue, string(role), except, now)
+	if err != nil {
+		return nil, fmt.Errorf("take the waiting hook prompts of %s's %s: %w", issue, role, err)
+	}
+	taken, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (OutboxRow, error) {
+		return scanOutbox(row)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("take the waiting hook prompts of %s's %s: %w", issue, role, err)
+	}
+	slices.SortFunc(taken, func(a, b OutboxRow) int { return cmp.Compare(a.ID, b.ID) })
+	return taken, nil
+}
+
 // RetryOutbox returns row id to the outbox, due again at nextAt, while leaseToken holds it: one
 // more attempt, its lease cleared, and lastErr as its last error. lastErr is a far side's error
 // text, so the row holds storetext.FarSideError of it, and the caller logs the whole text
