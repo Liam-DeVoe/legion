@@ -42,7 +42,11 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
 - Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on.
 
-- Another agent that needs an action (a stop, a retry, a suspension, a resume of the agent, a compaction or a fresh session) is the controller's to act on: ask it with a `dispatch comment` on that agent's issue that mentions its role, never with `envoy_publish` (`skill://legion-worker/references/findings.md#another-agent-that-needs-an-action`).
+- Another agent that needs an action (a stop, retry, suspension, resume of the agent, compaction or fresh session) is the controller's: ask it with a `dispatch comment` on that agent's issue that mentions its role, never with `envoy_publish` (`skill://legion-worker/references/findings.md`).
+
+- **Ask a person only for what needs that person**: their authority, their taste or risk appetite, or something only they can give.
+
+- **Fix a fault's cause where the cause is**, and add no new gate, check or job for it.
 
 - No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/results.md`).
 
@@ -71,7 +75,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
 - No deferrals.
   A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request.
-  So is a wording nit or any clear fix in a file it touches: a later round costs a CI pass and a review, if any.
+  So is any clear fix in a file it touches: a later round costs a CI pass and a review, if any.
   `Fast-follow:` reads `none` or names cleanup in files the pull request does not touch.
 
 - The merge gate follows the task's `Steps:` line: each named step runs in order, then retro and the merger.

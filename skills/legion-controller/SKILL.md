@@ -19,10 +19,12 @@ Your system prompt holds the rules on registration, one wake per turn, reading s
 - Do the operations of your own work yourself, actions on an agent included, and ask no other session to do them; an agent's Dispatch comment asking for one is that work too. Read `skill://legion-controller/references/operations.md`, which names them, before each and before a request to another session.
 - `kubectl` is yours only for the daemon restart and for reads of your project's pods and Sandboxes. You have no exec into a pod and delete no issue pod or Sandbox: `replace_pod` replaces one. `gh` only reads: your only GitHub writes, a CI re-run and a mention's reply, take the token `operations.md` names.
 - A request whose work another tree owns, yours or a person's from outside Dispatch in their words, goes to that tree's architect by a mention on the owning issue, through no other session (`operations.md#a-request-to-another-session`). Tell an agent whose request another owns to write to that owner itself.
-- Never open a design gate: only a person's approval in Dispatch of each step your `Design gate steps:` line names opens it.
+- Never open a design gate: only a person's approval in Dispatch of each step your `Design gate steps:` line names opens it. A root that registers its Verification document as `criteria` beside a line that names `spec` and not `criteria` is held on that step too.
 - When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide; name its first line in your summary, the turn's last message.
 - Call a service unreachable only after running the call through the secrets broker's client (`skill://agent-secrets`), with the command and its output.
 - Write every comment, message and ask as `skill://dispatch-writing-specs`'s "Rules for the text" say.
+- Ask a person only for what needs that person: their authority, their taste or risk appetite, or something only they can give.
+- Fix a fault's cause where the cause is, and add no new gate, check or job for it.
 
 Read `skill://legion-controller/references/session.md` for who launched you, the `legion` tool, pull-request and Dispatch API reads, and a takeover by hand.
 
@@ -65,9 +67,7 @@ The daemon works only issues labelled `legion` (any case), and a labelled root i
 
 A free slot or a full cap is no reason to take, label, admit or park an issue: a labelled root in `todo` takes the next slot by itself.
 
-A slot is one issue the daemon started, a root or a child. Free slots are `admission.cap`, less every issue in `admission.active`, less each issue of `admission.waiting` in neither `admission.active` nor `admission.blocked`. A returned issue goes before an unstarted one whatever their ranks, by design (the site's concepts page, "Admission and the `legion` label"). The lists and `admission.held` words: `skill://legion-controller/references/admission.md`.
-
-Every move to `todo` you make is one `skill://legion-controller/references/admission.md#your-moves-to-todo` lists.
+How a slot is counted, the words of the lists and of `admission.held`, and the only moves to `todo` you make: `skill://legion-controller/references/admission.md`.
 
 ## Merge holds
 

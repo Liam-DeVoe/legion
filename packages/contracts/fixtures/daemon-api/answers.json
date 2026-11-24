@@ -167,6 +167,22 @@
     "noBody": false
   },
   {
+    "id": "intake-replay",
+    "routes": [
+      "POST /legion/v1/intake/replay"
+    ],
+    "since": 228,
+    "noBody": false
+  },
+  {
+    "id": "intake-discard",
+    "routes": [
+      "POST /legion/v1/intake/discard"
+    ],
+    "since": 228,
+    "noBody": false
+  },
+  {
     "id": "agent-action",
     "routes": [
       "POST /legion/v1/agents/stop",

@@ -22,7 +22,7 @@ Where a row says to ask a person, a child's own architect asks the architect abo
 | `pr-closed-unmerged` | Decide whether the work reopens, restarts or ends, and give the reason. A phase worker makes the repository change. |
 | `pull-request-missing` | Tell the implementer to open the pull request from the branch the reason names. |
 | `child-status` | A child left, re-entered, joined the tree or started. The daemon starts what runs. |
-| `child-closed` | Section 2. File any new child it calls for after the red-team check, and release it at once. |
+| `child-closed` | Section 2. File any new child it calls for as `skill://legion-architect/references/decomposition.md` says, and release it at once. |
 | `children-first` | Release every child that should run. Move one that should not run now where your role prompt's `children-first` paragraph says, then ask the person on the root when it should run; sign off neither issue until they answer. A `blocked_by` link up the parent chain: ask a person to remove it. |
 | `child-release-stalled` | Read the parent's record (`read_record`); release the parent first when the reason says so, then the child again. A parent that never records is a finding. |
 | `child-not-recorded` | Set the child's repository (`dispatch issue-update --repo owner/name`) and release it again. A missing named App is a `dispatch ask` on the child's issue; release the child once it is installed. |
@@ -51,7 +51,7 @@ Read what every counted round found, choose one, act on it, and post the rounds 
 
 - **Split**: part of the work cannot settle here.
   On a child, it becomes a child of this issue's parent (a child's own architect sends it up with `envoy_publish`);
-  that parent's architect files it after the red-team check with `--blocked-by <this issue>` and releases it at once.
+  that parent's architect files it with `--blocked-by <this issue>` and releases it at once.
   On the root, open a `dispatch ask`; the part stays a requirement until the person says otherwise.
 
 - **Accept the rounds**: each round found less than the one before, and the last found no defect in the change itself.

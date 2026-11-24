@@ -153,7 +153,10 @@ const RoleTopicPrefix = "notifications.role."
 // supervise's tellOfProviderErrors), which the issue's architect is told as well, unless the run
 // is the tree root's architect's own, and a child's own architect's run is told to the architect
 // above that child; one of the controller's own programs its pod's memory guard ended
-// (`memory-guard-kill`, workflow's controllerMemoryGuardKill, once for each kill); and the
+// (`memory-guard-kill`, workflow's controllerMemoryGuardKill, once for each kill); the messages
+// the intake gave up, counted in one notice that waits a minute for the give-ups after its first
+// (`intake-gave-up`, record's Postgres.GiveUpIntakeMessage), which the controller replays or
+// discards (its replay_give_up and discard_give_up); and the
 // operator's pause and resume of the project (`project-paused` and `project-resumed`,
 // record.ProjectPause, queued in the store's Pause and Resume), of which the controller's own pause
 // or resume tells it nothing. A free slot alone is no reason for the controller to take an issue:
