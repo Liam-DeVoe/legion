@@ -2126,18 +2126,16 @@ func (r *outbox) ownerSlotHolds(ctx context.Context, row record.OutboxRow, paylo
 
 // ownerSlotFor is the one gate of an act told to owner, an issue's own architect, as role: an
 // owner-step (ownerSlotHolds) and a merge-forward message that asks an act (ownerSlotActs). It
-// answers nil once the role the owner's slot acts as now (ownerSlotRole, the owner's own where it
-// does no act of another role) shares role's App (sameApp) and the slot's gh files hold that App
+// answers nil once the role the owner's slot acts as now (runtime.SlotRole over the daemon's
+// ActsAs, ownerActsAs: the role of the act ownerSlotRole reads, the owner's own where it does no
+// act of another role) shares role's App (sameApp) and the slot's gh files hold that App
 // (slotHoldsApp). While the slot acts as an App of another role, the act waits, with no write and
 // no ask of the runtime: the row is held on its backoff, wrapped in waits, the wait of its kind,
 // and what names the row in it.
 func (r *outbox) ownerSlotFor(ctx context.Context, row record.OutboxRow, owner claim.Token, role claim.Role, waits error, what string) error {
-	slot, acts, err := ownerSlotRole(ctx, r.pool, r.records, owner)
+	slot, err := runtime.SlotRole(ctx, ownerActsAs(r.pool, r.records), owner, claim.RoleArchitect)
 	if err != nil {
-		return fmt.Errorf("read the role %s's slot acts as: %w", owner, err)
-	}
-	if !acts {
-		slot = claim.RoleArchitect
+		return err
 	}
 	if !r.sameApp(ctx, row.Issue, slot, role) {
 		return fmt.Errorf("%w: %s's %s %d of %s waits for its slot to act as %s, and it acts as %s", waits, owner, what, row.ID, row.Issue, role, slot)
