@@ -41,51 +41,62 @@ func reviewerStepFour(t *testing.T, pool *pgxpool.Pool, engine *Engine, tester c
 	if round == 1 {
 		move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	}
-	completesAs(t, pool, engine, claim.RoleImplementer, agentToken(t, "implementer"), "implement", round)
+	completesAs(t, pool, engine, claim.RoleImplementer, agentToken(t, "implementer"), "implement", round, "head")
 	recordReviewRead(t, pool, key, 2, stepTwoRead)
 	move(t, pool, engine, key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
-	completesAs(t, pool, engine, claim.RoleTester, tester, "test", round)
+	completesAs(t, pool, engine, claim.RoleTester, tester, "test", round, "head")
 	assertWalksAt(t, pool, engine, key, phase.Reviewing, stepPlace(4))
 	return rolesRows(t, pool, engine, key, claim.RoleReviewer)[4]
 }
 
-// A reviewer step of another agent than the reviewer step before it reads the whole change at its
-// first round. In `implementer:a reviewer tester:s reviewer:s`, step 4 is key s's, and step 2's
-// review read a commit: step 4's first task names no commit of its own, `Last reviewed commit:
-// none.`, and names step 2's commit as another agent's before it. Its row holds no commit. After a
-// review of key s's own read a commit, a return to step 1 and the walk back to step 4, its task
-// names that commit, its own, and no other agent's. Before, step 4's first round was named step
-// 2's commit as its own, so key s read only the change past a commit another agent approved.
+// A reviewer step's first round is named the commit of its agent's own nearest earlier reviewer
+// row of the task, else none, so a step whose agent ran no earlier reviewer step reads the whole
+// change at its first round. In each plan below, step 4 is key s's first reviewer step, and step
+// 2's review, another agent's, read a commit: step 4's first task names no commit of its own, `Last
+// reviewed commit: none.`, and names step 2's commit as another agent's before it. Its row holds no
+// commit. After a review of key s's own read a commit, a return to step 1 and the walk back to step
+// 4, its task names that commit, its own, and no other agent's. Step 2's agent is the reviewer's
+// own in the first plan, and in the second agent a, which runs step 5 too. Before, step 4's first
+// round was named step 2's commit as its own, so key s read only the change past a commit another
+// agent approved.
 func TestAReviewerStepOfAnotherAgentReadsTheWholeChangeAtItsFirstRound(t *testing.T) {
-	pool := migratedPool(t)
-	engine := textEngine()
-	root := stepRoot(t, pool, phase.Admitted)
-	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer", "tester:s", "reviewer:s")
-	keyS := agentToken(t, "tester")
+	for _, steps := range [][]string{
+		{"implementer:a", "reviewer", "tester:s", "reviewer:s"},
+		{"implementer:a", "reviewer:a", "tester:s", "reviewer:s", "reviewer:a"},
+	} {
+		t.Run(strings.Join(steps, " "), func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := textEngine()
+			root := stepRoot(t, pool, phase.Admitted)
+			seedStepsPlan(t, pool, root.Key, root.Generation, steps...)
+			keyS := agentToken(t, "tester")
 
-	first := reviewerStepFour(t, pool, engine, keyS, 1)
-	other := reviewround.AnotherAgentsSentence(stepTwoRead)
-	if first.Claim != keyS || first.ReviewedHead != "" ||
-		!strings.HasSuffix(first.EntryTask, other+reviewround.Sentences("", first.Entry)) {
-		t.Fatalf("step 4's first round = claim %s, commit %q, task %q; want key s's, no commit of its own, and a task ending %q",
-			first.Claim, first.ReviewedHead, first.EntryTask, other+reviewround.Sentences("", first.Entry))
-	}
+			first := reviewerStepFour(t, pool, engine, keyS, 1)
+			other := reviewround.AnotherAgentsSentence(stepTwoRead)
+			if first.Claim != keyS || first.ReviewedHead != "" ||
+				!strings.HasSuffix(first.EntryTask, other+reviewround.Sentences("", first.Entry)) {
+				t.Fatalf("step 4's first round = claim %s, commit %q, task %q; want key s's, no commit of its own, and a task ending %q",
+					first.Claim, first.ReviewedHead, first.EntryTask, other+reviewround.Sentences("", first.Entry))
+			}
 
-	recordReviewRead(t, pool, root.Key, 4, stepFourRead)
-	move(t, pool, engine, root.Key, TriggerReviewRejected, stepPlace(1), record.PhaseRow{})
-	second := reviewerStepFour(t, pool, engine, keyS, 2)
-	if !strings.HasSuffix(second.EntryTask, reviewround.Sentences(stepFourRead, second.Entry)) ||
-		strings.Contains(second.EntryTask, reviewround.AnotherAgentLabel) {
-		t.Fatalf("step 4's second round task = %q, want it to end %q and name no other agent's commit",
-			second.EntryTask, reviewround.Sentences(stepFourRead, second.Entry))
+			recordReviewRead(t, pool, root.Key, 4, stepFourRead)
+			move(t, pool, engine, root.Key, TriggerReviewRejected, stepPlace(1), record.PhaseRow{})
+			second := reviewerStepFour(t, pool, engine, keyS, 2)
+			if !strings.HasSuffix(second.EntryTask, reviewround.Sentences(stepFourRead, second.Entry)) ||
+				strings.Contains(second.EntryTask, reviewround.AnotherAgentLabel) {
+				t.Fatalf("step 4's second round task = %q, want it to end %q and name no other agent's commit",
+					second.EntryTask, reviewround.Sentences(stepFourRead, second.Entry))
+			}
+		})
 	}
 }
 
-// A reviewer step of the same agent as the reviewer step before it keeps today's rule: in
-// `implementer:a reviewer:r tester reviewer:r`, steps 2 and 4 are key r's, the reviewer's claim,
-// so step 4's first round is named step 2's commit as its own, and no other agent's. (Two steps of
-// one role with no key are two agents, which this release refuses as a plan.)
-func TestAReviewerStepOfTheSameAgentIsNamedTheStepBeforesCommit(t *testing.T) {
+// A reviewer step's first round is named the commit of its agent's own nearest earlier reviewer
+// row of the task: in `implementer:a reviewer:r tester reviewer:r`, steps 2 and 4 are key r's, the
+// reviewer's claim, so step 4's first round is named step 2's commit as its own, and no other
+// agent's. (Two steps of one role with no key are two agents, which this release refuses as a
+// plan.)
+func TestAReviewerStepsFirstRoundIsNamedItsAgentsOwnEarlierStepsCommit(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -168,38 +179,6 @@ func TestAReviewerStepALaterVersionGivesToAnotherAgentIsNamedThatAgentsOwnCommit
 	}
 }
 
-// The mirror of the test above, on the same plan: step 4 is key s's first reviewer step, so its
-// first task names no commit of its own, `Last reviewed commit: none.`, and agent a's commit of
-// step 2 as another agent's before it. Its control is a lookup of the step's agent that takes any
-// agent's earlier row for its own, which names agent a's commit as key s's.
-func TestAnAgentsFirstReviewerStepIsNamedNoneAndAnotherAgentsCommit(t *testing.T) {
-	pool := migratedPool(t)
-	engine := textEngine()
-	root := stepRoot(t, pool, phase.Admitted)
-	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer:a", "tester:s", "reviewer:s", "reviewer:a")
-	keyS := agentToken(t, "tester")
-	four := reviewerStepFour(t, pool, engine, keyS, 1)
-	want := reviewround.AnotherAgentsSentence(stepTwoRead) + reviewround.Sentences("", four.Entry)
-	if four.Claim != keyS || four.ReviewedHead != "" || !strings.HasSuffix(four.EntryTask, want) {
-		t.Fatalf("step 4's first round = claim %s, commit %q, task %q; want key s's, no commit of its own, and a task ending %q",
-			four.Claim, four.ReviewedHead, four.EntryTask, want)
-	}
-}
-
-// releasesAs leaves token's claim of LEGION-208, working role, as an idle release leaves a pod's
-// claims (seedReleasedClaim, for a claim of a key rather than of the role's own token), and hands
-// engine the project's pod records, so a wake of that claim can be taken.
-func releasesAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, token claim.Token, role claim.Role) {
-	t.Helper()
-	engine.cfg.Pods = wakePods(t, pool)
-	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation,
-		session, session_file, state, suspended_by, serving_generation, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-		values ($1, $3, 'LEGION-208', 'LEGION-208', $2, 1, 'ses-woken', '', 'suspended', 'released', 1, 0, 0, 0, 0)`,
-		string(token), string(role), wakeProjectToken(t)); err != nil {
-		t.Fatalf("release the claim %s as the %s: %v", token, role, err)
-	}
-}
-
 // wakesClaim brings token's released claim back by a message sent to its session, through the one
 // act every wake performs (wakeReleased), and answers the task that wake gives it (WakeTask).
 func wakesClaim(t *testing.T, pool *pgxpool.Pool, engine *Engine, token claim.Token) string {
@@ -232,7 +211,8 @@ func TestAWakeInAReviewerStepOfAnotherAgentNamesThatAgentsCommit(t *testing.T) {
 	keyS := agentToken(t, "tester")
 	four := reviewerStepFour(t, pool, engine, keyS, 1)
 	outboxRan(t, pool)
-	releasesAs(t, pool, engine, keyS, claim.RoleReviewer)
+	engine.cfg.Pods = wakePods(t, pool)
+	seedReleasedToken(t, pool, keyS, claim.RoleReviewer, "ses-woken", root.Generation)
 	wake := wakesClaim(t, pool, engine, keyS)
 	want := wake + reviewround.AnotherAgentsSentence(stepTwoRead) + reviewround.Sentences("", four.Entry)
 	if task := onlyReviewerStart(t, pool).Task; task != want {
@@ -254,7 +234,8 @@ func TestAWakeOfAnEarlierReviewerStepsAgentNamesItsOwnRow(t *testing.T) {
 	four := reviewerStepFive(t, pool, engine)[4]
 	keyS := agentToken(t, "tester")
 	outboxRan(t, pool)
-	releasesAs(t, pool, engine, keyS, claim.RoleReviewer)
+	engine.cfg.Pods = wakePods(t, pool)
+	seedReleasedToken(t, pool, keyS, claim.RoleReviewer, "ses-woken", root.Generation)
 	wake := wakesClaim(t, pool, engine, keyS)
 	if want, task := wake+reviewround.Sentences(stepFourRead, four.Entry), onlyReviewerStart(t, pool).Task; task != want {
 		t.Fatalf("key s's woken reviewer claim at step 5 is given the task %q, want %q: its own commit of step 4 and step 4's entry", task, want)
@@ -275,21 +256,6 @@ func standsAt(t *testing.T, pool *pgxpool.Pool, head string) {
 	t.Helper()
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42,
 		Branch: "legion/LEGION-208", HeadSHA: head, Failing: []string{}})
-}
-
-// completesAtHead is role's completion of its n-th run under token, as completesAs applies it, at
-// head, which the pull request stands at.
-func completesAtHead(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, token claim.Token, word string, n int, head string) {
-	t.Helper()
-	standsAt(t, pool, head)
-	fact := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: role, Claim: token,
-		Summary: "done", Commit: head, HandoffRecord: fmt.Sprintf("%s-%d", word, n), HandoffVersion: n}
-	if role == claim.RoleTester {
-		fact.Verdict = "pass"
-	}
-	if result := applyFacts(t, pool, engine)(fmt.Sprintf("%s-%s-%d", role, word, n), fact); result.Refusal != nil {
-		t.Fatalf("the %s's completion %s version %d was refused: %+v", role, word, n, result.Refusal)
-	}
 }
 
 // reviewsAs submits, as the review App from session, a review in state of head, where the pull
@@ -340,14 +306,17 @@ func agentRReviewsAtStepFourAndReturns(t *testing.T, pool *pgxpool.Pool, engine 
 	keyA, keyR := agentToken(t, "implementer"), agentToken(t, "reviewer")
 	seedClaimSession(t, pool, keyR, "ses-r")
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
-	completesAtHead(t, pool, engine, claim.RoleImplementer, keyA, "implement", 1, firstRead)
+	standsAt(t, pool, firstRead)
+	completesAs(t, pool, engine, claim.RoleImplementer, keyA, "implement", 1, firstRead)
 	reviewsAs(t, pool, engine, 1, "approved", firstRead, "ses-r")
-	completesAtHead(t, pool, engine, claim.RoleTester, agentToken(t, "tester"), "test", 1, firstRead)
+	standsAt(t, pool, firstRead)
+	completesAs(t, pool, engine, claim.RoleTester, agentToken(t, "tester"), "test", 1, firstRead)
 	assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(4))
 	reviewsAs(t, pool, engine, 2, "changes_requested", secondRead, "ses-r")
 	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(1))
 	agentHolds(t, pool, engine, claim.RoleReviewer, keyR, secondRead, "after step 4's request for changes")
-	completesAtHead(t, pool, engine, claim.RoleImplementer, keyA, "implement", 2, secondRead)
+	standsAt(t, pool, secondRead)
+	completesAs(t, pool, engine, claim.RoleImplementer, keyA, "implement", 2, secondRead)
 	assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(2))
 	return rolesRows(t, pool, engine, root.Key, claim.RoleReviewer)[2]
 }
@@ -376,7 +345,8 @@ func TestALaterReviewerStepsNextRoundIsNamedItsAgentsNewerCommitOfAnEarlierStep(
 	agentRReviewsAtStepFourAndReturns(t, pool, engine)
 	reviewsAs(t, pool, engine, 3, "approved", thirdRead, "ses-r")
 	agentHolds(t, pool, engine, claim.RoleReviewer, agentToken(t, "reviewer"), thirdRead, "after step 2's approval")
-	completesAtHead(t, pool, engine, claim.RoleTester, agentToken(t, "tester"), "test", 2, thirdRead)
+	standsAt(t, pool, thirdRead)
+	completesAs(t, pool, engine, claim.RoleTester, agentToken(t, "tester"), "test", 2, thirdRead)
 	assertWalksAt(t, pool, engine, "LEGION-208", phase.Reviewing, stepPlace(4))
 	four := rolesRows(t, pool, engine, "LEGION-208", claim.RoleReviewer)[4]
 	if !strings.HasSuffix(four.EntryTask, reviewround.Sentences(thirdRead, four.Entry)) {

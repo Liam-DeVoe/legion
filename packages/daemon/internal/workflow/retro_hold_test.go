@@ -411,10 +411,10 @@ func TestAHeldRetroAfterTheImplementersLastStepGetsItsReport(t *testing.T) {
 		}, "1"},
 		{"implementer:a reviewer implementer:a", []string{"implementer:a", "reviewer", "implementer:a"}, func(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 			implementer := agentToken(t, "implementer")
-			completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 1)
-			completesAs(t, pool, engine, claim.RoleReviewer, agentToken(t, "reviewer"), "review", 1)
+			completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 1, "head")
+			completesAs(t, pool, engine, claim.RoleReviewer, agentToken(t, "reviewer"), "review", 1, "head")
 			move(t, pool, engine, "LEGION-208", TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
-			completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 2)
+			completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 2, "head")
 		}, "2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -41,7 +41,7 @@ func lastStart(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) st
 // under the claim of the step's worker (workerOr), as completesAs applies it.
 func completes(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, word string, n int) {
 	t.Helper()
-	completesAs(t, pool, engine, role, workerOr(t, pool, "LEGION-208", role, claim.Token(string(role)+"-claim")), word, n)
+	completesAs(t, pool, engine, role, workerOr(t, pool, "LEGION-208", role, claim.Token(string(role)+"-claim")), word, n, "head")
 }
 
 // hasPrefix fails the test unless the task starts with want.

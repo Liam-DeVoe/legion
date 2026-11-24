@@ -297,8 +297,8 @@ func TestARefusedLaunchQueuesTheStartOfTheClaimItIsOf(t *testing.T) {
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "tester:b", "implementer:b")
 	keyA, keyB := agentToken(t, "implementer"), agentToken(t, "tester")
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
-	completesAs(t, pool, engine, claim.RoleImplementer, keyA, "implement", 1)
-	completesAs(t, pool, engine, claim.RoleTester, keyB, "test", 1)
+	completesAs(t, pool, engine, claim.RoleImplementer, keyA, "implement", 1, "head")
+	completesAs(t, pool, engine, claim.RoleTester, keyB, "test", 1, "head")
 	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(3))
 	third := rolesRows(t, pool, engine, root.Key, claim.RoleImplementer)[3]
 	if third.Claim != keyB || third.Entry == 0 || third.EntryTask == "" {
