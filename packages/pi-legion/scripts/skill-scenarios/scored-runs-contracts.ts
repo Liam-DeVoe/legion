@@ -174,7 +174,8 @@ export type QueuedNotice = z.infer<typeof QueuedNotice>;
 
 /** `texts/world-request.json`. `plan.task` is the task's id and `plan.text` the text of its
  * block; `plan.steps` are the task's step roles in order. `earlier[].verdict` is `null` for a
- * step that gives none. */
+ * step that gives none. `gate.artifactId` is the run's real spec document, which the label's
+ * catch-up notice names to the owner. */
 export const WorldRequest = z.strictObject({
   project: nonEmpty,
   repository,
@@ -182,7 +183,13 @@ export const WorldRequest = z.strictObject({
   workspace: absolutePath,
   issues: z.array(WorldIssue).min(1),
   gate: z
-    .strictObject({ issue: nonEmpty, step: nonEmpty, version: positive, approved: z.boolean() })
+    .strictObject({
+      issue: nonEmpty,
+      step: nonEmpty,
+      version: positive,
+      approved: z.boolean(),
+      artifactId: nonEmpty,
+    })
     .nullable(),
   subject: nonEmpty,
   plan: z
