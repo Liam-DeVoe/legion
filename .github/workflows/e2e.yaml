@@ -151,14 +151,14 @@ jobs:
       - if: matrix.bun
         run: bun install --frozen-lockfile
 
-      # The three proofs that start the Go daemon: it refuses to boot without jj, and names it
+      # Each proof that starts the Go daemon: it refuses to boot without jj, and names it
       # (`missing required daemon tools: jj`), as run 40957651922 showed. This installs the jj the
       # worker image ships, which is the one the daemon is written for.
       - if: matrix.jj
         uses: ./.github/actions/install-jj
 
-      # role-prompt-rule.sh runs real Oh My Pi panes, each answered by a model stand-in of its
-      # driver's own, so it needs the Oh My Pi .omp-pin names and no model route. This installs
+      # role-prompt-rule.sh and late-completion.sh run real Oh My Pi panes, each answered by a model
+      # stand-in of its driver's own, so each needs the Oh My Pi .omp-pin names and no model route. This installs
       # that build, held to its pinned sha256, and exports its path as LEGION_TEST_OMP, which the
       # run step names to the script as LEGION_OMP_PATH.
       - if: matrix.omp

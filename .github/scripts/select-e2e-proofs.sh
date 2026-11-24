@@ -192,8 +192,8 @@ if event == "workflow_dispatch":
     asked = os.environ.get("REQUESTED", "").strip()
     name = asked if asked.endswith(".sh") else f"{asked}.sh"
     if name in elsewhere:
-        refuse(f"{PROOF_DIR}/{name} needs {elsewhere[name]['needs']}. A GitHub-hosted runner "
-               f"gives none of that, so this workflow runs it nowhere.", about=None)
+        refuse(f"{PROOF_DIR}/{name} is on the elsewhere list of {LIST_FILE}, so this workflow runs "
+               f"it nowhere. It needs {elsewhere[name]['needs']}.", about=None)
     if name not in hosted:
         refuse(f"{PROOF_DIR}/{name} is no proof a GitHub-hosted runner can run. Name one of: "
                f"{', '.join(sorted(hosted))}.", about=None)

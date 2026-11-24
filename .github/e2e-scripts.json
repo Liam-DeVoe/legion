@@ -3,7 +3,8 @@
     "Every entry point under scripts/e2e/, in one of two lists, read by .github/workflows/e2e.yaml.",
     "`hosted` is the set a GitHub-hosted runner can run: each row says what the job must give that",
     "script, and `why_hosted` is a note on why a hosted runner can run it, read by no job. `elsewhere`",
-    "is every other script, each with the `needs` its own header states; e2e.yaml refuses one by",
+    "is every other script, each with the `needs` its own header states, or, where a hosted runner",
+    "has all it needs, the failed run that keeps it out of `hosted`; e2e.yaml refuses one by",
     "name with that text, and the refusal is a failed job. Both lists together must name every",
     "scripts/e2e/*.sh of the tree, and e2e.yaml's select job fails when one is missing or extra.",
     "`apt` is what the job installs for that script alone, `bun` whether it needs bun and this",
@@ -158,6 +159,17 @@
       "jj": true
     },
     {
+      "script": "late-completion.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": true,
+      "omp": true,
+      "evidence_variable": "LATE_COMPLETION_EVIDENCE_DIR",
+      "timeout_minutes": 25,
+      "why_hosted": "Run it from a checkout on a Linux host with go, git, jj, awk, tar, python3 and bun (after bun install), as LEGION_OMP_PATH=... LEGION_TEST_PG_DSN=... bash scripts/e2e/late-completion.sh; install-omp gives it the pinned Oh My Pi, CI's pgvector service is the PostgreSQL, whose role creates Dispatch's database there, the script installs the nats-server it needs with go install and builds Dispatch itself, and each pane's model is an HTTP stand-in of the driver's own, so it needs no model route, no tmux and no container",
+      "jj": true
+    },
+    {
       "script": "plan-ratings.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
@@ -227,7 +239,7 @@
   "elsewhere": [
     {
       "script": "approved-version-news.sh",
-      "needs": "the pinned Oh My Pi every pane of its part two runs (LEGION_OMP_PATH, an executable, which a GitHub-hosted runner has none of), the model gateway ANTHROPIC_BASE_URL names and its key file (APPROVED_VERSION_NEWS_MODEL_KEY_FILE, by default /var/run/model-gateway-key/key), a loopback PostgreSQL with pgvector (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, tar, awk, python3 and bun with this repository's node_modules, for part two's base arm and for part one's negative control (`--control`) a commit of this repository's own history to take the base from with `git archive` (`git merge-base HEAD origin/main`, or, for the control alone, the commit `--base-commit` names), which a shallow CI checkout carries none of, and the wall clock of both parts: part one about two minutes, and the twelve runs of real sessions that part two's driver plans for a full run, each bounded at eight minutes; APPROVED_VERSION_NEWS_STEP, APPROVED_VERSION_NEWS_ARM and APPROVED_VERSION_NEWS_RUNS pick a partial run, a measurement whose last line reads MEASURED, never PASS"
+      "needs": "the pinned Oh My Pi every pane of its part two runs (LEGION_OMP_PATH, an executable, which .github/actions/install-omp installs on a GitHub-hosted runner), the model gateway ANTHROPIC_BASE_URL names and its key file (APPROVED_VERSION_NEWS_MODEL_KEY_FILE, by default /var/run/model-gateway-key/key), a loopback PostgreSQL with pgvector (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, tar, awk, python3 and bun with this repository's node_modules, for part two's base arm and for part one's negative control (`--control`) a commit of this repository's own history to take the base from with `git archive` (`git merge-base HEAD origin/main`, or, for the control alone, the commit `--base-commit` names), which a shallow CI checkout carries none of, and the wall clock of both parts: part one about two minutes, and the twelve runs of real sessions that part two's driver plans for a full run, each bounded at eight minutes; APPROVED_VERSION_NEWS_STEP, APPROVED_VERSION_NEWS_ARM and APPROVED_VERSION_NEWS_RUNS pick a partial run, a measurement whose last line reads MEASURED, never PASS"
     },
     {
       "script": "burstable-kind.sh",
@@ -235,11 +247,11 @@
     },
     {
       "script": "busy-relaunch-delivery.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, awk, tar, python3 and bun with this repository's node_modules, and, for its negative control, a commit of this repository's own history to take the base tree from with `git archive` (`--base-commit`), which a shallow CI checkout carries none of"
+      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which .github/actions/install-omp installs on a GitHub-hosted runner), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, awk, tar, python3 and bun with this repository's node_modules, and, for its negative control, a commit of this repository's own history to take the base tree from with `git archive` (`--base-commit`), which a shallow CI checkout carries none of"
     },
     {
       "script": "claim-compaction.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, awk, tar, python3 and bun with this repository's node_modules, and about eight minutes of wall clock for its four panes and the compaction it holds"
+      "needs": "go, git, jj 0.38 or later, awk, tar, python3, bun with this repository's node_modules, a loopback PostgreSQL (LEGION_TEST_PG_DSN) and the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which .github/actions/install-omp installs), each of which a GitHub-hosted runner has; it is not in `hosted` because its last run failed: on 2026-11-24 at 17f24c20d23, on the build cluster, step 3 stopped at `deliver \"Say the word REFUSED-… and nothing else.\" to …-2-implementer = 409 {\"error\":\"deliver refused: the claim is failed …\"}, want 200`"
     },
     {
       "script": "claude-backend-sandbox.sh",
@@ -286,10 +298,6 @@
       "needs": "a Legion pod: its own model route for both agent runtimes (LEGION_E2E_MODEL_BASE_URL, LEGION_E2E_MODEL_KEY_FILE, LEGION_E2E_MODEL_ID and LEGION_E2E_CLAUDE_MODEL), the worker image's Oh My Pi and Claude Code pin, and a loopback PostgreSQL with pgvector (ENVOY_SESSION_STATES_PG_DSN); it starts its own NATS, listeners and Dispatch"
     },
     {
-      "script": "late-completion.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL carrying pgvector whose role may create databases (LEGION_TEST_PG_DSN), go, awk, tar, python3, jj and bun with this repository's node_modules"
-    },
-    {
       "script": "leak-guard-image-job.sh",
       "needs": "a pod whose projected Kubernetes credential may create a Job (kubectl -n <namespace> auth can-i create jobs answers yes), the worker image digest to prove (--image, from the Worker Image run's Record digest step) and the deployment's compute class (--node-selector), with the base branch's digest as the negative control (--control); it starts one Job of that image and nothing of its own"
     },
@@ -323,11 +331,11 @@
     },
     {
       "script": "provider-error-retry.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, awk, tar, python3 and bun with this repository's node_modules"
+      "needs": "go, git, jj 0.38 or later, awk, tar, python3, bun with this repository's node_modules, a loopback PostgreSQL (LEGION_TEST_PG_DSN) and the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which .github/actions/install-omp installs), each of which a GitHub-hosted runner has; it is not in `hosted` because its last run failed: on 2026-11-24 at 17f24c20d23, on the build cluster, three runs of three stopped at step 1 with `timed out after 3m45s waiting for the ladder's send 4`, after sends 2 and 3 came 30 s and 60 s apart"
     },
     {
       "script": "refusal-fallback-omp.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), go, which it builds its own natsd with, bun with this repository's node_modules, and about fifteen minutes of wall clock, which is longer than any job of ci.yaml holds",
+      "needs": "go, which it builds its own natsd with, bun with this repository's node_modules and the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which .github/actions/install-omp installs), each of which a GitHub-hosted runner has, and about sixteen minutes of wall clock, which e2e.yaml's 25-minute job holds; it is not in `hosted` because its last run failed: on 2026-11-24 at 17f24c20d23, on the build cluster, after 982 s, with `rate-limited-comes-back-on-the-suppression: it went back 348s after the fallback, which is the cooldown's own clock rather than the host's suppression`",
       "timeout_minutes": 25
     },
     {

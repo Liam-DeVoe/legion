@@ -363,7 +363,7 @@ root=$(fixture dispatch-elsewhere)
 run_select "$root" workflow_dispatch gamma-proof
 check "fails" "$(is "$status" 1)"
 check "names the script, what it needs and why no job runs it" \
-  "$(contains "$out" '^::error::scripts/e2e/gamma-proof.sh needs a throwaway cluster on an amd64 Linux host and a worker image by digest. A GitHub-hosted runner gives none of that, so this workflow runs it nowhere.$')"
+  "$(contains "$out" '^::error::scripts/e2e/gamma-proof.sh is on the elsewhere list of \.github/e2e-scripts\.json, so this workflow runs it nowhere\. It needs a throwaway cluster on an amd64 Linux host and a worker image by digest\.$')"
 
 echo "case: a workflow_dispatch for a name in neither list"
 root=$(fixture dispatch-unknown)
@@ -422,6 +422,18 @@ for name in $hosted_scripts; do
   check "  and emits that row alone" "$(is "$(proof_scripts)" "$name")"
   check "  with every key the matrix reads" \
     "$(is "$(proof_keys 0)" "apt,bun,evidence_variable,go_version_file,jj,omp,proof,script,timeout_minutes")"
+done
+
+# The proofs whose panes run the pinned Oh My Pi: each is a hosted row that has the job install it.
+for name in late-completion.sh role-prompt-rule.sh; do
+  : > "$real_output"
+  set +e
+  out=$(EVENT=workflow_dispatch REQUESTED="$name" GITHUB_OUTPUT="$real_output" "$check_script" 2>&1)
+  status=$?
+  set -e
+  proofs=$(sed -n 's/^proofs=//p' "$real_output")
+  check "a workflow_dispatch of $name passes" "$(is "$status" 0)"
+  check "  and its row has the job install Oh My Pi" "$(is "$(proof_field 0 omp)" true)"
 done
 
 summary "select-e2e-proofs.sh"
