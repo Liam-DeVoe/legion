@@ -4,6 +4,7 @@ import {
   isStepRole,
   LEGION_ROLES,
   type LegionStepRole,
+  parseRoleToken,
 } from "@legion/contracts";
 import {
   LEGION_PHASES,
@@ -147,16 +148,37 @@ const pauseActorWords = (session: string | undefined): string =>
 const pauseWords = (id: number, since: string, by: string, reason: string): string =>
   `pause ${id} since ${since} by ${by}: ${reason}`;
 
+/** The name of the agent a claim token of an issue ends in, read with the project the token
+ * itself names (`parseRoleToken`), and undefined for a token that names no agent of an issue, the
+ * controller's among them: the Go daemon's `claim.Token.Cut`. */
+function agentOfToken(token: string): string | undefined {
+  const parsed = parseRoleToken(token.split("-")[1] ?? "", token);
+  return parsed === undefined || "controller" in parsed ? undefined : parsed.role;
+}
+
+/** A claim of `issue` on `role` whose token is `token` as the summary names it, in the words
+ * `legion state` names it (`api.ClaimName` in `packages/daemon/internal/api/state.go`): `<issue>
+ * <role>` for the claim of an agent named for its role, and for a claim served without its token,
+ * and `<issue> <role> (claim <token>)` for every other claim — a second agent of one role such as
+ * `implementer-2`, or the agent of another role's name that holds the role for a step — so two
+ * claims of one role on one issue read apart. */
+function claimName(issue: string, role: string, token: string | undefined): string {
+  const agent = token === undefined ? undefined : agentOfToken(token);
+  return agent === undefined || agent === role
+    ? `${issue} ${role}`
+    : `${issue} ${role} (claim ${token})`;
+}
+
 /**
  * The summary's line on the project's pause, in the words `legion state` prints for an operator
  * (`pausedSummary` and `lastPauseSummary` in `packages/daemon/cmd/legion/project.go`), so the
  * controller and an operator read the same words. The times are not the same text: `legion
  * state` prints each at whole seconds, and this line prints the daemon's own string. While the
- * project is paused: the pause, since when, by whom and why, the roles whose stop it still waits
- * on, each by issue and role, and how many rows it holds, which `legion state` leaves to its
- * JSON. While the project runs after a pause has ended: that pause, then when and by whom it was
- * ended. The state carries one of the two at most, and neither before the project's first pause,
- * when the summary has no such line.
+ * project is paused: the pause, since when, by whom and why, the claims whose stop it still waits
+ * on, each by its name (`claimName`), and how many rows it holds, which `legion state` leaves to
+ * its JSON. While the project runs after a pause has ended: that pause, then when and by whom it
+ * was ended. The state carries one of the two at most, and neither before the project's first
+ * pause, when the summary has no such line.
  *
  * Each field is taken off the pause it belongs to, under the state's own names, which
  * `LEGION_ANSWER_READS` declares as `paused.id`, `paused.by|0.kind` and
@@ -165,7 +187,7 @@ const pauseWords = (id: number, since: string, by: string, reason: string): stri
 function pauseSummary(state: LegionState): string | undefined {
   const paused = state.paused;
   if (paused !== undefined) {
-    const roles = paused.waitsOn.map((stop) => `${stop.issue} ${stop.role}`);
+    const roles = paused.waitsOn.map((stop) => claimName(stop.issue, stop.role, stop.claim));
     const waitsOn =
       roles.length === 0
         ? "no role"

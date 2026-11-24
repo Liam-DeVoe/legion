@@ -2592,6 +2592,48 @@ test("read_state's summary prints the pause's line while the project is paused a
   ]);
 });
 
+// The pause's line names each claim whose stop the pause still waits on as `legion state` names
+// it (`api.ClaimName` in `packages/daemon/internal/api/state.go`): by its issue and role, and by
+// its token beside them for the claim of an agent not named for its role. A pause waits on every
+// claim of an issue, so it can wait on two claims of one role — the role's own and a second agent
+// such as `implementer-2`, or the agent of another role's name that holds the role for a step —
+// and the line names them apart. A stop the daemon served without its claim is named by its issue
+// and role, as `legion state` names it.
+test("read_state's summary names two claims of one role apart on the pause's line", async () => {
+  const stop = (role: string, claim?: string) => ({
+    ...(claim === undefined ? {} : { claim }),
+    issue: "LEGION-208",
+    role,
+    askedAt: "2026-11-16T08:00:00Z",
+  });
+  const state = legionState({
+    paused: {
+      id: 9,
+      since: "2026-11-16T08:00:00Z",
+      by: { kind: "operator" },
+      reason: "a provider outage",
+      waitsOn: [
+        stop("implementer", "legion-legion-legion-208-implementer"),
+        stop("implementer", "legion-legion-legion-208-implementer-2"),
+        stop("tester", "legion-legion-legion-208-reviewer"),
+        stop("merger"),
+      ],
+      held: [],
+    },
+  });
+  const lines = await summaryLinesOf(recordingDaemon({ state }).daemon);
+  const paused = lines.filter((line) => line.startsWith("paused: "));
+  expect(paused).toHaveLength(1);
+  // The names the line lists between its count of the claims and its count of the rows held.
+  const listed = /; waits on 4 roles — (.+); holds no row$/.exec(paused[0] ?? "");
+  expect(listed?.[1]?.split(", ")).toEqual([
+    "LEGION-208 implementer",
+    "LEGION-208 implementer (claim legion-legion-legion-208-implementer-2)",
+    "LEGION-208 tester (claim legion-legion-legion-208-reviewer)",
+    "LEGION-208 merger",
+  ]);
+});
+
 // What the controller reads of the wake pacing in `read_state` with no field: one line with how
 // many wakes the pacing holds until their turn and when the earliest of them is due. The
 // controller's skill has it read that line after a resume (`skills/legion-controller/references/

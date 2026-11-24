@@ -1261,8 +1261,10 @@ const legionEndedPause = z.object({
 
 /** `api.PauseStopView` — one claim whose stop the open pause still waits on: the claim, its issue
  * and role, and `askedAt`, when the pause asked it to stop. A role in a turn stops when that turn
- * ends, so it is listed until then. The controller's summary names each by its issue and role,
- * so those two are required; `claim` and `askedAt` are optional, since no plugin code reads them
+ * ends, so it is listed until then. The controller's summary names each by its issue and role, so
+ * those two are required, with the claim's token beside them for a claim that is not of its role's
+ * own agent, as `legion state` names it; `claim` stays optional, since a stop served without it is
+ * named by its issue and role alone, and `askedAt` is optional, since no plugin code reads it
  * (LEGION_ANSWER_READS). */
 const legionPauseStop = z.object({
   claim: nonEmptyString.optional(),
@@ -2325,10 +2327,10 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "capabilities[].configLine",
     // The summary's line on the wakes the pacing holds counts them and names the earliest
     // `dueAt`, and its line on the project's pause (contract 178) names the pause that stands,
-    // with the roles whose stop it waits on and how many rows it holds, or the last pause with
-    // when and by whom it was ended. `wakesWaiting`, `paused` and `lastPause` stay optional: the
-    // daemon writes the two pauses only where there is one, and strips all three for a caller
-    // below the contract that added each.
+    // with the claims whose stop it waits on, each by its issue, its role and its token, and how
+    // many rows it holds, or the last pause with when and by whom it was ended. `wakesWaiting`,
+    // `paused` and `lastPause` stay optional: the daemon writes the two pauses only where there is
+    // one, and strips all three for a caller below the contract that added each.
     "wakesWaiting",
     "wakesWaiting[].dueAt",
     "paused",
@@ -2342,6 +2344,7 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "paused.waitsOn",
     "paused.waitsOn[].issue",
     "paused.waitsOn[].role",
+    "paused.waitsOn[].claim",
     "paused.held",
     "lastPause",
     "lastPause.id",
