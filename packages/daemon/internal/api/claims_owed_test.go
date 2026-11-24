@@ -191,31 +191,32 @@ func TestClaimOwedIsTheMergeUntilTheMergersPullRequestIsMerged(t *testing.T) {
 }
 
 // A claim the daemon has failed owes nothing, whatever its phase: the failure is the daemon's own
-// word that the session is finished. This is what ends the reminding of a session whose provider
-// refuses every turn (dispatch://INFRA-264): each refused turn is reported over
-// `POST /legion/v1/claims/turn-outcome`, the run reaching the launch failure limit fails the
-// claim, and the one delayed reminder a refused turn arms asks this route before it goes.
+// word that the claim's work is its architect's to decide. This is what ends the reminding of a
+// session whose provider refuses its turns with a status that cannot clear (dispatch://INFRA-264,
+// dispatch://INFRA-4508): the report of a reminder's own turn, which ran no prompt of the
+// daemon's, is sent over `POST /legion/v1/claims/turn-outcome` marked unprompted with the status
+// the provider refused it with, a 400 fails the claim at once, and the one delayed reminder a
+// refused turn arms asks this route before it goes. A run of refusals fails no claim, so a
+// refusal that cannot clear is the turn-outcome path to a failure.
 func TestClaimOwedIsNothingOnceTheDaemonHasFailedTheClaim(t *testing.T) {
 	h, _, _ := newEntryHarness(t)
 	seedIssueAt(t, h, "LEGION-208", phase.Testing)
 	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
 	tester.owes(t, "the testing phase of LEGION-208")
 
-	generation := h.stored(tester.token).Generation
-	for sequence := uint64(1); h.stored(tester.token).State != supervise.StateFailed; sequence++ {
-		if sequence > 10 {
-			t.Fatalf("ten refused turns left %s %s, want it failed", tester.token, h.stored(tester.token).State)
-		}
-		recorder, _ := h.turnOutcome(claim.TurnOutcomeRequest{
-			ClaimToken: tester.token, SessionID: tester.session, Secret: tester.secret,
-			Generation: generation, Sequence: sequence, Outcome: claim.TurnRefused, Message: "the provider refused the request",
-		})
-		if recorder.Code != http.StatusOK {
-			t.Fatalf("turn outcome %d = %d, want 200; body %s", sequence, recorder.Code, recorder.Body)
-		}
+	recorder, answer := h.turnOutcome(claim.TurnOutcomeRequest{
+		ClaimToken: tester.token, SessionID: tester.session, Secret: tester.secret,
+		Generation: h.stored(tester.token).Generation, Sequence: 1, Outcome: claim.TurnRefused,
+		Message: "400 the provider refused the reminder's turn", HTTPStatus: http.StatusBadRequest, Unprompted: true,
+	})
+	if recorder.Code != http.StatusOK || !answer.Failed {
+		t.Fatalf("the refused reminder's turn = %d %+v, want 200 with the claim failed; body %s", recorder.Code, answer, recorder.Body)
 	}
-	// The answer is the whole of nothing: no work, and no architect named for a session the daemon
-	// has finished.
+	if state := h.stored(tester.token).State; state != supervise.StateFailed {
+		t.Fatalf("the refused reminder's turn left %s %s, want it failed", tester.token, state)
+	}
+	// The answer is the whole of nothing: no work, and no architect named for a claim the daemon
+	// has failed.
 	if got := tester.owed(t); got != (OwedResponse{}) {
 		t.Fatalf("the failed %s is told %+v, want nothing at all", tester.token, got)
 	}

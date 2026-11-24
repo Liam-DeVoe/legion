@@ -55,18 +55,20 @@ type OwedResponse struct {
 // turn it is for, nor to a caller that cannot prove it holds the claim.
 //
 // A claim the daemon has failed is the one exception, and it is answered that it owes nothing.
-// The failure is the daemon's own word that the session is finished: a retry starts the phase
-// again in a session of its own, and a reminder written into this one reaches nobody who can act
-// on it. A failed claim holds no secret any more (supervise.NormalizeClaim drops the capability
+// The failure is the daemon's own word that the claim's work is its architect's to decide, and a
+// reminder written into its session reaches nobody who can act on it. A failed claim holds no
+// secret any more (supervise.NormalizeClaim drops the capability
 // of every state that holds none), so its session cannot prove it holds the claim, and refusing
 // it would read to the reminder as an answer that did not arrive, which nudges
 // (UNREAD_CHECK in packages/pi-shared/src/phase-reminder.ts). So a claim this daemon
 // holds failed, asked from the session it records, is answered that nothing is owed without the
 // secret: the answer names no work, and that the claim is failed is what the unauthenticated
 // GET /legion/v1/state already serves. That is what ends the reminding of a session whose
-// provider refuses every turn: the daemon fails the claim once the run of refused turns reported
-// over `POST /legion/v1/claims/turn-outcome` reaches `launch_failure_limit`, and the one delayed
-// reminder each refused turn arms asks this route before it goes.
+// provider refuses its turns with a status that cannot clear: the daemon fails the claim on the
+// first such turn, a reminder's own included, which it judges from the turn-outcome report
+// (`POST /legion/v1/claims/turn-outcome`, dispatch://INFRA-4508), and the one delayed reminder
+// each refused turn arms asks this route before it goes. A run of refusals that can clear fails
+// no claim, so its reminders keep their pace.
 //
 // A daemon that reads no issue record, or does not know which role works a phase
 // (Options.Pool, Options.RoleFor), answers 500 rather than "nothing owed": the reminder that

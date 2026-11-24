@@ -3514,6 +3514,34 @@ package api
 // lowest number above main's 220 that no other open pull request declares. Read main's own number
 // and every open pull request again at the next merge rather than from this line.)
 //
+// 232: dispatch://INFRA-4508 -- `POST /legion/v1/claims/turn-outcome` takes two optional fields.
+// `httpStatus` is the HTTP status the provider refused the turn with, from 100 to 599, where the
+// producer's provider library gives one (Oh My Pi's `errorStatus` on the refused assistant
+// message, Claude Code's `api_error_status`); a number outside that range is taken as no status,
+// and the daemon logs a warning naming it rather than refusing the report. `unprompted: true`
+// says the turn ran no prompt the daemon sent: a phase reminder, an Envoy message, a background
+// job's result. The daemon judges such a turn from its report, as it judges a prompt's turn from
+// that prompt's result: a refusal whose status cannot clear (a 4xx other than 401, 403, 408 and
+// 429) fails the claim at once with cause `provider_error` and holds the issue, and the answer's
+// `failed` is then true; a refusal that can clear, or with no status, fails nothing and counts in
+// the claim's run of provider-error turns, whose sixth in a row tells the controller once. A
+// refused report without `unprompted` is judged by nothing, so the report of a turn a prompt ran is
+// never counted beside that prompt's result. A clean report, with `unprompted` or without, ends
+// that run when no later turn's report has reached the daemon before it. The daemon reads every
+// body strictly, so a report from this contract that carries either field is refused by a daemon
+// before 232; the boot gate refuses the mixed pair. (This entry took 239 at first, the lowest
+// number above main's 219 that no open pull request declared at a reading of the 132 open heads
+// that change this file, made between 2026-11-23T22:41:49Z and 22:44:42Z. The forward merge of
+// 2026-11-23 that brought in 7df64124 brought main's 220 (the entry above 228), and a reading of
+// the 133 open heads that change this file, at refs/pull/<n>/head between 2026-11-23T23:47:10Z and
+// 23:50:14Z, found each of 220 to 239 declared by another pull request (239 by #4592) and 240 by
+// none, so this entry moved to 240. The forward merge of 2026-11-24 that brought in e14345bf
+// brought main's 228 (INFRA-1575's entry above), and a reading of the 137 open heads that change
+// this file, between 2026-11-24T09:36:47Z and 09:39:37Z, found 240 declared by #3831 and 229 to
+// 231 declared by others, and 232 by none, so this entry moved to 232, the lowest number above
+// main's 228 that no other open pull request declares. Read main's own number and every open head
+// again at the next merge rather than from this line.)
+//
 // 240: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
 // `GET /legion/v1/state` says so: an issue takes four keys, `repoBefore` and `repoCorrectedAt`,
 // the repository the issue left and the moment the daemon applied the correction, and
@@ -3529,8 +3557,8 @@ package api
 // caller: by the contract its `Legion-Plugin-Contract` header states, else by its pod's claims,
 // which count no claim at 193 or above, so a plugin of 193 meets the band by its header alone.
 // `packages/contracts/src/legion-api.ts` mirrors the four on `legionIssue`, each optional. A
-// caller at 240 is served what one at 228 is with the four keys beside it, so 240's records are
-// 228's under its own number with the four key paths added to the state's and the record's,
+// caller at 240 is served what one at 232 is with the four keys beside it, so 240's records are
+// 232's under its own number with the four key paths added to the state's and the record's,
 // and with a record of the owed answer below, which no contract before 240 has.
 //
 // The same contract adds the claim route `POST /legion/v1/claims/owed` (`api.OwedRequest`, the
@@ -3595,7 +3623,7 @@ package api
 // v18.18.6-sami.20261118-035823, the first fork release whose `prompt` refusal and `prompt_result`
 // carry `code: "session_busy"` when the agent is busy (dispatch://INFRA-3538;
 // shimwire.CodeSessionBusy names the refusals that code covers). The daemon reads that code and
-// no words. A pod of the release before this one (contract 228) runs the same Oh My Pi and sends
+// no words. A pod of the release before this one (contract 232) runs the same Oh My Pi and sends
 // the code already. A pod still on an image before v18.18.6-sami.20261118-035823, until its update
 // round, sends its busy refusal with no code, and the daemon reads it as busy from its own record
 // of the claim working or from the agent's get_state (supervise's agentRefusalOutcome). While the
@@ -3656,10 +3684,12 @@ package api
 // 233 by #4173, #4180, #4182, #4193 and #4932, 234 by #4065, 235 by #5204, 236 by #4984, 237 by
 // #5168 and #5169, 238 by #5285, 239 by #4592, 241 by #4771 and #5307, 242 by #4596 and 243 by
 // #5349, with 244 declared by #3831), and 240 by none, so this entry moved to 240, the lowest
-// number above main's 228 that no other open pull request declared then. The readings behind this
-// change's earlier numbers are in its implement handoffs on dispatch://INFRA-3136. The last
-// number of answers.go's SupportedContracts was `intakeGiveUpsContract`, after
-// `api.assignmentPlanContract`, until this entry added `api.repositoryCorrectionContract` after
+// number above main's 228 that no other open pull request declared then. The forward merge of
+// 2026-11-24 that brought in 3dbaa2b2 brought main's 232 (#5271, INFRA-4508's entry above), which
+// 240 is above, so this entry kept 240. The readings behind this change's earlier numbers are in
+// its implement handoffs on dispatch://INFRA-3136. The last number of answers.go's
+// SupportedContracts was 232, version.go's entry for dispatch://INFRA-4508, after
+// `api.intakeGiveUpsContract`, until this entry added `api.repositoryCorrectionContract` after
 // it. That is a reading and never the rule: read main's own number and every open head again at
 // the next forward merge rather than from this line.)
 const DaemonAPIVersion = 240
