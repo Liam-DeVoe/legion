@@ -56,6 +56,16 @@ runs:
         for id in $(docker ps -q); do containers+=(--container "$id"); done
         .github/scripts/test-fence.sh fence "${containers[@]}"
 
+    # The six commands dev-broker.sh builds (its build loop), compiled here with the runner's
+    # cores so the build cache holds them: k9's stack starts under GOMAXPROCS=1, which its go build
+    # inherits, and a cold build under it ran past dev-airlock.sh's 300-second wait for
+    # dev-broker.sh in pull-request run 45428667412 (job 138567900586), where the dispatch run
+    # 45423603463's stack was ready 275 s in. Building several main packages discards the results.
+    - name: Build the stack's commands into the build cache
+      shell: bash
+      working-directory: packages/envoy
+      run: GOTOOLCHAIN=go1.27.3 go build ./cmd/cipherd ./cmd/dev-oidc-issuer ./cmd/dev-proxy-stands ./cmd/cipher ./cmd/cipher-helper ./cmd/cipher-devrelay
+
     # Each stack's dev-airlock.sh runs in a session of its own with its output in
     # $RUNNER_TEMP/airlock-<stack>.log and its pid beside it; the step ends once its banner says
     # ready. The leg's own stack first: k9's, with github.com's stand-in and each broker under
