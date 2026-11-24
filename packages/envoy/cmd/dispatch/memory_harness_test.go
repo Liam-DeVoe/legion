@@ -64,7 +64,6 @@ const memoryTestToken = "memory-test-token"
 
 // memoryHarness is the database and the issue the memory tests' servers share.
 type memoryHarness struct {
-	t        testing.TB
 	database *store.Store
 	issue    string
 	// env is added to every server's environment.
@@ -76,7 +75,7 @@ func newMemoryHarness(t testing.TB) *memoryHarness {
 	if runtime.GOOS != "linux" {
 		t.Skip("the memory tests read a server's resident memory from /proc")
 	}
-	harness := &memoryHarness{t: t, database: storetest.Open(t)}
+	harness := &memoryHarness{database: storetest.Open(t)}
 	server := harness.start(t)
 	for _, request := range []struct{ path, body string }{
 		{"/api/v1/projects", `{"key":"MEM","name":"Memory"}`},
@@ -191,7 +190,7 @@ var serverSlots = make(chan struct{}, testlimits.MaxProcessesAtOnce)
 // it holds another (TestTheHeaviestStoredDocumentsStayWithinTheMemoryBound's reader beside its
 // writer) waits for a server of another test, which never waits for a slot while it holds one:
 // every other test stops its server before it starts the next.
-func takeServerSlot(t *testing.T) (release func()) {
+func takeServerSlot(t testing.TB) (release func()) {
 	t.Helper()
 	serverSlots <- struct{}{}
 	var once sync.Once
@@ -908,7 +907,7 @@ func (p *memoryServer) loadOverWebsocket(t testing.TB, artifactID string) {
 // waitForRequestLine waits until the server's output past offset holds the access log line of a
 // request whose line carries every one of fields, and fails the test if the server exits first or
 // a minute passes, a hang guard on a line a healthy server writes in milliseconds.
-func (p *memoryServer) waitForRequestLine(t *testing.T, offset int, fields ...string) {
+func (p *memoryServer) waitForRequestLine(t testing.TB, offset int, fields ...string) {
 	t.Helper()
 	want := append([]string{`msg="` + accesslog.Message + `"`}, fields...)
 	deadline := time.Now().Add(time.Minute)
