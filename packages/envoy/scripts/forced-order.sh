@@ -7,11 +7,18 @@
 # copies nats-server's module at that version out of the module cache, applies
 # packages/envoy/internal/testnats/testdata/hooked/v<server>/server.patch to the copy, adds the
 # shared testdata/hooked/zz_measure.go and that version's zz_measure_write.go to its server
-# package, and builds the tests against the copy through
-# a replace directive (go refuses an -overlay of a file in the module cache). A module of the
-# workspace (go.work) builds in a copy of the workspace file, with absolute `use` paths and the
-# replace added, so every other module version is the one CI's own build of it links, on either
-# nats-server (2.10.29 adds go.uber.org/automaxprocs, which it requires, and changes no other
+# package, and builds the tests against the copy through a replace directive (go refuses an
+# -overlay of a file in the module cache). The copy stands at a path that depends on the version
+# and the -drop points alone, ${TMPDIR:-/tmp}/forced-order-nats-server/v<server>-hooked, or
+# v<server>-drop-<point>+<point> for a run with -drop: go keys a package it compiles without
+# -trimpath on its directory as well as on its files, so a second run of the same build reads the
+# hooked server's packages from go's build cache, where a copy at a new path each run compiled the
+# whole server again under -race. The run holds that path under flock(1) from before it writes the
+# copy until it ends, when it removes it, so two runs of the same build take turns and neither
+# rewrites the other's copy. A module of the workspace (go.work) builds in a copy of the workspace
+# file, with absolute `use` paths and the replace added, so every other module version is the one
+# CI's own build of it links, on either nats-server (2.10.29 adds go.uber.org/automaxprocs, which
+# it requires, and changes no other
 # version). A workspace that does not use the module, or that holds a replace, is refused, since
 # the build would then link other module versions than CI's, and so is a module whose go.mod
 # replaces nats-server, whose hooked copy would take the replacement's place. A module with no
@@ -105,6 +112,7 @@ done
 [ $# -ge 1 ] || usage
 command -v patch >/dev/null || die "patch(1) is not installed, and the hooks are a patch"
 command -v jq >/dev/null || die "jq is not installed, and the script reads go's JSON with it"
+command -v flock >/dev/null || die "flock(1) is not installed, and the hooked copy's path is held under it"
 
 cd "$module"
 [ -f go.mod ] || die "$module holds no go.mod"
@@ -187,7 +195,21 @@ done
   die "go mod download could not fetch $nats_server@v$server"
 source_dir="$(jq -r '.Dir // empty' "$work/download.json")" || die "jq could not read go mod download's answer"
 [ -n "$source_dir" ] && [ -d "$source_dir" ] || die "go mod download found no source for $nats_server@v$server"
-copy="$work/nats-server"
+# The copy's path: the version and the sorted -drop points, so another build of the same source
+# reads the same directory, and a build with other points cut never reads this one's. It is held
+# under flock (descriptor 9) for the rest of the run, and removed at its end; its lock file stays,
+# so a run that waits on it holds the same file as the run before it.
+variant=hooked
+if [ ${#drops[@]} -gt 0 ]; then
+  variant="drop-$(printf '%s\n' "${drops[@]}" | sort -u | paste -sd+ -)"
+fi
+copies="${TMPDIR:-/tmp}/forced-order-nats-server"
+mkdir -p "$copies" || die "could not make $copies, where the hooked copy is built"
+copy="$copies/v$server-$variant"
+exec 9>"$copy.lock" || die "could not open $copy.lock"
+flock 9 || die "could not lock $copy.lock"
+trap 'rm -rf "$work" "$copy"' EXIT
+rm -rf "$copy"
 cp -R "$source_dir" "$copy"
 chmod -R u+w "$copy"
 grep -qF "VERSION = \"$server\"" "$copy/server/const.go" ||
