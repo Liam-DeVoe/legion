@@ -524,13 +524,15 @@ func ReadRuns(dirs ...string) (Runs, error) {
 // keepsIssues says whether a report reads each issue's times from the line scorecards of the part
 // key: the part of a window under the rule its daemon ran, which its validation reads, and the
 // part of the window before the change under the rule of the window after it, which the forecast
-// reads.
+// reads. A window whose record names no rule (its parts name none, or more than one) keeps them for
+// every part, since a validation of it names its rule itself and may read any part: without them
+// each issue would read as one no replay placed, its error the window's end less the record's time.
 func (r Runs) keepsIssues(key partKey) bool {
 	rec, ok := r.windows[key.window]
 	if !ok {
 		return false
 	}
-	if key.rule == rec.Rule {
+	if rec.Rule == "" || key.rule == rec.Rule {
 		return true
 	}
 	for _, other := range r.windows {
