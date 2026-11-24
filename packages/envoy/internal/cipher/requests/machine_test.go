@@ -166,6 +166,7 @@ func newAppFixture(t *testing.T, apps ...string) (m *Machine, enrollmentID strin
 		Skew:              time.Minute,
 		Replay:            replayer(st),
 		ServicesByAccount: map[string]string{fixtureSubject: fixtureService},
+		Subjects:          identities(t),
 	}
 	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Policy)
 	return m, enrollmentID, requesterKey, fixtureOperator

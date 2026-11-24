@@ -132,6 +132,7 @@ func newProfiledProjectFixture(t *testing.T, file string, rules proxyrules.Rules
 		Skew:              time.Minute,
 		Replay:            replayer(st),
 		ServicesByAccount: map[string]string{fixtureSubject: fixtureService},
+		Subjects:          identities(t),
 	}
 	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Policy)
 	m.Airlock, m.AirlockProxyURL, m.AirlockCACertificate = rules, testProxyURL, testCACertificate

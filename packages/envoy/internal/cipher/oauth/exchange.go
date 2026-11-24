@@ -835,7 +835,7 @@ func personDeclinesNothing() error {
 // gives the machine both, and both end together, because the credential is written in the
 // transaction the token is written in and expires when the subject token does.
 //
-// The credential is keyed by the machine (exchange.MachineSubject) and bound to the key the
+// The credential is keyed by the machine (the provider's LauncherSubject) and bound to the key the
 // request's DPoP proof presented, so a machine's next exchange moves the one credential it holds
 // and no machine can move another's. It names its fleet's service and no person, whatever the
 // fleet's entry says: secret authority follows the access token, so a machine's sessions reach
@@ -909,7 +909,7 @@ func (p *Provider) machineCredential(ctx context.Context, r *http.Request, subje
 // Both refusals are invalid_grant rather than a server error, and name the sign-in command: the
 // subject token is sound and it is the broker's own record that refuses, which the person fixes
 // by signing in again, with a key of its own. The machine's is a refusal and not an update
-// because the credential this sign-in holds is keyed by all three (exchange.PersonSubject): a
+// because the credential this sign-in holds is keyed by all three (the provider's PersonSubject): a
 // row that followed its key to another machine would ask for a subject no live credential has,
 // and every trade of it from then on would collide on launcher_credentials_live_key and be
 // refused invalid_grant with nothing naming the cure.
@@ -957,7 +957,7 @@ func (p *Provider) personSignIn(ctx context.Context, session *oauthstore.Exchang
 // own recorded subject, which a credential carrying an operator never writes
 // (enroll.Service.Create).
 //
-// The credential is keyed by the sign-in (exchange.PersonSubject: the person, the machine's
+// The credential is keyed by the sign-in (the google identity provider's PersonSubject: the person, the machine's
 // account and the box key) and bound to that box key, so two people signed in on one box hold a
 // credential each, one person signed in on two boxes holds one per box, and no sign-in's trade
 // moves another's.
