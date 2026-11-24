@@ -104,7 +104,7 @@ test("the bar's box takes the page's size: the comfortable padding by default, t
   const padding = () =>
     sizeUnder(screen.getByRole("toolbar", { name: "Selected rows" }), SIZE_CSS).padding;
   try {
-    // The comfortable size is the bar the Inbox draws, which passes none.
+    // With no size the bar is drawn comfortable, the size the Inbox passes (`BAR_SIZE`).
     expect(padding()).toBe("8px 16px 8px 16px");
     view.rerender(bar("comfortable"));
     expect(padding()).toBe("8px 16px 8px 16px");
