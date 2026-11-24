@@ -6,11 +6,22 @@ import { join } from "node:path";
 // FAKE_DISPATCH_LOG, prints FAKE_DISPATCH_ERR on stderr, as the real command prints its
 // `dispatch: <warning>` lines before its answer, then its answer as the real command's would
 // print: FAKE_DISPATCH_OUT_<command> where that is set (FAKE_DISPATCH_OUT_steps for `dispatch
-// steps`), else FAKE_DISPATCH_OUT, and exits FAKE_DISPATCH_EXIT.
+// steps`), else FAKE_DISPATCH_OUT, and exits FAKE_DISPATCH_EXIT. A call that names
+// `--issue <KEY>` prints FAKE_DISPATCH_OUT_<command>_<KEY with - as _> where that is set, so
+// each issue of one run has an answer of its own: FAKE_DISPATCH_OUT_steps_LEGION_1 for
+// `dispatch steps --issue LEGION-1`.
 const fakeDispatch = `#!/usr/bin/env bash
 printf '%s\\n' "$*" >>"$FAKE_DISPATCH_LOG"
 printf '%s' "$FAKE_DISPATCH_ERR" >&2
 answer=FAKE_DISPATCH_OUT_\${1//[^a-z]/_}
+previous=
+for word in "$@"; do
+  if [ "$previous" = --issue ] && [[ $word =~ ^[A-Za-z0-9_-]+$ ]]; then
+    keyed=\${answer}_\${word//-/_}
+    [ -z "\${!keyed+set}" ] || answer=$keyed
+  fi
+  previous=$word
+done
 printf '%s' "\${!answer-$FAKE_DISPATCH_OUT}"
 exit "\${FAKE_DISPATCH_EXIT:-0}"
 `;
@@ -35,8 +46,9 @@ export interface ReadRun {
  * `dir`. The fake is written in a `beforeAll` registered at this call, so the call comes after the
  * one that makes `dir` (`temporaryDirectory`), whose hook runs first. Each run gives the fake `out`
  * to print on stdout, the one answer of every command or one answer for each command it names
- * (`{ steps, plans }`), `err` on stderr and `exit` to exit with, and runs the script with `args`,
- * `defaults` where it names none, on `path`, which by default finds the fake first.
+ * (`{ steps, plans }`), or for each command and issue (`{ steps_LEGION_1 }`). It gives `err` on
+ * stderr and `exit` to exit with, and runs the script with `args`, `defaults` where it names none,
+ * on `path`, which by default finds the fake first.
  */
 export function fakeDispatchRead(
   script: string,
