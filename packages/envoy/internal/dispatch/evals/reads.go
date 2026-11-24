@@ -375,6 +375,12 @@ func CountedIn(ctx context.Context, q delivery.Querier, project, family, deployR
 // the evals, read the 84-day repository read on the build farm in 183 to 227 ms where the plan
 // with its values took 96 to 124 ms.
 //
+// The subquery that names each row's eval as the project reads it (owned) ends in `offset 0`, which
+// keeps Postgres from pulling it up into the outer query: pulled up, the row's eval id, a string
+// built per row, was built again for each filter and case that reads it. Measured on the pod at a
+// tenth of INFRA's size (the 84-day repository read with a compare range, 18,257 rows, 9 runs
+// each), the fence took the median execution from 77 to 78 ms to 64 to 67 ms, with the same plan.
+//
 // A row answers what the folds and the answer read and nothing more (WindowRow), since what the
 // read costs is the bytes it sends: no project, repository, listing or build, but the owner it is
 // stored under, which a rebuild's overlay of staged rows reads, and a sample list
@@ -419,6 +425,7 @@ func DayWindowIn(ctx context.Context, q delivery.Querier, projects []string, ent
 				where o.project_key = any($1::text[]) and ` + ownedKeys("d", "= any($1::text[])") + ` and d.listed
 				  and ` + cut + `
 				  and d.day >= $` + strconv.Itoa(from) + `::date and d.day < $` + strconv.Itoa(to) + `::date
+				offset 0
 			) owned
 			where eval_id = any($3)
 			  and writer = case when eval_id = any($6::text[]) then '` + writerComputation + `' else '` + writerReadings + `' end
