@@ -226,7 +226,7 @@ func refusalUnless(err error, refusal *intake.Refusal) *intake.Refusal {
 // that gave it and stored, the plan in force at the fact's generation (nil for none). An
 // architect's version is the owner's, "", whose claim requestRefusal judged. A sub-owner's
 // (intake.PlanGiven.SubOwner) is the task of stored that names a sub-owner and whose sub-owner's
-// agent (record.SubOwnerAgent) is the agent of the claim that gave it; the route held that claim to
+// agent (plan.SubOwnerAgent) is the agent of the claim that gave it; the route held that claim to
 // fact's issue (SUB_OWNER_OUTSIDE_ISSUE), a claim's issue never changes, and plan.Validate holds
 // each sub-owner's agent to a name of its own. requestRefusal judges no sub-owner, so its version of
 // a run the issue has left is refused PLAN_STALE_GENERATION here, and one whose claim is the
@@ -245,7 +245,7 @@ func giverOf(fact intake.PlanGiven, issue *record.Issue, stored *record.StoredPl
 	}
 	if issue != nil && stored != nil {
 		for _, task := range stored.Tasks {
-			if task.OwnerRole == "" || record.SubOwnerAgent(task.Task) != agent {
+			if task.OwnerRole == "" || plan.SubOwnerAgent(task.Task) != agent {
 				continue
 			}
 			if refusal := intake.FinishedTask(fact.Issue, task.Task, task.State, intake.ChangeOfTask); refusal != nil {

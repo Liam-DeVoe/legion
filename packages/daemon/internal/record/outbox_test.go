@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 )
 
@@ -598,7 +599,7 @@ func TestANoticeNamesOnlyASubOwnersClaim(t *testing.T) {
 		}
 		return named
 	}
-	subOwner := token(SubOwnerAgent("f"))
+	subOwner := token(plan.SubOwnerAgent("f"))
 	if err := validateOutboxPayload("LEGION-208", Notice{Kind: "parts-done", Role: claim.RoleArchitect, To: subOwner}); err != nil {
 		t.Fatalf("a notice named to the sub-owner %s = %v, want it taken", subOwner, err)
 	}
@@ -627,7 +628,7 @@ func TestTheClaimsANoticeGoesTo(t *testing.T) {
 		return named
 	}
 	for named, want := range map[claim.Token]bool{
-		token("architect"): true, token(SubOwnerAgent("f")): true,
+		token("architect"): true, token(plan.SubOwnerAgent("f")): true,
 		token("implementer"): false, token("implementer-2"): false, claim.ControllerToken("legion"): false, "nobody": false, "": false,
 	} {
 		if got := NoticeGoesTo(named); got != want {
@@ -649,7 +650,7 @@ func TestTheClaimsANoticeGoesTo(t *testing.T) {
 // noticeWithController copies a notice whole) that carries a claim nothing routes it to (its
 // control: the validation of the base, which takes it).
 func TestAControllerNoticeNamesNoClaim(t *testing.T) {
-	subOwner, err := claim.AgentToken("legion", "LEGION-208", SubOwnerAgent("f"))
+	subOwner, err := claim.AgentToken("legion", "LEGION-208", plan.SubOwnerAgent("f"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -235,7 +235,7 @@ func TestAPlanAtZeroWaitsOnlyBeforeAnEarlierOwnersPlan(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
-	architect, subOwner := architectOf(t), agentClaim(t, root.Key, record.SubOwnerAgent("f"))
+	architect, subOwner := architectOf(t), agentClaim(t, root.Key, plan.SubOwnerAgent("f"))
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		if err := putOwnedVersion(t.Context(), tx, root.Key, root.Generation, 1, architect, subOwned("f")); err != nil {
 			return err

@@ -1891,7 +1891,7 @@ func PlanRefused(reasons []plan.Refusal) *Refusal {
 
 // NoSubOwnedTask is the reason a version of issue's plan is refused when agent, the sub-owner's
 // agent whose claim gave it (PlanGiven.SubOwner), is the sub-owner of no task of the plan in force
-// (record.SubOwnerAgent): the plan in force names each task a sub-owner gives the parts of.
+// (plan.SubOwnerAgent): the plan in force names each task a sub-owner gives the parts of.
 func NoSubOwnedTask(issue string, agent claim.Agent) plan.Refusal {
 	return plan.Refusal{Reason: fmt.Sprintf("%s is the sub-owner of no task of the plan in force of %s.", agent, issue)}
 }
