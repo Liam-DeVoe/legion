@@ -807,7 +807,7 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	backlogParent := r.create(asSession, "Arctic sensor network", parentOf("Sensors", ""))
 	backlogApproval := r.approve(backlogParent.PrimaryArtifactID)
 	// The daemon reads the issue a person's approval is on as Dispatch shows it when the event is
-	// delivered (workflow's personHandoverQueues), so the approval is applied while P is still in
+	// delivered (workflow's personHandover), so the approval is applied while P is still in
 	// triage: one read after the move to the backlog would be the person's handover of P.
 	r.applied(r.newestEvent(backlogParent.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == backlogApproval.Version }))
 	r.setStatus(backlogParent.Key, "backlog")

@@ -298,15 +298,16 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
 		AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
 		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
-		AnswerPlanRegister:
+		AnswerPlanRegister, AnswerIntakeReplay, AnswerIntakeDiscard:
 		// The identity, one row each: every contract this daemon serves one of these answers
 		// reads the body it writes. No key has arrived on any of them since that answer arrived.
 		// One key has gone: AnswerHandoffComplete lost its `note` at stateMachineContract, and
 		// no reader from ServingFloor to 85 requires it, so no stand-in is written for it
 		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract,
-		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, and
-		// AnswerPlanRegister arrived whole at OwnerPlanContract, so no older contract records any
-		// of the four at all.
+		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract,
+		// AnswerPlanRegister arrived whole at OwnerPlanContract, and AnswerIntakeReplay and
+		// AnswerIntakeDiscard arrived whole at intakeGiveUpsContract, so no older contract records
+		// any of the six at all.
 		return body, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -579,6 +580,7 @@ var stateNarrowings = []stateNarrowing{
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
 	{contract: assignmentPlanContract, issue: withoutAssignmentPlans, dropped: "the issues' assignments' plan"},
+	{contract: intakeGiveUpsContract, state: withoutIntakeGiveUps, dropped: "intakeGiveUps"},
 	{contract: gateBasisContract, issue: withoutGateBasis,
 		dropped: "the issues' treeRuns and the gatedSteps of every issue a step of which stands on an ancestor's basis"},
 }
@@ -1041,9 +1043,28 @@ const cachesSourceContract = 213
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the key arrived at stays where it is. It moves only with this
-// change's own number, and it is a number of answers.go's SupportedContracts, which names the
-// constant rather than its number for that reason.
+// change's own number, and answers.go's SupportedContracts names the constant rather than its
+// number for that reason.
 const assignmentPlanContract = 220
+
+// intakeGiveUpsContract is the daemon contract that added the intake's give-ups (version.go's
+// 228, dispatch://INFRA-1575). It added one key to the state, `intakeGiveUps`: each durable
+// consumer's count of the messages its intake gave up on that no replay or discard has closed,
+// with the newest stream sequence among them, and the newest of those records. It added two
+// answers whole with their routes, the controller's replay and discard of those records
+// (answers.go's AnswerIntakeReplay and AnswerIntakeDiscard), which no contract below it records.
+// A plugin before it is served the state without the key (withoutIntakeGiveUps, its row of
+// stateNarrowings): one built before sjawhar/legion#2788 reads the state with a strict schema
+// and would refuse the whole body for a key it does not name, and one built after strips the key
+// instead, so the band keeps the body its own contract's record describes. The two enumerated
+// fields it added, a give-up's `reason` and a replayed record's `outcome` (answers.go's
+// intakeGiveUpReasons and replayOutcomes), arrived whole with the key and the answer that carry
+// them, so no value strip is needed. The operator's two give-up routes answer the `legion`
+// command, which no plugin parses.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
+// moves that constant, and the contract the key and the two answers arrived at stays where it is.
+const intakeGiveUpsContract = 228
 
 // gateBasisContract is the daemon contract that let a root's gated step stand open on an
 // ancestor's approval or wait on an ancestor's approval request (version.go's 239,
@@ -1070,27 +1091,31 @@ const assignmentPlanContract = 220
 // (heldReasons), served as `children_first`, the word a started parent's wait took over
 // (withoutUnadmittedHeldWords, heldReasonStandIn).
 //
-// Of the bands of stateNarrowings, assignmentPlanContract's stands right below this one,
-// repositoriesLiveContract's below that and shapedAnswersContract's below that, and this band
-// touches no key of any of theirs: shapedAnswersContract's takes `lowestPluginContract` and the
-// claim views' `updateState` and `wake`, repositoriesLiveContract's writes the `repositories`
-// block in contract 152's shape, assignmentPlanContract's takes each assignment's `plan`, and
-// this one takes `treeRuns` and some `gatedSteps`. So a caller from 202 up to the number below
-// this contract is served the keys 193 added and the block 202 writes and none of this contract's
-// keys and words. One that states a number between 202 and this contract is served the nearest
-// recorded contract at or below it (recordedContractAtOrBelow): one at 203 or 204 is served 202's,
-// one at 205 to 212 is served 205's, whose records are 202's under its own number, as version.go's
-// 205 entry says, one at 213 to 216 is served 213's, which are 205's with `caches` among the words
-// of a capability row's `source` (cachesSourceContract), one at 217 or 218 is served 217's,
-// which are 213's under its own number, as version.go's 217 entry says, one at 219 is served
-// OwnerPlanContract's, which are 217's with the owner's plan's routes, fields and words, and one at
-// 220 up to the number below this contract is served assignmentPlanContract's, which are
-// OwnerPlanContract's with each assignment's `plan`, so a caller below assignmentPlanContract is
-// served no assignment's `plan`, and one below OwnerPlanContract neither the owner's plan's
-// additions nor this contract's. A caller from 193 to 201
-// is served the keys 193 added, the block in contract 152's shape and none of this contract's:
-// one that states a number from 194 to 198 is served 193's shape, and one that states 199, 200 or
-// 201 is served 199's, which is 193's, since 199 moves no shape of an answer a plugin parses.
+// Of the bands of stateNarrowings, intakeGiveUpsContract's stands right below this one,
+// assignmentPlanContract's below that, repositoriesLiveContract's below that and
+// shapedAnswersContract's below that, and this band touches no key of any of theirs:
+// shapedAnswersContract's takes `lowestPluginContract` and the claim views' `updateState` and
+// `wake`, repositoriesLiveContract's writes the `repositories` block in contract 152's shape,
+// assignmentPlanContract's takes each assignment's `plan`, intakeGiveUpsContract's takes the
+// state's `intakeGiveUps`, and this one takes `treeRuns` and some `gatedSteps`. So a caller from
+// 202 up to the number below this contract is served the keys 193 added and the block 202 writes
+// and none of this contract's keys and words. One that states a number between 202 and this
+// contract is served the nearest recorded contract at or below it (recordedContractAtOrBelow):
+// one at 203 or 204 is served 202's, one at 205 to 212 is served 205's, whose records are 202's
+// under its own number, as version.go's 205 entry says, one at 213 to 216 is served 213's, which
+// are 205's with `caches` among the words of a capability row's `source` (cachesSourceContract),
+// one at 217 or 218 is served 217's, which are 213's under its own number, as version.go's 217
+// entry says, one at 219 is served OwnerPlanContract's, which are 217's with the owner's plan's
+// routes, fields and words, one at 220 to 227 is served assignmentPlanContract's, which are
+// OwnerPlanContract's with each assignment's `plan`, and one at 228 up to the number below this
+// contract is served intakeGiveUpsContract's, which are assignmentPlanContract's with
+// `intakeGiveUps` and the two give-up answers. So a caller below intakeGiveUpsContract is served
+// no `intakeGiveUps`, one below assignmentPlanContract no assignment's `plan` either, and one
+// below OwnerPlanContract neither the owner's plan's additions nor this contract's. A caller from
+// 193 to 201 is served the keys 193 added, the block in contract 152's shape and none of this
+// contract's: one that states a number from 194 to 198 is served 193's shape, and one that states
+// 199, 200 or 201 is served 199's, which is 193's, since 199 moves no shape of an answer a plugin
+// parses.
 // Every such caller states its contract: podContracts leaves out a claim at shapedAnswersContract
 // or above, so a pod reading places no caller there.
 //
@@ -1906,6 +1931,19 @@ func withoutPause(state State) (State, bool) {
 	moved := state.Paused != nil || state.LastPause != nil
 	state.Paused, state.LastPause = nil, nil
 	return state, moved
+}
+
+// withoutIntakeGiveUps is state with no `intakeGiveUps`, the one key intakeGiveUpsContract added
+// to the state; the rest of that contract is two answers of their own routes, which no older
+// plugin calls. The key is left off rather than emptied, because the strict reader before the
+// contract refuses it as surely when its two lists are empty as when they name a give-up, which
+// is why State.MarshalJSON writes the key on every body but this one (State.intakeGiveUpsHidden),
+// as withoutWakesWaiting leaves off `wakesWaiting`. The flag is set on a value of the state's own,
+// so the state the source answered is left as it was. The band reports a move on every body it
+// serves, as withoutWakesWaiting does.
+func withoutIntakeGiveUps(state State) (State, bool) {
+	state.IntakeGiveUps, state.intakeGiveUpsHidden = IntakeGiveUpsView{}, true
+	return state, true
 }
 
 // withoutResumePauses is records with no resume carrying `pause`, the one key pauseContract added

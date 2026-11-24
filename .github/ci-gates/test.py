@@ -45,6 +45,14 @@ GATE = gate("test", "test", runs=[
     (f"{DAEMON}/internal/capabilities/testdata/web-search-open-planner.json", "scripts/e2e/lib/stage4b-capabilities.test.ts:13-22"),
     (f"{DAEMON}/internal/runtime/sandbox/testdata/golden/root.json", "scripts/e2e/lib/stage4b-pods.test.ts:22-35"),
     (f"{DAEMON}/internal/runtime/sandbox/testdata/golden/root-operator-route.json", "scripts/e2e/lib/stage4b-pods.test.ts:180-190"),
+    (f"{DAEMON}/internal/daemon/approved_version_news_sessions_live_test.go",
+     "scripts/e2e/lib/approved-version-news-runs.test.ts:170 reads its news marks, and :327-328 copies it into the scratch checkout"),
+    (f"{DAEMON}/internal/daemon/approved_version_news_live_test.go",
+     "scripts/e2e/lib/approved-version-news-runs.test.ts:327-328 copies it into the scratch checkout"),
+    (f"{DAEMON}/internal/daemon/approved_version_news_part_one_steps_live_test.go",
+     "scripts/e2e/lib/approved-version-news-runs.test.ts:327-328 copies it into the scratch checkout"),
+    (f"{DAEMON}/internal/daemon/approved_version_news_seed_live_test.go",
+     "scripts/e2e/lib/approved-version-news-runs.test.ts:327-328 copies it into the scratch checkout"),
     (".github/actions/install-changie/**", f"{at('test', './.github/actions/install-changie')}, which "
                                            "release-push.test.sh's fold-notes cases render with"),
     (".github/ci-tools.yaml", ".github/actions/install-changie/action.yml:28-29 installs the tarball of the changie row, "

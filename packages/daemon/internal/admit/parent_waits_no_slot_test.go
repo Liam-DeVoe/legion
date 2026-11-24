@@ -1468,8 +1468,8 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		inTx(t, pool, func(tx pgx.Tx) {
 			records, ctx := record.NewStore(), context.Background()
 			pr, err := records.PullRequest(ctx, tx, child)
-			if err != nil || pr == nil || pr.HeadSHA != "head-42" || pr.Generation != 2 {
-				t.Fatalf("carried pull request = %+v, %v; want head-42 at generation 2", pr, err)
+			if err != nil || pr == nil || pr.HeadSHA != "head-42" || pr.Generation != 1 {
+				t.Fatalf("carried pull request = %+v, %v; want head-42 with its settlement's generation 1 kept", pr, err)
 			}
 			gates, err := records.GatesOf(ctx, tx, child)
 			if gate := record.SpecGate(gates); err != nil || gate == nil || gate.ArtifactID != artifact {
