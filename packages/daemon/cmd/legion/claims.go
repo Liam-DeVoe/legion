@@ -259,11 +259,11 @@ func claimStateWord(c api.OperatorClaim) string {
 // (api.ClaimFailureView). A claim with no failure record that carries a refused launch's fact the
 // store has not taken (api.OperatorClaim.UnrecordedRefusal) prints `refusal-unrecorded`: the
 // daemon tries each such fact again, at least once an hour, for as long as it fails and the refusal
-// it names stands, and where the failing fact is the refusal's report, the issue and the
-// controller are told nothing and the claim's start is not queued until it is taken; when the
-// oldest such fact's first try failed, how many of its tries have failed and its last error are
-// read with --json. It is empty for every other claim the daemon holds no failure record for — one
-// that never failed, one that has been given another run since, which clears the record, and one
+// it names stands; until one is taken the claim's start is not queued, and where the failing fact
+// is the refusal's report, the issue and the controller are told nothing; when the oldest such
+// fact's first try failed, how many of its tries have failed and its last error are read with
+// --json. It is empty for every other claim the daemon holds no failure record for — one that
+// never failed, one that has been given another run since, which clears the record, and one
 // holding a cause with no sentence (api.FailureViewOf) — which the line prints as `-`.
 func claimCauseWord(c api.OperatorClaim) string {
 	if c.Failure != nil {
