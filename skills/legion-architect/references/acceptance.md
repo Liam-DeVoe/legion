@@ -53,7 +53,7 @@ A child's merge while the parent waits needs no move of its own:
 the last round tests them all, and the daemon answers a conflict on its head (*A conflicting head*, below).
 If the pull request merged before its last round, move nothing back. Once the children close:
 
-1. Run each check with no `ci_check` on the default branch and record each result, yourself or by a subagent you dispatch, and `wait` for its report.
+1. Run each check with no `ci_check` on the default branch and record each result, yourself or by a subagent you dispatch; `wait` for a subagent's report.
 2. Read each `ci_check` result in `dispatch results`.
 3. Post the results in the acceptance comment, then `sign_off`.
 

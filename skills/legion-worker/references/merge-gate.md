@@ -1,6 +1,8 @@
 # The merge gate: review and the production check
 
 Read it when you review or approve, or work a look of a closed issue's production check.
+Your role prompt gives the review submission, its footer, the thread rule, the CI read and the forward-merge confirmation; this page gives the rest.
+The merger's steps are all in its role prompt.
 
 ## The reviewer
 
@@ -77,12 +79,7 @@ Cases 2, 3, 4 and 6 end: tell the architect, do not approve, and wait with a `WA
 
 ### A merge of the base is reviewed for what it changed
 
-After a forward merge, read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`) and this change's own commits since your last submitted review's footer `head`.
-This lists your session's reviews, oldest first; no line, or `no head` on the last one, means you read the whole diff:
-
-```bash
-gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | {id, state, submitted_at, footer: ([.body // "" | scan("<!-- legion: (\\{.*?\\}) -->")] | last | .[0]? // "" | try fromjson catch {})} | select(.footer.phase == "review" and .footer.session == "<your session id>") | [.id, .state, .submitted_at, (.footer.head // "no head")] | @tsv'
-```
+After a forward merge, read the merge and this change's own commits since your last submitted review's footer `head` (`skill://legion-worker/references/conflicts-and-rewrites.md#reading-a-merge-of-the-base`, which lists your reviews).
 
 ## The production check after the close
 

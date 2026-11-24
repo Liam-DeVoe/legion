@@ -5,6 +5,8 @@ description: Use when dispatched as a per-process Legion phase worker — planne
 
 # Legion Phase Worker
 
+Your role prompt gives the workspace, the push, the handoff, `handoff_complete`, the waits and the pod release; this skill adds the rest.
+
 ## Every phase
 
 1. Read the issue, then your task, then each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`).
@@ -34,8 +36,7 @@ description: Use when dispatched as a per-process Legion phase worker — planne
   - `HANDOFF_STALE_ENTRY`: end the turn without completing; the daemon sends the new entry's task by itself.
     Do what it asks at the head it names, with a handoff of its own.
 
-  - `HANDOFF_HEAD_MERGED_FORWARD`: a merge forward the daemon asked for has landed above the head your completion names, or your completion names no head; nothing was recorded.
-    Read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`), then complete again at the new head with a handoff that names it.
+  - `HANDOFF_HEAD_MERGED_FORWARD`: `skill://legion-worker/references/conflicts-and-rewrites.md#the-daemons-ask`.
 
   - `HANDOFF_NOT_CURRENT_PHASE`: report it; do not retry that completion.
     `HANDOFF_ALREADY_RECORDED`: the first answer stands.
@@ -95,7 +96,7 @@ description: Use when dispatched as a per-process Legion phase worker — planne
 - End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.
 
 - A Dispatch comment or message never carries the `<!-- legion: … -->` footer.
-  Dispatch records the session that wrote it, and only a pull-request comment or review needs it.
+  Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
 
 - Never run `gh config set` or `gh alias set`, and leave `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` unset:
   a set variable outranks the gh directory the daemon refreshes.

@@ -9,7 +9,7 @@ You are the one persistent, wake-driven session of a Legion project. You start n
 
 ## Rules
 
-These add to your system prompt's rules:
+Your system prompt holds the rules on registration, one wake per turn, reading state first, the `legion` tool and parking. These add to them:
 
 - A direct message that settles scope, priority or an owner is a directive: answer it, then run the weekly-plan reconciliation (`skill://legion-controller/references/backlog-stewardship.md`).
 - Read a session's state from the Envoy registry, never from its absence from a list (`skill://envoy`). Start no replacement for an `unresponsive` session, take nothing from it, and never report it gone, since it keeps its claims.
@@ -27,7 +27,7 @@ Read `skill://legion-controller/references/session.md` for who launched you, the
 
 ## Every turn
 
-1. Recheck [trees waiting on a root claim](#trees-waiting-on-a-root-claim).
+1. Recheck the trees waiting on a root claim (`skill://legion-controller/references/admission.md#trees-waiting-on-a-root-claim`).
 2. Do the wake's work, or the start procedure below.
 3. First turn of each six-hour UTC block: `skill://legion-controller/references/consolidation.md`.
 4. First turn of each UTC week: `skill://legion-controller/references/weekly-audit.md`.
@@ -59,10 +59,6 @@ Every launch opens with a start message. Envoy keeps no wake sent while no contr
 | A finding sent as text | Open an ask ([Findings](#findings-and-the-issues-you-file)) |
 | An answer to a park ask; a deferral ask | `skill://legion-controller/references/park-asks.md`; `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` |
 | Any other wake, a GitHub mention | `skill://legion-controller/references/wakes.md` |
-
-## Trees waiting on a root claim
-
-A root architect whose claim on its root was refused waits, and nothing tells it when the holder lets go. `dispatch read` each root in `admission.trees` still at `phase: admitted`. When `Claimed by:` is `nobody` or ends `· not running`, `envoy_publish` `<KEY>: the claim is free; claim it again.` to `notifications.role.<issues.<KEY>.architect.locator.claim>`.
 
 ## Issues handed to Legion
 

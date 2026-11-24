@@ -713,14 +713,14 @@ test("the architect skill names the versions that keep the design gate open", ()
   ).toEqual([]);
 });
 
-// With no tester step only the implementer runs the checks, except the owner's subagent in the
+// With no tester step only the implementer runs the checks, except the owner or its subagent in the
 // last round of a parent whose pull request already merged (`references/acceptance.md`, "The last
 // round"). Each sentence a reader of the acceptance showed false is gone. This shows the text
 // ships, never that a role follows it.
 test("the architect's references say who runs the checks again", () => {
   expect([
     ...lacks("legion-architect/references/plan.md", [
-      /no other step runs them again, except where a parent's pull request merged before its last round[^.;]*your subagent then runs and records them/,
+      /no other step runs them again, except where a parent's pull request merged before its last round[^.;]*you, or a subagent you dispatch, then run and record them/,
       /^(?![\s\S]*nobody runs them again)/,
     ]),
   ]).toEqual([]);
