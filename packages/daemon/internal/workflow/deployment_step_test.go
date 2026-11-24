@@ -775,6 +775,45 @@ func TestABootStopsATaskWhoseAgentIsNamedForARoleTheDeploymentLost(t *testing.T)
 	}
 }
 
+// A second agent of one role takes a name that numbers its role (record.NameAgents): step 3 of
+// `implementer reviewer implementer` is the agent `implementer-2`, in a slot of that name, which
+// a pod of the deployment builds for the agents of the plan. Its name numbers a role Legion
+// defines (claim.DefinedRole), so a daemon that restarts while the task stands at that step leaves
+// the task running and tells no one. The fault: the boot read `implementer-2` as a role of the
+// deployment that its settings no longer define, and stopped the task. The control is a numbered
+// agent of a role the deployment lost: step 4 of `checker implementer checker:a tester:a` is key
+// a's agent `checker-2`, the checker's second agent, whose slot no pod of the restarted
+// deployment has, and the boot stops that task, naming that agent.
+func TestABootLeavesATaskWhoseStepASecondAgentOfALegionRoleWorks(t *testing.T) {
+	pool := migratedPool(t)
+	engine := lostChecker()
+	root := stepRoot(t, pool, phase.Implementing)
+	seedStepsAt(t, pool, root.Key, root.Generation, 3, nil, "implementer", "reviewer", "implementer")
+	seedTreeLifecycle(t, pool, root.Key)
+	if step, ok := walkOf(t, pool, engine, root.Key).stepAt(stepPlace(3)); !ok || step.AgentName() != "implementer-2" {
+		t.Fatalf("step 3's agent is %q, want implementer-2, the second agent of the role", step.AgentName())
+	}
+
+	applyRefusingNothing(t, pool, engine, intake.DaemonBooted{Boot: 1})
+
+	if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskRunning {
+		t.Fatalf("task a after the boot = %s (%q), want running: implementer-2 is a second agent of the implementer", task.State, task.StoppedReason)
+	}
+	if stopped := noticesOf(t, pool, root.Key, "task-stopped"); len(stopped) != 0 {
+		t.Fatalf("the task-stopped notices = %+v, want none", stopped)
+	}
+
+	lost := migratedPool(t)
+	checker := stepRoot(t, lost, phase.Testing)
+	seedStepsAt(t, lost, checker.Key, checker.Generation, 4, map[string]string{"checker": "testing"}, "checker", "implementer", "checker:a", "tester:a")
+	seedTreeLifecycle(t, lost, checker.Key)
+	applyRefusingNothing(t, lost, engine, intake.DaemonBooted{Boot: 1})
+	const why = "step 4 is the work of the agent checker-2, which runs in the slot of the role checker-2, which the deployment no longer defines"
+	if task := taskOf(t, lost, engine, checker.Key); task.State != record.TaskStopped || task.StoppedReason != why {
+		t.Fatalf("the control's task after the boot = %s stopped with %q, want stopped with %q", task.State, task.StoppedReason, why)
+	}
+}
+
 // A person's todo on a root held for its stopped task starts nothing while a step of the task names
 // a role the deployment no longer defines: the task stays stopped, its reason now the lost step's,
 // the issue stays held as it was, the status the record keeps is written back over the todo with

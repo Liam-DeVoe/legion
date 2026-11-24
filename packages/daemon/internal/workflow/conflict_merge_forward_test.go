@@ -148,6 +148,34 @@ func TestAMergeForwardMessageNamesTheClaimOfItsRolesStep(t *testing.T) {
 	}
 }
 
+// A second agent of one role runs in a slot of its numbered name, `implementer-2` for step 3 of
+// `implementer reviewer implementer` (record.NameAgents), which numbers a role Legion defines
+// (claim.DefinedRole). So a merge forward asked in implementing while that agent works the step
+// reaches its claim: the ask names `…-implementer-2`. The fault: the slot `implementer-2` read as a
+// role the deployment no longer defines (lostSlot), so no ask was written and no agent was told to
+// merge the base forward. The control is the same conflict with the implementer's own claim on the
+// step, whose ask names that claim.
+func TestAMergeForwardAsksASecondAgentOfTheRoleThatWorksTheStep(t *testing.T) {
+	for _, agent := range []claim.Agent{"implementer-2", "implementer"} {
+		t.Run(string(agent), func(t *testing.T) {
+			worker := agentToken(t, agent)
+			pool := seedConflictIssue(t, phase.Implementing, "in_progress", settledGreen("lint"))
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				if _, err := tx.Exec(t.Context(), "delete from phases where issue = $1 and role = $2", "LEGION-208", string(claim.RoleImplementer)); err != nil {
+					return err
+				}
+				return record.NewStore().PutPhase(t.Context(), tx, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: worker,
+					StepTask: "a", StepPlace: 3, Entry: 1})
+			})
+			confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
+			got := mergeForwardMessages(t, pool)
+			if len(got) != 1 || got[0].Role != claim.RoleImplementer || got[0].Step != record.MergeForwardAsk || got[0].Claim != worker {
+				t.Fatalf("merge-forward messages %+v, want one ask of the implementer naming %s, the claim of the agent on its step", got, worker)
+			}
+		})
+	}
+}
+
 // conflictConfirms is the due time of every second read of a conflict the outbox holds, in the
 // order written, each of them a read of #42 at conflictHead due a minute after the first read it
 // carries (record.ConflictConfirm.FirstReadAt).
