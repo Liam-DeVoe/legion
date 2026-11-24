@@ -696,8 +696,11 @@ func (r *Runtime) writeLaunchCredential(ctx context.Context, pod *corev1.Pod, sp
 // moment must not cost.
 func (r *Runtime) slotAppChanges(ctx context.Context, pod *corev1.Pod, spec runtime.SpawnSpec) (bool, error) {
 	_, acts, err := runtime.Acting(ctx, r.actsAs, spec.Claim)
-	if err != nil || acts {
-		return false, err
+	if err != nil {
+		return true, nil // control 2: a failed ask read as another App
+	}
+	if acts {
+		return false, nil
 	}
 	app, err := r.roleApps.Of(ctx, spec.Issue, spec.Role)
 	if err != nil {
