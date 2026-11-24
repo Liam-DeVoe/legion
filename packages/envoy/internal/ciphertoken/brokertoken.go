@@ -182,21 +182,22 @@ type Caller struct {
 	// naming none is ErrNotASession and never reaches one.
 	Session string
 	// Person is the person that session acts for. A Caller names a person or a service, never
-	// both and never neither: an answer that names no person names its service instead.
+	// both and never neither: an answer that names no person names the service it is.
 	Person string
 	// Service is the service a caller that names no person is, as the broker's own
 	// configuration names it: the fleet the machine presenting the token belongs to, the
-	// service a read entry names, or, for a job's token, the identity its job entry lists — a
-	// pod's Kubernetes service account, a workflow, or a Google account. Whoever mounts this
-	// check decides what such a caller may do; what this package promises is that one of the two
-	// is set.
+	// service a read entry names, the account of an account entry naming no person, which the
+	// token acts as (system:serviceaccount:<namespace>:<name>), or, for a job's token, the
+	// identity its job entry lists — a pod's Kubernetes service account, a workflow, or a Google
+	// account. Whoever mounts this check decides what such a caller may do; what this package
+	// promises is that one of the two is set.
 	Service string
 	// Projects is the token's list of projects, the caller's own copy: a ProjectScopeNamed
-	// token's one project, or none for an account entry that names a person and no project (the
-	// shared public-session account's), and exactly one for a job's token; the projects a
-	// ProjectScopePerson token's trade asked for, each one its person could see then, nil for
-	// none, and none for a token that names a service; and a ProjectScopePublic token's private
-	// projects, its job entry's whole list of 0 to oauthwire.MaxProjects, beside which it
+	// token's one project, or none for an account entry naming none (the shared public-session
+	// account's, and an account entry naming no person), and exactly one for a job's token; the
+	// projects a ProjectScopePerson token's trade asked for, each one its person could see then,
+	// nil for none, and none for a token that names a service; and a ProjectScopePublic token's
+	// private projects, its job entry's whole list of 0 to oauthwire.MaxProjects, beside which it
 	// reaches every public project, which no list names. A read-only caller (ReadOnly) names
 	// none, since it writes none. Sorted, each once.
 	Projects []string
@@ -474,18 +475,24 @@ func sessionCaller(answer Introspection, servesReadOnly bool) (Caller, error) {
 	// here rather than taken as a token that names no project at all (ErrNotASession). A
 	// read-only token passes only a verifier whose service serves one, and a public token only
 	// beside a service and no person (shapeOf). A named token is an operator's entry's, which
-	// names one project and a person or a service, or none for an account entry that names a
-	// person: a named answer naming two or more projects, which a reader holding a write to one
-	// project would take as no limit at all, or naming none and no person, is the same case. A
+	// names one project, or none for an account entry that names none: such an entry names a
+	// person, or names no person and acts as its account, which is the token's service and is
+	// always a whole Kubernetes account subject (oauthwire.AccountSubject), so a named answer
+	// naming no person, no project and any other service, a fleet's name or a string that only
+	// opens like an account among them, is no token the broker mints. A job's named token names
+	// no person, exactly one project and its job entry's identity, which may be an account, a
+	// workflow or a Google account. A named answer naming two or more projects, which a reader
+	// holding a write to one project would take as no limit at all, is the same case. A
 	// service's token under the scope person names no project, since the exchange refuses a
-	// machine's trade naming one; under named and public a service's token is a job's, which
-	// names its entry's list. A list no exchange mints (oauthwire.ValidProjects: more than
-	// oauthwire.MaxProjects, a key that is none, or keys not sorted and named once) is refused
-	// under every scope for the same reason.
+	// machine's trade naming one; under named and public a service's token may name its entry's
+	// list. A list no exchange mints (oauthwire.ValidProjects: more than oauthwire.MaxProjects, a
+	// key that is none, or keys not sorted and named once) is refused under every scope for the
+	// same reason.
 	shape := shapeOf(answer)
 	if answer.Session == "" || (answer.Person == "" && answer.Service == "") || answer.ClientID != ExchangeClientID ||
 		shape == shapeNotASession || (shape == shapeReadOnly && !servesReadOnly) ||
-		(answer.ProjectScope == ProjectScopeNamed && (len(answer.Projects) > 1 || (len(answer.Projects) == 0 && answer.Person == ""))) ||
+		(answer.ProjectScope == ProjectScopeNamed && len(answer.Projects) > 1) ||
+		(answer.ProjectScope == ProjectScopeNamed && answer.Person == "" && len(answer.Projects) == 0 && !oauthwire.AccountSubject.MatchString(answer.Service)) ||
 		(answer.ProjectScope == ProjectScopePerson && answer.Person == "" && len(answer.Projects) > 0) ||
 		oauthwire.ValidProjects(answer.Projects) != nil {
 		return Caller{}, ErrNotASession
@@ -519,16 +526,17 @@ const (
 // shapeOf is the one rule that says what a read-only token is and what a job's token is, and so
 // what every other answer is beside them. The read-only shape is exact: the project scope
 // ProjectScopeNone, a Scope that is the one word ScopeRead, a service, and no person and no
-// projects. An answer carrying none in any other shape is no session's token. A job's token
-// names no person and holds no OAuth scope at all, since the broker grants a job's token none.
-// Its public shape is ProjectScopePublic beside a service, no person and no scope word; public
-// beside a person, which no entry that names a person mints, with no service, or beside any
-// scope word is no session's token. Its named shape is ProjectScopeNamed beside no person and
-// no scope word; named beside no person and any scope word, person and approve included, is no
-// session's token, while named beside a person keeps the scope its entry grants. An answer whose
-// Scope holds the word read beside the project scope named or person is no session's token
-// either, since no broker mints either and read beside a project scope that writes would let a
-// token meant to read write. The list beside each shape is sessionCaller's to hold.
+// projects. An answer carrying none in any other shape is no session's token. A token that names
+// no person and is no read-only token — a job's, or an account entry's naming no person — holds
+// no OAuth scope at all, since the broker grants neither one. A job's public shape is
+// ProjectScopePublic beside a service, no person and no scope word; public beside a person, which
+// no entry that names a person mints, with no service, or beside any scope word is no session's
+// token. The named shape of both is ProjectScopeNamed beside no person and no scope word; named
+// beside no person and any scope word, person and approve included, is no session's token, while
+// named beside a person keeps the scope its entry grants. An answer whose Scope holds the word
+// read beside the project scope named or person is no session's token either, since no broker
+// mints either and read beside a project scope that writes would let a token meant to read
+// write. The list beside each shape is sessionCaller's to hold.
 //
 // Scope is read as RFC 7662 spells it, words separated by spaces, one word at a time and with
 // no slice built of them, because this runs on every request a verifier decides, an answer
@@ -543,7 +551,8 @@ func shapeOf(answer Introspection) tokenShape {
 	}
 	switch answer.ProjectScope {
 	case ProjectScopeNamed:
-		// A named token that names no person is a job's, and a job's token holds no OAuth scope.
+		// A named token that names no person is a job's or an account entry's naming no person,
+		// and the broker grants neither one an OAuth scope.
 		if read || (answer.Person == "" && words > 0) {
 			return shapeNotASession
 		}

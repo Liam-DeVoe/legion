@@ -17,12 +17,12 @@ body: |-
   for the audience `AGENT_SECRETS_MACHINE_AUDIENCE` names. A missing variable is an error that
   names it.
 
-  `dispatch whoami` says that a job's broker token, whose project scope Dispatch answers as `named`
-  or `public`, runs as its service and no person and writes as that service: in its one project
-  for `named`, and for `public`, which names no one project, wherever a token that names no
-  project may write. A machine's token, under `person`, a token under any other project scope, and
-  any token of a Dispatch that answers no project scope, keep the sentence that names
-  `agent-secrets login`. Its details carry `project_scope`.
+  `dispatch whoami` says that a broker token Dispatch answers `sign_in_required` false for, a job's
+  under the project scope `named` or `public` among them, runs as its service and no person and
+  writes as that service: in its one project where it names one, and otherwise wherever a token
+  that names no project may write. A machine's token, which Dispatch answers `sign_in_required`
+  true for, and any service token of a Dispatch that answers no `sign_in_required`, keep the
+  sentence that names `agent-secrets login`. Its details carry `project_scope`.
 time: 2026-11-24T01:52:17Z
 custom:
     Issue: job-tokens

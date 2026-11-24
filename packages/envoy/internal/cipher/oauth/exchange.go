@@ -50,10 +50,11 @@ const (
 	// ClaimPerson is the person the session acts for.
 	ClaimPerson = "person"
 	// ClaimService is the service a token that names no person is, a machine's fleet, the service
-	// a read entry names, or a job entry's listed identity (exchange.Claims.Service), and is empty
-	// for every token that names one. It is written always, for the reason ClaimProjectScope is: a
-	// reader of the row never has to take an absent service as either "no service" or "a claim
-	// this build of the broker did not write".
+	// a read entry names, the account of an account entry naming no person, or a job entry's
+	// listed identity (exchange.Claims.Service), and is empty for every token that names one. It
+	// is written always, for the reason ClaimProjectScope is: a reader of the row never has to
+	// take an absent service as either "no service" or "a claim this build of the broker did not
+	// write".
 	ClaimService = "service"
 	// ClaimMachine is the machine a person signed in on acted through: the Google account the
 	// trade's actor token named (exchange.Claims.Actor). It is set only beside ClaimPerson, and
@@ -823,10 +824,14 @@ func dispatchUnreachable(err error) error {
 // misconfiguration, never an outage to mint through.
 //
 // A token that names no person asks Dispatch nothing. A machine's whose entry names no person and
-// a read entry's name no project (exchange.ErrProjectsNoPerson). A job entry's names its entry's
-// whole list, under the named scope or the public one, and that is not asked either: the
-// operator's entry chose the list, and there is no person whose sight of a project to check, so
-// the token mints the same whether Dispatch is configured, reachable or neither.
+// a read entry's name no project, and a trade naming one is refused
+// (exchange.ErrProjectsNoPerson). An account entry's naming no person names no project either,
+// since its entry names none, so a trade naming one is refused as under any entry naming none
+// (exchange.ErrProjectsFixed). A job entry's names its entry's whole list, under the named scope
+// or the public one, and that is not asked either: the operator's entry chose the list, and there
+// is no person whose sight of a project to check, so the token mints the same whether Dispatch is
+// configured, reachable or neither. With no person there is nobody whose member kind Dispatch
+// could be asked about, so the restricted-member check does not run for any of them.
 func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, session *oauthstore.ExchangeSession) error {
 	person, _ := session.Extra[ClaimPerson].(string)
 	scope, _ := session.Extra[ClaimProjectScope].(string)

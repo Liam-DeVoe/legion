@@ -83,7 +83,8 @@ var brokerPersonScopes = []string{model.ScopePerson}
 // under the DPoP scheme: the broker is asked whether the token is live and the caller is held to
 // the key that token is bound to (internal/ciphertoken). A verified caller is the session the
 // token names, acting for the person it names, or, where the broker names none, for the service
-// it names instead. It is never retried as another credential. The credential carries the token's
+// it names: the fleet of the machine holding it, the account an operator's entry lists, or a
+// job's identity. It is never retried as another credential. The credential carries the token's
 // project scope and its list as the broker answered them (model.Credential.ProjectScope,
 // Projects), which is what tells the callers that name a service and no person apart.
 //
@@ -98,6 +99,15 @@ var brokerPersonScopes = []string{model.ScopePerson}
 // none and its writes that belong to the deployment follow the rule of a token naming no project.
 // It holds no OAuth scope, so the rows that need `person` or `approve` turn it away
 // (gateRouteScopes).
+//
+// A caller that names a service and no person under the project scope named and names no project
+// is an account entry's that names no person and no project (cipher/exchange's Set.Pod): its
+// service is the account, system:serviceaccount:<namespace>:<name>, and its writes are recorded
+// under that account, as the session the token names acting for that service and for no person
+// (model.Actor.Service). writeNeedsASignedInPerson lets it write, since there is somebody to
+// record the write under: the account the operator listed. It holds no OAuth scope, so a route
+// that needs `person` or `approve` refuses it (gateRouteScopes), and it names no project, so it
+// writes wherever Dispatch's own rules let a credential naming none write.
 //
 // A caller that names a service and no person under the project scope person is a machine nobody
 // has signed in on (`agent-secrets login`). It reads as any session does, and
@@ -196,7 +206,8 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		// request and no request body has to name it, and the actor is Proven. A read-only token
 		// is marked as one, which is all refuseReadOnlyToken reads, and the project scope and the
 		// list are carried as the broker answered them, which is what writeNeedsASignedInPerson
-		// reads of a caller naming a service and no person.
+		// reads of a caller naming a service and no person: a job's token and an account entry's
+		// token naming no person write, and a machine's nobody signed in on does not.
 		Credential: &model.Credential{
 			Scopes:       scopes,
 			Session:      caller.Session,
@@ -217,8 +228,9 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// Only a token an operator's entry mapped to one project names that project as the one it
 	// may write, which is today's named-scope rule, and a job's named token, whose entry names one
 	// project, is held to it the same way; a named token naming none (the shared public-session
-	// account's) writes, as a token naming no project does, wherever Dispatch's own rules let it,
-	// and ciphertoken refuses a named token naming two, and a job's named token naming none.
+	// account's, and an account entry's naming no person) writes, as a token naming no project
+	// does, wherever Dispatch's own rules let it, and ciphertoken refuses a named token naming
+	// two, and a named token naming no person, no project and a service that is no account.
 	// A token acting as its person carries the list its trade asked for
 	// (ciphertoken.Caller.Projects), and that list limits no write here: a dev box session's
 	// person writes wherever they may, and the token of a machine naming a service and no person
@@ -232,7 +244,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	}
 	// The writer the line names: the person, or the service for a token that names none, under
 	// the `service:` prefix requestKeyLogin spells a service with, so one field never reads a
-	// fleet's name as a person's login.
+	// fleet's name or an account as a person's login.
 	writer := caller.Person
 	if writer == "" {
 		writer = "service:" + caller.Service

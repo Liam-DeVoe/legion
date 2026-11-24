@@ -221,10 +221,24 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 	otherClient.ClientID = "another-client"
 	unknownScope := liveToken(caller.jkt, time.Hour)
 	unknownScope.ProjectScope = "everything"
-	// A named answer may name no project when it names a person (an account entry may
-	// name none), and names at most one.
+	// A named answer may name no project when it names a person (an account entry may name
+	// none), or when it names no person and names the account it acts as (an account entry may
+	// name neither), and names at most one. A named answer naming no person and a fleet is no
+	// token the broker mints: the service of that shape is always an account. A named answer
+	// naming no person holds no OAuth scope, as the broker mints an account entry's and a job's.
 	namedNoProject := liveToken(caller.jkt, time.Hour)
 	namedNoProject.ProjectScope, namedNoProject.Projects = ciphertoken.ProjectScopeNamed, nil
+	namedForAnAccount := liveToken(caller.jkt, time.Hour)
+	namedForAnAccount.Person, namedForAnAccount.Service, namedForAnAccount.Projects, namedForAnAccount.Scope = "", "system:serviceaccount:example-ns:example-public", nil, ""
+	namedForAFleet := namedForAnAccount
+	namedForAFleet.Service = "example-fleet"
+	namedForAnAccountScoped := namedForAnAccount
+	namedForAnAccountScoped.Scope = "person"
+	// A job's named entry names exactly one project, so a job's named token naming none is no
+	// token the broker mints; a workflow, which no account entry names, shows it apart from an
+	// account entry's token.
+	namedForAWorkflowNoProject := jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopeNamed)
+	namedForAWorkflowNoProject.Service = "example-org/example-repo/.github/workflows/sweep.yaml@refs/heads/main"
 	namedTwoProjects := liveToken(caller.jkt, time.Hour)
 	namedTwoProjects.ProjectScope, namedTwoProjects.Projects = ciphertoken.ProjectScopeNamed, []string{"ACME", "OTHER"}
 	serviceWithProjects := serviceToken(caller.jkt, time.Hour)
@@ -266,6 +280,9 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 		{"another client", otherClient, false},
 		{"unknown scope", unknownScope, false},
 		{"named with no project, for a person", namedNoProject, true},
+		{"named with no project, for an account", namedForAnAccount, true},
+		{"named with no project and no person, for a fleet", namedForAFleet, false},
+		{"named with no project, for an account, holding the scope person", namedForAnAccountScoped, false},
 		{"named with two projects", namedTwoProjects, false},
 		{"service with projects", serviceWithProjects, false},
 		{"a job's named token", jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopeNamed, "ACME"), true},
@@ -275,7 +292,12 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 		{"a public token beside a person", publicForPerson, false},
 		{"a public token holding the scope read", publicRead, false},
 		{"a public token holding an OAuth scope", publicScoped, false},
-		{"a job's named token naming no project", jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopeNamed), false},
+		{"a job's named token naming no project, for a workflow", namedForAWorkflowNoProject, false},
+		{"a job's named token naming one project, for a workflow", func() ciphertoken.Introspection {
+			answer := namedForAWorkflowNoProject
+			answer.Projects = []string{"ACME"}
+			return answer
+		}(), true},
 		{"a job's named token naming two projects", jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopeNamed, "ACME", "OTHER"), false},
 		{"a job's named token holding the scope person", scoped(namedForJob, "person"), false},
 		{"a job's named token holding the scope approve", scoped(namedForJob, "approve"), false},

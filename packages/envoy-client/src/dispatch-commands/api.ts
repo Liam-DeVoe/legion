@@ -114,6 +114,11 @@ export const WRITE_ROUTES: readonly WriteRoute[] = [
   { method: "POST", pattern: "/api/v1/issues/{key}/comments", commands: ["comment", "suggest"] },
   { method: "POST", pattern: "/api/v1/artifacts/{id}/comments", commands: ["comment", "suggest"] },
   { method: "POST", pattern: "/api/v1/comments/{id}/resolve", commands: ["resolve-comment"] },
+  // The author's corrections of its own comment and issue message.
+  { method: "PATCH", pattern: "/api/v1/comments/{id}", commands: ["edit-comment"] },
+  { method: "DELETE", pattern: "/api/v1/comments/{id}", commands: ["delete-comment"] },
+  { method: "PATCH", pattern: "/api/v1/messages/{id}", commands: ["edit-message"] },
+  { method: "DELETE", pattern: "/api/v1/messages/{id}", commands: ["delete-message"] },
   // issue-update posts a closing reason there (`issues.ts`).
   {
     method: "POST",
