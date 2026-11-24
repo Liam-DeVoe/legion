@@ -433,17 +433,14 @@ func disarmLegacyConfig(jjDir, repo string) error {
 // (execRunner.Run): the layout's components and the workspace's .jj, its .jj/repo naming the shared
 // clone that Location puts beside it (guardWorkspace), and no legacy configuration file that jj
 // would migrate into the configuration it reads (disarmLegacyConfig, which removes each). The clone
-// is derived from dir's place in the layout and from nothing inside dir (locationOf), as
-// WorkspaceOf derives it. The Kubernetes issue pod's launcher calls it before its workspace read
-// (R6 of dispatch://INFRA-3271). An error is a workspace in which no jj command is to run.
+// is derived from dir's place in the layout and from nothing inside dir, by the derivation
+// WorkspaceOf makes (layoutWorkspace). The Kubernetes issue pod's launcher calls it before its
+// workspace read (R6 of dispatch://INFRA-3271). An error is a workspace in which no jj command is
+// to run.
 func GuardJJ(dir string) error {
-	dir = filepath.Clean(dir)
-	if !filepath.IsAbs(dir) {
-		return fmt.Errorf("refusing to run jj in %s: it is no absolute path, so the shared clone it belongs to cannot be derived", dir)
-	}
-	located, err := locationOf(dir)
+	located, err := layoutWorkspace(dir)
 	if err != nil {
-		return fmt.Errorf("refusing to run jj in %s: it is in no state directory's workspace layout: %w", dir, err)
+		return fmt.Errorf("refusing to run jj in %s: %w", dir, err)
 	}
 	guarded, err := guardWorkspace(located.Dir, located.Clone, true)
 	if err != nil {
