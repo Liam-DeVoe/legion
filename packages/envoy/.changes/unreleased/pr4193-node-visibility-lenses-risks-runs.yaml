@@ -88,8 +88,3 @@ body: |-
   takes no new text, and holds one `document.retired` event whose reason names the lens, and its
   old address answers that lens on `GET /api/v1/references?to=` and in the reference closure of any
   issue that cites it. Then it writes the lens, its risks and their `prevented_by` pointers.
-
-  The pre-deploy migration census (`envoy-dispatch census`) no longer reads a pending
-  `create index concurrently` of a table as a change of that table, so a later pending migration's
-  bounded writes of the table are admitted beside it: such an index changes none of the keys,
-  rules and triggers those writes are judged by.
