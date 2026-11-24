@@ -204,8 +204,6 @@ Without it, the proxy refuses a call to `api.github.test`, since the name resolv
 `DEV_BROKER_GITHUB_PERMISSIONS` (`<owner>=<permission>:<level>,...`, several separated by spaces)
 sets what each installation holds in place of the stand's own map, and `DEV_BROKER_BROKER_BIN`
 names a broker binary the script starts in place of the one it builds.
-`packages/envoy/scripts/github-profile-check.sh` sets the first two and drives every profile end to
-end on a stack of its own.
 
 ## Run a helper and log it in
 

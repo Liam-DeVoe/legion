@@ -745,9 +745,9 @@ func decodeWhy(t *testing.T, secretType, value string) string {
 
 // noProfilesLine is the exact ProfilesAppliedMessage line a policy with no profiles file writes
 // at its first publish, after the lines of the secrets that publish refuses. Its message is
-// written out rather than read from the constant: it is a text the operate page documents and
-// scripts/github-profile-check.sh reads, so a change to the constant has to fail here, and it
-// begins "broker:" as every other line of the broker does.
+// written out rather than read from the constant: it is a text the operate page documents, so a
+// change to the constant has to fail here, and it begins "broker:" as every other line of the
+// broker does.
 const noProfilesLine = `INFO broker: profiles applied served=0 refused=0 file_digest=""` + "\n"
 
 // servableLine is the exact ServableMessage line Current writes, as CaptureLog reads it, for the

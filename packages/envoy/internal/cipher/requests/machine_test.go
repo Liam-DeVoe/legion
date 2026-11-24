@@ -1417,9 +1417,8 @@ func TestAGrantFrozenOnAnotherSourceIsNotLive(t *testing.T) {
 }
 
 // leftOutLine is ProfilePermissionLeftOutMessage's text, written out rather than read from the
-// constant: it is a text the operate page documents and scripts/github-profile-check.sh reads,
-// so a change to the constant has to fail here, and it begins "broker:" as every other line of
-// the broker does.
+// constant: it is a text the operate page documents, so a change to the constant has to fail
+// here, and it begins "broker:" as every other line of the broker does.
 const leftOutLine = "broker: a profile's permission was left out, since the installation does not hold it"
 
 // TestTheReleaseNamesEachPermissionTheCutLeftOut: a github-app profile's release mints with the

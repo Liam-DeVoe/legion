@@ -73,8 +73,8 @@
 # is told where that name is (BROKER_AIRLOCK_TEST_RESOLVE) and that it may dial it there
 # (BROKER_AIRLOCK_TEST_DIAL_ALLOW). Binding port 443 needs a machine that lets this user bind it,
 # so the stack leaves it out unless asked, and a call through the proxy to api.github.test is then
-# refused, since the name resolves nowhere. github-profile-check.sh sets it, and sets
-# DEV_BROKER_GITHUB_PERMISSIONS: what the App's installations hold, as one or more space-separated
+# refused, since the name resolves nowhere. DEV_BROKER_GITHUB_PERMISSIONS sets what the App's
+# installations hold, as one or more space-separated
 # <owner>=<permission>:<level>[,<permission>:<level>...], which the stands take as
 # --installation-permissions. DEV_BROKER_BROKER_BIN names a broker binary this script starts in
 # place of building one, which is how a check's control swaps the broker and nothing else.

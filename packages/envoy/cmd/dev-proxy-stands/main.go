@@ -50,8 +50,8 @@
 // scope holds that repository, so a check spends a narrowed token as a caller does. The App's
 // installation on each owner holds what --installation-permissions names for that owner, or the
 // stand-in package's own map where it names nothing, and a token request naming a permission
-// past what it holds is refused 422, as GitHub refuses it; only github-profile-check.sh passes
-// the flag, so every other driver reads the stand's own map. Three routes answer by what the
+// past what it holds is refused 422, as GitHub refuses it; dev-broker.sh passes the flag only
+// where DEV_BROKER_GITHUB_PERMISSIONS asks, and no driver does. Three routes answer by what the
 // token holds, as GitHub answers them (proxyrulestest.GitHubStand): GET
 // /repos/{owner}/{repo}/keys needs administration, GET /orgs/{org}/installations needs
 // organization_administration, and POST /repos/{owner}/{repo}/statuses/{sha} needs statuses at
