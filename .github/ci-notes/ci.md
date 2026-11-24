@@ -1539,11 +1539,19 @@ claims this much and no more:
   setup-golang nor setup-go-x;
 - a code span that starts with a path word and goes on with a hash, a colon or two colons and a
   name, and is no token, fails: a citation in that span is either a token, which is held, or
-  refused, never skipped. A token wrapped onto a second line is refused rather than joined, for
-  a token is one line so that a search for it finds every citation of its name, and where a wrap
-  fell, at a space or inside a word, and what comment marker it added, is a guess. A path word
-  followed by a space alone is a command, such as `.github/scripts/release-push.sh release`, and
-  is read as prose;
+  refused, never skipped. A code span is read as CommonMark pairs one, from its backticks to the
+  next run of as many, over every line of its paragraph, so a span over three lines is read as
+  one over two is. A token wrapped onto another line is refused rather than joined, for a token
+  is one line so that a search for it finds every citation of its name, and where a wrap fell,
+  at a space or inside a word, and what comment marker it added, is a guess. In a span's line
+  break a comment marker is one only where a space or the line's end follows it, so a token
+  wrapped just before its hash is refused too. A path word followed by a space alone is a
+  command, such as `.github/scripts/release-push.sh release`, and is read as prose;
+- a path word followed right away by a hash and a name, outside a token, fails: a token with its
+  backticks left off, or one inside a code span that other text starts. A Markdown file's path,
+  a hash and a heading's anchor, as this note's links are written, is a link and passes. Inside
+  a code span that the path does not start, a colon after it is a command's or an annotation's,
+  such as ::error file=ci.yaml::x, and is read as prose, as a space before a hash is;
 - a line number written beside a path word fails, in each spelling its docstring lists, a line
   that wraps between the path and the number included. A spelling it does not list passes: a
   colon and a space before the number, an @ before it, "ln" or "around line" are none of them.
@@ -1560,13 +1568,20 @@ claims this much and no more:
 A path word is the path of a tracked file, the end of one that holds a slash or a dot, or a
 capitalised file name such as CODEOWNERS. A backticked text with a hash in it that is no citation
 reads as a token whose path names no file, so it is written without the backticks or reworded.
-A name is chosen so that the rename of what the citation means fails it: a word every such file
-holds, such as a YAML key like if: or a shell case's command word, is no such name, while the
-case arm itself, as in `.github/scripts/release-push.sh#release)`, is one. Nothing outside
+A name is chosen so that the rename of what the citation means fails it, and so is text the
+cited code holds once: a word every such file holds, such as a YAML key like if: or a shell
+case's command word, is no such name, and nor is a case arm that a message of the same file
+also holds, as release) is in release-push.sh. The release command is cited by its usage line,
+`.github/scripts/release-push.sh#usage: release-push.sh release [`, and a root of the list that
+skills-guard.test.ts sweeps by its entry,
+`packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "AGENTS.md")`. Nothing outside
 .github is read. The check runs in the lint job, which every pull request and merge group runs,
 since a rename can be in any file of the repository, after the job's setup-go and its bun
 install, which its scanners need, and its test, .github/scripts/ci-citations.test.sh, runs just
-before it.
+before it. The TypeScript scanner's bun run resolves typescript from this repository, where the
+scanner stands: in CI from the node_modules that the lint job's bun install --frozen-lockfile
+fills from bun.lock. A local run with no node_modules does not fail on that: Bun installs
+typescript itself into its own cache, at the version the root package.json and bun.lock give.
 
 ## A lane label turns on one slow suite on a pull request
 

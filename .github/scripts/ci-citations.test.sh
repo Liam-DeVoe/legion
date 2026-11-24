@@ -17,7 +17,14 @@
 #   a string or a docstring holds none; shell and YAML lose their hash comments;
 # - a scanner program that fails fails the check, naming its command;
 # - a code span that starts with a path word and goes on with a hash or a colon and a name, and
-#   is no token, is refused, a token wrapped onto a second line included;
+#   is no token, is refused, a token wrapped onto another line included: over three lines, and
+#   wrapped just before its hash, in prose and in a comment; a command wrapped in a comment is
+#   not;
+# - a path word followed right away by a hash and a name outside a token is refused, with no
+#   backticks around it or inside a code span that other text starts; a Markdown heading's
+#   anchor is not, and nor is a colon after a path inside a command's code span;
+# - a token names text its file holds once, so the rename of the case arm or the list entry it
+#   cites fails it, while a token whose text another string holds too still holds;
 # - each spelling of a line number beside a path word is refused, and so is a token whose name
 #   is a line number;
 # - a backticked text that is no token, right after a path word (a possessive, a parenthesis or
@@ -36,7 +43,8 @@
 # script into it, so the script under test is the file CI runs: it resolves its root from its own
 # path, which the symlink puts at the fixture root, and it reads no symlink. The scanner programs
 # it runs are the ones beside the real script, with this repository's typescript package, so the
-# harness needs bun install run, Bun and Go, as the lint job has them.
+# harness needs Bun and Go, as the lint job has them; where no bun install has run, Bun installs
+# typescript itself, as ci_citations.py's docstring says.
 #
 # Run from anywhere: .github/scripts/ci-citations.test.sh
 # CI runs it in the lint job, before the check itself.
@@ -64,7 +72,8 @@ tok() { printf '%s%s%s%s%s' "$bt" "$1" "$h" "$2" "$bt"; }
 # rows", names TestOldName only in a comment and holds the strings setup-golang and setup-go-x;
 # playwright.config.ts, run.sh and tool.py each hold a comment marker inside a string ahead of
 # a name; guard.test.ts, note.tsx, tool.py, scan.go and ci.yaml hold the shapes each language's
-# case reads.
+# case reads; push.sh holds a case arm whose text a message holds too, and roots.test.ts a list
+# entry whose file name another string holds, as release-push.sh and skills-guard.test.ts do.
 fixture() {
   local root="$work/$1"
   mkdir -p "$root/.github/scripts" "$root/.github/ci-notes" "$root/.github/docker" "$root/.github/workflows" \
@@ -103,6 +112,19 @@ EOF
 #!/usr/bin/env bash
 printf '%s\n' "a # in a string"; held_after_hash=1
 # only_in_a_comment
+EOF
+  cat > "$root/packages/app/push.sh" <<'EOF'
+#!/usr/bin/env bash
+case $1 in
+  release)
+    usage='usage: push.sh release [<tag>]'
+    echo "no tag: push v0.0.0 on the commit before its first release)" >&2
+    ;;
+esac
+EOF
+  cat > "$root/packages/app/roots.test.ts" <<'EOF'
+const roots = [path.join(REPO_ROOT, "AGENTS.md"), path.join(REPO_ROOT, "docs")];
+expect(dispatching).toEqual(["skills/AGENTS.md"]);
 EOF
   cat > "$root/packages/app/tool.py" <<'EOF'
 """PY_ONLY_IN_A_MODULE_DOCSTRING is named in this docstring alone."""
@@ -388,6 +410,22 @@ The rows are ${bt}$app${h}the agent
 ${h} rows${bt}, wrapped in a comment.
 
 ${bt}ci.yaml${c}12${bt}
+
+The rows are ${bt}$app${h}the
+agent
+rows${bt}, over three lines.
+
+The job is ${bt}.github/workflows/ci.yaml
+${h}no_such_job${bt}, wrapped just before its hash.
+
+${h} The job is ${bt}.github/workflows/ci.yaml
+${h}no_such_job${bt}, wrapped just before its hash in a comment.
+
+${h} The job is ${bt}.github/workflows/ci.yaml
+${h} ${h}no_such_job${bt}, wrapped just before its hash, past the comment marker.
+
+${h} Run ${bt}packages/app/run.sh
+${h} release${bt} to release, a command wrapped in a comment.
 EOF
 track "$root"
 run_check "$root"
@@ -401,7 +439,70 @@ check "refuses a token that wraps onto the next line, naming it joined" \
 check "and one wrapped past a comment marker" \
   "$(refused 10 "a citation token is one line: write it as $(tok "$app" 'the agent rows') on one line")"
 check "leaves a line number after a colon to the line-number rule" "$(refused 13 'by a line number')"
-check "and refuses each once" "$(is "$(grep -c 'notes.md' <<<"$out")" 6)"
+check "refuses a token that runs over three lines, as a code span pairs across its paragraph" \
+  "$(refused 15 "a citation token is one line: write it as $(tok "$app" 'the agent rows') on one line")"
+check "refuses a token wrapped just before its hash, which no comment marker is" \
+  "$(refused 19 "a citation token is one line: write it as $(tok .github/workflows/ci.yaml no_such_job) on one line")"
+check "and the same wrap in a comment, where a hash with a name after it is no comment marker" \
+  "$(refused 22 "a citation token is one line: write it as $(tok .github/workflows/ci.yaml no_such_job) on one line")"
+check "and the hash after a comment marker and a space" \
+  "$(refused 25 "a citation token is one line: write it as $(tok .github/workflows/ci.yaml no_such_job) on one line")"
+check "while a command wrapped in a comment, its marker and a space before the next word, passes" "$(clean 28)"
+check "and refuses each once" "$(is "$(grep -c 'notes.md' <<<"$out")" 10)"
+
+echo "case: a path word followed right away by a hash and a name outside a token is refused"
+root=$(fixture hashes)
+notes "$root" <<EOF
+The job is .github/workflows/ci.yaml${h}no_such_job, with no backticks.
+
+The job is ${bt}see .github/workflows/ci.yaml${h}no_such_job${bt}, in a span the path does not start.
+
+The job is ci.yaml${h}x, by its file name.
+
+The rule is in .github/ci-notes/notes.md${h}a-heading, a link to a heading.
+
+${bt}gh workflow run ci.yaml --ref main${bt} and ${bt}echo "${c}${c}error file=ci.yaml${c}${c}x"${bt} are commands.
+
+$(tok "$app" TestReadsTheConfig) holds, so a pass would not be the pass of a scan that found no token.
+EOF
+track "$root"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "refuses a token with no backticks" \
+  "$(refused 1 "cites .github/workflows/ci.yaml outside backticks, and is no citation token: write it as $(tok .github/workflows/ci.yaml no_such_job)")"
+check "refuses one inside a code span that other text starts" \
+  "$(refused 3 "cites .github/workflows/ci.yaml inside a code span that does not start with it, and is no citation token: write it as $(tok .github/workflows/ci.yaml no_such_job)")"
+check "refuses a file name and a hash, naming the token by its root path" \
+  "$(refused 5 "write it as $(tok .github/workflows/ci.yaml x)")"
+check "passes a Markdown file's path, a hash and a heading's anchor" "$(clean 7)"
+check "and a colon after a path inside a command's code span" "$(clean 9)"
+check "and refuses nothing else" "$(is "$(grep -c 'notes.md' <<<"$out")" 3)"
+
+echo "case: a token names text its file holds once, so the rename of what it cites fails it"
+# The shape review 6043861656 found: release-push.sh's release) arm is also held by a message of
+# that file, and skills-guard.test.ts's AGENTS.md root by another string of it, so a token that
+# names either still holds after the arm is renamed or the root is deleted. The arm's usage line
+# and the root's list entry are text that each file holds once.
+root=$(fixture once)
+push="packages/app/push.sh"
+roots="packages/app/roots.test.ts"
+notes "$root" <<EOF
+$(tok "$push" 'usage: push.sh release [')
+
+$(tok "$roots" 'path.join(REPO_ROOT, "AGENTS.md")')
+
+$(tok "$push" 'release)') and $(tok "$roots" AGENTS.md)
+EOF
+track "$root"
+run_check "$root"
+check "passes before the rename" "$(is "$status" 0)"
+sed -i 's/^  release)$/  publish)/; s/push.sh release \[/push.sh publish [/' "$root/$push"
+sed -i 's/path.join(REPO_ROOT, "AGENTS.md"), //' "$root/$roots"
+run_check "$root"
+check "fails after it" "$(is "$status" 1)"
+check "on the usage line of the renamed arm" "$(refused 1 "holds no ${bt}usage: push.sh release [${bt}")"
+check "on the list entry of the deleted root" "$(refused 3 "holds no ${bt}path.join(REPO_ROOT, \"AGENTS.md\")${bt}")"
+check "while the arm's name and the root's file name, which other strings hold, still hold" "$(clean 5)"
 
 echo "case: a line number beside a path word is refused, in every spelling"
 root=$(fixture lines)

@@ -23,10 +23,21 @@ What this check claims, and all it claims:
   setup-golang nor setup-go-x.
 - A code span that starts with a path word and goes on with a hash, a colon or two colons and a
   name, and is no token, fails: such as ci.yaml:x or ci.yaml::x in backticks, or a token that
-  wraps onto the next line. A token is one line so that a search for it finds every citation of
-  a name; a wrapped one is refused rather than joined, since where the wrap fell, at a space or
-  inside a word, and what comment marker it added, is a guess. A path word followed by a space
+  wraps onto another line. A code span is read as CommonMark pairs one: from a run of backticks
+  to the next run of as many, over as many lines as its paragraph holds, which a blank line, or
+  a line that holds only a comment marker, ends. A token is one line so that a search for it
+  finds every citation of a name; a wrapped one is refused rather than joined, since where the
+  wrap fell, at a space or inside a word, and what comment marker it added, is a guess. In a
+  span's line break a comment marker is one only where a space or the line's end follows it,
+  so a token that wraps just before its hash is refused too. A path word followed by a space
   alone is a command, as `release-push.sh release` is, and is read as prose.
+- A path word followed right away by a hash and a name, outside a token, fails: a token with
+  its backticks left off, or one inside a code span that other text starts, such as a span
+  whose first word is see. Such a span's path is not its first word, so the rule above does not
+  read it. A Markdown file's path, a hash and a heading's anchor is a link to that heading, and
+  passes. A hash and a number is the line-number rule's.
+  Inside a code span the path does not start, a colon after it is read as prose, being a
+  command's or an annotation's, as in ::error file=ci.yaml::x, and so is a space before a hash.
 - A line number written beside a path word, in a spelling this check knows, fails: a colon, an
   L or a hash and the number right after the path, the path at the end of a line and the number
   at the start of the next, and the words line or lines with a number beside the path (before
@@ -61,7 +72,12 @@ How the code of a cited file is read, each language by its own scanner:
 - TypeScript, TSX, JavaScript, .mjs and .cjs through the typescript package's parser, in one bun
   run of .github/scripts/ci_citations_code.ts over every such file a token cites: its
   identifiers, and its text with its comments removed and its strings, templates and regular
-  expressions kept.
+  expressions kept. The run starts in the repository's root (the fixture's, in the test), and
+  the scanner's import of typescript resolves from the directory the scanner stands in, this
+  repository's: in CI from the node_modules that the lint job's bun install --frozen-lockfile
+  fills from bun.lock. Where there is no node_modules, as in a fresh checkout, the import does
+  not fail: Bun installs typescript itself into its own cache, at the version the root
+  package.json and bun.lock give, and only a local run meets that.
 - Go through go/scanner, in one go run of .github/scripts/ci_citations_code.go over every Go file
   a token cites: its identifiers, and its text with its comments removed and its strings kept.
 - Shell, YAML, TOML, jq, Dockerfiles, CODEOWNERS, ignore files and an extension-free script that
@@ -109,13 +125,29 @@ LINE_NAME = re.compile(r"^L?\d+(?:\s*[-,:]\s*L?\d+)*$")
 # A word that may be a path: path characters after none of them, behind any ./ ../ or /. A word
 # inside a URL is never one, as each part of a URL's path follows a slash.
 CANDIDATE = re.compile(r"(?<![\w.@/~$%+-])((?:\.\.?/)*/?)([\w@%+-][\w.@%+/-]*|\.[\w@%+-][\w.@%+/-]*)")
-# A code span, which may wrap onto one more line as a comment or a paragraph wraps it.
-CODE_SPAN = re.compile(r"(\x60+)([^\x60\n]+(?:\n[^\x60\n]+)?)\1(?!\x60)")
+# A comment marker at the start of a line of a comment.
+MARKER = r"(?:#+|//+|\*|--)"
+# A line that holds nothing but a comment marker, which ends a paragraph as a blank line does.
+BLANK_LINE = rf"[ \t]*{MARKER}?[ \t]*(?:\n|$)"
+# A code span: a run of backticks, then text up to a run of as many, over as many lines as its
+# paragraph holds, as CommonMark pairs one; a blank line ends the paragraph, and the span with it.
+CODE_SPAN = re.compile(rf"(\x60+)(?=[^\x60])([^\x60\n]*(?:\n(?!{BLANK_LINE})[^\x60\n]*)*)\1(?!\x60)")
 
 # A line break in a comment or a paragraph, past the next line's comment marker: the one place
-# the three patterns below that read across a wrap take it from.
-LINE_BREAK = r"[ \t]*\n[ \t]*(?:#+|//+|\*|--)?[ \t]*"
-WRAP = re.compile(LINE_BREAK)
+# the patterns below that read across a wrap take it from.
+LINE_BREAK = rf"[ \t]*\n[ \t]*{MARKER}?[ \t]*"
+# A line break inside a code span, which its reading joins to one space. There a comment marker
+# is one only where a space or the line's end follows it: a hash with a name right after the
+# break is the hash of a token that wrapped just before it, and stays.
+SPAN_BREAK = re.compile(rf"[ \t]*\n[ \t]*(?:{MARKER}(?=\s))?[ \t]*")
+# A hash and a name right after a path word, outside a token: a token's shape with no backticks,
+# or inside a code span that the path does not start. A hash and a number is the line-number
+# rule's.
+HASH_NAME = re.compile(r"#(?!L?\d)([^\s\x60#]+)")
+# The anchor of a Markdown heading, as a link names one, and any closing punctuation after it.
+ANCHOR = re.compile(r"[\w-]+[)\].,;:'\"]*")
+# What may stand between a code span's opening backticks and the path word that starts it.
+SPAN_LEAD = re.compile(r"\s*['\"]?")
 # Whitespace, which may wrap onto the next line.
 GAP = rf"(?:[ \t]+|{LINE_BREAK})"
 GAP0 = f"(?:{GAP})?"
@@ -338,10 +370,13 @@ class Citing:
             word = m.group(2).rstrip(".")
             if word and repo.names(word):
                 self.words.append((m.start(), m.start(2) + len(word), word))
-        # (start, end, text with its wrap joined) of each code span, paired from left to right as
-        # Markdown pairs them, so a closing backtick is never read as an opening one.
-        self.spans = [(m.start(), m.end(), WRAP.sub(" ", m.group(2))) for m in CODE_SPAN.finditer(self.text)]
+        # (start, end, text with each line break joined to one space) of each code span, paired
+        # from left to right as Markdown pairs them, so a closing backtick is never read as an
+        # opening one, and where the text of each starts, after its backticks.
+        spans = list(CODE_SPAN.finditer(self.text))
+        self.spans = [(m.start(), m.end(), SPAN_BREAK.sub(" ", m.group(2))) for m in spans]
         self.opens = [s for s, _, _ in self.spans]
+        self.bodies = [m.start(2) for m in spans]
 
     def line(self, offset):
         return bisect.bisect_right(self.starts, offset)
@@ -353,6 +388,10 @@ class Citing:
         """The index of the code span that holds offset, or None."""
         i = bisect.bisect_right(self.opens, offset) - 1
         return i if i >= 0 and offset < self.spans[i][1] else None
+
+    def leads(self, i, start):
+        """Whether the path word at start, with any ./ before it, is the first word of code span i."""
+        return SPAN_LEAD.fullmatch(self.text, self.bodies[i], start) is not None
 
 
 def token_problems(citing, repo):
@@ -386,9 +425,9 @@ def line_number_problems(citing, repo):
 
 def span_problems(citing, repo):
     """Each code span that starts with a path word and goes on with a hash, a colon or two colons
-    and a name, and so is a citation, and is no token: a token wraps no line, and any other form
-    of one is refused rather than skipped. A line number after the colon is the line-number
-    rule's."""
+    and a name, and so is a citation, and is no token, over however many lines it runs: a token
+    wraps no line, and any other form of one is refused rather than skipped. A line number after
+    the colon is the line-number rule's."""
     refused = set()
     for start, _, word in citing.words:
         i = citing.span_at(start)
@@ -402,12 +441,32 @@ def span_problems(citing, repo):
         refused.add(i)
         shown, name = repo.shown(word), cited.group(1)
         if "\n" in citing.text[s:e]:
-            yield citing.line(s), (f"this code span wraps {BACKTICK}{shown}{BACKTICK} and a name onto a second "
+            yield citing.line(s), (f"this code span wraps {BACKTICK}{shown}{BACKTICK} and a name onto another "
                                    f"line, and a citation token is one line: write it as {token(shown, name)} "
                                    f"on one line")
         else:
             yield citing.line(s), (f"{BACKTICK}{inner.strip()}{BACKTICK} cites {word} in a form that is no "
                                    f"citation token: write it as {token(shown, name)}")
+
+
+def hash_problems(citing, repo):
+    """Each path word followed right away by a hash and a name, outside a token and outside a
+    code span the word starts, which the span rule reads: a token with no backticks around it,
+    or inside a code span that some other text starts. A Markdown file's path, a hash and a
+    heading's anchor is a link's, and is not refused."""
+    for start, end, word in citing.words:
+        m = HASH_NAME.match(citing.text, end)
+        if m is None:
+            continue
+        i = citing.span_at(start)
+        if i is not None and citing.leads(i, start):
+            continue
+        if all(f.endswith(".md") for f in repo.names(word)) and ANCHOR.fullmatch(m.group(1)):
+            continue
+        name = m.group(1).rstrip(".,;:'\"")
+        where = "outside backticks" if i is None else "inside a code span that does not start with it"
+        yield citing.line(start), (f"{word}#{name} cites {word} {where}, and is no citation token: write it "
+                                   f"as {token(repo.shown(word), name)}, a code span of its own")
 
 
 def beside_problems(citing, repo):
@@ -469,7 +528,7 @@ def main(argv):
     found = []
     for path, c in citing:
         problems = [*token_problems(c, repo), *line_number_problems(c, repo), *span_problems(c, repo),
-                    *beside_problems(c, repo)]
+                    *hash_problems(c, repo), *beside_problems(c, repo)]
         found.extend(f"{path}:{number}: {message}" for number, message in sorted(problems))
     tokens = sum(len(c.tokens) for _, c in citing)
     holding = sum(1 for _, c in citing if c.tokens)

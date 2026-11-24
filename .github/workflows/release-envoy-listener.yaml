@@ -1006,8 +1006,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.assets.outputs.tag }}
           FILES: ${{ steps.assets.outputs.files }}
-        # `.github/scripts/release-push.sh#release)`, as in release.yaml. --upload-to-published: a re-run puts this
-        # run's assets over a published release's own, which release.yaml's jobs leave as they are.
+        # `.github/scripts/release-push.sh#usage: release-push.sh release [`, as in release.yaml. --upload-to-published: a
+        # re-run puts this run's assets over a published release's own, which release.yaml's jobs leave as they are.
         run: |
           assets=()
           while IFS= read -r file; do

@@ -28,12 +28,24 @@ GATE = gate("pi_legion", "pi-legion", runs=[
     ("skills/**", "`packages/pi-legion/src/skills-guard.test.ts#stageSkills` and `packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` stages them, and that test reads the roots it lists, skills/legion-controller among them; `packages/pi-legion/scripts/skill-scenarios/rig.test.ts#ste runs omp in the directory on its prompt, no plugins, asd-ste100 alone, the pinned model` and `packages/pi-legion/scripts/skill-scenarios/rig.test.ts#fails, naming the rig's root, when the root is no checkout`; prepack stages skills"),
     ("scripts/pi-plugin-prepack.sh", "`packages/pi-shared/test/skills-guard.ts#PREPACK_SCRIPT` and `packages/pi-shared/test/skills-guard.ts#stageSkills`"),
     ("scripts/third-party-notices.ts", "`scripts/pi-plugin-prepack.sh#$root/scripts/third-party-notices.ts`"),
-    (f"{DAEMON}/internal/**", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` and `packages/pi-legion/src/skills-guard.test.ts#packages/daemon/internal` sweeps every .md/.go/.ts/.yaml/.yml/.example/.sh under packages/daemon/internal, a root of that test's list"),
-    ("docs/kubernetes.md", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` and `packages/pi-legion/src/skills-guard.test.ts#docs/kubernetes.md` sweeps it, a root of that test's list"),
-    ("docs/site/src/content/docs/**", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` and `packages/pi-legion/src/skills-guard.test.ts#docs/site/src/content/docs` sweeps it, a root of that test's list"),
-    ("deploy/kubernetes/daemon/controller.yaml.example", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` and `packages/pi-legion/src/skills-guard.test.ts#deploy/kubernetes/daemon/controller.yaml.example` sweeps it, a root of that test's list"),
-    ("AGENTS.md", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` and `packages/pi-legion/src/skills-guard.test.ts#AGENTS.md` sweeps it, a root of that test's list"),
-    ("README.md", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` and `packages/pi-legion/src/skills-guard.test.ts#README.md` sweeps it, a root of that test's list"),
+    (f"{DAEMON}/internal/**", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` and "
+                              '`packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "packages/daemon/internal")`'
+                              " sweeps every .md/.go/.ts/.yaml/.yml/.example/.sh under packages/daemon/internal, a root of that test's list"),
+    ("docs/kubernetes.md", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` and "
+                           '`packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "docs/kubernetes.md")`'
+                           " sweeps it, a root of that test's list"),
+    ("docs/site/src/content/docs/**", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` and "
+                                      '`packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "docs/site/src/content/docs")`'
+                                      " sweeps it, a root of that test's list"),
+    ("deploy/kubernetes/daemon/controller.yaml.example", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` and "
+                                                         '`packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "deploy/kubernetes/daemon/controller.yaml.example")`'
+                                                         " sweeps it, a root of that test's list"),
+    ("AGENTS.md", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` and "
+                  '`packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "AGENTS.md")`'
+                  " sweeps it, a root of that test's list"),
+    ("README.md", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` and "
+                  '`packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "README.md")`'
+                  " sweeps it, a root of that test's list"),
     ("scripts/e2e/lib/**", "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#scriptFunctions`, imported from scripts/e2e/lib/script-functions, and `packages/pi-legion/scripts/skill-scenarios/rig.test.ts#loopbackDsn`, which the services_up row sources; `packages/pi-legion/scripts/skill-scenarios/rig.sh#$root/scripts/e2e/lib/rig.sh` sources scripts/e2e/lib/rig.sh"),
     ("packages/envoy/scripts/lib/pg-url.sh", "`packages/pi-legion/scripts/skill-scenarios/rig.sh#$root/packages/envoy/scripts/lib/pg-url.sh` sources it for pg_sql and safe_url; "
                                              "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#safe_url drops the password of a URL and keeps the rest` and "
