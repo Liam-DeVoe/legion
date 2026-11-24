@@ -126,7 +126,7 @@ func (e *Engine) toldThisSession(ctx context.Context, tx pgx.Tx, issue record.Is
 // through the one writer of the notice (tellOwner), and logs it as the fact commits. by names the
 // reader that found the step owed, for the log line.
 func (e *Engine) tellOwedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, owed owedStep, by string) error {
-	if err := e.tellOwner(ctx, tx, issue, owed.step, owed.task); err != nil {
+	if err := e.tellOwner(ctx, tx, issue, owed.step, owed.run.Starts, owed.task); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: the owner of a step that started and has not ended is told it again",

@@ -221,8 +221,10 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 	// The moment is the one the count of starts keeps, which PostgreSQL holds to the microsecond
 	// and the end reads back, so the start and the end write one moment (endRun).
 	now := e.now().Truncate(time.Microsecond)
-	write, err := e.store.RaiseStepStarts(ctx, tx, issue.Key, step.place, func(starts int64) record.StepRecord {
-		write := stepWrite(issue, step.place, step.role, step.typ, string(agent), starts)
+	var starts int64
+	write, err := e.store.RaiseStepStarts(ctx, tx, issue.Key, step.place, func(raised int64) record.StepRecord {
+		starts = raised
+		write := stepWrite(issue, step.place, step.role, step.typ, string(agent), raised)
 		write.StartedAt = new(now)
 		return write
 	})
@@ -235,7 +237,7 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 	if !step.owner {
 		return nil
 	}
-	return e.tellOwner(ctx, tx, issue, step, task)
+	return e.tellOwner(ctx, tx, issue, step, starts, task)
 }
 
 // endStep writes the end of the run of the step at site on w, the walk of that run, before being
