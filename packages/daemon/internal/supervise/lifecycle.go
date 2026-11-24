@@ -74,9 +74,11 @@ func (m *Machine) startHolds(ctx context.Context, start StartWork) error {
 // launching. In-lifetime recovery only rechecks the bound epoch (checkLaunch), so an old launch
 // cannot cross a cleanup confirmation into a later admission. exempt is whether the request that
 // asked for it is one the wake pacing never makes wait (exemptWake); every caller reads it from
-// its own event, so a request that carries no such field is paced. start is the work a workflow
-// start brings the claim back for, which its caller has judged already (startHolds) and the
-// launch judges again at the turn of a wake the pacing parks it on (launchAfter).
+// its own event, so a request that carries no such field is paced. turn is the moment the request
+// already reserved for this launch in the pacing (RequestSpawn.Turn), the zero time for every
+// request that reserved none (launchAfter). start is the work a workflow start brings the claim
+// back for, which its caller has judged already (startHolds) and the launch judges again where a
+// park it waits in ends (startLeftWhileParked).
 //
 // A start that leaves the session the claim records (leaves, StartWork's LeaveSession) forgets it
 // once the admission has bound the claim, so the launch spawns a fresh agent, as retry's fresh
@@ -95,7 +97,7 @@ func (m *Machine) startHolds(ctx context.Context, start StartWork) error {
 // process, so its launch lets none go and records nothing of one (noEnd). Each was raised by a
 // request, which the pod's start gate puts first among the starts waiting in the claim's pod
 // (launchAfter's requested, podQueue.next).
-func (m *Machine) revive(ctx context.Context, exempt bool, start StartWork, admitted func()) error {
+func (m *Machine) revive(ctx context.Context, exempt bool, turn time.Time, start StartWork, admitted func()) error {
 	leave := m.leaves(start)
 	if leave {
 		if err := m.mayForget(ctx, "start"); err != nil {
@@ -114,7 +116,7 @@ func (m *Machine) revive(ctx context.Context, exempt bool, start StartWork, admi
 		m.log.Info("supervise: the start leaves the session a key's agent ran in, so it spawns a fresh agent", "session", m.claim.Session)
 		m.forgetSession("its step's agent took a name a key's agent held in an earlier generation, so it starts in a session of its own: this session was that key's")
 	}
-	return m.launchAfter(ctx, false, exempt, true, noEnd, start)
+	return m.launchAfter(ctx, false, exempt, true, turn, noEnd, start)
 }
 
 // checkLaunch is the lifecycle recheck every launch makes first: a claim whose tree cleanup is

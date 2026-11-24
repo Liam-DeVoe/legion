@@ -510,6 +510,20 @@ type Notice struct {
 	// Volume is what a volume-near-full notice carries: one sweep of the issue pod's volume as
 	// the cache trimmer in that pod's launcher reported it. Only that kind carries one.
 	Volume *VolumeNearFull `json:"volume,omitempty"`
+	// Count is how many messages the intake gave up that an intake-gave-up notice counts, and
+	// GiveUps names the first of them, at most giveUpNoticeNames (Postgres.countIntakeGiveUp). Only
+	// that kind carries either: the controller reads the rest in the state.
+	Count   int            `json:"count,omitempty"`
+	GiveUps []NoticeGiveUp `json:"giveUps,omitempty"`
+}
+
+// NoticeGiveUp names one message the intake gave up, in an intake-gave-up notice: its record's id
+// in intake_failures, which a replay or a discard names, the consumer that delivered it and its
+// subject.
+type NoticeGiveUp struct {
+	ID       int64  `json:"id"`
+	Consumer string `json:"consumer"`
+	Subject  string `json:"subject"`
 }
 
 // ProjectPause is what the controller is told when the operator pauses or resumes its project
@@ -999,6 +1013,15 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // issue is the project key, and its Pause names who acted, when, and why: the pause's reason, or
 // the pause the resume ended (ProjectPause). Each is queued in the pause's or the resume's own
 // transaction (store's Pause and Resume); the controller's own pause or resume tells it nothing.
+//
+// An intake-gave-up notice counts the messages the intake gave up while it waited for its
+// publish, and names the first giveUpNoticeNames of them by their records' ids (Count, GiveUps).
+// It carries no role, and its issue is the project key, as a tick's is. The give-up writes it,
+// and only while a controller is registered (Postgres.GiveUpIntakeMessage, countIntakeGiveUp):
+// the first give-up of a burst opens it, due giveUpNoticeDelay later, each later give-up joins it
+// while no publish has taken it, and one that finds it leased or given back to retry opens the
+// next. Nobody inside a tree is told: the message is the intake's, of no issue an architect runs,
+// and the controller replays or discards it (dispatch://INFRA-1575).
 const (
 	TriageNotice           NoticeKind = "triage"
 	SlotFreeNotice         NoticeKind = "slot-free"
@@ -1015,6 +1038,7 @@ const (
 	MemoryGuardKillNotice  NoticeKind = "memory-guard-kill"
 	ProjectPausedNotice    NoticeKind = "project-paused"
 	ProjectResumedNotice   NoticeKind = "project-resumed"
+	IntakeGaveUpNotice     NoticeKind = "intake-gave-up"
 )
 
 // ArchitectStallArm names which reading raised an architect-stalled notice. It is part of the
@@ -2439,6 +2463,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if err := validateNoticeEscalation(value.Kind, value.Reason, value.Escalation); err != nil {
 			return err
 		}
+		if err := validateNoticeGiveUps(value.Kind, value.Role, value.Count, value.GiveUps); err != nil {
+			return err
+		}
 		if err := validateNoticeStopper(value.Kind, value.StoppedBy); err != nil {
 			return err
 		}
@@ -2488,6 +2515,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.Kind == ArchitectStalledNotice && value.Reason == "" {
 			return fmt.Errorf("an architect-stalled notice carries the reason that names its arm, the root and what the record says")
+		}
+		if err := validateNoticeGiveUps(value.Kind, value.Role, value.Count, value.GiveUps); err != nil {
+			return err
 		}
 	case SuperviseRequest:
 		if !validSuperviseOp(value.Op) {
@@ -2765,21 +2795,29 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // (workflow's taskStopped), whose notice names the architect that made the call (StoppedBy) and
 // reaches the issue's architect only when that is another claim (the daemon's deliverNotice);
 // or by a failed step that no step before it of the type implementation can take the work back
-// from (workflow's stopUnreturned). The task's owner reads which task, and which step or which
-// architect, in its reason.
+// from (workflow's stopUnreturned); or by a step whose role the deployment no longer defines,
+// stopped at the daemon's boot or kept stopped at a person's todo (workflow's lostStop), whose
+// notice names that role. The task's owner reads which task, and which step, which architect or
+// which role, in its reason.
 //
 // `retro-held` is a parent whose task's last step is not the owner's acceptance, held before its retro because it
 // passed its last step while issues beneath it are still in the workflow (workflow's
 // beneathRetro, retroHeldNotice; HoldForChildren). Its reason names each of them, and that the
 // retro starts when the last one leaves (workflow's releaseHeldParents).
 //
-// `plan-not-taken` is a plan an earlier owner gave for an issue, which its first step did not take
-// (workflow's passOverEarlierOwners, tellPassedOver): its giver is no architect of the issue's tree
-// now (ArchitectOfTree), as after an orphan is admitted again as a root of its own or an adoption
-// moves a member to another tree. The first step deletes its rows and tells the issue's architect
-// once, whatever number of versions it passed over; the reason names each version, its document
-// and its giver, and the plan the first step runs: an owner's, of the issue's generation or carried
-// to it, or the default steps.
+// `plan-not-taken` is a plan its issue's first step did not take, the first step telling the
+// issue's architect once, whatever number of versions it passed over, after it deleted their
+// rows; it carries one of two meanings. A plan an earlier owner gave (workflow's
+// passOverEarlierOwners, tellPassedOver): its giver is no architect of the issue's tree now
+// (ArchitectOfTree), as after an orphan is admitted again as a root of its own or an adoption
+// moves a member to another tree; the reason names each version, its document and its giver,
+// the plan the first step runs (an owner's, of the issue's generation or carried to it, or the
+// default steps), and that the architect may give the plan again with register_plan as its own.
+// Or a plan of an issue whose experiment's group takes no plan from its owner (workflow's
+// passOverOwners, tellNotTaken): every plan its owner or an earlier owner gave is passed over, the
+// run takes the project's default steps, and the reason names each version and the group
+// (intake's GroupClause), and offers no register_plan, which that issue's owner is answered
+// PLAN_NOT_TAKEN for.
 //
 // `session-forgotten` is the worker whose claim forgot its recorded session because the pod's
 // launcher, older than the release that added the kind, could not look the session up by its id,
@@ -2850,6 +2888,35 @@ func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error 
 	return nil
 }
 
+// validateNoticeGiveUps holds a notice's count and named give-ups to the intake-gave-up notice,
+// which counts one give-up or more, names between one and min(Count, giveUpNoticeNames) of them,
+// each by its record's positive id, and carries no role, since it is the controller's alone.
+// Every other kind carries neither. Both arms of the switch above call it, as they call
+// validateNoticeFailure: a Notice can never be of this kind, so there it refuses any count.
+func validateNoticeGiveUps(kind NoticeKind, role claim.Role, count int, giveUps []NoticeGiveUp) error {
+	if kind != IntakeGaveUpNotice {
+		if count != 0 || len(giveUps) > 0 {
+			return fmt.Errorf("a %s notice carries a count or names give-ups; only an intake-gave-up notice does", kind)
+		}
+		return nil
+	}
+	if count < 1 {
+		return fmt.Errorf("an intake-gave-up notice counts one give-up or more, not %d", count)
+	}
+	if most := min(count, giveUpNoticeNames); len(giveUps) < 1 || len(giveUps) > most {
+		return fmt.Errorf("an intake-gave-up notice that counts %d names between 1 and %d of them, not %d", count, most, len(giveUps))
+	}
+	for _, giveUp := range giveUps {
+		if giveUp.ID <= 0 {
+			return fmt.Errorf("an intake-gave-up notice names each give-up by its positive record id, not %d", giveUp.ID)
+		}
+	}
+	if role != "" {
+		return fmt.Errorf("an intake-gave-up notice carries no role, not %q: it is the controller's alone", role)
+	}
+	return nil
+}
+
 // validateNoticeStopper holds the claim of the architect that stopped a task to the one notice
 // that carries it: the task-stopped notice of its owner's stop_task (workflow's taskStopped),
 // which the daemon's executor publishes only to an architect that is not that claim. Both arms
@@ -2867,7 +2934,7 @@ func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
 		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, PodWaitHeldNotice, MemoryGuardKillNotice,
-		ProjectPausedNotice, ProjectResumedNotice:
+		ProjectPausedNotice, ProjectResumedNotice, IntakeGaveUpNotice:
 		return true
 	default:
 		return false

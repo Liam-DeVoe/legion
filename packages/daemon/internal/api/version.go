@@ -3354,8 +3354,8 @@ package api
 // and 219 by none, so this entry moved to 219: the lowest number above main's 205 that no open
 // pull request declares and no later part of this work, stacked on this branch, holds. The
 // forward merge of 2026-11-22 that brought in 51d1a21f brought main's 213 (the entry above),
-// below 219, so this entry kept 219. From this entry the last number of answers.go's
-// SupportedContracts is `api.OwnerPlanContract`, after `cachesSourceContract`, and
+// below 219, so this entry kept 219. From this entry answers.go's SupportedContracts names
+// `api.OwnerPlanContract`, after `cachesSourceContract`, and
 // `shapedAnswersContract` and `repositoriesLiveContract` stay 193 and 202. Read the base's own
 // number and every open pull request again at the next merge rather than from this line. The
 // forward merge of 2026-11-23 that brought in 054cd5ca brought main's 217 (the entry above), below
@@ -3363,12 +3363,191 @@ package api
 // declared only by #4611 and by #4902, #4948 and #5161, each stacked on this branch and carrying
 // this entry, so this entry kept 219, and OwnerPlanContract comes after 217 in SupportedContracts.)
 //
-// 221: the roles a deployment defines run steps of an issue's task. An issue whose running step is
+// 220: an experiment sets how each new issue is done. `POST /legion/v1/plans/register` and `POST
+// /legion/v1/tasks/stop` answer `409 PLAN_NOT_TAKEN` for a recorded issue that an experiment drew
+// into an arm whose `plan` is `default`: a code and a sentence that names the issue's variant and
+// experiment, with no `reasons`. Legion takes no plan from that issue's owner, and so no stop of
+// one of its tasks; register_plan's answer leaves the registration unspent, so the same call sent
+// again gets the same answer. The code is a value of the refusal's `code`, which no reader
+// enumerates, so a plugin below 220 reads the code and its sentence as it reads every other one,
+// and no answer's shape moves for it. This entry also names what the two routes answer and 219's
+// entry leaves out: register_plan's `400 INVALID_ISSUE`, `400 INVALID_ARTIFACT_ID`,
+// `400 INVALID_VERSION` and `500 DISPATCH_UNAVAILABLE`, and stop_task's
+// `400 INVALID_ISSUE`. `TestEveryCodeThePlanRoutesAnswerIsInTheContractHistory` reads the codes the
+// two routes answer of their own from the source and holds each to this history.
+// `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` gain one key: each assignment of
+// an issue's `assignments` carries `plan`, the group the arm of an experiment that sets how its
+// issues are done set at the issue's draw (`owner` or `default`), as the draw recorded it, and
+// absent where the arm named none. The issue runs on that group for its whole life, and the
+// project's file can change an arm's `plan` or rename the arm after the draw, so a reader takes
+// the group from the record and never from `settings`. The records of 220 hold
+// `issues.*.assignments.*.plan`, and no record below 220 does: a caller whose contract (the one it
+// states, else its pod's) is below 220 is served every assignment without the key (the band of
+// shaping.go's stateNarrowings, `withoutAssignmentPlans`). The key
+// `settings.projects.<KEY>.experiments.<name>.variants[].plan` came with it: a key below
+// `projects`, which no reader types, so no record holds it and nothing is served down
+// (answers.go's typedSettings).
+// (This entry takes 220, above each number another open pull request declared. The forward merge
+// of 2026-11-22 brought the base's 219 (the owner's plan's entry above). A reading of `const
+// DaemonAPIVersion` at the head commit of each of the 431 open pull requests, made between
+// 2026-11-22T02:35:47Z and 02:36:07Z, read all 431 and found 219 declared by #4611 and #4805, 220
+// by this change's own pull request alone, and nothing above 220. The forward merge of 2026-11-23
+// that brought in 7923340d brought the base's 219 again, over main's 217, and a reading of all 507
+// open heads between 2026-11-23T16:08:36Z and 16:09:51Z found 220 declared only by this change's
+// pull request and #5014, which is stacked on it and carries this entry, so this entry kept 220.
+// From this entry answers.go's SupportedContracts names `api.assignmentPlanContract`, after
+// `OwnerPlanContract`. Read the base's own number and every open pull request again at the next
+// merge rather than from this line.)
+//
+// 228: INFRA-1575 -- the intake gives up on a message whose handling keeps failing, keeps it
+// whole, tells the controller, and lets the operator or the controller replay it or discard it.
+// `GET /legion/v1/state` gains `intakeGiveUps` (`api.IntakeGiveUpsView`), written on every body:
+// `consumers`, each durable consumer with an open give-up as `{name, open, newestSeq}`, the newest
+// stream sequence being the `throughSeq` of a bulk replay or discard of all of them, and `newest`,
+// the newest open give-ups, latest given up first, at most 50, each `{id, consumer, subject,
+// streamSeq, storedAt, eventId, deliveries, gaveUpAt, reason, lastError}`, where `eventId` is null
+// for a message that did not decode and `lastError` is the first 300 characters of the record's
+// error; both lists are empty rather than null. The controller's two routes, `POST
+// /legion/v1/intake/replay` and `POST /legion/v1/intake/discard` (`api.IntakeReplayRequest`,
+// `api.IntakeDiscardRequest`), take `grantId` and a selection: `giveUp`, one record's id, or
+// `consumer` with `throughSeq`, every open record of that consumer at or below that sequence; the
+// discard takes `reason` too. They answer `api.IntakeReplayResponse` (`replayed`, each record's
+// `{id, consumer, streamSeq, outcome, error}`, the outcome `applied`, `already applied`, `no fact`
+// or `failed`, and `remaining`) and `api.IntakeDiscardResponse` (`discarded`, the ids it closed),
+// and refuse 400 `GIVE_UP_REQUEST_INVALID` for a selection of neither form or both and a discard
+// with no reason or one longer than 2,048 characters, 403 `CONTROLLER_REQUIRED` for a grant that
+// is not the controller's, 404 `GIVE_UP_NOT_FOUND` for an id of no give-up of the project, 409
+// `GIVE_UP_CLOSED`, naming how and when, for an id the action may not take, 409
+// `GIVE_UP_BEING_REPLAYED` for an id a running replay holds, and 503 `NO_INTAKE` on a daemon
+// with no intake. A controller grant records who minted it (`credential.Grant`'s Session and
+// Operator, 178), so the record keeps `controller session <id>` as who closed a record, and
+// `operator` for a controller grant the operator's bearer minted. The operator's two
+// routes, `POST /legion/v1/operator/intake/replay` and `POST /legion/v1/operator/intake/discard`,
+// take the same bodies without `grantId` and answer the same; `legion intake replay` and `legion
+// intake discard` post them. The controller notice kind `intake-gave-up`
+// (`record.IntakeGaveUpNotice`), with `record.Notice`'s `count` and `giveUps`, reaches the
+// controller's topic, a minute after the give-up that opens it, with every give-up of that minute
+// joined to it. An older daemon refuses a controller whose plugin holds this contract with 409, at
+// `legion controller start` and at its registration, so the controller never calls the two routes
+// there; only this release's operator command `legion intake` reaches an older daemon, which
+// answers it 404.
+//
+// The change is served down by the tables 193 put in place, one row each:
+//
+//   - The state's one new key is one band, the row of `intakeGiveUpsContract` in shaping.go's
+//     `stateNarrowings` (`withoutIntakeGiveUps`): a caller that states a contract below 228, or
+//     that states none from a pod whose claims record one below 193 (`podContracts` counts no
+//     claim at `shapedAnswersContract` or above), is served the state without the key,
+//     with every band below it, which is why `packages/contracts/src/legion-api.ts` declares it
+//     optional, as it declares `wakesWaiting`. The key is left off by a flag rather than emptied
+//     (`State.intakeGiveUpsHidden`), as `wakesWaiting` and `claimsToRefresh` are, since a strict
+//     reader refuses it empty as surely as filled.
+//   - The controller's two answers are two rows of answers.go's `Answers`, `AnswerIntakeReplay`
+//     and `AnswerIntakeDiscard`, each arrived with its route at 228, so no contract below records
+//     either, and each is the identity in `shapeAnswer`. The operator's two routes answer the
+//     `legion` command, which is built from the daemon's own commit, so they are no rows and
+//     write their answers as `answerUnparsed`, as the operator's pause and resume do. Every
+//     refusal of the four routes is the refusal answer.
+//   - Two fields of those bodies are read with a `z.enum`, so each is a row of answers.go's
+//     `EnumeratedFields`: a give-up's `reason` on the state (`intakeGiveUps.newest.*.reason`, the
+//     five words of `record.IntakeGiveUpReason`) and a replayed record's `outcome` on the
+//     replay's answer (`replayed.*.outcome`, the four words of `intake.ReplayOutcome`). Every
+//     value arrived with its field at 228, so the band and the answer's own arrival keep each
+//     from an older caller, and no value strip is owed (shaping.go's `fieldArrivals.heldBack`).
+//   - The controller's two request bodies are two rows of the request gate's table
+//     (`pluginRequests` in request_shapes_test.go), recorded from 228 on. The operator's two are
+//     the `legion` command's, which no older build sends.
+//
+// So `contract-shapes.json` gains the records of 228, which are 220's with the key paths of
+// `intakeGiveUps` and the five values of its `reason`'s domain on the state's record and with the
+// records of the two new answers beside them, and `request-shapes.json` gains the records of 228,
+// which are 220's with the two controller routes beside them. Every record below 228 is as it was
+// but for the state's, 220's among them, which gains the domain `intakeGiveUps.newest.*.reason`
+// admitting no value, since every record holds a domain for each enumerated field of its answer
+// (`TestTheRecordSetIsOneRecordPerAnswerPerContract`) and no value of this one arrived below 228.
+//
+// The change carries store migration `20261120144241_intake_failures`, which adds the tables
+// `intake_failures`, `cleared_pull_requests` and `pull_request_settled_heads`. An older daemon
+// binary put back on this schema decodes an outbox payload strictly (`record.DecodeOutboxPayload`,
+// `DisallowUnknownFields`), so an unsent `intake-gave-up` notice row is refused at every attempt
+// and logged `outbox row failed` each time; and it applies or drops a message with an open failure
+// without telling the table, so after a roll forward the sweep would give up as passed a message
+// that applied. The way back is the migration header's last paragraph (`migrations.WayBack`), the
+// same text `docs/kubernetes.md` carries under "Rolling back the release that gives up on intake
+// messages": with the daemon stopped, delete the project's unsent `intake-gave-up` controller
+// notices and its open failures, each statement naming the project. The given-up records and the
+// three tables stay, which the older binary never reads and a roll forward finds in place.
+// (This entry took 195 when main declared 193, read on 2026-11-20 at 8a9540682d, and the open
+// pull requests read that day declared 194 and 196 to 199. The forward merge of 2026-11-20 that
+// brought in 6a85d7237c brought main's 199 (#4495, INFRA-4605's entry above). A reading of every
+// open pull request at that merge, which ended at 2026-11-20T23:12:47Z, found 200 (#4065, #4493
+// and #4580) and 201 (#4553 and #4611) declared, so this entry moved to 202, the lowest number
+// above main's 199 that no other open pull request declared. The forward merge of 2026-11-21 that
+// brought in a86c31c9fd brought main's 202 (#4493, INFRA-4401's entry above). A reading of every
+// open pull request at that merge, which ended at 2026-11-21T03:14:44Z, found 203 (#4065, #4175,
+// #4553, #4592 and #4661), 204 (#3831 and #4030), 205 (#4573) and 206 (#4540) declared above 202,
+// so this entry moved to 207, the lowest number above main's 202 that no other open pull request
+// declares. The forward merge of 2026-11-21 that brought in 98987d3f3d brought main's 205 (#4573,
+// INFRA-3178's entry above), and #4175 declares 208 and merges first. A reading of every open pull
+// request at that merge, which ended at 2026-11-21T20:28:32Z, found 206 (#3712), 207 (#3993,
+// #4273, #4392, #4432 and #4805), 208 (#2230 and #4175), 209 (#4049, #4540 and #4580), 210
+// (#4661), 211 (#4611), 212 (#3831 and #4771), 213 (#4030 and #4553), 214 (#4592 and #4596), 215
+// (#4065) and 216 (#4259) declared, so this entry moved to 217, the lowest number above #4175's
+// 208 that no other open pull request declares. The forward merge of 2026-11-22 that brought in
+// b6dc467a27 brought main's 213 (#4553, INFRA-4036's entry above). A reading of every open pull
+// request at that merge, which ended at 2026-11-22T16:36:44Z, found 214 (#4592), 215 (#4596), 216
+// (#4173, #4180, #4182, #4193, #4259, #4932 and #4984), 217 (#4273), 218 (#3831), 219 (#4611), 220
+// (#4930), 221 (#3993, #4049, #4392, #4432 and #4771), 222 (#4661), 223 (#4805), 224 (#4960), 225
+// (#3712 and #4580), 226 (#4175) and 227 (#4065) declared, so this entry moved to 228, the lowest
+// number above main's 213 that no other open pull request declares. The forward merge of
+// 2026-11-23 that brought in 054cd5ca16 brought main's 217 (#4273, the entry above for
+// dispatch://INFRA-3531 and dispatch://INFRA-4567). A reading of every open pull request at that
+// merge, which ended at 2026-11-23T02:19:36Z, found 218 (#3831), 219 (#4611), 220 (#4930), 221
+// (#3993, #4049, #4392, #4432, #4771, #4940 and #5164), 222 (#4661, #5156 and #5160), 223 (#4805),
+// 224 (#4960), 225 (#3712), 226 (#4175) and 227 (#4065 and #5162) declared, and no other pull
+// request declaring 228, so this entry kept 228, the lowest number above main's 217 that no other
+// open pull request declares. The forward merge of 2026-11-24 that brought in 42b2ad4d17 brought
+// main's 220 (#4930, the entry above, after #4611's 219). A reading of every open pull request at
+// that merge, which ended at 2026-11-24T01:34:50Z, found 221 (#4049, #4392, #4432, #4940 and
+// #5164), 222 (#5156), 223 (#3993 and #4661), 224 (#4960 and #5165), 225 (#3712), 226 (#4175) and
+// 227 (#5162) declared, and no other pull request declaring 228, so this entry kept 228, the
+// lowest number above main's 220 that no other open pull request declares. Read main's own number
+// and every open pull request again at the next merge rather than from this line.)
+//
+// 232: dispatch://INFRA-4508 -- `POST /legion/v1/claims/turn-outcome` takes two optional fields.
+// `httpStatus` is the HTTP status the provider refused the turn with, from 100 to 599, where the
+// producer's provider library gives one (Oh My Pi's `errorStatus` on the refused assistant
+// message, Claude Code's `api_error_status`); a number outside that range is taken as no status,
+// and the daemon logs a warning naming it rather than refusing the report. `unprompted: true`
+// says the turn ran no prompt the daemon sent: a phase reminder, an Envoy message, a background
+// job's result. The daemon judges such a turn from its report, as it judges a prompt's turn from
+// that prompt's result: a refusal whose status cannot clear (a 4xx other than 401, 403, 408 and
+// 429) fails the claim at once with cause `provider_error` and holds the issue, and the answer's
+// `failed` is then true; a refusal that can clear, or with no status, fails nothing and counts in
+// the claim's run of provider-error turns, whose sixth in a row tells the controller once. A
+// refused report without `unprompted` is judged by nothing, so the report of a turn a prompt ran is
+// never counted beside that prompt's result. A clean report, with `unprompted` or without, ends
+// that run when no later turn's report has reached the daemon before it. The daemon reads every
+// body strictly, so a report from this contract that carries either field is refused by a daemon
+// before 232; the boot gate refuses the mixed pair. (This entry took 239 at first, the lowest
+// number above main's 219 that no open pull request declared at a reading of the 132 open heads
+// that change this file, made between 2026-11-23T22:41:49Z and 22:44:42Z. The forward merge of
+// 2026-11-23 that brought in 7df64124 brought main's 220 (the entry above 228), and a reading of
+// the 133 open heads that change this file, at refs/pull/<n>/head between 2026-11-23T23:47:10Z and
+// 23:50:14Z, found each of 220 to 239 declared by another pull request (239 by #4592) and 240 by
+// none, so this entry moved to 240. The forward merge of 2026-11-24 that brought in e14345bf
+// brought main's 228 (INFRA-1575's entry above), and a reading of the 137 open heads that change
+// this file, between 2026-11-24T09:36:47Z and 09:39:37Z, found 240 declared by #3831 and 229 to
+// 231 declared by others, and 232 by none, so this entry moved to 232, the lowest number above
+// main's 228 that no other open pull request declares. Read main's own number and every open head
+// again at the next merge rather than from this line.)
+//
+// 255: the roles a deployment defines run steps of an issue's task. An issue whose running step is
 // of such a role stands at a new phase, `step`, of `GET /legion/v1/state`'s `phase`, `heldFrom` and
 // a claim view's `pendingTask.phase`, and names that role in a new key, `issues.<key>.stepRole`; a
 // stranded claim and a waiting wake may name such a role. An issue names, in a new key
 // `issues.<key>.startWaitsForPod`, the roles whose start waits because its pod was built before the
-// deployment defined them, absent where none waits. A caller whose contract is below 221 is served
+// deployment defined them, absent where none waits. A caller whose contract is below 255 is served
 // an issue at step as at work, at `implementing`, its hold from step as one from `implementing`, a
 // pending task at step as one at `implementing`, no `stepRole`, no `startWaitsForPod` (a plugin
 // before memoryContract reads an issue as a strict object and would refuse the whole state over
@@ -3381,20 +3560,22 @@ package api
 // /legion/v1/phase/backward` takes such a role's grant, and one optional field, `returnTo`, the
 // place of the step the move returns to (below 1 `400 INVALID_RETURN_TO`; a place the workflow may
 // not name, or a `to` that is not the phase that step runs as, `409 BACKWARD_REFUSED`). `readBody`
-// refuses an unknown field, so a plugin sending `returnTo` to a daemon below 221 would have the
+// refuses an unknown field, so a plugin sending `returnTo` to a daemon below 255 would have the
 // move refused; the bump is why the two never meet (`deploymentRolesContract`). `fresh_session`
 // and `compact` name the roles `architect, planner, implementer, tester, reviewer, merger, or a role
 // of this deployment`. From this entry the last number of answers.go's SupportedContracts is
-// `api.deploymentRolesContract`, after `api.OwnerPlanContract`.
-// (This entry takes 221, above the base's 211 (the owner's plan, the entry above) and above every
-// number another open pull request declared, with 218 to 220 left free: a reading of
-// `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 422 open pull requests, made
-// between 2026-11-21T22:24:28Z and 22:24:45Z, read all 422 and found 211 declared by #4611 and
-// #4902, 213 by #4030 and #4553, 214 by #4592 and #4596, 215 by #4065, 216 by #3831, #4173, #4259
-// and #4540, 217 by #2230, #4273, #4590 and #4771, and nothing at 212, from 218 to 220, or at 221
-// or above. The forward merge of 2026-11-23 that brought in the base's 27191336 brought the owner's
-// plan at 219 and main's entries up to 217, all below 221, so this entry kept 221. Read the base's
-// own number and every open pull request again at the next merge rather than from this line.)
+// `api.deploymentRolesContract`, after 232.
+// (This entry takes 255, the lowest number above main's 232 and above every number an open pull
+// request declared, and outside 246 to 250, which another change holds: a reading of `const
+// DaemonAPIVersion` at the head of each of the 480 open pull requests, made between
+// 2026-11-24T13:09:22Z and 13:11:08Z, read all 480 and found 254 the highest declared, and 229 to
+// 240, 242 to 246, 250 and 251 among the numbers below it. The entry first took 221, the lowest
+// free number at a reading of 2026-11-21, then 243 at the forward merge of main on 2026-11-24 that
+// brought main's 220; by the forward merge that brought main's 228 another open pull request
+// declared 243 and others declared numbers up to 251, so this entry moved to 252; by the forward
+// merge that brought main's 232 another open pull request declared 254, so this entry moved to 255.
+// Read main's own number and every open pull request again at the next merge rather than from this
+// line.)
 //
 // 222: a claim of `GET /legion/v1/state`'s `strandedClaims` names its claim token in a new key,
 // `strandedClaims.*.token`. Two claims of one issue can hold one role, a keyed agent's on another
@@ -3429,7 +3610,7 @@ package api
 // the same report from two claims of one role is two completions, so neither is answered
 // `HANDOFF_ALREADY_RECORDED` for the other's. From this entry the last number of answers.go's
 // SupportedContracts is
-// `api.strandedTokenContract`, and `deploymentRolesContract` stays 221.
+// `api.strandedTokenContract`, and `deploymentRolesContract` stays 255.
 // (This entry takes 222, the lowest number above the base's 221 (the entry above) that no other
 // open pull request declared: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head, by the
 // contract check's own reader (declared_by_open_pull_requests), of each of the 428 open pull

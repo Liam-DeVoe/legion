@@ -172,7 +172,7 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | Phase | Worker | What it does | GitHub identity |
 | --- | --- | --- | --- |
 | `awaiting_person` | none | The root keeps its admission slot while its live architect waits for and reads a person's answer to a question on the root. | none |
-| `planning` | planner | Writes the implementation plan into its handoff and the issue's document. | review App |
+| `planning` | planner | Writes the implementation plan into the issue's `plan.md` document. | review App |
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
@@ -230,11 +230,20 @@ its earlier owner gave: at its first step Legion deletes that plan, logs
 `workflow: a plan of an earlier owner is not taken`, and tells the issue's architect once, in a
 `plan-not-taken` notice, which version it did not take and which plan the step runs instead, the
 new owner's or the default steps.
+An issue that a project's experiment drew into a group whose issues run the project's default
+steps (an arm's `plan: default`) takes no plan from its owner: once the daemon records it, the
+owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`, naming the group, and
+a plan its owner or an earlier owner gave before is deleted at its first step, logged for each
+version as `workflow: a plan is not taken: the issue's group runs the project's default steps`,
+never as an earlier owner's line above, and told in the same `plan-not-taken` notice, which names
+each version and the group and offers no `register_plan`.
 
 A deployment adds roles of its own in `legion.yaml`: `roles` names each one with its `type` (one
 of `design`, `planning`, `implementation`, `testing` and `review`, or a type `role_types` adds)
 and its `prompt_file`. A role may also name its `model`, and its `github_app`, `implement` or
 `review`, the review App by default.
+A role of the type `review` works as the review App, and the loader refuses one that names
+`implement`.
 A step of such a role reads no pull request, so a plan may put it at any place, except that a role
 of the type implementation stands before the `implementer` step, since Legion's retro is done by
 the implementer. It runs at `step` and reports `pass` or `fail`: a fail sends the work back as a
@@ -445,6 +454,13 @@ none, and nor does the architect. A step of a role of the deployment writes none
 reports the verdict `pass` or `fail` and the commit its workspace stands on, and the task of the
 step after it, or of the step its fail sends the work back to, names
 `Step <i> (<role>) reported: <verdict>.` with its summary.
+
+A handoff's body is `head`, the commit the phase ended at, and, where the role has one, a `note`
+of at most 1,000 characters that tells the next role how to run the issue's checks in the worker
+pod or an order of work it must keep. The tester's body also keeps `implementerProof`, `failures`
+and `failed`. A worker writes its handoff once, when it completes its phase. What other records
+hold stays out of it: the diff, the pull request body, each check's result, the GitHub review,
+and `plan.md` with its plan checks and its departures from the spec.
 
 A completion that ends a phase with a handoff names its record, and the daemon reads that record back from Dispatch before
 it moves the issue: it refuses a record another session wrote, one of another issue, phase or

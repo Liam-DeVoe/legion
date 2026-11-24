@@ -49,7 +49,7 @@
       },
       {
         "value": "step",
-        "since": 221
+        "since": 255
       },
       {
         "value": "testing",
@@ -696,7 +696,7 @@
         "since": 46
       }
     ],
-    "until": 221
+    "until": 255
   },
   {
     "answer": "state",
@@ -727,7 +727,7 @@
         "since": 53
       }
     ],
-    "until": 221
+    "until": 255
   },
   {
     "answer": "state",
@@ -758,7 +758,7 @@
         "since": 178
       }
     ],
-    "until": 221
+    "until": 255
   },
   {
     "answer": "state",
@@ -946,7 +946,7 @@
       },
       {
         "value": "step",
-        "since": 221
+        "since": 255
       },
       {
         "value": "testing",
@@ -1140,7 +1140,7 @@
       },
       {
         "value": "step",
-        "since": 221
+        "since": 255
       },
       {
         "value": "testing",
@@ -1198,7 +1198,7 @@
       },
       {
         "value": "step",
-        "since": 221
+        "since": 255
       },
       {
         "value": "testing",
@@ -1363,6 +1363,32 @@
     ]
   },
   {
+    "answer": "state",
+    "keyPath": "intakeGiveUps.newest.*.reason",
+    "values": [
+      {
+        "value": "bound",
+        "since": 228
+      },
+      {
+        "value": "consumer moved past",
+        "since": 228
+      },
+      {
+        "value": "did not end",
+        "since": 228
+      },
+      {
+        "value": "retention",
+        "since": 228
+      },
+      {
+        "value": "undecodable",
+        "since": 228
+      }
+    ]
+  },
+  {
     "answer": "issue-record",
     "keyPath": "phase",
     "values": [
@@ -1412,7 +1438,7 @@
       },
       {
         "value": "step",
-        "since": 221
+        "since": 255
       },
       {
         "value": "testing",
@@ -2062,7 +2088,7 @@
       },
       {
         "value": "step",
-        "since": 221
+        "since": 255
       },
       {
         "value": "testing",
@@ -2256,7 +2282,7 @@
       },
       {
         "value": "step",
-        "since": 221
+        "since": 255
       },
       {
         "value": "testing",
@@ -2314,7 +2340,7 @@
       },
       {
         "value": "step",
-        "since": 221
+        "since": 255
       },
       {
         "value": "testing",
@@ -2449,6 +2475,28 @@
         "since": 46
       }
     ],
-    "until": 221
+    "until": 255
+  },
+  {
+    "answer": "intake-replay",
+    "keyPath": "replayed.*.outcome",
+    "values": [
+      {
+        "value": "already applied",
+        "since": 228
+      },
+      {
+        "value": "applied",
+        "since": 228
+      },
+      {
+        "value": "failed",
+        "since": 228
+      },
+      {
+        "value": "no fact",
+        "since": 228
+      }
+    ]
   }
 ]
