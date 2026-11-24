@@ -17,8 +17,8 @@ import (
 // order table's takeover rows suspend a role the release still holds (supervise's
 // suspendedAgain); this test suspends a woken one, whose launch is under way (supervise's
 // suspended). Control: a rule under which a suspension by the daemon or the operator of a claim an
-// idle release had suspended takes the release's work off it, as the release mark of 1640db51a4
-// was cleared by such a suspension, fails every row; no row of the order table fails under it.
+// idle release had suspended takes the release's work off it, as the earlier release mark was
+// cleared by such a suspension, fails every row; no row of the order table fails under it.
 func TestAWokenReleasedRoleSuspendedBeforeAnyPodIsNamedWhereThePodWent(t *testing.T) {
 	for _, by := range []supervise.SuspendSource{supervise.SuspendedByDaemon, supervise.SuspendedByOperator} {
 		for _, end := range []roundPodEnd{endPodGone, endRecreated, endRecreatedRefusing} {
