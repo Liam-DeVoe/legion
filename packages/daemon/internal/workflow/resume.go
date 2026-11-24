@@ -25,8 +25,10 @@ import (
 // so a write the daemon lost before the restart is put back by it. The controller tick runs the
 // same repair, so no later loss waits for a restart.
 //
-// Third, the resume by rule: every claim of this project that owns its issue's current phase and
-// that the daemon or its own exit suspended (supervise's ByRule) is started again. Nothing else
+// Third, the resume by rule: every phase worker of this project that owns its issue's current
+// phase and that the daemon or its own exit suspended (supervise's ByRule) is started again. An
+// architect at a place it works itself, an acceptance it does, a step of the key owner or its
+// retro, is no phase worker, so this resume starts none there (suspendedPhaseOwners). Nothing else
 // would start it: the phase's start ran before the restart, a re-admission's starts are queued
 // only when a tree is re-admitted, and the next start is the next phase's. This is the one trigger
 // main did not have, so it acts on no other source: an operator's suspension holds until the

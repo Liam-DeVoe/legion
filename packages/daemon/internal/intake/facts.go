@@ -2074,8 +2074,8 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 // the entry the claim's worker is on (HandoffComplete.Entry), current the entry the role's phases
 // row names (record.PhaseRow.Entry), movedBack whether the move that raised it was a move back
 // (record.PhaseRow.EntryMovedBack), and otherSteps the highest entry another row of the role
-// holds, the row of another of its steps or the implementer's retro row (record.OtherStepsEntry),
-// 0 where the role has no other row; served is the claim the role's row on
+// holds, the row of another of its steps or its retro row where it does the retro
+// (record.OtherStepsEntry), 0 where the role has no other row; served is the claim the role's row on
 // the served entry names (record.ServedClaim) and holder the claim the row on current names
 // (record.PhaseRow.Claim); issue is the record as the same read holds it, pr the pull request it
 // holds, and pending the claim's queued task, which only the route reads.

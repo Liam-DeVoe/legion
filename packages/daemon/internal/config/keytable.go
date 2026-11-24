@@ -528,9 +528,9 @@ var nestedKeys = []memberGroup{
 	}},
 	{Path: "github_apps", Members: []member{
 		{Name: "implement", Default: "none: a file that names no implement App is refused", RequiredBy: "yes",
-			Description: "The App the implementer, the merger, each role of an issue's plan of the type implementation and each role of `roles` whose `github_app` names it work as, and the architect's slot while it does such a step of its own, whose token clones every pod's workspace and pushes and lands the change; no review ever comes from it."},
+			Description: "The App the implementer, the merger, each role of an issue's plan of the type implementation and each role of `roles` whose `github_app` names it work as, and the architect's slot while it acts as one of them (at an implementation step of its own, through the retro of a task whose last such step is its own, and while a merge forward asked of it has not ended), whose token clones every pod's workspace and pushes and lands the change; Legion asks it for no review."},
 		{Name: "review", Default: "none: a file that names no review App is refused", RequiredBy: "yes",
-			Description: "The App every other role works as — the architect, planner, tester, reviewer and acceptance, a role of `roles` whose `github_app` names it, and a role a plan defines of any other type or of none — whose token writes the reviews and the check runs the implement App may not; the architect's slot works as the implement App instead while it does an implementation step of its own."},
+			Description: "The App every other role works as — the architect, planner, tester, reviewer and acceptance, a role of `roles` whose `github_app` names it, and a role a plan defines of any other type or of none — whose token writes the reviews and the check runs the implement App may not; the architect's slot works as the implement App instead at an implementation step of its own, through the retro of a task whose last such step is its own, and while a merge forward asked of it has not ended."},
 	}},
 	{Path: "github_apps.<APP>", Members: []member{
 		{Name: "app_id", Default: "none: an App that names no id is refused", RequiredBy: "yes",

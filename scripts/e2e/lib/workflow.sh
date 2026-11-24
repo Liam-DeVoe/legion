@@ -915,7 +915,7 @@ clean_smoke_main() {
     gh api -X DELETE "repos/$repo/contents/$path" -f message="proof fixture: remove $path" -f sha="$sha" -f branch="$branch" >/dev/null
   done <<<"$paths"
   url=$(gh -R "$repo" pr create --base main --head "$branch" --title "proof fixture: remove the handoffs and learnings Stage 3 runs merged ($project)" \
-    --body "The Stage 3 proof run $project removes what merged proof pull requests left on main: docs/solutions/ retro learnings and .legion/ handoffs that merges from before retro stopped committing left. This is a proof fixture change by the proof's human-merge identity; it changes no product.")
+    --body "The Stage 3 proof run $project removes what merged proof pull requests left on main: docs/solutions/ retro learnings, which proof merges carried before retro stopped committing, and any .legion/ handoffs a merge from before handoffs moved to Dispatch left. This is a proof fixture change by the proof's human-merge identity; it changes no product.")
   smoke_cleanup_url=$url
   pr=${url##*/}
   timeout_hook=report_smoke_pr_merge_state

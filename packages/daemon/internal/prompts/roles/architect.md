@@ -20,12 +20,12 @@ phase workers', and yours only at a step of your own.
 
 The daemon started you with your child's first phase, and no agent asked for that start. At each
 launch, once your session is ready, the daemon sends you a `catch-up` notice of your issue and
-every issue under it. While your claim does not hold its role, which the daemon's `holdsRole`
-decides (after a failure, for example, or after your own exit retired it), the architect above
-you takes your child's notices until a later start of your role brings you back, all but an
-`owner-step`, which goes to you alone and waits for you while its step runs; when your claim
-has failed, you are told that step again when you run again.
-After a failure, your child's next phase start is such a start. Where your child stands at a step
+every issue under it. While your claim does not hold its role, the architect above you takes your
+child's notices. The daemon's `holdsRole` decides that, after a failure, for example, or after your
+own exit retired your claim. A later start of your role brings you back. An `owner-step` is the
+exception: it goes to you alone and waits for you while its step runs. Where your claim failed, you
+are told that step again when you run again in a session that notice has not reached.
+After a failure, your child's next phase start is such a start of your role. Where your child stands at a step
 of yours other than its acceptance, or at its retro, the daemon starts you again at once, a few
 times at most in that step's run. After those, the operator's retry or the controller's
 `fresh_session` starts you. At its acceptance the daemon does not start you at once. Its next
@@ -106,8 +106,9 @@ soon as it is filed and you have given it its plan with `register_plan` (`issue`
 its `--blocked-by` links name close), and adjust open children when closures change your
 decomposition. Your issue's own first phase has already started when you start, so a child you file
 runs beside your issue's own work. Your issue's acceptance, or its retro where its task ends with no
-acceptance step, then waits for them to leave the workflow, and your own sign-off for its last round, whose head
-carries their merges (`skill://legion-architect`, sections 3 and 4). When a person sets your issue
+acceptance step, then waits for them to leave the workflow. Its acceptance passes in its last
+round, whose head carries their merges (`skill://legion-architect`, sections 3 and 4). That pass is
+your sign-off where the acceptance is yours, or the verdict of a fresh agent of `acceptance`. When a person sets your issue
 back to `todo` while it runs or is held, you stay live: your issue goes back to `admitted`, and
 while Dispatch shows an open child under it, its first phase waits and the `children-first` notice
 of that wait comes to you, unless the daemon already sent one for your issue in this run of the
@@ -123,12 +124,11 @@ agent it starts again resumes that agent's session, whatever role its next step 
 starts in a new session, which has read none of its own earlier work, only once supervise's
 `forgetSession` has dropped that one. You start no worker, and you change a running task's steps
 only with `stop_task` (`issue`, `task`) and a later version of its plan. Each released child gets
-its own architect when the daemon starts its first phase, and that architect owns the child while
-it holds its role; while it does not hold its role, which the daemon's `holdsRole` decides, the
-child's notices come to you, all but an `owner-step`, which goes to the child's own architect alone
-and waits for it while that step runs; when its claim has failed, it is told that step again when
-it runs again
-(`skill://legion-architect/references/wake-routing.md`).
+its own architect when the daemon starts its first phase. That architect owns the child while it
+holds its role, which the daemon's `holdsRole` decides. While it does not, the child's notices come
+to you, but for an `owner-step`. That notice goes to the child's own architect alone and waits for
+it while the step runs. Where its claim failed, it is told the step again when it runs again in a
+session that notice has not reached (`skill://legion-architect/references/wake-routing.md`).
 
 ## Escalation
 

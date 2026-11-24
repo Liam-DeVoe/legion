@@ -247,7 +247,7 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 				t.Fatalf("the implementer's backstops due an hour after the cancel = %d, want %d", n, wantBackstops)
 			}
 			if n := pauseCount(t, st, `select count(*) from pod_wake_backstops where issue = $1 and role = 'architect'`, rootIssue); n != 0 {
-				t.Fatalf("the architect's backstops = %d, want none: an architect's phase is its own", n)
+				t.Fatalf("the architect's backstops = %d, want none: the implementer works the issue's place, not its architect", n)
 			}
 			if held, open := heldOpenResume(t, st, claim.RoleImplementer); open != tc.woken || (open && held != pause.ID) {
 				t.Fatalf("the implementer's open resume = pause %d, open %t; want open %t, held by pause %d: the cancel leaves the wake that owes the launch",

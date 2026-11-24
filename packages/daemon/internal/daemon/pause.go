@@ -249,9 +249,10 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 			return made, err
 		}
 		if issue != nil && p.backstop > 0 {
-			// The claim a backstop is armed for is a claim, not a role: the owner at its own place,
-			// and elsewhere the claim the record gives the open phase's step, which at step can be a
-			// keyed agent's beside the role's own claim (workflow.BackstopTargetAt).
+			// The claim a backstop is armed for is a claim, not a role: the owner where it works its
+			// place alone, at a step of the key owner or its retro, and elsewhere the claim the record
+			// gives the open phase's step, which at step can be a keyed agent's beside the role's own
+			// claim (workflow.BackstopTargetAt).
 			role, target, err := workflow.BackstopTargetAt(ctx, p.records, tx, p.token, *issue)
 			if err != nil {
 				return made, err

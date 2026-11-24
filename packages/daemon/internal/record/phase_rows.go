@@ -51,11 +51,12 @@ func rowAbove(row, than PhaseRow) bool {
 }
 
 // OtherStepsEntry is the highest entry a row of row's role holds other than row: the row of
-// another step of that role, or the implementer's retro row (place 0), which stands once its retro
-// is entered; and 0 where the role has no other row: a role at one step with no retro row, and
-// every role of an issue with no plan rows. A step's start raises its entry above every row of its
-// role (workflow's enter), so an entry at or below this one is of another step's run or the
-// retro's, or of an earlier run of row's own step that the task has since left for one of them.
+// another step of that role, or the role's retro row (place 0), where its agent does the retro as
+// that role, which stands once its retro is entered; and 0 where the role has no other row: a
+// role at one step with no retro row, and every role of an issue with no plan rows. A step's
+// start raises its entry above every row of its role (workflow's enter), so an entry at or below
+// this one is of another step's run or the retro's, or of an earlier run of row's own step that
+// the task has since left for one of them.
 // The entry fence of a completion reads it (intake.EntryFence), so the same head is never taken as
 // the same work across two runs that ask for different work.
 func OtherStepsEntry(rows []PhaseRow, row PhaseRow) int64 {
@@ -187,8 +188,9 @@ func CompletionRow(rows []PhaseRow, role claim.Role, entry int64, works bool, ta
 
 // RolePlace is the place (PhaseRow.StepPlace) of the row of role PhaseRowAt reads at at, on task,
 // whose steps are steps: role's place nearest at (NearestPlace) among its steps, the retro, the
-// role its agent runs as (PlaceWorker, the role of the task's last step of the type
-// implementation, so the row read there is the row its entry raises), and the merge, the
+// role its agent runs as (PlaceWorker: the role of the task's last step of the type implementation,
+// and the implementer where that step is the owner's or the task has none, so the row read there is
+// the row its entry raises), and the merge, the
 // merger's; from 1 for a step, 0 for the retro, the merge and a role the task gives no place. It is
 // also the place a completion's key names where the role stands at two steps and its row is of no
 // step (StandsTwice; api's completion route).

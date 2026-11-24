@@ -14,9 +14,11 @@ import (
 // daemon's ActsAs, which reads that predicate at each write of the slot). One predicate decides it,
 // over the issue and its pull request as the record holds them, and each write of either record
 // asks it of the record before the write and after it (ownersMergeForwardWritten):
-//   - a write that ends the ask gives the owner's slot its own App back at once, as the end of each
-//     step the owner does as another role does (ownerSlotCredential), so no path leaves the slot
-//     on the implement App;
+//   - a write that ends the ask queues the write of the owner's slot back to its own App, as the end
+//     of each step the owner does as another role does (ownerSlotCredential). That write is made
+//     where the record then answers the owner's own App, and an act of another App that runs by
+//     then keeps its App (internal/daemon's slotCredential), so no path leaves the slot on the
+//     implement App once no act holds it there;
 //   - a write that opens the ask again asks the owner again (askOwnerAgain), since that ask's
 //     delivery is what writes the slot for the implement App before it tells the owner.
 //

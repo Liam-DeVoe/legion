@@ -527,8 +527,8 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // other claim — a live one, and one the wake did not reach — is told as before. It is compared by
 // claim, not by role: the owner a settlement wakes at its own place is the claim the start of the
 // owner's implementation step names, as well as the architect that owns the issue, and the agent
-// of the implementation step can work the retro under the role implementer while its own step's
-// role has another name, and so be the claim the wake reached.
+// of the task's last implementation step works the retro too, as that step's role (the implementer
+// for the owner's), and so can be the claim the wake reached.
 //
 // A holder this daemon cannot name is an error here, and with it the settlement's whole
 // transaction: the settlement moves no issue, so there is nothing kept by telling the rest, and
