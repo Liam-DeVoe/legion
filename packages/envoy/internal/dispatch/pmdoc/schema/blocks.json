@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 13,
   "nodes": [
     { "name": "doc" },
     { "name": "paragraph" },
@@ -129,6 +129,11 @@
           "kind": "string",
           "since": 5,
           "creatable_since": 5
+        },
+        "parent": {
+          "kind": "block[]",
+          "since": 13,
+          "creatable_since": 14
         }
       },
       "since": 3,
