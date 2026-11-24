@@ -51,7 +51,7 @@ type launchers struct {
 	// beforeStart is set by tests alone: start runs it between the session serveLeakCheck chose
 	// and the Start's write, the window in which a launcher that reconnects leaves the start on a
 	// closed session (TestALaunchWhoseLauncherReconnectsBeforeItsStartIsWrittenFailsAndTheNextTryStarts).
-	beforeStart      func(ctx context.Context, token claim.Token)
+	beforeStart func(ctx context.Context, token claim.Token)
 	// guardKilled takes a launcher's report of one process ended in an issue pod into the daemon's
 	// fact path (Options.MemoryGuardKilled), and controllerKilled one ended in the controller's pod
 	// (Options.ControllerMemoryGuardKilled): in a pod of either kind, one the memory guard ended in
