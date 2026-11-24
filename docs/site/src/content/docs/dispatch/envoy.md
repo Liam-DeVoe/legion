@@ -612,7 +612,14 @@ carries a role-lane subject is left to a start, which moves the role lanes off. 
 the buckets its program opens back to `ENVOY_NATS_REPLICAS` (`envoy nats keeper raised a bucket`,
 with `replicas="1 -> 3"`). A pass that fails logs `envoy nats keeper could not restore the stream`
 or `envoy nats keeper could not raise a bucket` and is tried again 30 seconds later; it never
-stops the program.
+stops the program. A bucket the program's NATS user may not read or update under its grant, such
+as `envoy_known_sessions` on a hub whose users' render predates its grant, is the exception: the
+keeper logs the refusal once at WARN, `envoy nats keeper may not raise a bucket under its grant;
+it asks again after the backoff` with `probe_again_in="10m0s"`, and asks about that bucket once
+every ten minutes rather than every pass, so neither the hub nor the program logs a permissions
+violation for it every 30 seconds. The ask that the server answers logs
+`envoy nats keeper's grant now covers a bucket the server refused it`; one that fails for another
+reason logs `envoy nats keeper could not raise a bucket` as usual.
 
 The consumer cap is the one of these the binary carries rather than reads from a setting: 24000,
 the most session consumers the stream holds at once. What keeps the count under it is not the cap
