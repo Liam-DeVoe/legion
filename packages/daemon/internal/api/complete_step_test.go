@@ -252,12 +252,12 @@ func TestCompleteStepIsTheOwnersReportOfItsOwnStep(t *testing.T) {
 			at := recorded(t)
 			seedIssueAt(t, at.h, key, phase.Accepting)
 			seedOwnerPlan(t, at.h, key, tc.words, stepAt(tc.step))
-			seedEntry(t, at.h, key, "acceptance", 4)
+			seedEntry(t, at.h, key, claim.RoleAcceptance, 4)
 			owner := newLiveClaim(t, at.h, key, claim.RoleArchitect)
 			answered(t, completeStep(at.h, map[string]any{"grantId": owner.grant(t), "issue": key, "step": tc.step, "summary": "the widget does not render",
 				"verdict": "fail", "commit": headSHA}))
 			failed, ok := oneFact(t, at).(intake.HandoffComplete)
-			if !ok || failed.Issue != key || failed.Role != "acceptance" || failed.Claim != owner.token || failed.Step != tc.step || failed.Verdict != "fail" ||
+			if !ok || failed.Issue != key || failed.Role != claim.RoleAcceptance || failed.Claim != owner.token || failed.Step != tc.step || failed.Verdict != "fail" ||
 				failed.ReturnTo != 0 || failed.Entry != 4 || failed.Commit != headSHA || failed.Summary != "the widget does not render" {
 				t.Fatalf("the fail = %#v, want the acceptance's fail of step %d under %s at entry 4, naming no step", failed, tc.step, owner.token)
 			}
