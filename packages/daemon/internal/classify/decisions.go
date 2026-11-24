@@ -1192,10 +1192,10 @@ func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
 // It does not hold for a head the record holds in a confirmed conflict: that approval ends the
 // round whatever the merge state (workflow's reviewRound), since nothing GitHub answers about the
 // head will change until the base is merged forward, by the agent of the task's last step of the
-// type implementation before its place (workflow's mergeForward), and the issue's move into
-// accepting, retro or merging is what asks for that merge (dispatch://INFRA-4374 R0,
-// record.ConflictMergeNext). Read here, the state build shows no mergeWait for the round the
-// engine has just ended.
+// type implementation at or before its place, else the task's last such step (workflow's
+// mergeForward), and the issue's move into accepting, retro or merging is what asks for that merge
+// (dispatch://INFRA-4374 R0, record.ConflictMergeNext). Read here, the state build shows no
+// mergeWait for the round the engine has just ended.
 //
 // It holds only for an open pull request. A merged one has nothing left to merge. GitHub answers
 // `unknown` for it for good, and the daemon never reads its state after the merge: workflow's
@@ -1361,14 +1361,14 @@ func GreenContexts(pr record.PullRequest) []string {
 // workflow's mergeability), whatever fact is making the move. The exemption keys on that mark
 // rather than on the cause, because every way back out of a conflicting head is the same round of
 // work - a reviewer's request for changes, a worker's backward move, a tester's fail - and the
-// agent of the task's last implementation step before its place (the implementer in the default
-// steps) answers each of them with the one forward merge the conflict needs. That merge moves the
-// recorded head, the mark no longer equals it, and the next rejection counts (a rejection at a
-// review step the owner does counts none, workflow's transition), which is how the
-// exemption ends without a write of its own. The same mark is what says a head needs merging
-// forward before it can merge at all: an approval of it ends its review round (workflow's
-// reviewRound), and a move into accepting, retro or merging at it asks for the merge forward
-// (workflow's mergeForwardOnEntry).
+// agent of the task's last step of the type implementation at or before its place, else the
+// task's last such step (the implementer in the default steps), answers each of them with the one
+// forward merge the conflict needs. That merge moves the recorded head, the mark no longer equals
+// it, and the next rejection counts (a rejection at a review step the owner does counts none,
+// workflow's transition), which is how the exemption ends without a write of its own. The same
+// mark is what says a head needs merging forward before it can merge at all: an approval of it
+// ends its review round (workflow's reviewRound), and a move into accepting, retro or merging at
+// it asks for the merge forward (workflow's mergeForwardOnEntry).
 func ConflictRound(pr record.PullRequest) bool {
 	return pr.ConflictingHead != "" && pr.ConflictingHead == pr.HeadSHA
 }
