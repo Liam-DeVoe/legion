@@ -368,6 +368,9 @@ The daemon keeps that claim through the wait, and at each pass it keeps the root
 The start state's copy of Dispatch holds each issue's Dispatch claim as the newest event before the window's start that shows a claim shows it, as the record's daemon held it then.
 The start state opens the lifecycle of the tree of each root in the workflow whose current run took a slot, or had a member start, or opened its design gate, or launched its architect afresh.
 The last two show a run that the daemon ran where the log holds no slot line of it.
+The daemon marks a re-admitted root whose tree's members it has still to bring back, until that tree first runs in its new generation: at the root's promotion, or at the first admission pass that finds the tree running because its design gate opened first.
+A window recorded under a release before that mark holds none of it, so the start state writes it as the daemon's upgrade to the release that keeps it writes it: on each root of its own tree in todo at admitted on a generation past the first, with no linger, no slot and no mark of a slot given back for a wait.
+So the members of a tree that the record re-admitted before the window's start come back at its promotion, or at the first pass that finds it running, as the daemon of the commit that the replay was built from brings them back.
 The replay's copy of Dispatch also takes the claim of each `issue.claimed` and `issue.released` event, so a later boot or tick reads the claim that Dispatch showed.
 Each work segment runs its recorded length times `f^((n − m)/42)`, where n is the number of issues in flight in the replay at the segment's start, and m the number in the record.
 Each stretch draws, with `--seed`, whether its head conflicts with its base, from a model that the run fits on the stretches that begin and end inside the window.

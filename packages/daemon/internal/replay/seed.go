@@ -107,7 +107,8 @@ func SeedAndReport(ctx context.Context, tx pgx.Tx, records record.Store, claims 
 		return SeedReport{}, fmt.Errorf("replay: seed the start state of %s: %w", t.Project, err)
 	}
 	s := seeder{ctx: ctx, tx: tx, records: records, claims: claims, engine: engine, t: t, at: at, rule: t.ruleAt(at), token: token,
-		placed: map[string]record.Issue{}, epochs: map[string]uint64{}, leftOut: map[int]int{}, childrenTold: map[string]time.Time{}}
+		placed: map[string]record.Issue{}, epochs: map[string]uint64{}, slotted: map[string]struct{}{}, leftOut: map[int]int{},
+		childrenTold: map[string]time.Time{}}
 	keys := slices.Sorted(maps.Keys(t.Issues))
 	for _, key := range keys {
 		if err := s.mirror(t.Issues[key]); err != nil {
@@ -119,8 +120,8 @@ func SeedAndReport(ctx context.Context, tx pgx.Tx, records record.Store, claims 
 			return SeedReport{}, err
 		}
 	}
-	for _, fn := range []func() error{s.gates, s.told, s.childrenToldMarks, s.asks, s.slots, s.lifecycles, s.closedLifecycles, s.turns,
-		s.waitingArchitects, s.owedStarts, s.pullRequests, s.unclassified} {
+	for _, fn := range []func() error{s.gates, s.told, s.childrenToldMarks, s.asks, s.slots, s.membersOwed, s.lifecycles,
+		s.closedLifecycles, s.turns, s.waitingArchitects, s.owedStarts, s.pullRequests, s.unclassified} {
 		if err := fn(); err != nil {
 			return SeedReport{}, err
 		}
@@ -184,6 +185,9 @@ type seeder struct {
 	// opened, by its root.
 	placed map[string]record.Issue
 	epochs map[string]uint64
+	// slotted is each issue the start state wrote a slot row or the mark of a release for a wait
+	// for (slots), which the mark of a return still owed to a tree's members reads (membersOwed).
+	slotted map[string]struct{}
 	// report is each issue named, leftOut the turns written no claim of by assumption, inferred
 	// the slots written that the trace inferred, and childrenTold the children waits whose telling
 	// was marked (SeedReport).
@@ -697,6 +701,7 @@ func (s *seeder) slots() error {
 		if err := s.records.PutSlot(s.ctx, s.tx, slot); err != nil {
 			return fmt.Errorf("replay: seed the slot of %s: %w", h.key, err)
 		}
+		s.slotted[h.key] = struct{}{}
 		if h.span.Inferred {
 			s.inferred++
 		}
@@ -725,6 +730,32 @@ func (s *seeder) slots() error {
 		if err := s.records.ReleaseSlotForWait(s.ctx, s.tx, key, last.End); err != nil {
 			return fmt.Errorf("replay: seed the release of %s's slot for its wait: %w", key, err)
 		}
+		s.slotted[key] = struct{}{}
+	}
+	return nil
+}
+
+// membersOwed marks each re-admitted root whose generation no promotion has opened at the start
+// (record.Issue.MembersOwed), so the replay's daemon brings its tree's members back at that
+// promotion, or at the first admission pass that finds the tree running, as the daemon of the
+// commit it was built from does (admit's returnOwedMembers). A window recorded under a release
+// before the mark holds none of it, so the start state writes it as the daemon's upgrade to the
+// release that keeps it writes it (store migration 20261123224717_members_owed): on each root of
+// its own tree standing in todo at admitted on a generation past the first, with no linger and
+// neither a slot nor the mark of a release for a wait (slots). It writes through the store's own
+// writer (record.Store.OweMembers), and the placed record carries the mark with it.
+func (s *seeder) membersOwed() error {
+	for _, key := range s.placedKeys() {
+		issue := s.placed[key]
+		if _, slotted := s.slotted[key]; slotted || issue.Tree != key || issue.Generation <= 1 || issue.Status != "todo" ||
+			issue.Phase != phase.Admitted || issue.LingerUntil != nil {
+			continue
+		}
+		if err := s.records.OweMembers(s.ctx, s.tx, key); err != nil {
+			return fmt.Errorf("replay: seed the return owed to the members of %s: %w", key, err)
+		}
+		issue.MembersOwed = true
+		s.placed[key] = issue
 	}
 	return nil
 }

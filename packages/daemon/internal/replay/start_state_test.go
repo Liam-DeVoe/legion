@@ -286,3 +286,46 @@ func TestARunGoesOnPastATurnInATreeThatRunsNoLifecycle(t *testing.T) {
 			result.Divergence.NoLifecycleTurns, result.Divergence.TurnsLeftOut)
 	}
 }
+
+// A re-admitted root whose generation no promotion has opened at the window's start carries the mark
+// that its tree's members are still owed their return (record.Issue.MembersOwed), which a window
+// recorded before the mark holds none of: the start state writes it as the daemon's upgrade to the
+// release that keeps it does (seeder.membersOwed), so the replay's daemon brings the members back at
+// the root's promotion, or at the first pass that finds its tree running, as the daemon does. In a
+// window from 10:00 to 12:00 reaching back to 08:00, ACME-1 and ACME-2 run to their merges at 08:45
+// and 08:50 and a person sets each back to todo at 09:00, which the record takes as each root's
+// tree at its second generation; ACME-2 is promoted at 09:30, and ACME-1 still waits in the line at
+// 10:00. ACME-3, a root handed to Legion at 09:10, has never run. Seeded at 10:00, ACME-1 alone
+// carries the mark: ACME-2's promotion holds its slot, and ACME-3 is at its first generation.
+func TestSeedOwesTheMembersOfARootReadmittedBeforeTheStart(t *testing.T) {
+	st := seedStore(t)
+	b := newWindowBuilder(t, clock(10, 0), clock(12, 0))
+	b.reaches(2 * time.Hour)
+	b.boot(clock(8, 0))
+	mergedRoot(b, "ACME-1", "a1", clock(8, 5))
+	mergedRoot(b, "ACME-2", "a2", clock(8, 10))
+	for _, key := range []string{"ACME-1", "ACME-2"} {
+		b.edit(clock(9, 0), key, setStatus("todo"))
+		b.ownTree(key)
+	}
+	b.file(clock(9, 10), "ACME-3", filing{Title: "Ship the ACME-3 change", Status: "todo", Rank: "a3", Labels: handedToLegion})
+	b.rootPromoted(clock(9, 30), "ACME-2")
+	window := b.build()
+
+	_, report := seedReported(t, st, window, window.From, func(tx pgx.Tx) {
+		rows, err := tx.Query(context.Background(), `select key from issues where members_owed order by key`)
+		if err != nil {
+			t.Fatalf("read the seeded marks: %v", err)
+		}
+		owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read the seeded marks: %v", err)
+		}
+		if !slices.Equal(owed, []string{"ACME-1"}) {
+			t.Errorf("the seeded roots owed their members' return are %v, want ACME-1 alone", owed)
+		}
+	})
+	if len(report.Unplaced) != 0 {
+		t.Errorf("the seed names %+v, want no issue", report.Unplaced)
+	}
+}

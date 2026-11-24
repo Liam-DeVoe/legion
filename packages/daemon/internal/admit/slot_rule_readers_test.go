@@ -235,6 +235,30 @@ func statusIn(stands phase.Phase) string {
 //     owner's acceptance. The hold before the retro stands in place of a phase that keeps no slot
 //     under the daemon's own rule, and under a rule that keeps one there the parent holds it as
 //     any held issue holding one does (the KeepsSlotIn row of held above). No row.
+//
+// The return of a re-admitted tree's members (cybermonklabs/legion#5303) adds or changes readers
+// beside the rule that read none of its choices, so none of them is a row:
+//
+//   - record.Waiting's hold of the members of a tree whose root waits for the promotion that opens
+//     it (record.AwaitsPromotion, read once for the line and for record.FirstPhaseStartsNow), and
+//     of a root whose label a person took off while its members are still owed
+//     (record.Issue.MembersOwed): the root's design gate, its tree's lifecycle and the mark decide
+//     it, and the slot row it reads says only whether the root was promoted already, whichever
+//     phases a rule keeps a slot in. No row.
+//   - record.HeldReasonOf's tree_closed word for those members (reopensAtPromotion) reads the same
+//     gate and lifecycle with no slot term. No row.
+//   - blockers.waitsOf, blockers.CoverWaits, record.LineFacts.IdleReturns and the stalled-tree
+//     measure (lineHolds.waitsByDesign) read the queued-root rule over the root's tree lifecycle
+//     beside its gate (record.QueuedRoot): which roots wait for their tree to be opened, not which
+//     phases keep a slot. No row.
+//   - admit's releaseTreeSlots frees every row of a re-admitted root's tree and clears each mark
+//     of a release for a wait: the rows releaseSlots frees for a tree that lingers under every
+//     rule, since record.LineFacts.NeedsSlot answers false under a root that lingers whatever
+//     phases the rule keeps a slot in. No row.
+//   - admit's returnMembersOfRunningTrees and promotedByEarlierRelease read the mark, the tree's
+//     lifecycle and gate (record.MembersReturnOwed), a slot row, the mark of a release for a wait
+//     and whether the root stands past admitted, which every phase past admitted answers alike
+//     under every rule; the earlier release it names ran the daemon's own. No row.
 func slotRuleReaders() []slotRuleReader {
 	var rows []slotRuleReader
 	for _, stands := range phase.All {
@@ -296,7 +320,7 @@ func slotRuleReaders() []slotRuleReader {
 				takeSlot(t, pool, holder)
 				acmeRoot(t, pool, marked, phase.Accepting, "needs_review", "b", nil, nil)
 				takeSlot(t, pool, marked)
-				releaseForWait(t, pool, marked)
+				releaseForWaitAt(t, pool, marked, fixedNow.Add(-time.Hour))
 				tickThrough(t, pool, ruledAdmission(t, 1, rule, silent()), "the pass")
 				return slotWord(t, pool, marked) + "; " + markWord(t, pool, marked)
 			},
@@ -639,7 +663,7 @@ func slotRuleReaders() []slotRuleReader {
 				// child has not started, ranked behind a tree that never opened.
 				acmeRoot(t, pool, waiter, phase.Accepting, "needs_review", "c", nil, nil)
 				takeSlot(t, pool, waiter)
-				releaseForWait(t, pool, waiter)
+				releaseForWaitAt(t, pool, waiter, fixedNow.Add(-time.Hour))
 				acmeRoot(t, pool, root, phase.Accepting, "needs_review", "b", nil, nil)
 				approvedGate(t, pool, root)
 				acmeChild(t, pool, child, root, phase.Admitted, "todo", "b")
@@ -1302,14 +1326,10 @@ func openChild(t *testing.T, pool *pgxpool.Pool, key, parent string) {
 	})
 }
 
-// releaseForWait takes key's slot back for a wait, as the pass's release for a wait does: the row
-// goes and the mark that says why is written with it (record.Store.ReleaseSlotForWait).
-func releaseForWait(t *testing.T, pool *pgxpool.Pool, key string) {
-	t.Helper()
-	releaseForWaitAt(t, pool, key, fixedNow.Add(-time.Hour))
-}
-
-// releaseForWaitAt is releaseForWait at the moment at, which the mark carries.
+// releaseForWaitAt takes key's slot back for a wait at the moment at, which the mark carries, as
+// the pass's release for a wait does: the row goes and the mark that says why is written with it
+// (record.Store.ReleaseSlotForWait). readmitted_members_test.go's releaseForWait is this at the
+// pass's own clock.
 func releaseForWaitAt(t *testing.T, pool *pgxpool.Pool, key string, at time.Time) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {

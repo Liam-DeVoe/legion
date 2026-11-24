@@ -358,7 +358,7 @@ func waitsOf(rows map[string]Row, issue record.Issue, facts record.LineFacts) []
 	if issue.Phase == phase.Admitted && record.AtWork(issue, facts.Gates[issue.Tree]) {
 		return nil
 	}
-	if record.QueuedRoot(issue, facts.Gates[issue.Tree]) {
+	if record.QueuedRoot(issue, facts.Lifecycles[issue.Tree], facts.Gates[issue.Tree]) {
 		return nil
 	}
 	if facts.InWaitGrace(issue.Key) {
@@ -393,7 +393,7 @@ func waitsOf(rows map[string]Row, issue record.Issue, facts record.LineFacts) []
 // root whose design gate has never opened is a waiter, so what its design waits on can start on
 // its slot.
 func CoverWaits(rows map[string]Row, issue record.Issue, facts record.LineFacts) []string {
-	if !record.InWorkflow(issue) || issue.AwaitingPerson() || record.QueuedRoot(issue, facts.Gates[issue.Tree]) {
+	if !record.InWorkflow(issue) || issue.AwaitingPerson() || record.QueuedRoot(issue, facts.Lifecycles[issue.Tree], facts.Gates[issue.Tree]) {
 		return nil
 	}
 	var waits []string

@@ -171,8 +171,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 
 // IssueRecordFields is every field of `record.Issue`, in the order the record declares them. No
 // field of it is a secret and none is the operator route's alone, so every entry is served to
-// the agent surfaces or withheld, as bookkeeping or, for ReleasedForWaitAt, MovedAt and
-// TreeStalledToldAt, for the reason its own entry gives.
+// the agent surfaces or withheld, as bookkeeping or, for ReleasedForWaitAt, MovedAt,
+// TreeStalledToldAt and MembersOwed, for the reason its own entry gives.
 var IssueRecordFields = []RecordFieldDecision{
 	{Field: "Key", Column: ColumnAgents, Keys: []string{"key"}, Reason: "the issue the whole view is about"},
 	{Field: "Tree", Column: ColumnAgents, Keys: []string{"tree"},
@@ -187,7 +187,7 @@ var IssueRecordFields = []RecordFieldDecision{
 	{Field: "Status", Column: ColumnAgents, Keys: []string{"status"},
 		Reason: "the status the daemon means the issue to have and writes to Dispatch"},
 	{Field: "Rank", Column: ColumnWithheld,
-		Reason: "the record's field is served as no key of its own: the `rank` and `rootRank` an issue of the project carries are the admission's reading (contract 240), which the projection writes beside the record for the issues the line and the slots reading place, and no issue of another project carries them"},
+		Reason: "the record's field is served as no key of its own: the `rank` and `rootRank` an issue of the project carries are the admission's reading (contract 249), which the projection writes beside the record for the issues the line and the slots reading place, and no issue of another project carries them"},
 	{Field: "LingerUntil", Column: ColumnAgents, Keys: []string{"lingerUntil"},
 		Reason: "an absent `holdReason` means either no reason or a tree that lingers, and this is what tells the two apart, which the controller's texts turn on"},
 	{Field: "Hold", Column: ColumnAgents, Keys: []string{"holdReason", "heldFrom"},
@@ -217,6 +217,8 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "when this one issue last moved reaches no surface of its own: what a reader is served is its whole tree's measure, `treeMovedAt` and `quietHours`, which the projection builds from every member's movement and from their claims' steps (record.QuietTrees) and which no field of one record carries"},
 	{Field: "TreeStalledToldAt", Column: ColumnWithheld,
 		Reason: "the mark that holds one stall to one notice, written on a tree's root as the stalled-tree notice is queued: it is the daemon's own record of what it has already told a controller, and a reader of the state is told the tree's quiet time instead"},
+	{Field: "MembersOwed", Column: ColumnWithheld,
+		Reason: "the mark that a re-admission still owes its tree's members their return, which the root's promotion or the pass that finds its tree running clears in the same transaction that brings them back: it is the daemon's own record of a return still to make, and a reader acts on what it causes, the members' starts and their places in `admission.waiting`"},
 }
 
 // AssignmentRecordFields is every field of `record.Assignment`, in the order the record declares

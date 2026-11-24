@@ -19,8 +19,10 @@ type HeldReason string
 // The words of C1. The order they are read in is the order of the ladder's own body and
 // is written there alone; this block is the vocabulary, one constant per word.
 const (
-	// HeldTreeClosed is an issue of a tree whose root has finished or lingers after its close:
-	// the daemon starts no issue of such a tree.
+	// HeldTreeClosed is an issue of a tree whose root has finished or lingers after its close, or a
+	// member of a tree whose re-admitted root waits in the line, its design gate open, for the
+	// promotion that opens its tree again (reopensAtPromotion): the daemon starts no issue of such a
+	// tree, and in that last case the root's promotion is what ends the hold.
 	HeldTreeClosed HeldReason = "tree_closed"
 	// HeldTreeParked is an issue of a tree that was parked, its root in backlog or icebox: the
 	// two statuses of OutOfWorkflowStatuses that stop work without finishing it.
@@ -160,6 +162,11 @@ type HeldFacts struct {
 	// rows and the moment the pass read the record (LineFacts.Now), which the tree_closed word
 	// reads a root's linger against.
 	Facts LineFacts
+	// Unopened is the queued roots whose promotion has still to open their tree (AwaitsPromotion),
+	// by key: Waiting's unopened set, which the starting part's hold of those trees' members reads
+	// (FirstPhaseStartsNow). The ladder reads none of it: its word for those members reads the same
+	// roots with no slot term wherever their gate is open (reopensAtPromotion).
+	Unopened map[string]struct{}
 }
 
 // treeRoot is the record of an issue's tree root as the ladder reads it: the pass's own records
@@ -187,6 +194,25 @@ func liveAncestry(issue Issue, live map[string]struct{}) []string {
 		}
 	}
 	return under
+}
+
+// reopensAtPromotion says whether root waits in the line for the promotion that opens its tree
+// while its design gate stands open: a re-admitted root whose tree's lifecycle is not open under
+// the workflow, which the gate leaves queued (ran, dispatch://INFRA-5471), or a root another tree
+// handed over carrying an open gate. Such a tree is closed until that promotion opens it, and its
+// members wait for it: Waiting's hold of an unopened tree's members (its unopened set, over
+// AwaitsPromotion) offers none of them a phase. It is written over QueuedRoot with no slot term,
+// and the two name the same roots wherever the gate is open: a queued root whose gate is open
+// holds no row the daemon granted it in this tree, since a promotion that granted one opened its
+// tree's lifecycle, after which an open gate makes the tree run, and the re-admission frees every
+// row of its tree from the generation before (admit's releaseTreeSlots); a root handed over
+// awaits its promotion whatever row it carries. Without this the ladder's gate word would pass
+// over them, the gate being open, and leave each at at_work or unclassified, which say that its
+// workers run or that no rule names its wait. A queued root whose gate is shut answers false, and
+// its members read design_gate as they always have.
+func reopensAtPromotion(root Issue, facts LineFacts) bool {
+	gate := facts.Gates[root.Key]
+	return gate.Open() && QueuedRoot(root, facts.Lifecycles[root.Key], gate)
 }
 
 // openChildren is the keys of the open Dispatch children of one children-first wait, in the order
@@ -244,7 +270,8 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	// chain walk and the two map reads cost nothing for an issue an earlier word answers for,
 	// which on a project of hundreds of records is most of them.
 	switch {
-	case recorded && (root.Status == DoneStatus || Lingering(root, facts.Facts.Now)):
+	case recorded && (root.Status == DoneStatus || Lingering(root, facts.Facts.Now) ||
+		(!claim.IsTreeRoot(issue.Key, issue.Tree) && reopensAtPromotion(root, facts.Facts))):
 		return HeldTreeClosed, []string{issue.Tree}
 	case recorded && (root.Status == "backlog" || root.Status == "icebox"):
 		return HeldTreeParked, []string{issue.Tree}
@@ -329,7 +356,7 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 // The rows are sorted by issue key, which gives the state's body and the tick's notice a stable
 // order.
 func HeldList(issues []Issue, slots []Slot, line []LineEntry, dropped []HeldIssue, facts LineFacts) []HeldIssue {
-	held := HeldFactsOf(issues, facts)
+	held := HeldFactsOf(issues, slots, facts)
 	placed := make(map[string]struct{}, len(slots)+len(line))
 	for _, slot := range slots {
 		placed[slot.Issue] = struct{}{}
@@ -363,19 +390,26 @@ func HeldList(issues []Issue, slots []Slot, line []LineEntry, dropped []HeldIssu
 }
 
 // HeldFactsOf is the facts the ladder and the starting part's holds read beside each issue
-// (HeldFacts), built over issues, the whole list a pass gave Waiting, and that pass's facts from
-// the same calls Waiting makes: the records by key, one queuedRoots and one liveRoots, and one
-// chainOf. HeldList builds its facts here, and so does a reader outside the line that asks the
-// line's own question of an issue (FirstPhaseStartsNow), such as a replay of a recorded window.
-func HeldFactsOf(issues []Issue, facts LineFacts) HeldFacts {
+// (HeldFacts), built over issues, the whole list a pass gave Waiting, slots, the slot rows it gave
+// Waiting, and that pass's facts from the same calls Waiting makes: the records by key, one
+// queuedRoots, and over it one liveRoots and one unopenedRoots, and one chainOf. HeldList builds
+// its facts here, and so does a reader outside the line that asks the line's own question of an
+// issue (FirstPhaseStartsNow), such as a replay of a recorded window.
+func HeldFactsOf(issues []Issue, slots []Slot, facts LineFacts) HeldFacts {
 	byKey := make(map[string]Issue, len(issues))
 	for _, issue := range issues {
 		byKey[issue.Key] = issue
 	}
+	slotted := make(map[string]struct{}, len(slots))
+	for _, slot := range slots {
+		slotted[slot.Issue] = struct{}{}
+	}
+	queued := queuedRoots(issues, facts)
 	return HeldFacts{
-		ByKey: byKey,
-		Live:  liveRoots(issues, facts, queuedRoots(issues, facts)),
-		Chain: chainOf(byKey, facts.Parents),
-		Facts: facts,
+		ByKey:    byKey,
+		Live:     liveRoots(issues, facts, queued),
+		Chain:    chainOf(byKey, facts.Parents),
+		Facts:    facts,
+		Unopened: unopenedRoots(queued, slotted, facts),
 	}
 }

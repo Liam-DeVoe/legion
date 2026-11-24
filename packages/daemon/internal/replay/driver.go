@@ -647,15 +647,16 @@ func (d *driver) rerank(root string) {
 // starting part (record.FirstPhaseStartsNow) over the line as that pass is about to judge it
 // (admit.Admission.View), read as the line reads it (record.HeldFactsOf). An issue the replay has
 // not filed yet, or has finished, moved past its first phase or taken out of the workflow cannot,
-// nor can one a hold of the starting part keeps back: its tree not running, its root waiting on a
-// person, its tree's design gate closed, a blocker, its open children or an accepted ancestor. A
-// root waiting for its tree to be opened cannot either, since its promotion starts it, which ranks
-// it at its own recorded start (firstStarts.rootRank). Such an issue pins no tree's rank to its
-// own, and one that can again pins it again. Where an answer changes, the rank of each root it moves
-// is written into the root's record in tx, so the pass orders its line by it, as it orders the
-// daemon's line by the ranks of the moment whatever the fact changed of the holds; once the fact
-// commits, the new answers stand and each such root is reranked (rerank), which shows the rank in
-// the replay's copy of Dispatch and reaches the daemon's mirror as a change of it.
+// nor can one a hold of the starting part keeps back: its tree not running or not yet opened by
+// its root's promotion, its root waiting on a person, its tree's design gate closed, a blocker,
+// its open children or an accepted ancestor. A root waiting for its tree to be opened cannot
+// either, since its promotion starts it, which ranks it at its own recorded start
+// (firstStarts.rootRank). Such an issue pins no tree's rank to its own, and one that can again
+// pins it again. Where an answer changes, the rank of each root it moves is written into the
+// root's record in tx, so the pass orders its line by it, as it orders the daemon's line by the
+// ranks of the moment whatever the fact changed of the holds; once the fact commits, the new
+// answers stand and each such root is reranked (rerank), which shows the rank in the replay's copy
+// of Dispatch and reaches the daemon's mirror as a change of it.
 func (d *driver) reviewFirstStarts(ctx context.Context, tx pgx.Tx) error {
 	f := d.firstStarts
 	if !f.left() {
@@ -665,14 +666,15 @@ func (d *driver) reviewFirstStarts(ctx context.Context, tx pgx.Tx) error {
 	if err != nil {
 		return fmt.Errorf("replay: read the line at %s for the recorded first starts: %w", stamp(d.clock.Instant()), err)
 	}
-	line := record.HeldFactsOf(view.Issues, view.Facts)
+	line := record.HeldFactsOf(view.Issues, view.Slots, view.Facts)
 	changed := map[string]bool{}
 	for _, key := range f.keys() {
 		if !f.pending(key) {
 			continue
 		}
 		issue, recorded := line.ByKey[key]
-		barred := !recorded || !record.FirstPhaseStartsNow(issue, record.QueuedRoot(issue, view.Facts.Gates[issue.Key]), line)
+		queued := record.QueuedRoot(issue, view.Facts.Lifecycles[issue.Key], view.Facts.Gates[issue.Key])
+		barred := !recorded || !record.FirstPhaseStartsNow(issue, queued, line)
 		if barred != f.barred[key] {
 			changed[key] = barred
 		}

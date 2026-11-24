@@ -352,7 +352,7 @@ function fixtureBody(name: string): Record<string, unknown> {
   return body;
 }
 
-/** A state body as a caller below the slots reading's contract (240) is served it: with no
+/** A state body as a caller below the slots reading's contract (249) is served it: with no
  * `admission.slots`, no `rank` or `rootRank` on an issue, and no `state` or `since` on a slot,
  * the five keys shaping.go's withoutSlotsReading and withoutRanksAndSlotStates take off. It
  * takes the keys off `state` itself, which the caller reads fresh from its file. */
@@ -1148,6 +1148,53 @@ test("the state golden carries the experiments each issue was drawn for", () => 
   drawn.assignments = [{ experiment: "planning", variant: "b", mode: "random", plan: "" }];
   expect(parses()).toBeFalse();
   drawn.assignments = held;
+  expect(parses()).toBeTrue();
+});
+
+// Contract 246: the state golden carries LEGION-219, whose quiet pod the idle rule has held for
+// background work since the evening before: the reason in the rule's own word, the first and the
+// newest pass of the streak, and the kind the session reported. An issue whose pod no hold stands
+// on carries no key at all, as does every issue of the body served a caller before 246, so the
+// field is optional; a daemon before this contract sent none, and its state must still parse.
+test("the state golden carries a held pod's standing hold", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, Record<string, unknown>>;
+  };
+  const kept = state.issues["LEGION-219"];
+  if (kept === undefined) {
+    throw new Error("state fixture lacks LEGION-219");
+  }
+  expect(kept.podHold).toEqual({
+    reason: "background_work",
+    firstAt: "2026-09-21T22:04:00Z",
+    at: "2026-09-22T09:17:00Z",
+    detail: "async-job",
+  });
+  expect(state.issues["LEGION-208"]?.podHold).toBeUndefined();
+
+  const parses = () => LegionStateResponse.safeParse(state).success;
+  expect(parses()).toBeTrue();
+
+  // A state from a daemon before contract 246, and one served to a caller below it.
+  const held = kept.podHold;
+  delete kept.podHold;
+  expect(parses()).toBeTrue();
+  // A reason a later daemon adds is read rather than refused, and a hold with no detail is the
+  // shape of every hold whose record holds none.
+  kept.podHold = {
+    reason: "a_later_hold",
+    firstAt: "2026-09-21T22:04:00Z",
+    at: "2026-09-22T09:17:00Z",
+  };
+  expect(parses()).toBeTrue();
+  // An empty reason, a reason that is no string, and a pass time that is no time.
+  kept.podHold = { reason: "", firstAt: "2026-09-21T22:04:00Z", at: "2026-09-22T09:17:00Z" };
+  expect(parses()).toBeFalse();
+  kept.podHold = { reason: 7, firstAt: "2026-09-21T22:04:00Z", at: "2026-09-22T09:17:00Z" };
+  expect(parses()).toBeFalse();
+  kept.podHold = { reason: "image", firstAt: "the evening", at: "2026-09-22T09:17:00Z" };
+  expect(parses()).toBeFalse();
+  kept.podHold = held;
   expect(parses()).toBeTrue();
 });
 
@@ -2780,9 +2827,10 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // contract below the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which
   // moved no answer's shape, and the lowest plugin contract reports the claims of the snapshot the
   // route projected the body from, a pod at 201, which `state.json`'s own fixture does not hold.
-  // Four bands stand above 199: the repositories block's at 202; contract 220's, which takes `plan`
+  // Five bands stand above 199: the repositories block's at 202; contract 220's, which takes `plan`
   // off each assignment, so the golden's rows are compared without it; the intake's give-ups' at
-  // 228, so the narrowing leaves `intakeGiveUps` off; and the slots reading's, at 240, which takes
+  // 228, so the narrowing leaves `intakeGiveUps` off; the pod hold's at 246, which leaves `podHold`
+  // off every issue (`withoutPodHold`); and the slots reading's, at 249, which takes
   // `admission.slots`, each issue's `rank` and `rootRank`, and each slot's `state` and `since` off
   // the body (shaping.go's withoutSlotsReading and withoutRanksAndSlotStates). One value strip
   // stands above 199 as well: `caches`, the source of the repository-cache-room row, arrived at
@@ -2812,17 +2860,20 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     ...rest
   } = servedBelowSlotsReadingContract(fixtureBody("state.json"));
   const issues = Object.fromEntries(
-    Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => [
-      key,
-      issue.assignments === undefined
-        ? issue
-        : {
-            ...issue,
-            assignments: (issue.assignments as Record<string, unknown>[]).map(
-              ({ plan: _plan, ...row }) => row
-            ),
-          },
-    ])
+    Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => {
+      const { podHold: _podHold, ...kept } = issue;
+      return [
+        key,
+        kept.assignments === undefined
+          ? kept
+          : {
+              ...kept,
+              assignments: (kept.assignments as Record<string, unknown>[]).map(
+                ({ plan: _plan, ...row }) => row
+              ),
+            },
+      ];
+    })
   );
   const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);
   expect(capabilities.some((row) => row.source === "caches")).toBeTrue();

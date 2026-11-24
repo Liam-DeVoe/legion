@@ -635,7 +635,7 @@ func (f LineFacts) InWaitGrace(key string) bool {
 func (f LineFacts) IdleReturns(holder Issue, slot Slot, members []Issue, claims []HolderClaim) bool {
 	rule := f.Rule.OrMain()
 	if rule.IdleReturn <= 0 || !f.KeepsSlot(holder) || (holder.Phase == phase.Admitted && AtWork(holder, f.Gates[holder.Tree])) ||
-		QueuedRoot(holder, f.Gates[holder.Tree]) {
+		QueuedRoot(holder, f.Lifecycles[holder.Tree], f.Gates[holder.Tree]) {
 		return false
 	}
 	if open, person := IdleWaits(holder, members); !person && len(open) == 0 {
@@ -1405,11 +1405,12 @@ const WaitingLineBand = "among the issues whose work came back, oldest first"
 //
 // A root is in the line as a root that never ran (LineQueuedRoot) only while its own record says
 // the generation it carries has not run — it stands at admitted with its design gate never
-// opened, or it arrived from another tree carrying the phase it ran there (ran). So a person's
-// todo on a running root puts it back in no queue: the root whose gate has opened waits here for
-// its own first phase, and the root in accepting, in merging or at work waits for nothing. The
-// slot does not say it either, for the reason the queued-root loop states at the skip it guards
-// below.
+// opened, or it arrived from another tree carrying the phase it ran there, or it is a re-admitted
+// root whose tree has no lifecycle open under the workflow, whose gate says nothing until its
+// promotion opens the tree (ran). So a person's todo on a running root puts it back in no queue:
+// the root whose gate has opened in a tree that runs waits here for its own first phase, and the
+// root in accepting, in merging or at work waits for nothing. The slot does not say it either, for
+// the reason the queued-root loop states at the skip it guards below.
 //
 // An issue holding a slot row is in the line where its promotion needs more than that row, the
 // three kinds LineEntry.Holds names, and each is promoted without taking a second slot: the
@@ -1448,13 +1449,25 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 	queued := queuedRoots(issues, facts)
 	live := liveRoots(issues, facts, queued)
 	queuedKeys := make(map[string]struct{}, len(queued))
+	// unopened is the queued roots whose promotion has still to open their tree (AwaitsPromotion):
+	// nothing of such a tree starts before that promotion, which offers the root's own work and
+	// brings back its members (admit's returnOwedMembers), so the line offers none of its members
+	// a place (inUnopenedTree). A queued root holding a row the daemon granted it in this tree has
+	// been promoted already, and its members stand in the line as the members of any tree that
+	// runs. The ladder's tree_closed word reads the open-gate members of these trees
+	// (reopensAtPromotion), which is the same set of roots wherever their gate is open.
+	unopened := unopenedRoots(queued, slotted, facts)
 	for _, issue := range queued {
 		queuedKeys[issue.Key] = struct{}{}
+	}
+	inUnopenedTree := func(issue Issue) bool {
+		_, unopenedTree := unopened[issue.Tree]
+		return unopenedTree
 	}
 	// Every drop site reports what it left behind through one ladder, built over the facts the
 	// line itself is judged on, so that the word an issue reads here and the word the assembly
 	// reads for an issue no site saw are read from one set of facts (HeldList).
-	heldFacts := HeldFacts{ByKey: byKey, Live: live, Chain: chain, Facts: facts}
+	heldFacts := HeldFacts{ByKey: byKey, Live: live, Chain: chain, Facts: facts, Unopened: unopened}
 	var heldRows []HeldIssue
 	hold := func(issue Issue) {
 		reason, heldBy := HeldReasonOf(issue, heldFacts)
@@ -1491,9 +1504,14 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineAnswered, Holds: holds}, at: at})
 			continue
 		}
-		if _, waitingAsRoot := queuedKeys[issue.Key]; waitingAsRoot {
-			// A root whose tree is not open yet is in the second part whatever rows it owes: its
-			// promotion opens the tree, and the starts of a run it carries are queued then.
+		// A root whose tree is not open yet is in the second part whatever rows it owes: its
+		// promotion opens the tree, and the starts of a run it carries are queued then. A member of
+		// a tree whose root waits for that promotion is offered no slot either, whatever start it
+		// owes: the promotion starts the member's phase role, which a start it already owes stands
+		// for (workflow.StartFor), and only then does the tree run. Without that, a start a lease hid
+		// from finishFencedStarts through the tree's close would put the member in the line before
+		// its tree had opened (dispatch://INFRA-5471).
+		if _, waitingAsRoot := queuedKeys[issue.Key]; waitingAsRoot || inUnopenedTree(issue) {
 			hold(issue)
 			continue
 		}
@@ -1593,7 +1611,7 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		// above, QueuedRoot, WaitsForSlot and AwaitsPromotion, which reads it, each point here
 		// rather than repeating it.
 		_, holds := slotted[issue.Key]
-		if !AwaitsPromotion(issue, facts.Gates[issue.Key], holds) {
+		if _, awaits := unopened[issue.Key]; !awaits {
 			hold(issue)
 			continue
 		}
@@ -1829,16 +1847,30 @@ func FirstPhaseMayStart(issue Issue) bool {
 // FirstPhaseStartsNow says whether issue's first phase may start now, by the facts of the pass
 // that builds the waiting line (line, as Waiting builds them over its issues): every hold of the
 // line's starting part, read in Waiting's order. queued says whether issue is a root that waits
-// for its tree to be opened (QueuedRoot over its own gate), which its promotion starts and not
-// this branch. It is the one statement of those holds: Waiting reads it of each issue it may
-// offer a first phase, and a replay of a recorded window reads it of each issue whose recorded
-// first start it has still to make, to rank that issue's tree by a start the daemon would make.
+// for its tree to be opened (QueuedRoot over its tree's lifecycle and its own gate), which its
+// promotion starts and not this branch. It is the one statement of those holds: Waiting reads it
+// of each issue it may offer a first phase, and a replay of a recorded window reads it of each
+// issue whose recorded first start it has still to make, to rank that issue's tree by a start the
+// daemon would make.
 //
 // The issue must stand where its first phase can start (FirstPhaseMayStart), and its tree must
 // run: its root recorded among the pass's issues, not lingering, and live, since the line is
 // work the daemon is about to start and a tree that has left runs nothing. A root that handed
 // work to a person starts nothing of its tree while it waits: its members start with its resume
 // (admit's promotion of the answered root). The tree's design gate must stand open.
+//
+// A member of a tree whose root waits for its promotion takes no first phase before that
+// promotion opens the tree (HeldFacts.Unopened). Such a root's gate is shut, and the gate's own
+// hold holds the member, but in two cases: a re-admitted root whose tree has no lifecycle open
+// under the workflow, whose gate says nothing until its promotion (ran), and a root another tree
+// handed over with an open gate (cybermonklabs/legion#5303). A root whose label a person took off
+// while its re-admission still owes its members their return takes no first phase of its own
+// either: nothing hands its tree to the daemon, so the admission pass brings no member back
+// (MembersReturnOwed), and a first phase would start its work ahead of them. A marked root that
+// is still handed over is not held here: the pass brings its members back before the line is
+// judged, and a root that pass passes over for the promotion's hold (admit's heldKeys) is offered
+// its first phase here and stopped by the promotion loop through the same hold, so the candidates
+// behind it keep waiting.
 //
 // A child an unfinished Dispatch issue holds where it stands (LineFacts.Held) waits for that
 // issue, not for a slot: offered one it would take it from an issue that can work, and its own
@@ -1866,6 +1898,9 @@ func FirstPhaseStartsNow(issue Issue, queued bool, line HeldFacts) bool {
 	}
 	root, recorded := line.ByKey[issue.Tree]
 	if _, live := line.Live[issue.Tree]; !recorded || root.Lingers() || !live {
+		return false
+	}
+	if _, unopened := line.Unopened[issue.Tree]; unopened || (issue.MembersOwed && !issue.HandedOver) {
 		return false
 	}
 	if root.AwaitingPerson() || !line.Facts.Gates[issue.Tree].Open() {
@@ -1900,29 +1935,45 @@ func WaitingIssues(line []LineEntry) []Issue {
 func queuedRoots(issues []Issue, facts LineFacts) []Issue {
 	queued := make([]Issue, 0, len(issues))
 	for _, issue := range issues {
-		if QueuedRoot(issue, facts.Gates[issue.Key]) {
+		if QueuedRoot(issue, facts.Lifecycles[issue.Key], facts.Gates[issue.Key]) {
 			queued = append(queued, issue)
 		}
 	}
 	return queued
 }
 
+// unopenedRoots is the roots of queued (queuedRoots) whose promotion has still to open their tree
+// (AwaitsPromotion), by key, slotted being the keys that hold a slot row: Waiting's unopened set,
+// written once so that the line and a reader that asks the line's question outside it
+// (HeldFactsOf) read the same roots.
+func unopenedRoots(queued []Issue, slotted map[string]struct{}, facts LineFacts) map[string]struct{} {
+	unopened := make(map[string]struct{}, len(queued))
+	for _, issue := range queued {
+		if _, holds := slotted[issue.Key]; AwaitsPromotion(issue, facts.Lifecycles[issue.Key], facts.Gates[issue.Key], holds) {
+			unopened[issue.Key] = struct{}{}
+		}
+	}
+	return unopened
+}
+
 // QueuedRoot says whether issue is a root handed to Legion that waits in the line for its tree
 // to be opened: a root that never ran, a re-admitted one and a handed-over one, each standing in
 // todo, not waiting on a person (whose answer resumes it where it stands) and with a record that
-// does not already say this generation runs (ran). It is the one statement of the rule, read by
-// the line itself, by the set of live trees (liveRoots), by the set of running ones (TreeRuns)
-// and by the relay of a person's decision (WaitsForSlot), so that no two of them disagree about
-// a root that has still to start.
+// does not already say this generation runs (ran, over lifecycle, its tree's lifecycle, and gate,
+// its own design gate). It is the one statement of the rule, read by the line itself, by the set
+// of live trees (liveRoots), by the set of running ones (TreeRuns) and by the relay of a person's
+// decision (WaitsForSlot), so that no two of them disagree about a root that has still to start.
 //
-// The tree's lifecycle does not answer this, though it is what says the tree is live
+// The tree's lifecycle does not answer this alone, though it is what says the tree is live
 // (liveRoots): a lifecycle that stands open says the tree once opened, not that this generation
 // of the root is running, and a root whose tree ran and ended queues again with that row still
-// standing until its cleanup confirms. The slot does not answer it either: a root arriving from
-// another tree in a phase that keeps a slot may carry the row it held there while the tree of
-// its own has still to be opened, which Waiting's queued-root loop states at the skip it guards.
-func QueuedRoot(issue Issue, gate TreeGate) bool {
-	if !issue.HandedOver || !claim.IsTreeRoot(issue.Key, issue.Tree) || ran(issue, gate) {
+// standing until its cleanup confirms. It is read in one case only, which ran states: a
+// re-admitted root whose members are still owed their return. The slot does not answer it
+// either: a root arriving from another tree in a phase that keeps a slot may carry the row it
+// held there while the tree of its own has still to be opened, which Waiting's queued-root loop
+// states at the skip it guards.
+func QueuedRoot(issue Issue, lifecycle treelifecycle.Lifecycle, gate TreeGate) bool {
+	if !issue.HandedOver || !claim.IsTreeRoot(issue.Key, issue.Tree) || ran(issue, lifecycle, gate) {
 		return false
 	}
 	return !issue.AwaitingPerson() && issue.Status == "todo"
@@ -1938,6 +1989,14 @@ func QueuedRoot(issue Issue, gate TreeGate) bool {
 // A re-admission clears the gate with the rest of the generation, so a tree Legion takes back
 // queues again as a root that never ran, which is what it is.
 //
+// The gate says nothing of a root whose re-admission still owes its members their return
+// (Issue.MembersOwed) while its tree's lifecycle is not open under the workflow: its cleanup
+// reserved or confirmed, as after a linger that ended, or no lifecycle at all. Such a tree has
+// nothing open to run in, and only the promotion opens its next epoch, so the root stays queued
+// whatever its gate says, and that promotion brings the members back (dispatch://INFRA-5471). A
+// re-admission inside the linger finds the lifecycle open, and the gate's opening makes that tree
+// run at once (MembersReturnOwed).
+//
 // The one record that carries a run and has still to run here is a root that has just arrived
 // from another tree with the phase it ran there (Issue.HandedOverFrom): that run belonged to the
 // tree it left, and the tree of its own it becomes has yet to be opened, so its promotion opens
@@ -1947,20 +2006,43 @@ func QueuedRoot(issue Issue, gate TreeGate) bool {
 // such a root, running and holding no row of its own tree in accepting or merging, would queue
 // it here again and promote it a second time, starting its merger over a merge that has already
 // been made.
-func ran(issue Issue, gate TreeGate) bool {
-	return issue.HandedOverFrom == "" && (issue.CarriesRun() || gate.EverOpened())
+func ran(issue Issue, lifecycle treelifecycle.Lifecycle, gate TreeGate) bool {
+	gateSaysRan := gate.EverOpened() && !(issue.MembersOwed && !lifecycle.OpenUnderWorkflow())
+	return issue.HandedOverFrom == "" && (issue.CarriesRun() || gateSaysRan)
 }
 
 // AwaitsPromotion says whether root waits for the promotion that opens its tree: it is a queued
-// root (QueuedRoot, over gate, its own design gate), and holds, whether it holds a slot row, names
-// no row the daemon granted it in this tree. A queued root holding such a row has been promoted
-// already, while a root that arrived from another tree (Issue.HandedOverFrom) may carry the row it
-// held there and still wait; Waiting's queued-root loop, which reads this, states why. Until that
-// promotion nothing of the tree runs: the root's carried phase, and each member a re-admission
-// left mid-phase, start their runs there (admit's startMidPhaseMembers), so the boot and the settle
-// open and record no run of such a tree (workflow's generationStarted).
-func AwaitsPromotion(root Issue, gate TreeGate, holds bool) bool {
-	return QueuedRoot(root, gate) && !(holds && root.HandedOverFrom == "")
+// root (QueuedRoot, over lifecycle and gate, its tree's lifecycle and its own design gate), and
+// holds, whether it holds a slot row, names no row the daemon granted it in this tree. A queued
+// root holding such a row has been promoted already, while a root that arrived from another tree
+// (Issue.HandedOverFrom) may carry the row it held there and still wait; Waiting's queued-root
+// loop, which reads this, states why. Until that promotion nothing of the tree runs: the root's
+// carried phase, and each member a re-admission left mid-phase, start their runs there (admit's
+// returnOwedMembers), so the boot and the settle open and record no run of such a tree
+// (workflow's generationStarted).
+func AwaitsPromotion(root Issue, lifecycle treelifecycle.Lifecycle, gate TreeGate, holds bool) bool {
+	return QueuedRoot(root, lifecycle, gate) && !(holds && root.HandedOverFrom == "")
+}
+
+// MembersReturnOwed says whether the admission pass acts on root's mark now: a re-admission owes
+// the members their return (Issue.MembersOwed), the root's design gate has opened
+// (TreeGate.EverOpened) and its tree runs (TreeRuns, over lifecycle, its tree's lifecycle), so the
+// root is no queued root and no promotion will come for it. That is a re-admitted root whose
+// architect registered an approved design while the root still waited in the line: the promotion
+// that brings a re-admitted tree's members back (admit's returnOwedMembers) no longer comes, and
+// the pass brings them back instead, once, and clears the mark (dispatch://INFRA-5471). This
+// release's promotion clears the mark itself, so a tree it opened never reads true here. A true
+// answer can also be a stale mark an earlier release's promotion left, which never names the
+// column (admit's promotedByEarlierRelease): the pass clears it and starts nothing (admit's
+// returnMembersOfRunningTrees).
+//
+// The root must still be handed to Legion (Issue.HandedOver), as a promotion asks of a queued root:
+// a root whose label a person took off while it waited is no queued root either, and the tree runs
+// by its lifecycle, but nothing hands that tree's work to the daemon, so the mark stands until the
+// label is back and the members come back then.
+func MembersReturnOwed(root Issue, lifecycle treelifecycle.Lifecycle, gate TreeGate) bool {
+	return root.MembersOwed && root.HandedOver && claim.IsTreeRoot(root.Key, root.Tree) && gate.EverOpened() &&
+		TreeRuns(root, lifecycle, gate)
 }
 
 // treeLive is TreeLive over the facts of one root already in hand: its tree's lifecycle and its
@@ -1974,7 +2056,7 @@ func treeLive(root Issue, lifecycle treelifecycle.Lifecycle, gate TreeGate) bool
 	case root.AwaitingPerson():
 		return true
 	}
-	return lifecycle.OpenUnderWorkflow() || QueuedRoot(root, gate)
+	return lifecycle.OpenUnderWorkflow() || QueuedRoot(root, lifecycle, gate)
 }
 
 // TreeLive says whether root's tree is live: its lifecycle stands open under the workflow's own
@@ -1999,7 +2081,7 @@ func TreeLive(ctx context.Context, store Store, tx pgx.Tx, root Issue, steps []D
 	if root.AwaitingPerson() {
 		return true, nil
 	}
-	lifecycle, gate, err := rootFacts(ctx, store, tx, root, steps)
+	lifecycle, gate, err := RootFacts(ctx, store, tx, root, steps)
 	if err != nil {
 		return false, err
 	}
@@ -2020,7 +2102,7 @@ func TreeLive(ctx context.Context, store Store, tx pgx.Tx, root Issue, steps []D
 // linger needs: readmit clears the linger while the lifecycle of the run that ended still
 // stands open, so the lifecycle alone would call such a root running.
 func TreeRuns(root Issue, lifecycle treelifecycle.Lifecycle, gate TreeGate) bool {
-	return lifecycle.OpenUnderWorkflow() && !root.Lingers() && !QueuedRoot(root, gate)
+	return lifecycle.OpenUnderWorkflow() && !root.Lingers() && !QueuedRoot(root, lifecycle, gate)
 }
 
 // TreeRunning is TreeRuns for a caller holding one root and no facts of a pass: it reads that
@@ -2030,7 +2112,7 @@ func TreeRunning(ctx context.Context, store Store, tx pgx.Tx, root Issue, steps 
 	if !claim.IsTreeRoot(root.Key, root.Tree) || root.Lingers() {
 		return false, nil
 	}
-	lifecycle, gate, err := rootFacts(ctx, store, tx, root, steps)
+	lifecycle, gate, err := RootFacts(ctx, store, tx, root, steps)
 	if err != nil {
 		return false, err
 	}
@@ -2087,12 +2169,13 @@ func ReadRunningRoots(ctx context.Context, tx pgx.Tx, store Store, project strin
 	return RunningRoots(issues, LineFacts{Lifecycles: lifecycles, Gates: gates}), nil
 }
 
-// rootFacts is one root's tree lifecycle and design gate, for the single-root readings of the two
-// rules above — TreeLive, which the recording of a todo child under a live tree asks, and
-// TreeRunning, which workflow's sessionStatusWrite asks of a session's status write: a pass that
-// judges many trees reads them in bulk instead (ReadLineFacts). steps are the design-gate steps
-// the deployment gates.
-func rootFacts(ctx context.Context, store Store, tx pgx.Tx, root Issue, steps []DesignStep) (treelifecycle.Lifecycle, TreeGate, error) {
+// RootFacts is one root's tree lifecycle and design gate, for the single-root readings of the
+// rules above — TreeLive, which the recording of a todo child under a live tree asks, TreeRunning,
+// which workflow's sessionStatusWrite asks of a session's status write, and QueuedRoot and
+// AwaitsPromotion for a reader holding one root (WaitsForSlot, the outbox's startRoot, workflow's
+// generationStarted): a pass that judges many trees reads them in bulk instead (ReadLineFacts).
+// steps are the design-gate steps the deployment gates.
+func RootFacts(ctx context.Context, store Store, tx pgx.Tx, root Issue, steps []DesignStep) (treelifecycle.Lifecycle, TreeGate, error) {
 	project, err := claim.ProjectToken(root.Project)
 	if err != nil {
 		return treelifecycle.Lifecycle{}, TreeGate{}, err
