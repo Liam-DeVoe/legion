@@ -14,15 +14,17 @@ import (
 // installs the scripts at its boot before it starts supervision, the NATS connection or its API,
 // and `legion controller start` while nothing else of it starts one. RunsBeside's forks stand in
 // for a process that does. Each install's three scripts are three runs: the first of each three
-// installs again, over the install before, and each runs its script as soon as the install
-// returns.
+// installs again, over the install before, and the three run newest first, so git, which Install
+// writes last, runs as soon as it returns. Run oldest first, legion's run came after the writes of
+// gh and git, and with programfile.Write's lock taken out the test met 13 refusals in one run of
+// its 450 and none in another.
 func TestTheScriptsInstallWritesRunWhileTheProcessForks(t *testing.T) {
 	legion, err := exec.LookPath("true")
 	if err != nil {
 		t.Fatalf("no true command for the scripts to exec: %v", err)
 	}
 	root := t.TempDir()
-	names := []string{"legion", "gh", "git"}
+	names := []string{"git", "gh", "legion"}
 	const installs = 150
 	testexec.RunsBeside(t, len(names)*installs, func(i int) error {
 		if i%len(names) == 0 {
