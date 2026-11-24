@@ -678,6 +678,11 @@ func (r *idleWakeRig) boot() {
 	}
 	if r.options.wallClock {
 		o.clock = nil
+	} else {
+		// The still clock fires no timer, and the pod start gate ends a role's session load on a
+		// timer a settle after its registration (supervise.PodStarts), so on it the second role of
+		// a pod would never start. The gate runs on the wall clock instead, as in a deployment.
+		o.podStartClock = supervise.RealClock{}
 	}
 	go func() {
 		done <- run(ctx, r.cfg, logger, o)

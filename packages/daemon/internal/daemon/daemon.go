@@ -173,6 +173,11 @@ type overrides struct {
 	runtime runtimeFactory
 	// clock is the machines' time; nil is the wall clock.
 	clock supervise.Clock
+	// podStartClock is the clock of the pod start gate (podStarts); nil is the machines' clock. A
+	// test whose machine clock fires no timer (the idle rig's stillClock) gives the gate the wall
+	// clock, so the roles of one pod start one session load at a time and each next start comes a
+	// settle after the registration before it, as in a deployment, rather than never.
+	podStartClock supervise.Clock
 	// getenv is the environment the OMP invocation is resolved against; nil is the process's.
 	getenv func(string) string
 	// environ is the environment provider keys are resolved under (`secrets get`) and the NATS
@@ -998,6 +1003,9 @@ type plan struct {
 	// kubernetes, whose probe reports it, and for a replaced runtime.
 	modelFallback func(ctx context.Context) string
 	clock         supervise.Clock
+	// podStartClock is the pod start gate's clock (overrides.podStartClock), the machines' clock
+	// where no test gives it one.
+	podStartClock supervise.Clock
 	orphanSweep   time.Duration
 	// controllerRetry is the controller keeper's first wait before it retries a failed controller.
 	controllerRetry time.Duration
@@ -1154,6 +1162,10 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	if clock == nil {
 		clock = supervise.RealClock{}
 	}
+	podStartClock := o.podStartClock
+	if podStartClock == nil {
+		podStartClock = clock
+	}
 	orphanSweep := o.orphanSweep
 	if orphanSweep == 0 {
 		orphanSweep = orphanSweepInterval
@@ -1176,7 +1188,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames), installed: appauth.NewInstalled(), left: appauth.NewLeftOut(),
 		project: reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions,
 		dispatchToken: reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
-		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
+		tools: reads.tmux.tools, clock: clock, podStartClock: podStartClock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
@@ -1888,7 +1900,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			Burst:   cfg.WorkerWakeBurst,
 		},
 		RefreshGate:        refreshGate,
-		PodStarts:          podStarts(cfg, p.clock),
+		PodStarts:          podStarts(cfg, p.podStartClock),
 		PluginContract:     api.DaemonAPIVersion,
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
@@ -2556,10 +2568,11 @@ func noPluginInstall(cfg config.Config, c supervise.Claim) bool {
 }
 
 // podStarts is the gate the machines of this daemon start their roles' processes through
-// (supervise.Deps.PodStarts, dispatch://INFRA-5297): one per daemon, on the machines' own clock,
-// under the Kubernetes runtime alone, where every role of an issue runs in the issue's one pod
-// under one memory limit. tmux runs each role in a pane of the host's, with no pod for two loads
-// to meet in, so it gets none and no start waits.
+// (supervise.Deps.PodStarts, dispatch://INFRA-5297): one per daemon, on the machines' own clock
+// unless a test gives it one of its own (overrides.podStartClock), under the Kubernetes runtime
+// alone, where every role of an issue runs in the issue's one pod under one memory limit. tmux runs
+// each role in a pane of the host's, with no pod for two loads to meet in, so it gets none and no
+// start waits.
 func podStarts(cfg config.Config, clock supervise.Clock) *supervise.PodStarts {
 	if cfg.Runtime.Name != "kubernetes" {
 		return nil
