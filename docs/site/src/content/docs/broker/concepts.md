@@ -69,8 +69,10 @@ source: each source, each component, and every issue of the project, closed and 
 included. No setting holds a read entry to some projects.
 
 An enrollment is leased for `BROKER_LEASE_SECONDS` and renewed while its session runs: the helper
-renews the sessions it registered, `agent-secrets renew` renews a box, and Legion's pod shim renews
-a pod. A pod's renewal carries the pod's current projected token, and the broker refuses it
+renews the sessions it registered, `agent-secrets renew` renews a box, Legion's pod shim renews
+a pod, and the commands of a person signed in on a machine keep that sign-in's enrollment renewed
+while the machine needs it ([A sign-in's renewal](#a-sign-ins-renewal)). A pod's renewal carries
+the pod's current projected token, and the broker refuses it
 (`POD_IDENTITY_MISMATCH`) unless the token names the pod UID and service account the enrollment was
 made for. The token is not yet required. The broker ratchets each pod UID instead: once any
 enrollment naming a pod UID, live or ended, has renewed with that pod's token, the broker refuses a
@@ -144,6 +146,45 @@ records no operator when a service's login enrolled it, since the Legion daemon 
 service with its own Kubernetes token rather than as a person. A pod whose account
 `BROKER_POD_OPERATORS` maps to a person records that person as its operator as well
 ([a person's pod](#a-persons-pod)).
+
+### A sign-in's renewal
+
+A person's sign-in on a machine registers one enrollment, which every session of that person on
+the machine signs as, and which names no session. Nothing launches it, so nothing else renews it:
+each `agent-secrets` command that signs as the sign-in keeps it renewed. The command records that
+it used the sign-in, and a request it leaves waiting for a person, in the sign-in's renewal
+directory beside its record (`<hash>.renewal` in the sign-in store), and starts the sign-in's one
+renewer, `agent-secrets renew --sign-in`, where none runs. The renewer runs in a session of its own
+and holds the flock of that directory's `lock` for its whole life, so two commands at once start
+one renewer between them. It renews the enrollment the sign-in's record names when a third of the
+lease has passed, as `agent-secrets renew` renews a box, while the machine needs it:
+
+- a command used the sign-in less than one lease ago;
+- a request one of those commands left waiting for a person is still pending, which the renewer
+  asks the broker once the first no longer holds; or
+- a grant of the enrollment that has an end is still live, which the renewer reads in
+  `GET /v1/enrollments/self`. A grant with no end, one that lasts until its session ends, keeps the
+  enrollment no longer than use does.
+
+So a grant a person approved lasts to its own end, and a request waits for its person until they
+decide it, it is cancelled or it expires, however long the session waits between commands. The
+renewer stops, and the lease then lapses within one more lease, once none of the three holds;
+once the record names no enrollment or is gone from the machine; once the broker refuses the
+enrollment for good, as after the person revokes the sign-in, exiting 76; and once for 30
+minutes, or two leases where the lease is longer, no renewal got through or no answer of the
+broker said whether anything needs the enrollment, exiting 1, so a renewer whose broker went
+away does not retry forever. A refused enrollment is recorded in the `lock` file, and no later
+renewer sends it again. A new `agent-secrets login` writes a record that names a new
+enrollment, which the running renewer renews from its next renewal on.
+
+A renewer that is killed, with its machine or its process tree, renews nothing until a command
+starts one: the next command of the sign-in, or within a second a use command still waiting for
+a person, which looks each second. A grant is lost, and a request cancelled, if neither runs
+before the lease lapses. A grant with no end lasts while the sign-in is in use. The renewer
+itself registers no enrollment: a command that finds the enrollment ended registers the next
+one, as before, and keeps that one renewed. Each renewer writes to `renewer.log` in the renewal
+directory why it stopped and each renewal that failed; one stopped by SIGTERM or SIGINT writes
+no line.
 
 ### When no broker is serving
 
