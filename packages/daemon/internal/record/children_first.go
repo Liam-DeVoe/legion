@@ -107,10 +107,10 @@ func OpenChildHolds(p phase.Phase) bool {
 // parent gives each judgement exactly what a read of its own parents would; an issue in more than
 // one set — one at admitted that owes a start — is judged in each. A parent with none has no entry
 // in any of the three maps. facts are the pass's own, which carry the gates each candidate is read
-// against and the starts the project owes (LineFacts.Owed), and pass the one chain of the pass
-// (passChain), which every walk of it reads: the cycle walk (ChildWaits), the child left out
-// (withoutHeldUnderAccepted) and, after this, the issues beneath a parent held before its retro
-// (retroHoldsOf).
+// against and the starts the project owes (LineFacts.Owed), and pass the pass's own records
+// (passChain.issues) with the one chain of the pass, which every walk of it reads: the cycle walk
+// (ChildWaits), the child left out (withoutHeldUnderAccepted) and, after this, the issues beneath a
+// parent held before its retro (retroHoldsOf).
 //
 // It is two queries whatever the number of parents, and none where no issue can wait on its
 // children (Store.DispatchChildren reads nothing for no parents, judgeChildren nothing for no
@@ -124,11 +124,11 @@ func OpenChildHolds(p phase.Phase) bool {
 // back to the step ReturnStep gives its held start (admit's childrenWaits), and the held list
 // names the children of a parent in awaiting_children and of one held before its retro
 // (HeldReasonOf), each from this one read of the pass.
-func readChildWaits(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, held []string, facts LineFacts,
+func readChildWaits(ctx context.Context, tx pgx.Tx, store Store, project string, held []string, facts LineFacts,
 	pass *passChain,
 ) (childrenFirst, started, retroHeld map[string]ChildWait, err error) {
-	candidates := ChildrenFirstCandidates(issues, facts.Gates)
-	parents := StartedParents(issues, facts.Owed)
+	candidates := ChildrenFirstCandidates(pass.issues, facts.Gates)
+	parents := StartedParents(pass.issues, facts.Owed)
 	all := slices.Concat(candidates, parents, held)
 	slices.Sort(all)
 	children, err := store.DispatchChildren(ctx, tx, project, slices.Compact(all))
@@ -272,8 +272,8 @@ func ChildOpen(child DispatchIssueRow, recorded *Issue) bool {
 // ChildWaits is the children-first judgement of one admission pass: for each parent of children,
 // the open Dispatch children under it (ChildOpen), by parent key. A parent with none has no
 // entry, so the map is exactly the set of issues whose own first phase waits. children is what
-// the mirror says hangs under each parent (Store.DispatchChildren) and own the records the pass
-// already holds, by key.
+// the mirror says hangs under each parent (Store.DispatchChildren) and pass the records the pass
+// already holds (passChain.own) with the chain it walks.
 //
 // Nothing here is stored. The wait ends when every open child is released and leaves the
 // workflow, is closed, is moved to icebox, is moved to another parent, or is moved out from
@@ -292,11 +292,13 @@ func ChildOpen(child DispatchIssueRow, recorded *Issue) bool {
 // since the child was filed does not see it, and the children-first wait is complete only from
 // the first boot listing after the child exists.
 //
-// chain is the records the pass walks its parent chains over (chainOf): own and the records of
-// the issues over them that the pass leaves out (LineFacts.Parents), so that the cycle's own walk
-// of the parent chain crosses an ancestor already done. It is the one chain of the pass, which
-// every walk of the pass reads (passChain), read here exactly as the line reads it.
-func ChildWaits(own map[string]Issue, children map[string][]DispatchIssueRow, records, chain map[string]Issue) map[string]ChildWait {
+// The chain is the records the pass walks its parent chains over (passChain.chain, chainOf): its
+// own records and the records of the issues over them that the pass leaves out
+// (LineFacts.Parents), so that the cycle's own walk of the parent chain crosses an ancestor
+// already done. It is the one chain of the pass, which every walk of the pass reads, read here
+// exactly as the line reads it.
+func ChildWaits(pass *passChain, children map[string][]DispatchIssueRow, records map[string]Issue) map[string]ChildWait {
+	own, chain := pass.own(), pass.chain()
 	waits := make(map[string]ChildWait, len(children))
 	for key, rows := range children {
 		parent, recorded := own[key]
@@ -397,7 +399,7 @@ func judgeChildren(ctx context.Context, tx pgx.Tx, store Store, project string, 
 		return nil, nil, err
 	}
 	records := byKey(rows)
-	return ChildWaits(pass.own(), children, records, pass.chain()), records, nil
+	return ChildWaits(pass, children, records), records, nil
 }
 
 // ChildWaitRows is the children-first waits as the rows the state's `blocked` and a tick

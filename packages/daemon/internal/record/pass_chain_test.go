@@ -67,10 +67,8 @@ func allocated(do func()) uint64 {
 // One pass builds its parent chain once (passChain), and every walk of it ReadLineFacts makes
 // reads that one map: the cycle of each Dispatch child (ChildWaits), the child left out of the
 // started parents' waits and of the retro-held parents' (withoutHeldUnderAccepted) and the issues
-// beneath a parent held before its retro (retroHoldsOf). Each of the four built a copy of its own
-// before, of the pass's records and of every record above them, so a pass that made all four walks
-// copied every record above it four times. The pass here makes all four: a started root and a root
-// held before its retro, each with a child filed under it that no tree records.
+// beneath a parent held before its retro (retroHoldsOf). The pass here makes all four: a started
+// root and a root held before its retro, each with a child filed under it that no tree records.
 //
 // Nothing of a build shows outside the pass but its cost, so the builds are counted by their bytes.
 // The records above the pass are many (aboveRecords, which the read of them answers), each a done
@@ -78,7 +76,8 @@ func allocated(do func()) uint64 {
 // allocates. The pass's bytes, less those of the read of those records (ReadParents, which
 // ReadLineFacts makes as it is) and of the one walk that lists every record of the chain
 // (openBeneathIn, for the held root), are a whole number of chains, each the bytes of one build
-// (chainOf). The pass before passChain comes to four.
+// (chainOf). The band around one catches a walk that builds a copy of its own, which adds one
+// chain: a pass whose four walks each build one comes to four.
 func TestAPassBuildsItsParentChainOnce(t *testing.T) {
 	const (
 		started      = "LEGION-960" // a root in implementing, filed under a done issue
@@ -116,9 +115,9 @@ func TestAPassBuildsItsParentChainOnce(t *testing.T) {
 		}
 		read := allocated(func() { _, err = ReadParents(ctx, tx, records, "LEGION", issues) })
 		must(t, err)
-		chain := chainOf(byKey(issues), facts.Parents)
+		var chain map[string]Issue
+		one := allocated(func() { chain = chainOf(byKey(issues), facts.Parents) })
 		listed := allocated(func() { openBeneathIn(heldRoot, chain) })
-		one := allocated(func() { _ = chainOf(byKey(issues), facts.Parents) })
 		beyond := int64(pass) - int64(read) - int64(listed)
 		builds := float64(beyond) / float64(one)
 		t.Logf("the pass allocated %d bytes: %d for the read of the records above it, %d for the list of the held root's tree, and %.2f chains of %d bytes",

@@ -358,7 +358,8 @@ func chainOf(byKey, above map[string]Issue) map[string]Issue {
 // walk after: the pass walks the chain for the cycle of each child (ChildWaits), for the child left
 // out of the started parents' waits and of the retro-held parents' (withoutHeldUnderAccepted) and
 // for the issues beneath each parent held before its retro (retroHoldsOf), so it builds it once,
-// and not at all where it reads no Dispatch child and holds no parent before its retro.
+// and not at all where it reads no Dispatch child and holds no parent before its retro. Every walk
+// only reads the two maps, which every walk after the first shares, so none may write them.
 type passChain struct {
 	issues         []Issue
 	above          map[string]Issue
@@ -879,7 +880,7 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 	held := RetroHeldParents(issues)
 	pass := &passChain{issues: issues, above: facts.Parents}
 	var children map[string]ChildWait
-	if facts.childrenFirst, facts.StartedParentWaits, children, err = readChildWaits(ctx, tx, store, project, issues, held, facts, pass); err != nil {
+	if facts.childrenFirst, facts.StartedParentWaits, children, err = readChildWaits(ctx, tx, store, project, held, facts, pass); err != nil {
 		return LineFacts{}, err
 	}
 	resting, err := RestingRootsOn(ctx, tx, store, held)
