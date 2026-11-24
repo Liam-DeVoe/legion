@@ -94,11 +94,35 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 			next.Earlier = append(slices.Clip(before.Earlier), record.LandedMergeForward{Head: before.Head, Landed: before.Landed})
 		}
 	}
-	// The ask and the hold are queued before the record holds the ask: the write of the record opens
-	// a merge forward asked of the owner, which asks the owner again (ownersMergeForwardWritten,
-	// askOwnerAgain) unless an ask at that head is queued already, and this one is.
-	if err := e.tellAsk(ctx, tx, issue, *next, pr.Number, named, true); err != nil {
+	// Planted fault, a control of a test, never merged: the addressing the one order of a merge
+	// forward's messages replaced. Each claim is addressed once (addressRoles), the agent asked gets
+	// the ask, and the ask carries no cover of the hold that same claim works.
+	var recipients []roleRecipient
+	if named {
+		recipients = append(recipients, asked)
+	}
+	if !own {
+		worker, token, held, err := record.MergeForwardWorker(record.MergeForwardHold, issue, at)
+		if err != nil {
+			return err
+		}
+		if held {
+			recipients = append(recipients, roleRecipient{issue: issue.Key, role: worker, row: issue.Key, claim: token})
+		}
+	}
+	addressed, err := e.addressRoles(ctx, tx, issue.Project, recipients, nil)
+	if err != nil {
 		return err
+	}
+	for _, to := range addressed {
+		message := record.MergeForwardMessage{Role: to.role, Claim: to.token, Step: record.MergeForwardHold, Head: pr.HeadSHA, Base: pr.Base,
+			Phase: at, PullRequest: pr.Number, Why: why}
+		if named && to.token == asked.claim {
+			message = next.Ask(pr.Number, "")
+		}
+		if err := e.enqueue(ctx, tx, to.issue, message); err != nil {
+			return err
+		}
 	}
 	if !own {
 		reason := fmt.Sprintf("the head %s conflicts with %s (%s): the agent of the task's implementation step is asked to merge %s forward, and the issue stays in %s",
