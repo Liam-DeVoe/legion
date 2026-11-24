@@ -1,16 +1,14 @@
 name: envoy-session-proofs
 description: >-
-  The envoy-session-proofs leg of ci.yaml's envoy-held job: four proofs against envoy and
+  The envoy-session-proofs leg of ci.yaml's envoy-held job: three proofs against envoy and
   Dispatch stacks built from this tree, on the job's Postgres - claimant delivery of Dispatch's
   outbox (scripts/e2e/dispatch-claimant-delivery.sh), the verification results of Dispatch
-  (scripts/e2e/verification-results.sh), the session title of claude-envoy
-  (packages/claude-envoy/scripts/smoke-session-title.sh) and a private project's secrets at the
-  broker (packages/envoy/scripts/project-secrets-check.sh, its local-stack mode and its negative
-  control) - which the merge queue runs, and a pull request with full-ci or a lane label of the
-  job. The first three ran in envoy-session-stall's leg, which passed the 10 minutes a pull
-  request's job is held to with them (16.2 minutes in CI run 45292147224). The leg runs on
-  ubuntu-24.04, with the setup that leg gives them. DISPATCH_TEST_DATABASE_URL names the job's
-  Postgres, and each proof's step carries it.
+  (scripts/e2e/verification-results.sh) and the session title of claude-envoy
+  (packages/claude-envoy/scripts/smoke-session-title.sh) - which the merge queue runs, and a pull
+  request with full-ci or a lane label of the job. They ran in envoy-session-stall's leg, which
+  passed the 10 minutes a pull request's job is held to with them (16.2 minutes in CI run
+  45292147224). The leg runs on ubuntu-24.04, with the setup that leg gives them.
+  DISPATCH_TEST_DATABASE_URL names the job's Postgres, and each step carries it.
 inputs:
   postgres:
     description: The id of the job's Postgres service container (ci.yaml's `job.services.postgres.id`).
@@ -28,7 +26,7 @@ runs:
         go-download-base-url: https://go.dev/dl
         token: ''
         cache: false
-    # go-envoy: the listener, natsd, envoy-dispatch and the secrets stack's binaries the proofs build.
+    # go-envoy: the listener, natsd and envoy-dispatch the three proofs build.
     - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
@@ -83,35 +81,3 @@ runs:
       env:
         DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       run: bash packages/claude-envoy/scripts/smoke-session-title.sh
-    # A private Dispatch project's secret goes only to a credential that names the project
-    # (dispatch://INFRA-3862's R11): dev-stack.sh --project-access built from this tree, with the
-    # broker's airlock stands in a container of the Debian image .github/ci-images.yaml copies, and
-    # six callers' trades and requests, one PASS or FAIL line per row; it exits 0 only when all 16
-    # rows ran and passed. Its live mode reads a deployment, a tool that no job runs.
-    - name: Private project secrets on the local stack (project-secrets-check.sh)
-      shell: bash
-      working-directory: packages/envoy
-      env:
-        DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
-      run: |
-        export DEV_STACK_AIRLOCK_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
-        LEGION_TEST_PG_DSN="$DISPATCH_TEST_DATABASE_URL" bash scripts/project-secrets-check.sh
-    # The same check's negative control on a stack of its own: PRIV_KEY written with no project
-    # tag, so every caller gets it, and the run exits 1 naming the first caller that should have
-    # been refused. The step passes only on that line, since a control that names no caller shows
-    # a check blind to the rule.
-    - name: Negative control of the private project secrets check (project-secrets-check.sh --control untagged)
-      shell: bash
-      working-directory: packages/envoy
-      env:
-        DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
-      run: |
-        export DEV_STACK_AIRLOCK_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
-        out=$RUNNER_TEMP/project-secrets-control.out
-        status=0
-        LEGION_TEST_PG_DSN="$DISPATCH_TEST_DATABASE_URL" bash scripts/project-secrets-check.sh --control untagged 2>&1 |
-          tee "$out" || status=${PIPESTATUS[0]}
-        if [ "$status" -ne 1 ] || ! grep -q '^control: the first caller that got PRIV_KEY although it should have been refused: ' "$out"; then
-          echo "::error::the control exited $status and named no caller that got PRIV_KEY although it should have been refused"
-          exit 1
-        fi

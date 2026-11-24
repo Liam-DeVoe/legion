@@ -270,11 +270,12 @@ of the two secrets and one trade (`packages/cipher-client/scripts/print-trade.ts
 which prints the token's `project_scope` and `projects` from the broker's
 introspection), and prints one `PASS` or `FAIL` line per answer, naming the caller and
 the secret. The last line is `project-secrets-check: <n> rows ran, <m> passed`; it
-exits 0 only when all 16 rows ran and passed. The `envoy-session-proofs` leg of
-`ci.yaml`'s `envoy-held` job runs it, and its negative control below, on the leg's
-Postgres, with the airlock's stands in a container of the Debian image
-`.github/ci-images.yaml` copies (`DEV_STACK_AIRLOCK_IMAGE`); the same command runs it
-again here:
+exits 0 only when all 16 rows ran and passed. No CI job runs it yet. Its stand-ins write
+what avenue A of dispatch://INFRA-3862 adds to Dispatch's schema (the columns
+`projects.owner` and `projects.visibility` and the table `project_access`), and no
+migration on `main` makes them. So it runs only on a branch that holds that migration,
+and the pull request that lands it adds this run and its negative control to the
+`envoy-session-proofs` leg of `ci.yaml`'s `envoy-held` job. On such a branch:
 
 ```bash
 cd packages/envoy && LEGION_TEST_PG_DSN=... bash scripts/project-secrets-check.sh
@@ -298,7 +299,7 @@ session listed.
 The negative control writes `PRIV_KEY` with no project tag. Every caller then gets it,
 and the run exits 1 with the line `control: the first caller that got PRIV_KEY although
 it should have been refused: <caller>` (on the right stack, carol's session naming
-nothing); the same leg's step passes only on that line:
+nothing); a CI step of the control passes only on that line:
 
 ```bash
 LEGION_TEST_PG_DSN=... bash scripts/project-secrets-check.sh --control untagged

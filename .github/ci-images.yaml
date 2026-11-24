@@ -131,9 +131,7 @@ images:
     tag: debian-bookworm-slim-99c0b25c
     digest: sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 
-  # The worker image's toolchain and runtime-base stages, and the container of the broker's
-  # airlock stands that project-secrets-check.sh's two steps in the envoy-session-proofs leg of
-  # .github/workflows/ci.yaml's envoy-held job start (DEV_STACK_AIRLOCK_IMAGE).
+  # The worker image's toolchain and runtime-base stages.
   - upstream: docker.io/library/debian:trixie-slim
     tag: debian-trixie-slim-f6b08b09
     digest: sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4

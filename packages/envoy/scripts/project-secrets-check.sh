@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# legion: tool - its live mode alone (--broker-url, --secret) reads a running deployment's broker and writes nothing: the pod's trade, the pod's request for a private project's secret and the operator's session listing that project, for the operator who decides whether that deployment holds the secret to the credentials that name its project; no job runs that mode. The local-stack mode and its control are a test, which the envoy-session-proofs leg of ci.yaml's envoy-held job runs.
+# legion: tool - its live mode alone (--broker-url, --secret) reads a running deployment's broker and writes nothing: the pod's trade, the pod's request for a private project's secret and the operator's session listing that project, for the operator who decides whether that deployment holds the secret to the credentials that name its project; no job runs that mode.
+# Its local-stack mode and that mode's negative control are dispatch://INFRA-3862's acceptance test of its R11. They run only once avenue A's migration is on the branch under test: the columns projects.owner and projects.visibility and the table project_access, which the two stand-ins below write. So no CI job runs them yet, and the pull request that lands avenue A adds them to the envoy-session-proofs leg of ci.yaml's envoy-held job, as the two steps of .github/actions/go-envoy/envoy-session-proofs/action.yml at cybermonklabs/legion 205675a4601642c74535b58af838c1514daeb350.
 # packages/envoy/scripts/project-secrets-check.sh
 # dispatch://INFRA-3862's R11, driven on the binaries production runs: a private project's secret
 # goes only to a credential that names that project.
@@ -57,8 +58,8 @@
 # variable to the option for a URL that holds a password: the option stays in this script's own
 # arguments, in the process list for any user of the machine to read, and the environment is not.
 #
-#   LEGION_TEST_PG_DSN=… bash scripts/project-secrets-check.sh                     # as CI runs it
-#   LEGION_TEST_PG_DSN=… bash scripts/project-secrets-check.sh --control untagged  # as CI runs it
+#   LEGION_TEST_PG_DSN=… bash scripts/project-secrets-check.sh                     # with avenue A's migration
+#   LEGION_TEST_PG_DSN=… bash scripts/project-secrets-check.sh --control untagged  # with avenue A's migration
 #   bash scripts/project-secrets-check.sh --broker-url https://secrets… --secret PROBE_PRIV  # the tool
 set -euo pipefail
 
