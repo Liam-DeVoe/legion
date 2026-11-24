@@ -9262,3 +9262,96 @@ for (const target of ["the Later band's toggle", "the last card's Snooze"] as co
     expect(requestsSent(snoozes), step("nothing is written")).toBe(0);
   });
 }
+
+// The tester's red rows of round 16 (R5, R8): a key held down past the system's repeat delay acts
+// once. A held digit in the Snooze menu writes one snooze, and its repeats tick no option of the
+// question R8 puts in hand after it; a held `b` or `p` opens its menu with nothing typed in its
+// box. At 9d3e0777 the repeats land after the press: the digit's on the next question's row,
+// where the Inbox's `1` ticks its first option, and the opener's in the menu's box.
+
+/** Holds `key` down as a hand does: one press, a system's repeat delay of half a second, then
+ *  `repeats` repeats 33 ms apart, which Playwright sends with `repeat: true`. */
+async function holdKey(page: Page, key: string, repeats: number): Promise<void> {
+  await page.keyboard.down(key);
+  // Half a second is a common system's delay before a held key starts to repeat.
+  await page.waitForTimeout(500);
+  for (let repeat = 0; repeat < repeats; repeat += 1) {
+    await page.keyboard.down(key);
+    // Thirty-three ms apart is a common system's rate of a held key's repeats.
+    await page.waitForTimeout(33);
+  }
+  await page.keyboard.up(key);
+}
+
+// SLOW(>=2s): three questions in the reading pane, a digit held for a second.
+test("k-snooze-menu: beside the reading pane a 1 held down in the Snooze menu writes one snooze, answers nothing, and its repeats tick no option of the question R8 puts in hand @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `k-snooze-menu: a held 1: ${text}`;
+  await createProject({ key: "CORE", name: "Core" });
+  for (const title of ["Ledger", "Mirror", "Lease"]) {
+    const issue = await createIssue({ project: "CORE", title: `${title} rollout` });
+    await createAsk(
+      issue.key,
+      {
+        options: [{ label: "Ship" }, { label: "Hold" }, { label: "Drop" }],
+        question: `Ship the ${title.toLowerCase()} rollout?`,
+      },
+      asker
+    );
+  }
+  const inbox = await openInboxAt(page, "the reading pane", 3);
+  const first = itemAt(inbox.order, 0);
+  const second = itemAt(inbox.order, 1);
+  const firstSnoozes = snoozeWrites(page, first);
+  const snoozes = inbox.order.flatMap((id) => [snoozeWrites(page, id), unsnoozeWrites(page, id)]);
+  const answers = inbox.order.map((id) => answerWrites(page, id));
+  const menu = openList(page);
+  await goTo(inbox, first);
+  await page.keyboard.press("b");
+  await expect(menu, step("b opens the Snooze menu")).toBeVisible();
+  await holdKey(page, "1", 15);
+  await expect
+    .poll(() => writesSent(firstSnoozes), { message: step("the held 1 snoozes the ask") })
+    .toBe(1);
+  await expectInHand(inbox, second, step("the snooze hands on to the next question"));
+  // A write the repeats sent reaches the page's request events within this second and a half.
+  await page.waitForTimeout(1_500);
+  expect(requestsSent(snoozes), step("the held 1 sends one snooze in all")).toBe(1);
+  expect(requestsSent(answers), step("the held 1 answers no question")).toBe(0);
+  await expect(
+    inboxPane(page).getByRole("radio", { checked: true }),
+    step("the held 1's repeats tick no option of the question now in hand")
+  ).toHaveCount(0);
+});
+
+// SLOW(>=2s): an ask in the reading pane, two keys each held for a second.
+test("k-snooze-menu: beside the reading pane a b held down opens the Snooze menu on Later today with every choice shown and nothing typed, and a p held down the priority menu on P2 @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `k-snooze-menu: a held opener: ${text}`;
+  const seed = await seedAsksAtP2(1);
+  const askId = itemAt(seed.asks, 0);
+  const inbox = await openInboxAt(page, "the reading pane", 1);
+  const writes = [snoozeWrites(page, askId), issueWrites(page, seed.keyOf.get(askId) ?? "")];
+  const menu = openList(page);
+  await goTo(inbox, askId);
+  for (const [key, first, count] of [
+    ["b", "Later today", SNOOZE_CHOICES.length],
+    ["p", "P2", PRIORITY_CHOICES.length],
+  ] as const) {
+    await holdKey(page, key, 10);
+    await expect(menu, step(`a held ${key} opens its menu`)).toBeVisible();
+    await expect(menu.getByRole("combobox"), step(`a held ${key} types nothing`)).toHaveValue("");
+    await expect(menu.getByRole("option"), step(`a held ${key} shows every choice`)).toHaveCount(
+      count
+    );
+    await expectHighlight(menu, first, step(`a held ${key} highlights ${first}`));
+    await page.keyboard.press("Escape");
+    await expect(menu, step(`Escape closes the menu a held ${key} opened`)).toHaveCount(0);
+    await expect(rowOf(inbox, askId), step("Escape gives the focus back to the row")).toBeFocused();
+  }
+  // A write the keys sent reaches the page's request events within this second and a half.
+  await page.waitForTimeout(1_500);
+  expect(requestsSent(writes), step("nothing is written")).toBe(0);
+});
