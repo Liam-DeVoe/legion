@@ -2004,7 +2004,7 @@ a file it can open takes both, which still reach the reader, and a file whose di
 A proof's last line, and the mark it rests on: the one rule for every script here whose `EXIT` trap prints PASS.
 Sourced by each of them, never run.
 Every other `EXIT` trap here that prints a verdict prints FAIL only, from a mark of its own, and its script does not source the lib.
-[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) and [`lib/two-builds.sh`](#libtwo-buildssh) source it for the proofs that make their runs, and `burstable-kind.sh`, `controller-sweep-kind.sh`, `share-volumes-kind.sh`, `dispatch-claimant-delivery.sh`, `verification-results.sh`, `plan-pointer-drive.sh`, `refusal-fallback-omp.sh`, `dispatch-session-settings.sh`, `clean-session-stop-tmux.sh` and `envoy-session-states.sh` source it themselves.
+`approved-version-news.sh`, `dispatch-claimant-delivery.sh`, `verification-results.sh`, `dispatch-session-settings.sh` and `clean-session-stop-tmux.sh` source it.
 
 ```sh
 . "$root/scripts/e2e/lib/run-verdict.sh"     # sourced, never run
@@ -2023,14 +2023,14 @@ A trap that reads the status alone then prints PASS for a run that never reached
 So a run passes only when it also reached its end:
 the script calls `run_end` as the statement after its last check, nothing else sets the mark, and nothing but the shell's end runs after it.
 Past each `fi` of an `if` around it and each `else` branch, which does not run after it, the next line of code is none, the `)` that ends the subshell it runs in, or an `exit 0`.
-Or it is the closing brace of a function, and then every call of that function, in the script and in each script that sources it, stands alone on its line and is held to the same rule in its own shell, as `live_daemon_proof` and `busy-relaunch-delivery.sh`'s `negative_control` are.
+Or it is the closing brace of a function, and then every call of that function, in the script and in each script that sources it, stands alone on its line and is held to the same rule in its own shell.
 A run a signal ends never reaches that statement, so the mark alone keeps it from passing.
 
 The lib sets no signal trap, and a script needs none for this rule.
 bash runs a trapped signal's handler only once the foreground command returns, and a proof runs its driver in the foreground for up to an hour, so a trap would make a killed proof wait for its driver:
 measured in a Legion pod, a `TERM` trap held a shell's exit for 6069 ms behind a 6 s `sleep`, against 1217 ms with no trap.
-`dispatch-claimant-delivery.sh`, `verification-results.sh`, `plan-pointer-drive.sh`, `refusal-fallback-omp.sh`, `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, `dispatch-session-settings.sh` and [`lib/two-builds.sh`](#libtwo-buildssh) trap `INT` and `TERM` for their own teardown, and pass the signal's status (130, 143) to `run_verdict`:
-`dispatch-session-settings.sh` traps each to an `exit` with that status, which its `EXIT` trap reads, and the other seven trap each to their teardown with it.
+`dispatch-claimant-delivery.sh`, `verification-results.sh`, `clean-session-stop-tmux.sh` and `dispatch-session-settings.sh` trap `INT` and `TERM` for their own teardown, and pass the signal's status (130, 143) to `run_verdict`:
+`dispatch-session-settings.sh` traps each to an `exit` with that status, which its `EXIT` trap reads, and the other three trap each to their teardown with it.
 A `HUP`, which none of them traps, reaches their `EXIT` trap as status 0 and reads FAIL by the mark.
 
 Each item below names a function, then what it does.
@@ -2045,7 +2045,7 @@ Each item below names a function, then what it does.
 
 - `run_status STATUS`
 
-  prints STATUS, or 1 for a status of 0 the run did not reach its end with, for a teardown that keeps evidence for a failure ([`lib/kind-sandbox.sh`](#libkind-sandboxsh)'s `kind_sandbox_teardown`, `share-volumes-kind.sh`'s `release_shares`), so a killed run keeps its evidence too
+  prints STATUS, or 1 for a status of 0 the run did not reach its end with, for a teardown that keeps evidence for a failure ([`lib/kind-sandbox.sh`](#libkind-sandboxsh)'s `kind_sandbox_teardown`), so a killed run keeps its evidence too
 
 - `run_verdict STATUS PASSED FAILED`
 
@@ -2056,15 +2056,15 @@ Each item below names a function, then what it does.
   bash ends it with the signal once the trap returns
 
 The mark is the shell's own variable.
-A subshell starts with the value the shell had when it forked, so a run made in a subshell (`lib/live-daemon-proof.sh`'s, inside `approved-version-news.sh` and `busy-relaunch-delivery.sh`'s negative control) sets its own mark, and the script around it calls its own `run_end`.
+A subshell starts with the value the shell had when it forked, so a run made in a subshell sets its own mark, and the script around it calls its own `run_end`.
 
 `lib/run-verdict.test.ts` drives the real lib with a fixture proof killed by `TERM`, `INT` and `HUP` between its checks, killed in its setup, ended by an `exit 0` of its own, and run to its end, and only the last prints PASS.
 It also holds every script here to the rule: no `EXIT` trap prints PASS but through `run_verdict`, a script whose trap does reaches a `run_end`, and each `run_end` stands where nothing but the shell's end follows it, read as above.
-A `run_end` put last in `controller-sweep-kind.sh`'s `left()`, which the script calls after the sweep's driver and again after the negative control's, fails that row at both calls, since more of the script runs after each.
-A call of `busy-relaunch-delivery.sh`'s `negative_control` with `&& note x` after it on its line fails it too, since `note x` runs after the call.
+Its rows of the reader read scripts of their own, written in the place of an entry script here.
+A `run_end` put last in a `left()` that the script calls after its driver and again after its negative control's fails that row at both calls, since more of the script runs after each.
+A call of a `negative_control` that ends in its `run_end`, with `&& note x` after it on its line, fails it too, since `note x` runs after the call.
 A one-line `if …; then …; fi` in an `else` branch, with more after its `fi` or not, closes its own `if`, and so does a `fi` before a comment, so the line after the outer `fi` is still read.
-`lib/live-daemon-proof.test.ts` and `lib/approved-version-news-runs.test.ts` drive the real `live_daemon_proof` and the real `approved-version-news.sh --part one` over stand-ins of `go`, the `nats-server`, `python3` and the driver (`lib/live-daemon-proof-fixture.ts`), killed in their setup and in their driver by a signal to the whole process group, and run to their end.
-`lib/approved-version-news-runs.test.ts` drives the script's run of both parts over the same stand-ins too, from a scratch checkout whose one commit is its base.
+`lib/approved-version-news-runs.test.ts` drives the real `approved-version-news.sh` over stand-ins of `go`, `jj`, `python3` and Oh My Pi (`lib/approved-version-news-fixture.ts`), from a scratch checkout whose one commit is its base, killed in its plan check and in its sessions' run by a signal to the whole process group (`lib/run-verdict-fixture.ts`), and run to its end.
 
 ## lib/rig.sh
 

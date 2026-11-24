@@ -20,9 +20,8 @@
 # run_verdict.
 #
 # The mark is the shell's own variable. A subshell starts with the value the shell had when it
-# forked, so a run made in a subshell (lib/live-daemon-proof.sh's, inside approved-version-news.sh
-# and busy-relaunch-delivery.sh's negative control) sets its own mark, and the script around it
-# still needs its own run_end.
+# forked, so a run made in a subshell sets its own mark, and the script around it still needs its
+# own run_end.
 
 # run_ended is the mark: empty until run_end sets it.
 run_ended=''

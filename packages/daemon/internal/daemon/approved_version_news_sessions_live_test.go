@@ -11,7 +11,7 @@
 // (BenchmarkRealSessionsTellAndAnswerANewVersion), which no job runs.
 //
 // Every part a session touches is the real one, built from this checkout or the pod's own. Each
-// pane is a real `omp --mode rpc` (LEGION_OMP_PATH) under the real `legion worker-shim`, started by
+// pane is a real `omp --mode rpc` (LEGION_TEST_OMP) under the real `legion worker-shim`, started by
 // localruntime_live_test.go, with this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion`
 // packed into an Oh My Pi profile of the run's own, and this checkout's `dispatch` command first on
 // its PATH. Its model is the real one: the model gateway ANTHROPIC_BASE_URL names, reached through

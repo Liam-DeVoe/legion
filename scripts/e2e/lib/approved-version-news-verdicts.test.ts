@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   temporaryDirectories,
@@ -8,7 +8,7 @@ import {
 import {
   a4,
   answers,
-  driverTest,
+  body,
   failed,
   fullPlan,
   off,
@@ -19,7 +19,7 @@ import {
   runsOf,
   script,
 } from "./approved-version-news-fixture";
-import { stopped } from "./live-daemon-proof-fixture";
+import { stopped } from "./run-verdict-fixture";
 import {
   expectNoMissingHelpers,
   nameMissingHelpers,
@@ -27,56 +27,48 @@ import {
   scriptFunctions,
 } from "./script-functions";
 
-// approved-version-news.sh's two controls, its plan of part two and its last line, taken from the
-// script by name and run over driver output written as each driver prints it. Part one's negative
-// control (control_verdict) bites only when A2's one-approval check fails in its own words after
-// the step's five setup checks: never on the line the driver prints when its harness fails, never
-// on a killed run. Part two's steps, arms and count of runs are the driver's plan, which the script
-// reads and keeps no copy of: its plan check holds head_only to the plan of a full run
-// (check_plan), and its count of each arm (part_two_step) reads the arms the plan makes a step in.
-// That count counts only runs that reached the step's assertion: a run that stopped at its setup
-// is named and not counted, so it never makes the control bite, and a head run that stopped there
-// is no pass. The last line (finish, the script's EXIT trap, through lib/run-verdict.sh) reads
-// PASS, MEASURED or the control's verdict only for a run that reached one of the script's ends: a
-// signal ends a shell with its EXIT trap reading status 0, so a killed run must read FAIL. A run
-// that picks part two's runs reads MEASURED, never PASS. approved-version-news-runs.test.ts drives
-// the script's runs of part one and of both parts whole, so its own end mark is the one under test.
+// approved-version-news.sh's plan of the runs, its count of each arm and its last line, taken from
+// the script by name and run over the benchmark's output written as the driver prints it. The
+// steps, arms and count of runs are the driver's plan, which the script reads and keeps no copy
+// of: its plan check holds head_only to the plan of a full run (check_plan), and its count of each
+// arm (part_two_step) reads the arms the plan makes a step in. That count counts only runs that
+// reached the step's assertion: a run that stopped at its setup is named and not counted, so it
+// never makes the control bite, and a head run that stopped there is no pass. The last line
+// (finish, the script's EXIT trap, through lib/run-verdict.sh) reads PASS or MEASURED only for a
+// run that reached the script's end: a signal ends a shell with its EXIT trap reading status 0, so
+// a killed run must read FAIL. A run that picks its runs reads MEASURED, never PASS.
+// approved-version-news-runs.test.ts drives the script's run whole, so its own end mark is the one
+// under test.
 
 const assignment = scriptAssignments(script);
 const fn = scriptFunctions(script);
-const note = scriptFunctions(join(import.meta.dir, "live-daemon-proof.sh"))("note");
-const fail = scriptFunctions(join(import.meta.dir, "live-daemon-proof.sh"))("fail");
 const helperGuard = nameMissingHelpers(script);
 const dir = temporaryDirectory("approved-version-news-verdicts-test");
 const scratch = temporaryDirectories("approved-version-news-verdicts-jj");
 
 let files = 0;
-/** A driver output file holding LINES, one a line; null writes no file at all. */
-function proofLog(lines: string[] | null): string {
+/** A file of the benchmark's output holding LINES, one a line. */
+function proofLog(lines: string[]): string {
   const path = join(dir, `proof-${++files}.log`);
-  if (lines !== null) writeFileSync(path, lines.map((line) => `${line}\n`).join(""));
+  writeFileSync(path, lines.map((line) => `${line}\n`).join(""));
   return path;
 }
 
-/** Runs BODY after the script's control settings, its control, plan and part-two functions and
- * the lib's note and fail, in its plan check, over the driver's plan of a full run at this change
- * (fullPlan) with no pick: BODY sets another plan or a pick. */
-function controls(body: string) {
+/** Runs COMMANDS after the script's plan and count settings, its plan and count functions and
+ * its note and fail, in its plan check, over the driver's plan of a full run at this change
+ * (fullPlan) with no pick: COMMANDS set another plan or a pick. */
+function controls(commands: string) {
   const result = Bun.spawnSync([
     "bash",
     "-c",
     `set -euo pipefail
 ${helperGuard}
-${note}
-${fail}
-${assignment("control_step")}
-${assignment("control_setup_checks")}
-${assignment("control_failure")}
+${fn("note")}
+${fn("fail")}
 ${assignment("part_two_minutes")}
 ${assignment("part_two_setup_minutes")}
 ${assignment("head_only")}
 ${fn("head_only_why")}
-${fn("control_verdict")}
 ${fn("plan_words")}
 ${fn("plan_step")}
 ${fn("plan_runs")}
@@ -85,126 +77,13 @@ ${fn("part_two_deadline")}
 ${fn("pick_said")}
 ${fn("part_two_step")}
 check=plan full_plan=${quoted(fullPlan)} part_two_plan=${quoted(fullPlan)} pick_step='' pick_arm='' pick_runs=''
-${body}`,
+${commands}`,
   ]);
   const out = result.stdout.toString();
   const err = result.stderr.toString();
   expectNoMissingHelpers(out, err);
   return { code: result.exitCode, out, err };
 }
-
-const a2 = "a2-the-reviewer-is-told-the-changed-sections";
-// The base run's output up to A2's one-approval check: the driver's notes, then the step's five
-// setup checks, each printed as it held.
-const setup = (checks = 5) => [
-  `=== RUN   ${driverTest}`,
-  "   Dispatch http://127.0.0.1:41871 built from /tmp/base, its events on nats://127.0.0.1:40111",
-  `== ${a2}`,
-  ...[
-    "the setup approval opened the gate of AVQ1-1 at version 1 of spec",
-    "the setup approval opened the gate of AVQ1-2 at version 1 of spec",
-    "version 2 of AVQ1-1's spec, changing its Design section, closed the gate",
-    "the reviewer of AVQ1-1 is in a turn",
-    "the person's approval of version 2 opened the gate again",
-  ]
-    .slice(0, checks)
-    .map((check) => `   assert ${a2}: ${check}`),
-];
-// The one-approval check's own failure on a daemon from before the change, as awaitQueued writes it.
-const ownFailure = `FAIL ${a2}: waited 2m0s for a task queued for the reviewer of AVQ1-1 behind its open turn; last seen: its claim holds no task`;
-const goFailure = [
-  `    approved_version_news_part_one_steps_live_test.go:147: ${a2}: waited 2m0s for a task queued for the reviewer of AVQ1-1 behind its open turn`,
-  `--- FAIL: ${driverTest} (191.40s)`,
-  "FAIL",
-];
-
-/** control_verdict over PROOF and STATUS: whether it bit, what it counted and what it said. */
-function controlVerdict(proof: string, status: number) {
-  const run =
-    controls(`if control_verdict ${JSON.stringify(proof)} ${status}; then echo bites; else echo "no control"; fi
-printf 'counted=%s\\nsaid=%s\\n' "$counted" "$control_said"`);
-  expect(run.err).toBe("");
-  const [verdict, counted, said] = run.out.trimEnd().split("\n");
-  return { verdict, counted, said: said.replace(/^said=/, "") };
-}
-
-describe("part one's negative control", () => {
-  test("bites on the one-approval check's own failure after the five setup checks", () => {
-    const control = controlVerdict(proofLog([...setup(), ownFailure, ...goFailure]), 1);
-    expect(control).toEqual({ verdict: "bites", counted: "counted=5", said: ownFailure });
-  });
-
-  test("does not bite on the line the driver prints when its harness fails at that check", () => {
-    // The base daemon died during the wait: the harness's read of the claim failed the test, and
-    // the driver's run named the step in words of no check.
-    const harness = `FAIL ${a2}: the step stopped on the failure the test log above names`;
-    const control = controlVerdict(
-      proofLog([
-        ...setup(),
-        "    daemon_test.go:961: GET /legion/v1/operator/claims: dial tcp 127.0.0.1:41234: connect: connection refused",
-        harness,
-        `--- FAIL: ${driverTest} (12.20s)`,
-        "FAIL",
-      ]),
-      1
-    );
-    expect(control.verdict).toBe("no control");
-    expect(control.counted).toBe("counted=5");
-    expect(control.said).toStartWith(
-      `no control: the base run stopped at ${a2}'s first one-approval check, but not on that check's own failure`
-    );
-    expect(control.said).toEndWith(harness);
-  });
-
-  test("does not bite on a killed run that printed no FAIL line", () => {
-    const control = controlVerdict(proofLog(setup()), 137);
-    expect(control.verdict).toBe("no control");
-    expect(control.said).toBe(
-      "no control: the base run's driver ended (status 137) with no FAIL line naming a step, a killed or timed-out run"
-    );
-  });
-
-  test("does not bite on a run whose driver never ran", () => {
-    const control = controlVerdict(proofLog(null), 1);
-    expect(control).toEqual({
-      verdict: "no control",
-      counted: "counted=0",
-      said: "no control: the base run failed (status 1) before its driver ran",
-    });
-  });
-
-  test("does not bite on a pass", () => {
-    const control = controlVerdict(
-      proofLog([...setup(), `ok ${a2} (40s)`, `--- PASS: ${driverTest} (300.00s)`]),
-      0
-    );
-    expect(control.verdict).toBe("no control");
-    expect(control.said).toBe("no control: part one passed against the base");
-  });
-
-  test("does not bite on a failure before the step", () => {
-    const setupFailure =
-      'FAIL setup: Dispatch created Approved version news a2, member 0 with key "" and spec ""';
-    const control = controlVerdict(
-      proofLog([`=== RUN   ${driverTest}`, setupFailure, ...goFailure.slice(1)]),
-      1
-    );
-    expect(control.verdict).toBe("no control");
-    expect(control.said).toBe(
-      `no control: the base run failed somewhere other than ${a2}: ${setupFailure}`
-    );
-  });
-
-  test("does not bite on a failure inside the step's setup checks", () => {
-    const early = `FAIL ${a2}: waited 2m0s for the reviewer of AVQ1-1 in a turn; last seen: state ready`;
-    const control = controlVerdict(proofLog([...setup(3), early, ...goFailure.slice(1)]), 1);
-    expect(control.verdict).toBe("no control");
-    expect(control.counted).toBe("counted=3");
-    expect(control.said).toStartWith(
-      `no control: the base run failed at ${a2} after 3 of its checks`
-    );
-  });
-});
 
 /** TEXT as one single-quoted word of bash. */
 const quoted = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
@@ -225,7 +104,7 @@ const harnessFailed = "HARNESS: the harness failed; its log is above";
  * plan and the pick the script's plan check and arguments check leave ("" for a full run's): the
  * step's part of the last line, the head runs that missed, and the notes it printed. */
 function partTwoStep(word: string, lines: string[], pick = "") {
-  const proof = proofLog([`=== RUN   TestRealSessionsTellAndAnswerANewVersionLive`, ...lines]);
+  const proof = proofLog([`=== RUN   ${body}`, ...lines]);
   const run = controls(`${pick}
 part_two_step ${JSON.stringify(proof)} ${word}
 printf 'said=%s\\nmissed=%s\\n' "$step_said" "$head_missed"`);
@@ -478,7 +357,7 @@ function checkJJ(said: string | null, override?: string) {
       `set -euo pipefail
 ${helperGuard}
 check=arguments
-${fail}
+${fn("fail")}
 ${fn("check_jj")}
 check_jj`,
     ],
@@ -489,7 +368,7 @@ check_jj`,
   return { code: result.exitCode, err };
 }
 
-// Both parts boot the whole daemon, whose boot refuses a jj below 0.38, so the arguments check
+// Each run boots the whole daemon, whose boot refuses a jj below 0.38, so the arguments check
 // fails the run before it builds anything on a jj below that, on one whose version it cannot read
 // and on none, and takes 0.38 and every later release, a build's suffix included. It reads the jj
 // the daemon runs: LEGION_JJ_PATH where it is set, and the jj on PATH otherwise.
@@ -530,12 +409,12 @@ describe("the arguments check's jj", () => {
   });
 });
 
-/** Runs BODY in a bash whose EXIT trap is the script's finish, with the real lib/run-verdict.sh,
- * over the state finish reads as a run of part one alone leaves it standing in its `driver` check
- * with 3 of its 52 checks counted; VERDICT is the control's, "" for none. BODY calls run_end where
- * the script reaches one of its ends; the rows of "the script's run of part one" below drive the
- * script's own run_end. */
-function finishRun(body: string, verdict = "") {
+/** Runs COMMANDS in a bash whose EXIT trap is the script's finish, with the real
+ * lib/run-verdict.sh, over the state finish reads as a run standing in its `sessions` check
+ * leaves it, with SAID as what it counted and VERDICT as its verdict, "" for PASS. COMMANDS call
+ * run_end where the script reaches its end; approved-version-news-runs.test.ts drives the
+ * script's own run_end. TREES are the scratch trees the run made, which finish removes. */
+function finishRun(commands: string, verdict = "", said = "", trees = ["", ""]) {
   const result = Bun.spawnSync([
     "bash",
     "-c",
@@ -543,10 +422,10 @@ function finishRun(body: string, verdict = "") {
 ${helperGuard}
 . ${JSON.stringify(join(import.meta.dir, "run-verdict.sh"))}
 ${fn("finish")}
-parts=one base_tree='' prompts_tree='' plan_tree='' counted=3 expected=52 part_two_said=''
-verdict=${JSON.stringify(verdict)} version_news_evidence=/evidence version_news_started=$SECONDS check=driver
+work=${quoted(trees[0])} prompts_tree=${quoted(trees[1])} part_two_said=${quoted(said)}
+verdict=${quoted(verdict)} version_news_evidence=/evidence version_news_started=$SECONDS check=sessions
 trap finish EXIT
-${body}`,
+${commands}`,
   ]);
   const out = result.stdout.toString();
   const err = result.stderr.toString();
@@ -554,36 +433,41 @@ ${body}`,
   return { code: result.exitCode, signal: result.signalCode, out, err };
 }
 
-// What finish prints for a run that ended before either of the script's ends with status 0:
+// What finish prints for a run that ended before the script's end with status 0:
 // lib/run-verdict.sh's line that says so (stopped), then the FAIL line.
-const interrupted = new RegExp(
-  `^${stopped}\\napproved version news e2e: FAIL at driver after \\d+s \\(assertions: 3/52; part one alone, part two did not run, evidence: /evidence\\)\\n$`
-);
+const interrupted = (said: string) =>
+  new RegExp(
+    `^${stopped}\\napproved version news: FAIL at sessions after \\d+s \\(${said}, evidence: /evidence\\)\\n$`
+  );
+const measured = `a partial run picked by APPROVED_VERSION_NEWS_STEP=a4, leaving out off head, off base, answers head: a4 head 3/3 ${retired[0].headOnly}`;
 
 describe("the last line", () => {
-  test("prints no control verdict for a control run a SIGTERM ended before its exit", () => {
-    const run = finishRun(
-      "kill -TERM $$\nsleep 5\nrun_end",
-      "control bites at a2 against a97cd593"
-    );
+  test("prints no MEASURED for a measurement a SIGTERM ended before its end", () => {
+    const run = finishRun("kill -TERM $$\nsleep 5\nrun_end", "MEASURED");
     expect(run.out).toBe("");
-    expect(run.err).toMatch(interrupted);
+    expect(run.err).toMatch(interrupted("the sessions did not run"));
     expect(run.code === 143 || run.signal === "SIGTERM").toBe(true);
   });
 
-  test("prints the control's verdict for a control run that reached its end", () => {
-    const run = finishRun("run_end\nexit 0", "control bites at a2 against a97cd593");
+  test("prints MEASURED for a measurement that reached its end", () => {
+    const run = finishRun("run_end\nexit 0", "MEASURED", measured);
     expect(run.code).toBe(0);
     expect(run.err).toBe("");
-    expect(run.out).toMatch(
-      /^approved version news e2e: control bites at a2 against a97cd593 in \d+s \(assertions: 3\/52; part one alone, part two did not run, evidence: \/evidence\)\n$/
-    );
+    expect(run.out).toMatch(/^approved version news: MEASURED in \d+s \(/);
+    expect(run.out).toEndWith(`(${measured}, evidence: /evidence)\n`);
   });
 
-  test("reads FAIL, and exits 1, for an exit 0 the script makes before either of its ends", () => {
+  test("reads FAIL, and exits 1, for an exit 0 the script makes before its end", () => {
     const run = finishRun("exit 0");
     expect(run.code).toBe(1);
     expect(run.out).toBe("");
-    expect(run.err).toMatch(interrupted);
+    expect(run.err).toMatch(interrupted("the sessions did not run"));
+  });
+
+  test("removes the scratch trees the run made, whatever its end", () => {
+    const trees = [scratch(), scratch()];
+    const run = finishRun("exit 0", "", "", trees);
+    expect(run.code).toBe(1);
+    for (const tree of trees) expect(existsSync(tree)).toBe(false);
   });
 });

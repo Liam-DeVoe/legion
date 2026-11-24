@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
-import { stopped } from "./live-daemon-proof-fixture";
+import { stopped } from "./run-verdict-fixture";
 import { scriptFunctions, sourcedLibraries } from "./script-functions";
 
 // lib/run-verdict.sh is the one rule for a proof's last line: PASS only for a run that ends with
@@ -98,11 +98,11 @@ describe("run_verdict over a fixture proof", () => {
   });
 });
 
-// The shape of dispatch-claimant-delivery.sh, verification-results.sh, plan-pointer-drive.sh,
-// refusal-fallback-omp.sh, clean-session-stop-tmux.sh, envoy-session-states.sh and
-// lib/two-builds.sh: INT and TERM trapped to cleanup with the signal's status, HUP not trapped, so
-// the EXIT trap reads 0 for a hangup. dispatch-session-settings.sh, the eighth script that traps
-// INT and TERM, traps them to an exit with that status, which reaches its EXIT trap as the status.
+// The shape of dispatch-claimant-delivery.sh, verification-results.sh and
+// clean-session-stop-tmux.sh: INT and TERM trapped to cleanup with the signal's status, HUP not
+// trapped, so the EXIT trap reads 0 for a hangup. dispatch-session-settings.sh, the fourth script
+// that traps INT and TERM, traps them to an exit with that status, which reaches its EXIT trap as
+// the status.
 describe("run_verdict under a script that traps INT and TERM itself", () => {
   const traps = `trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
@@ -419,41 +419,33 @@ describe("every script under scripts/e2e", () => {
     expect(runEndsWithMoreAfter(text)).toEqual([]);
   });
 
-  // controller-sweep-kind.sh's left() runs after the sweep's driver and after the negative
-  // control's: a run_end last in it is followed by its closing brace, and then by more of the
-  // script each time, so a TERM during the negative control's driver would print PASS.
+  // The reader's rows below read a script of their own, written in the place of the first entry
+  // script here (host), so they hold the reader whichever scripts the directory keeps.
+  const host = scripts.find((path) => dirname(path) === e2e) ?? join(e2e, "missing.sh");
+  const read = (script: string) => runEndsWithMoreAfter(new Map([...text, [host, script]]));
+
+  // left() runs after a proof's driver and after its negative control's: a run_end last in it is
+  // followed by its closing brace, and then by more of the script each time, so a TERM during the
+  // negative control's driver would print PASS.
   test("refuses a run_end last in a function the script calls before more of it runs", () => {
-    const sweep = join(e2e, "controller-sweep-kind.sh");
-    const original = text.get(sweep) ?? "";
-    const moved = original
-      .replace(/\nrun_end\n$/, "\n")
-      .replace(/(\nleft\(\) \{\n[\s\S]*?\n)\}\n/, "$1  run_end\n}\n");
-    expect(moved.match(/^\s*run_end$/gm)).toEqual(["  run_end"]);
-    expect(moved).toContain("\n  run_end\n}\n");
-    const wrong = runEndsWithMoreAfter(new Map([...text, [sweep, moved]]));
-    expect(wrong).toHaveLength(2);
-    for (const line of wrong) {
-      expect(line).toMatch(
-        /^controller-sweep-kind\.sh:\d+ run_end, last in left\(\) called at controller-sweep-kind\.sh:\d+, runs more after it: controller-sweep-kind\.sh:\d+ pass$/
-      );
-    }
+    const wrong = read(
+      "left() {\n  note x\n  run_end\n}\nrun_driver\nleft\npass\nrun_control\nleft\npass\n"
+    );
+    expect(wrong).toEqual([
+      `${shown(host)}:3 run_end, last in left() called at ${shown(host)}:6, runs more after it: ${shown(host)}:7 pass`,
+      `${shown(host)}:3 run_end, last in left() called at ${shown(host)}:9, runs more after it: ${shown(host)}:10 pass`,
+    ]);
   });
 
-  // busy-relaunch-delivery.sh's negative_control() ends in its run_end, and the script's last
-  // line of code calls it. A call followed on its own line by a control operator runs more after
-  // it there, so a run_end last in the function then has more run after it.
+  // negative_control() ends in its run_end, and the script's last line of code calls it. A call
+  // followed on its own line by a control operator runs more after it there, so a run_end last in
+  // the function then has more run after it.
   test("refuses a run_end last in a function whose call runs more after it on its line", () => {
-    const busy = join(e2e, "busy-relaunch-delivery.sh");
-    const original = text.get(busy) ?? "";
-    const chained = original.replace(
-      /\n {2}negative_control\nfi\n$/,
-      "\n  negative_control && note x\nfi\n"
-    );
-    expect(chained).not.toBe(original);
-    expect(runEndsWithMoreAfter(new Map([...text, [busy, chained]]))).toEqual([
-      expect.stringMatching(
-        /^busy-relaunch-delivery\.sh:\d+ run_end, last in negative_control\(\), which busy-relaunch-delivery\.sh:\d+ calls inside another command: negative_control && note x$/
-      ),
+    const control = (call: string) =>
+      `negative_control() {\n  note x\n  run_end\n}\nif [ -n "$control" ]; then\n${call}\nfi\n`;
+    expect(read(control("  negative_control"))).toEqual([]);
+    expect(read(control("  negative_control && note x"))).toEqual([
+      `${shown(host)}:3 run_end, last in negative_control(), which ${shown(host)}:6 calls inside another command: negative_control && note x`,
     ]);
   });
 
@@ -466,17 +458,10 @@ describe("every script under scripts/e2e", () => {
     ["a one-line if with more after its fi", "  if false; then note x; fi; note y", "fi"],
     ["a fi before a comment", "  note x", "fi # the else branch"],
   ])("reads the command after an if whose else branch holds %s", (_, branch, close) => {
-    const sweep = join(e2e, "controller-sweep-kind.sh");
-    const original = text.get(sweep) ?? "";
-    const branched = original.replace(
-      /\nrun_end\n$/,
-      `\nif true; then\n  run_end\nelse\n${branch}\n${close}\nnote after\n`
-    );
-    expect(branched).not.toBe(original);
-    expect(runEndsWithMoreAfter(new Map([...text, [sweep, branched]]))).toEqual([
-      expect.stringMatching(
-        /^controller-sweep-kind\.sh:\d+ run_end runs more after it: controller-sweep-kind\.sh:\d+ note after$/
-      ),
+    const ended = `note before\nif true; then\n  run_end\nelse\n${branch}\n${close}\n`;
+    expect(read(ended)).toEqual([]);
+    expect(read(`${ended}note after\n`)).toEqual([
+      `${shown(host)}:3 run_end runs more after it: ${shown(host)}:7 note after`,
     ]);
   });
 });
