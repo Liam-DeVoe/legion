@@ -1138,14 +1138,16 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 //
 // A claim on an issue the daemon does not record holds too. The workflow never deletes an issue,
 // so there is no record only for a claim the workflow never made — the operator's own spawn, whose
-// issue key need not be an issue key at all. The comparison itself is record.PhaseHolds, which a
-// test that wires this answer without a daemon calls too.
-func (w *workflowRuntime) phaseHolds(ctx context.Context, key string, queuedFor phase.Phase, generation uint64) (bool, error) {
+// issue key need not be an issue key at all. A fix's task (fix above 0) runs beside the step of
+// the phase, so it holds while that fix runs on that run, whatever phase the issue stands in. The
+// comparison itself is record.PhaseHolds, which a test that wires this answer without a daemon
+// calls too.
+func (w *workflowRuntime) phaseHolds(ctx context.Context, key string, queuedFor phase.Phase, generation uint64, fix int) (bool, error) {
 	issue, err := w.recordedIssue(ctx, key)
 	if err != nil {
 		return false, fmt.Errorf("read %s for the phase of its task: %w", key, err)
 	}
-	return record.PhaseHolds(issue, queuedFor, generation, 0), nil
+	return record.PhaseHolds(issue, queuedFor, generation, fix), nil
 }
 
 // rootHears answers supervise's Deps.RootHears from the issue record: a root architect's task of a

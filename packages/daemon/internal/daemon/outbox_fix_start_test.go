@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +14,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -35,7 +40,9 @@ const (
 // fixStartRig is an issue whose task's fix 1 runs beside the step the issue stands in: the record
 // holds the issue, the implementer's phases row at the fix's entry and the fix itself, and the
 // outbox runs over a supervisor of its own, whose machines ask the daemon's own answer whether a
-// task is still its issue's work (workflowRuntime.phaseHolds). Its log is kept.
+// task is still its issue's work (workflowRuntime.phaseHolds) and adopt a phase task's working copy
+// under the role's App as the daemon wires them (adoptingAsTheDaemonDoes). The implementer's agent
+// answers on a fake connection of its own, and its log is kept.
 type fixStartRig struct {
 	t       *testing.T
 	pool    *store.Pool
@@ -43,6 +50,8 @@ type fixStartRig struct {
 	issue   record.Issue
 	runner  *outbox
 	sup     *supervisor
+	rt      *fake.Runtime
+	conn    *fake.Conn
 	token   claim.Token
 	logs    *syncBuffer
 }
@@ -77,8 +86,11 @@ func newFixStartRig(t *testing.T, stands func(*record.Issue)) *fixStartRig {
 	}); err != nil {
 		t.Fatalf("record the implementer's entry and the running fix: %v", err)
 	}
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records, log: quietLogger()}).phaseHolds
+	adoptingAsTheDaemonDoes(sup)
+	conn := fake.NewConn()
+	sup.deps.Conns.(*fake.Conns).Register(token, conn)
 	logs := &syncBuffer{}
 	runner := &outbox{log: slog.New(slog.NewJSONHandler(logs, nil)), pool: pool, dispatchProject: "LEGION", records: records,
 		supervisor: sup, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
@@ -89,7 +101,7 @@ func newFixStartRig(t *testing.T, stands func(*record.Issue)) *fixStartRig {
 	if got := readIssue(t, pool, fixStartIssue); got.RunningFix != 1 {
 		t.Fatalf("the record names running fix %d, want 1: the case's own premise", got.RunningFix)
 	}
-	return &fixStartRig{t: t, pool: pool, records: records, issue: issue, runner: runner, sup: sup, token: token, logs: logs}
+	return &fixStartRig{t: t, pool: pool, records: records, issue: issue, runner: runner, sup: sup, rt: rt, conn: conn, token: token, logs: logs}
 }
 
 // fixStartOf is the start of fix 1's task on the implementer: phase implementing, entry
@@ -155,6 +167,49 @@ func (r *fixStartRig) tookTheTask(row record.OutboxRow) {
 	}
 }
 
+// sentTheFixsTask holds that the fix's task the implementer's claim took reaches its agent once
+// the claim is ready, whatever phase the issue stands in. The machine's own fence of the send asks
+// the daemon's answer with the task's fix (workflowRuntime.phaseHolds), so the task is not retired
+// for the phase the issue stands in; and the send adopts first, naming the fix's head and the move,
+// under the implementer's App, before the agent is prompted with the fix's task.
+func (r *fixStartRig) sentTheFixsTask() {
+	t := r.t
+	t.Helper()
+	machine, found := r.sup.Machine(r.token)
+	if !found {
+		t.Fatal("the fix's start created no claim for the implementer")
+	}
+	generation := machine.Claim().Generation
+	for _, ev := range []supervise.Event{
+		supervise.StreamHello{Claim: r.token, Generation: generation},
+		supervise.RequestRegister{Claim: r.token, Generation: generation, Session: "ses-impl", SessionFile: "/sessions/impl.jsonl"},
+		supervise.RequestReady{Claim: r.token, Generation: generation, Session: "ses-impl"},
+	} {
+		if err := machine.Handle(context.Background(), ev); err != nil {
+			t.Fatalf("handle %T for the implementer: %v", ev, err)
+		}
+	}
+	machine.Wait()
+	held := machine.Claim().Pending
+	if held == nil {
+		t.Fatalf("the implementer's ready claim holds no task, want the fix's task sent: the send's fence retired it (issue %s in %s)",
+			fixStartIssue, readIssue(t, r.pool, fixStartIssue).Phase)
+	}
+	if held.Fix != 1 || held.FixFrom != fixStartHead || held.MoveTo != fixStartMove {
+		t.Fatalf("the implementer's pending delivery carries fix %d from %q moving to %q, want fix 1 from %s moving to %s",
+			held.Fix, held.FixFrom, held.MoveTo, fixStartHead, fixStartMove)
+	}
+	testwait.Eventually(t, "the fix's task to reach the implementer's agent", func() bool { return len(r.conn.Prompts()) == 1 })
+	if sent := r.conn.Prompts()[0]; sent.DeliveryID != held.ID || !strings.Contains(sent.Message, fixStartTask) {
+		t.Fatalf("the implementer's agent was sent %+v, want the fix's task, delivery %s", sent, held.ID)
+	}
+	want := runtime.Adoption{FixFrom: fixStartHead, MoveTo: fixStartMove}
+	made := r.rt.CallsOf("AdoptWorkingCopy")
+	if len(made) != 1 || made[0].Adoption != want || made[0].Identity.Name != "legion-implementer[bot]" {
+		t.Fatalf("adoptions = %+v, want one naming %+v under the implementer's App", made, want)
+	}
+}
+
 // finishedByTheFence holds that row was finished without acting by the start fence, on line, which
 // names the fix the row serves where it serves one (fix above 0) and no fix otherwise, and that no
 // claim was made for the implementer.
@@ -177,9 +232,10 @@ func (r *fixStartRig) finishedByTheFence(line string, fix int) {
 // A fix's start names phase implementing while the issue stands in reviewing, the step beside it.
 // The start fence holds it to the fix instead of the phase (record.PhaseHolds): with fix 1 running,
 // the start passes, and the implementer's claim takes the fix's task, with the row and the fix's
-// entry. The controls are the same start of no fix, which the fence finishes as it finishes any
-// start of a phase the issue has left, and a start of fix 1 once fix 1 ended, which it finishes
-// too, with a line that names the fix.
+// entry; once the claim is ready, the machine's fence of the send holds it to the fix too, and the
+// task reaches the agent after an adoption that names the fix's head. The controls are the same
+// start of no fix, which the fence finishes as it finishes any start of a phase the issue has left,
+// and a start of fix 1 once fix 1 ended, which it finishes too, with a line that names the fix.
 func TestAFixStartRunsWhileTheIssueIsInReviewing(t *testing.T) {
 	t.Parallel()
 
@@ -189,6 +245,7 @@ func TestAFixStartRunsWhileTheIssueIsInReviewing(t *testing.T) {
 		row := rig.queue(fixStartOf())
 		rig.run(row)
 		rig.tookTheTask(row)
+		rig.sentTheFixsTask()
 	})
 
 	t.Run("control: the same start of no fix", func(t *testing.T) {
@@ -221,8 +278,9 @@ func TestAFixStartRunsWhileTheIssueIsInReviewing(t *testing.T) {
 // A fix's start the lane runs only after the issue moved to held for the fix (record.HoldForFix: a
 // step beside the fix failed and its return waits for the fix, or the last step passed and the
 // retro waits) still passes the start fence, since the fix still runs, and the implementer's claim
-// takes its task. The control is the same start of no fix, which the fence finishes: the issue
-// stands in no phase of implementing.
+// takes its task; the machine's fence of the send holds it to the fix too, and the task reaches the
+// agent after an adoption that names the fix's head. The control is the same start of no fix, which
+// the fence finishes: the issue stands in no phase of implementing.
 func TestAFixStartRunsAfterTheIssueIsHeldForTheFix(t *testing.T) {
 	t.Parallel()
 	held := func(issue *record.Issue) {
@@ -235,6 +293,7 @@ func TestAFixStartRunsAfterTheIssueIsHeldForTheFix(t *testing.T) {
 		row := rig.queue(fixStartOf())
 		rig.run(row)
 		rig.tookTheTask(row)
+		rig.sentTheFixsTask()
 	})
 
 	t.Run("control: the same start of no fix", func(t *testing.T) {

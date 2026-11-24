@@ -2698,7 +2698,7 @@ func TestPhaseHoldsAnswersFromTheIssuesCurrentPhase(t *testing.T) {
 		{name: "an issue the workflow never recorded", issue: "LEGION-999", queuedFor: phase.Implementing, generation: 1, want: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := holds(context.Background(), tc.issue, tc.queuedFor, tc.generation)
+			got, err := holds(context.Background(), tc.issue, tc.queuedFor, tc.generation, 0)
 			if err != nil {
 				t.Fatalf("phaseHolds: %v", err)
 			}
@@ -2712,7 +2712,7 @@ func TestPhaseHoldsAnswersFromTheIssuesCurrentPhase(t *testing.T) {
 		Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: "LEGION", Title: "phase holds",
 		Phase: phase.Testing, Generation: 2, Status: "testing", Rank: "00000",
 	})
-	implementing, err := holds(context.Background(), "LEGION-208", phase.Implementing, 2)
+	implementing, err := holds(context.Background(), "LEGION-208", phase.Implementing, 2, 0)
 	if err != nil {
 		t.Fatalf("phaseHolds after the phase moved: %v", err)
 	}
