@@ -2,12 +2,14 @@ package workflow
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -196,13 +198,18 @@ func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldAtAdmitted(t *testing.T) {
 	}
 }
 
-// The notice of a person's todo beneath an accepted ancestor is one text whatever plan the
+// The notice of a person's todo beneath an accepted ancestor is one notice whatever plan the
 // ancestor walks, since an issue stands in its retro or its merge once its task's last step passed,
-// whatever that step is (record.Accepted), and it names the child and the ancestor. The ancestor
-// walks today's line in one case and the plan `implementer tester`, which has no reviewer step, in
-// the other.
+// whatever that step is (record.Accepted): the child's outbox holds one child-status notice to the
+// architect, the value ChildUnderAcceptedParentNotice gives for the child and the ancestor. Every
+// notice row of the child is read, so a notice sent twice fails as one sent for no plan does. The
+// ancestor walks today's line in one case and the plan `implementer tester`, which has no reviewer
+// step, in the other.
 func TestTheNoticeOfATodoUnderAnAcceptedAncestorIsOneForEachPlan(t *testing.T) {
-	var reasons []string
+	want := []record.Notice{ChildUnderAcceptedParentNotice("LEGION-300", "LEGION-208")}
+	if want[0].Kind != "child-status" || want[0].Role != claim.RoleArchitect {
+		t.Fatalf("ChildUnderAcceptedParentNotice = %+v, want a child-status notice to the architect", want[0])
+	}
 	for _, tc := range []struct {
 		name  string
 		steps []string
@@ -226,18 +233,9 @@ func TestTheNoticeOfATodoUnderAnAcceptedAncestorIsOneForEachPlan(t *testing.T) {
 				intake.DispatchIssue{Key: "LEGION-300", ResolvedRepo: "sjawhar/legion", Seq: 3, Type: "issue.updated",
 					Status: "todo", Title: "child", Parent: "LEGION-208", Rank: "Z"})
 
-			var reason string
-			if err := pool.QueryRow(context.Background(),
-				"select payload->>'reason' from outbox where kind = 'notice' and issue = 'LEGION-300' and payload->>'kind' = 'child-status'").Scan(&reason); err != nil {
-				t.Fatalf("read the child-status notice: %v", err)
+			if got := noticesOf(t, pool, "LEGION-300", "child-status"); !reflect.DeepEqual(got, want) {
+				t.Fatalf("LEGION-300's outbox holds the child-status notices %+v, want %+v alone", got, want)
 			}
-			if !strings.Contains(reason, "LEGION-300") || !strings.Contains(reason, "LEGION-208") {
-				t.Fatalf("the child-status notice %q does not name LEGION-300 and LEGION-208", reason)
-			}
-			reasons = append(reasons, reason)
 		})
-	}
-	if len(reasons) != 2 || reasons[0] != reasons[1] {
-		t.Fatalf("the child-status notices of the two plans = %q, want one text", reasons)
 	}
 }
