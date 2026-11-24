@@ -1,5 +1,5 @@
 {
-  "broadcast": "21d0ebf2-634f-42ba-b1b8-5e96cb6908df",
+  "broadcast": "a1dded89-a26c-4799-bc36-9797402ae7ca",
   "deliveryQuery": "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z",
   "issue": "CORE-1",
   "issueArtifactSlug": "requirements-md",
@@ -11,5 +11,5 @@
   "projectDocumentSlug": "runbook",
   "agentArtifactSlug": "layout-stress-screenshot-of-the-issue-header-at-1280-png",
   "agentSession": "019a5200-0008-7a00-8000-000000000008",
-  "seededAt": "2026-11-23T23:18:55.717Z"
+  "seededAt": "2026-11-24T06:28:45.724Z"
 }
