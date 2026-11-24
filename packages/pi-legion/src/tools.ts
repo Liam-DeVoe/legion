@@ -8,6 +8,8 @@ import {
 } from "@legion/contracts";
 import {
   LEGION_PHASES,
+  LEGION_PLAN_RATING_LEAST,
+  LEGION_PLAN_RATING_MOST,
   LegionGateRegisterRequest,
   type LegionGrant,
   type LegionIssue,
@@ -936,7 +938,7 @@ export function createLegionTool(deps: {
             }
             if (lone === "reason") {
               throw new Error(
-                "complete_step names plan_reason without plan_rating: send the reason with the rating of the plan, a whole number from 1 to 5, the two together"
+                `complete_step names plan_reason without plan_rating: send the reason with the rating of the plan, a whole number from ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}, the two together`
               );
             }
             // Retried whole while the daemon restarts: the record, the report and a fresh grant are
