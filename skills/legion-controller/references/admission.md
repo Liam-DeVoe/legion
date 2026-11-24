@@ -19,7 +19,7 @@ The rules behind them: [Admission and the `legion` label](https://cybermonklabs.
   `issues.<KEY>.waitingLine` says where one stands (`part`, `kind`, `holdsSlot`, `reason`): quote its `reason` before you call an order wrong.
 
 - `admission.blocked`: issues waiting on an unfinished `blocked_by` issue, or a parent waiting for its open children.
-  A started issue here gave its slot back and takes one again by itself; nothing of its work stops.
+  A started issue here gave its slot back and takes one again by itself; nothing of its work stops, unless it is a parent whose phases started and that an open child holds: its phase stops, and it waits in `awaiting_children` with no slot and in no line until no child under it is open, then goes back by itself to the phase it held.
 
 - `phase: awaiting_person` with `waitingOn`: a root waiting on a person's answer or review keeps its slot and is in no line.
   `waitingOn.answeredAt` means the daemon has put it in `admission.waiting` as well, among the issues whose work came back, oldest first, where it stands until the pass that resumes it.
