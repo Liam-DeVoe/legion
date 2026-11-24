@@ -281,6 +281,53 @@ check "names the timed installs folded into one (rule 31)" \
   "$(has "$out" "job tool-fallback of .github/workflows/ci.yaml holds 2 step(s) with uses ./.github/actions/install-elan bound to 11 minutes, where 3 kept")"
 check "names the second merge-group workflow (rule 14)" "$(has "$out" ".github/workflows/extra.yaml runs on merge_group")"
 
+# Rule 11 over ci-caches.yaml's refills (main's #5141): a family the fill saves under the readers'
+# key followed by the commit is filled again on every push from its newest entry, so its restore
+# there downloads (no lookup-only) and takes exactly the readers' key and a `-` as its
+# restore-keys, and the family is saved under that suffix alone; a save under a computed key names
+# a restore of its own job, and no save key holds hashFiles(), which the save evaluates after the
+# build (go-envoy-infra's did, and every push missed its lookup: run 45088325195). The real file's
+# go-daemon, go-notices, go-envoy, go-envoy-test and go-envoy-darwin-vet are refills, and
+# go-envoy-infra and elan saves under their lookups' computed keys: the base passes with each.
+echo "case: ci-caches.yaml's refills and computed save keys, each broken (rule 11)"
+root=$(fresh cache-refills)
+caches=$root/.github/workflows/ci-caches.yaml
+replace "$caches" \
+  '          restore-keys: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-' \
+  '          lookup-only: true'
+replace "$caches" \
+  'restore-keys: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}-' \
+  'restore-keys: go-notices-'
+replace "$caches" \
+  $'\n          restore-keys: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-\n' \
+  $'\n'
+replace "$caches" \
+  'key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ github.sha }}' \
+  'key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ github.run_id }}'
+replace "$caches" \
+  $'          key: go-envoy-darwin-vet-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ github.sha }}\n' \
+  $'          key: go-envoy-darwin-vet-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ github.sha }}\n      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: ${{ runner.temp }}/go-build-darwin\n          key: go-envoy-darwin-vet-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}\n'
+replace "$caches" '          key: ${{ steps.go-envoy-infra.outputs.cache-primary-key }}' \
+  '          key: ${{ steps.go-other.outputs.cache-primary-key }}'
+replace "$caches" '          key: ${{ steps.elan-cache.outputs.cache-primary-key }}' \
+  "          key: elan-\${{ runner.os }}-\${{ hashFiles('lean-toolchain') }}"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names a refill's restore that is a lookup" \
+  "$(has "$out" "job daemon's actions/cache/restore of family go-daemon is \`lookup-only: true\`, but this workflow saves the family under")"
+check "names a refill's restore-keys that take a shorter prefix" \
+  "$(has "$out" "job notices's actions/cache/restore of family go-notices has restore-keys go-notices-, but a family this workflow saves under")"
+check "names a refill's restore with no restore-keys" \
+  "$(has "$out" "job envoy's actions/cache/restore of family go-envoy has restore-keys (none), but a family this workflow saves under")"
+check "names a save under another suffix" \
+  "$(has "$out" "job envoy saves family go-envoy-test under key")"
+check "names a family saved both under the commit and without it" \
+  "$(has "$out" "this workflow saves family go-envoy-darwin-vet both under")"
+check "names a save under the computed key of no restore of its job" \
+  "$(has "$out" "job envoy-infra saves under")"
+check "names a save key that holds hashFiles()" \
+  "$(has "$out" "job elan saves under")"
+
 echo "case: the verdict job's reconcile step runs on a dispatch of another ref, or after the hold"
 # On a dispatch of another ref every other ci-ok of the head is a pull request's or the queue's,
 # and the step would set each posted one to that run's verdict; `if: always()` alone was the shape
