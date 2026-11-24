@@ -481,11 +481,17 @@ func TestADrainBatchMovesOneBatchAndSaysWhetherRowsRemain(t *testing.T) {
 }
 
 // TestARunsJobsWriteTakesTheChangeLogLockLast: a run's jobs write (UpsertRunJobs) of 400 jobs, sent
-// while the change log's lock is held elsewhere, waits for the lock holding its run's row already,
-// since it takes the lock in the statement's change triggers, after its rows; let go, it lands. The
-// time from the lock's release to its answer, which bounds its hold from above, is logged and
-// asserted nowhere: the wall clock is the build farm's measure (k20). Its deadlock test against a
-// run write of the same run is TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock.
+// while the change log's lock is held elsewhere, waits for the lock holding its run's row and the
+// row of each of its jobs already, since it takes the lock once, in the statement's change
+// triggers, after its rows; let go, it lands. The run's 400 jobs are written unfinished first, so
+// the gated write updates and locks each existing row, and the run carries a jobs-unfetchable mark
+// that the write clears, so its run row moves too. A write that cleared the mark in a statement of
+// its own before its jobs' (main's two statements before INFRA-5577) would take the lock in that
+// statement's trigger, holding the run's row and none of its jobs', and take it again in the jobs'
+// statement: another transaction would then find the 400 job rows unlocked. The time from the
+// lock's release to its answer, which bounds its hold from above, is logged and asserted nowhere:
+// the wall clock is the build farm's measure (k20). Its deadlock test against a run write of the
+// same run is TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock.
 func TestARunsJobsWriteTakesTheChangeLogLockLast(t *testing.T) {
 	shared, ctx := deliveryTestPool(t)
 	pool := wideTestPool(t, shared)
@@ -493,8 +499,24 @@ func TestARunsJobsWriteTakesTheChangeLogLockLast(t *testing.T) {
 	if err := UpsertRun(ctx, pool, changeTestRun(811, DeliveryRunKindDeploy, started, started)); err != nil {
 		t.Fatalf("UpsertRun: %v", err)
 	}
+	unfinished := make([]DeliveryRunJob, 400)
+	for i := range unfinished {
+		unfinished[i] = DeliveryRunJob{Repo: "acme/widgets", RunID: 811, Name: fmt.Sprintf("job-%d", i), StartedAt: &started}
+	}
+	if err := UpsertRunJobs(ctx, pool, "acme/widgets", 811, unfinished, false); err != nil {
+		t.Fatalf("write the run's jobs unfinished: %v", err)
+	}
+	// MarkRunJobsUnfetchable refuses a run that holds job rows, so the mark is set by hand: what
+	// matters here is that the write's clearing of it moves the run's row, which the run's change
+	// trigger logs (0100's delivery_runs_changed ignores jobs_complete alone).
+	if _, err := pool.Exec(ctx, `
+		update delivery_runs set jobs_unfetchable_at = now(), jobs_unfetchable_reason = 'a listing that failed'
+		where repo = 'acme/widgets' and run_id = 811
+	`); err != nil {
+		t.Fatalf("mark the run's jobs unfetchable: %v", err)
+	}
 	finished, success := started.Add(10*time.Minute), DeliveryJobConclusionSuccess
-	jobs := make([]DeliveryRunJob, 400)
+	jobs := make([]DeliveryRunJob, len(unfinished))
 	for i := range jobs {
 		jobs[i] = DeliveryRunJob{Repo: "acme/widgets", RunID: 811, Name: fmt.Sprintf("job-%d", i), StartedAt: &started, CompletedAt: &finished, Conclusion: &success}
 	}
@@ -506,6 +528,9 @@ func TestARunsJobsWriteTakesTheChangeLogLockLast(t *testing.T) {
 	}
 	if !rowLockedByAnother(t, ctx, pool, `select 1 from delivery_runs where repo = 'acme/widgets' and run_id = 811`) {
 		t.Error("the jobs write waits for the change log's lock holding no lock of its run's row: it takes the change log's lock before its rows")
+	}
+	if free := jobRowsFreeToAnother(t, ctx, pool, "acme/widgets", 811); free != 0 {
+		t.Errorf("the jobs write waits for the change log's lock while another transaction can lock %d of its %d job rows: it takes the change log's lock before its jobs' rows", free, len(jobs))
 	}
 	released := time.Now()
 	if err := gate.Commit(ctx); err != nil {
@@ -520,7 +545,28 @@ func TestARunsJobsWriteTakesTheChangeLogLockLast(t *testing.T) {
 	if err != nil || len(stored) != len(jobs) {
 		t.Fatalf("jobs after the write = %d, %v; want %d", len(stored), err, len(jobs))
 	}
-	t.Logf("the jobs write of %d jobs waited for the change log's lock holding its run's row, and held the lock at most %s", len(jobs), held.Round(time.Microsecond))
+	t.Logf("the jobs write of %d jobs waited for the change log's lock holding its run's row and every job row, and held the lock at most %s", len(jobs), held.Round(time.Microsecond))
+}
+
+// jobRowsFreeToAnother is how many of the run's job rows another transaction can lock: it takes
+// them `for no key update skip locked`, as an update of them would, and counts the rows no other
+// transaction holds.
+func jobRowsFreeToAnother(t *testing.T, ctx context.Context, pool *store.Pool, repo string, runID int64) int {
+	t.Helper()
+	probe, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the probe: %v", err)
+	}
+	defer func() { _ = probe.Rollback(context.Background()) }()
+	var free int
+	if err := probe.QueryRow(ctx, `
+		select count(*) from (
+			select 1 from delivery_run_jobs where repo = $1 and run_id = $2 for no key update skip locked
+		) free
+	`, repo, runID).Scan(&free); err != nil {
+		t.Fatalf("probe the job rows' locks: %v", err)
+	}
+	return free
 }
 
 // TestTheDeployedWriteTakesTheChangeLogLockLastAndNeverDeadlocksWithAPullRequestWrite: the
