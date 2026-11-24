@@ -109,10 +109,11 @@ func DaemonSettings() (Settings, error) {
 type CollectConfig struct {
 	// Project is the Dispatch project key of the daemon the lines are from.
 	Project string
-	// From and To bound the window, and Before is how far before From its inputs reach: the lines
-	// kept are those written in [From − Before, To).
-	From, To time.Time
-	Before   time.Duration
+	// From and To bound the window, and Before is how far before From its inputs reach and After
+	// how far past To (the run-out): the lines kept are those written in [From − Before,
+	// To + After).
+	From, To      time.Time
+	Before, After time.Duration
 	// Logs is each file or directory of the daemon's lines a person collected (every file under a
 	// directory is read): the daemon's own standard error, `kubectl logs` output with or without
 	// its timestamps, or a Cloud Logging export, rows of {timestamp, jsonPayload} as JSON lines or
@@ -141,7 +142,7 @@ type CollectConfig struct {
 type Collected struct {
 	Window Window
 	// Read is how many daemon lines the log files held, and Kept how many the window holds: the
-	// lines of a kind the trace reads (TraceReads), written in [From − Before, To), each once.
+	// lines of a kind the trace reads (TraceReads), written in [From − Before, To + After), each once.
 	Read, Kept int
 	// Duplicates is how many lines were left out as a line already kept, which two log files that
 	// cover the same time give.
@@ -155,20 +156,22 @@ type Collected struct {
 }
 
 // Collect reads a recorded window and writes it to cfg.Out. From the log files it keeps the lines
-// of every kind the trace reads, written in [From − Before, To), in time order (a line read in two
-// files once); from Dispatch it reads the events of every issue those lines name, and of every
-// blocker, parent and child those issues' events name, in any project, each issue's from its first
-// event and up to To, at most cfg.Concurrency at once, each read Dispatch refuses for now (429, a
-// 5xx, no answer) tried again with a growing wait. It sends Dispatch GET alone. window.json
-// records the project, the span, Before, the cap of each change the slot lines and the daemon's
-// start lines show, the line kinds the log holds, cfg's settings, parts and collector, and the
-// sha256 of each file. A line of a kind the trace reads that its reader refuses fails the
-// collect, naming the file and the line, so a window is never written that the trace cannot read.
+// of every kind the trace reads, written in [From − Before, To + After), in time order (a line read
+// in two files once); from Dispatch it reads the events of every issue those lines name, and of
+// every blocker, parent and child those issues' events name, in any project, each issue's from its
+// first event and up to To + After, at most cfg.Concurrency at once, each read Dispatch refuses for
+// now (429, a 5xx, no answer) tried again with a growing wait. It sends Dispatch GET alone.
+// window.json records the project, the span, Before, the run-out After, the cap of each change the
+// slot lines and the daemon's start lines show, the line kinds the log holds, cfg's settings, parts
+// and collector, and the sha256 of each file. A line of a kind the trace reads that its reader
+// refuses fails the collect, naming the file and the line, so a window is never written that the
+// trace cannot read.
 func Collect(ctx context.Context, cfg CollectConfig) (Collected, error) {
 	if err := cfg.check(); err != nil {
 		return Collected{}, err
 	}
-	lines, read, err := readLogs(cfg.Logs, cfg.From.Add(-cfg.Before), cfg.To)
+	end := cfg.To.Add(cfg.After)
+	lines, read, err := readLogs(cfg.Logs, cfg.From.Add(-cfg.Before), end)
 	if err != nil {
 		return Collected{}, err
 	}
@@ -176,8 +179,8 @@ func Collect(ctx context.Context, cfg CollectConfig) (Collected, error) {
 
 	named := make(map[string]bool)
 	kinds := make(map[string]bool)
-	w := Window{Project: cfg.Project, From: cfg.From.UTC(), To: cfg.To.UTC(), Before: Duration(cfg.Before), Caps: []CapAt{},
-		Parts: append([]Part{}, cfg.Parts...), TickInterval: Duration(cfg.Settings.TickInterval),
+	w := Window{Project: cfg.Project, From: cfg.From.UTC(), To: cfg.To.UTC(), Before: Duration(cfg.Before), After: Duration(cfg.After),
+		Caps: []CapAt{}, Parts: append([]Part{}, cfg.Parts...), TickInterval: Duration(cfg.Settings.TickInterval),
 		GateSteps: append([]record.DesignStep{}, cfg.Settings.GateSteps...), Linger: Duration(cfg.Settings.Linger),
 		ReviewRoundCap: cfg.Settings.ReviewRoundCap, StalledTreeNotice: Duration(cfg.Settings.StalledTreeNotice),
 		WorkerSilence: Duration(cfg.Settings.WorkerSilence), WorkerBackground: Duration(cfg.Settings.WorkerBackground),
@@ -199,7 +202,7 @@ func Collect(ctx context.Context, cfg CollectConfig) (Collected, error) {
 		w.Lines = []string{}
 	}
 
-	reader := eventReader{log: cfg.Dispatch, to: cfg.To, wait: cfg.Wait, limit: cfg.Concurrency, events: map[string][]json.RawMessage{}}
+	reader := eventReader{log: cfg.Dispatch, to: end, wait: cfg.Wait, limit: cfg.Concurrency, events: map[string][]json.RawMessage{}}
 	if reader.wait == nil {
 		reader.wait = backoff.Sleep
 	}
@@ -240,8 +243,8 @@ func Collect(ctx context.Context, cfg CollectConfig) (Collected, error) {
 }
 
 // check refuses a CollectConfig no collect can run: a project that is no Dispatch project key, an
-// empty span, a negative reach, no log, no Dispatch, no collector, settings no daemon runs with,
-// a part that names no rule, or an Out that holds files already.
+// empty span, a negative reach or run-out, no log, no Dispatch, no collector, settings no daemon
+// runs with, a part that names no rule, or an Out that holds files already.
 func (cfg CollectConfig) check() error {
 	switch {
 	case !claim.IsIssueKey(cfg.Project + "-1"):
@@ -250,6 +253,8 @@ func (cfg CollectConfig) check() error {
 		return fmt.Errorf("replay: collect: the span [%s, %s) is empty", cfg.From.Format(time.RFC3339), cfg.To.Format(time.RFC3339))
 	case cfg.Before < 0:
 		return fmt.Errorf("replay: collect: the reach before the span is %s, below zero", cfg.Before)
+	case cfg.After < 0:
+		return fmt.Errorf("replay: collect: the run-out after the span is %s, below zero", cfg.After)
 	case len(cfg.Logs) == 0:
 		return errors.New("replay: collect: no log file is named")
 	case cfg.Dispatch == nil:

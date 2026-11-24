@@ -115,13 +115,21 @@ type piece struct {
 	// are entered at the generation the issue stands at, its registration names the issue's own
 	// document, and the Dispatch events of the work it copies stay the copied issue's.
 	drawn bool
+	// leftUnrun says the piece is work of a generation its issue left in the replay before the
+	// piece opened (driver.cancelWork): the replay never ran that generation's piece in it, so the
+	// piece runs at the generation the issue stands at when it opens, and its move is entered at
+	// that generation, as a drawn piece's is (moveGeneration).
+	leftUnrun bool
 	// stretchDrawn says the stretch the piece's move ends drew its conflict already: the piece
 	// goes on with a stretch past its recorded end (stretchEnds), which is not drawn a second
-	// time, or drew it at a boot inside it (bootConflicts). drew is, for a merge-forward piece, the
-	// piece whose stretch drew the conflict, and resumes says that piece stands paused by a
-	// conflict a boot's read found while it ran, which the merge forward's end resumes
-	// (mergedForward).
+	// time, or drew it at a boot inside it (bootConflicts). bootLeft says the first boot inside
+	// that stretch left its draw to its end, by the share of the conflicts after a boot of the
+	// phase its issue stood in there (driver.drawsAtBoot), so no later boot draws it. drew is, for
+	// a merge-forward piece, the piece whose stretch drew the conflict, and resumes says that piece
+	// stands paused by a conflict a boot's read found while it ran, which the merge forward's end
+	// resumes (mergedForward).
 	stretchDrawn bool
+	bootLeft     bool
 	drew         *piece
 	resumes      bool
 	// acts is every act of the piece, by its offset from the start.
@@ -264,7 +272,8 @@ type scriptEvent struct {
 	followers  []int
 	// prev is the issue event before this one on its issue, in the record's order, -1 for none or
 	// for an event that is no issue event: what a write of the daemon's own session is judged
-	// against (driver.keepsDaemonEvent).
+	// against (driver.keepsDaemonEvent), and what an issue event's change is read against
+	// (shadow.take).
 	prev int
 	// dispatched is whether the replay has applied the event to its copy of Dispatch; where the
 	// replay placed it is driver.placed's.

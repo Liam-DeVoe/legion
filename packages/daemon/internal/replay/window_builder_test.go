@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -2077,7 +2079,7 @@ func TestAnOperatorsFreshSessionRunsTheWorkerOutsideTheFence(t *testing.T) {
 // move ACME-1 back at 10:50 and ACME-2 at 10:55; each loop is 15 minutes in each phase, back to
 // merging at 12:05 and 12:10, where each stands at the window's end. Both stretches inside the
 // window end in a conflict, so the fitted chance is 1, and both conflicts come within 15 minutes
-// after the boot, so conflicts in merging cluster after boots.
+// after the boot, so merging's share of conflicts after a boot is 1.
 func bootConflictsWindow(t *testing.T) Window {
 	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
 	b.window.Parts[0].Rule = "legion-v20.42.5"
@@ -2103,12 +2105,13 @@ func bootConflictsWindow(t *testing.T) Window {
 }
 
 // A drawn conflict of a stretch that spans a recorded boot enters at the first boot inside the
-// stretch, in a phase whose recorded conflicts cluster after boots (assumption 3): the boot
-// re-reads each pull request, so its read sees the conflict. The chance of the stretch does not
-// change, only its moment. The test replays bootConflictsWindow under legion-v20.42.5 at the seeds
-// 1 to 3: both merging stretches span the boot at 10:45 and draw at their fitted chance of 1, and
-// both issues move back to implementing at 10:45. It fails where a conflict enters at its stretch's
-// end, for which ACME-1 moves back at 10:50 and ACME-2 at 10:55.
+// stretch, in the share of the window's conflicts after a boot of the phase the stretch stands in
+// there (assumption 3): the boot re-reads each pull request, so its read sees the conflict. The
+// chance of the stretch does not change, only its moment. The test replays bootConflictsWindow under
+// legion-v20.42.5 at the seeds 1 to 3: both merging stretches span the boot at 10:45, merging's
+// recorded conflicts all came after it, so both draw there at their fitted chance of 1, and both
+// issues move back to implementing at 10:45. It fails where a conflict enters at its stretch's end,
+// for which ACME-1 moves back at 10:50 and ACME-2 at 10:55.
 func TestADrawnConflictEntersAtTheBootInsideItsStretch(t *testing.T) {
 	for seed := int64(1); seed <= 3; seed++ {
 		_, log, _ := replayLoopWindow(t, bootConflictsWindow(t), "legion-v20.42.5", seed)
@@ -2119,6 +2122,328 @@ func TestADrawnConflictEntersAtTheBootInsideItsStretch(t *testing.T) {
 			if len(back) == 0 || !back[0].Equal(clock(10, 45)) {
 				t.Errorf("at seed %d %s moved back from merging by conflict at %s, want first at 10:45:00, the boot", seed, key, describeTimes(back))
 			}
+		}
+	}
+}
+
+// A recorded issue event changes the replay's copy of Dispatch by what it changed in the record,
+// read against the issue's event before it in the record's order, and takes back no change that an
+// event after it in the record made and the copy applied first (shadow.take). The test replays
+// lateRootWindow under keep-past-review, in which ACME-2's architect files ACME-3 in triage at 10:10,
+// inside its turn, and edits ACME-3's title at 10:20, the daemon's session writes ACME-3 todo at
+// 10:25 (the release the architect's API makes), and ACME-2 waits for its child from 10:30, where
+// ACME-3 starts. ACME-2 is promoted an hour late, so its filing of ACME-3, an act of its work, enters
+// at 11:10, after the edit and the todo, which keep their recorded times: ACME-3 stays todo and starts
+// at 11:30. It fails where the late filing is read against the last event the copy applied, the todo,
+// for which its triage stands over the todo, ACME-3 leaves the workflow at 11:10 and never starts.
+func TestALateFilingTakesBackNoLaterChange(t *testing.T) {
+	log, _ := replayCopied(t, lateRootWindow(t, func(b *windowBuilder) {
+		headerChild(b, clock(10, 10), "triage")
+		b.changed(clock(10, 20), "ACME-3", b.session("ACME-2", claim.RoleArchitect), func(issue *builtIssue) {
+			issue.Title = "Write the export's header row in bold"
+		})
+		b.daemonWrites(clock(10, 25), "ACME-3", "todo")
+		b.rootWaitsForChildren(clock(10, 30), "ACME-2", 1)
+		b.childStarts(clock(10, 30), "ACME-3")
+	}), "keep-past-review")
+	if started, want := startedAt(log, "ACME-3"), []time.Time{clock(11, 30)}; !slices.EqualFunc(started, want, time.Time.Equal) {
+		t.Errorf("ACME-3 started at %s, want at %s: the late filing's triage takes back no later todo", describeTimes(started),
+			describeTimes(want))
+	}
+}
+
+// lateBlockerWindow is a window from 09:00 to 14:00 recorded under main with a cap of 2, its inputs
+// reaching back to the daemon's boot at 06:00. ACME-5, a root promoted at 06:05, implements from
+// 06:50 to the window's end, holding a slot. ACME-1, a root promoted at 06:30, holds the other slot
+// to its review's approval at 09:00, and merges at 11:00. ACME-2, a root handed to Legion at 07:00,
+// takes that slot at 09:00 and works 5 or 10 minutes in each phase to its merge at 10:00, giving its
+// slot back at its accepting at 09:45. ACME-3, which a person files todo under ACME-5 at 07:30,
+// blocked by ACME-2, starts at 10:00 once ACME-2 is done, and its planner works to 10:30. At 10:40
+// ACME-5's architect parks ACME-3 (the daemon's session writes it backlog), and at 12:30 releases it
+// again (todo), where ACME-3 starts its second generation and its planner works to 13:00. Under
+// keep-past-review ACME-1 keeps its slot to its merge at 11:00, so ACME-2 starts at 11:00 and is done
+// at 12:00, two hours late, and ACME-3 is parked before it ever starts.
+func lateBlockerWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(14, 0))
+	b.reaches(3 * time.Hour)
+	b.capped(2)
+	b.boot(clock(6, 0))
+	rootThrough(b, "ACME-5", "a5", clock(6, 5), clock(6, 20), moveAt(6, 50, phase.Implementing, workflow.TriggerPlannerCompleted))
+	rootThrough(b, "ACME-1", "a0", clock(6, 30), clock(6, 45), moveAt(7, 15, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(7, 45, phase.Testing, workflow.TriggerImplementationReady), moveAt(8, 15, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(9, 0, phase.Accepting, workflow.TriggerReviewApproved))
+	b.file(clock(7, 0), "ACME-2", filing{Title: "Count the widgets per shelf", Status: "todo", Rank: "a1", Labels: handedToLegion})
+	b.file(clock(7, 30), "ACME-3", filing{Title: "Write the export's header row", Parent: "ACME-5", Tree: "ACME-5", Status: "todo", Rank: "b3",
+		BlockedBy: []string{"ACME-2"}})
+	b.rootPromoted(clock(9, 0), "ACME-2")
+	b.rootDesigned(clock(9, 5), "ACME-2")
+	b.through("ACME-2", phase.Planning, moveAt(9, 15, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(9, 25, phase.Testing, workflow.TriggerImplementationReady), moveAt(9, 35, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(9, 45, phase.Accepting, workflow.TriggerReviewApproved), moveAt(9, 50, phase.Retro, workflow.TriggerSignOff),
+		moveAt(9, 55, phase.Merging, workflow.TriggerRetroCompleted), moveAt(10, 0, phase.Done, workflow.TriggerPullRequestMerged))
+	b.leaves(clock(10, 0), "ACME-2", record.DoneStatus)
+	b.childStarts(clock(10, 0), "ACME-3", "ACME-2")
+	b.segmentEnds(clock(10, 30), "ACME-3", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
+	b.daemonWrites(clock(10, 40), "ACME-3", "backlog")
+	b.leaves(clock(10, 40), "ACME-3", "backlog")
+	b.through("ACME-1", phase.Accepting, moveAt(9, 20, phase.Retro, workflow.TriggerSignOff),
+		moveAt(9, 40, phase.Merging, workflow.TriggerRetroCompleted), moveAt(11, 0, phase.Done, workflow.TriggerPullRequestMerged))
+	b.leaves(clock(11, 0), "ACME-1", record.DoneStatus)
+	b.issue("ACME-3").generation++
+	b.daemonWrites(clock(12, 30), "ACME-3", "todo")
+	b.childStarts(clock(12, 30), "ACME-3")
+	b.segmentEnds(clock(13, 0), "ACME-3", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
+	return b.build()
+}
+
+// The work of a generation the replay never ran, its issue having left the workflow before that
+// work opened, runs at the generation the issue stands at in the replay when it opens, as a drawn
+// piece's does (moveGeneration): the record's generation is one the replay's issue has left. The test
+// replays lateBlockerWindow under keep-past-review: ACME-3 is parked at 10:40 before its blocker is
+// done, enters again at 12:30 at its second generation and starts, and its planner's work of the
+// first generation, half an hour long, moves it to implementing at 13:00, with no move refused. It
+// fails where that work's move is entered at the record's first generation, which the daemon refuses
+// for its generation.
+func TestAnUnrunGenerationsWorkMovesAtTheReplaysGeneration(t *testing.T) {
+	result, log := knobRun(t, lateBlockerWindow(t), replayedRule(t, "keep-past-review"), "main")
+	planned := linesAt(log, func(line replayLine) bool {
+		return line.Msg == phaseChangedLine && line.Issue == "ACME-3" && line.From == string(phase.Planning) && line.To == string(phase.Implementing)
+	})
+	if want := []time.Time{clock(13, 0)}; !slices.EqualFunc(planned, want, time.Time.Equal) {
+		t.Errorf("ACME-3 moved from planning to implementing at %s, want at %s", describeTimes(planned), describeTimes(want))
+	}
+	if refused := result.Divergence.Refused; len(refused) > 0 {
+		t.Errorf("the replay refused %+v", refused)
+	}
+}
+
+// bootAcceptingWindow is a window from 09:00 to 13:00 recorded under legion-v20.42.5, its inputs
+// reaching back to the daemon's boot at 06:00. ACME-1, a root promoted at 06:05, moves into testing
+// at 08:00 and stands in accepting from 08:50; its architect signs it off at 11:30, and it moves to
+// merging at 11:45 and merges at 12:30. ACME-2, a root promoted at 06:10, moves into testing at 10:00
+// and works 10 minutes in testing and in reviewing to accepting at 10:20. A daemon process stops and
+// the next starts at 10:45, and at 10:50 a conflict moves ACME-2 back from accepting to implementing,
+// where it implements to the window's end. ACME-2's is the window's one stretch that begins and ends
+// inside it, so the fitted chance is 1, and accepting's one recorded conflict comes within 15
+// minutes after the boot.
+func bootAcceptingWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.reaches(3 * time.Hour)
+	b.boot(clock(6, 0))
+	rootThrough(b, "ACME-1", "a1", clock(6, 5), clock(6, 20), moveAt(6, 50, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(8, 0, phase.Testing, workflow.TriggerImplementationReady), moveAt(8, 20, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(8, 50, phase.Accepting, workflow.TriggerReviewApproved))
+	rootThrough(b, "ACME-2", "a2", clock(6, 10), clock(6, 25), moveAt(6, 55, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(10, 0, phase.Testing, workflow.TriggerImplementationReady), moveAt(10, 10, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(10, 20, phase.Accepting, workflow.TriggerReviewApproved))
+	b.stopped(clock(10, 45))
+	b.boot(clock(10, 45))
+	b.through("ACME-2", phase.Accepting, moveAt(10, 50, phase.Implementing, workflow.TriggerConflict))
+	b.through("ACME-1", phase.Accepting, moveAt(11, 30, phase.Retro, workflow.TriggerSignOff),
+		moveAt(11, 45, phase.Merging, workflow.TriggerRetroCompleted), moveAt(12, 30, phase.Done, workflow.TriggerPullRequestMerged))
+	b.leaves(clock(12, 30), "ACME-1", record.DoneStatus)
+	return b.build()
+}
+
+// A boot draws every stretch under way, whatever piece of its work runs (driver.bootConflicts): an
+// issue that stands in accepting at a boot, whose stretch the record ends in merging, draws there at
+// merging's chance, in accepting's share of conflicts after a boot (assumption 3). The test replays
+// bootAcceptingWindow under legion-v20.42.5 at the seeds 1 to 3: ACME-1's stretch, under way in its
+// architect's accepting at the boot at 10:45, draws its conflict there at the fitted chance of 1,
+// accepting's one recorded conflict having come after a boot, and ACME-1 moves back from accepting to
+// implementing at 10:45. It fails where a boot draws only a running piece whose own move ends its
+// stretch, for which ACME-1 is signed off at 11:30 and moves back from merging at 12:30.
+func TestAStretchUnderWayDrawsAtABootWhateverPieceRuns(t *testing.T) {
+	for seed := int64(1); seed <= 3; seed++ {
+		_, log, _ := replayLoopWindow(t, bootAcceptingWindow(t), "legion-v20.42.5", seed)
+		back := linesAt(log, func(line replayLine) bool {
+			return line.Msg == phaseChangedLine && line.Issue == "ACME-1" && line.Trigger == workflow.TriggerConflict
+		})
+		from := linesAt(log, func(line replayLine) bool {
+			return line.Msg == phaseChangedLine && line.Issue == "ACME-1" && line.Trigger == workflow.TriggerConflict && line.From == string(phase.Accepting)
+		})
+		if want := []time.Time{clock(10, 45)}; !slices.EqualFunc(back, want, time.Time.Equal) || !slices.EqualFunc(from, want, time.Time.Equal) {
+			t.Errorf("at seed %d ACME-1 moved back by conflict at %s, from accepting at %s; want once, from accepting at 10:45:00, the boot", seed,
+				describeTimes(back), describeTimes(from))
+		}
+	}
+}
+
+// bootShareStretches is how many stretches of bootShareWindow span its boot.
+const bootShareStretches = 40
+
+// bootShareWindow is a window from 09:00 to 13:00 recorded under legion-v20.42.5 with a cap of 50,
+// its inputs reaching back to the daemon's boot at 06:00, in which half the conflicts out of testing
+// come within 15 minutes after a boot. A daemon process stops and the next starts at 10:30. ACME-91
+// and ACME-92, roots promoted at 06:00, move into testing at 09:10 and 10:20, and conflicts move them
+// back to implementing at 09:40, with no boot near, and at 10:35, five minutes after the boot; each
+// implements to the window's end. Theirs are the window's only stretches that begin and end inside
+// it, so the fitted chance is 1. ACME-1 to ACME-40, roots promoted at 06:00, move into testing at
+// 08:50, and their testers fail them at 11:00: bootShareStretches stretches that span the boot.
+func bootShareWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.reaches(3 * time.Hour)
+	b.capped(50)
+	b.boot(clock(6, 0))
+	for i := 1; i <= bootShareStretches; i++ {
+		rootThrough(b, fmt.Sprintf("ACME-%d", i), fmt.Sprintf("a%02d", i), clock(6, 0), clock(6, 10),
+			moveAt(6, 20, phase.Implementing, workflow.TriggerPlannerCompleted), moveAt(8, 50, phase.Testing, workflow.TriggerImplementationReady),
+			moveAt(11, 0, phase.Implementing, workflow.TriggerTesterFailed))
+	}
+	for i, start := range []time.Time{clock(9, 10), clock(10, 20)} {
+		end := clock(9, 40)
+		if i == 1 {
+			end = clock(10, 35)
+		}
+		rootThrough(b, fmt.Sprintf("ACME-%d", 91+i), fmt.Sprintf("b%d", i), clock(6, 0), clock(6, 10),
+			moveAt(6, 20, phase.Implementing, workflow.TriggerPlannerCompleted), builtMove{start, phase.Testing, workflow.TriggerImplementationReady},
+			builtMove{end, phase.Implementing, workflow.TriggerConflict})
+	}
+	b.stopped(clock(10, 30))
+	b.boot(clock(10, 30))
+	return b.build()
+}
+
+// A boot draws a phase's stretches in the share of the window's conflicts out of that phase that
+// came within 15 minutes after a boot (assumption 3): the rest draw at their ends, at the same
+// chance, so the boot moves the moment of that share of the conflicts and not their number. The test
+// replays bootShareWindow under legion-v20.42.5 at the seeds 1 to 3: each of the forty stretches in
+// testing at the boot at 10:30 conflicts, at the fitted chance of 1, either at the boot or at its end
+// at 11:00, and over the 120 stretches those at the boot are about half, testing's share: between 42
+// and 78, more than three standard deviations of a draw at a half each side of 60. It fails where a
+// phase's conflicts all enter at the boot, as an all-or-nothing reading of clustering has them.
+func TestABootDrawsItsPhasesShareOfConflicts(t *testing.T) {
+	window := bootShareWindow(t)
+	atBoot := 0
+	for seed := int64(1); seed <= 3; seed++ {
+		_, log, _ := replayLoopWindow(t, window, "legion-v20.42.5", seed)
+		boot, end := 0, 0
+		for i := 1; i <= bootShareStretches; i++ {
+			key := fmt.Sprintf("ACME-%d", i)
+			back := linesAt(log, func(line replayLine) bool {
+				return line.Msg == phaseChangedLine && line.Issue == key && line.From == string(phase.Testing) && line.Trigger == workflow.TriggerConflict
+			})
+			switch {
+			case len(back) == 1 && back[0].Equal(clock(10, 30)):
+				boot++
+			case len(back) == 1 && back[0].Equal(clock(11, 0)):
+				end++
+			default:
+				t.Errorf("at seed %d %s moved back from testing by conflict at %s, want once, at the boot or at 11:00", seed, key, describeTimes(back))
+			}
+		}
+		t.Logf("at seed %d %d stretches conflicted at the boot and %d at their ends", seed, boot, end)
+		atBoot += boot
+	}
+	if atBoot < 42 || atBoot > 78 {
+		t.Errorf("%d of the 120 stretches conflicted at the boot, want between 42 and 78, about testing's share of a half", atBoot)
+	}
+}
+
+// A run counts the recorded conflict loops it passes over, each of a stretch whose recorded end is a
+// conflict and which draws none, and the conflicts it draws at stretches the record ended otherwise,
+// in run.json (divergence.skippedLoops and divergence.addedLoops) and in its line of counts. The test
+// replays acceptingLoopWindow under main, where ACME-2's stretch draws no conflict at 10:30 and goes
+// on past its recorded loop, and bootAcceptingWindow under legion-v20.42.5, where ACME-1's stretch,
+// which the record ended in its merge, draws a conflict and ACME-2's open loop is kept: one loop
+// passed over and no conflict added, then none passed over and one added. It fails for a run that
+// counts neither.
+func TestARunCountsTheLoopsItPassesOverAndAdds(t *testing.T) {
+	for _, c := range []struct {
+		name           string
+		window         Window
+		rule           string
+		skipped, added int
+	}{
+		{"a loop passed over", acceptingLoopWindow(t), "main", 1, 0},
+		{"a conflict added", bootAcceptingWindow(t), "legion-v20.42.5", 0, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			out := t.TempDir()
+			result, err := Run(context.Background(), RunConfig{Window: c.window, Rule: replayedRule(t, c.rule), Branch: MainBranch, Seed: 1,
+				Slowdown: 1, PGDSN: replayDSN(t), Out: out})
+			if err != nil {
+				t.Fatalf("replay the window under %s: %v", c.rule, err)
+			}
+			var ran struct {
+				Divergence map[string]json.RawMessage `json:"divergence"`
+			}
+			if err := readJSON(filepath.Join(out, runFile), &ran); err != nil {
+				t.Fatalf("read the run's %s: %v", runFile, err)
+			}
+			if skipped, added := string(ran.Divergence["skippedLoops"]), string(ran.Divergence["addedLoops"]); skipped != fmt.Sprint(c.skipped) ||
+				added != fmt.Sprint(c.added) {
+				t.Errorf("run.json counts %q loops passed over and %q conflicts added, want %d and %d", skipped, added, c.skipped, c.added)
+			}
+			if want := fmt.Sprintf("%d recorded conflict loops passed over, %d conflicts drawn where the record shows none", c.skipped,
+				c.added); !strings.Contains(result.Counts(), want) {
+				t.Errorf("the run's line of what it counted, %q, does not say %q", result.Counts(), want)
+			}
+		})
+	}
+}
+
+// runOutWindow is a window from 09:00 to 13:00 recorded under main with a run-out of four hours after
+// it, its inputs reaching back to the daemon's boot at 06:00. ACME-2, a root promoted at 06:05,
+// works to its review at 08:20, where its reviewer works, holding its slot, until a conflict moves
+// it back to implementing at 12:00. Its loop, 90 minutes in implementing and 15 in testing, brings
+// it back to reviewing at 13:45, inside the run-out, where its reviewer works to a rejection at
+// 16:00, and it implements to the run-out's end. No stretch begins and ends inside the window, so
+// the fitted rate draws no conflict.
+func runOutWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.reaches(3 * time.Hour)
+	b.boot(clock(6, 0))
+	rootThrough(b, "ACME-2", "a2", clock(6, 5), clock(6, 20), moveAt(6, 50, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(7, 50, phase.Testing, workflow.TriggerImplementationReady), moveAt(8, 20, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(12, 0, phase.Implementing, workflow.TriggerConflict), moveAt(13, 30, phase.Testing, workflow.TriggerImplementationReady),
+		moveAt(13, 45, phase.Reviewing, workflow.TriggerTesterPassed), moveAt(16, 0, phase.Implementing, workflow.TriggerReviewRejected))
+	b.window.After = Duration(4 * time.Hour)
+	return b.build()
+}
+
+// A window with a run-out replays past its end, to the run-out's, so the work the record shows after
+// --to runs where the replay moves it, and its every measure reads the window alone (the architect's
+// D12). The test replays runOutWindow under main: ACME-2's stretch draws no conflict at 12:00 and
+// goes on past its recorded loop into its review recorded inside the run-out, so its reviewer works
+// on across 13:00 and rejects it at 14:15, a move the replay's log shows. Its slot-hours of the
+// window are each in a turn, and no scorecard, the replay's two nor the record's, counts a move, a
+// slot or a loop after 13:00. It fails where the replay stops at the window's end, for which the
+// rejection never comes.
+func TestARunOutReplaysPastTheWindowAndMeasuresInsideIt(t *testing.T) {
+	window := runOutWindow(t)
+	result, log := knobRun(t, window, mainRule(t), "main")
+	rejected := linesAt(log, func(line replayLine) bool {
+		return line.Msg == phaseChangedLine && line.Issue == "ACME-2" && line.From == string(phase.Reviewing) &&
+			line.Trigger == workflow.TriggerReviewRejected
+	})
+	if want := []time.Time{clock(14, 15)}; !slices.EqualFunc(rejected, want, time.Time.Equal) {
+		t.Errorf("ACME-2's review rejected it at %s, want at %s, inside the run-out", describeTimes(rejected), describeTimes(want))
+	}
+	if card := result.Scorecard; math.Abs(card.SlotHoursInTurn-4) > fixtureTolerance || card.SlotHoursNoTurn > fixtureTolerance {
+		t.Errorf("ACME-2's slot-hours of the window are %v in a turn and %v in none, want 4 and 0", card.SlotHoursInTurn, card.SlotHoursNoTurn)
+	}
+	recorded, err := Score(window)
+	if err != nil {
+		t.Fatalf("score the record: %v", err)
+	}
+	for name, card := range map[string]Scorecard{"snapshot": result.Scorecard, "line": result.LineScorecard, "record": recorded} {
+		if !card.From.Equal(clock(9, 0)) || !card.To.Equal(clock(13, 0)) || card.Done != 0 || len(card.DoneAt) != 0 {
+			t.Errorf("the %s scorecard reads [%s, %s) with %d done, want [09:00, 13:00) with none", name, stamp(card.From), stamp(card.To), card.Done)
+		}
+		for key, first := range card.FirstSlot {
+			if !first.Before(clock(13, 0)) {
+				t.Errorf("the %s scorecard gives %s a first slot at %s, after the window", name, key, stamp(first))
+			}
+		}
+		wantLoops := map[string]LoopHours{}
+		if name == "record" {
+			wantLoops[string(CauseConflict)] = LoopHours{Rounds: 1, Hours: 1}
+		}
+		if !maps.EqualFunc(card.Loops, wantLoops, func(a, b LoopHours) bool { return a.Rounds == b.Rounds && math.Abs(a.Hours-b.Hours) < fixtureTolerance }) {
+			t.Errorf("the %s scorecard counts the loops %+v, want %+v: nothing after 13:00", name, card.Loops, wantLoops)
 		}
 	}
 }

@@ -23,10 +23,13 @@ import (
 // whole payload, so no sequence fence of the daemon drops it for arriving out of the record's
 // order, and an echo that changes the status leaves the issue's links, parent, labels and rank as
 // they stand. A recorded issue event changes the payload by what it changed in the record, read as
-// the fields its payload differs in from the recorded event before it, so a person's edit lands on
-// the replay's status rather than writing back the status the record's daemon had written. The
-// daemon's reads of Dispatch — a boot's listing, a tick's re-read, a status write's read, a gate
-// seed's read of a document — are answered from it.
+// the fields its payload differs in from the issue's recorded event before it in the record's
+// order, whatever the copy applied before it, so a person's edit lands on the replay's status
+// rather than writing back the status the record's daemon had written, and an event the replay
+// applies late, an act of a piece of work it moved, changes only what it changed in the record. It
+// takes back no field that an event after it in the record's order set and the copy applied first
+// (shadowIssue.setBy). The daemon's reads of Dispatch — a boot's listing, a tick's re-read, a status
+// write's read, a gate seed's read of a document — are answered from it.
 type shadow struct {
 	project string
 	issues  map[string]*shadowIssue
@@ -54,9 +57,10 @@ type shadowIssue struct {
 	// (decodeShown: take and statusWrite) rather than at each read.
 	shownStatus, shownParent   string
 	shownLabels, shownBlockers []string
-	// recorded is the payload of the issue's last recorded issue event, whoever wrote it, which
-	// the next recorded issue event's change is read against.
-	recorded map[string]json.RawMessage
+	// setBy is, for each field of the payload a recorded issue event set, the place in the record's
+	// order of the last event that set it (the script's index of the event): an event before it in
+	// that order, applied later, sets the field no more.
+	setBy map[string]int
 	// log is every event of the issue the shadow holds, as applied: first the recorded events
 	// before the window's start (seedEvent), the first seeded of them, then every event the replay
 	// applied. A read of the issue's event log is answered from it (intake.LabelSetter), as
@@ -111,7 +115,8 @@ func (s *shadow) issue(key, project string) *shadowIssue {
 		if project == "" {
 			project, _, _ = strings.Cut(key, "-")
 		}
-		iss = &shadowIssue{key: key, project: project, asks: map[string]*shadowAsk{}, artifacts: map[string]*shadowArtifact{}}
+		iss = &shadowIssue{key: key, project: project, setBy: map[string]int{}, asks: map[string]*shadowAsk{},
+			artifacts: map[string]*shadowArtifact{}}
 		s.issues[key] = iss
 	}
 	return iss
@@ -165,21 +170,15 @@ func daemonWrote(actor dispatch.Actor, key string) bool {
 	return actor.Kind == "session" && actor.ID == dispatch.DaemonSession(key)
 }
 
-// note reads a recorded issue event of the daemon's own into the shadow without applying it: the
-// next recorded event's change is read against it, and the shadow's payload is the replay's own.
-func (s *shadow) note(e envelope) {
-	if issueEvent(e.kind) && e.payload != nil {
-		s.issue(e.key, e.project).recorded = e.payload
-	}
-}
-
 // apply applies a recorded event at at: it takes its issue's next sequence, and an issue event
-// changes the payload by the fields it changed in the record. It answers the event as the replay
-// applies it, which the daemon's decoder reads.
-func (s *shadow) apply(e envelope, at time.Time) (json.RawMessage, error) {
+// changes the payload by the fields it changed in the record (take). place is the event's place in
+// the record's order, and before the payload of its issue's recorded issue event before it in that
+// order, nil for none. It answers the event as the replay applies it, which the daemon's decoder
+// reads.
+func (s *shadow) apply(e envelope, before map[string]json.RawMessage, place int, at time.Time) (json.RawMessage, error) {
 	iss := s.issue(e.key, e.project)
 	iss.seq++
-	return s.take(iss, e, at)
+	return s.take(iss, e, before, place, at)
 }
 
 // seedEvent applies a recorded event from before the window's start at its recorded time at and
@@ -187,39 +186,46 @@ func (s *shadow) apply(e envelope, at time.Time) (json.RawMessage, error) {
 // stood at the start: each issue at the sequence of its newest event before it, where the start
 // state writes its record's LastDispatchSeq, with the payload, asks and documents the record shows
 // then. A write of the daemon's own is applied as any other, since the record's state at the start
-// holds it. The event joins the issue's log ahead of every event the replay applies
-// (shadowIssue.seeded): a replay seeds every event before its start before it applies its first.
-func (s *shadow) seedEvent(e envelope, seq int64, at time.Time) error {
+// holds it. place and before are apply's. The event joins the issue's log ahead of every event the
+// replay applies (shadowIssue.seeded): a replay seeds every event before its start before it
+// applies its first.
+func (s *shadow) seedEvent(e envelope, before map[string]json.RawMessage, place int, seq int64, at time.Time) error {
 	iss := s.issue(e.key, e.project)
 	iss.seq = seq
-	if _, err := s.take(iss, e, at); err != nil {
+	if _, err := s.take(iss, e, before, place, at); err != nil {
 		return err
 	}
 	iss.seeded = len(iss.log)
 	return nil
 }
 
-// take applies e to iss at at, at the sequence iss stands at: an issue event changes the payload
-// by the fields it changed in the record, a claim event (issue.claimed, issue.released) changes
-// the claim the payload shows where it shows one, as Dispatch's next read of the issue would show
-// it (DispatchEvent.Claim), and every event's asks and documents are read (notePayload). It answers
-// the event as applied, which joins the issue's log.
-func (s *shadow) take(iss *shadowIssue, e envelope, at time.Time) (json.RawMessage, error) {
+// take applies e, the recorded event at place in the record's order, to iss at at, at the sequence
+// iss stands at: an issue event sets each field its payload differs in from before, the payload of
+// its issue's recorded issue event before it in that order, and its whole payload where iss holds
+// none yet, but a field that an event after it in the record's order set (shadowIssue.setBy); a
+// claim event (issue.claimed, issue.released) changes the claim the payload shows where it shows
+// one, as Dispatch's next read of the issue would show it (DispatchEvent.Claim), and every event's
+// asks and documents are read (notePayload). It answers the event as applied, which joins the
+// issue's log.
+func (s *shadow) take(iss *shadowIssue, e envelope, before map[string]json.RawMessage, place int, at time.Time) (json.RawMessage, error) {
 	fields := maps.Clone(e.fields)
 	if issueEvent(e.kind) && e.payload != nil {
-		if iss.payload == nil {
-			iss.payload = maps.Clone(e.payload)
-		} else {
-			for name, value := range e.payload {
-				if bookkeeping[name] {
-					continue
-				}
-				if before, had := iss.recorded[name]; !had || !sameJSON(before, value) {
-					iss.payload[name] = value
-				}
-			}
+		first := iss.payload == nil
+		if first {
+			iss.payload = map[string]json.RawMessage{}
 		}
-		iss.recorded = e.payload
+		for name, value := range e.payload {
+			if !first && bookkeeping[name] {
+				continue
+			}
+			if prior, had := before[name]; !first && had && sameJSON(prior, value) {
+				continue
+			}
+			if by, set := iss.setBy[name]; set && by > place {
+				continue
+			}
+			iss.payload[name], iss.setBy[name] = value, place
+		}
 		iss.decodeShown()
 		iss.stamp(at)
 		payload, err := iss.render(s.ranks)
@@ -420,8 +426,8 @@ var rankActor = jsonActor{Kind: "system", ID: "replay-first-starts"}
 // Dispatch at at: an issue.updated of the shadow's payload at the new rank, whose changed fields
 // are the rank, by rankActor, at the issue's next sequence. It answers false where the rank shown
 // does not move, and where the shadow holds no payload of the issue to write over, whose first
-// event then carries the rank. No recorded event is this one: the record's own payload, which the
-// next recorded event's change is read against, stays as it was.
+// event then carries the rank. No recorded event is this one: the payload and the record's place of
+// the event that last set each of its fields (shadowIssue.setBy) stay as they were.
 func (s *shadow) rankWrite(key, rank string, shown bool, at time.Time) (json.RawMessage, bool, error) {
 	if before, had := s.ranks[key]; had == shown && before == rank {
 		return nil, false, nil

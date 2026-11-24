@@ -11,12 +11,14 @@ import (
 
 // The streams of the run's seed: each draw of a replay reads a source of its own, seeded by the
 // run's seed on its own stream, so a draw of one kind never moves the draws of another: the
-// experiments' (newChain), the never-started scenario's, a stretch's conflict's and the loop of a
-// conflict it made. The last two are seeded afresh at each stretch's draw, by the stretch's place
-// as well (driver.seedDraw), so no draw of a conflict reads the draws before it.
+// experiments' (newChain), the never-started scenario's, a stretch's conflict's, whether a boot
+// draws a stretch under way (drawsAtBoot) and the loop of a conflict it made. The last three are
+// seeded afresh at each stretch's draw, by the stretch's place as well (driver.seedDraw), so no draw
+// of a conflict reads the draws before it.
 const (
 	experimentStream   = 0x7265706c6179     // "replay"
 	conflictStream     = 0x636f6e666c696374 // "conflict"
+	bootStream         = 0x626f6f74         // "boot"
 	loopStream         = 0x6c6f6f70         // "loop"
 	neverStartedStream = 0x6e65766572       // "never"
 )
@@ -55,8 +57,10 @@ func neverStartedIn(t Trace, key string) bool {
 }
 
 // startedIn says whether the record started iss inside t's window: the earlier of its first slot
-// and its first work segment begins at or after the window's start and before its end. An issue
-// whose first slot it held from before the window's reach (SlotSpan.Before) did not start in it.
+// and its first work segment begins at or after the window's start and before the end of its
+// inputs (Trace.End), its run-out's where it holds one, whose recorded work a replay runs as it runs
+// the window's. An issue whose first slot it held from before the window's reach (SlotSpan.Before)
+// did not start in it.
 func startedIn(t Trace, iss *IssueTrace) bool {
 	var first time.Time
 	if len(iss.Slots) > 0 {
@@ -70,13 +74,14 @@ func startedIn(t Trace, iss *IssueTrace) bool {
 			first = visit.Segment.Start
 		}
 	}
-	return !first.IsZero() && !first.Before(t.From) && first.Before(t.To)
+	return !first.IsZero() && !first.Before(t.From) && first.Before(t.End)
 }
 
-// finishedIn says whether the record moved iss to done inside t's window.
+// finishedIn says whether the record moved iss to done inside t's window or its run-out
+// (startedIn).
 func finishedIn(t Trace, iss *IssueTrace) bool {
 	return slices.ContainsFunc(iss.Visits, func(visit Visit) bool {
-		return visit.Out != nil && visit.Out.To == phase.Done && !visit.Out.At.Before(t.From) && visit.Out.At.Before(t.To)
+		return visit.Out != nil && visit.Out.To == phase.Done && !visit.Out.At.Before(t.From) && visit.Out.At.Before(t.End)
 	})
 }
 
@@ -204,10 +209,11 @@ func clonePieces(pieces []*piece, key string) []*piece {
 }
 
 // moveGeneration is the generation the recorded move that ends p is entered at: the record's
-// generation of p's issue at the move, or, for a drawn piece, the generation the issue stands at in
-// the replay.
+// generation of p's issue at the move, or, for a drawn piece and for a piece of a generation its
+// issue left in the replay before the piece opened (piece.leftUnrun), the generation the issue
+// stands at in the replay.
 func (d *driver) moveGeneration(p *piece, move *Move) (uint64, error) {
-	if !p.drawn {
+	if !p.drawn && !p.leftUnrun {
 		return d.generationAt(p.issue, move.At), nil
 	}
 	issue, err := d.recorded(p.issue)

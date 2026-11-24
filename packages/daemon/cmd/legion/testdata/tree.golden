@@ -44,7 +44,7 @@ legion project
 legion project pause	--config string	--json bool	--operator-token-file string	--port int	--reason string
 legion project resume	--config string	--json bool	--operator-token-file string	--port int
 legion replay
-legion replay collect	--before duration	--collector string	--concurrency int	--dispatch-token-file string	--from string	--gate-steps string	--linger duration	--log stringArray	--out string	--part stringArray	--project string	--review-round-cap int	--stalled-tree-notice duration	--tick-interval duration	--to string	--worker-background duration	--worker-silence duration
+legion replay collect	--after duration	--before duration	--collector string	--concurrency int	--dispatch-token-file string	--from string	--gate-steps string	--linger duration	--log stringArray	--out string	--part stringArray	--project string	--review-round-cap int	--stalled-tree-notice duration	--tick-interval duration	--to string	--worker-background duration	--worker-silence duration
 legion replay collect-merges	--branch string	--from string	--github-api string	--github-token-env string	--out string	--repo string	--to string
 legion replay compare	--from-runs stringArray	--keep-logs bool	--only-rule string	--only-window string	--out string	--parallel int	--pg-dsn string	--rule stringArray	--runs string	--window stringArray
 legion replay forecast	--after string	--before string	--from-runs stringArray	--json bool	--keep-logs bool	--out string	--parallel int	--pg-dsn string	--rule string

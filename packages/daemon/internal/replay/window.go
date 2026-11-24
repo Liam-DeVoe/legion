@@ -53,12 +53,18 @@ type Window struct {
 	Format int `json:"format"`
 	// Project is the Dispatch project key of the daemon the window was recorded from.
 	Project string `json:"project"`
-	// From and To bound the window: the replay starts its daemon at From and stops at To.
+	// From and To bound the window: the replay starts its daemon at From, and its measures read
+	// [From, To).
 	From time.Time `json:"from"`
 	To   time.Time `json:"to"`
 	// Before is how far before From the inputs reach, so the state at From can be rebuilt from
 	// them.
 	Before Duration `json:"before"`
+	// After is the window's run-out: how far past To the inputs reach, so the work the record
+	// shows after To runs in a replay, which goes on to the run-out's end (End) and is measured
+	// over [From, To) alone. A window collected with no run-out, or before collect read one, holds
+	// none, and window.json then names none.
+	After Duration `json:"after,omitempty"`
 	// Caps is the admission cap the daemon ran with, each from its At on.
 	Caps []CapAt `json:"caps"`
 	// Parts says which release, commit and slot rule the daemon ran over each part of the window.
@@ -96,6 +102,13 @@ type Window struct {
 	Events map[string][]json.RawMessage `json:"-"`
 	// Merges is each merges file's commits, by repository as owner/repo.
 	Merges map[string][]Merge `json:"-"`
+}
+
+// End is where w's inputs end: To, plus the run-out where w holds one (After). A replay runs to it,
+// so the work the record shows after To runs where the replay moves it, and measures [From, To)
+// alone.
+func (w Window) End() time.Time {
+	return w.To.Add(time.Duration(w.After))
 }
 
 // CapAt is the admission cap the daemon ran with from At on.

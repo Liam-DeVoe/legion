@@ -383,17 +383,19 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 }
 
 // Counts is what the run counted of where it left the record's course, as `legion replay run`
-// prints it on one line beside the run's name: the moves refused, the conflicts kept and left to the
-// merger, the starts that opened no recorded work, the events fenced, the issues the start state
-// could not place, the issues admitted with no work and the slot-hours they hold, and, under a drawn
-// scenario, how many issues drew their work from each pool (DrawnWork).
+// prints it on one line beside the run's name: the moves refused, the conflicts kept, the recorded
+// conflict loops passed over and the conflicts drawn where the record shows none, the conflicts
+// left to the merger, the starts that opened no recorded work, the events fenced, the issues the
+// start state could not place, the issues admitted with no work and the slot-hours they hold, and,
+// under a drawn scenario, how many issues drew their work from each pool (DrawnWork).
 func (r RunResult) Counts() string {
 	c := r.Divergence
-	counts := fmt.Sprintf("%d moves refused, %d recorded conflicts kept for a loop open at the window's end, %d conflicts past the review left to the merger, "+
+	counts := fmt.Sprintf("%d moves refused, %d recorded conflicts kept for a loop open at the window's end, "+
+		"%d recorded conflict loops passed over, %d conflicts drawn where the record shows none, %d conflicts past the review left to the merger, "+
 		"%d reassertion starts, %d events fenced, %d starts with no segment left, %d segments passed over, %d unplaced issues, "+
 		"%d issues admitted with no work holding %s slot-hours",
-		len(c.Refused), c.KeptOpenLoops, c.ConflictsToMerger, c.Reassertions, c.Fenced, c.NoSegment, c.SkippedSegments, len(r.Unplaced),
-		c.NoWorkAdmissions, formatNumber(c.NoWorkSlotHours))
+		len(c.Refused), c.KeptOpenLoops, c.SkippedLoops, c.AddedLoops, c.ConflictsToMerger, c.Reassertions, c.Fenced, c.NoSegment,
+		c.SkippedSegments, len(r.Unplaced), c.NoWorkAdmissions, formatNumber(c.NoWorkSlotHours))
 	if drawn := c.DrawnWork; drawn != (DrawnWork{}) {
 		counts += fmt.Sprintf(", the drawn work of %d issues: %d from its own tree, %d of its priority and repository, %d from the window",
 			drawn.Tree+drawn.PriorityRepository+drawn.Window, drawn.Tree, drawn.PriorityRepository, drawn.Window)
@@ -535,13 +537,14 @@ func (d *driver) lineTimeline() (Timeline, Trace, error) {
 }
 
 // runRecord is a run's run.json: what it ran — the rule, the branch, the seed, the slowdown, the
-// scenario and every assumption it used by number — what ran it — the commit of the legion binary
-// (BuildCommit, where RuleCommit is the commit the rule was first written as a value at) and the
-// moment on the wall clock the run started — and what it counted: the facts it applied and the
-// passes they ran, the mean time of a pass, the run's wall time and peak memory, the issues the
-// start state could not place, the segments it ran, its divergence counters, the gap of each
-// measure between its snapshot and line timelines, and the conflict model it drew by. It holds
-// numbers and names alone, never an assumption's text.
+// scenario, every assumption it used by number, and the window's run-out it ran past the window's
+// end (After, none for a window with no run-out), its measures reading the window alone — what ran
+// it — the commit of the legion binary (BuildCommit, where RuleCommit is the commit the rule was
+// first written as a value at) and the moment on the wall clock the run started — and what it
+// counted: the facts it applied and the passes they ran, the mean time of a pass, the run's wall
+// time and peak memory, the issues the start state could not place, the segments it ran, its
+// divergence counters, the gap of each measure between its snapshot and line timelines, and the
+// conflict model it drew by. It holds numbers and names alone, never an assumption's text.
 type runRecord struct {
 	Rule            string        `json:"rule"`
 	RuleCommit      string        `json:"ruleCommit"`
@@ -551,6 +554,7 @@ type runRecord struct {
 	Slowdown        float64       `json:"slowdown"`
 	Scenario        string        `json:"scenario"`
 	Assumptions     []int         `json:"assumptions"`
+	After           Duration      `json:"after"`
 	Database        string        `json:"database"`
 	KeptDatabase    bool          `json:"keptDatabase"`
 	Facts           int           `json:"facts"`
@@ -576,8 +580,8 @@ func (d *driver) writeOutputs(result RunResult, began time.Time) error {
 		mean = float64(d.passTime.Microseconds()) / 1000 / float64(d.facts)
 	}
 	ran := runRecord{Rule: d.rule.Name, RuleCommit: d.rule.Commit, BuildCommit: cmp.Or(d.cfg.BuildCommit, unknownBuild), Branch: d.cfg.Branch,
-		Seed: d.cfg.Seed, Slowdown: d.cfg.Slowdown, Scenario: result.Scorecard.Scenario, Assumptions: result.Assumptions, Database: result.Database,
-		KeptDatabase: d.cfg.KeepDB, Facts: d.facts, Passes: d.facts + d.boots, MeanPassMillis: mean, StartedAt: began.UTC(),
+		Seed: d.cfg.Seed, Slowdown: d.cfg.Slowdown, Scenario: result.Scorecard.Scenario, Assumptions: result.Assumptions, After: d.window.After,
+		Database: result.Database, KeptDatabase: d.cfg.KeepDB, Facts: d.facts, Passes: d.facts + d.boots, MeanPassMillis: mean, StartedAt: began.UTC(),
 		WallSeconds: time.Since(began).Seconds(), PeakMemoryBytes: peakMemory(), Unplaced: len(result.Unplaced), Segments: len(d.segments),
 		Divergence: result.Divergence, Gaps: result.Gaps, Conflicts: result.Conflicts}
 	for name, value := range map[string]any{scorecardFile: result.Scorecard, lineScorecardFile: result.LineScorecard, runFile: ran} {

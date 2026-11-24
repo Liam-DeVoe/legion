@@ -25,9 +25,11 @@ import (
 // start state (Seed) and the measures share, so a replay and its record are read alike, and what
 // it cannot place it names (Unplaced) rather than leaving out.
 type Trace struct {
-	// Project is the window's Dispatch project, and From and To its span.
-	Project  string
-	From, To time.Time
+	// Project is the window's Dispatch project, From and To its span, which the measures read, and
+	// End where its inputs end (Window.End): To, or the end of its run-out past To, to which a replay
+	// runs.
+	Project       string
+	From, To, End time.Time
 	// Start is the earliest moment the window's inputs reach, From less Before: the log holds
 	// nothing older, so a phase or a slot an issue stood in at Start began at an unknown time.
 	Start time.Time
@@ -685,7 +687,7 @@ func readTrace(w Window, ran *record.SlotRule) (Trace, []LogLine, []readEvent, e
 		rules[i] = rule
 	}
 	b := traceBuilder{
-		t: &Trace{Project: w.Project, From: w.From, To: w.To, Start: w.From.Add(-time.Duration(w.Before)), Parts: w.Parts, rules: rules,
+		t: &Trace{Project: w.Project, From: w.From, To: w.To, End: w.End(), Start: w.From.Add(-time.Duration(w.Before)), Parts: w.Parts, rules: rules,
 			GateSteps: w.GateSteps, TickInterval: time.Duration(w.TickInterval), Branches: map[string]string{},
 			Issues: map[string]*IssueTrace{}},
 		ran:         ran,
@@ -2595,10 +2597,10 @@ func (b *traceBuilder) workerStart(iss *IssueTrace, visit *Visit) time.Time {
 }
 
 // ticks sets the controller ticks of each boot: a minute after it, then every TickInterval, until
-// the next boot or the window's end.
+// the next boot or the end of the window's inputs (Trace.End), to which a replay runs.
 func (b *traceBuilder) ticks() {
 	for i, boot := range b.t.Boots {
-		until := b.t.To
+		until := b.t.End
 		if i+1 < len(b.t.Boots) && b.t.Boots[i+1].At.Before(until) {
 			until = b.t.Boots[i+1].At
 		}

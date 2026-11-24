@@ -59,8 +59,8 @@ A recorded window is a directory.
 
 | File | What it holds |
 | --- | --- |
-| `window.json` | The project, the span (`from`, `to`), the reach (`before`), the cap from each change on, the release, commit and rule of each part of the span, the deployment's settings, the kinds of line that the log holds, the collector's commit, and the sha256 of each input file. |
-| `log.jsonl` | The daemon's lines in the reach and the span, one JSON object each, as the daemon writes them on standard error: `time`, `level`, `msg` and the attributes. |
+| `window.json` | The project, the span (`from`, `to`), the reach (`before`), the run-out (`after`, only where the window has one), the cap from each change on, the release, commit and rule of each part of the span, the deployment's settings, the kinds of line that the log holds, the collector's commit, and the sha256 of each input file. |
+| `log.jsonl` | The daemon's lines in the reach, the span and the run-out, one JSON object each, as the daemon writes them on standard error: `time`, `level`, `msg` and the attributes. |
 | `events/<KEY>.jsonl` | Each issue's Dispatch events, oldest first, as Dispatch's issue event log serves them. |
 | `merges/<owner>__<name>.jsonl` | The first-parent commits of each base branch, which the conflict draw reads. |
 
@@ -85,12 +85,17 @@ The reach is the span from `--from` less `--before` to `--from`.
 No reading of a daemon's state exists for a past moment, so the tool rebuilds the state at `--from` from the lines and events of the reach.
 Each run gives the number of issues that it could not place at `--from`, and names each one with the reason.
 
+The run-out is the span from `--to` to `--to` plus `--after`.
+A replay runs on through the run-out, so the work that the record shows after `--to` runs where the replay moves it.
+Every measure reads only the span from `--from` to `--to`.
+A window that names no `after` has no run-out.
+
 Every command reads a window only if each input file has the sha256 that `window.json` gives for it.
 A window that holds an input file that `window.json` does not name is refused too.
 
 ## Collect a window
 
-1. Get the daemon's log lines for the reach and the span.
+1. Get the daemon's log lines for the reach, the span and the run-out.
 
 2. Run `legion replay collect`.
 
@@ -148,7 +153,7 @@ A log store keeps lines for a limited time, 30 days by default in Cloud Logging,
 
 `collect` reads from Dispatch the events of each issue that the lines name.
 It also reads the events of each blocker, parent and child that those events name, in any project.
-It reads each issue from its first event up to `--to`.
+It reads each issue from its first event up to `--to` plus `--after`.
 Set `DISPATCH_URL` to your Dispatch server.
 The token comes from the file that `--dispatch-token-file` names, else from the file that `DISPATCH_TOKEN_FILE` names, else from `DISPATCH_TOKEN`.
 `collect` never prints the token.
@@ -172,6 +177,7 @@ It names each issue that Dispatch does not have.
 | `--project <KEY>` | The Dispatch project key of the daemon that wrote the lines (required). |
 | `--from <time>`, `--to <time>` | The window's start and end, in RFC 3339 (required). |
 | `--before <duration>` | How far before `--from` the inputs reach, so that the tool can rebuild the state at `--from` (required). |
+| `--after <duration>` | The run-out: how far after `--to` the inputs reach, so that a replay runs the work that the record shows after `--to` (none by default). |
 | `--log <file or directory>` | A file, or a directory of files, of the daemon's lines, given once for each (required). |
 | `--out <dir>` | The directory that the window goes to, which must be missing or empty (required). |
 | `--dispatch-token-file <file>` | The file that holds the Dispatch token. |
@@ -182,6 +188,10 @@ It names each issue that Dispatch does not have.
 
 - Make `--before` as long as the lines that you hold allow.
   If the reach starts while slots are in use and no line names their holders, the tool infers the holders from their phases (assumption 34).
+
+- Give `--after` where you hold lines after `--to`.
+  An issue that the replay moves earlier, for example past a conflict loop that the replay does not draw, then runs into its work recorded after `--to`, and does not stand with no work at `--to`.
+  Work recorded after the end of the run-out is not in the replay (assumption 3).
 
 - Give one `--part` for each release that the daemon ran in the window, with the name of its rule as `legion replay rules` prints it.
   `scorecard` reads the record under the rule of each moment.
@@ -301,6 +311,8 @@ legion replay run \
 
 `run` replays the window through the daemon's own handler chain: the Dispatch mirror, the workflow engine and the admission pass.
 It enters each Dispatch event, each recorded phase move, each tick and each boot at its recorded time or offset.
+Where the window has a run-out, the replay runs on through it, and enters each of those in the run-out too.
+Every measure of the run reads only the window's span, and `run.json` names the run-out as `after`.
 Where the window starts while a daemon process boots, no pass runs before that process's recorded reconcile, and each act before the reconcile waits for it, as an act waits for the next boot while no daemon runs.
 The replay reads that reconcile from the line that holds roots for the Dispatch consumer, or else from the process's first slot line before its line `legion daemon started`.
 Most Dispatch events that the daemon's own session wrote are its outbox's status writes, which the replay's own outbox makes again, so the replay leaves those events out.
@@ -328,6 +340,9 @@ A segment of a later run of the issue waits for the replay to enter that run.
 Where `answer` is `offset`, a person's answer to a worker's question enters at its offset from the moment that the question entered the replay, wherever the question entered, so no answer comes before its question.
 Where a drawn conflict loop takes the place of the issue's own recorded loop, each event of the issue's own loop enters at its offset in the drawn loop's segment of the same role and phase, or at the end of that segment where the segment is shorter, and an event of a role and phase that the drawn loop does not hold enters as an event that no worker wrote.
 So the replay enters each recorded event once.
+Each recorded event of an issue changes the replay's copy of Dispatch only in the fields in which it differs from the issue's event before it in the record.
+Where the replay applies an event late, the event does not change a field that an event after it in the record set first.
+So an architect's filing of a child that enters after the daemon's later todo of that child leaves the child in todo, as the record does.
 After each fact, a worker stub runs the outbox rows that the daemon's lanes would take.
 An operator's retry of a phase's worker with a fresh session, which `legion claims retry --fresh-session` makes of a suspended claim, shows in the record as a launch of the claim and, at the same moment, a held phase released by the operator's retry where no hold stands.
 The release `legion-v20.42.5` launched the claim outside the start fence of the outbox and then restarted the phase, and the fence held the start of that restart, for example while the tree's design gate stood closed.
@@ -352,8 +367,10 @@ Such a move back is not entered as recorded, because the stretch that it ends dr
 Each draw of a stretch takes its value from `--seed`, the issue, and the place of the stretch in the record: the phase and the recorded start of the work segment that ends it, and how many times the stretch drew before.
 The loop of a conflict that it draws takes its value from the same place.
 So a draw never depends on the draws before it, and two rules at one seed draw the same value for each stretch that both run, also where one rule ends a stretch earlier or runs a stretch that the other does not.
-A daemon's boot reads each pull request again, so the run also reads, for each phase, whether the window's conflicts in that phase came within 15 minutes after a boot more often than the time in that phase lies there.
-In such a phase, a stretch that spans a boot draws at the boot's read, at the chance that it would draw at its end, and a conflict that it draws enters there: the issue moves back, or a role merges the base forward and the work goes on after it, or the conflict waits for merging, as the rule's path has it.
+A daemon's boot reads each pull request again, so the run also reads, for each phase, the share of the window's conflicts out of that phase that came within 15 minutes after a boot.
+At a boot, each stretch under way draws there in that share of the phase in which its issue stands, whatever work segment of the stretch runs: an issue in accepting whose stretch the record ends in merging draws there too.
+It draws at the chance that it would draw at its end, in the phase in which the record ends it, and a conflict that it draws enters there: the issue moves back, or a role merges the base forward and the work goes on after it, or the conflict waits for merging, as the rule's path has it.
+A stretch makes this choice at the first boot inside it, and a stretch that does not draw there draws at its end.
 A stretch that draws no conflict at a boot goes on and does not draw again at its end.
 Under a rule whose conflicting head moves back, an issue whose stretch draws a conflict runs a recorded conflict loop, drawn with `--seed` among the loops of the window whose conflict left the same phase.
 Where the window records no loop from that phase, the replay draws among the loops that left a later phase, and cuts the drawn loop at its first work segment in that phase or a later one, so the issue returns to the phase that its conflict left.
@@ -361,9 +378,11 @@ Where the window records only loops that left an earlier phase, the replay draws
 Where the issue's own work holds no segment in the phase that such a loop returns to, the issue runs no drawn loop and goes on with its own recorded work.
 Where the record ended the stretch otherwise than in a conflict, the issue runs the work that ended it again after the loop, and an accepting segment of that work opens on the move into accepting, also where the segment was under way at the window's start.
 The replay draws only among the loops whose work, as the drawn conflict takes it, the record shows ending.
-A loop whose issue the record shows still in it at `--to`, or leaving the workflow inside it, has no known length, and an issue given it would stand in its last work segment to the window's end and never run its own work after the loop.
+A loop whose issue the record shows still in it at the end of the inputs, or leaving the workflow inside it, has no known length, and an issue given it would stand in its last work segment to the end of the inputs and never run its own work after the loop.
 A loop that left a later phase counts where the record shows it reaching the phase that the drawn conflict left.
-A stretch whose recorded conflict loop runs to `--to`, with no return to the phase that the conflict left, does not draw: it keeps that conflict, and the issue runs its own loop where the daemon moves it back (assumption 35).
+A stretch whose recorded conflict loop runs to the end of the inputs, `--to` or the end of the run-out, with no return to the phase that the conflict left, does not draw: it keeps that conflict, and the issue runs its own loop where the daemon moves it back (assumption 35).
+`run` prints the number of recorded conflict loops that it passed over, because their stretch drew no conflict, and the number of conflicts that it drew where the record shows none.
+`run.json` counts them as `divergence.skippedLoops` and `divergence.addedLoops`.
 The replay runs the daemon of the commit that it was built from, and that daemon answers a conflict past the review by the conflict path of the rule that you name.
 Under `main` and each candidate built on it, the daemon answers as cybermonklabs/legion#4979 has it, and leaves that conflict to the merger (assumption 37).
 In accepting and retro, the daemon records the head as conflicting and asks nobody, because neither the architect's acceptance nor retro needs a head that merges.
@@ -631,7 +650,8 @@ Then write the document and the issues file from the parts' directories with `--
 
 ## The measures
 
-Every scorecard gives these measures over the window, from `--from` to `--to`.
+Every scorecard gives these measures over the window, from `--from` to `--to`, also where the window has a run-out after `--to`.
+Nothing after `--to` counts, and a stretch, a wait or a loop that goes on past `--to` is cut at `--to`.
 A replay reads them from its own run, and `legion replay scorecard` reads them from the record, by the same code.
 So a difference between the two is a difference of the replay, not of two readings.
 
@@ -1366,10 +1386,16 @@ The stretches of every other phase draw at the base, as the stretches that end i
 A branch sets the merges term to zero and keeps the base and the phase terms.
 A rule moves conflicts only through the merges term, because each stretch ends in the phase that the record shows.
 A daemon's boot reads each pull request again, so a conflict that the boot's read sees comes soon after the boot.
-For each phase, the tool reads the share of the window's conflicts out of that phase that came within 15 minutes after a boot, and the share of the time in that phase that lies in those 15 minutes.
-In each phase where the first share is the larger, the conflicts cluster after boots, and a drawn conflict of a stretch that spans a boot enters at the first boot inside the stretch, at the boot's read.
-The stretch draws at the chance that it would draw at its end, so a boot moves the moment of a conflict and not its chance.
-In every other phase, a drawn conflict enters at the end of its stretch.
+For each phase, the tool reads the share of the window's conflicts out of that phase that came within 15 minutes after a boot.
+At a boot, each stretch under way draws there in that share of the phase in which its issue stands, whatever work segment of the stretch runs, and every other stretch draws at its end.
+The stretch draws at the chance that it would draw at its end, in the phase in which the record ends it, so a boot moves the moment of a conflict and not its chance.
+Each stretch draws apart from the record's outcome.
+So a stretch that the record ended in a conflict can draw none, and its issue then goes on past its recorded loop into its later recorded work.
+A stretch that the record ended otherwise can draw a conflict, and its loop pushes the issue's later work later.
+A window's run-out holds the record's work after `--to`, so an issue that goes on past a loop runs into that work.
+Work recorded after the end of the run-out is not in the replay.
+So an issue that goes on past a loop longer than the run-out stands in its last recorded work from the end of that work to the end of the run-out.
+An approval that an added loop pushes past `--to` is not counted.
 It keeps every other send-back loop at its recorded count and length.
 
 **Evidence in a recorded window.** _A conflict rate fitted on the window, and loops kept as recorded._
@@ -1378,12 +1404,15 @@ The phase lines give each move back with its trigger, and the trace names its ca
 `compare` prints the same terms for each window that measures conflicts.
 In the prototype's record, that odds ratio was 1.21, with a 95% interval of 0.92 to 1.35, so the record does not show the merges term.
 In one deployment's window, a rate with no phase term gave the stretches that end in merging about twice the share of conflicts that the record shows for them, so the rate takes a term for each phase.
-`run` prints each phase whose conflicts cluster after boots, with its conflicts within 15 minutes after a boot and the share of its time there.
-In one deployment's window, 50 of the 72 conflicts past the review came within 15 minutes after a boot, where those 15 minutes held about 4% of the time past the review, and every phase in which a head can conflict clustered so.
+`run` prints each phase whose conflicts came after a boot, with its conflicts within 15 minutes after a boot and the share of its time in those 15 minutes.
+In one deployment's window, 50 of the 72 conflicts past the review came within 15 minutes after a boot, where those 15 minutes held about 4% of the time past the review.
+There, the share was 34 of 42 in accepting, 14 of 28 in merging, 41 of 127 in testing and 19 of 161 in reviewing.
+`run` prints the number of recorded conflict loops that it passed over and the number of conflicts that it drew where the record shows none, and `run.json` counts them as `divergence.skippedLoops` and `divergence.addedLoops`.
 
 **If it is wrong.**
 If a longer wait brings more conflicts than the fitted rate gives, the replay moves the measures so for a rule under which branches wait longer.
-If conflicts cluster after boots more or less than the window shows, the replay misstates how many returned issues wait for a slot at once.
+If conflicts come at boots more or less often than the window shows, the replay misstates how many returned issues wait for a slot at once.
+If the run-out is shorter than a loop that the replay passes over, the issue of that loop stands with no recorded work before the end of the run-out, and holds its slot with no work there.
 
 - Issues finished: Up, because the replay draws fewer conflicts for that rule than it would meet.
 
@@ -1402,7 +1431,8 @@ At the same phase and the same number of merges, a higher rate of conflict after
 For each phase, the share of the stretches that end there in a conflict in a window that the rate was not fitted on tests the phase terms.
 A window that records no conflict of its own, such as one of a release that records a conflict as red checks (assumption 22), tests neither the phase terms nor the merges term.
 `validate` and `compare` give the branch `main+merges=zero` beside `main`, which shows how far the merges term moves each measure.
-For each phase, the share of the conflicts that come within 15 minutes after a boot against the share of the time there, in a window that the model was not fitted on, tests the boot timing.
+For each phase, the share of the conflicts that come within 15 minutes after a boot, in a window that the model was not fitted on, tests the boot timing.
+The number of recorded loops that a run passes over and the number that it adds, over the seeds, show how far the draws move the record's loops.
 
 ### Assumption 4: A link removal, a child moved out, a gate closing and an outside blocker's close happen at their recorded time, or at their recorded offset from the wait's start
 

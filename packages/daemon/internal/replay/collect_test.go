@@ -558,3 +558,54 @@ func TestCollectRefusesAnOutputThatHoldsFiles(t *testing.T) {
 		t.Errorf("notes.txt reads %q, %v after the refused collect; want it as it was", data, err)
 	}
 }
+
+// A collect with a run-out reads past the window's end (the architect's D12): the daemon's lines and
+// each issue's Dispatch events written in [To, To + after) join the window, which records the margin
+// in window.json, and a line or an event written at the run-out's end or later stays out, as one
+// written at To does without a run-out. The test collects three slot lines of ACME-9, an hour before
+// the span's end, an hour after it and two hours after it, with a run-out of two hours, against a
+// Dispatch stub answering three events of ACME-9 at the same moments. It fails where a collect stops
+// at the span's end or records no margin.
+func TestCollectReadsTheRunOutAfterTheWindow(t *testing.T) {
+	moments := []time.Time{collectTo.Add(-time.Hour), collectTo.Add(time.Hour), collectTo.Add(2 * time.Hour)}
+	var log bytes.Buffer
+	var lines, events []json.RawMessage
+	for i, at := range moments {
+		line := fmt.Sprintf(`{"time":%q,"level":"INFO","msg":"admission: slot taken","issue":"ACME-9","slots":%d,"cap":9}`,
+			at.Format(time.RFC3339Nano), i+1)
+		fmt.Fprintln(&log, line)
+		lines = append(lines, compactJSON(t, []byte(line)))
+		events = append(events, compactJSON(t, fmt.Appendf(nil, `{"id":%d,"issue_key":"ACME-9","artifact_id":null,"project":"ACME","seq":%d,`+
+			`"type":"message.created","actor":{"kind":"session","id":"legion-daemon:ACME"},"notify":false,"created_at":%q,"payload":{"body":"note %d"}}`,
+			900101+i, i+1, at.Format(time.RFC3339Nano), i+1)))
+	}
+	logs := filepath.Join(t.TempDir(), "daemon.log")
+	if err := os.WriteFile(logs, log.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server, _ := dispatchStub(t, map[string][]json.RawMessage{"ACME-9": events}, nil)
+	settings, err := DaemonSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "window")
+	if _, err := Collect(context.Background(), CollectConfig{Project: "ACME", From: collectFrom, To: collectTo, Before: time.Hour,
+		After: 2 * time.Hour, Logs: []string{logs}, Dispatch: dispatch.New(server.URL, stubDispatchToken), Settings: settings,
+		Collector: "0123456789abcdef0123456789abcdef01234567", Out: out}); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	read, err := ReadWindow(out)
+	if err != nil {
+		t.Fatalf("ReadWindow of the collected window: %v", err)
+	}
+	if time.Duration(read.After) != 2*time.Hour || !read.To.Equal(collectTo) {
+		t.Errorf("window.json reads back a span to %s with a run-out of %s, want to %s with one of 2h0m0s", stamp(read.To),
+			time.Duration(read.After), stamp(collectTo))
+	}
+	if !reflect.DeepEqual(read.Log, lines[:2]) {
+		t.Errorf("the log holds\n  %s\nwant the lines before the run-out's end\n  %s", read.Log, lines[:2])
+	}
+	if !reflect.DeepEqual(read.Events["ACME-9"], events[:2]) {
+		t.Errorf("ACME-9's events are\n  %s\nwant those before the run-out's end\n  %s", read.Events["ACME-9"], events[:2])
+	}
+}

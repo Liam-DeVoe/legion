@@ -946,8 +946,13 @@ func (c comparison) writeHead(p *printer, forecast ForecastResult) {
 		if w.Order == after.Order {
 			place = "after"
 		}
-		p.line("- %s: project %s, from %s to %s, the window %s the change of the rule; its daemon ran the rule `%s` (%s).",
-			w.Name, w.Project, w.From.UTC().Format("2006-01-02T15:04Z"), w.To.UTC().Format("2006-01-02T15:04Z"), place, w.Rule, partsText(w.Parts))
+		runOut := ""
+		if w.After > 0 {
+			runOut = fmt.Sprintf(", replayed on through a run-out of %s after it and measured to its end", time.Duration(w.After))
+		}
+		p.line("- %s: project %s, from %s to %s%s, the window %s the change of the rule; its daemon ran the rule `%s` (%s).",
+			w.Name, w.Project, w.From.UTC().Format("2006-01-02T15:04Z"), w.To.UTC().Format("2006-01-02T15:04Z"), runOut, place, w.Rule,
+			partsText(w.Parts))
 	}
 	rules := make([]string, 0, len(c.rules))
 	for _, rule := range c.rules {

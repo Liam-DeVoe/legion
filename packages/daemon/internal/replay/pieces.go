@@ -290,9 +290,12 @@ func (d *driver) resumePiece(p *piece) error {
 // stands in that the replay has not opened enter then too, by their anchors (placeUnrun), as the
 // events of work the replay passed over or cancelled enter: an issue the replay ran ahead of the
 // record, or behind it, can leave before the piece that files a child, writes a document or sets a
-// link opens, and that event must still enter (assumption 17). A piece of a later generation, work
-// the record ran after the issue entered the workflow again, is left to run where the replay enters
-// it again (assumption 16); a piece left unopened stays so, its events entered once.
+// link opens, and that event must still enter (assumption 17). Such a piece is left to run where the
+// replay's issue enters the workflow again, at the generation it then stands at (piece.leftUnrun),
+// the generation the record ran it in being one the replay left without running it. A piece of a
+// later generation, work the record ran after the issue entered the workflow again, is left to run
+// where the replay enters it again (assumption 16); a piece left unopened stays so, its events
+// entered once.
 func (d *driver) cancelWork(key string) error {
 	boundary, err := d.nextGenerationAt(key)
 	if err != nil {
@@ -305,6 +308,7 @@ func (d *driver) cancelWork(key string) error {
 		case pieceWaiting:
 			if boundary.IsZero() || p.start.Before(boundary) {
 				d.placeUnrun(p)
+				p.leftUnrun = true
 			}
 		}
 	}
@@ -428,15 +432,17 @@ func (d *driver) recordedConflict(p *piece) error {
 // (MoveSources): through the engine's ReplayTransition, or through the daemon's own handler of the
 // fact the API or GitHub applies. A move whose source is the conflict draw is no move this replay
 // enters: the stretch it ended drew no conflict, and goes on past the loop the record ran for it
-// (stretchEnds). Every move the daemon's code refuses is counted with its reason, and a merge
-// whose close waits for the issues beneath it is counted as held (merged). The run names the
-// assumptions a move of a recorded release rests on (MoveSource.Assumptions: 21 and 22 for that
-// release's checks_red), and, for a worker's completion entered through ReplayTransition, the
-// one every such move rests on (assumeCompletionPassed), since the completion itself is a fact the
-// replay leaves out (FactSources' HandoffComplete).
+// (stretchEnds), which the run counts as a loop passed over (Divergence.SkippedLoops). Every move
+// the daemon's code refuses is counted with its reason, and a merge whose close waits for the
+// issues beneath it is counted as held (merged). The run names the assumptions a move of a recorded
+// release rests on (MoveSource.Assumptions: 21 and 22 for that release's checks_red), and, for a
+// worker's completion entered through ReplayTransition, the one every such move rests on
+// (assumeCompletionPassed), since the completion itself is a fact the replay leaves out
+// (FactSources' HandoffComplete).
 func (d *driver) enterRecorded(p *piece) error {
 	move := p.move()
 	if move.Source.Way == MoveDraw {
+		d.counters.SkippedLoops++
 		return d.stretchEnds(p)
 	}
 	for _, number := range move.Source.Assumptions {

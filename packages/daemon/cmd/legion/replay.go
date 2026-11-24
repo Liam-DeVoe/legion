@@ -53,23 +53,27 @@ The daemon's lines are read from the files and directories --log names, which a 
 collected: the daemon's own standard error, ` + "`kubectl logs`" + ` output (with or without
 --timestamps and --prefix), or a Cloud Logging export of {timestamp, jsonPayload} rows as JSON
 lines or one JSON array; any of them gzipped or not. The lines of every kind the replay's trace
-reads, written in [--from − --before, --to), are kept in time order, a line read twice once.
+reads, written in [--from − --before, --to + --after), are kept in time order, a line read twice
+once.
 
 The events of every issue those lines name, and of every blocker, parent and child those
 issues' events name, in any project, are read from Dispatch (DISPATCH_URL) from each issue's
-first event up to --to, with GET alone. The token is the file --dispatch-token-file names, else
-the file DISPATCH_TOKEN_FILE names, else DISPATCH_TOKEN; it is never printed.
+first event up to --to + --after, with GET alone. The token is the file --dispatch-token-file
+names, else the file DISPATCH_TOKEN_FILE names, else DISPATCH_TOKEN; it is never printed.
 
-window.json records the project, the span, --before, the cap of each change the slot lines and
-the daemon's start lines show, the line kinds the log holds, the deployment's settings (the flags
-below, each defaulting to the daemon's own default), the parts of the span (--part), the
-collector's commit (--collector, else the binary's own) and the sha256 of every file. Run
+--after is the window's run-out: a replay runs on past --to through it, so the work the record
+shows after --to runs where the replay moves it, and every measure reads [--from, --to) alone.
+
+window.json records the project, the span, --before, --after, the cap of each change the slot
+lines and the daemon's start lines show, the line kinds the log holds, the deployment's settings
+(the flags below, each defaulting to the daemon's own default), the parts of the span (--part),
+the collector's commit (--collector, else the binary's own) and the sha256 of every file. Run
 collect-merges next for each base branch.`
 
 // newReplayCollectCommand is `legion replay collect` (replay.Collect).
 func newReplayCollectCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "collect --project <KEY> --from <time> --to <time> --before <duration> --log <file|dir>... --out <dir>",
+		Use:   "collect --project <KEY> --from <time> --to <time> --before <duration> [--after <duration>] --log <file|dir>... --out <dir>",
 		Short: "collect a recorded window: the daemon's lines from log files, and the Dispatch events of the issues they name",
 		Long:  replayCollectLong,
 		Args:  noArguments,
@@ -80,6 +84,7 @@ func newReplayCollectCommand(stdout, stderr io.Writer) *cobra.Command {
 	from := flags.String("from", "", "the window's start, RFC 3339 (required)")
 	to := flags.String("to", "", "the window's end, RFC 3339 (required)")
 	before := flags.Duration("before", 0, "how far before --from the inputs reach, so the state at --from can be rebuilt (required)")
+	after := flags.Duration("after", 0, "the run-out: how far past --to the inputs reach, so a replay runs the work recorded after --to")
 	logs := flags.StringArray("log", nil, "a file or a directory of files of the daemon's lines; repeat for more (required)")
 	out := flags.String("out", "", "the directory the window is written to, missing or empty (required)")
 	tokenFile := flags.String("dispatch-token-file", "", "the file holding the Dispatch token (else DISPATCH_TOKEN_FILE, else DISPATCH_TOKEN)")
@@ -134,7 +139,7 @@ func newReplayCollectCommand(stdout, stderr io.Writer) *cobra.Command {
 			return 1
 		}
 		collected, err := replay.Collect(ctx, replay.CollectConfig{
-			Project: *project, From: span[0], To: span[1], Before: *before, Logs: *logs,
+			Project: *project, From: span[0], To: span[1], Before: *before, After: *after, Logs: *logs,
 			Dispatch: dispatch.New(base, token), Concurrency: *concurrency, Parts: windowParts, Collector: commit, Out: *out,
 			Settings: replay.Settings{TickInterval: *tick, GateSteps: steps, Linger: *linger, ReviewRoundCap: *rounds,
 				StalledTreeNotice: *stalled, WorkerSilence: *silence, WorkerBackground: *background},
@@ -264,6 +269,9 @@ issue and the stretch's place in the record give, so two rules at one seed draw 
 stretch both run; the run prints the model with its intervals. --branch sets one knob the record
 does not give: timing, answer, afterSendBack, firstStarts, neverStarted, merges, or conflicts, the
 diagnostic knob that keeps the record's conflicts (main+<knob>=<value>).
+A window collected with a run-out (collect --after) is replayed on past its end through the
+run-out, so the work the record shows after --to runs where the replay moves it; every measure
+reads the window's own span alone.
 Nothing outside is asked: no Dispatch, no GitHub, no NATS.
 
 --out receives log.jsonl (the daemon's lines on the simulated clock), scorecard.json (the
@@ -328,6 +336,10 @@ func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 		counted := result.Divergence
 		fmt.Fprintf(stdout, "legion replay run: replayed %s under the rule %s on the branch %s (seed %d, f %v) in the database %s (%s); wrote %s\n",
 			*windowDir, rule.Name, branch.Name, *seed, *slowdown, result.Database, kept, *out)
+		if window.After > 0 {
+			fmt.Fprintf(stdout, "legion replay run: replayed on to %s through the window's run-out of %s; every measure reads %s to %s alone\n",
+				window.End().Format(time.RFC3339), time.Duration(window.After), window.From.Format(time.RFC3339), window.To.Format(time.RFC3339))
+		}
 		fmt.Fprintf(stdout, "legion replay run: %s\n", result.Counts())
 		for _, refused := range counted.Refused {
 			fmt.Fprintf(stdout, "legion replay run: refused %s %s→%s by %s at %s: %s\n", refused.Issue, refused.From, refused.To, refused.Trigger,

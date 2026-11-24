@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"container/heap"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -265,6 +266,12 @@ type Divergence struct {
 	// KeptOpenLoops is how many stretches kept their recorded conflict, its loop running to the
 	// window's end in the record, rather than draw (keepConflict, assumption 35).
 	KeptOpenLoops int `json:"keptOpenLoops"`
+	// SkippedLoops is how many recorded conflict loops the replay passed over, each stretch whose
+	// recorded end is a conflict drawing none (enterRecorded, stretchEnds), and AddedLoops how many
+	// conflicts the replay made at stretches the record ended otherwise (addsLoop): the conflicts
+	// the replay's draws took away from the record and added to it (assumption 3).
+	SkippedLoops int `json:"skippedLoops"`
+	AddedLoops   int `json:"addedLoops"`
 	// ConflictsToMerger is how many conflicts past the review, drawn or kept, the daemon the replay
 	// runs left to the merger, where a daemon before cybermonklabs/legion#4979 moved the issue back
 	// to implementing or asked the implementer (assumption 37): one in merging whose merger was asked
@@ -351,9 +358,10 @@ func (d *driver) now() time.Time { return d.clock.Now() }
 
 // newChain builds the daemon's handler chain afresh, as each of the daemon's boots does: a new
 // engine and admission pass under the run's rule, on the simulated clock, with the window's
-// settings and the cap the daemon served under at at, the replay's tables of what a rule the
-// daemon does not run records (ruleTables), the replay's own handler before the chain, and its
-// reading of the recorded first starts right before the admission pass (firstStartsHandler).
+// settings and the cap the daemon process running from at served under (processCap), the replay's
+// tables of what a rule the daemon does not run records (ruleTables), the replay's own handler
+// before the chain, and its reading of the recorded first starts right before the admission pass
+// (firstStartsHandler).
 func (d *driver) newChain(at time.Time) {
 	w := d.window
 	source := rand.New(rand.NewPCG(uint64(d.cfg.Seed), experimentStream))
@@ -366,7 +374,7 @@ func (d *driver) newChain(at time.Time) {
 	d.engine = workflow.New(d.records, workflow.Config{Project: w.Project, Steps: w.GateSteps, ReviewRoundCap: w.ReviewRoundCap,
 		Linger: time.Duration(w.Linger), Clock: d.clock.Now, Repositories: replayRepositories{branches: d.trace.Branches},
 		Experiments: w.Experiments, ExperimentSource: draw, SlotRule: d.rule}, d.log)
-	d.admission = admit.New(d.records, d.engine, capAt(w, at), w.Project, d.log)
+	d.admission = admit.New(d.records, d.engine, d.processCap(at), w.Project, d.log)
 	d.admission.UseRuleTables(ruleTables{})
 	d.admission.UseClock(d.clock.Now)
 	d.admission.UseExperiments(w.Experiments)
@@ -397,7 +405,8 @@ func (h firstStartsHandler) Apply(ctx context.Context, tx pgx.Tx, _ intake.Fact)
 }
 
 // capAt is the admission cap w's daemon ran with at at: the last change at or before it, or the
-// first where at is before every change.
+// first where at is before every change. A change is dated by the first line naming it, which a
+// process writes minutes into its boot, so the cap a process starts under is processCap's.
 func capAt(w Window, at time.Time) int {
 	if len(w.Caps) == 0 {
 		return 0
@@ -407,6 +416,45 @@ func capAt(w Window, at time.Time) int {
 		if !change.At.After(at) {
 			limit = change.Cap
 		}
+	}
+	return limit
+}
+
+// processCap is the admission cap the daemon process running from at served under (capOfProcess),
+// reading the record's boots: at a boot, that boot's own start and the line saying it finished
+// booting; the next boot's start bounds the process.
+func (d *driver) processCap(at time.Time) int {
+	var started, until time.Time
+	for _, boot := range d.trace.Boots {
+		if boot.At.Equal(at) {
+			started = boot.Started
+		}
+		if boot.At.After(at) && (until.IsZero() || boot.At.Before(until)) {
+			until = boot.At
+		}
+	}
+	return capOfProcess(d.window, at, started, until)
+}
+
+// capOfProcess is the admission cap of the daemon process that runs from from: the first cap change
+// at or after from that the process's own lines name — no later than started, the line saying it
+// finished its boot, where the record holds one, and before until, the next process's start — and
+// the cap that stood at from where its lines name no change. The cap is the process's configuration,
+// read before its first pass, so it holds from the process's first line, though the window dates the
+// change by the first line naming it (collect's caps): a slot line of the boot's first pass, or its
+// `legion daemon started` line, minutes after the process began. Every cap change the windows hold
+// falls inside a restart so. Read at the process's start alone (capAt), a raise served the old cap
+// until the next restart.
+func capOfProcess(w Window, from, started, until time.Time) int {
+	limit := capAt(w, from)
+	for _, change := range w.Caps {
+		if change.At.Before(from) {
+			continue
+		}
+		if (!started.IsZero() && change.At.After(started)) || (!until.IsZero() && !change.At.Before(until)) {
+			break
+		}
+		return change.Cap
 	}
 	return limit
 }
@@ -666,9 +714,11 @@ func (d *driver) reviewFirstStarts(ctx context.Context, tx pgx.Tx) error {
 
 // run replays the window: the chain that runs at its start, the start state at its start, the
 // replay's copy of Dispatch brought to the record's state there, then every item of the queue in
-// order to its end, the worker stub after each.
+// order to the end of the window's inputs, its run-out's end where it holds one (Window.End), the
+// worker stub after each. The measures read [From, To) alone.
 func (d *driver) run() error {
 	w, t := d.window, d.trace
+	end := w.End()
 	d.clock.advance(w.From)
 	// The process that runs at the window's start is the newest that started before it; a boot
 	// at the start itself is applied as a boot. It is built before the start state, which asks its
@@ -685,7 +735,7 @@ func (d *driver) run() error {
 		if !event.at.Before(w.From) {
 			continue
 		}
-		if err := d.shadow.seedEvent(event.env, event.parsed.Seq, event.at); err != nil {
+		if err := d.shadow.seedEvent(event.env, d.recordedBefore(event), i, event.parsed.Seq, event.at); err != nil {
 			return fmt.Errorf("replay: bring the copy of Dispatch to the window's start with the %s event of %s at %s: %w", event.env.kind,
 				event.env.key, stamp(event.at), err)
 		}
@@ -709,7 +759,7 @@ func (d *driver) run() error {
 	}
 	for i := range t.Boots {
 		boot := t.Boots[i]
-		if boot.At.Before(w.From) || !boot.At.Before(w.To) {
+		if boot.At.Before(w.From) || !boot.At.Before(end) {
 			continue
 		}
 		d.push(&item{at: boot.At, class: classBoot, rec: boot.At, run: func() error { return d.boot(boot) }})
@@ -725,16 +775,16 @@ func (d *driver) run() error {
 		}})
 	}
 	for _, at := range t.Ticks {
-		if at.Before(w.From) || !at.Before(w.To) {
+		if at.Before(w.From) || !at.Before(end) {
 			continue
 		}
 		d.push(&item{at: at, class: classTick, rec: at, run: func() error { return d.tick(at) }})
 	}
 	for _, pause := range t.Pauses {
-		if !pause.From.Before(w.From) && pause.From.Before(w.To) {
+		if !pause.From.Before(w.From) && pause.From.Before(end) {
 			d.push(&item{at: pause.From, class: classAct, rec: pause.From, order: lineOrder, run: func() error { return d.pause(pause) }})
 		}
-		if !pause.To.IsZero() && !pause.To.Before(w.From) && pause.To.Before(w.To) {
+		if !pause.To.IsZero() && !pause.To.Before(w.From) && pause.To.Before(end) {
 			d.push(&item{at: pause.To, class: classAct, rec: pause.To, order: lineOrder, run: func() error { return d.resume(pause) }})
 		}
 	}
@@ -754,7 +804,7 @@ func (d *driver) run() error {
 	d.dirty = true
 	for d.queue.Len() > 0 {
 		it := heap.Pop(&d.queue).(*item)
-		if !it.at.Before(w.To) {
+		if !it.at.Before(end) {
 			break
 		}
 		if it.done {
@@ -1129,16 +1179,16 @@ func (d *driver) waitStart(wait waitAnchor) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// dispatchEvent applies the recorded event events[i] to the shadow at the clock's instant, and
-// answers the event as the replay applies it; nil for an event of the daemon's own, which the
-// replay makes again from its own outbox, and which the shadow only notes. A reopen of the daemon's
-// own session that waits for the replay's issue to leave the workflow (defersReopen) is neither
-// applied nor noted: it answers deferred, and waits to be queued again.
+// dispatchEvent applies the recorded event events[i] to the shadow at the clock's instant, read
+// against its issue's event before it in the record's order (recordedBefore), and answers the event
+// as the replay applies it; nil for an event of the daemon's own, which the replay makes again from
+// its own outbox, and which the shadow does not apply. A reopen of the daemon's own session that
+// waits for the replay's issue to leave the workflow (defersReopen) is not applied: it answers
+// deferred, and waits to be queued again.
 func (d *driver) dispatchEvent(i int) (applied []byte, deferred bool, err error) {
 	event := &d.script.events[i]
 	if daemonWrote(event.env.actor, event.env.key) {
 		if !d.keepsDaemonEvent(event) {
-			d.shadow.note(event.env)
 			return nil, false, nil
 		}
 		if deferred, err := d.defersReopen(i); err != nil || deferred {
@@ -1148,8 +1198,17 @@ func (d *driver) dispatchEvent(i int) (applied []byte, deferred bool, err error)
 	if d.namesLinkOrChild(event) {
 		d.used[10] = true
 	}
-	applied, err = d.shadow.apply(event.env, d.clock.Instant())
+	applied, err = d.shadow.apply(event.env, d.recordedBefore(event), i, d.clock.Instant())
 	return applied, false, err
+}
+
+// recordedBefore is the payload of event's issue's recorded issue event before it in the record's
+// order (scriptEvent.prev), which the event's change is read against; nil for none.
+func (d *driver) recordedBefore(event *scriptEvent) map[string]json.RawMessage {
+	if event.prev < 0 {
+		return nil
+	}
+	return d.script.events[event.prev].env.payload
 }
 
 // keepsDaemonEvent says whether event, one the daemon's own session wrote, is a write the replay's
@@ -1335,7 +1394,7 @@ func (d *driver) boot(boot Boot) error {
 		return err
 	}
 	bootNumber := d.boots
-	if !boot.Holding.IsZero() && !boot.CaughtUp.IsZero() && boot.CaughtUp.Before(d.window.To) {
+	if !boot.Holding.IsZero() && !boot.CaughtUp.IsZero() && boot.CaughtUp.Before(d.window.End()) {
 		d.push(&item{at: boot.CaughtUp, class: classAct, rec: boot.CaughtUp, order: lineOrder, run: func() error {
 			_, err := d.apply("dispatch", d.factID("dispatch-position", d.window.Project, bootNumber),
 				intake.DispatchConsumerPosition{AckFloorStream: target, Idle: true})
@@ -1367,7 +1426,7 @@ func (d *driver) boot(boot Boot) error {
 		}
 		return nil
 	}})
-	if read := maxTime(maxTime(bootRead(boot), last), d.clock.Instant()); read.Before(d.window.To) && d.conflicts.clustersAtBoots() {
+	if read := maxTime(maxTime(bootRead(boot), last), d.clock.Instant()); read.Before(d.window.End()) && d.conflicts.drawsAtBoots() {
 		d.push(&item{at: read, class: classAct, rec: read, order: lineOrder + 1, run: d.bootConflicts})
 	}
 	return nil
@@ -1401,7 +1460,7 @@ func (d *driver) servesFrom() (Boot, time.Time, bool) {
 			}
 		}
 	}
-	return *boot, serves, serves.After(w.From) && serves.Before(w.To)
+	return *boot, serves, serves.After(w.From) && serves.Before(w.End())
 }
 
 // serialized runs write in one transaction that takes the lock every fact applies under, with
@@ -1455,7 +1514,7 @@ func (d *driver) catchesUp(ctx context.Context, tx pgx.Tx) ([]record.Issue, erro
 // the root from the boot on, which is the catch-up's own act on what the downtime left it, or the
 // daemon's start of service, whichever is first; the boot itself where the record shows neither.
 func (d *driver) caughtUpAt(boot Boot, root string) time.Time {
-	next := d.window.To
+	next := d.window.End()
 	for _, other := range d.trace.Boots {
 		if other.At.After(boot.At) && other.At.Before(next) {
 			next = other.At
