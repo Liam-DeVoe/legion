@@ -13,7 +13,7 @@ import (
 )
 
 func TestSecretTypeWritesAndDisplaysBothStores(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:385).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:385).
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		useStdin(t, policytest.TypeValue(policy.TypeGoogleLogin))
 		if _, stderr, code := runSecret("create", "TYPE_NOT_A_SECRET", "--owner", "me", "--tier", "agent", "--type", "google-login"); code != 0 {
@@ -92,7 +92,7 @@ func TestSecretOldClassifierFlagIsUnknown(t *testing.T) {
 // and a write that leaves no type goes ahead. Against a broker that answers secret_type_tag, every
 // row is written and exits 0, so the refusal is the setting's and not the row's.
 func TestATypedWriteIsRefusedByABrokerThatDoesNotReadTheTypeTag(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:385).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:385).
 	login := policytest.TypeValue(policy.TypeGoogleLogin)
 	rotated := appValue(t, map[string]string{"type": "authorized_user", "client_id": "client", "client_secret": "secret", "refresh_token": "rotated"})
 	tags := func(extra ...string) map[string]string {

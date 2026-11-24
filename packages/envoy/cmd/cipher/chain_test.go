@@ -729,7 +729,7 @@ func TestAKubernetesMachineIdentityIsRefusedBeforeAnyTrade(t *testing.T) {
 // own identity, and so holds a machine session in its cache, acts as a person from the first use
 // after they sign in, and the cache stays on disk for the next process with no sign-in.
 func TestSignInTakesEffectAfterAMachineCache(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at chain_test.go:744); it signals the test process or changes its signal handling (main.login, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.login, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at chain_test.go:744); it signals the test process or changes its signal handling (main.login, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.login, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	binary := chainBinary(t)
 	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 	r := newChainRig(t, binary, broker)
@@ -1191,7 +1191,7 @@ func TestMachineRegistrationsAtOnceKeepOneSession(t *testing.T) {
 // session, under the home the password database gives its user, so the unit's second command
 // signs with the session its first registered rather than trading and enrolling again.
 func TestAUnitWithNoHomeKeepsItsStateUnderItsUsersHome(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at chain_test.go:1200); it signals the test process or changes its signal handling (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (passwdHome set at chain_test.go:1198).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at chain_test.go:1200); it signals the test process or changes its signal handling (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (passwdHome set at chain_test.go:1198).
 	isolateChain(t)
 	home := t.TempDir()
 	original := passwdHome

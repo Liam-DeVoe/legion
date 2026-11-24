@@ -104,7 +104,7 @@ func TestSecretTypeAndMaxGrantOnAWS(t *testing.T) {
 // TestSecretTypeAndMaxGrantOnGCP retags one secret through every type, each value stored before
 // the retag that decodes it, as TestSecretTypeAndMaxGrantOnAWS does.
 func TestSecretTypeAndMaxGrantOnGCP(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
 	useGCPIdentity(t, "authorized_user", "ada@example.com")
@@ -352,7 +352,7 @@ func TestARetagOfASecretWhoseStoredOwnersAreMalformedNamesTheMalformedTag(t *tes
 // will hold once the write lands, on both stores, so a retag never writes a github-app secret the
 // broker then refuses as github-owners-missing.
 func TestARetagThatLeavesAGitHubAppSecretWithoutOwnersWritesNothing(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	refusals := [][]string{
 		{"retag", "PLAIN_KEY", "--type", policy.TypeGitHubApp},
 		{"retag", "APP_KEY", "--github-owners", "none"},
@@ -499,7 +499,7 @@ const groupOwner = "group:approvers@example.com"
 // list as given: the group once, beside a registered service, which a human-tier secret of that
 // type may list (policy.RequesterRule).
 func TestSecretCreateWritesTheGroupForm(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:385).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:385).
 	const requesters = "builder " + groupOwner
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		useStdin(t, policytest.TypeValue(policy.TypeGoogleServiceAccount))
@@ -630,7 +630,7 @@ func TestAGitHubOwnersListIsWrittenSpaceSeparatedAndACommaIsRefused(t *testing.T
 // secret it would write has no github-owners tag. Such a create is refused with a usage error
 // before anything is written, on both stores, as a create without --github-owners is.
 func TestACreateThatNamesNoneAsItsGitHubOwnersWritesNothing(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	owners := []string{"none", "None", "NONE"}
 	t.Run("aws", func(t *testing.T) {
 		local := secrets.NewLocal()
@@ -780,7 +780,7 @@ func TestSecretRefusedRemovalOnASharedSecretSaysOnlyWhatTheCloudSaid(t *testing.
 // TestSecretRetagSetsAndRemovesMaxGrant: retag --max-grant sets the tag on both backends and keeps
 // type, and --max-grant none removes it and keeps type.
 func TestSecretRetagSetsAndRemovesMaxGrant(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	t.Run("aws", func(t *testing.T) {
 		local := secrets.NewLocal(typeTaggedSecret(t, "APP_KEY"))
 		startSecretBroker(t, servedBy(local))
@@ -1256,7 +1256,7 @@ func (s gcpTypeStore) tagReadPermission() string { return "secretmanager.secrets
 // Secret Manager: that makes the secret before it reads the value and deletes it on the refusal,
 // then asks the broker to reread the name once, which the broker answers absent.
 func TestSecretCreateSetAndRetagRefuseEveryValueTheTypesMinterRefuses(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.mintRefusal, (*GoogleServiceAccount).Mint, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:385).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.mintRefusal, (*GoogleServiceAccount).Mint, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:385).
 	onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
 		for _, row := range refusedTypeValues(t) {
 			t.Run(row.secretType+"/"+row.name, func(t *testing.T) {
@@ -1320,7 +1320,7 @@ func TestSecretCreateSetAndRetagRefuseEveryValueTheTypesMinterRefuses(t *testing
 // stderr saying the value was not checked, naming the permissions the read needs and saying the
 // broker reports such a secret unservable.
 func TestSecretRetagReadsTheValueOnlyWhenItChangesTheType(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.mintRefusal, (*GoogleServiceAccount).Mint, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.onEachStore, main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.mintRefusal, (*GoogleServiceAccount).Mint, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.onEachStore, main.useAWS, awsClients set at secret_test.go:375).
 	noAppID := appValue(t, map[string]string{"private_key": appKeyPEM(t)})
 	says := mintRefusal(t, policy.TypeGitHubApp, noAppID)
 	onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {

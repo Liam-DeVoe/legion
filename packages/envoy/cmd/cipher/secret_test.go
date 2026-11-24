@@ -587,7 +587,7 @@ func useAWSSources(t *testing.T, sources []aws.CredentialSource) {
 // line naming the credential it signs in to the store with, and prints it before its first call of
 // the store.
 func TestEverySecretFormNamesTheSourceItUses(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:385).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:385).
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		store.put(t, "HELD_TEST", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent}, "v1")
 		for _, form := range []struct {
@@ -879,7 +879,7 @@ func TestTheValueReaderRemovesATrailingLineEndingBeforeItStores(t *testing.T) {
 // value is never asked for, so a writer who typed the old flag loses nothing — and a retag that
 // names it is refused the same way, leaving the secret's tags as they were.
 func TestSecretCreateAndRetagRefuseShape(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.countingStdin, secretStdin set at secret_test.go:918).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.countingStdin, secretStdin set at secret_test.go:918).
 	onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
 		store.put(t, "API_KEY", policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "").Tags, "v1")
 		before := store.tags(t, "API_KEY")
@@ -937,7 +937,7 @@ func (c *countingReader) Read(p []byte) (int, error) {
 // refuses is refused in its words, and nothing is written; one it reads is stored, less its
 // trailing line ending.
 func TestSecretSetReadsTheSecretsOwnType(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.mintRefusal, (*GoogleServiceAccount).Mint, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:385).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.mintRefusal, (*GoogleServiceAccount).Mint, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:385).
 	notALogin := appValue(t, map[string]string{"type": "service_account"})
 	says := mintRefusal(t, policy.TypeGoogleLogin, notALogin)
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
@@ -966,7 +966,7 @@ func TestSecretSetReadsTheSecretsOwnType(t *testing.T) {
 // refuses that read, the refusal names the permission the read needs, and the value is never
 // asked for.
 func TestSecretSetRefusedTagReadNamesThePermission(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.countingStdin, secretStdin set at secret_test.go:918).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.countingStdin, secretStdin set at secret_test.go:918).
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		store.put(t, "API_KEY", policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "").Tags, "v1")
 		read := countingStdin(t, "a-new-value")
@@ -1682,7 +1682,7 @@ func TestSecretShowSaysWhoDecidesAndOnWhatGuidance(t *testing.T) {
 // holds no `shape` key, and list's header carries no SHAPE column. The leftover tag is left in
 // the store untouched; nothing here removes it.
 func TestSecretShowAndListNameNoShape(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.onEachStore, main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.onEachStore, main.useAWS, awsClients set at secret_test.go:375).
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		leftover := policytest.Secret("LEFTOVER_KEY", "ada@example.com", policy.TierAgent, "v1").Tags
 		leftover["shape"] = "token"

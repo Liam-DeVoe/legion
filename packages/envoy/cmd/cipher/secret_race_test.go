@@ -58,7 +58,7 @@ func loginWithOwnersLeft(name string) map[string]string {
 // found, and the command that sets the secret right, and it writes nothing, so the other
 // writer's retag stands rather than being taken back.
 func TestAConcurrentRetagIsReportedAndOverwritesNothing(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	t.Run("aws", func(t *testing.T) {
 		secret := policytest.TypeSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
 		secret.Tags = loginWithOwnersLeft("APP_KEY")

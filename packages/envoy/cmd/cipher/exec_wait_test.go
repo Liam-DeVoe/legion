@@ -371,7 +371,7 @@ func runWaiting(t *testing.T, b *waitBroker, key *proofKey) []string {
 // change read at 2 s and 6 s, without a wait, so it learnt of the grant from a read made after it,
 // which fails the row whatever the timing.
 func TestExecLearnsOfTheGrantWithinASecond(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.runWaiting, main.buildRecordingBackoff, t.Setenv at exec_wait_test.go:313); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past ((*waitBroker).requireReleaseFromTheGrantedRead, (*waitBroker).requireClientStep, an upper bound on a measured time at exec_wait_test.go:207).
+	// Not parallel: it sets environment variables of the whole process (main.runWaiting, main.buildRecordingBackoff, t.Setenv at exec_wait_test.go:317); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past ((*waitBroker).requireReleaseFromTheGrantedRead, (*waitBroker).requireClientStep, an upper bound on a measured time at exec_wait_test.go:211).
 	const grantAfter = 3 * time.Second
 	key := newProofKey(t)
 	b := newWaitBroker(t, key, true, false, grantAfter)
@@ -404,7 +404,7 @@ func TestExecLearnsOfTheGrantWithinASecond(t *testing.T) {
 // time either process was held up (requireClientStep), in 2 status reads. A loop that slept its 2 s
 // backoff after every pending answer, a held one too, asks for that sleep.
 func TestExecLearnsOfAGrantAfterAFullHold(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.runWaiting, main.buildRecordingBackoff, t.Setenv at exec_wait_test.go:313); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past ((*waitBroker).requireClientStep, an upper bound on a measured time at exec_wait_test.go:207).
+	// Not parallel: it sets environment variables of the whole process (main.runWaiting, main.buildRecordingBackoff, t.Setenv at exec_wait_test.go:317); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past ((*waitBroker).requireClientStep, an upper bound on a measured time at exec_wait_test.go:211).
 	key := newProofKey(t)
 	b := newWaitBroker(t, key, true, true, 300*time.Millisecond)
 	backoffs := runWaiting(t, b, key)
@@ -443,7 +443,7 @@ func TestTheWaitLimitEndsInsideTheClientsCallTimeout(t *testing.T) {
 // learns of the grant from its second read: a run with no sleep fails only when it read more than
 // twice.
 func TestExecBacksOffAgainstABrokerThatIgnoresWait(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.runWaiting, main.buildRecordingBackoff, t.Setenv at exec_wait_test.go:313).
+	// Not parallel: it sets environment variables of the whole process (main.runWaiting, main.buildRecordingBackoff, t.Setenv at exec_wait_test.go:317).
 	key := newProofKey(t)
 	b := newWaitBroker(t, key, false, false, 9*time.Second)
 	backoffs := runWaiting(t, b, key)

@@ -63,7 +63,7 @@ func (h hungCreate) CreateSecret(ctx context.Context, in *secretsmanager.CreateS
 // the secret with its value in one call, it says that the store may hold the secret or not and
 // names the command that says which. Each exits 1 well before the store would answer.
 func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
 	for _, store := range []string{"gcp", "aws"} {
 		t.Run(store, func(t *testing.T) {
 			useStoreCallDeadline(t, 300*time.Millisecond)
@@ -275,7 +275,7 @@ func TestAWSSecretCreateSaysWhetherAFailedCreateMayHaveStoredTheValue(t *testing
 // naming the command that tells which. The cleanup is run here as the signal would run it, right
 // after the store's answer.
 func TestCreateSignalAfterAFailedAWSStoreSaysWhatTheStoreMayHold(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it signals the test process or changes its signal handling (main.openSession, main.openSecretBackend, main.newGCPBackend, (*gcpBackend).signIn, main.gcloudLogins, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it signals the test process or changes its signal handling (main.openSession, main.openSecretBackend, main.newGCPBackend, (*gcpBackend).signIn, main.gcloudLogins, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	local := secrets.NewLocal()
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, failedCreate{Local: local, stored: true, err: &types.InternalServiceError{Message: aws.String("oops")}}, testAccount, adaSignIn)

@@ -301,7 +301,7 @@ func (c gcloudChild) requireGone(t *testing.T) {
 // once it has seen the child running (callEnds); the timer's own expiry and its error alone, on
 // every platform, are TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline's.
 func TestGcloudTokenRefreshAtItsDeadlineKillsGcloudsChild(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useGcloudWhoseChildHoldsItsOutput, main.gcloudStubIn, t.Setenv at secret_gcp_linux_test.go:108); it signals the test process or changes its signal handling ((gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useStoreCallDeadline, storeCallDeadline set at secret_create_test.go:36); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past ((gcloudChild).callEnds, main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
+	// Not parallel: it sets environment variables of the whole process (main.useGcloudWhoseChildHoldsItsOutput, main.gcloudStubIn, t.Setenv at secret_gcp_linux_test.go:108); it signals the test process or changes its signal handling ((gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useStoreCallDeadline, storeCallDeadline set at secret_create_test.go:36); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past ((gcloudChild).callEnds, main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
 	useStoreCallDeadline(t, gcloudHeldDeadline)
 	gcloud, child := useGcloudWhoseChildHoldsItsOutput(t)
 	deadline := newFiredDeadline(t)
@@ -322,7 +322,7 @@ func TestGcloudTokenRefreshAtItsDeadlineKillsGcloudsChild(t *testing.T) {
 // deadline, naming it, and the child that held gcloud's output is gone with it, not left running.
 // The test fires the deadline once it has seen the child running (callEnds).
 func TestGcloudLoginListAtItsDeadlineKillsGcloudsChild(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useGcloudWhoseChildHoldsItsOutput, main.gcloudStubIn, t.Setenv at secret_gcp_linux_test.go:108); it signals the test process or changes its signal handling (main.gcloudLogins, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useStoreCallDeadline, storeCallDeadline set at secret_create_test.go:36); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past ((gcloudChild).callEnds, main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
+	// Not parallel: it sets environment variables of the whole process (main.useGcloudWhoseChildHoldsItsOutput, main.gcloudStubIn, t.Setenv at secret_gcp_linux_test.go:108); it signals the test process or changes its signal handling (main.gcloudLogins, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useStoreCallDeadline, storeCallDeadline set at secret_create_test.go:36); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past ((gcloudChild).callEnds, main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
 	useStoreCallDeadline(t, gcloudHeldDeadline)
 	gcloud, child := useGcloudWhoseChildHoldsItsOutput(t)
 	deadline := newFiredDeadline(t)
@@ -366,7 +366,7 @@ const gcloudPidName = "gcloud.pid"
 // runRecorded goes on; at gcloudWaited the stub exits at once, leaving its child holding its
 // output (TestGcloudSignInSignalledAtGcloudsStartOrEndKillsGcloudsChild).
 func TestGcloudSignInSignalHelper(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_linux_test.go:408); it signals the test process or changes its signal handling (main.useNoADC, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (onGcloudStep set at secret_gcp_linux_test.go:395).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_linux_test.go:408); it signals the test process or changes its signal handling (main.useNoADC, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (onGcloudStep set at secret_gcp_linux_test.go:395).
 	pidFile := os.Getenv("AGENT_SECRETS_GCLOUD_SIGNAL_HELPER")
 	if pidFile == "" {
 		t.Skip("subprocess helper")
@@ -603,7 +603,7 @@ func TestGcloudSignInSignalledAtGcloudsStartOrEndKillsGcloudsChild(t *testing.T)
 // that child killed once runGcloud has waited for gcloud, whatever the call's outcome. The stub
 // exits once the test, having seen the child running, writes its go-ahead file (callEnds).
 func TestGcloudThatExitsLeavingAChildTakesTheChildWithIt(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.gcloudStubIn, t.Setenv at secret_gcp_linux_test.go:108); it signals the test process or changes its signal handling (main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past ((gcloudChild).callEnds, main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
+	// Not parallel: it sets environment variables of the whole process (main.gcloudStubIn, t.Setenv at secret_gcp_linux_test.go:108); it signals the test process or changes its signal handling (main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past ((gcloudChild).callEnds, main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
 	dir := t.TempDir()
 	goAhead := filepath.Join(dir, "go")
 	// The stub waits for the go-ahead, and gives up when this test's process is gone, so a test
@@ -628,7 +628,7 @@ func TestGcloudThatExitsLeavingAChildTakesTheChildWithIt(t *testing.T) {
 // left running. The test fires the deadline once it has seen the child running (callEnds); the
 // timer's own expiry is TestGCPSecretGcloudSettingsReadIsBestEffort's.
 func TestGcloudSettingsReadAtItsDeadlineKillsGcloudsChild(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useGcloudWhoseChildHoldsItsOutput, main.gcloudStubIn, t.Setenv at secret_gcp_linux_test.go:108); it signals the test process or changes its signal handling (main.readGcloudSettings, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (gcloudSettingsDeadline set at secret_gcp_linux_test.go:633); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past ((gcloudChild).callEnds, main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
+	// Not parallel: it sets environment variables of the whole process (main.useGcloudWhoseChildHoldsItsOutput, main.gcloudStubIn, t.Setenv at secret_gcp_linux_test.go:108); it signals the test process or changes its signal handling (main.readGcloudSettings, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (gcloudSettingsDeadline set at secret_gcp_linux_test.go:633); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past ((gcloudChild).callEnds, main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
 	restore := gcloudSettingsDeadline
 	gcloudSettingsDeadline = gcloudHeldDeadline
 	t.Cleanup(func() { gcloudSettingsDeadline = restore })
@@ -651,7 +651,7 @@ func TestGcloudSettingsReadAtItsDeadlineKillsGcloudsChild(t *testing.T) {
 // replaced, so no signal reaches any process: a real kill of a reaped gcloud's pid could reach
 // another process given that pid since. The live tests above drive the real kill.
 func TestGcloudCancelOfAGroupGoneAlreadyAnswersProcessDone(t *testing.T) {
-	// Not parallel: it signals the test process or changes its signal handling (var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (signalGroup set at secret_gcp_linux_test.go:656).
+	// Not parallel: it sets a package variable the package's other tests read (signalGroup set at secret_gcp_linux_test.go:656).
 	restore := signalGroup
 	t.Cleanup(func() { signalGroup = restore })
 	for _, row := range []struct{ answer, want error }{

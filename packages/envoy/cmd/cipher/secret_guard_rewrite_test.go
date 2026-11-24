@@ -539,7 +539,7 @@ func TestTheUncheckedLineFollowsOnlyALandedWrite(t *testing.T) {
 // the `secret show` that reads them, and claims nothing about what the requesters tag holds, which
 // is that writer's. The broker is asked to reread once, since the removal landed.
 func TestARewriteGCPRefusesForARaceSaysAnotherWriterChangedTheTags(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
 	useGCPIdentity(t, "authorized_user", "ada@example.com")
@@ -636,7 +636,7 @@ func TestALandedRetagWhoseValueWasNotCheckedSaysSo(t *testing.T) {
 //     refuses the secret after it, which a person may read as "nothing more to check". After a
 //     rewrite, the one thing it says stands is the removal, which landed.
 func TestATagWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	rewrite := guarded("ada@example.com")
 	notGuessed := []string{"does not hold " + policy.RequestersRollbackGuard + " yet", "still holds " + policy.RequestersRollbackGuard, "the removal landed, so", "and API_KEY's requesters were written as"}
 	const show = "secret show API_KEY`"

@@ -53,7 +53,7 @@ func (e echoingList) ListSecrets(context.Context, *secretsmanager.ListSecretsInp
 // permission and a message with no permission in it are the controls: the check sees the store's
 // answer.
 func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useLentGCPAccessToken, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useLentGCPAccessToken, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	planted := "hunter2pw-" + "storeecho-" + "4b1f"
 	const arn = "arn:aws:iam::111122223333:user/"
 	hex64 := strings.Repeat("a1b2c3d4", 4) + strings.Repeat("e5f6a7b8", 4)

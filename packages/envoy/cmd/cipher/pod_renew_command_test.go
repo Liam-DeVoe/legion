@@ -31,7 +31,7 @@ var printedRenewCommand = regexp.MustCompile(`keep this lease alive with: (.*)`)
 // the variable still empty. The renewal must reach the broker, which it can only do by finding
 // key.pem and enrollment in the directory the printed command names.
 func TestThePrintedRenewalCommandRunsFromAnOutDirectory(t *testing.T) {
-	// Not parallel: it signals the test process or changes its signal handling (a signal to this process (syscall.Kill) at pod_renew_command_test.go:112).
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	token := fakePodToken(t, testPodAccount, testPodUID)
 	tokenFile := writePodToken(t, token)

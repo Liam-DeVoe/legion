@@ -75,7 +75,7 @@ func googleAnswer(r *http.Request, status int, body string) *http.Response {
 // keeps, not a transport error's own words. A userinfo answer that names a person still makes
 // that person the owner (the control: the stand-in is the endpoint the form reached).
 func TestGCPUserinfoPrintsItsStatusAndCodeNeverItsBody(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_printed_test.go:88); it signals the test process or changes its signal handling (var main.gcpMetadataToken, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it replaces a value of the whole process (main.useGoogleAPIsStandIn, http.DefaultTransport set at secret_gcp_printed_test.go:51); it sets a package variable the package's other tests read (gcpMetadataToken set at secret_gcp_printed_test.go:99).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_printed_test.go:88); it signals the test process or changes its signal handling (var main.gcpMetadataToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it replaces a value of the whole process (main.useGoogleAPIsStandIn, http.DefaultTransport set at secret_gcp_printed_test.go:51); it sets a package variable the package's other tests read (gcpMetadataToken set at secret_gcp_printed_test.go:99).
 	const secret = "hunter2pw-userinfo-4b7e19"
 	real := gcpUserinfo
 	for _, row := range []struct {
@@ -250,7 +250,7 @@ func TestGCPCredentialsFilePrintsItsVariableNeverItsPathOrContent(t *testing.T) 
 // (the metadata server) the commands carry no prefix, and under a gcloud login they carry the
 // login (the controls).
 func TestGCPPrintedCommandsCarryTheCredentialsFileItSignedInWith(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_printed_test.go:273); it changes the whole process's working directory (t.Chdir at secret_gcp_printed_test.go:272); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_printed_test.go:273); it changes the whole process's working directory (t.Chdir at secret_gcp_printed_test.go:272); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
 	const secret = "hunter2pw-cmdtoken-27d0ae"
 	for _, mode := range []struct {
 		name string
@@ -426,7 +426,7 @@ func TestGCPStoreCallUnderARefusedTokenRefreshPrintsItsClass(t *testing.T) {
 // who pasted a credential in the wrong place puts it. A login and a configuration gcloud holds
 // still sign in (the controls).
 func TestARefusedGcloudSelectorIsNotPrinted(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_printed_test.go:436); it signals the test process or changes its signal handling (main.useNoADC, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useNoADC, gcpMetadataToken set at secret_gcp_test.go:536).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_printed_test.go:436); it signals the test process or changes its signal handling (main.useNoADC, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useNoADC, gcpMetadataToken set at secret_gcp_test.go:536).
 	const secret = "hunter2pw-selector-5f21a8"
 	t.Run("CLOUDSDK_CORE_ACCOUNT", func(t *testing.T) {
 		fake := newFakeSecretManager()
@@ -493,7 +493,7 @@ func TestARefusedGcloudSelectorIsNotPrinted(t *testing.T) {
 // error_description there, which the server writes what it likes in. It holds for the login list
 // and for the token. A gcloud that answers still signs the form in (the control).
 func TestGcloudsStandardErrorIsNotPrinted(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_printed_test.go:527); it signals the test process or changes its signal handling (main.useNoADC, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (main.useNoADC, gcpMetadataToken set at secret_gcp_test.go:536).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_printed_test.go:527); it signals the test process or changes its signal handling (main.useNoADC, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useNoADC, gcpMetadataToken set at secret_gcp_test.go:536).
 	const secret = "hunter2pw-gcloudstderr-7c40b2"
 	refused := `echo "ERROR: (gcloud.auth.print-access-token) There was a problem refreshing your current auth tokens: ('invalid_grant: echo of ` + secret + `', {'error': 'invalid_grant', 'error_description': 'echo of ` + secret + `'})" >&2; exit 1`
 	for _, row := range []struct {
@@ -594,7 +594,7 @@ func TestTheWellKnownCredentialsFileIsNamedByItsSettingNeverItsPath(t *testing.T
 // fixed words. Control: a service account's email still prints in both places, so the check sees
 // the answer.
 func TestAnAccountGooglesAnswerNamesPrintsOnlyWhereItIsAServiceAccounts(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_printed_test.go:618); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.killGroupOnCancel, var main.signalGroup, a signal to this process (syscall.Kill) at secret_gcp_unix.go:52); it sets a package variable the package's other tests read (gcpUserinfo set at secret_gcp_printed_test.go:616).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_printed_test.go:618); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (gcpUserinfo set at secret_gcp_printed_test.go:616).
 	planted := "hunter2pw-" + "accountanswer-" + "c71d"
 	for _, row := range []struct {
 		name, email, want string
