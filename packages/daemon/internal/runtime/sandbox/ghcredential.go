@@ -718,7 +718,7 @@ func (r *Runtime) slotAppChanges(ctx context.Context, pod *corev1.Pod, spec runt
 			return true, nil
 		}
 		if err != nil {
-			return false, err
+			return true, nil // control 2b: a failed plan read of a held role read as another App
 		}
 		if was != app {
 			return true, nil
