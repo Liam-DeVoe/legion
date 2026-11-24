@@ -112,11 +112,11 @@ func runStoreVarsChild(t *testing.T, caPEM string, environ []string) storeVarsCh
 }
 
 // TestPrepareAirlockReadsTheStoreWithNoVariableWhereEveryClientSettingIsSet: the machine's own
-// system bundle lacks a root made for this test, and the command carries the eight settings, the
-// six file settings naming one file that holds that bundle's roots plus the root, SSL_CERT_FILE
+// system bundle lacks a root made for this test, and the command carries the nine settings, the
+// eight file settings naming one file that holds that bundle's roots plus the root, SSL_CERT_FILE
 // among them. x509.SystemCertPool would read the root through SSL_CERT_FILE, but git and wget read
 // the system bundle alone, so the bundle must be written, with GIT_SSL_CAINFO and WGETRC naming
-// it. The command carries all eight because one missing setting gets the bundle whatever the store
+// it. The command carries all nine because one missing setting gets the bundle whatever the store
 // holds, which would hide a store read through SSL_CERT_FILE.
 func TestPrepareAirlockReadsTheStoreWithNoVariableWhereEveryClientSettingIsSet(t *testing.T) {
 	root := proxyTestRoot(t, "test proxy root for the store with every setting")

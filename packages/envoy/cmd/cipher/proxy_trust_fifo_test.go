@@ -204,7 +204,7 @@ func TestPrepareAirlockReadsAPipeOrDeviceATrustSettingNames(t *testing.T) {
 		}
 		return string(data)
 	}
-	// No row carries the eight settings, so each takes the bundle path.
+	// No row carries the nine settings, so each takes the bundle path.
 	environ := func(t *testing.T, setting string) []string {
 		return []string{"XDG_RUNTIME_DIR=" + t.TempDir(), setting}
 	}
@@ -241,7 +241,7 @@ func TestPrepareAirlockReadsAPipeOrDeviceATrustSettingNames(t *testing.T) {
 		}
 	})
 	t.Run("CURL_CA_BUNDLE names a pipe, and the skip decision looks at it first", func(t *testing.T) {
-		// The store holds the release's root and the command carries the eight settings, so the
+		// The store holds the release's root and the command carries the nine settings, so the
 		// decision reaches the trust files themselves: the control, a regular CURL_CA_BUNDLE that
 		// holds the root, gets no bundle. A pipe's bytes can be read once, and the decision refuses
 		// it without reading it, so the bundle writer still gets what its writer sent.

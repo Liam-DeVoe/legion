@@ -21,6 +21,9 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 )
 
+// TestPrepareAirlockSecondRunOfAGrantGetsTheTrustItsOwnSettingsName: a second run of one grant
+// whose CURL_CA_BUNDLE names a private authority the first run's settings did not gets a bundle
+// that holds that authority, not the first run's bundle.
 func TestPrepareAirlockSecondRunOfAGrantGetsTheTrustItsOwnSettingsName(t *testing.T) {
 	authority, err := proxyrulestest.NewAuthority("test private authority of the second command")
 	if err != nil {

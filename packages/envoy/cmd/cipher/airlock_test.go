@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -544,12 +545,14 @@ func TestPrepareAirlockTwiceForOneGrantKeepsTheDirectoryThatIsThere(t *testing.T
 	if err != nil {
 		t.Fatalf("read the airlock root: %v", err)
 	}
-	if len(entries) != 1 || filepath.Join(runtimeDir, "agent-secrets", "airlock", entries[0].Name()) != filepath.Dir(first.bundle) {
-		names := make([]string, len(entries))
-		for i, entry := range entries {
-			names[i] = entry.Name()
-		}
-		t.Fatalf("the airlock root holds %v, want the one grant directory: the second run's own is left behind", names)
+	// The root holds the key the directory names are keyed with (proxyTrustDirKey) and the one
+	// grant directory, nothing else.
+	names := make([]string, len(entries))
+	for i, entry := range entries {
+		names[i] = entry.Name()
+	}
+	if want := []string{proxyTrustKeyFile, filepath.Base(filepath.Dir(first.bundle))}; !slices.Equal(names, want) {
+		t.Fatalf("the airlock root holds %v, want %v, the key and the one grant directory: the second run's own is left behind", names, want)
 	}
 }
 

@@ -11,10 +11,11 @@ package main
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -242,14 +243,22 @@ const airlockBuildLifetime = time.Hour
 //
 // An error here names the path it failed on, as checkAirlockRoot's do: every such path is the
 // root (airlockRootParts: XDG_RUNTIME_DIR, else TMPDIR, else the system's temporary directory)
-// with names this CLI made below it and the grant's id, which this CLI prints wherever it names
-// the grant, and none of those is a setting a person points at a secret's file. The files a
-// person's own settings name are another matter: WGETRC's can hold http_password, so no error
-// names the file WGETRC or a bundle variable names or quotes what it holds - readTrustFile and
-// wgetrcFor skip a file they cannot read, and print nothing of it.
+// with names this CLI made below it, the grant's id, which this CLI prints wherever it names the
+// grant, and a keyed hash of the trust (proxyTrustDirName), and none of those is a setting a person
+// points at a secret's file or a plain function of one. The files a person's own settings name
+// are another matter: WGETRC's can hold http_password, so no error names the file WGETRC or a
+// bundle variable names or quotes what it holds - readTrustFile and commandWgetrcLines skip a file
+// they cannot read, and print nothing of it.
 func prepareAirlock(environ []string, release *AirlockRelease, grantID string, expiresAt *time.Time) (airlockFiles, error) {
+	return prepareProxyFilesFor(environ, environ, release, grantID, expiresAt)
+}
+
+// prepareProxyFilesFor is prepareAirlock with its two environments apart: own, agent-secrets' own,
+// which places the airlock root (makeAirlockRoot), and command, the one the command will run with,
+// which the decision and the files are made from.
+func prepareProxyFilesFor(own, command []string, release *AirlockRelease, grantID string, expiresAt *time.Time) (airlockFiles, error) {
 	// First, since a command that needs no bundle has no directory to make, tidy or name.
-	if proxyRootsTrusted(environ, release.CACertificate, systemTrust) {
+	if proxyRootsTrusted(command, release.CACertificate, systemTrust) {
 		return airlockFiles{}, nil
 	}
 	// The grant id becomes one path element, so it must be one: the broker's ids are opaque, and
@@ -262,7 +271,13 @@ func prepareAirlock(environ []string, release *AirlockRelease, grantID string, e
 	// Before the tidy, which removes directories under the root, and before anything is
 	// written there: a root this user does not hold is one this run neither sweeps nor writes
 	// in.
-	root, err := makeAirlockRoot(environ)
+	root, err := makeAirlockRoot(own)
+	if err != nil {
+		return airlockFiles{}, err
+	}
+	// Before the tidy, which sweeps every directory it does not recognize: a directory where the
+	// key goes is refused (proxyTrustDirKey), not swept and replaced by a new key.
+	key, err := proxyTrustDirKey(root)
 	if err != nil {
 		return airlockFiles{}, err
 	}
@@ -281,13 +296,13 @@ func prepareAirlock(environ []string, release *AirlockRelease, grantID string, e
 		return airlockFiles{}, fmt.Errorf("make the airlock directory private: %w", err)
 	}
 
-	// The directory is named for the grant and for what its files hold (airlockDirName), so the
+	// The directory is named for the grant and for what its files hold (proxyTrustDirName), so the
 	// bundle and the inherited wgetrc lines are read first. Each file is written under the build
 	// directory and names the paths the command will read, which are the ones under dir: the
 	// wgetrc carries the bundle's path to wget, and a path under the build directory would be
 	// gone by the time the command read it.
-	bundle, wgetrcLines := trustBundle(environ, release.CACertificate), commandWgetrcLines(environ)
-	dir := filepath.Join(root, airlockDirName(grantID, bundle, wgetrcLines))
+	bundle, wgetrcLines := trustBundle(command, release.CACertificate), commandWgetrcLines(command)
+	dir := filepath.Join(root, proxyTrustDirName(key, grantID, bundle, wgetrcLines))
 	files := airlockFiles{bundle: filepath.Join(dir, "ca-bundle.pem"), wgetrc: filepath.Join(dir, "wgetrc")}
 	if err := writeFileAtomic(filepath.Join(build, "ca-bundle.pem"), bundle, 0o600); err != nil {
 		return airlockFiles{}, fmt.Errorf("write the trust bundle: %w", err)
@@ -299,7 +314,7 @@ func prepareAirlock(environ []string, release *AirlockRelease, grantID string, e
 		return airlockFiles{}, fmt.Errorf("write the airlock expiry: %w", err)
 	}
 	if err := os.Rename(build, dir); err != nil {
-		// The final name is this grant's and this trust's (airlockDirName), so what holds it
+		// The final name is this grant's and this trust's (proxyTrustDirName), so what holds it
 		// is a run of this same grant and the same trust that got there first: a finished
 		// directory, with this grant's expiry and the very bytes this run wrote. Its files are
 		// left as they are rather than written over, since the command of the run that put them
@@ -357,13 +372,21 @@ func expiresText(expiresAt *time.Time) string {
 }
 
 // tidyAirlockDirs removes every directory under root but the running grant's (keep, read from the
-// name with airlockDirGrant, so a grant whose id begins with keep is not taken for it) whose grant
-// has expired, every one a run left unfinished (no expires file, or one that cannot be read or
-// parsed), and every directory under airlockBuildPrefix that has stood longer than a build can
+// name with proxyTrustDirGrant, so a grant whose id begins with keep is not taken for it) whose
+// grant has expired, every one a run left unfinished (no expires file, or one that cannot be read
+// or parsed), and every directory under airlockBuildPrefix that has stood longer than a build can
 // take, which is a leftover of a run that died between making it and renaming it into place. A
 // directory whose expires file is empty lasts until its session ends and is left. Each directory
-// of a grant, one per trust its commands named (airlockDirName), carries that grant's expiry, so
+// of a grant, one per trust its commands named (proxyTrustDirName), carries that grant's expiry, so
 // once the grant ends a tidy takes every one of them.
+//
+// The running grant's directories are all kept, whatever trust each holds: a command of that grant
+// that is still running may read its bundle again at any time (Python requests reads the file on
+// each request), and nothing here can tell whether one still runs. So a live grant keeps one
+// directory of about 250 KB per distinct trust its commands named, not per run: a run whose trust
+// matches an earlier one's takes that directory. A grant with no expiry keeps them until its
+// session ends, when XDG_RUNTIME_DIR goes; a command that names other trust on every run, such as a
+// WGETRC made fresh each time, makes a directory each time.
 //
 // Tidying is not the run: nothing here is logged, nothing is refused and no error is answered,
 // because a command must still run when the runtime directory is read-only, is shared with
@@ -377,7 +400,7 @@ func tidyAirlockDirs(root, keep string, now time.Time) {
 		if !entry.IsDir() {
 			continue
 		}
-		if grant, ok := airlockDirGrant(entry.Name()); ok && grant == keep {
+		if grant, ok := proxyTrustDirGrant(entry.Name()); ok && grant == keep {
 			continue
 		}
 		dir := filepath.Join(root, entry.Name())
@@ -463,36 +486,117 @@ func trustBundle(environ []string, caPEM string) []byte {
 	return bundle
 }
 
-// airlockDirName is the name of the directory one run's files go in: the grant's id, a dot, and
-// 16 hex digits of the SHA-256 of what the command's clients will read from it. That is the
-// bundle's bytes as written (every trust file read for it, the system bundle standing behind an
-// SSL_CERT_FILE that names none, and the proxy's roots) and the inherited wgetrc's lines as read,
-// with a zero byte between the two; the path of the bundle the wgetrc then names is the one part
-// left out, since it is this very name. It is a hash of contents read, not of the settings, so
-// another path holding the same bytes is the same trust and the same path holding other bytes is
-// other trust.
+// proxyTrustDirName is the name of the directory one run's files go in: the grant's id, a dot, and
+// 16 hex digits of the HMAC-SHA-256, keyed with key (proxyTrustDirKey), of what the command's clients
+// will read from it. That is the bundle's bytes as written (every trust file read for it, the
+// system bundle standing behind an SSL_CERT_FILE that names none, and the proxy's roots) and the
+// inherited wgetrc's lines as read, with a zero byte between the two; the path of the bundle the
+// wgetrc then names is the one part left out, since it is this very name. It is of contents read,
+// not of the settings, so another path holding the same bytes is the same trust and the same path
+// holding other bytes is other trust.
 //
 // agent-secrets reuses a live grant across the commands of a session, so two runs of one grant
 // can name different trust: before this name, both took the grant's id alone, the second run
 // found the first's directory under it and answered that (the rename's collision in
 // prepareAirlock), and the second command got the first command's bundle. Runs of one grant and
 // one trust still take one name, and so one directory, which the rename hands over finished.
-func airlockDirName(grantID string, bundle, wgetrcLines []byte) string {
-	h := sha256.New()
+//
+// Keyed, because the name leaves the root, in the child's environment, the argv of a command that
+// passes the bundle's path on, and an error that names the directory, while the wgetrc lines can
+// hold http_password and the rest of the input is public: a plain hash would let anyone who sees
+// the name test password guesses against it offline.
+func proxyTrustDirName(key []byte, grantID string, bundle, wgetrcLines []byte) string {
+	h := hmac.New(sha256.New, key)
 	h.Write(bundle)
 	h.Write([]byte{0})
 	h.Write(wgetrcLines)
-	return grantID + "." + hex.EncodeToString(h.Sum(nil))[:airlockDirHashLen]
+	return grantID + "." + hex.EncodeToString(h.Sum(nil))[:proxyTrustDirHashLen]
 }
 
-// airlockDirHashLen is how many hex digits of the hash airlockDirName keeps: 64 bits, so two trusts
-// of one grant share a directory only by a collision no run will meet.
-const airlockDirHashLen = 16
+// proxyTrustKeyFile and proxyTrustKeyLen are the file in the airlock root that holds
+// proxyTrustDirName's key, and how many bytes the key is.
+const (
+	proxyTrustKeyFile = "dir-name.key"
+	proxyTrustKeyLen  = 32
+)
 
-// airlockDirGrant is the grant id of a directory name airlockDirName gave, read from the end, since
-// the broker's ids are opaque and may hold a dot; false for a name of any other form.
-func airlockDirGrant(name string) (string, bool) {
-	i := len(name) - airlockDirHashLen - 1
+// proxyTrustDirKey is the key proxyTrustDirName is keyed with: 32 random bytes in the airlock
+// root's proxyTrustKeyFile, made by the first run and read back by every later one, so runs of one
+// grant and one trust, each its own process, still take one name. The key sits in the same root,
+// owned by this user alone and mode 0700 (makeAirlockRoot), as the wgetrc copies that hold the
+// inherited lines in clear, so whoever can read it can read those lines anyway; it is never put in
+// an environment, an argv or any output.
+//
+// A first run writes the key under a name of its own (mode 0600, created exclusively) and links it
+// to proxyTrustKeyFile, which a link never replaces, then reads proxyTrustKeyFile back: two first
+// runs that race both end with the key the link that won put in place. A key file that is not a
+// regular file holding exactly proxyTrustKeyLen bytes, or that its group or others can read or
+// write (the rule checkAirlockRoot holds the root to, so the two agree on every platform), is
+// refused, not used: it is not one this CLI wrote. It is read without waiting (readRegularFile),
+// so a named pipe put in its place is refused rather than waited on. The tidy passes it over,
+// since it removes directories alone (tidyAirlockDirs).
+func proxyTrustDirKey(root string) ([]byte, error) {
+	path := filepath.Join(root, proxyTrustKeyFile)
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		if err := writeProxyTrustDirKey(root, path); err != nil {
+			return nil, err
+		}
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("read the airlock key %s: %w", path, err)
+	}
+	refused := fmt.Errorf("the airlock key %s is not a %d-byte regular file that only this user can read; remove it and run again", path, proxyTrustKeyLen)
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() != proxyTrustKeyLen {
+		return nil, refused
+	}
+	key, err := readRegularFile(path)
+	if errors.Is(err, errNotRegular) || errors.Is(err, errFileTooLarge) || err == nil && len(key) != proxyTrustKeyLen {
+		return nil, refused
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read the airlock key %s: %w", path, err)
+	}
+	return key, nil
+}
+
+// writeProxyTrustDirKey puts a new key at path, unless another run's link got there first, which is
+// no error: proxyTrustDirKey reads back whichever key the link put in place.
+func writeProxyTrustDirKey(root, path string) error {
+	key := make([]byte, proxyTrustKeyLen)
+	if _, err := rand.Read(key); err != nil {
+		return fmt.Errorf("make the airlock key: %w", err)
+	}
+	temp, err := os.CreateTemp(root, ".key-")
+	if err != nil {
+		return fmt.Errorf("write the airlock key: %w", err)
+	}
+	defer os.Remove(temp.Name())
+	if err := temp.Chmod(0o600); err != nil {
+		temp.Close()
+		return fmt.Errorf("write the airlock key: %w", err)
+	}
+	if _, err := temp.Write(key); err != nil {
+		temp.Close()
+		return fmt.Errorf("write the airlock key: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("write the airlock key: %w", err)
+	}
+	if err := os.Link(temp.Name(), path); err != nil && !errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("put the airlock key in place: %w", err)
+	}
+	return nil
+}
+
+// proxyTrustDirHashLen is how many hex digits of the HMAC proxyTrustDirName keeps: 64 bits, so two
+// trusts of one grant share a directory only by a collision no run will meet.
+const proxyTrustDirHashLen = 16
+
+// proxyTrustDirGrant is the grant id of a directory name proxyTrustDirName gave, read from the end,
+// since the broker's ids are opaque and may hold a dot; false for a name of any other form.
+func proxyTrustDirGrant(name string) (string, bool) {
+	i := len(name) - proxyTrustDirHashLen - 1
 	if i < 1 || name[i] != '.' {
 		return "", false
 	}
@@ -504,22 +608,29 @@ func airlockDirGrant(name string) (string, bool) {
 	return name[:i], true
 }
 
-// prepareCommandAirlock is prepareAirlock for the exec form's command: the environment it decides
-// and builds on is the one the command will run with, the inherited environment with the released
-// values after it (buildChildEnv), so a released trust setting, HOME or SSL_CERT_DIR counts as the
-// command's own. Where it writes a bundle, it names on stderr each trust setting it read through a
-// relative path (relativeTrustSettings), one line each.
-func prepareCommandAirlock(environ []string, released map[string]string, release *AirlockRelease, grantID string, expiresAt *time.Time, stderr io.Writer) (airlockFiles, error) {
+// prepareProxyTrustForCommand is prepareAirlock for the exec form's command. The trust it decides and
+// builds on is the command's: the inherited environment with the released values after it
+// (buildChildEnv), so a released trust setting, HOME or SSL_CERT_DIR counts as the command's own.
+// Where the airlock root goes is agent-secrets' own choice (airlockRootParts), made from the
+// inherited environment alone, so a released value named XDG_RUNTIME_DIR or TMPDIR, which the
+// broker answers and agent-secrets does not choose, does not move where it writes and tidies.
+// Where it writes a bundle, it names on stderr each trust setting given as a relative path
+// (relativeTrustSettings), one line each.
+func prepareProxyTrustForCommand(environ []string, released map[string]string, release *AirlockRelease, grantID string, expiresAt *time.Time, stderr io.Writer) (airlockFiles, error) {
 	command := slices.Clone(environ)
 	for _, name := range slices.Sorted(maps.Keys(released)) {
 		command = append(command, name+"="+released[name])
 	}
-	files, err := prepareAirlock(command, release, grantID, expiresAt)
+	files, err := prepareProxyFilesFor(environ, command, release, grantID, expiresAt)
 	if err != nil || files.bundle == "" {
 		return files, err
 	}
 	for _, key := range relativeTrustSettings(command) {
-		fmt.Fprintf(stderr, "agent-secrets: %s is a relative path, read for the trust bundle from the directory the command starts in\n", key)
+		into := "trust bundle"
+		if key == "WGETRC" {
+			into = "wgetrc"
+		}
+		fmt.Fprintf(stderr, "agent-secrets: %s is a relative path, resolved for the %s from the directory the command starts in\n", key, into)
 	}
 	return files, nil
 }
@@ -527,10 +638,11 @@ func prepareCommandAirlock(environ []string, released map[string]string, release
 // relativeTrustSettings are the settings the bundle writer reads (airlockBundleVars and WGETRC)
 // whose value is a relative path. agent-secrets runs the command in its own process (syscall.Exec),
 // so the command starts in this directory, and such a value names here the file the command itself
-// would read at its start: the bundle carries what that file holds, under an absolute path that
-// still holds after the command changes directory. The command is told, since a relative path is
-// one it might have meant to resolve from somewhere else. Only the variable's name is printed,
-// never its value: WGETRC's file can hold http_password.
+// would read at its start: the bundle (or, for WGETRC, the wgetrc) carries what that file holds,
+// under an absolute path that still holds after the command changes directory, and nothing where
+// no file is there. The command is told, since a relative path is one it might have meant to
+// resolve from somewhere else. Only the variable's name is printed, never its value: WGETRC's file
+// can hold http_password.
 func relativeTrustSettings(environ []string) []string {
 	var relative []string
 	for _, key := range append(slices.Clone(airlockBundleVars), "WGETRC") {
@@ -621,312 +733,6 @@ var airlockBundleVars = []string{
 	// this file in place of its own (https://github.com/grpc/grpc/blob/master/doc/environment_variables.md).
 	// grpc-go reads the system roots, which SSL_CERT_FILE names.
 	"GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
-}
-
-// proxyRootsTrusted reports whether the command reaches the proxy with the trust it already has,
-// so that it needs no bundle: the command's environment shows that every client family reads the
-// system store (proxyClientsReadTheStore) and has no SSL_CERT_DIR; that store, which system
-// answers, trusts every root the release carries; each file a trust variable of the command names
-// holds every root too, as does wget's ca_directory (wgetTrusts); and every path this reads is
-// absolute.
-//
-// Every root, not one of them: during a change of the proxy's root a release carries two, the
-// old and the new, and a store that trusts one of them is not yet one the proxy can rely on. A
-// release that carries no root this can parse is no root the store trusts, so it gets the bundle.
-//
-// Node, Python requests and httpx, uv, git, the AWS CLI, gcloud and gRPC's C core each read roots
-// of their own, not the system store, unless a setting points them at it. A command without those
-// settings, from a shell started before a launcher set them, a runtime that passes on only some
-// variables or a systemd-run unit, would lose the proxy for those clients with no bundle, so it
-// keeps the bundle, which reaches each of them. The answer errs toward writing the bundle, which
-// is never wrong, only unneeded.
-//
-// The command keeps each trust variable it has when no bundle is written, and each one sets its
-// client's roots: a file that lacks a root takes the proxy away from that client, as a file this
-// process cannot read may, and either keeps the bundle, which holds that file's trust as well
-// (trustBundle). NODE_EXTRA_CA_CERTS too: Node adds its file to the roots it has, and it is the
-// one way the root reaches a Node that does not read the system store, which every Node before
-// v24.6.0 and v22.19.0 does not (NODE_USE_SYSTEM_CA is added in those). git reads GIT_SSL_CAINFO
-// after every level of its configuration, so an http.sslCAInfo in a gitconfig is no part of the
-// answer once GIT_SSL_CAINFO names a file that holds every root (measured with git 2.47.3).
-//
-// A relative path is resolved from the directory of whoever reads it, and the command may read it
-// from a directory other than the one it starts in (`git -C ../x`, `sh -c 'cd sub && curl'`), so a
-// relative trust variable, WGETRC, SYSTEM_WGETRC, HOME or ca_directory never counts toward a skip.
-//
-// The command keeps its SSL_CERT_DIR too, which Node's system store (NODE_USE_SYSTEM_CA), uv
-// (UV_SYSTEM_CERTS) and httpx read in place of the system's directory, Node with no system bundle
-// file beside it. They do not read it alike, so no reading of the directories answers for all of
-// them: Node v24 takes the whole value as one path (a ':' list is one directory that is not
-// there) and an empty value as set, and httpx, through OpenSSL's capath, finds a root only under
-// its subject-hash name. So any SSL_CERT_DIR entry, even an empty one, gets the bundle: its
-// SSL_CERT_FILE reaches httpx, uv and OpenSSL beside the directory, and its NODE_EXTRA_CA_CERTS
-// reaches Node.
-//
-// Nothing here opens a named pipe, a device or a socket that is one when it looks
-// (readRegularFile): a pipe's bytes can be read once, and the bundle writer reads them afterwards.
-func proxyRootsTrusted(environ []string, caPEM string, system func() *x509.CertPool) bool {
-	// The command's environment first: it alone answers most commands, and then the system
-	// bundle is not read.
-	if !proxyClientsReadTheStore(environ) || envHas(environ, "SSL_CERT_DIR") {
-		return false
-	}
-	roots := proxyRoots(caPEM)
-	if len(roots) == 0 || !poolTrustsEvery(system(), roots) || !wgetTrusts(environ, roots) {
-		return false
-	}
-	// One file is often named by several of these, as the system bundle is, and is read once.
-	named := make([]string, 0, len(airlockBundleVars))
-	for _, key := range airlockBundleVars {
-		named = append(named, envValue(environ, key))
-	}
-	slices.Sort(named)
-	for _, path := range slices.Compact(named) {
-		data, err := readRegularFile(path)
-		if err != nil {
-			return false
-		}
-		pool := x509.NewCertPool()
-		pool.AppendCertsFromPEM(data)
-		if !poolTrustsEvery(pool, roots) {
-			return false
-		}
-	}
-	return true
-}
-
-// proxyClientsReadTheStore reports whether the command's environment shows that every client
-// family which reads roots of its own by default reads the system store: each of
-// airlockBundleVars is an absolute path (proxyRootsTrusted then checks the file it names), and
-// uv's switch is on (UV_SYSTEM_CERTS as uv 0.13.5 reads a true value: 1, t, true, y, yes or on, in
-// any case). An unset or empty value is no absolute path: an empty GIT_SSL_CAINFO is a setting git
-// reads, as an empty CA file that fails every HTTPS request (measured with git 2.47.3), and an
-// empty NODE_EXTRA_CA_CERTS leaves a Node that does not read the system store without the root.
-// A relative path is resolved from the directory of whoever reads it, which need not be this one.
-func proxyClientsReadTheStore(environ []string) bool {
-	for _, key := range airlockBundleVars {
-		if !filepath.IsAbs(envValue(environ, key)) {
-			return false
-		}
-	}
-	switch strings.ToLower(envValue(environ, "UV_SYSTEM_CERTS")) {
-	case "1", "t", "true", "y", "yes", "on":
-		return true
-	}
-	return false
-}
-
-// systemWgetrcFile is the system wgetrc built into wget, Debian's, which wget reads when
-// SYSTEM_WGETRC names no file that is there. A test replaces it.
-var systemWgetrcFile = "/etc/wgetrc"
-
-// wgetTrusts reports whether wget's startup files leave it trusting every root. wget reads no
-// trust variable, only those files, and the command keeps them when no bundle is written: first
-// the system wgetrc (the file SYSTEM_WGETRC names when it is there, else systemWgetrcFile when
-// that is there), then the user's (the file WGETRC names, or homeWgetrc when it is there and
-// WGETRC is unset or empty); "there" is wget's own test, a stat; measured with wget 1.25.0 and
-// 1.21.4. wget built on GnuTLS, as Debian's is, reads its ca_directory in place of the system
-// store and adds a ca_certificate to that trust rather than replacing it (measured with wget
-// 1.25.0). So the last ca_directory across those files, the one wget reads, must hold every root,
-// an empty one loads no directory and no system store at all, and a ca_certificate takes nothing
-// away. A startup file this process cannot read, a WGETRC naming none, or a relative path to any
-// of them or to the ca_directory, which wget resolves from its own directory, is one it cannot
-// vouch for. wget ignores case, '_' and '-' in a command's name, and skips a line that opens with
-// '#'.
-func wgetTrusts(environ []string, roots []*x509.Certificate) bool {
-	var files []string
-	if named := envValue(environ, "SYSTEM_WGETRC"); named != "" && !filepath.IsAbs(named) {
-		return false
-	} else if named != "" && exists(named) {
-		files = append(files, named)
-	} else if exists(systemWgetrcFile) {
-		files = append(files, systemWgetrcFile)
-	}
-	if named := envValue(environ, "WGETRC"); named != "" {
-		files = append(files, named)
-	} else if user := homeWgetrc(environ); user != "" && !filepath.IsAbs(user) {
-		return false
-	} else if user != "" && exists(user) {
-		files = append(files, user)
-	}
-	directory, set := "", false
-	for _, file := range files {
-		if !filepath.IsAbs(file) {
-			return false
-		}
-		data, err := readRegularFile(file)
-		if err != nil {
-			return false
-		}
-		for line := range strings.Lines(string(data)) {
-			name, value, found := strings.Cut(line, "=")
-			if found && wgetrcCommand.Replace(strings.ToLower(strings.TrimSpace(name))) == "cadirectory" {
-				directory, set = strings.TrimSpace(value), true
-			}
-		}
-	}
-	if !set {
-		return true
-	}
-	// An empty value is still a ca_directory: wget keeps it, loads no directory from it, and so
-	// loads no system store either.
-	return filepath.IsAbs(directory) && certDirTrustsEvery(directory, roots)
-}
-
-// homeWgetrc is the user wgetrc wget reads where WGETRC names none: $HOME/.wgetrc, HOME being the
-// command's own when it is set, even empty (wget joins the two with '/', so an empty HOME reads
-// /.wgetrc), and the password database's home only when HOME is unset; "" where it has neither.
-func homeWgetrc(environ []string) string {
-	home := envValue(environ, "HOME")
-	if !envHas(environ, "HOME") {
-		if home = passwdHome(); home == "" {
-			return ""
-		}
-	}
-	return home + "/.wgetrc"
-}
-
-// wgetrcCommand folds a wgetrc command's name to the one wget reads it as.
-var wgetrcCommand = strings.NewReplacer("_", "", "-", "")
-
-// proxyCertFileMaxBytes, proxyCertDirMaxFiles and proxyCertDirMaxBytes bound what the skip decision
-// reads: each file (a trust file, the system bundle, a wget startup file, a ca_directory's entry),
-// a ca_directory's entries, and a ca_directory's bytes in all. A certificate is a few kilobytes,
-// Debian's whole bundle is under 250 KB, and Debian's /etc/ssl/certs holds about 300 entries, each
-// root under two names and the bundle, under 2 MiB in all. Past a bound the answer is that the
-// command needs the bundle, which is never wrong. The bundle writer reads a named pipe or a device
-// that a bundle variable or WGETRC names up to proxyCertFileMaxBytes too, and a regular one whole
-// (readTrustSource).
-const (
-	proxyCertFileMaxBytes = 1 << 20
-	proxyCertDirMaxFiles  = 4096
-	proxyCertDirMaxBytes  = 8 << 20
-)
-
-// certDirTrustsEvery reports whether the certificate directory dir holds every root. It reads the
-// directory's regular files alone (readRegularFile), so a device, a named pipe or a socket there
-// cannot stall or flood agent-secrets before the command runs, and opens the directory itself so
-// that no open waits (openDirNoWait). A file it skips adds nothing, and a directory of more than
-// proxyCertDirMaxFiles entries or more than proxyCertDirMaxBytes in all, or one this process
-// cannot read, is one it cannot vouch for.
-func certDirTrustsEvery(dir string, roots []*x509.Certificate) bool {
-	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-		return false
-	}
-	f, err := openDirNoWait(dir)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	entries, err := f.ReadDir(proxyCertDirMaxFiles + 1)
-	if (err != nil && !errors.Is(err, io.EOF)) || len(entries) > proxyCertDirMaxFiles {
-		return false
-	}
-	pool := x509.NewCertPool()
-	total := 0
-	for _, entry := range entries {
-		data, err := readRegularFile(filepath.Join(dir, entry.Name()))
-		if err != nil {
-			continue
-		}
-		if total += len(data); total > proxyCertDirMaxBytes {
-			return false
-		}
-		pool.AppendCertsFromPEM(data)
-	}
-	return poolTrustsEvery(pool, roots)
-}
-
-// errNotRegular and errFileTooLarge are readRegularFile's answers for a path that names something
-// other than a regular file, and for one of more than proxyCertFileMaxBytes.
-var (
-	errNotRegular   = errors.New("not a regular file")
-	errFileTooLarge = errors.New("larger than the bound")
-)
-
-// readRegularFile is the regular file at path, up to proxyCertFileMaxBytes (a symbolic link is
-// followed to what it names), for the files the skip decision reads, where a file it will not read
-// only means the bundle is written. It looks before it opens, and opens nothing that is not a
-// regular file when it looks: opening a named pipe for reading waits for a writer that may never
-// come, and opening one at all lets a writer waiting in its own open go on and hand its bytes to a
-// reader that closes them unread. A pipe swapped in between the look and the open is opened
-// without waiting (openNoWait) and refused by what the open file is. Its error is the look's where
-// that fails, so a path that is not there answers os.ErrNotExist; errNotRegular where the path
-// names something else, and errFileTooLarge past the bound.
-func readRegularFile(path string) ([]byte, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, errNotRegular
-	}
-	if info.Size() > proxyCertFileMaxBytes {
-		return nil, errFileTooLarge
-	}
-	f, regular, size, err := openNoWait(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	if !regular {
-		return nil, errNotRegular
-	}
-	if size > proxyCertFileMaxBytes {
-		return nil, errFileTooLarge
-	}
-	var data bytes.Buffer
-	data.Grow(int(size) + bytes.MinRead)
-	if _, err := data.ReadFrom(io.LimitReader(f, proxyCertFileMaxBytes+1)); err != nil {
-		return nil, err
-	}
-	if data.Len() > proxyCertFileMaxBytes {
-		return nil, errFileTooLarge
-	}
-	return data.Bytes(), nil
-}
-
-// proxyRoots is every certificate of the release's PEM, and nil when any block of it is not a
-// certificate this can parse: a release this cannot read whole is one it cannot vouch for.
-// pem.Decode passes over a block whose body is not base64 and answers the next one, so each
-// block's opening line is counted against the certificates parsed.
-func proxyRoots(caPEM string) []*x509.Certificate {
-	var roots []*x509.Certificate
-	rest := []byte(caPEM)
-	for {
-		block, next := pem.Decode(rest)
-		if block == nil {
-			break
-		}
-		rest = next
-		if block.Type != "CERTIFICATE" {
-			return nil
-		}
-		root, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			return nil
-		}
-		roots = append(roots, root)
-	}
-	if strings.Count(caPEM, "-----BEGIN ") != len(roots) {
-		return nil
-	}
-	return roots
-}
-
-// poolTrustsEvery reports whether each of roots verifies against pool as its roots
-// (x509.Certificate.Verify): it chains to a certificate the pool holds, and is within its validity
-// period. A nil pool trusts nothing here, where Verify would read it as the system's own.
-func poolTrustsEvery(pool *x509.CertPool, roots []*x509.Certificate) bool {
-	if pool == nil {
-		return false
-	}
-	for _, root := range roots {
-		if _, err := root.Verify(x509.VerifyOptions{Roots: pool}); err != nil {
-			return false
-		}
-	}
-	return true
 }
 
 // airlockVars are the environment variables an airlock release adds to the command's

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -22,18 +23,18 @@ import (
 func grantDirOf(t *testing.T, root, grant, path string) string {
 	t.Helper()
 	dir := filepath.Dir(path)
-	if got, ok := airlockDirGrant(filepath.Base(dir)); filepath.Dir(dir) != root || !ok || got != grant {
+	if got, ok := proxyTrustDirGrant(filepath.Base(dir)); filepath.Dir(dir) != root || !ok || got != grant {
 		t.Fatalf("%s is not in a directory of %s under %s", path, grant, root)
 	}
 	return dir
 }
 
-// TestPrepareCommandAirlockDecidesOnTheReleasedValues: the exec form adds the released values to
+// TestPrepareProxyTrustForCommandDecidesOnTheReleasedValues: the exec form adds the released values to
 // the command's environment after the inherited ones (buildChildEnv), so a released value of a
 // trust setting, of HOME or of SSL_CERT_DIR is one the command's clients read. The decision reads
 // that environment: such a value that takes a root away gets the bundle, where the inherited
 // environment alone would have skipped it.
-func TestPrepareCommandAirlockDecidesOnTheReleasedValues(t *testing.T) {
+func TestPrepareProxyTrustForCommandDecidesOnTheReleasedValues(t *testing.T) {
 	root, other := proxyTestRoot(t, "test proxy root"), proxyTestRoot(t, "test private authority")
 	system := writeLoginFile(t, "ca-certificates.crt", root)
 	useSystemTrustFiles(t, system)
@@ -56,25 +57,25 @@ func TestPrepareCommandAirlockDecidesOnTheReleasedValues(t *testing.T) {
 			release := testRelease("AIRLOCK_ME", []string{"api.example.com"}, nil)
 			release.CACertificate = root
 			var stderr strings.Builder
-			files, err := prepareCommandAirlock(environ, row.released, release, "grant-one", nil, &stderr)
+			files, err := prepareProxyTrustForCommand(environ, row.released, release, "grant-one", nil, &stderr)
 			if err != nil {
-				t.Fatalf("prepareCommandAirlock: %v", err)
+				t.Fatalf("prepareProxyTrustForCommand: %v", err)
 			}
 			if got := files.bundle != ""; got != row.wantBundle {
-				t.Errorf("prepareCommandAirlock wrote a bundle: %v, want %v", got, row.wantBundle)
+				t.Errorf("prepareProxyTrustForCommand wrote a bundle: %v, want %v", got, row.wantBundle)
 			}
 		})
 	}
 }
 
-// TestPrepareCommandAirlockReadsARelativeTrustPathFromTheStartDirectory: agent-secrets runs the
+// TestPrepareProxyTrustForCommandReadsARelativeTrustPathFromTheStartDirectory: agent-secrets runs the
 // command in its own process (syscall.Exec), so the command starts in this directory, and a
 // relative trust path names here the file the command itself would read at its start. The bundle
 // carries what that file holds, under an absolute path that still holds after the command changes
 // directory, and one stderr line names each variable so read. The decision counts no relative path,
 // so such a command never skips the bundle: the control names the same file by its absolute path
 // and skips it.
-func TestPrepareCommandAirlockReadsARelativeTrustPathFromTheStartDirectory(t *testing.T) {
+func TestPrepareProxyTrustForCommandReadsARelativeTrustPathFromTheStartDirectory(t *testing.T) {
 	root, other := proxyTestRoot(t, "test proxy root"), proxyTestRoot(t, "test private authority")
 	system := writeLoginFile(t, "ca-certificates.crt", root)
 	useSystemTrustFiles(t, system)
@@ -92,9 +93,9 @@ func TestPrepareCommandAirlockReadsARelativeTrustPathFromTheStartDirectory(t *te
 		t.Helper()
 		environ := withSettings(append([]string{"XDG_RUNTIME_DIR=" + t.TempDir()}, proxyStoreSettings(t, system)...), more...)
 		var stderr strings.Builder
-		files, err := prepareCommandAirlock(environ, nil, release, "grant-one", nil, &stderr)
+		files, err := prepareProxyTrustForCommand(environ, nil, release, "grant-one", nil, &stderr)
 		if err != nil {
-			t.Fatalf("prepareCommandAirlock: %v", err)
+			t.Fatalf("prepareProxyTrustForCommand: %v", err)
 		}
 		return files, stderr.String()
 	}
@@ -116,7 +117,7 @@ func TestPrepareCommandAirlockReadsARelativeTrustPathFromTheStartDirectory(t *te
 		if !strings.Contains(string(bundle), other) {
 			t.Errorf("the bundle lacks what the relative CURL_CA_BUNDLE names in the start directory")
 		}
-		if want := "agent-secrets: CURL_CA_BUNDLE is a relative path, read for the trust bundle from the directory the command starts in\n"; stderr != want {
+		if want := "agent-secrets: CURL_CA_BUNDLE is a relative path, resolved for the trust bundle from the directory the command starts in\n"; stderr != want {
 			t.Errorf("stderr is %q, want %q", stderr, want)
 		}
 	})
@@ -128,7 +129,7 @@ func TestPrepareCommandAirlockReadsARelativeTrustPathFromTheStartDirectory(t *te
 		if data, err := os.ReadFile(files.wgetrc); err != nil || !strings.Contains(string(data), "tries = 7\n") {
 			t.Errorf("the wgetrc lacks the relative WGETRC's lines (read error %v)", err)
 		}
-		if want := "agent-secrets: WGETRC is a relative path, read for the trust bundle from the directory the command starts in\n"; stderr != want {
+		if want := "agent-secrets: WGETRC is a relative path, resolved for the wgetrc from the directory the command starts in\n"; stderr != want {
 			t.Errorf("stderr is %q, want %q", stderr, want)
 		}
 	})
@@ -163,7 +164,7 @@ func TestExecFormNamesARelativeTrustPathItReadFromTheStartDirectory(t *testing.T
 	}
 	lines := strings.Split(strings.TrimSuffix(stderr, "\n"), "\n")
 	want := []string{
-		"agent-secrets: CURL_CA_BUNDLE is a relative path, read for the trust bundle from the directory the command starts in",
+		"agent-secrets: CURL_CA_BUNDLE is a relative path, resolved for the trust bundle from the directory the command starts in",
 		"agent-secrets: AIRLOCK_ME from " + fakeSourceText(broker),
 	}
 	if len(lines) < 2 || lines[0] != want[0] || lines[1] != want[1] {
@@ -173,7 +174,7 @@ func TestExecFormNamesARelativeTrustPathItReadFromTheStartDirectory(t *testing.T
 
 // TestPrepareAirlockGivesEachTrustItsOwnDirectory: agent-secrets reuses a live grant across the
 // commands of a session, and two commands of one grant can name different trust. The directory a
-// run's files go in is named for the grant and for what its clients will read (airlockDirName),
+// run's files go in is named for the grant and for what its clients will read (proxyTrustDirName),
 // so a run whose trust differs gets a directory and a bundle of its own, and the earlier run's
 // stays as its command may still be reading it. The name is of what was read, not of the
 // settings: the same path holding other bytes is other trust, and two paths holding the same bytes
@@ -233,55 +234,65 @@ func TestPrepareAirlockGivesEachTrustItsOwnDirectory(t *testing.T) {
 
 // TestPrepareAirlockRunsOfOneTrustShareOneFinishedDirectory: runs of one grant and one trust,
 // parallel tool calls of one agent among them, take one directory, and each answers it only once
-// it holds every file under its final name (the rename): no run reads a half-written one.
+// it holds every file under its final name (the rename): no run reads a half-written one. Runs
+// that start together on a root with no key yet race to make the key the name is keyed with
+// (proxyTrustDirKey), and each ends with the key the winner put in place: the root holds that one
+// key, the one directory, and nothing a run left behind. Each round is a fresh root, so each
+// round races for the key again.
 func TestPrepareAirlockRunsOfOneTrustShareOneFinishedDirectory(t *testing.T) {
-	runtimeDir := t.TempDir()
-	environ := []string{"XDG_RUNTIME_DIR=" + runtimeDir}
+	const rounds, runs = 8, 12
 	expires := time.Now().Add(time.Hour)
-	const runs = 12
-	var wg sync.WaitGroup
-	answers := make([]airlockFiles, runs)
-	complaints := make(chan string, runs)
-	for i := range runs {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			files, err := prepareAirlock(environ, testRelease("AIRLOCK_ME", nil, nil), "grant-one", &expires)
-			if err != nil {
-				complaints <- fmt.Sprintf("run %d: %v", i, err)
-				return
-			}
-			answers[i] = files
-			for _, path := range []string{files.bundle, files.wgetrc, filepath.Join(filepath.Dir(files.bundle), "expires")} {
-				if _, err := os.Stat(path); err != nil {
-					complaints <- fmt.Sprintf("run %d answered a directory without %s: %v", i, filepath.Base(path), err)
+	for round := range rounds {
+		runtimeDir := t.TempDir()
+		environ := []string{"XDG_RUNTIME_DIR=" + runtimeDir}
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		answers := make([]airlockFiles, runs)
+		complaints := make(chan string, 2*runs)
+		for i := range runs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				files, err := prepareAirlock(environ, testRelease("AIRLOCK_ME", nil, nil), "grant-one", &expires)
+				if err != nil {
+					complaints <- fmt.Sprintf("round %d run %d: %v", round, i, err)
+					return
 				}
-			}
-			if data, err := os.ReadFile(files.bundle); err != nil || !strings.Contains(string(data), testAirlockCertificate) {
-				complaints <- fmt.Sprintf("run %d answered a bundle without the proxy's certificate (read error %v)", i, err)
-			}
-		}()
-	}
-	wg.Wait()
-	close(complaints)
-	for complaint := range complaints {
-		t.Error(complaint)
-	}
-	for i, files := range answers {
-		if files.bundle != answers[0].bundle || files.wgetrc != answers[0].wgetrc {
-			t.Errorf("run %d answered %q and %q, want the one directory %q", i, files.bundle, files.wgetrc, filepath.Dir(answers[0].bundle))
+				answers[i] = files
+				for _, path := range []string{files.bundle, files.wgetrc, filepath.Join(filepath.Dir(files.bundle), "expires")} {
+					if _, err := os.Stat(path); err != nil {
+						complaints <- fmt.Sprintf("round %d run %d answered a directory without %s: %v", round, i, filepath.Base(path), err)
+					}
+				}
+				if data, err := os.ReadFile(files.bundle); err != nil || !strings.Contains(string(data), testAirlockCertificate) {
+					complaints <- fmt.Sprintf("round %d run %d answered a bundle without the proxy's certificate (read error %v)", round, i, err)
+				}
+			}()
 		}
-	}
-	entries, err := os.ReadDir(filepath.Join(runtimeDir, "agent-secrets", "airlock"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
+		close(start)
+		wg.Wait()
+		close(complaints)
+		for complaint := range complaints {
+			t.Error(complaint)
+		}
+		for i, files := range answers {
+			if files.bundle != answers[0].bundle || files.wgetrc != answers[0].wgetrc {
+				t.Errorf("round %d run %d answered %q and %q, want the one directory %q", round, i, files.bundle, files.wgetrc, filepath.Dir(answers[0].bundle))
+			}
+		}
+		entries, err := os.ReadDir(filepath.Join(runtimeDir, "agent-secrets", "airlock"))
+		if err != nil {
+			t.Fatal(err)
+		}
 		names := make([]string, len(entries))
 		for i, entry := range entries {
 			names[i] = entry.Name()
 		}
-		t.Errorf("the airlock root holds %v, want the one directory of the one trust", names)
+		want := []string{proxyTrustKeyFile, filepath.Base(filepath.Dir(answers[0].bundle))}
+		if !slices.Equal(names, want) {
+			t.Errorf("round %d: the airlock root holds %v, want the one key and the one directory of the one trust %v", round, names, want)
+		}
 	}
 }
 
@@ -294,7 +305,7 @@ func TestTidyAirlockDirsSweepsAnEndedGrantByItsName(t *testing.T) {
 	root := t.TempDir()
 	leave := func(grant, trust, expires string) string {
 		t.Helper()
-		dir := filepath.Join(root, airlockDirName(grant, []byte(trust), nil))
+		dir := filepath.Join(root, proxyTrustDirName([]byte("a key"), grant, []byte(trust), nil))
 		if err := os.Mkdir(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -323,17 +334,17 @@ func TestTidyAirlockDirsSweepsAnEndedGrantByItsName(t *testing.T) {
 	}
 }
 
-// TestAirlockDirGrantReadsTheNameAirlockDirNameGives: the grant id comes back from the directory
-// name whatever it holds, a dot among it, and a name of another form names no grant.
-func TestAirlockDirGrantReadsTheNameAirlockDirNameGives(t *testing.T) {
+// TestProxyTrustDirGrantReadsTheNameProxyTrustDirNameGives: the grant id comes back from the
+// directory name whatever it holds, a dot among it, and a name of another form names no grant.
+func TestProxyTrustDirGrantReadsTheNameProxyTrustDirNameGives(t *testing.T) {
 	for _, grant := range []string{"grant-one", "grant.with.dots", "0193f6a2-7d1e-7c3b-9a4f-2b1c0d9e8f7a"} {
-		if got, ok := airlockDirGrant(airlockDirName(grant, []byte("a bundle"), []byte("a wgetrc"))); !ok || got != grant {
-			t.Errorf("airlockDirGrant(airlockDirName(%q)) = %q, %v; want %q, true", grant, got, ok, grant)
+		if got, ok := proxyTrustDirGrant(proxyTrustDirName([]byte("a key"), grant, []byte("a bundle"), []byte("a wgetrc"))); !ok || got != grant {
+			t.Errorf("proxyTrustDirGrant(proxyTrustDirName(%q)) = %q, %v; want %q, true", grant, got, ok, grant)
 		}
 	}
 	for _, name := range []string{"grant-one", "grant-one.0123", "grant-one.0123456789abcdeg", ".0123456789abcdef", airlockBuildPrefix + "123"} {
-		if got, ok := airlockDirGrant(name); ok {
-			t.Errorf("airlockDirGrant(%q) = %q, true; want no grant", name, got)
+		if got, ok := proxyTrustDirGrant(name); ok {
+			t.Errorf("proxyTrustDirGrant(%q) = %q, true; want no grant", name, got)
 		}
 	}
 }

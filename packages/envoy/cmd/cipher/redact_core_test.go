@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -160,11 +161,12 @@ func inheritedWgetrc(t *testing.T) (string, []string) {
 
 // TestAnAirlockDirectoryThatCannotBePutInPlaceNamesItsPathButNotWGETRCs: every path the airlock
 // prints is its root - XDG_RUNTIME_DIR, else TMPDIR, else the system's temporary directory - and
-// names this CLI made below it, none of which a person sets to a secret's file, so when a grant's
-// directory cannot take its final name the refusal names that path and the system's reason. The
-// WGETRC the command inherits names a file that can hold http_password, so neither its path nor
-// what it holds prints. With nothing in the way the root takes the grant's files, and the wgetrc
-// there carries the inherited lines: the control, which shows the run read that WGETRC.
+// names this CLI made below it, the grant's id and a keyed hash of the trust, none of which a
+// person sets to a secret's file or can test a guess against, so when a grant's directory cannot
+// take its final name the refusal names that path and the system's reason. The WGETRC the command
+// inherits names a file that can hold http_password, so neither its path nor what it holds prints.
+// With nothing in the way the root takes the grant's files, and the wgetrc there carries the
+// inherited lines: the control, which shows the run read that WGETRC.
 func TestAnAirlockDirectoryThatCannotBePutInPlaceNamesItsPathButNotWGETRCs(t *testing.T) {
 	wgetrc, secrets := inheritedWgetrc(t)
 	base := filepath.Join(t.TempDir(), "runtime")
@@ -173,14 +175,17 @@ func TestAnAirlockDirectoryThatCannotBePutInPlaceNamesItsPathButNotWGETRCs(t *te
 		t.Fatal(err)
 	}
 	environ := []string{"XDG_RUNTIME_DIR=" + base, wgetrc}
-	// The grant's directory is named for what its files hold (airlockDirName), and the root holds
-	// no part of that, so a run of the same command under another root shows the name.
-	scratch := t.TempDir()
-	learned, err := prepareAirlock([]string{"XDG_RUNTIME_DIR=" + scratch, wgetrc}, testRelease("AIRLOCK_ME", nil, nil), "grant-one", nil)
+	// The grant's directory is named with a key kept in the root and for what its files hold
+	// (proxyTrustDirName), so a first run under this root shows the name; the key stays for the
+	// next run, so the same command takes the same name again.
+	learned, err := prepareAirlock(environ, testRelease("AIRLOCK_ME", nil, nil), "grant-one", nil)
 	if err != nil {
-		t.Fatalf("prepareAirlock under another root: %v", err)
+		t.Fatalf("prepareAirlock to learn the name: %v", err)
 	}
 	name := filepath.Base(filepath.Dir(learned.bundle))
+	if err := os.RemoveAll(filepath.Join(root, name)); err != nil {
+		t.Fatal(err)
+	}
 	// A file where the grant's directory goes: the rename of a directory onto it is refused.
 	if err := os.WriteFile(filepath.Join(root, name), nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -189,7 +194,10 @@ func TestAnAirlockDirectoryThatCannotBePutInPlaceNamesItsPathButNotWGETRCs(t *te
 	if err == nil {
 		t.Fatal("prepareAirlock put its directory in place over a file")
 	}
-	wantNamedNotPrinted(t, "the refusal", err.Error(), []string{"put the airlock directory in place", filepath.Join(root, name) + ": not a directory"}, secrets...)
+	// Nor does it hold the digits a plain hash of the trust gives, against which a guess of the
+	// WGETRC's password could be tested (proxyTrustDirName is keyed).
+	plain := unkeyedTrustDigest(environ, testAirlockCertificate)
+	wantNamedNotPrinted(t, "the refusal", err.Error(), []string{"put the airlock directory in place", filepath.Join(root, name) + ": not a directory"}, append(slices.Clone(secrets), plain)...)
 
 	t.Run("control: nothing in the way", func(t *testing.T) {
 		if err := os.Remove(filepath.Join(root, name)); err != nil {
