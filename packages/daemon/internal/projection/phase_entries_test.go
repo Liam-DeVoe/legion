@@ -304,7 +304,7 @@ func TestARootCarriesItsArchitectHandshakeOfThisRunInEveryPhase(t *testing.T) {
 // numbers, and so does accepting on an issue with no plan rows, which the architect works as
 // itself on its own row.
 func TestAPlaceTheOwnerWorksCarriesTheEntryOfItsStepsOwnRowAndNoGivenEntry(t *testing.T) {
-	const project, acceptance = "LEGION", claim.Role("acceptance")
+	const project = "LEGION"
 	earlier, later := projectedAt.Add(-2*time.Hour), projectedAt.Add(-time.Hour)
 	issue := func(key string, p phase.Phase, stepRole, placeRole claim.Role) record.Issue {
 		return record.Issue{Key: key, Project: project, Tree: "LEGION-120", Phase: p, Generation: 1, Status: "in_progress",
@@ -327,7 +327,7 @@ func TestAPlaceTheOwnerWorksCarriesTheEntryOfItsStepsOwnRowAndNoGivenEntry(t *te
 			// type implementation that is the owner's.
 			issue("LEGION-122", phase.Retro, "", claim.RoleArchitect),
 			// `acceptance:owner`.
-			issue("LEGION-123", phase.Accepting, acceptance, claim.RoleArchitect),
+			issue("LEGION-123", phase.Accepting, claim.RoleAcceptance, claim.RoleArchitect),
 			// Step 1, `implementer` with no key: another agent does it.
 			issue("LEGION-124", phase.Implementing, claim.RoleImplementer, claim.RoleImplementer),
 			// Accepting on an issue with no plan rows.
@@ -337,7 +337,7 @@ func TestAPlaceTheOwnerWorksCarriesTheEntryOfItsStepsOwnRowAndNoGivenEntry(t *te
 			"LEGION-121": {row("LEGION-121", claim.RoleArchitect, 2, earlier, 0), row("LEGION-121", claim.RoleImplementer, 1, later, 1)},
 			"LEGION-122": {row("LEGION-122", claim.RoleArchitect, 3, earlier, 0), row("LEGION-122", claim.RoleImplementer, 4, earlier, 1),
 				row("LEGION-122", claim.RoleImplementer, 5, later, 0)},
-			"LEGION-123": {row("LEGION-123", claim.RoleArchitect, 2, earlier, 0), row("LEGION-123", acceptance, 1, later, 3)},
+			"LEGION-123": {row("LEGION-123", claim.RoleArchitect, 2, earlier, 0), row("LEGION-123", claim.RoleAcceptance, 1, later, 3)},
 			"LEGION-124": {row("LEGION-124", claim.RoleArchitect, 2, earlier, 0), row("LEGION-124", claim.RoleImplementer, 3, later, 1)},
 			"LEGION-125": {row("LEGION-125", claim.RoleArchitect, 2, earlier, 0)},
 		},
