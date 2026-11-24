@@ -354,6 +354,9 @@ func dispatchFrameWithheld(data []byte, sessionID string, projects []string, sub
 	if err != nil {
 		return frameKeyWithheld(err), true
 	}
+	if event == nil {
+		return frameDrops(withheldDispatchProjectUnread), true
+	}
 	project, named := dispatchEventProject(event)
 	switch {
 	case project != "" && slices.Contains(projects, project):
