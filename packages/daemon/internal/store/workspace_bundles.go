@@ -41,13 +41,13 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 		return fmt.Errorf("save the workspace bundle of %s: %w", issue, err)
 	}
 	err = Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `insert into workspace_bundles (issue, release_id, source_pod_uid, bundle, size_bytes, at, head, tips, bookmarks)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		_, err := tx.Exec(ctx, `insert into workspace_bundles (issue, release_id, source_pod_uid, bundle, size_bytes, at, head, fix_head, tips, bookmarks)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 			on conflict (issue) do update set release_id = excluded.release_id, source_pod_uid = excluded.source_pod_uid,
 				bundle = excluded.bundle, size_bytes = excluded.size_bytes, at = excluded.at, head = excluded.head,
-				tips = excluded.tips, bookmarks = excluded.bookmarks,
+				fix_head = excluded.fix_head, tips = excluded.tips, bookmarks = excluded.bookmarks,
 				attempt_pod_uid = null, attempt_at = null, attempt_outcome = null`,
-			issue, release, b.PodUID, b.Bundle, b.Size(), b.At, b.Head, tips, bookmarks)
+			issue, release, b.PodUID, b.Bundle, b.Size(), b.At, b.Head, b.FixHead, tips, bookmarks)
 		return err
 	})
 	if err != nil {
@@ -134,8 +134,8 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, project, issu
 				attempt_outcome = case when `+saveSecond+` <= $3 then 'sent' else 'refused_older' end
 			where `+bundleOffered+`
 			returning attempt_outcome, case when attempt_outcome = 'sent' then bundle end,
-				at, head, tips, bookmarks, release_id, source_pod_uid`,
-			issue, podUID, podCreated, project).Scan(&outcome, &b.Bundle, &b.At, &b.Head, &tips, &bookmarks, &b.Release, &b.PodUID)
+				at, head, fix_head, tips, bookmarks, release_id, source_pod_uid`,
+			issue, podUID, podCreated, project).Scan(&outcome, &b.Bundle, &b.At, &b.Head, &b.FixHead, &tips, &bookmarks, &b.Release, &b.PodUID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}

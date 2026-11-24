@@ -14,15 +14,22 @@ const MaxWorkspaceBundleBytes = 40 << 20
 // holding every visible commit no remote branch holds, on any head, and the working copy's own
 // change, with the commits a new pod's workspace fetch already holds as its bases.
 //
-// Head is the commit the bundle's working copy sat on, Bookmarks maps each local bookmark that
-// points into the saved set to its commit, and Tips names the heads the bundle carries, so the
-// restore can make each visible again: a bundle that only unbundles leaves every saved head out of
-// jj's view, since jj's visible heads live in .jj/repo, which dies with the pod.
+// Head is the commit the bundle's working copy sat on, FixHead the commit the fix's working copy
+// beside the workspace sat on, Bookmarks maps each local bookmark that points into the saved set to
+// its commit, and Tips names the heads the bundle carries, so the restore can make each visible
+// again: a bundle that only unbundles leaves every saved head out of jj's view, since jj's visible
+// heads live in .jj/repo, which dies with the pod.
 type WorkspaceBundle struct {
 	// Bundle is the git bundle's bytes.
 	Bundle []byte
 	// Head is the working-copy commit id the bundle was taken at.
 	Head string
+	// FixHead is the working-copy commit id of the fix's working copy beside the workspace
+	// (workspace.FixDir) when the bundle was taken, "" where no fix's working copy was there. The
+	// restore makes that working copy again there, so a fix that ran at the release goes on from
+	// its own last working copy, its commits and the edits its agent had not committed included.
+	// The commit is in the bundle, or in the remote the new pod's workspace fetches.
+	FixHead string
 	// Tips are the commit ids of the heads the bundle carries.
 	Tips []string
 	// Bookmarks maps a local bookmark name to the commit id it pointed at.

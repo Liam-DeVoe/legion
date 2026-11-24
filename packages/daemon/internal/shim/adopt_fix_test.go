@@ -228,8 +228,10 @@ func TestAnAdoptionMakesTheFixCopyAtItsHead(t *testing.T) {
 	}
 }
 
-// A later fix of the same task finds the fix's working copy there and moves it onto the head it
-// starts from, a fresh commit authored by the role, and adds no second workspace.
+// A later fix of the same task finds the fix's working copy there, holding nothing over the head
+// the fix starts from, and moves it onto that head, a fresh commit authored by the role, and adds no
+// second workspace. The one read before the move is what tells it from the running fix's own copy
+// (TestAnAdoptionOfTheRunningFixKeepsItsCopy).
 func TestASecondFixMovesTheCopy(t *testing.T) {
 	r := newCopyRig(t)
 	if got := r.adopt("first", shimwire.AdoptWorkingCopy{FixFrom: r.head}); !got.OK || got.FixDir != r.fixDir {
@@ -249,7 +251,7 @@ func TestASecondFixMovesTheCopy(t *testing.T) {
 		t.Errorf("the fix's working copy is %q, want an undescribed commit authored by %s", author, adoptingUser)
 	}
 	ran := r.commands()[before:]
-	if want := []string{"workspace update-stale", "new", "metaedit"}; !slices.Equal(verbs(ran), want) {
+	if want := []string{"workspace update-stale", "log", "new", "metaedit"}; !slices.Equal(verbs(ran), want) {
 		t.Errorf("the second fix's adoption ran jj\n%s\nwant %v in the fix's working copy and no second workspace add", strings.Join(ran, "\n"), want)
 	}
 	for _, command := range ran {

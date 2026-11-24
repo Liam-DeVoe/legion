@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,9 +19,9 @@ import (
 )
 
 // restoreBudget bounds the pod's one restore: an unbundle of a pack of unpushed commits, one jj
-// import, a bookmark per saved bookmark and one jj edit. A restore that cannot finish in it is
-// one the roles start without, with a notice of what was lost, rather than one the pod waits
-// longer for.
+// import, a bookmark per saved bookmark, one jj edit, and the fix's working copy where the save
+// names one. A restore that cannot finish in it is one the roles start without, with a notice of
+// what was lost, rather than one the pod waits longer for.
 const restoreBudget = 5 * time.Minute
 
 // restoreRefPrefix is where the restore's temporary branches live. A bundle that only unbundles
@@ -336,8 +337,11 @@ func restoreWorkspace(ctx context.Context, start procgroup.Starter, dir string, 
 	// through (internal/workspace): it is what names a stale git lock in a failure's report and
 	// what stops a child holding the pipe past the budget.
 	started := time.Now()
+	runIn := func(at string, stdin []byte, args ...string) (string, error) {
+		return workspace.RunCommand(ctx, start, restoreBudget, started, env, at, stdin, args)
+	}
 	run := func(stdin []byte, args ...string) (string, error) {
-		return workspace.RunCommand(ctx, start, restoreBudget, started, env, dir, stdin, args)
+		return runIn(dir, stdin, args...)
 	}
 	// The bundle's own prerequisites are the commits the new pod's workspace fetch was expected
 	// to hold; one that is gone — a branch force-pushed away since the release — is what git
@@ -365,6 +369,22 @@ func restoreWorkspace(ctx context.Context, start procgroup.Starter, dir string, 
 	if _, err := run(nil, "jj", "edit", "-R", dir, b.Head); err != nil {
 		return lost(err.Error())
 	}
+	// A fix ran beside the workspace when the work was saved: its working copy goes back where the
+	// shim makes it (workspace.FixDir), on its own last working copy, so the fix goes on from its
+	// commits and from the edits its agent had not committed. `jj workspace add` starts that copy on
+	// a fresh commit over the saved one, and `jj edit` puts it on the saved one itself, which drops
+	// the fresh commit as empty. Its name is the one the shim's adoption gives it.
+	fix := ""
+	if b.FixHead != "" {
+		fixDir := workspace.FixDir(dir)
+		if _, err := run(nil, "jj", "workspace", "add", "-R", dir, "--name", filepath.Base(fixDir), "-r", b.FixHead, fixDir); err != nil {
+			return lost(err.Error())
+		}
+		if _, err := runIn(fixDir, nil, "jj", "edit", "-R", fixDir, b.FixHead); err != nil {
+			return lost(err.Error())
+		}
+		fix = fmt.Sprintf(", the fix's working copy on %s", b.FixHead)
+	}
 	// The temporary branches go through jj, which keeps each head visible; deleting the git refs
 	// under it would have jj abandon the commits they made visible, taking the restored work with
 	// them. Whatever jj did not export is deleted after, so none is left in the repository.
@@ -376,8 +396,8 @@ func restoreWorkspace(ctx context.Context, start procgroup.Starter, dir string, 
 	if _, err := run(workspace.RefUpdates("delete", restoreRefHeadPrefix, b.Tips), "git", "--git-dir="+gitDir, "update-ref", "--stdin"); err != nil {
 		return lost(err.Error())
 	}
-	notice := fmt.Sprintf("the released workspace's saved work is restored: %d head(s), %d bookmark(s) and the working copy on %s, saved at %s",
-		len(b.Tips), len(b.Bookmarks)-len(skipped), b.Head, b.At.UTC().Format(time.RFC3339))
+	notice := fmt.Sprintf("the released workspace's saved work is restored: %d head(s), %d bookmark(s)%s and the working copy on %s, saved at %s",
+		len(b.Tips), len(b.Bookmarks)-len(skipped), fix, b.Head, b.At.UTC().Format(time.RFC3339))
 	if len(skipped) > 0 {
 		notice += fmt.Sprintf("; jj would not take %d bookmark name(s), which are not set: %s",
 			len(skipped), strings.Join(skipped, ", "))
