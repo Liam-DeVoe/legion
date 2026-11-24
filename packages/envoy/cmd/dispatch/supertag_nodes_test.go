@@ -73,11 +73,13 @@ const backfillVersion = 20261121060636
 // migration after them. Each version listed here that writes rows of graph_nodes (writesGraphNodes)
 // is a type migration such a store meets after its backfill, and
 // requireTheCensusAdmitsEachTypeMigrationAboveTheLimit judges it as it judges the type migrations
-// numbered above backfillVersion.
+// numbered above backfillVersion. A version a later release holds is listed here too, as
+// 20261110224508_post_corrections is, which legion-envoy-v34.22.0 first holds: a v34.11.x store
+// meets it after its backfill all the same.
 var unreleasedVersionsBelowTheBackfill = []int{
-	20261116015042, 20261116015056, 20261116094058, 20261116094059, 20261116094100, 20261116094101,
-	20261117002006, 20261117002045, 20261117093337, 20261118161237, 20261119020700, 20261119020800,
-	20261119020900, 20261119021000, 20261121034242,
+	20261110224508, 20261116015042, 20261116015056, 20261116094058, 20261116094059, 20261116094100,
+	20261116094101, 20261117002006, 20261117002045, 20261117093337, 20261118161237, 20261119020700,
+	20261119020800, 20261119020900, 20261119021000, 20261121034242,
 }
 
 // releasedThroughTheBackfill is how many migrations each v34.11.x release holds, all of them
