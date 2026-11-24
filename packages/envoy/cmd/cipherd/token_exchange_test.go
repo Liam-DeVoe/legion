@@ -775,6 +775,7 @@ func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) 
 // the broker mints. The same pod naming a project is refused, as under any entry naming none, and
 // a broker whose entry names a project and no person refuses to start, naming the rule.
 func TestTheBinaryExchangesAPersonlessAccountEntrysPodToken(t *testing.T) {
+	t.Parallel()
 	const (
 		personlessAccount = "system:serviceaccount:example-ns:example-public"
 		personlessSession = "example-public-session"
