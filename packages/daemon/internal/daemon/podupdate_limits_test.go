@@ -130,7 +130,7 @@ func (r *fleetRig) sweepUntilRounds(what string, want ...string) {
 
 // sweepUntilReplaced sweeps until the pod of issue has been replaced, as the single-issue rig's
 // awaitReplacement does: a sweep that reads a machine mid-decision leaves the replacement to the
-// next one (roundGroup's mask), so which sweep makes it is no part of what these tests pin. Its
+// next one (masked), so which sweep makes it is no part of what these tests pin. Its
 // first poll sweeps nothing either, for the reason sweepUntilRounds's does not sweep.
 func (r *fleetRig) sweepUntilReplaced(issue string) {
 	r.t.Helper()
@@ -151,7 +151,7 @@ func (r *fleetRig) sweepUntilReplaced(issue string) {
 
 // answer is every worker of issue answering its round, as the `legion` tool's ready_for_update
 // posts it. Each waits for its own machine to have handled what it is owed first, so the sweep
-// that follows reads the answer rather than a machine still deciding (roundGroup's mask).
+// that follows reads the answer rather than a machine still deciding (masked).
 func (r *fleetRig) answer(issue string) {
 	r.t.Helper()
 	for _, role := range r.rolesOf(issue) {

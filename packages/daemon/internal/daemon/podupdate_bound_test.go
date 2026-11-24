@@ -1030,7 +1030,7 @@ func TestPodUpdateRoundOpenAtTheDeployKeepsItsAnswerAndAsksOnlyTheUnanswered(t *
 // post is on a loaded pod; the decision changes nothing of the claim (holdInDecision). That sweep
 // still reads the tester's answer and asks it nothing: the answer is a fact about the claim, and
 // only the decision to replace the pod reads a deciding claim as not having answered
-// (roundGroup's mask), because that decision may delete a disk. The implementer has not answered
+// (masked), because that decision may delete a disk. The implementer has not answered
 // and is asked once, so the rig's sweeps do ask.
 func TestPodUpdateRoundOpenAtTheDeployAsksNoRoleThatAnsweredWhileItsMachineDecides(t *testing.T) {
 	t.Parallel()
@@ -1107,7 +1107,7 @@ func TestPodUpdateBoundLineIsNotWrittenWhenTheRuntimeFindsNoPodToReplace(t *test
 
 // Every role of the round has answered, and the round's bound has come by the sweep that replaces
 // the pod. Here the tester's machine is in a decision through that whole sweep (holdInDecision),
-// so the replacement's own decision reads the tester as not having answered (roundGroup's mask),
+// so the replacement's own decision reads the tester as not having answered (masked),
 // and the bound steps over that reading as it steps over every wait for an answer. What the lines
 // report is what each role said, not that reading: the tester answered, so no line of a bounded
 // end is written, and the line of the round's end says that no bound made it.

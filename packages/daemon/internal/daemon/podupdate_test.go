@@ -494,7 +494,7 @@ func (r *podUpdateRig) runAsk(row record.OutboxRow) {
 // unless a test calls for one, so a condition the sweep alone decides never arrives while a
 // wait merely polls for it. One tick is not enough on its own, as it is not for the replacement
 // (awaitReplacement): the sweep reads the claims live and through the deciding mask
-// (roundGroup), so a claim whose machine is still settling a decision at that read counts as not
+// (masked), so a claim whose machine is still settling a decision at that read counts as not
 // having answered, and what the round would have decided is left to the next sweep. Nothing is
 // given up by the sweeps this makes: the rig's clock is held, so no round's bound is crossed by
 // sweeping again, and a claim the sweep has asked is not asked again (supervision.askRound).
@@ -536,7 +536,7 @@ func (r *podUpdateRig) awaitSwept(role claim.Role, what string, want func(superv
 // worker answers from inside the turn the round's ask started, after Oh My Pi acknowledged that
 // ask, so the answer waits for the machine to have handled each acknowledgement it is owed
 // (supervise.PromptAcked). Answered while one is still in flight, the machine decides that
-// acknowledgement after the answer, and a sweep that reads it then masks the answer (roundGroup)
+// acknowledgement after the answer, and a sweep that reads it then masks the answer (masked)
 // and asks the runtime nothing, which CI run 41563218953 is the reproduction of.
 //
 // After the answer, signal writes the activity report that the answering turn's end sends in
@@ -706,7 +706,7 @@ func (r *podUpdateRig) replacements() []fake.Call {
 
 // awaitReplacement sweeps until the pod has been replaced n times, and is how every assertion
 // that a replacement happened reads the count. One tick is not enough on its own:
-// completePodUpdate reads the group live and through the deciding mask (roundGroup), so a claim
+// completePodUpdate reads the group live and through the deciding mask (masked), so a claim
 // whose machine is still settling a decision at that read counts as not having answered, the
 // replacement is deferred, and the round is simply decided by the next sweep instead
 // (podupdate.go's completePodUpdate). Nothing is lost by that deferral and the round stays open,
@@ -1476,7 +1476,7 @@ func TestPodUpdateKeepsARoundWhoseLiveClaimStopsRecordingItsLivePod(t *testing.T
 // suspendByOperator is the operator suspending a claim, settled: the process goes with the
 // suspension (letGo clears the locator), and the machine is deciding nothing by the time it
 // returns, since a sweep's live read counts a claim whose machine is deciding as one that has
-// not answered (roundGroup's mask) and would decide something else entirely.
+// not answered (masked) and would decide something else entirely.
 func (r *podUpdateRig) suspendByOperator(role claim.Role) {
 	r.t.Helper()
 	r.suspendBy(role, supervise.SuspendedByOperator)
@@ -2306,7 +2306,7 @@ func TestPodUpdateAbortsTheReplacementForAClaimTheGroupNeverHeld(t *testing.T) {
 
 	// The call below is the one sweep the test makes, over a group it built by hand, so nothing
 	// may still be deciding when it reads the claims: a machine mid-decision reads as not having
-	// answered (roundGroup's mask), and the sweep would then decide nothing at all rather than
+	// answered (masked), and the sweep would then decide nothing at all rather than
 	// refuse the replacement — under the race detector, 4 runs in 30 on the base this change sits
 	// on.
 	rig.settleAll()
