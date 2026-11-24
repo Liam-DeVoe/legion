@@ -25,6 +25,14 @@
 // SessionRegistry.StoredByWriter, whose callers decide whether the edge listener shows a session,
 // sends to it or names it as a role's holder (cmd/listener's project_scope.go). The read of a key's
 // newest message they all make (newestMessage) is GetLatest's marker read too.
+//
+// One delete is decided from a copy and not from the leader: the collection of chunks no record
+// names (internal/kvchunk, store's collectInterestChunks and session's collectChunks). No read of
+// one key proves that no manifest of the bucket names a chunk, so the cache decides, and only for a
+// chunk its copy has held for kvchunk.Grace (10 minutes) while no record named it: that is safe
+// only while the copy is less than the grace behind the bucket. The collectors judge nothing while
+// kvwatch.Watcher.Following is false, which proves that a full read of the bucket completed since
+// the copy last stopped following, not how far behind the live watch is now.
 
 package bus
 

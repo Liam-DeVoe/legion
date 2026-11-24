@@ -135,6 +135,10 @@ func (s *KnownSessions) purgeChunkMarkers(ctx context.Context) (int, error) {
 // nothing while the store's bucket is not open or its cache does not follow the bucket
 // (kvwatch.Watcher.Following), since a copy behind the bucket could lack the manifest that names
 // a chunk. Each delete waits no longer than ctx.
+// The cache, not the bucket stream's leader, decides these deletes, the one exception to the rule
+// that a read deciding a delete is the leader's (internal/bus/kv_leader_read.go): it is safe only
+// while the copy is less than kvchunk.Grace behind the bucket, and Following proves only that a
+// full read completed since the copy last stopped following, not the live watch's lag.
 func (s *KnownSessions) collectChunks(ctx context.Context) (int, error) {
 	watcher := s.watch()
 	if watcher == nil || !watcher.Following() {
