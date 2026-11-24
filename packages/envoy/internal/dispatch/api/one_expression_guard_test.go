@@ -38,7 +38,7 @@ package api
 // nobody. It is a file of its own under `//go:build !race` now, so the text-check job runs it
 // and the line below is the declaration that holds that job's filter to what it reads.
 //ci:reads packages/envoy/**/*.go !**/*_test.go internal/dispatch/api/module_source_test.go:76 walks packages/envoy (infra, testdata and all) and :83 parses every .go file it finds but the test files (:80), for the tests that ask it for the module's sources: lock_level_test.go:91, event_insert_guard_test.go:46, review_order_guard_test.go:49, review_write_guard_test.go:53, TestOneExpressionDecidesWhoWaitsInOneSpelling, issue_route_writer_guard_test.go:107; issue_route_writer_guard_test.go:126 also walks packages/envoy and reads every non-test file of it as text
-//ci:reads packages/envoy/**/*.sql TestOneExpressionDecidesWhoWaitsInOneSpelling walks packages/envoy and reads every .sql file it finds, its comments blanked, for a copy of the rule
+//ci:reads packages/envoy/**/*.sql sqlRuleCopies, which TestOneExpressionDecidesWhoWaitsInOneSpelling calls, walks packages/envoy and reads every .sql file it finds, its comments blanked, for a copy of the rule
 
 import (
 	"fmt"
@@ -184,6 +184,39 @@ func goRuleCopies(text string) int {
 	return len(ruleNeedle.FindAllStringIndex(text, -1))
 }
 
+// sqlRuleCopies is each .sql file of the module that spells the rule, read with its comments
+// blanked (sqlCode), as its path with the number of copies in it. A walk that read no migration
+// would answer none for a reason other than there being none, so it fails the test instead.
+func sqlRuleCopies(t *testing.T) []string {
+	t.Helper()
+	copies := []string{}
+	read, migrations := 0, 0
+	migrationDir := filepath.Join(moduleRoot, "internal", "dispatch", "store", "migrations")
+	if err := filepath.WalkDir(moduleRoot, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".sql") {
+			return err
+		}
+		text, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		read++
+		if filepath.Dir(path) == migrationDir {
+			migrations++
+		}
+		if spelled := len(ruleNeedle.FindAllStringIndex(sqlCode(string(text)), -1)); spelled > 0 {
+			copies = append(copies, fmt.Sprintf("%s (%d)", filepath.ToSlash(path), spelled))
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk %s for .sql files: %v", moduleRoot, err)
+	}
+	if migrations == 0 {
+		t.Fatalf("read %d .sql files and none of %s: the migrations this check holds were not seen", read, migrationDir)
+	}
+	return copies
+}
+
 // TestOneExpressionDecidesWhoWaitsInOneSpelling holds the six reads that name a person to the
 // one constant: each of the six names it, and the SQL it holds - the expression and the three
 // joins it reads over - is spelled once in the module's Go and never in its .sql files. The
@@ -310,32 +343,7 @@ func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 	if t.Failed() {
 		return
 	}
-	sqlCopies := []string{}
-	read, migrations := 0, 0
-	migrationDir := filepath.Join(moduleRoot, "internal", "dispatch", "store", "migrations")
-	if err := filepath.WalkDir(moduleRoot, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".sql") {
-			return err
-		}
-		text, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		read++
-		if filepath.Dir(path) == migrationDir {
-			migrations++
-		}
-		if spelled := len(ruleNeedle.FindAllStringIndex(sqlCode(string(text)), -1)); spelled > 0 {
-			sqlCopies = append(sqlCopies, fmt.Sprintf("%s (%d)", filepath.ToSlash(path), spelled))
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("walk %s for .sql files: %v", moduleRoot, err)
-	}
-	if migrations == 0 {
-		t.Fatalf("read %d .sql files and none of %s: the migrations this check holds were not seen", read, migrationDir)
-	}
-	if len(sqlCopies) > 0 {
+	if sqlCopies := sqlRuleCopies(t); len(sqlCopies) > 0 {
 		t.Fatalf("the rule is spelled in the SQL of %v, want it in no .sql file: %s names it once, in ask_rows.go",
 			sqlCopies, askedOfPersonExpressionName)
 	}
