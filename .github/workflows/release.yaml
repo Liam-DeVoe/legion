@@ -210,12 +210,20 @@ jobs:
           PI_ENVOY_VERSION: ${{ steps.plugin_versions.outputs.pi_envoy_version }}
           LEGION_CONTRACT_ORDER: ${{ steps.contract_order.outputs.stamp }}
         run: .github/scripts/release-build-legion.sh
+      # `legion version` names the release, the commit and the linked plugin pair. Then `legion
+      # version --contracts` is held line by line to the stamp the build linked: `contract` L plus
+      # the stamp's count of ids, L the greatest number of
+      # packages/contracts/fixtures/daemon-api/released-contracts.json; `order stamped`, for the
+      # stamp `v1:` of no entry too; and each id of the stamp in its order, the k-th numbered L + k
+      # and followed by its slug. An archive linked with no stamp prints `order id`, so it fails
+      # here even where its ids fall in the stamp's order.
       - name: Smoke test
         if: steps.version.outputs.skip != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
           PI_LEGION_VERSION: ${{ steps.plugin_versions.outputs.pi_legion_version }}
           PI_ENVOY_VERSION: ${{ steps.plugin_versions.outputs.pi_envoy_version }}
+          LEGION_CONTRACT_ORDER: ${{ steps.contract_order.outputs.stamp }}
         run: |
           version=$(out/legion-linux-amd64/legion version)
           echo "$version"
@@ -223,6 +231,11 @@ jobs:
           test "$lines" -eq 2
           test "$(printf '%s\n' "$version" | sed -n '1p')" = "legion v$VERSION commit $GITHUB_SHA"
           test "$(printf '%s\n' "$version" | sed -n '2p')" = "plugins @sjawhar/pi-legion $PI_LEGION_VERSION @sjawhar/pi-envoy $PI_ENVOY_VERSION"
+          contracts=$(out/legion-linux-amd64/legion version --contracts)
+          echo "$contracts"
+          last=$(jq -e max packages/contracts/fixtures/daemon-api/released-contracts.json)
+          want=$(printf '%s\n' "$LEGION_CONTRACT_ORDER" | awk -F, -v l="$last" 'sub(/^v1:/, "") { print "contract", l + NF; print "order stamped"; for (k = 1; k <= NF; k++) print $k, l + k }')
+          test "$(printf '%s\n' "$contracts" | awk 'NR > 2 && NF == 3 { print $1, $2; next } 1')" = "$want"
       # The archives, exactly as built and smoke-tested, for publish.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: steps.version.outputs.skip != 'true'

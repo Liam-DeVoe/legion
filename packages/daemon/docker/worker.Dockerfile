@@ -1674,7 +1674,13 @@ ARG GH_STACK_TOOL
 # prints `gitconfig: <key>=<value>` for each, as `git config --system --get` reads it, and fails on
 # any other value, a missing key included.
 # Then the `legion` on the image PATH is this one, it runs on this base, and it names the
-# commit the workflow built. git, jj and gh each resolve to Legion's own wrapper in
+# commit the workflow built. Its `legion version --contracts` is held line by line to
+# LEGION_CONTRACT_ORDER, the stamp the go stage linked: `contract` L plus the stamp's count of
+# ids, L the greatest number of packages/contracts/fixtures/daemon-api/released-contracts.json
+# (bind-mounted from the build context); `order stamped`, for the stamp `v1:` of no entry too;
+# and each id of the stamp in its order, the k-th numbered L + k and followed by its slug. A
+# `legion` linked with no stamp prints `order id`, so it fails here even where its ids fall in
+# the stamp's order. git, jj and gh each resolve to Legion's own wrapper in
 # /opt/legion/bin and the step refuses any other path, and behind each one the real binary runs
 # and prints its version: /usr/bin/git, /usr/local/bin/jj and /usr/local/bin/gh. The real gh runs
 # `gh stack` from a data directory laid out as the shim lays a role's out (a link to
@@ -1749,6 +1755,7 @@ ARG GH_STACK_TOOL
 # (PI_ENVOY_VERSION, PI_LEGION_VERSION): an image whose plugin roots name any other version, or no
 # version, fails here.
 ARG LEGION_REVISION
+ARG LEGION_CONTRACT_ORDER
 ARG PI_LEGION_VERSION
 ARG PI_ENVOY_VERSION
 # Each client plugin's build-commit stamp: the commit this image is built from, written beside the
@@ -1769,6 +1776,7 @@ RUN if printf '%s\n' "$LEGION_REVISION" | grep -Eqx '[0-9a-f]{40}'; then \
 USER 1000:1000
 RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/pi-envoy.json \
     --mount=type=bind,source=packages/pi-legion/package.json,target=/tmp/source/pi-legion.json \
+    --mount=type=bind,source=packages/contracts/fixtures/daemon-api/released-contracts.json,target=/tmp/source/released-contracts.json \
     set -eu; \
     for plugin in pi-envoy pi-legion; do \
       case "$plugin" in pi-envoy) want="${PI_ENVOY_VERSION:-}" ;; *) want="${PI_LEGION_VERSION:-}" ;; esac; \
@@ -1828,6 +1836,10 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
       expected="$(printf '%s\nplugins @sjawhar/pi-legion %s @sjawhar/pi-envoy %s' "$expected" "$PI_LEGION_VERSION" "$PI_ENVOY_VERSION")"; \
     fi; \
     test "$version" = "$expected"; \
+    contracts="$(legion version --contracts)"; echo "$contracts"; \
+    last="$(jq -e max /tmp/source/released-contracts.json)"; \
+    expected="$(printf '%s\n' "${LEGION_CONTRACT_ORDER:-}" | awk -F, -v l="$last" 'sub(/^v1:/, "") { print "contract", l + NF; print "order stamped"; for (k = 1; k <= NF; k++) print $k, l + k }')"; \
+    test "$(printf '%s\n' "$contracts" | awk 'NR > 2 && NF == 3 { print $1, $2; next } 1')" = "$expected"; \
     legion probe-image --plugin-root /opt/legion/pi-legion --envoy-plugin-root /opt/legion/pi-envoy --claude-root /opt/legion/claude-envoy --claude-code-pin /opt/legion/claude-code --skip-agent-models; \
     agent-secrets --help >/dev/null; \
     rm -rf /home/legion/.omp/profiles/legion/logs /home/legion/.config/go
