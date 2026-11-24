@@ -41,6 +41,38 @@ const (
 // a check is for.
 func (e *Engine) checkRole() claim.Role { return e.cfg.ProductionCheckRole }
 
+// checkClaim is the claim of the agent that works check, the one reader of a check's claim, and
+// each row of the check that names a claim names this one: the start of each look (startLook), the
+// suspend that follows a pending look (endLookPending) and the issue_close of its close
+// (closeCheck). For a check of a task (check.Task set) it is the claim of the check's agent
+// (record.CheckAgent) over the plan of the check's run (check.Generation): the task's last agent
+// of the check's role, else a fresh agent of the task. The plan alone decides it, so the claim a
+// leave keeps for a check it is about to open is the claim that check's rows will name. For a check
+// of an issue with no plan rows, or one a release before checks carried their task wrote, it is the
+// claim of the worker on the role's step (record.WorkerClaim), the role's own claim there.
+func (e *Engine) checkClaim(ctx context.Context, tx pgx.Tx, check record.ProductionCheck) (claim.Token, error) {
+	project, err := claim.ProjectToken(check.Project)
+	if err != nil {
+		return "", fmt.Errorf("the claim of %s's production check: %w", check.Issue, err)
+	}
+	if check.Task == "" {
+		rows, err := e.store.Phases(ctx, tx, check.Issue)
+		if err != nil {
+			return "", err
+		}
+		return record.WorkerClaim(project, check.Issue, check.Role, rows)
+	}
+	stored, err := e.store.Plan(ctx, tx, check.Issue, check.Generation)
+	if err != nil {
+		return "", err
+	}
+	var steps []record.PlanStep
+	if stored != nil {
+		steps = stored.Steps[check.Task]
+	}
+	return claim.AgentToken(project, check.Issue, record.CheckAgent(steps, check.Task, check.Role))
+}
+
 // openCheck opens issue's production check on its merged pull request pr and starts its first
 // look, woken by the merge: the record (record.ProductionCheck, bound at the project's
 // ProductionCheckBound from now, carrying the role that works it and the task whose merge it
@@ -123,10 +155,11 @@ func (e *Engine) openCheck(ctx context.Context, tx pgx.Tx, issue record.Issue, p
 // bound's look: the record counts the look open from now with that wake and no wake standing —
 // the row this look starts from is spent, and only a pending report names the next one — the
 // check's role (record.ProductionCheck.Role, the role the check opened with, never the setting as
-// it stands now) is started on the check task — a start with no phase, fenced on the check and its
-// look (record.SuperviseRequest.CheckLook and CheckOpenedAt) rather than on the generation, and
-// stamped with the generation the issue holds as the delivery's run — and a check_look row due at
-// the look bound, naming the check and the look, ends the look should nobody report it.
+// it stands now) is started on the check task, on the claim of the check's agent (checkClaim) — a
+// start with no phase, fenced on the check and its look (record.SuperviseRequest.CheckLook and
+// CheckOpenedAt) rather than on the generation, and stamped with the generation the issue holds as
+// the delivery's run — and a check_look row due at the look bound, naming the check and the look,
+// ends the look should nobody report it.
 func (e *Engine) startLook(ctx context.Context, tx pgx.Tx, issue record.Issue, check *record.ProductionCheck, cause, detail string, last bool) error {
 	now := e.now()
 	check.Looks++
@@ -136,7 +169,11 @@ func (e *Engine) startLook(ctx context.Context, tx pgx.Tx, issue record.Issue, c
 	if err := e.store.PutProductionCheck(ctx, tx, *check); err != nil {
 		return err
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: check.Role,
+	token, err := e.checkClaim(ctx, tx, *check)
+	if err != nil {
+		return err
+	}
+	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: check.Role, Claim: token,
 		Generation: issue.Generation, CheckLook: check.Looks, CheckOpenedAt: check.OpenedAt, Task: checkTask(issue, *check, cause, detail, last)}); err != nil {
 		return err
 	}
@@ -338,7 +375,12 @@ func (e *Engine) endLookPending(ctx context.Context, tx pgx.Tx, check *record.Pr
 			"look", check.Looks, "phase", issue.Phase)
 		return nil
 	}
-	if err := e.suspend(ctx, tx, issue, check.Role, fmt.Sprintf("%s's production check waits for its next look", issue.Key)); err != nil {
+	token, err := e.checkClaim(ctx, tx, *check)
+	if err != nil {
+		return err
+	}
+	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "suspend", Tree: issue.Tree, Role: check.Role, Claim: token,
+		Generation: issue.Generation, Reason: fmt.Sprintf("%s's production check waits for its next look", issue.Key)}); err != nil {
 		return err
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.IssueSuspend{Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.Generation}); err != nil {
@@ -387,14 +429,15 @@ func (e *Engine) nameWake(ctx context.Context, tx pgx.Tx, check *record.Producti
 	return nil
 }
 
-// closeCheck closes the check with outcome (markCheckClosed) and ends the checking role's part in it:
-// its claim is closed (issue_close: retired, its session kept), and the issue's Sandbox is
-// suspended and deleted with the pod it ran in, whether the issue is a child whose tree runs on or
-// a root, or a child, of a lingering tree whose close would delete it anyway. A tree lingering past
-// its deadline waited for this check (lingerExpired): once no check of the tree is open its close
-// is re-armed with a LingerClose row due now, a duplicate of the waiting row's event, so applying
-// both is harmless. An issue back in the workflow — a root reopened inside its linger — retires
-// nobody and suspends nothing: the claims and the pod are the new run's.
+// closeCheck closes the check with outcome (markCheckClosed) and ends the checking agent's part in
+// it: its claim (checkClaim) is closed (issue_close: retired, its session kept), and the issue's
+// Sandbox is suspended and deleted with the pod it ran in, whether the issue is a child whose tree
+// runs on or a root, or a child, of a lingering tree whose close would delete it anyway. A tree
+// lingering past its deadline waited for this check (lingerExpired): once no check of the tree is
+// open its close is re-armed with a LingerClose row due now, a duplicate of the waiting row's
+// event, so applying both is harmless. An issue in the workflow — one whose other tasks go on, or
+// a root reopened inside its linger — retires nobody and suspends nothing: the claims and the pod
+// are the run's.
 func (e *Engine) closeCheck(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck, outcome record.CheckOutcome) error {
 	if err := e.markCheckClosed(ctx, tx, check, outcome); err != nil {
 		return err
@@ -404,11 +447,15 @@ func (e *Engine) closeCheck(ctx context.Context, tx pgx.Tx, check *record.Produc
 		return err
 	}
 	if record.InWorkflow(issue) {
-		e.logOnCommit(ctx, "workflow: production check closed while its issue runs again; its claims and pod are the run's", "issue", issue.Key,
+		e.logOnCommit(ctx, "workflow: production check closed while its issue is in the workflow; its claims and pod are the run's", "issue", issue.Key,
 			"mergeCommit", check.MergeSHA, "phase", issue.Phase)
 		return nil
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "issue_close", Tree: issue.Tree, Role: check.Role,
+	token, err := e.checkClaim(ctx, tx, *check)
+	if err != nil {
+		return err
+	}
+	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "issue_close", Tree: issue.Tree, Role: check.Role, Claim: token,
 		Generation: issue.Generation, Reason: fmt.Sprintf("%s's production check closed as %s", issue.Key, outcome)}); err != nil {
 		return err
 	}
