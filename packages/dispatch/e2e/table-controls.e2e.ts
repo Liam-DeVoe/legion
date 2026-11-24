@@ -78,6 +78,7 @@ import {
   control,
   controlRow,
   displayChoice,
+  displayTrigger,
   listOf,
   listTrigger,
   openFilterPanel,
@@ -2171,6 +2172,9 @@ test("the four parameters this change adds ride in the address and survive a rel
   );
 
   // The drawer's own state is its own: narrowing it over the project List writes no parameter.
+  // The narrowing takes in the drawer: its bar takes the narrow layout in every window 768 px
+  // wide or wider, so no chip stands in its line, Filter's badge stands for the one narrowing,
+  // and the open panel lists it at its top with its remove control (R8).
   await openIssuesTab(page, scene.project, "List");
   await expect(page.locator("[data-issue-row]").first()).toBeVisible();
   const before = page.url();
@@ -2178,7 +2182,14 @@ test("the four parameters this change adds ride in the address and survive a rel
   const peek = drawer(page);
   await expect(peek.locator("[data-inbox-row]").first()).toBeVisible();
   await pickInboxField(page, "type", /^Question,/, peek);
-  await expect(control(controlRow(peek), CONTROL.chip)).not.toHaveCount(0);
+  const peekBar = controlRow(peek);
+  await expect(control(peekBar, CONTROL.panelTrigger)).toHaveAccessibleName("Filter · 1");
+  await expect(control(peekBar, CONTROL.chip), "a chip stands in the drawer's line").toHaveCount(0);
+  await expect(
+    (await openFilterPanel(page, peek)).getByRole("button", { name: REMOVE_CHIP }),
+    "the drawer's Filter panel does not list its narrowing"
+  ).toHaveCount(1);
+  await closeControlPanel(peek);
   expect(page.url(), "the drawer wrote its narrowing into the page's address").toBe(before);
 });
 
@@ -5622,10 +5633,13 @@ test("Tab and Escape never leave a panel for the page behind it, in a dialog or 
   await expect(inboxTrigger, "Inbox: Tab from the panel's last control").toBeFocused();
 
   // In a dialog: the Inbox drawer's View menu, whose last control is its last section's choice.
+  // The drawer's bar takes the narrow layout in every window 768 px wide or wider, where its
+  // display menu is an item of More (R8): the menu opens from that item, and Tab from its last
+  // choice puts the focus back on it, in More, which stays open under the menu it opened.
   await openIssuesTab(page, "CORE", "List");
   await expect(page.locator("[data-issue-row]").first()).toBeVisible();
   await peekTrigger(page).click();
-  const viewTrigger = control(controlRow(drawer(page)), CONTROL.displayMenu);
+  const viewTrigger = await displayTrigger(page, "View", drawer(page));
   await viewTrigger.click();
   const viewMenu = page.getByRole("dialog", { name: "View" });
   await expect(viewMenu).toHaveCount(1);
