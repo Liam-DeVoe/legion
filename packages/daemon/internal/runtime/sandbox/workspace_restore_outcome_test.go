@@ -165,7 +165,7 @@ func TestABundleTakeWhoseOutcomeStaysUnknownSaysTheAttemptMayBeSpent(t *testing.
 	fired := fault.Cut(bundleTake, testdb.CutAfterCommitRefusing)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, take, err := faulted.TakeWorkspaceBundleForRestore(ctx, testProject, testTree, podUID, savedBundleRepo, created, ghrepo.Renames{}.Left)
+	_, take, err := faulted.TakeWorkspaceBundleForRestore(ctx, testProject, testTree, podUID, savedBundleRepo, created, ghrepo.Renames{}.Same)
 	testdb.Met(t, fired)
 	if !errors.Is(err, store.ErrCommitOutcomeUnknown) || !strings.Contains(err.Error(), "may be spent") {
 		t.Fatalf("the take whose outcome stayed unknown = %v (%v), want an error that is store.ErrCommitOutcomeUnknown and says the attempt may be spent", take, err)
@@ -178,7 +178,7 @@ func TestABundleTakeWhoseOutcomeStaysUnknownSaysTheAttemptMayBeSpent(t *testing.
 	if attempt == nil || *attempt != podUID {
 		t.Fatalf("the bundle's attempt names %v, want %s: the run committed", attempt, podUID)
 	}
-	if _, again, err := st.TakeWorkspaceBundleForRestore(context.Background(), testProject, testTree, podUID, savedBundleRepo, created, ghrepo.Renames{}.Left); err != nil || again != runtime.WorkspaceBundleNone {
+	if _, again, err := st.TakeWorkspaceBundleForRestore(context.Background(), testProject, testTree, podUID, savedBundleRepo, created, ghrepo.Renames{}.Same); err != nil || again != runtime.WorkspaceBundleNone {
 		t.Fatalf("a later take by the same pod = %v, %v; want nothing: the attempt is spent", again, err)
 	}
 	if _, held, err := st.WorkspaceBundleSize(context.Background(), testTree); err != nil || !held {
@@ -224,7 +224,7 @@ func TestADropWhoseOutcomeIsUnknownAnswersTheDropOnceTheStoreAnswers(t *testing.
 	met := releaseAfter(fault, fired)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	held, dropped, err := faulted.DropHeldWorkspaceBundle(ctx, testProject, testTree, "pod-of-the-kept-volume", savedBundleRepo, saved.At.Add(-time.Minute), ghrepo.Renames{}.Left)
+	held, dropped, err := faulted.DropHeldWorkspaceBundle(ctx, testProject, testTree, "pod-of-the-kept-volume", savedBundleRepo, saved.At.Add(-time.Minute), ghrepo.Renames{}.Same)
 	if err != nil || !dropped || held.Release != saved.Release {
 		t.Fatalf("the drop whose outcome was unknown = release %d, dropped %t, %v; want release %d dropped", held.Release, dropped, err, saved.Release)
 	}

@@ -476,7 +476,7 @@ func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T
 	}
 	// The next pod is built from the spec just read, so its workspace is a clone of that name.
 	saved, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, "legion", key, "pod-after-the-rename", spec.Repository.String(),
-		time.Now().UTC().Add(time.Minute), rig.w.repositories.left)
+		time.Now().UTC().Add(time.Minute), rig.w.repositories.same)
 	if err != nil || take != runtime.WorkspaceBundleSend || string(saved.Bundle) != "PACK" || saved.Head != "abc" || saved.PodUID != releasedPodUID {
 		t.Errorf("the next pod's restore took %v of a bundle with head %q off %q (%v), want the bundle the release saved off %s sent to it",
 			take, saved.Head, saved.PodUID, err, releasedPodUID)

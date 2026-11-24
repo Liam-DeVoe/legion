@@ -103,9 +103,11 @@ type DispatchIssue struct {
 	// daemon's prepareRecorded, from the record that preparation read), kept in memory with the
 	// fact and never stored. The record's correction is written only while the record still holds
 	// it; workflow.Engine.ApplyRepositoryChange says why. Empty for every fact no preparation of a
-	// recorded issue made, the decode's own among them, and an event prepared while its issue had
-	// no record: such a fact carries no RepositoryRead, so where it moves the record its correction
-	// writes nothing and asks a follow of the issue instead (ApplyRepositoryChange says why).
+	// recorded issue made, the decode's own among them, an event prepared while its issue had no
+	// record, and an event prepared while its record held no repository (record.Issue.Unfilled),
+	// which the preparation stamps empty: such a fact carries no RepositoryRead, so where it moves
+	// the record its correction writes nothing and asks a follow of the issue instead
+	// (ApplyRepositoryChange says why).
 	PreparedAgainst string
 	// Ancestry is the keys of the issue's Dispatch parent chain, from its parent upward to the top,
 	// stopping only at a repeated key or back at the issue: the chain release_children's own walk

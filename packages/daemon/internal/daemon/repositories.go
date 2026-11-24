@@ -2935,11 +2935,10 @@ func (w *workflowRuntime) prepareHandover(ctx context.Context, handover intake.H
 // another repository, which that listing reads GitHub for none of (prepareRecorded), so the
 // issue's change is read once the boot is over rather than at its next event. That is also what
 // covers the follow a skipped correction asks for at its commit (workflow.Config.FollowIssue,
-// requestFollowOf), and the one the refresher's backfill asks for after its fill's commit
-// (backfillLater), where the process stopped after the commit and before the ask: the record the
-// skip or the fill left can disagree with Dispatch only where Dispatch now resolves the issue
-// elsewhere, and the next boot's listing reads every recorded issue's resolution, following each
-// one resolved to another repository and telling each one resolved to none as any pass does.
+// requestFollowOf), where the process stopped after the commit and before the ask: the record the
+// skip left can disagree with Dispatch only where Dispatch now resolves the issue elsewhere, and
+// the next boot's listing reads every recorded issue's resolution, following each one resolved to
+// another repository and telling each one resolved to none as any pass does.
 func (w *workflowRuntime) requestFollow() {
 	w.followMu.Lock()
 	w.followEvery = true
@@ -2950,15 +2949,15 @@ func (w *workflowRuntime) requestFollow() {
 
 // requestFollowOf asks the refresher for a follow of the recorded issue key alone: an event's or
 // a hand-over's preparation whose correction's reads GitHub did not answer (prepareIssue,
-// prepareHandover), the engine at the commit of a fact whose correction it did not write because
-// the record moved after the fact was prepared or because the fact was prepared while the issue
-// had no record and read GitHub for no correction (workflow.Config.FollowIssue), and the
-// refresher's backfill for each record it filled (backfillLater). Each leaves a record that can
-// hold another repository than Dispatch resolves the issue to — a correction that wrote nothing,
-// or a fill from a listing read before an event that wrote nothing — so without the follow
-// nothing in the running process would read the change again until the issue's next event or the
-// next boot. The follow reads that issue alone, so it reads no other issue's waiting change sooner
-// than that issue's own next event or the next boot would.
+// prepareHandover), and the engine at the commit of a fact whose correction it did not write
+// because the record moved after the fact was prepared or because the fact was prepared while the
+// issue had no record, or while its record held no repository (the refresher's backfill filled it
+// meanwhile, backfillLater), and so read GitHub for no correction (workflow.Config.FollowIssue).
+// Each leaves a record that can hold another repository than Dispatch resolves the issue to — a
+// correction that wrote nothing — so without the follow nothing in the running process would read
+// the change again until the issue's next event or the next boot. The follow reads that issue
+// alone, so it reads no other issue's waiting change sooner than that issue's own next event or
+// the next boot would.
 //
 // A key no owed follow covers yet wakes the refresher, which follows it at once. A key already
 // covered (followEvery set, or followOwed naming it) is counted and wakes nothing, because a pass

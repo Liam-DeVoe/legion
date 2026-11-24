@@ -613,7 +613,7 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 	}
 	bundle, take, err := d.saved(restoring, issue, podUID, session.repo, session.podCreated)
 	if err != nil {
-		d.log.Warn("launcher bundle: the saved workspace bundle could not be taken for this pod's one restore attempt, so the pod starts on what was pushed",
+		d.log.Warn("launcher bundle: the saved workspace bundle could not be taken for this pod's one restore attempt, so the pod starts on what was pushed; its work stays in the daemon's database, in workspace_bundles, or in workspace_bundles_refused where the take refused it for its repository",
 			"issue", issue, "launcher", token, "pod", podUID, "error", err)
 		return
 	}

@@ -116,9 +116,10 @@ type Config struct {
 	// FollowIssue is asked, on the commit of a fact whose correction ApplyRepositoryChange did not
 	// write, for a follow of that issue where nothing else asked one: the record's repository
 	// moved after the fact was prepared (intake.DispatchIssue.PreparedAgainst), or the fact was
-	// prepared while the issue had no record and so carries no read of GitHub for the repository
-	// Dispatch moves it onto. The daemon reads Dispatch's resolution of it and GitHub again
-	// (workflowRuntime.requestFollowOf), so the record still ends on what Dispatch resolves.
+	// prepared while the issue had no record, or while its record held no repository, and so
+	// carries no read of GitHub for the repository Dispatch moves it onto. The daemon reads
+	// Dispatch's resolution of it and GitHub again (workflowRuntime.requestFollowOf), so the
+	// record still ends on what Dispatch resolves.
 	// Asked from that transaction's commit hook, it is asked exactly when the skip is committed,
 	// and a transaction rolled back asks nothing. A process that stops between that commit and
 	// the hook loses only the ask: its next boot's listing has every recorded issue Dispatch

@@ -29,7 +29,7 @@ import (
 // production_checks.repo (0049), repo_notes.resolved_repo (0047) and workspace_bundles.repo
 // (20261112012123_issue_repository_correction), the repository a saved bundle's work is of.
 // That last one is written because the take compares it with the repository of the pod that
-// asks, which a launch builds from the record, through the pair (ghrepo.Renames.Left): left on
+// asks, which a launch builds from the record, through the pair (ghrepo.Renames.Same): left on
 // the old name, a bundle saved before the pass would read as work of another repository than a
 // pod built from the new name once the pair is removed from `repository_renames`, and that pod's
 // restore would refuse it; and it is counted, so the rows the pass logs as left hold the
@@ -41,7 +41,9 @@ import (
 // correction's history and decides nothing that compares it with a pair;
 // issues.repo_change_pending, Dispatch's own name for a change still to be made, which the
 // issue's next event writes again from Dispatch; and workspace_bundles_refused.repo, work the
-// restore refused, which nothing in the daemon reads again and an operator carries out by hand.
+// restore refused, which an operator carries out by hand and which the daemon compares with
+// nothing: it reads the row again only by its issue and pod, to tell the issue of a refusal whose
+// commit it could not confirm (store.Store.RefusedWorkspaceBundle).
 // Every
 // comparison is made without case (`lower(col) = lower(from)`), as every read of a repository
 // name in the record is, so a row in any spelling of the old name is written; the new name is

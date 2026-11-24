@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -13,6 +14,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
+// bundleRefusalReadBound bounds what tellBundleRepositoryRefused does after a take whose commit
+// outcome stayed unknown: its read of workspace_bundles_refused, with every try of it again, and
+// its write on the issue. The take's own context has ended by then, since an outcome stays unknown
+// only once it has.
+const bundleRefusalReadBound = 10 * time.Second
+
+// bundleRefusalReadPause is the pause between two tries of that read (refusalRead): one second,
+// the first wait of the store's own poll of a commit's outcome (store's pollOutcome and
+// outcomeRetryFirst), kept fixed so the bound holds several tries.
+const bundleRefusalReadPause = time.Second
+
 // tellBundleRepositoryRefused is the store's take of an issue's saved workspace bundle for a pod
 // of project (savedWorkspaceBundle, store.Store.TakeWorkspaceBundleForRestore) as the runtime
 // asks it, with the one thing the daemon owes a person added to it: the bundle the store refused
@@ -23,15 +35,28 @@ import (
 // not record is answered nothing by the store, so no message is ever written on another
 // project's issue from here.
 //
-// Whether the bundle's repository and the pod's are two repositories is left's to say, and the
-// daemon hands it the rule a pod built from a repository is read by too (repositories.left,
-// repositoryDrift), so the restore and the update round never disagree about which names are one
-// repository: a configured rename's two names are one repository to both.
+// Whether the bundle's repository and the pod's are one repository is same's to say, and the
+// daemon hands it the deployment's comparison of two repository names (ghrepo.Renames.Same), the
+// comparison the update round reads a pod by too (repositoryDrift, through ghrepo.Renames.Left),
+// so the restore and the update round never disagree about which names are one repository: a
+// configured rename's two names are one repository to both.
 //
 // The issue is told once per bundle row, not once per pod that asks. The refusal is the bundle's
 // one restore attempt, and the store records it and moves the row to workspace_bundles_refused in
 // the transaction that answers it, so the next pod of the issue is answered
 // runtime.WorkspaceBundleNone and reaches no message at all.
+//
+// A take whose commit outcome stays unknown (store.ErrCommitOutcomeUnknown) may have committed its
+// refusal all the same: the row is then in workspace_bundles_refused, and no later take answers
+// it, since the row is gone from workspace_bundles. So after such a take this reads whether that
+// table holds a refusal of the issue to this pod (store.Store.RefusedWorkspaceBundle). Where it
+// does, the refusal is told and answered as one that committed. Where it does not, the take's
+// error is answered, which names both tables the work can be in. The take's context has ended by
+// then, so the read and the write on the issue run under a bound of their own
+// (bundleRefusalReadBound). The read is tried again until it answers or that bound ends
+// (refusalRead), since a store that did not answer the take's commit is the likeliest to refuse
+// the next connection too; where no try answers, the take's error is answered with the last
+// try's beside it.
 //
 // It is this wrapper and not the launcher's that logs the refusal, and the launcher logs none:
 // only a person can act on it — the work is a bundle of commits of a repository the pod's clone
@@ -47,14 +72,29 @@ import (
 // below, where the error is logged and the work stays in the database. A rig that builds the
 // runtime by hand passes a writer of its own (controller_sweep_kind_test.go's
 // noWriteOnIssue).
-func tellBundleRepositoryRefused(st *store.Store, project string, left func(saved, pod string) bool,
+func tellBundleRepositoryRefused(st *store.Store, project string, same func(saved, pod string) bool,
 	write func(ctx context.Context, issue, body string) error, log *slog.Logger) runtime.SavedWorkspaceBundle {
 	if log == nil {
 		log = slog.Default()
 	}
-	take := savedWorkspaceBundle(st, project, left)
+	take := savedWorkspaceBundle(st, project, same)
 	return func(ctx context.Context, issue, podUID, podRepo string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
 		bundle, outcome, err := take(ctx, issue, podUID, podRepo, podCreated)
+		if errors.Is(err, store.ErrCommitOutcomeUnknown) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), bundleRefusalReadBound)
+			defer cancel()
+			refused, found, readErr := refusalRead(ctx, st, issue, podUID)
+			if readErr != nil {
+				return bundle, outcome, fmt.Errorf("%w; whether workspace_bundles_refused holds its refusal to this pod is not known: %w", err, readErr)
+			}
+			if !found {
+				return bundle, outcome, err
+			}
+			log.Warn("supervise: the take of this issue's saved workspace bundle did not learn whether it committed, and workspace_bundles_refused holds its refusal to this pod, so the refusal is told as one that committed",
+				"issue", issue, "pod", podUID, "error", err)
+			bundle, outcome, err = refused, runtime.WorkspaceBundleRefusedRepository, nil
+		}
 		if err != nil || outcome != runtime.WorkspaceBundleRefusedRepository {
 			return bundle, outcome, err
 		}
@@ -70,6 +110,25 @@ func tellBundleRepositoryRefused(st *store.Store, project string, left func(save
 		}
 		log.Warn("supervise: the saved workspace bundle of this issue is refused for its repository, so no pod restores it; the issue is told and the work is kept in workspace_bundles_refused")
 		return bundle, outcome, nil
+	}
+}
+
+// refusalRead is st's read of whether workspace_bundles_refused holds issue's refusal to the pod
+// podUID (store.Store.RefusedWorkspaceBundle), tried again every bundleRefusalReadPause until a try
+// answers or ctx ends. It answers the first answer, or the last try's error once ctx has ended.
+func refusalRead(ctx context.Context, st *store.Store, issue, podUID string) (runtime.WorkspaceBundle, bool, error) {
+	for {
+		refused, found, err := st.RefusedWorkspaceBundle(ctx, issue, podUID)
+		if err == nil {
+			return refused, found, nil
+		}
+		pause := time.NewTimer(bundleRefusalReadPause)
+		select {
+		case <-ctx.Done():
+			pause.Stop()
+			return runtime.WorkspaceBundle{}, false, err
+		case <-pause.C:
+		}
 	}
 }
 
