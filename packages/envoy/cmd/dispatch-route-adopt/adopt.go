@@ -130,6 +130,25 @@ func adopt(repo gitRepo) (*adoptReport, error) {
 	} else if !baseOld {
 		return nil, fmt.Errorf("the merge base %s holds the route files already, so the branch's table is no old layout this can split", base)
 	}
+	// The step runs once per merge. It takes routes_table.go and routes_shapes.go whole from the
+	// new side, so a second run over a merge whose two files are resolved would overwrite what the
+	// person carried into them by hand. They are in conflict on the first run, since the branch
+	// changed the old table and the new side replaced it; once neither is, the step has run.
+	unmerged, err := repo.unmerged()
+	if err != nil {
+		return nil, err
+	}
+	pending := false
+	for _, name := range []string{tableFile, shapesFile} {
+		content, err := os.ReadFile(filepath.Join(repo.root, apiDir, name))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		pending = pending || slices.Contains(unmerged, path.Join(apiDir, name)) || hasConflictMarkers(content)
+	}
+	if !pending {
+		return nil, fmt.Errorf("neither %s nor %s is in conflict: this merge needs no adoption, or the adopt step has run on it already, and a second run would overwrite what was carried into them by hand", tableFile, shapesFile)
+	}
 
 	baseFiles, err := splitOldLayout(gitTree{repo, base})
 	if err != nil {
@@ -160,6 +179,12 @@ func adopt(repo gitRepo) (*adoptReport, error) {
 		inTree := err == nil
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, err
+		}
+		if hasConflictMarkers(current) {
+			// An earlier run left this route's conflict for the person: merging it again would nest
+			// one conflict inside the other.
+			report.conflicted = append(report.conflicted, name)
+			continue
 		}
 		switch {
 		case !inBase: // the branch added it
@@ -319,10 +344,23 @@ func sharedCode(name string, content []byte) (string, error) {
 					return false
 				}
 			case *ast.IfStmt:
-				if string(content[offset(n.Cond.Pos()):offset(n.Cond.End())]) == "s.deps.TestHooksEnabled" {
-					cuts = append(cuts, cut{offset(n.Body.Lbrace) + 1, offset(n.Body.Rbrace)})
-					return false
+				if string(content[offset(n.Cond.Pos()):offset(n.Cond.End())]) != "s.deps.TestHooksEnabled" {
+					return true
 				}
+				// The test hooks' rows, `rows = append(rows, routeRow{...}, ...)`: the rows alone are
+				// cut, so another statement the branch writes in the hooks' block is still compared.
+				ast.Inspect(n.Body, func(inner ast.Node) bool {
+					call, ok := inner.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					if fun, named := call.Fun.(*ast.Ident); named && fun.Name == "append" && len(call.Args) > 1 {
+						cuts = append(cuts, cut{offset(call.Args[1].Pos()), offset(call.Args[len(call.Args)-1].End())})
+						return false
+					}
+					return true
+				})
+				return false
 			}
 			return true
 		})

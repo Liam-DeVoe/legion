@@ -76,8 +76,12 @@ func (g gitRepo) stage(names, removed []string) error {
 			return err
 		}
 	}
+	// A route the branch removes is a file the incoming side added, so git's index holds it as a
+	// staged addition, which a plain `git rm` refuses to drop. adopt removes only a file whose bytes
+	// are the merge base's own, or the fixture the new layout no longer commits, so nobody's change
+	// is lost: the index entry is forced out and the file deleted.
 	if len(removed) > 0 {
-		if _, err := g.run(append([]string{"rm", "-q", "--ignore-unmatch", "--"}, prefixed(removed)...)...); err != nil {
+		if _, err := g.run(append([]string{"rm", "-q", "-f", "--ignore-unmatch", "--"}, prefixed(removed)...)...); err != nil {
 			return err
 		}
 	}
@@ -91,4 +95,15 @@ func prefixed(names []string) []string {
 		paths[index] = path.Join(apiDir, name)
 	}
 	return paths
+}
+
+// hasConflictMarkers reports whether a file holds a conflict git or jj wrote into it: a line that
+// begins with seven '<' (git's `<<<<<<< ours`, jj's `<<<<<<< conflict 1 of 1`).
+func hasConflictMarkers(content []byte) bool {
+	for line := range strings.Lines(string(content)) {
+		if strings.HasPrefix(line, "<<<<<<< ") || strings.TrimRight(line, "\n") == "<<<<<<<" {
+			return true
+		}
+	}
+	return false
 }

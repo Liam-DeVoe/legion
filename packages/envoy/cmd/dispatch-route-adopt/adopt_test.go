@@ -210,6 +210,141 @@ func TestTheAdoptStepCarriesARouteAcrossTheMoveAndTwoAddedRoutesMerge(t *testing
 	}
 }
 
+// editOn makes a branch from the base commit whose one change to the old layout is edit's.
+func (r *scratchRepo) editOn(branch, base string, edit func(table, shapes string) (string, string)) {
+	r.t.Helper()
+	r.git("checkout", "-q", "-b", branch, base)
+	table, shapes := edit(r.read(tableFile), r.read(shapesFile))
+	r.write(tableFile, table)
+	r.write(shapesFile, shapes)
+	r.commit("edit " + branch)
+}
+
+// mergeMainAndAdopt merges main into the branch checked out and runs the adopt step once.
+func (r *scratchRepo) mergeMainAndAdopt() (*adoptReport, error) {
+	r.t.Helper()
+	if output, err := r.run("git", "merge", "--no-edit", "main"); err == nil {
+		r.t.Fatalf("merging main stopped on no conflict, so there is nothing to adopt: %s", output)
+	}
+	found, err := findRepo(r.root)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return adopt(found)
+}
+
+// cutLine removes the one line of text that holds marker.
+func cutLine(t *testing.T, text, marker string) string {
+	t.Helper()
+	at := strings.Index(text, marker)
+	if at < 0 {
+		t.Fatalf("no line holds %q", marker)
+	}
+	start := strings.LastIndex(text[:at], "\n") + 1
+	return text[:start] + text[at+strings.Index(text[at:], "\n")+1:]
+}
+
+// A route the branch removes is a file main's side added, which git's index holds as a staged
+// addition; the step removes it, so the merge commit does not hold it.
+func TestTheAdoptStepRemovesARouteTheBranchRemoved(t *testing.T) {
+	repo := newScratchRepo(t)
+	base := strings.TrimSpace(repo.git("rev-parse", "HEAD"))
+	repo.editOn("branch-removes", base, func(table, shapes string) (string, string) {
+		return cutLine(t, table, `{http.MethodGet, "/api/v1/limits"`), cutLine(t, shapes, "\t\"GET /api/v1/limits\":")
+	})
+	repo.moveMain()
+	repo.git("checkout", "-q", "branch-removes")
+	report, err := repo.mergeMainAndAdopt()
+	if err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	file, _ := routeFileName("GET", "/api/v1/limits")
+	if !slices.Equal(report.removed, []string{file}) || report.left() {
+		var out bytes.Buffer
+		report.print(&out)
+		t.Fatalf("the adopt step did not remove %s alone:\n%s", file, out.String())
+	}
+	if _, err := os.Stat(repo.path(file)); !os.IsNotExist(err) {
+		t.Fatalf("%s is still on disk: %v", file, err)
+	}
+	repo.git("commit", "-q", "--no-edit")
+	if listed := repo.git("ls-files", "--", filepath.Join(apiDir, file)); listed != "" {
+		t.Fatalf("the merge commit holds %s", listed)
+	}
+}
+
+// The step runs once per merge. Once it has resolved routes_table.go and routes_shapes.go, a
+// second run is refused, so what the person carried into them is kept. And a route file a run
+// left in conflict is not merged a second time when the shared files are in conflict again: it
+// keeps one conflict, not one nested in another.
+func TestTheAdoptStepIsNotRunTwiceOverOneMerge(t *testing.T) {
+	repo := newScratchRepo(t)
+	base := strings.TrimSpace(repo.git("rev-parse", "HEAD"))
+	const limits = "The bounds a write is held to"
+	repo.editOn("branch-edits", base, func(table, shapes string) (string, string) {
+		return strings.Replace(table, limits, "The branch's bounds a write is held to", 1), shapes
+	})
+	repo.moveMain()
+	file, _ := routeFileName("GET", "/api/v1/limits")
+	repo.write(file, strings.Replace(repo.read(file), limits, "Main's bounds a write is held to", 1))
+	repo.commit("main edits the limits route")
+	repo.git("checkout", "-q", "branch-edits")
+	report, err := repo.mergeMainAndAdopt()
+	if err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	if !slices.Equal(report.conflicted, []string{file}) {
+		t.Fatalf("the first run left %v in conflict, want %s alone", report.conflicted, file)
+	}
+
+	carried := repo.read(tableFile) + "\n// carried by hand\n"
+	repo.write(tableFile, carried)
+	found, err := findRepo(repo.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adopt(found); err == nil || !strings.Contains(err.Error(), "has run on it already") {
+		t.Fatalf("a second run over the resolved merge was not refused: %v", err)
+	}
+	if repo.read(tableFile) != carried {
+		t.Fatal("the refused second run changed what was carried into routes_table.go")
+	}
+
+	repo.git("checkout", "-m", "--", filepath.Join(apiDir, tableFile))
+	if _, err := adopt(found); err != nil {
+		t.Fatalf("adopt over the conflicted table again: %v", err)
+	}
+	if markers := strings.Count(repo.read(file), "<<<<<<< "); markers != 1 {
+		t.Fatalf("%s holds %d conflict markers after the second run, want the first run's one", file, markers)
+	}
+}
+
+// A statement the branch writes in the test hooks' block, beside their rows, is shared code the
+// person must carry: the hooks' rows alone are cut before the comparison.
+func TestAStatementInTheHooksBlockIsSharedCode(t *testing.T) {
+	table := fixture(t, oldTableFixture)
+	const hooks = "if s.deps.TestHooksEnabled {\n"
+	at := strings.Index(table, hooks)
+	if at < 0 {
+		t.Fatal("the frozen table has no test hooks' block")
+	}
+	planted := table[:at+len(hooks)] + "\t\tpanic(\"shared-hook-change\")\n" + table[at+len(hooks):]
+	before, err := sharedCode(tableFile, []byte(table))
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := sharedCode(tableFile, []byte(planted))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before == after || !strings.Contains(after, "shared-hook-change") {
+		t.Fatal("a statement planted in the hooks' block is cut out with the hooks' rows, so its edit would be dropped unreported")
+	}
+	if strings.Contains(before, "/api/v1/live/_test/disconnect") {
+		t.Fatal("the hooks' rows are not cut out of the shared code")
+	}
+}
+
 // The same step under jj, where a merge is the working-copy commit `jj new <branch> main` makes
 // and jj reads no git index: the route the branch added is written, routes_table.go and
 // routes_shapes.go are main's, and jj holds no conflict afterwards.

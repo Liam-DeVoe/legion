@@ -19,9 +19,11 @@
 // are read from jj's git store (`jj git root`), nothing is staged, and the conflicts left are the
 // ones `jj file list` reports.
 //
-// One side of the merge holds the old layout and the other the new one. The tool splits the old
-// layout at the merge base and at the old-layout side into one file per route, with the splitter
-// that wrote main's route files, and compares the two splits route by route:
+// One side of the merge holds the old layout and the other the new one, in either order: a branch
+// made before the move merging main, or the move's own branch merging a main that still had the
+// old table (how the move itself was carried across main). The tool splits the old layout at the
+// merge base and at the old-layout side into one file per route, with the splitter that wrote
+// main's route files, and compares the two splits route by route:
 //
 //   - a route the branch added is written;
 //   - a route the branch changed is merged into the file the new side holds (git merge-file), and
@@ -36,6 +38,10 @@
 // removes is staged; it changes no other file. It ends by listing what is left: route files merged
 // with conflicts, edits to carry by hand, the other paths git still holds in conflict, and every
 // line of package api's other files that still names one of the old maps.
+//
+// It runs once per merge: once routes_table.go and routes_shapes.go are resolved, a second run is
+// refused, since it would overwrite what was carried into them by hand. A route file a run left
+// with conflict markers is never merged again.
 //
 // It exits 0 when nothing is left, 2 when it resolved what it could and something is left for the
 // person, and 1 when it could not run.

@@ -33,7 +33,6 @@ on:
       - 'packages/daemon/internal/daemon/**'
       - 'packages/dispatch/**'
       - 'packages/envoy-client/src/**'
-      - 'packages/envoy/internal/dispatch/api/route_*+*.go'
       - 'packages/envoy/internal/dispatch/delivery/**'
       - 'packages/envoy/internal/dispatch/pmdoc/**'
       - 'packages/proof-editor/proof-sdk-*.tgz'
