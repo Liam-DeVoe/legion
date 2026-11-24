@@ -60,3 +60,8 @@ func TestHoldsSeedAllocatesAtMostOneCopyPerDecoding(t *testing.T) {
 // allocsChildEnv marks the child process TestHoldsSeedAllocatesAtMostOneCopyPerDecoding measures
 // in: set, the test measures in its own process instead of starting one.
 const allocsChildEnv = "ENVOY_BUS_HOLDSSEED_ALLOCS_CHILD"
+
+// TestANoraceTestTheRunListLeavesOut is c-search's negative control A1b, never for merge: a test
+// added to this file, which only envoy-go's plain step builds, while that step's -run list stays as
+// it was, so no step runs it and the lint job's search must name it.
+func TestANoraceTestTheRunListLeavesOut(t *testing.T) {}
