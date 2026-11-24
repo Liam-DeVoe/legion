@@ -42,14 +42,19 @@ request's base, the merge group's base, which the generation step hands the scri
 computes the base tree's filters too, with the base tree's own engine, and each filter whose
 patterns differ is `'**'` in what the paths-filter step reads: every job whose selection the change
 could have moved runs. Each such filter is printed in the step's log and summary with the patterns
-only one side has. A base tree whose filters cannot be computed makes every filter `'**'`. A
+only one side has. A base tree whose filters cannot be computed makes every filter `'**'`, as a
+failed computation does (below). A
 change that touches none of those files is not compared, and costs no second computation.
 
 When the computation fails for any reason - a step before it that failed (setup-go, Bun's setup
 and the install each run with `continue-on-error`), a go command that cannot run, a gate file or a `//ci:` line that cannot be
 read, a run past five minutes - the script writes instead a file in which every filter the changes
 job hands on is `'**'`, its first line `# FAIL-OPEN:` with the reason, and exits 0: every job
-runs, as on a dispatch, and the paths filter's verdicts and the outputs stay one shape. The run is
+runs, as on a dispatch, and the paths filter's verdicts and the outputs stay one shape. The file's
+names are the filters the changes job's outputs hand on, so it holds no filter a step reads out of
+the list of matched filters (#one-list-for-the-test-jobs-step-gates); the script also writes
+`every_filter=true` to its step's outputs, which makes that list `all`, so every such step runs
+too. The run is
 red all the same: the lint job's two readers of the filters refuse a fail-open file, whatever the
 cause. The ci-filters job, which every filter then selects, fails as well when the cause is the
 engine's own (a go command, a gate file, a `//ci:` line), but not when it is the Bun install or the
@@ -1431,7 +1436,12 @@ lists, since a step gate decides nothing in a job that was not selected.
 The steps read those filters out of one output of the changes job, `matched_filters`: the
 paths filter's own `changes` output, the JSON array of every filter that matched
 (`["release_push_test","test"]`, written by JSON.stringify), or `all` on a dispatched run, whose
-filter step is skipped. Each of ci-job-test.yaml's two callers hands it on as one input,
+filter step is skipped, and on a run whose filters fell open: the fallback file
+(#the-changes-job-computes-its-filters-when-it-runs) is named from the changes job's outputs and
+holds none of these filters, and the generate step's `every_filter` output, which the script
+writes `true` with that file, turns the list to `all`. Without that term every step gated on the
+list would be skipped on exactly the run whose filters could not be computed, which is the run
+the filter engine's own harnesses must run in. Each of ci-job-test.yaml's two callers hands it on as one input,
 `matched-filters`, and the whole of each gated step's condition is
 `inputs.changes-result != 'success' || inputs.matched-filters == 'all' ||
 contains(inputs.matched-filters, '"<filter>"')`, with one more `|| contains(...)` term for each
@@ -1447,9 +1457,11 @@ gate added now costs ci.yaml nothing.
 out of an output (rules 2 and 3, both through one reader, `gated_filters`); rule 2 asks an
 output of the changes job only of a filter read through one, since the list hands on every filter
 that matched. It holds the shape:
-rule 19 holds `matched_filters` to its one value, `all` on a dispatched run included, refuses a
+rule 19 holds `matched_filters` to its one value, `all` on a dispatched run and on a fall-open
+run included, and its job to one step of id `generate` running the generation; it refuses a
 gate declaring a filter named `changes`, under which the paths filter would write that filter's
-verdict in place of the list, and refuses a filter name JSON would escape or two names that
+verdict in place of the list, or `<another filter>_count` or `_files`, names the paths filter
+writes those filters' counts and files under, and refuses a filter name JSON would escape or two names that
 differ only in case, which the quoted `contains` (GitHub's ignores case) could not tell apart;
 rule 23 refuses a condition naming the list that is not that whole shape (`!= ''`, a `!` before
 a `contains` or a term after the last, a `contains` without the quotes, a missing `all` or

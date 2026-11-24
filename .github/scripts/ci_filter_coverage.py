@@ -979,26 +979,49 @@ def check_output_steps(document: dict, filters: dict, problems: list[Annotation]
 
     LIST_OUTPUT reads `steps.filter.outputs.changes`, the action's own list of the filters that
     matched, which no filter names: it is held here to exactly LIST_OUTPUT_VALUE instead, since a
-    list that is not `all` on a dispatched run skips there every step it gates, and the generated
-    file is held to have no filter of that name, under which the action would write that filter's
-    verdict in place of the list."""
+    list that is not `all` on a dispatched run, or on one whose filters fell open, skips there every
+    step it gates. The fall-open term reads the generate step's every_filter output, so the job
+    must have that step: one of id GENERATE_STEP_ID that runs GENERATE_RUN.
+
+    No filter may have a name the action writes another output under: `changes`, its list, and
+    `<filter>_count` and `<filter>_files`, each other filter's count and (under list-files) files
+    (src/main.ts, exportResults, at the pinned v4.0.3). The action would write two values under one
+    name, and the output would hand on whichever it wrote last. GENERATE_SCRIPT's fallback file
+    also leaves out `changes`, so a job gated on a filter of that name would be skipped there."""
     job = (document.get("jobs") or {}).get("changes") or {}
     steps = job.get("steps") or []
     ids = [str(s.get("id", "")) for s in steps if s.get("id")]
     filter_steps = {str(s.get("id", "")): s for s in filter_input_steps(job)}
     outputs = job.get("outputs") or {}
+    for name in sorted(filters):
+        if name == LIST_SOURCE:
+            problems.append(error(GATES_DIR, f"a file of {GATES_DIR} declares a filter named {LIST_SOURCE}, and "
+                                             f"dorny/paths-filter writes its list of the filters that matched "
+                                             f"under that name only while no filter has it, so the changes job's "
+                                             f"output {LIST_OUTPUT} would hand on that one filter's verdict, and the "
+                                             f"fallback file of {GENERATE_SCRIPT} leaves the name out"))
+        for other in sorted(filters):
+            for suffix in ("_count", "_files"):
+                if other != name and name == other + suffix:
+                    problems.append(error(GATES_DIR, f"a file of {GATES_DIR} declares a filter named {name}, and "
+                                                     f"dorny/paths-filter writes filter {other}'s {suffix[1:]} under "
+                                                     f"that name too, so an output reading "
+                                                     f"steps.filter.outputs.{name} hands on whichever it wrote last"))
     if LIST_OUTPUT in outputs:
         value = " ".join(str(outputs[LIST_OUTPUT]).split())
         if value != LIST_OUTPUT_VALUE:
             problems.append(error(WORKFLOW, f"the changes job's output {LIST_OUTPUT} is {value}, and it must be "
                                             f"exactly {LIST_OUTPUT_VALUE}: the paths filter's list of the filters "
                                             f"that matched, or all on a dispatched run, whose filter step is "
-                                            f"skipped, so that every step it gates runs there"))
-        if LIST_SOURCE in filters:
-            problems.append(error(GATES_DIR, f"a file of {GATES_DIR} declares a filter named {LIST_SOURCE}, and "
-                                             f"dorny/paths-filter writes its list of the filters that matched "
-                                             f"under that name only while no filter has it, so the changes job's "
-                                             f"output {LIST_OUTPUT} would hand on that one filter's verdict"))
+                                            f"skipped, and on a run whose filters fell open, whose file holds no "
+                                            f"filter a step reads out of the list, so that every step it gates runs "
+                                            f"there"))
+        generate = [s for s in steps if str(s.get("id", "")) == GENERATE_STEP_ID]
+        if len(generate) != 1 or str(generate[0].get("run", "")).strip() != GENERATE_RUN:
+            problems.append(error(WORKFLOW, f"the changes job's output {LIST_OUTPUT} reads "
+                                            f"steps.{GENERATE_STEP_ID}.outputs.{EVERY_FILTER_OUTPUT}, and the job has "
+                                            f"no one step of id {GENERATE_STEP_ID} that runs `{GENERATE_RUN}`, which "
+                                            f"writes it, so the list is not all on a run whose filters fell open"))
         # A step reads its filter out of the list as `contains(<list>, '"<name>"')`, which holds
         # only while JSON.stringify writes the name as it is and no other name is it in another
         # case: GitHub's `contains` ignores case, so `"App"` would run app's steps.
@@ -1021,6 +1044,8 @@ def check_output_steps(document: dict, filters: dict, problems: list[Annotation]
         for step_id, name in STEP_OUTPUT_REF.findall(str(expression)):
             if output == LIST_OUTPUT and name == LIST_SOURCE and step_id in filter_steps:
                 continue  # the action's list, held above
+            if output == LIST_OUTPUT and step_id == GENERATE_STEP_ID and name == EVERY_FILTER_OUTPUT:
+                continue  # the fall-open term, held above with the step that writes it
             if step_id not in ids:
                 problems.append(error(WORKFLOW, f"the changes job's output {output} reads "
                                                 f"steps.{step_id}.outputs.{name}, and the job has no step {step_id}, "
@@ -1051,7 +1076,13 @@ GATE_REF = re.compile(r"needs\.changes\.outputs\.([A-Za-z0-9_-]+)")
 # a job, where an output and a `with:` line per gate cost ci.yaml about 197 bytes each
 # (.github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates).
 LIST_OUTPUT = "matched_filters"
-LIST_OUTPUT_VALUE = "${{ github.event_name == 'workflow_dispatch' && 'all' || steps.filter.outputs.changes }}"
+# The step of the changes job that runs GENERATE_RUN, and the output it writes `true` to when it
+# hands the paths filter a fallback file (every filter `'**'`, written by GENERATE_SCRIPT's
+# every_filter on FAIL-OPEN and FORCED), which holds no filter a step reads out of the list.
+GENERATE_STEP_ID = "generate"
+EVERY_FILTER_OUTPUT = "every_filter"
+LIST_OUTPUT_VALUE = (f"${{{{ (github.event_name == 'workflow_dispatch' || steps.{GENERATE_STEP_ID}.outputs."
+                     f"{EVERY_FILTER_OUTPUT} == 'true') && 'all' || steps.filter.outputs.changes }}}}")
 # The name dorny/paths-filter writes its list under, which it writes only while no filter has it.
 LIST_SOURCE = "changes"
 # A condition that names the list at all, in any spelling (an input's `matched-filters`, an

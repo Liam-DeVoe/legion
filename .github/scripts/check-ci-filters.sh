@@ -278,12 +278,18 @@
 #      matched: the job it gates would be skipped on every change it selects, and nothing else
 #      here would say so. The one name no filter holds that an output may read is the paths
 #      filter's own `changes`, the list of the filters that matched, in the output
-#      matched_filters alone, which must be exactly `${{ github.event_name == 'workflow_dispatch'
-#      && 'all' || steps.filter.outputs.changes }}` - a list that is not `all` on a dispatched
-#      run, whose filter step is skipped, skips there every step it gates - while no gate declares
-#      a filter named `changes`, under which the action would write that filter's verdict
-#      instead, and while every filter's name is letters, digits, `_` and `-` (which JSON writes
-#      as they are) and no two names differ only in case (GitHub's `contains` ignores case),
+#      matched_filters alone, which must be exactly `${{ (github.event_name ==
+#      'workflow_dispatch' || steps.generate.outputs.every_filter == 'true') && 'all' ||
+#      steps.filter.outputs.changes }}` - a list that is not `all` on a dispatched run, whose
+#      filter step is skipped, or on one whose filters fell open, whose fallback file holds no
+#      filter a step reads out of the list, skips there every step it gates - in a job whose one
+#      step of id `generate` runs the generation (ci-filters-generate.sh writes
+#      every_filter=true to that step's outputs when it writes the fallback file), while every
+#      filter's name is letters, digits, `_` and `-` (which JSON writes as they are) and no two
+#      names differ only in case (GitHub's `contains` ignores case). And with or without the
+#      list, a gate declaring a filter whose name the action writes another output under:
+#      `changes`, under which it would write that filter's verdict in place of the list, and which
+#      the fallback file leaves out, or `<another filter>_count` or `_files`,
 #  20. a step's vets for another platform - the Runs of mode vet whose env sets GOOS, one per
 #      tag set, today the three darwin vet steps ci_job_reads.py's darwin_vet pins - that
 #      between them pass over a file go builds for that platform under some tags, naming the

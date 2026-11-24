@@ -125,9 +125,9 @@ jobs:
       sessions_script: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.sessions_script }}
       # The step gates of the test and tooling-checks jobs, all in one: the paths filter's own list
       # of the filters that matched, out of which each harness step and the guides' layout step
-      # read their own.
+      # read their own; `all` on a dispatch and when the filters fell open (every_filter).
       # why: .github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates
-      matched_filters: ${{ github.event_name == 'workflow_dispatch' && 'all' || steps.filter.outputs.changes }}
+      matched_filters: ${{ (github.event_name == 'workflow_dispatch' || steps.generate.outputs.every_filter == 'true') && 'all' || steps.filter.outputs.changes }}
       # Selected like any other job now that no run of this workflow is a push to main.
       # docs-pages.yaml still builds and deploys main's site, on a push trigger of its own.
       docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.docs }}
@@ -214,6 +214,7 @@ jobs:
         timeout-minutes: 3
         run: bun install --frozen-lockfile
       - name: Compute every filter from what each job reads
+        id: generate
         timeout-minutes: 9
         env:
           CI_FILTERS_BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}

@@ -321,8 +321,48 @@ got=$(steps --event pull_request --verdicts false --verdict test=true --verdict 
 check "while the test job runs none of its harnesses on guide_layout" "$(is "$(running "$got")" "")"
 
 echo "case: a list that is not all on a dispatched run skips every step it gates there"
-broken=$(list_copy "$work/no-all" ci.yaml "'workflow_dispatch' && 'all'" "'workflow_dispatch' && '[]'")
+broken=$(list_copy "$work/no-all" ci.yaml "&& 'all' || steps.filter.outputs.changes" "&& '[]' || steps.filter.outputs.changes")
 got=$(steps_of "$broken" --event workflow_dispatch --verdicts false)
+check "none of them runs" "$(is "$(running "$got")" "")"
+
+# When the filters cannot be computed, ci-filters-generate.sh hands the paths filter a fallback
+# file whose every filter is '**', named from the changes job's outputs. No step's filter read out
+# of the list is among them, so the list must be `all` there, which the script's every_filter output
+# makes it. The fallback here is the real script's, over this repository's ci.yaml, in a tree whose
+# check-ci-filters.sh fails on purpose, as one whose go cannot run does.
+fallback_tree="$work/fallback-tree"
+mkdir -p "$fallback_tree/.github/scripts" "$fallback_tree/.github/workflows"
+cp "$script_dir/ci-filters-generate.sh" "$fallback_tree/.github/scripts/"
+printf '#!/bin/sh\necho "check-ci-filters.sh: failing on purpose" >&2\nexit 1\n' > "$fallback_tree/.github/scripts/check-ci-filters.sh"
+chmod +x "$fallback_tree/.github/scripts/check-ci-filters.sh"
+cp "$repo/.github/workflows/ci.yaml" "$fallback_tree/.github/workflows/ci.yaml"
+: > "$work/fallback.out"
+GITHUB_OUTPUT="$work/fallback.out" CI_FILTERS_BASE='' \
+  "$fallback_tree/.github/scripts/ci-filters-generate.sh" "$work/fallback.yaml" >/dev/null 2>&1 || true
+# fallen <workflow> <argument>...: steps_of over the fallback file and the outputs the script wrote.
+fallen() {
+  local workflow=$1
+  shift
+  "$script_dir/ci_router_outputs.py" "$workflow" --filters "$work/fallback.yaml" \
+    --step-outputs generate="$work/fallback.out" "$@" | sort
+}
+
+echo "case: on a merge group whose filters fell open, every step gated on the list runs"
+check "the script wrote a fail-open file" "$(contains "$(head -1 "$work/fallback.yaml")" '^# FAIL-OPEN: ')"
+check "it holds no filter named changes, under which the paths filter writes no list" \
+  "$(is "$(grep -c '^changes:$' "$work/fallback.yaml" || true)" 0)"
+check "and its step output says so" "$(is "$(cat "$work/fallback.out")" "every_filter=true")"
+got=$(fallen "$repo/.github/workflows/ci.yaml" --event merge_group)
+check "the list is all" "$(is "$(value "$got" matched_filters)" all)"
+check "the test job is selected" "$(is "$(value "$got" test)" true)"
+got=$(fallen "$repo/.github/workflows/ci.yaml" --event merge_group --steps test)
+check "the test job runs all $gated of its gated steps" "$(is "$(running "$got" | grep -c . || true)" "$gated")"
+got=$(fallen "$repo/.github/workflows/ci.yaml" --event merge_group --steps tooling-checks)
+check "and tooling-checks its guides step" "$(is "$(running "$got")" "Check the guides' semantic line breaks")"
+
+echo "case: a list that reads no fall-open term skips every step it gates on a fallback file"
+broken=$(list_copy "$work/no-fall-open" ci.yaml " || steps.generate.outputs.every_filter == 'true'" "")
+got=$(fallen "$broken" --event merge_group --steps test)
 check "none of them runs" "$(is "$(running "$got")" "")"
 
 summary "ci.yaml's changes outputs turn on what full-ci and the lane labels name, and the test job's steps what their filters name"

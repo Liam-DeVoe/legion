@@ -20,16 +20,21 @@ truthy), `==` and `!=` compare strings without regard to case, `contains` of an 
 whether an element equals the item, and `contains` of a string whether it holds the item, without
 regard to case. The paths-filter step's `changes` output is the JSON array, without spaces as
 JSON.stringify writes it, of every filter whose verdict is 'true', in the filters file's order,
-while no filter is named `changes`. Anything else, an unknown function or a context it does not
-model, is refused by name with exit 2, never read as false.
+while no filter is named `changes`. An output a step of the changes job did not write is empty,
+as GitHub reads one. Anything else, an unknown function or a context it does not model, is
+refused by name with exit 2, never read as false.
 
 Usage: ci_router_outputs.py <workflow> --filters <file> --event <name> [--label <name>]...
-  [--verdict <filter>=<value>]... [--verdicts <true|false>] [--steps <job> [--changes-result <result>]]
+  [--verdict <filter>=<value>]... [--verdicts <true|false>] [--step-outputs <id>=<file>]...
+  [--steps <job> [--changes-result <result>]]
        ci_router_outputs.py <workflow> --label-readers
 Prints `<output>=<value>` for each output of the `changes` job, in the file's order. --filters is
 the changes job's filters, which it computes when it runs (.github/scripts/ci-filters-generate.sh)
 and no file of the repository holds; the filter names are its keys. --verdicts sets every filter's
-verdict (default true); --verdict overrides one. --steps <job> prints instead, for the workflow
+verdict (default true); --verdict overrides one. --step-outputs gives the outputs of the changes
+job's step <id> as that step wrote them, a GITHUB_OUTPUT file of `<name>=<value>` lines (the
+generate step's, for one: ci-filters-generate.sh writes every_filter=true there when it falls
+open). --steps <job> prints instead, for the workflow
 that job of <workflow> calls, `<step>=<true|false>` for each step whose `if:` reads an input the
 job fills from the changes job, with that job's `with:` evaluated over those outputs and
 needs.changes.result (default success). --label-readers prints, one per line, each output whose
@@ -197,6 +202,9 @@ class Evaluator:
             # A property is found in any case, as GitHub's context dictionaries find it.
             key = next((k for k in value if str(k).lower() == part.lower()), None) if isinstance(value, dict) else None
             if key is None:
+                # An output a step of the job never wrote reads as empty, as GitHub reads one.
+                if at == 3 and len(parts) == 4 and parts[0].lower() == "steps" and parts[2].lower() == "outputs":
+                    return ""
                 raise Refused(f"context {path} is outside the modelled contexts")
             value = value[key]
         return value
@@ -264,6 +272,7 @@ def main():
     parser.add_argument("--verdicts", default="true", choices=["true", "false"])
     parser.add_argument("--steps")
     parser.add_argument("--changes-result", default="success")
+    parser.add_argument("--step-outputs", action="append", default=[])
     args = parser.parse_args()
     document = yaml.safe_load(Path(args.workflow).read_text())
     outputs = document["jobs"]["changes"]["outputs"]
@@ -291,8 +300,23 @@ def main():
     context = {
         "github": {"event_name": args.event,
                    "event": {"pull_request": {"labels": [{"name": label} for label in args.label]}}},
-        "steps": {"filter": {"outputs": step_outputs}, "ref": {"outputs": {"is_main": "false"}}},
+        # Every step of the changes job that has an id, its outputs empty until a step writes one.
+        "steps": {str(step["id"]): {"outputs": {}} for step in document["jobs"]["changes"].get("steps") or []
+                  if isinstance(step, dict) and step.get("id")},
     }
+    context["steps"]["filter"] = {"outputs": step_outputs}
+    context["steps"]["ref"] = {"outputs": {"is_main": "false"}}
+    for pair in args.step_outputs:
+        step_id, _, path = pair.partition("=")
+        if step_id not in context["steps"]:
+            print(f"ci_router_outputs: --step-outputs {pair} names no step of the changes job", file=sys.stderr)
+            return 2
+        for line in Path(path).read_text().splitlines():
+            name, equals, value = line.partition("=")
+            if not equals or "<<" in name:
+                print(f"ci_router_outputs: --step-outputs {pair}: {line!r} is no <name>=<value> line", file=sys.stderr)
+                return 2
+            context["steps"][step_id]["outputs"][name] = value
     evaluator = Evaluator(context)
     values = {}
     for name, expression in outputs.items():
