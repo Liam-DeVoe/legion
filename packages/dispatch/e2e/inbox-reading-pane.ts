@@ -30,6 +30,7 @@ import {
 import { blockId } from "./editor";
 import { inboxList, inboxPane } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
+import { rowSessionId } from "./test";
 
 export const session = {
   actor: { id: "e2e-reading-pane", kind: "session" as const },
@@ -41,7 +42,10 @@ export const session = {
  *  it was when their recording was made. */
 export const INBOX = "/?assignee=everyone";
 
-export { inboxAt } from "./inbox-pane-scroll";
+/** The address the Inbox writes for a selected row (`buildInboxPath`: the item, then the filter). */
+export function inboxAt(askId: string): string {
+  return `/?item=${askId}&assignee=everyone`;
+}
 
 /** The list the real-stack rows read: the reader's own, which holds every question `seedInbox`
  *  makes - the reader made the project, so its document's question reaches them too - and no
@@ -49,10 +53,9 @@ export { inboxAt } from "./inbox-pane-scroll";
  *  e2e/test.ts), and the cleared filter would list every open question of the stack. */
 export const OWN_INBOX = "/";
 
-/** The address the Inbox writes for a row selected in the reader's own list. */
-export function ownInboxAt(askId: string): string {
-  return `/?item=${askId}`;
-}
+/** The address the Inbox writes for a row selected in the reader's own list, a thread row's colon
+ *  escaped as the Inbox's own address escapes it. */
+export { inboxAt as ownInboxAt } from "./inbox-pane-scroll";
 
 // ---------------------------------------------------------------------------
 // The first spec: one section of 36 lines above the decision block.
@@ -337,13 +340,12 @@ export async function seedInbox(project: RowKey, login = "alice"): Promise<Seed>
 // of each kind the column draws.
 // ---------------------------------------------------------------------------
 
-export const OPEN_PROJECT = "OPEN";
 /** The heading of each document, which neither of the other two holds. */
 export const OPEN_SPEC_HEADING = "Spec heading only here";
 export const OPEN_TALK_HEADING = "Talk heading only here";
 export const OPEN_RUNBOOK_HEADING = "Runbook heading";
-/** The decision blocks, each id once across the three documents, since `indexedRow` matches a
- *  row by its block id alone. */
+/** The decision blocks, each id once across the three documents, since `indexedRow` tells the
+ *  rows of the one issue apart by their block ids alone. */
 export const OPEN_TALK_DECISION = "open-talk-decision";
 export const OPEN_BEFORE_HEADING = "open-talk-before-heading";
 const OPEN_SPEC_DECISION = "open-spec-decision";
@@ -417,7 +419,7 @@ export interface OpenPageSeed {
   quotedBlockId: string;
   /** 5: a question in no document. */
   plain: string;
-  /** 6: a decision block under the heading of a project document, handed to alice. */
+  /** 6: a decision block under the heading of a project document, handed to the reader. */
   runbookDecision: string;
   /** 7: a decision block of the second document that no heading stands above. */
   beforeHeading: string;
@@ -434,29 +436,46 @@ export interface OpenPageSeed {
 
 /**
  * One question of each kind an issue holds, a project document's decision block, and the Reply
- * thread of an answered decision block, all waiting on alice, who makes the project and the issue
- * and so is their assignee. The order is the point: answering question 8 writes its block's state
- * and saves a new version of `talk.md`, and a request to approve keeps the person's turn only
- * while no write has moved the document past the version it names, so every write to `talk.md`
- * comes before question 3.
+ * thread of an answered decision block, all waiting on `login`, who makes the project and the
+ * issue and so is their assignee. The order is the point: answering question 8 writes its block's
+ * state and saves a new version of `talk.md`, and a request to approve keeps the person's turn
+ * only while no write has moved the document past the version it names, so every write to
+ * `talk.md` comes before question 3.
+ *
+ * `project` is the key of the project they are made in and `login` the reader, both the row's
+ * own (`rowKey`, `rowPerson`, e2e/test.ts), so the reader's Inbox holds these questions and no
+ * other row's. The session that asks, replies and requests the approval is the row's own too
+ * (`rowSessionId`): Dispatch keeps what a session writes by its id, for every person at once.
  */
-export async function seedOpenPage(): Promise<OpenPageSeed> {
-  await createProject({ key: OPEN_PROJECT, name: "Open page" });
-  const issue = await createIssue({ project: OPEN_PROJECT, spec: openSpec, title: "Talk week" });
-  const { artifact: talk } = await createIssueArtifact(issue.key, {
-    content: talkContent,
-    name: "talk.md",
-  });
-  const { artifact: runbook } = await createProjectDocument(OPEN_PROJECT, {
-    content: runbookContent,
-    name: "runbook.md",
-  });
+export async function seedOpenPage(project: RowKey, login: string): Promise<OpenPageSeed> {
+  const asSession = {
+    actor: { id: rowSessionId("asker"), kind: "session" as const },
+    as: "agent" as const,
+  };
+  await createProject({ key: project, name: "Open page" }, { login });
+  const issue = await createIssue({ project, spec: openSpec, title: "Talk week" }, { login });
+  const { artifact: talk } = await createIssueArtifact(
+    issue.key,
+    { content: talkContent, name: "talk.md" },
+    { login }
+  );
+  const { artifact: runbook } = await createProjectDocument(
+    project,
+    { content: runbookContent, name: "runbook.md" },
+    { login }
+  );
+  const inIssue = (block: string) => (row: InboxRow) =>
+    row.block_id === block && row.issue_key === issue.key;
   const [talkDecision, specDecision, runbookDecision, beforeHeading, answered] = await Promise.all([
-    indexedRow((row) => row.block_id === OPEN_TALK_DECISION),
-    indexedRow((row) => row.block_id === OPEN_SPEC_DECISION),
-    indexedRow((row) => row.block_id === OPEN_RUNBOOK_DECISION),
-    indexedRow((row) => row.block_id === OPEN_BEFORE_HEADING),
-    indexedRow((row) => row.block_id === OPEN_ANSWERED),
+    indexedRow(login, inIssue(OPEN_TALK_DECISION)),
+    indexedRow(login, inIssue(OPEN_SPEC_DECISION)),
+    // A project document's question belongs to the document, so it carries no issue key.
+    indexedRow(
+      login,
+      (row) => row.block_id === OPEN_RUNBOOK_DECISION && row.artifact_id === runbook.id
+    ),
+    indexedRow(login, inIssue(OPEN_BEFORE_HEADING)),
+    indexedRow(login, inIssue(OPEN_ANSWERED)),
   ]);
 
   // Question 8's answer writes `state="answered"` into its block in the answer's own
@@ -464,7 +483,7 @@ export async function seedOpenPage(): Promise<OpenPageSeed> {
   await answerAsk(
     answered.id,
     { expected_edited_at: null, selected: [ANSWERED_OPTIONS[0]] },
-    { login: "alice" }
+    { login }
   );
   await expect
     .poll(async () => {
@@ -479,7 +498,7 @@ export async function seedOpenPage(): Promise<OpenPageSeed> {
       anchor: { artifact: talk.slug, quote: "a quote points at" },
       question: "Does every talk quote its sources?",
     },
-    session
+    asSession
   );
   const quotedBlockId = quoted.anchor?.block_id;
   if (quotedBlockId === undefined || quotedBlockId === null) {
@@ -488,25 +507,28 @@ export async function seedOpenPage(): Promise<OpenPageSeed> {
   const plain = await createAsk(
     issue.key,
     { options: [{ label: "Yes" }, { label: "No" }], question: "Should the talk be recorded?" },
-    session
+    asSession
   );
-  await handAskOn(runbookDecision.id, "alice");
+  await handAskOn(runbookDecision.id, login, { login });
 
-  // The session's reply in question 8's thread, after alice's answer: her Reply thread.
+  // The session's reply in question 8's thread, after the reader's answer: their Reply thread.
   await createComment(
     issue.key,
     { ask_id: answered.id, body: "The host closes it, then." },
-    session
+    asSession
   );
   await expect
     .poll(
-      async () => ((await listMyReplies()).rows ?? []).some((row) => row.thread_id === answered.id),
-      { ...INDEX_PROBE, message: "item 8 is alice's Reply thread" }
+      async () =>
+        ((await listMyReplies({}, { login })).rows ?? []).some(
+          (row) => row.thread_id === answered.id
+        ),
+      { ...INDEX_PROBE, message: "item 8 is the reader's Reply thread" }
     )
     .toBe(true);
 
   const approval = withOpenedAsk(
-    await requestApproval(talk.id, { summary: "The talk as it stands." }, session)
+    await requestApproval(talk.id, { summary: "The talk as it stands." }, asSession)
   );
 
   const [talkHeading, specHeading, runbookHeading] = await Promise.all([

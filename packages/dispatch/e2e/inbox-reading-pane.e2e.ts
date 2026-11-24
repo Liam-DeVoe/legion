@@ -19,10 +19,7 @@ import {
   DECISION_BLOCK,
   DECISION_QUESTION,
   expectTwoColumns,
-  INBOX,
-  inboxAt,
   OPEN_BEFORE_HEADING,
-  OPEN_PROJECT,
   OPEN_RUNBOOK_HEADING,
   OPEN_SPEC_HEADING,
   OPEN_TALK_DECISION,
@@ -467,12 +464,14 @@ test("Open page opens the document of the question, at its section, for each kin
   // waits out the whole expect timeout (15 s, `e2e/expect-timeout.ts`) and the row still reaches
   // item 8: six of them outlast a row's default limit.
   test.setTimeout(180_000);
-  const seed = await seedOpenPage();
+  const project = rowKey("OPEN");
+  const me = rowPerson("alice");
+  const seed = await seedOpenPage(project, me);
 
   // 1. What decides the row's scope, before the Inbox opens. Question 1 has the shape the server
   // sends for a decision block in an issue's second document, and its Inbox row names no project
-  // document; items 1 to 7 each wait on alice, question 6 because it was handed to her. The seed
-  // waits until item 8 is her Reply thread.
+  // document; items 1 to 7 each wait on the reader, question 6 because it was handed to them. The
+  // seed waits until item 8 is their Reply thread.
   const first = (await getAsk(seed.talkDecision)).ask;
   expect(
     {
@@ -502,7 +501,7 @@ test("Open page opens the document of the question, at its section, for each kin
     seed.runbookDecision,
     seed.beforeHeading,
   ];
-  const inbox = await getInbox();
+  const inbox = await getInbox({ login: me }, { assignee: "me" });
   expect(
     inbox.find((row) => row.id === seed.talkDecision),
     "question 1's Inbox row names no project document"
@@ -512,13 +511,14 @@ test("Open page opens the document of the question, at its section, for each kin
       const row = inbox.find((listed) => listed.id === id);
       return { id, waiting_on: row?.waiting_on, waiting_on_person: row?.waiting_on_person };
     }),
-    "items 1 to 7 each wait on alice"
-  ).toEqual(questions.map((id) => ({ id, waiting_on: "human", waiting_on_person: "alice" })));
-  expect((await getAsk(seed.runbookDecision)).ask.asked_of, "question 6 is handed to alice").toBe(
-    "alice"
-  );
+    "items 1 to 7 each wait on the reader"
+  ).toEqual(questions.map((id) => ({ id, waiting_on: "human", waiting_on_person: me })));
+  expect(
+    (await getAsk(seed.runbookDecision)).ask.asked_of,
+    "question 6 is handed to the reader"
+  ).toBe(me);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });
@@ -560,7 +560,7 @@ test("Open page opens the document of the question, at its section, for each kin
       },
       {
         fragment: `#b-${seed.headings.runbook}`,
-        path: `/projects/${OPEN_PROJECT}/documents/${seed.runbookSlug}`,
+        path: `/projects/${project}/documents/${seed.runbookSlug}`,
         row: seed.runbookDecision,
         shows: () => expect(pane).toContainText(OPEN_RUNBOOK_HEADING),
       },
@@ -580,9 +580,9 @@ test("Open page opens the document of the question, at its section, for each kin
     // editor has drawn the block and the address moves from the block to its heading.
     for (const [index, item] of items.entries()) {
       if (index === 0) {
-        await page.goto(inboxAt(item.row));
+        await page.goto(ownInboxAt(item.row));
       } else {
-        await navigateInApp(page, inboxAt(item.row));
+        await navigateInApp(page, ownInboxAt(item.row));
       }
       await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", item.row);
       await item.shows();
@@ -600,7 +600,7 @@ test("Open page opens the document of the question, at its section, for each kin
       [thread, OPEN_TALK_HEADING, OPEN_SPEC_HEADING],
     ] as const) {
       const address = `${item.path}${item.fragment}`;
-      await navigateInApp(page, inboxAt(item.row));
+      await navigateInApp(page, ownInboxAt(item.row));
       await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", item.row);
       await expect(openPage).toHaveAttribute("href", address);
       await openPage.click();

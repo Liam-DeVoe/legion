@@ -814,12 +814,16 @@ export function answerAsk(
   return post("/api/v1/asks/{id}/answer", { body: input, params: { id } }, options);
 }
 
-/** `PUT /api/v1/asks/{id}/asked-of`: hands the open ask `id` to `login`, as alice does from its
- *  card. */
-export async function handAskOn(id: string, login: string): Promise<void> {
+/** `PUT /api/v1/asks/{id}/asked-of`: hands the open ask `id` to `login`, as a person does from
+ *  its card; `options` names that person, alice when absent. */
+export async function handAskOn(
+  id: string,
+  login: string,
+  options: ApiOptions = {}
+): Promise<void> {
   // The person it is handed to has signed in, which the route requires of them.
   await userHeaders(login);
-  await put("/api/v1/asks/{id}/asked-of", { body: { asked_of: login }, params: { id } });
+  await put("/api/v1/asks/{id}/asked-of", { body: { asked_of: login }, params: { id } }, options);
 }
 
 export function resolveAsk(
