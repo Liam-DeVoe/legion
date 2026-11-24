@@ -112,7 +112,9 @@ const projectReleaseErrorInFull = "project release: an error in full; the result
 // where each claim's line of the result is read from at the end, the activity report of a
 // claim's launch, which is where the background hold of an issue pod is read from (background),
 // and the session names each claim of an issue holds and whether the record holds the issue's pull
-// request merged, which the read of the issue's workspace carries to the shim (unpushedRead).
+// request merged, which the read of the issue's workspace carries to the shim (unpushedRead); and
+// the end of a deleted pod's hold streaks, which the idle pass the mark holds would otherwise end
+// only after the next boot (takePod).
 type projectReleaseStore interface {
 	PauseRefusesProjectRelease(ctx context.Context, project string) error
 	StartProjectRelease(ctx context.Context, project string, now func() time.Time, bound time.Duration) (store.ProjectRelease, []store.TakenOverIdleRelease, []store.ProjectReleaseClaim, error)
@@ -125,6 +127,7 @@ type projectReleaseStore interface {
 	ClaimActivity(ctx context.Context, token claim.Token, generation uint64) (supervise.ActivityReport, bool, error)
 	ClaimHolds(ctx context.Context, project string, token claim.Token) ([]supervise.Hold, error)
 	PullRequestMerged(ctx context.Context, issue string) (bool, error)
+	EndPodHoldStreaks(ctx context.Context, project, issue string) error
 }
 
 // releasingStore is the daemon's store as a project release reads it: the store itself, and whether

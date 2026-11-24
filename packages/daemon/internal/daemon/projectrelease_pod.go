@@ -472,7 +472,11 @@ func (run *releaseRun) passBound(pod *releasePod) (dropped []claim.Token, kept b
 // held for an operator so that no boot starts it. Otherwise the pod is deleted
 // (IssueSuspender.SuspendIssue), with an authorize the runtime calls under its pod lock that holds
 // only while the release runs and no claim of the pod is an operator's, and whose false answer
-// leaves the pod as well. A deleted pod's line takes its last read and its outcome (writeDeleted).
+// leaves the pod as well. A deleted pod's line takes its last read and its outcome (writeDeleted),
+// and the pod's hold streaks end: no hold stands on a pod that is gone, and the idle pass, which
+// would end them at its next read, is held while the mark stands, so until the next boot the
+// state would show the deleted pod's hold (store.StandingPodHoldsTx). A streak that cannot be
+// ended is logged, and stands until the idle pass reads the issue again after the next boot.
 func (r *projectReleaser) stopAndDelete(ctx context.Context, run *releaseRun, pod *releasePod, last releaseRead) {
 	tokens := releaseStopTokens(pod.stop)
 	pending := r.stopClaims(ctx, run, tokens, "the project release stops it to delete its pod")
@@ -521,6 +525,9 @@ func (r *projectReleaser) stopAndDelete(ctx context.Context, run *releaseRun, po
 	outcome := line.Outcome
 	run.mu.Unlock()
 	r.log.Info("project release: deleted an issue pod", "release", run.id, "sandbox", pod.sandbox.Name, "outcome", outcome)
+	if err := r.store.EndPodHoldStreaks(ctx, r.project, pod.sandbox.Issue); err != nil {
+		r.log.Warn("project release: could not end a deleted pod's hold streaks", "release", run.id, "issue", pod.sandbox.Issue, "error", err)
+	}
 	r.record(ctx, run)
 }
 

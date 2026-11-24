@@ -110,7 +110,7 @@ func TestAHeldStartWhosePhaseTheIssueLeftStillStartsTheClaimTheProjectReleaseSto
 			why: "this row changes the claim's source alone: the outbox's phase fence finishes the start of a claim no project release stopped"},
 		{name: "a tester of a tree that lingers", root: "LEGION-930", key: "LEGION-931", generation: 1, lingers: true,
 			by:  supervise.SuspendedByProjectRelease,
-			why: "this row changes the root's own record alone, to the one a park left: the boot leaves a lingering tree's claims to its re-admission, which starts every role of a mid-phase member (startMidPhaseMembers)"},
+			why: "this row changes the root's own record alone, to the one a park left: the boot leaves a lingering tree's claims to the first run after its re-admission, which starts every role of a mid-phase member (returnOwedMembers)"},
 		{name: "a tester of an issue that left the workflow", root: "LEGION-940", key: "LEGION-941", generation: 1, status: "backlog",
 			by:  supervise.SuspendedByProjectRelease,
 			why: "this row changes the member's status alone: the boot leaves the claims of an issue out of the workflow to its close, and the outbox starts nothing for such an issue"},

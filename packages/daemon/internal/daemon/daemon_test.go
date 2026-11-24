@@ -117,7 +117,7 @@ func testConfig(t *testing.T) config.Config {
 	// for it. zero is a value config.Load refuses (config.go:871-874, "worker_stream_port must be a
 	// positive integer"): it is a fixture, never a configuration. The derivation from a real port
 	// is pinned by TestPrepareDerivesTheWorkerStreamAddressFromWorkerStreamPort.
-	port := holdPort(t, t, "127.0.0.1", 0)
+	port := holdPort(t, "127.0.0.1", 0)
 	return config.Config{
 		Project:                                 "TEST" + randomSuffix(t),
 		Port:                                    port,
@@ -214,14 +214,12 @@ var heldPorts = struct {
 
 // holdPort listens on port of host, a free one when port is 0, and returns the port it holds,
 // failing t when it cannot bind. The listener is held until a daemon takes it through heldListen,
-// or owner ends: owner is t itself but for a rig's step, whose failure is the step's while what
-// it starts outlives it (idleWakeRig.owner). Owner's cleanup drops the listener from heldPorts
-// only while it is still the one held for its address, so it never drops a later hold of the same
-// port. It is held under net.JoinHostPort(host, port), the address the daemon builds from bind,
+// or t ends. T's cleanup drops the listener from heldPorts only while it is still the one held for
+// its address, so it never drops a later hold of the same port. It is held under net.JoinHostPort(host, port), the address the daemon builds from bind,
 // not the listener's Addr(): Go reports a 0.0.0.0 listener as [::]:<port>, the dual-stack
 // wildcard. A port a stopped daemon served binds again at once, since that daemon closed its
 // listener.
-func holdPort(t, owner *testing.T, host string, port int) int {
+func holdPort(t *testing.T, host string, port int) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
@@ -232,7 +230,7 @@ func holdPort(t, owner *testing.T, host string, port int) int {
 	heldPorts.Lock()
 	heldPorts.byAddress[address] = listener
 	heldPorts.Unlock()
-	owner.Cleanup(func() {
+	t.Cleanup(func() {
 		heldPorts.Lock()
 		if heldPorts.byAddress[address] == listener {
 			delete(heldPorts.byAddress, address)
@@ -273,7 +271,7 @@ func heldSocket(t *testing.T) (*os.File, int) {
 	return file, port
 }
 
-// takeHeldSocket takes the listener holdPortAt holds for address (heldListen) and returns a
+// takeHeldSocket takes the listener holdPort holds for address (heldListen) and returns a
 // descriptor of its own for that listening socket, closed when t ends: the descriptor is taken
 // before the listener closes, so the port is held throughout, and a test can hand it to one daemon
 // after another (heldSocketListen).
@@ -314,7 +312,7 @@ func heldSocketListen(socket *os.File, port int) func(network, address string) (
 // rebinding: it is always port 0, resolved fresh on every bind.
 func rebindHeldPorts(t *testing.T, cfg *config.Config) {
 	t.Helper()
-	cfg.Port = holdPort(t, t, "127.0.0.1", 0)
+	cfg.Port = holdPort(t, "127.0.0.1", 0)
 	cfg.DaemonURL = "http://127.0.0.1:" + strconv.Itoa(cfg.Port)
 }
 
