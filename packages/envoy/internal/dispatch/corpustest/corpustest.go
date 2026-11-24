@@ -233,7 +233,16 @@ func (c *Corpus) Later(document Document, err error) bool {
 // finder's error on any of them fails the test and the document is not taken.
 func (c *Corpus) Quotes(document Document, quotes Quotes) ([]string, bool) {
 	c.t.Helper()
-	once := func(candidate string) bool { return Once(quotes.Text, candidate) }
+	// once is Once over the text, kept per candidate: the loop below asks again of each candidate
+	// Pick took, and each ask counts the whole text.
+	counted := map[string]bool{}
+	once := func(candidate string) bool {
+		if is, ok := counted[candidate]; ok {
+			return is
+		}
+		counted[candidate] = Once(quotes.Text, candidate)
+		return counted[candidate]
+	}
 	picked, need := quotes.Pick(once)
 	if len(picked) < need {
 		c.short++

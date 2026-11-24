@@ -20,16 +20,16 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// TestStatementTimings measures this package's changed statements on the seeded measurement
-// database (benchtime), which DISPATCH_BENCH_DATABASE_URL names. CI sets that variable in one
-// step, envoy-go's statement-timing step, which seeds the database at --scale 0.01 and runs this
-// test by name; envoy-go's unit step, which runs this package, skips it by name.
-// api/search_bench_test.go and api/related_recall_test.go are gated the same way. The test
-// measures the pairs that hold at that scale, the two backlink counts and refs.Edges' in reads,
-// and stops there; every pair below, the references read's, the loaders', the index pairs and the
-// probe fixture's among them, is measured by BenchmarkStatementTimings, a tool, on a seed of
-// --scale 1, where the rest were sized (statement_timing_bench_test.go says why they do not hold
-// at 0.01).
+// TestStatementTimings checks, on the seeded measurement database (benchtime), which
+// DISPATCH_BENCH_DATABASE_URL names, what this package's statement timings rest on, and times
+// nothing: the seed holds each subject the pairs read, each head statement binds the arguments
+// its pair holds it to (timedEdgesRead.sides, timedLoader.statement), Closure sends its out
+// statement and then its in statement first, and each graph read passes each loader a list. CI
+// sets that variable in one step, envoy-go's statement-timing step, which seeds the database at
+// --scale 0.01 and runs this test by name; envoy-go's unit step, which runs this package, skips it
+// by name. api/search_bench_test.go and api/related_recall_test.go are gated the same way. Every
+// pair below is measured by BenchmarkStatementTimings, a tool: a pair's verdict is the order of
+// two medians, which a runner's load decides (statement_timing_bench_test.go says what was read).
 //
 // A pair of one text with itself measures no change and passes or fails by chance, so a read whose
 // text is main's is no pair of main's text against the head's: refs.Edges' out reads and
@@ -149,10 +149,9 @@ func TestStatementTimings(t *testing.T) {
 	statementTimings(t, false)
 }
 
-// statementTimings measures the pairs TestStatementTimings describes: with scaleOne false, the
-// ones that hold on the seed CI writes, TestStatementTimings' share, and with it true every pair,
-// BenchmarkStatementTimings' share.
-func statementTimings(t testing.TB, scaleOne bool) {
+// statementTimings reads and checks every statement TestStatementTimings describes, and with
+// measure true times every pair of them (BenchmarkStatementTimings).
+func statementTimings(t testing.TB, measure bool) {
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	subjects := runner.Subjects()
 
@@ -162,9 +161,11 @@ func statementTimings(t testing.TB, scaleOne bool) {
 		t.Fatal("backlinkArms declares no arm for an issue, so the issue read's count has no statement")
 	}
 	issueIDs := []string{subjects.Issue}
-	runner.Pair(t, "refs.BacklinkCounts over an issue",
-		benchtime.Statement{SQL: docstest.ViewBacklinkCountSQL("graph_edges", "issue", false), Args: []any{"issue", issueIDs, nodeKinds}},
-		benchtime.Statement{SQL: issueCount, Args: []any{issueIDs, nodeKinds, VisibilityArg(model.Actor{})}})
+	if measure {
+		runner.Pair(t, "refs.BacklinkCounts over an issue",
+			benchtime.Statement{SQL: docstest.ViewBacklinkCountSQL("graph_edges", "issue", false), Args: []any{"issue", issueIDs, nodeKinds}},
+			benchtime.Statement{SQL: issueCount, Args: []any{issueIDs, nodeKinds, VisibilityArg(model.Actor{})}})
+	}
 
 	// The ask page's count: every ask of one issue at once, each ask's own clarification thread
 	// and its own parts excluded, which is what the page's cards show. Its subject is the issue
@@ -176,9 +177,11 @@ func statementTimings(t testing.TB, scaleOne bool) {
 	if !ok {
 		t.Fatal("backlinkArms declares no arm for an ask, so the ask page's count has no statement")
 	}
-	runner.Pair(t, "refs.BacklinkCounts over an issue's asks",
-		benchtime.Statement{SQL: docstest.ViewBacklinkCountSQL("graph_edges", "ask", true), Args: []any{"ask", askIDs, nodeKinds, AskBacklinkExclusions}},
-		benchtime.Statement{SQL: askCount, Args: []any{askIDs, nodeKinds, VisibilityArg(model.Actor{}), AskBacklinkExclusions}})
+	if measure {
+		runner.Pair(t, "refs.BacklinkCounts over an issue's asks",
+			benchtime.Statement{SQL: docstest.ViewBacklinkCountSQL("graph_edges", "ask", true), Args: []any{"ask", askIDs, nodeKinds, AskBacklinkExclusions}},
+			benchtime.Statement{SQL: askCount, Args: []any{askIDs, nodeKinds, VisibilityArg(model.Actor{}), AskBacklinkExclusions}})
+	}
 
 	// The edges pairs' subjects, each with the count it was chosen by.
 	message := timingSubject(t, runner, "the root message with the most replies", "replies", `
@@ -228,13 +231,11 @@ func statementTimings(t testing.TB, scaleOne bool) {
 		strictSides[index][0], strictSides[index][1] = read.sides(t, runner)
 	}
 	referencedByBefore, referencedByAfter := referencedBy.sides(t, runner)
-	for index, read := range strict {
-		runner.Pair(t, read.name, strictSides[index][0], strictSides[index][1])
-	}
-	runner.PairWithin(t, referencedBy.name, []benchtime.Statement{referencedByBefore}, []benchtime.Statement{referencedByAfter})
-	if !scaleOne {
-		// Every pair past this one holds only at --scale 1 (BenchmarkStatementTimings).
-		return
+	if measure {
+		for index, read := range strict {
+			runner.Pair(t, read.name, strictSides[index][0], strictSides[index][1])
+		}
+		runner.PairWithin(t, referencedBy.name, []benchtime.Statement{referencedByBefore}, []benchtime.Statement{referencedByAfter})
 	}
 
 	// The references read over its two subjects, and the four loaders it keys over the lists the
@@ -257,6 +258,12 @@ func statementTimings(t testing.TB, scaleOne bool) {
 		askLoader.passedBy(t, runner, documentRead),
 		blockLoader.passedBy(t, runner, documentRead),
 		messageLoader.passedBy(t, runner, messageRead),
+	}
+	if !measure {
+		for _, list := range lists {
+			list.check(t, runner)
+		}
+		return
 	}
 	for _, closure := range closures {
 		closure.measure(t, runner)
@@ -619,6 +626,16 @@ func (list loaderList) measure(t testing.TB, runner *benchtime.Runner) {
 	list.pair(t, runner, list.read+" first, then "+list.loader.table+" in md5 order",
 		list.filled(t, runner, contracts.ReferenceTargetsMax))
 	list.pair(t, runner, list.read, list.ids)
+}
+
+// check records the loader's statement for each list measure pairs it over, which fails unless
+// the loader sends one statement binding that list and the acting credential (statement), and
+// times none of them.
+func (list loaderList) check(t testing.TB, runner *benchtime.Runner) {
+	t.Helper()
+	for _, ids := range [][]string{list.ids[:1], list.filled(t, runner, contracts.ReferenceTargetsMax), list.ids} {
+		list.loader.statement(t, runner, ids)
+	}
 }
 
 // filled is the first size ids of list, and where the list holds fewer, the rows of the loader's

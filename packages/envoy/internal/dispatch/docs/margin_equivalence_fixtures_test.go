@@ -235,24 +235,28 @@ func (a seedAnchor) record() MarkRecord {
 	return record
 }
 
-// shown is text as a message may carry it: whole for a generated document, its length and sha256
-// for a private one.
+// shown is text as a message may carry it: whole for a generated document, hiddenText for a
+// private one.
 func (d *equivalenceDocument) shown(text string) string {
 	if d.private {
-		return fmt.Sprintf("<%d bytes, sha256 %x>", len(text), sha256.Sum256([]byte(text)))
+		return hiddenText(text)
 	}
 	return text
 }
 
+// hiddenText is text as a message about a private document carries it: its length and sha256.
+func hiddenText(text string) string {
+	return fmt.Sprintf("<%d bytes, sha256 %x>", len(text), sha256.Sum256([]byte(text)))
+}
+
 // privateError is an error about a private document as a message may carry it: its type, and its
-// text's length and sha256 as shown gives them, quoted, so the corpus counts the refusals of one
-// type together (corpustest counts a refusal under its text before its first quote). errors.Is
-// reads the error it holds.
+// text as hiddenText gives it, quoted, so the corpus counts the refusals of one type together
+// (corpustest counts a refusal under its text before its first quote). errors.Is reads the error
+// it holds.
 type privateError struct{ err error }
 
 func (e privateError) Error() string {
-	text := e.err.Error()
-	return fmt.Sprintf("%T %q", e.err, fmt.Sprintf("<%d bytes, sha256 %x>", len(text), sha256.Sum256([]byte(text))))
+	return fmt.Sprintf("%T %q", e.err, hiddenText(e.err.Error()))
 }
 
 func (e privateError) Unwrap() error { return e.err }

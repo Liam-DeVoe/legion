@@ -183,7 +183,7 @@ func TestDifferentialCompare(t *testing.T) {
 		// cannot read is left to that engine's own count, and a revision with no display read
 		// dumps neither tree and answers neither gate. So is a document the head refuses to
 		// store (its upload's refusal, Write): Dispatch holds no such document for either read
-		// to show, the schema refuses it because the readers part on it, and the gates above
+		// to show, the schema refuses it because the readers part on it, and the gates below
 		// fail a head that refuses what its base stored.
 		if head.dump.Write != "" {
 			counts["the head refuses to store"]++

@@ -30,7 +30,7 @@ import (
 
 // dismissedScaleExplained is one statement the test names, with what its plan is held to: the
 // index it must read, the table it may not scan, and the column no Sort key may name. Each is
-// matched by its text to a statement the operation's request sent (countDismissedScaleOperation),
+// matched by its text to a statement the operation's request sent (dismissedScaleTrace),
 // and a named statement the request did not send fails the row, so this list cannot fall behind
 // the routes. An empty noSortOn holds the plan to no Sort node at all, which is the rule
 // replies_plan_test.go holds every Reply-half read to; an Agent-half read carries sorts of the

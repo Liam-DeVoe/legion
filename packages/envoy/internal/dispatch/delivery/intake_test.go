@@ -349,7 +349,8 @@ func intakeTestClient(t testing.TB) *bus.Client {
 // test that means to publish into a bound consumer does not race the bind. Its one bound is what
 // the test binary's deadline leaves less boundDurableSpare (testwait.Remaining): a bind that is
 // merely slow on a loaded machine still passes, and one that never comes fails the row with time
-// left for its cleanups.
+// left for its cleanups. A benchmark's *testing.B reads no deadline, so there the wait has no
+// bound and ends on the bind alone, as every wait of a tool a person runs does (testwait).
 func awaitBoundDurable(t testing.TB, natsClient *bus.Client) {
 	t.Helper()
 	var state string
