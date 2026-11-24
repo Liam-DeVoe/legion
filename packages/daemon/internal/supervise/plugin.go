@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"context"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
@@ -393,7 +394,7 @@ func (m *Machine) relaunchStale(ctx context.Context, kind WakeKind, trigger stri
 // go (launchNow, runWake, letGo).
 func (m *Machine) relaunchMarked(ctx context.Context, kind WakeKind, interruption string) error {
 	m.markPluginRelaunch(kind)
-	_, err := m.replaceProcess(ctx, interruption, ordinaryEnd, endStalePlugin)
+	_, err := m.replaceProcess(ctx, interruption, ordinaryEnd, endStalePlugin, letGoAtItsTurn)
 	return err
 }
 
@@ -582,7 +583,7 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 	}
 	var err error
 	if m.claim.PluginRelaunchFor == m.deps.PluginContract {
-		err = m.relaunchAfterFailure(ctx, CauseStalePlugin, endStalePlugin)
+		err = m.relaunchAfterFailure(ctx, CauseStalePlugin, endStalePlugin, time.Time{})
 	} else {
 		err = m.relaunchStale(ctx, WakeLaunch, "registration")
 	}

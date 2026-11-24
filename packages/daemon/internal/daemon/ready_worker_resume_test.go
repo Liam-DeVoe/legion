@@ -311,6 +311,7 @@ func TestEveryComeBackInANewSessionGivesAPhaseHolderItsTaskWithinTwoMinutes(t *t
 // queues no start, the claim holds no task, and the record writes it no task number, so no value
 // is written for it. It waits, and its session's resume reminder wakes it while its phase is open.
 func TestEveryComeBackInTheSessionThatFinishedItsTaskGivesThePhaseHolderNothing(t *testing.T) {
+	t.Parallel()
 	for name, comeBack := range comeBacks {
 		t.Run(name, func(t *testing.T) {
 			rig := newReadyWorkerRig(t)

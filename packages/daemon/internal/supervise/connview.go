@@ -501,6 +501,17 @@ func (m *Machine) answerView(ctx context.Context, streaming bool) error {
 // after a hello no answer followed, or retired as a shim that never reconnected with no hello since
 // its close, a held suspension stopping the process in either place, and the task taken back as a
 // cut turn (interrupted).
+//
+// A claim holding a replacement of its live process for the report of its take's turn
+// (heldReplacement: a repoint after that turn ended, or a parked replacement whose wake's turn came
+// after it) reaches this deadline as that wait's bound, over a view not whole, where the report
+// wait's own bound does not run, as when the stale address is the worker stream's, which the shim
+// cannot dial. A suspension the deadline runs above ends the process instead. Otherwise the task is
+// taken back with the note of a cut turn and the held replacement runs: the repoint's own
+// relaunch, charged nothing, before the hello paths below, since a stale observation is never
+// charged (replacementAtDeadline). The relaunch of a hello no answer followed that the pacing
+// parks is held at its turn the same way, and so is bounded by a deadline only where one stands
+// then (replacementHolds): the park took this one (waitOnMachine).
 func reconnectDeadline(m *Machine, ctx context.Context, _ Event) error {
 	askedTurn := m.askTurn && !m.askedAt.IsZero()
 	if askedTurn && m.inTurn() && m.connSeen != viewWhole {
@@ -520,9 +531,16 @@ func reconnectDeadline(m *Machine, ctx context.Context, _ Event) error {
 		return m.refreshPlugin(ctx, m.askTrigger, nil, atReconnectDeadline)
 	}
 	m.markTurnUnseen()
+	// A replacement held for the report of the take's turn over this view not whole (repoint,
+	// runWake) is bounded by this deadline, the report wait's own bound judging only a whole view:
+	// it takes the task back with the note of a cut turn and runs, uncharged, rather than charge
+	// the no-hello path's CauseNeverReconnected (replacementAtDeadline).
+	if m.heldReplacement != nil {
+		return m.replacementAtDeadline(ctx)
+	}
 	if m.connSeen == viewAsked {
 		m.log.Warn(viewUnansweredRelaunchLine, "task", pendingNumber(m.claim.Pending))
-		end, err := m.replaceProcess(ctx, "the agent did not say whether it is in a turn by the reconnect deadline of its shim's hello", ordinaryEnd, endUnanswered)
+		end, err := m.replaceProcess(ctx, "the agent did not say whether it is in a turn by the reconnect deadline of its shim's hello", ordinaryEnd, endUnanswered, heldAtItsTurn)
 		if end == EndNotMade {
 			m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
 		}

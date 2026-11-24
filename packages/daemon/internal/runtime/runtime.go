@@ -760,6 +760,14 @@ type Observation struct {
 	// pod is the only thing the kubelet ends this way. It is a field rather than a shape of Detail
 	// for the reason Displaced is: Detail is prose for an operator and nothing else.
 	OutOfMemory bool
+	// DaemonAPIMoved is a StaleAddress whose moved addresses include the daemon's own API
+	// (LEGION_DAEMON_URL): the process holds an address of the daemon a process launched now is
+	// not handed, so nothing it sends the daemon over HTTP — a take, or the report of a turn —
+	// reaches it any more. The supervisor holds no relaunch of such a process for the report of
+	// its take's turn, which can never come (supervise's repoint). Only the Sandbox runtime
+	// reports it, as it alone reports StaleAddress. It is a field rather than a shape of Detail
+	// for the reason Displaced is: Detail is prose for an operator and nothing else.
+	DaemonAPIMoved bool
 	// PodEnd is the pod's own reason for the end and the kubelet's message with it, as
 	// `<reason>: <message>`, the reason alone where there is no message, and empty where the pod
 	// carries no reason: `Evicted: The node was low on resource: ephemeral-storage. ...` is the

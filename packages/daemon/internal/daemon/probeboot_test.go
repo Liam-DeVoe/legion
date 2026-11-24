@@ -221,6 +221,7 @@ func TestProbeBootRunsTheDaemonsImageProbeAfterTheClusterCheck(t *testing.T) {
 // probe-boot opens the task bucket a booting daemon opens, and creates it where it does not exist,
 // as the daemon's own user: the bucket is there once it has passed, at the shape a daemon gives it.
 func TestProbeBootCreatesTheTaskBucketABootingDaemonOpens(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (probeBootConfig).
 	var mu sync.Mutex
 	var requested []string
 	server := agentSandboxCluster(t, &requested, &mu)
@@ -260,6 +261,7 @@ func TestProbeBootCreatesTheTaskBucketABootingDaemonOpens(t *testing.T) {
 // and the pane seed's user where that is who the daemon connects as, before it probes any image.
 // The refused-grant server is a container, so CI's Docker runs this.
 func TestProbeBootNamesAMissingTaskBucketGrant(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (probeBootConfig).
 	taskBucketRefusals(t, func(t *testing.T, configure func(config.Config) config.Config, want []string) {
 		var mu sync.Mutex
 		var requested []string

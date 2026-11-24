@@ -7,6 +7,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -46,17 +47,18 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// 193, 202, 205, 213, 219, 220, 223 and 231 are constants rather than their numbers, because
-// the entries that added them name them (shapedAnswersContract, the shaped answers' entry;
+// 193, 202, 205, 213, 219, 220, 228, 240 and 252 are constants rather than their numbers,
+// because the entries that added them name them (shapedAnswersContract, the shaped answers' entry;
 // repositoriesLiveContract, dispatch://INFRA-4401's; childRouteRemovedContract,
 // dispatch://INFRA-3178's; cachesSourceContract, dispatch://INFRA-4036's; OwnerPlanContract, the
-// owner's plan's; assignmentPlanContract, the experiment group's; supervise.TaskTakeContract,
-// dispatch://INFRA-2811's; and taskHoldsContract, dispatch://INFRA-4130's, which is this daemon's
-// own contract): a renumber of any of those entries moves its constant and this list with it, and
-// moving one of the two alone would describe a shape at a contract no entry declares. The other
-// entries above 193 follow them as numbers: 199 is version.go's entry for INFRA-4605, and 217 its
-// entry for dispatch://INFRA-3531 and dispatch://INFRA-4567.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, supervise.TaskTakeContract, taskHoldsContract}
+// owner's plan's; assignmentPlanContract, the experiment group's; intakeGiveUpsContract
+// (dispatch://INFRA-1575's 228); supervise.TaskTakeContract, dispatch://INFRA-2811's; and
+// taskHoldsContract, dispatch://INFRA-4130's, which is this daemon's own contract): a renumber
+// of any of those entries moves its constant and this list with it, and moving one of the two
+// alone would describe a shape at a contract no entry declares. The other entries above 193
+// follow them as numbers: 199 is version.go's entry for INFRA-4605, and 217 its entry for
+// dispatch://INFRA-3531 and dispatch://INFRA-4567.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract, supervise.TaskTakeContract, taskHoldsContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -83,6 +85,8 @@ const (
 	AnswerProjectPause       AnswerID = "project-pause"
 	AnswerProjectResume      AnswerID = "project-resume"
 	AnswerPlanRegister       AnswerID = "plan-register"
+	AnswerIntakeReplay       AnswerID = "intake-replay"
+	AnswerIntakeDiscard      AnswerID = "intake-discard"
 	AnswerTask               AnswerID = "task"
 	AnswerTake               AnswerID = "take"
 )
@@ -141,7 +145,8 @@ var typedSettings = []TypedSetting{
 }
 
 // Answers is one row per answer a plugin parses. The operator's claim answers, the operator's
-// pause and resume answers (`legion project pause|resume`) and the controller's secret and
+// pause and resume answers (`legion project pause|resume`), the operator's replay and discard of
+// the intake's give-ups (`legion intake replay|discard`) and the controller's secret and
 // credential answers are no rows: no plugin parses them.
 var Answers = []Answer{
 	// Older than the floor: `GET /legion/v1/state` predates every numbered entry of version.go.
@@ -160,7 +165,7 @@ var Answers = []Answer{
 	{ID: AnswerRegisterController, Routes: []string{"POST /legion/v1/claims/register"}, Since: ServingFloor},
 	// Older than the floor: 204 and nothing after the headers. Three of the five routes are newer
 	// — `claims/ready-for-update` is version.go's 46, `claims/activity` its 48 and
-	// `claims/task-seen` its 223 (supervise.TaskTakeContract) — but the answer they share is older
+	// `claims/task-seen` its 240 (supervise.TaskTakeContract) — but the answer they share is older
 	// than any of them.
 	{ID: AnswerNoContent, Routes: []string{
 		"POST /legion/v1/claims/ready",
@@ -215,11 +220,18 @@ var Answers = []Answer{
 	// version.go's 219: the plan register_plan took (`api.PlanRegisterResponse`). The route
 	// arrives with the answer, so no contract below 219 records either.
 	{ID: AnswerPlanRegister, Routes: []string{"POST /legion/v1/plans/register"}, Since: OwnerPlanContract},
-	// version.go's 223: a worker's read of its claim's task value, the value the task bucket holds
+	// version.go's 228: what the controller's replay of the intake's give-ups did, record by
+	// record, and how many of the selection are left (`api.IntakeReplayResponse`). The route
+	// arrives with the answer, so no contract below 228 records either.
+	{ID: AnswerIntakeReplay, Routes: []string{"POST /legion/v1/intake/replay"}, Since: intakeGiveUpsContract},
+	// version.go's 228: the ids the controller's discard of the intake's give-ups closed
+	// (`api.IntakeDiscardResponse`), arrived with its route as the replay's answer did.
+	{ID: AnswerIntakeDiscard, Routes: []string{"POST /legion/v1/intake/discard"}, Since: intakeGiveUpsContract},
+	// version.go's 240: a worker's read of its claim's task value, the value the task bucket holds
 	// and the number of the last task the claim finished (`claim.TaskResponse`). The route arrives
-	// with the answer, so no contract below 223 records either.
+	// with the answer, so no contract below 240 records either.
 	{ID: AnswerTask, Routes: []string{"POST /legion/v1/claims/task"}, Since: supervise.TaskTakeContract},
-	// version.go's 223: the answer to a worker's take of the task its value names, accepted with
+	// version.go's 240: the answer to a worker's take of the task its value names, accepted with
 	// the text, refused naming the hold or dropped (`claim.TakeResponse`), arrived with its route
 	// as the task read's answer did.
 	{ID: AnswerTake, Routes: []string{"POST /legion/v1/claims/take"}, Since: supervise.TaskTakeContract},
@@ -288,13 +300,13 @@ type EnumeratedValue struct {
 // gained `caches` at dispatch://INFRA-4036's contract (cachesSourceContract), `holdReason`, which
 // gained `task-stopped` and `children` at OwnerPlanContract, `admission.held.*.reason`, which
 // gained `children_before_retro` and `task_stopped` there, and a claim's failure cause, which
-// gained `never_reconnected` at 223, so every other list is recorded whole at its own field's
+// gained `never_reconnected` at 240, so every other list is recorded whole at its own field's
 // arrival. (`suspendedBy` gained `released` at 48 and is no row here: the operator claim answers
 // carry it and no plugin parses them.)
 var EnumeratedFields = enumeratedFields()
 
 // enumeratedFields is every row the table holds: the state's own, the record's taken from them,
-// and the registration's, in that order.
+// the registration's and the replay's, in that order.
 //
 // The record's rows are taken rather than written, because the record route answers the very
 // value the whole-project body holds under `issues.<key>` (shaping.go's shapeIssue): every
@@ -311,9 +323,14 @@ func enumeratedFields() []EnumeratedField {
 		}
 		fields = append(fields, EnumeratedField{Answer: AnswerIssueRecord, KeyPath: path, Values: field.Values})
 	}
-	// `role` of the claim a registration issued (claim.RegisterResponse.Role). The controller's
-	// registration answers `controller` under a `z.literal` and is no row.
-	return append(fields, EnumeratedField{Answer: AnswerRegister, KeyPath: "role", Values: claimRoles})
+	return append(fields,
+		// `role` of the claim a registration issued (claim.RegisterResponse.Role). The
+		// controller's registration answers `controller` under a `z.literal` and is no row.
+		EnumeratedField{Answer: AnswerRegister, KeyPath: "role", Values: claimRoles},
+		// `outcome` of one record the controller's replay took, how its replay ended
+		// (api.ReplayedGiveUpView.Outcome, intake.ReplayOutcome). The answer arrived whole at
+		// intakeGiveUpsContract, so no older caller is served a value of it.
+		EnumeratedField{Answer: AnswerIntakeReplay, KeyPath: "replayed.*.outcome", Values: replayOutcomes})
 }
 
 // issueKeyPath is the path the whole-project body writes one issue's fields under. The record
@@ -322,7 +339,7 @@ func enumeratedFields() []EnumeratedField {
 const issueKeyPath = "issues.*."
 
 // stateEnumeratedFields is every enumerated field of the state, the answer that carries all but
-// one of them. Each row under issueKeyPath is a row of the record answer too (enumeratedFields).
+// two of them. Each row under issueKeyPath is a row of the record answer too (enumeratedFields).
 var stateEnumeratedFields = []EnumeratedField{
 	// `phase` of an issue, where the workflow holds it (api.Issue.Phase, LEGION_PHASES).
 	{Answer: AnswerState, KeyPath: "issues.*.phase", Values: phases},
@@ -383,7 +400,7 @@ var stateEnumeratedFields = []EnumeratedField{
 	{Answer: AnswerState, KeyPath: "paused.waitsOn.*.role", Values: pauseStopRoles},
 	// `role` of one claim whose task value nobody reported seeing (api.UnseenTaskValue.Role). It
 	// arrived with `unseenTaskValues`, which is served down below that contract whole
-	// (shaping.go's withoutUnseenTaskValues), so no body below 223 carries a value of it.
+	// (shaping.go's withoutUnseenTaskValues), so no body below 240 carries a value of it.
 	{Answer: AnswerState, KeyPath: "unseenTaskValues.*.role", Values: unseenTaskRoles},
 	// `runtime` of the registered controller's locator, the runtime this daemon runs under
 	// (api.ControllerLocator.Runtime).
@@ -413,7 +430,7 @@ var stateEnumeratedFields = []EnumeratedField{
 	// failed the claim chose (api.ClaimFailureView.Cause, supervise.FailureCause). Both arrived
 	// with the decided record and are served down below that contract whole
 	// (shaping.go's withoutRecordFields), and the architect's view and each worker's carry the
-	// one field. Their list grew: `never_reconnected` arrived at 223, after the field, and is
+	// one field. Their list grew: `never_reconnected` arrived at 240, after the field, and is
 	// served as `never_registered` below that contract (shaping.go's withoutNeverReconnected).
 	{Answer: AnswerState, KeyPath: "issues.*.architect.failure.cause", Values: failureCauses},
 	{Answer: AnswerState, KeyPath: "issues.*.workers.*.claim.failure.cause", Values: failureCauses},
@@ -451,6 +468,11 @@ var stateEnumeratedFields = []EnumeratedField{
 	// which added `task-stopped` and `children`; an issue held for either is served without
 	// its `holdReason` below that contract (shaping.go's withoutUnadmittedHoldReason).
 	{Answer: AnswerState, KeyPath: "issues.*.holdReason", Values: holdReasons},
+	// `reason` of one open give-up of the intake, why it gave the message up (api.IntakeGiveUpView,
+	// record.IntakeGiveUpReason). It arrived with `intakeGiveUps`, which is served down below that
+	// contract whole (shaping.go's withoutIntakeGiveUps), so no body below 228 carries a value of
+	// it.
+	{Answer: AnswerState, KeyPath: "intakeGiveUps.newest.*.reason", Values: intakeGiveUpReasons},
 }
 
 // valuesFrom is every value of a field whose list has not moved since the field arrived: each
@@ -533,8 +555,8 @@ var workflowPhases = valuesFrom(recordFieldsContract,
 // later arrives at its own contract and not at this one, and the list grew once:
 // `never_reconnected`, a claim whose shim never said hello again within the reconnect deadline,
 // after a daemon start restored it or after its connection closed over a pending task, arrived at
-// supervise.TaskTakeContract (version.go's 223). So it is written out value by value, sorted by
-// value, as waitAnswers is, and a caller below 223 is served the word as `never_registered`
+// supervise.TaskTakeContract (version.go's 240). So it is written out value by value, sorted by
+// value, as waitAnswers is, and a caller below 240 is served the word as `never_registered`
 // (shaping.go's withoutNeverReconnected).
 var failureCauses = []EnumeratedValue{
 	{Value: string(supervise.CauseDied), Since: recordFieldsContract},
@@ -722,3 +744,18 @@ var cacheStates = valuesFrom(ServingFloor, "starting", "cloning", "ready", "fail
 // each live entry's cache takes: no `live` is served below that contract at all (shaping.go's
 // withoutRepositoriesLive), so the values arrived with the key.
 var liveCacheStates = valuesFrom(repositoriesLiveContract, "starting", "cloning", "ready", "failing", "refused")
+
+// intakeGiveUpReasons is every word of an open give-up's `reason`, recorded at
+// intakeGiveUpsContract, the contract `intakeGiveUps` arrived at. It names each of the record
+// package's constants, so a reason added there later is no value of this list until the contract
+// that adds it records it here.
+var intakeGiveUpReasons = valuesFrom(intakeGiveUpsContract,
+	record.GiveUpBound, record.GiveUpDidNotEnd, record.GiveUpRetention, record.GiveUpUndecodable,
+	record.GiveUpConsumerMovedPast)
+
+// replayOutcomes is every way the replay of one give-up can end, the `outcome` of each record
+// the controller's replay answers, recorded at intakeGiveUpsContract, the contract that answer
+// arrived at (AnswerIntakeReplay). It names each constant for the reason intakeGiveUpReasons
+// does.
+var replayOutcomes = valuesFrom(intakeGiveUpsContract,
+	intake.ReplayApplied, intake.ReplayAlreadyApplied, intake.ReplayNoFact, intake.ReplayFailed)

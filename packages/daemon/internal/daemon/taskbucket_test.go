@@ -360,6 +360,7 @@ func (w *bucketWorker) reattach() {
 // nothing, a value written into its key is deleted while the same write into another project's
 // key stands.
 func TestTaskBucketRepairsOnlyItsOwnProjectsKeys(t *testing.T) {
+	t.Parallel()
 	r := newBucketRig(t)
 	r.boot()
 	w := r.spawn("LEGION-1", "Say hello.")
@@ -429,6 +430,7 @@ func TestTaskBucketRepairsOnlyItsOwnProjectsKeys(t *testing.T) {
 // purge every reader of the bucket would hold one record per claim that ever had a task, for the
 // bucket's whole life. A marker younger than the bound stands.
 func TestTaskBucketPurgesItsOwnProjectsOldDeleteMarkersAlone(t *testing.T) {
+	t.Parallel()
 	const markerLife = 2 * time.Second
 	r := newBucketRig(t)
 	r.o.taskBucketMarkerLife = markerLife
@@ -458,6 +460,7 @@ func TestTaskBucketPurgesItsOwnProjectsOldDeleteMarkersAlone(t *testing.T) {
 // A delete marker younger than the bound stands: a listener whose watch is replaying, or whose
 // session was away, still reads the delete that tells it the claim holds no task.
 func TestTaskBucketLeavesADeleteMarkerYoungerThanTheBound(t *testing.T) {
+	t.Parallel()
 	r := newBucketRig(t)
 	r.o.taskBucketMarkerLife = time.Hour
 	r.boot()
@@ -481,6 +484,7 @@ func TestTaskBucketLeavesADeleteMarkerYoungerThanTheBound(t *testing.T) {
 // claims/task after the value was written and written again, and is handed the bucket's latest
 // revision under the bucket's own epoch, which it reports seen and takes.
 func TestTaskBucketValueLostToARelayIsReadFromClaimsTaskAtItsLatestRevision(t *testing.T) {
+	t.Parallel()
 	r := newBucketRig(t)
 	r.boot()
 	w := r.spawn("LEGION-1", "")
@@ -545,11 +549,13 @@ func valueRepairedOnce(t *testing.T, change func(r *bucketRig, key string, numbe
 // A value another writer changed to another number is written again from the record, once, under
 // the record's own number.
 func TestTaskValueWrittenAgainOnceWhenItDiffersFromTheRecord(t *testing.T) {
+	t.Parallel()
 	valueRepairedOnce(t, func(r *bucketRig, key string, number uint64) { r.put(key, number+1) })
 }
 
 // A value another writer deleted is written again from the record, once, under its own number.
 func TestTaskValueWrittenAgainOnceWhenDeleted(t *testing.T) {
+	t.Parallel()
 	valueRepairedOnce(t, func(r *bucketRig, key string, _ uint64) { r.remove(key) })
 }
 
@@ -557,6 +563,7 @@ func TestTaskValueWrittenAgainOnceWhenDeleted(t *testing.T) {
 // the record owes is written into it once, under the record's own number; the worker reads it at
 // the new epoch and takes it.
 func TestTaskValueWrittenFromTheRecordWhenTheBucketIsCreatedAgain(t *testing.T) {
+	t.Parallel()
 	r := newBucketRig(t)
 	r.boot()
 	w := r.spawn("LEGION-1", "Say hello.")
@@ -592,6 +599,7 @@ func TestTaskValueWrittenFromTheRecordWhenTheBucketIsCreatedAgain(t *testing.T) 
 // about it, and the restarted daemon's boot read finds the bucket holding the record's own last
 // write, writes nothing, and the worker reconnects and takes that same revision.
 func TestTaskValueRestartWithTheValueStandingWritesNothing(t *testing.T) {
+	t.Parallel()
 	r := newBucketRig(t)
 	r.boot()
 	w := r.spawn("LEGION-1", "Say hello.")
@@ -623,6 +631,7 @@ func TestTaskValueRestartWithTheValueStandingWritesNothing(t *testing.T) {
 // hold, the restarted daemon's boot writes nothing for a value its worker asked at and was refused,
 // and the ready after the restart ends the hold, which writes the value once.
 func TestTaskValueAHoldThatRefusedBeforeARestartIsWrittenOnceAfter(t *testing.T) {
+	t.Parallel()
 	r := newBucketRig(t)
 	r.boot()
 	w := r.spawn("LEGION-1", "Say hello.")
@@ -657,6 +666,7 @@ func TestTaskValueAHoldThatRefusedBeforeARestartIsWrittenOnceAfter(t *testing.T)
 // worker asked at the value's latest revision and asks once per revision, and the worker takes it
 // exactly once, with the provider error's note in front of its text.
 func TestTaskValueARestartDuringAProviderErrorsWaitWritesOnceAndIsTakenOnce(t *testing.T) {
+	t.Parallel()
 	r := newBucketRig(t)
 	r.boot()
 	w := r.spawn("LEGION-1", "Say hello.")
@@ -708,6 +718,7 @@ func TestTaskValueARestartDuringAProviderErrorsWaitWritesOnceAndIsTakenOnce(t *t
 // that answered nothing would arm no bound until a turn frame or the reconnect deadline
 // (supervise's connview.go).
 func TestTaskValueARestartDuringACompactionWritesOnceAndIsTakenOnce(t *testing.T) {
+	t.Parallel()
 	r := newBucketRig(t)
 	r.cfg.WorkerTakeTimeout, r.cfg.WorkerTurnStartTimeout = 5*time.Minute, 25*time.Minute
 	r.o.clock = &heldClock{}
@@ -791,6 +802,7 @@ func putStoredClaim(t *testing.T, cfg config.Config, c supervise.Claim) {
 // The line a daemon whose configuration names no NATS says at boot and `legion config check`
 // prints, written out here; a configuration that names NATS has none.
 func TestNoNATSLineIsSaidOnlyForAConfigurationThatNamesNoNATS(t *testing.T) {
+	t.Parallel()
 	const want = "nats: nats_urls names no NATS, so this daemon has no task bucket (legion_tasks) to hand a worker its task through: " +
 		"it launches no worker, and refuses every spawn, retry and resume of one until nats_urls names Envoy's NATS"
 	if got := NoNATSLine(config.Config{}); got != want {
@@ -806,6 +818,7 @@ func TestNoNATSLineIsSaidOnlyForAConfigurationThatNamesNoNATS(t *testing.T) {
 // earlier boot with a bucket stored is refused its resume for the same reason, with nothing
 // launched.
 func TestNoNATSLaunchesNoWorker(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
 	record := &built{}
@@ -914,6 +927,7 @@ func taskBucketRefusals(t *testing.T, check func(t *testing.T, cfg func(config.C
 // subject its NATS user is refused, and records no boot: no wait gives a user a grant it lacks.
 // The refused-grant server is a container, so CI's Docker runs this.
 func TestTaskBucketRefusedRefusesBoot(t *testing.T) {
+	t.Parallel()
 	taskBucketRefusals(t, func(t *testing.T, configure func(config.Config) config.Config, want []string) {
 		cfg := configure(testConfig(t))
 		o := fakeRuntime(fake.NewRuntime(), &built{})

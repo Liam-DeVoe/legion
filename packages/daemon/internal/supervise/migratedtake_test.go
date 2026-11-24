@@ -174,7 +174,9 @@ func TestRelaunchOfAMigratedTakeRunsItOnce(t *testing.T) {
 // A take whose turn is over, on a plugin that names its task's number, is taken back with the
 // note a cut turn gets when a relaunch lets its process go: only a report naming the number
 // finishes such a task, and the end of a run says nothing of whose run it was. The process the
-// relaunch starts takes it again behind that note.
+// relaunch starts takes it again behind that note. The relaunch is a repoint whose observation
+// says the daemon's own API moved, which no report can reach, so it is not held for the report
+// as every other stale address is after the take's turn ended (rule two of T3, holdReplacement).
 //
 // The negative control is the end frame finishing it whatever the contract (interrupted's gate
 // before this change): the task is finished, and the new process is handed nothing.
@@ -185,7 +187,7 @@ func TestRelaunchTakesBackACurrentPluginsTakeWhoseTurnIsOverWithItsNote(t *testi
 	number := h.pending().Number
 	h.reportActivity()
 
-	h.observe(runtime.StaleAddress)
+	h.observeMovedDaemonAPI()
 
 	if p := h.pending(); p.taken() || !p.Interrupted || p.Number != number {
 		t.Fatalf("the task after the relaunch is %+v, want task %d taken back with the note of a cut turn", p, number)

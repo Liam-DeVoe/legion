@@ -253,7 +253,7 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 	t.Logf("before the migration the task number write is refused: %v", err)
 
 	// The fixture stands just below this migration, so the run applies it and every embedded
-	// migration above it — at this release the twenty-four recorded after it,
+	// migration above it — at this release the twenty-six recorded after it,
 	// 20261113181500_architect_stalled_notices, 20261113182000_architect_entry_upgrade,
 	// 20261114020537_claim_entry_handshake, 20261114031356_merge_queue_removal,
 	// 20261114061900_phase_entry_verbatim, 20261115194357_project_pause,
@@ -269,12 +269,15 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 	// confirmed_at, which this one keeps), 20261120012547_set_back_observed_seq,
 	// 20261120042902_claim_agent_resume_generation,
 	// 20261120055717_dispatch_issue_value_sequences,
+	// 20261120144241_intake_failures (which adds the intake's three tables),
 	// 20261121170714_dispatch_issue_applied_seq (which adds dispatch_issues.applied_seq at its
 	// default),
 	// 20261122160000_design_news_credit_at_turn_start (which writes design_news_told_in again to
-	// read turn_started, a column this migration adds) and
+	// read turn_started, a column this migration adds),
 	// 20261123165139_experiment_assignment_plan (which adds experiment_assignments.plan at its
-	// default), which run after its fill and touch no column
+	// default) and 20261123212127_claim_start_failure_after_ready (which empties
+	// claims.last_start_failure on every claim stored ready, working or idle), which run after its
+	// fill and touch no column
 	// the fill writes or this test reads — and nothing else. So the fill runs here before the
 	// handshake's columns stand, as it does on a store migrated in version order, and confirms no
 	// handshake (TestMigrationTaskNumbersConfirmsTheHandshakeOfATakeItFills reads the upgrade from

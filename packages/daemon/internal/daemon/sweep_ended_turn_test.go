@@ -29,6 +29,7 @@ func aliveObservation(m *supervise.Machine) supervise.RuntimeObservation {
 // tester's value is written again at once, which is the value its worker asks to take at, and its
 // take is accepted then, not a sweep later.
 func TestASweepEndedTurnReleasesTheIssuesHeldTake(t *testing.T) {
+	t.Parallel()
 	rig := newIssueRig(t)
 	values := supervisetest.NewTaskValues()
 	rig.sup.deps.TaskValues = values

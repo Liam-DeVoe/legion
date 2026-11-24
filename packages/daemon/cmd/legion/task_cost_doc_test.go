@@ -1,5 +1,8 @@
 package main
 
+//ci:reads docs/site/src/content/docs/legion/task-delivery-cost.md taskCostExamples reads taskCostPage under ../../../..
+//ci:reads packages/daemon/internal/supervise/testdata/task-cost.jsonl readSample reads taskCostSample under ../..
+
 // The documentation site's page of the cost reading and the sample log committed beside
 // internal/supervise hold each other to the reader: the page's commands, parsed as `legion
 // task-cost` parses them (parseTaskCostArgs) and read by the daemon's own reader

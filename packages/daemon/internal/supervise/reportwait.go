@@ -11,9 +11,11 @@ import (
 // with it the report that settles the task, and its take-back would mark as a cut turn a task whose
 // turn ran whole, to run again in the next process. So what the machine holds for the take's turn
 // waits for that report: a held suspension (Machine.held), a stale-plugin relaunch
-// (Machine.staleRelaunch), and a wake whose turn comes meanwhile, which is spent into the held
-// suspension (wakeNow, Machine.heldLaunch). And a take whose turn ended waits for that report with
-// nothing held, too: no other bound reaches a take whose turn started. This file is that one wait:
+// (Machine.staleRelaunch), a replacement of the live process — a stale-address relaunch, or a
+// replacement the wake pacing parked whose turn came (Machine.heldReplacement) — and a wake whose
+// turn comes meanwhile, which is spent into the held suspension (wakeNow, Machine.heldLaunch). And
+// a take whose turn ended waits for that report with nothing held, too: no other bound reaches a
+// take whose turn started. This file is that one wait:
 // which of its phases the take is in (takePhase) and the claim is in (reportWaitNow), when new work
 // joins it (reportHolds), its bound (TimerReport), which takes it reaches (reportReaches), and its
 // one take-back (reportMissed). Nothing of it is a mark of its own: it is read off the take and the
@@ -70,7 +72,8 @@ import (
 //
 // Work that reaches the claim while no turn runs joins the wait in the second phase, and in the
 // third where work already waits there (reportHolds): a suspension is held (suspend,
-// holdForReport), a relaunch is left waiting (refreshPlugin, runWake), and a wake whose turn comes
+// holdForReport), a relaunch is left waiting (refreshPlugin, runWake), a replacement of the live
+// process is held (repoint, runWake, holdReplacement), and a wake whose turn comes
 // is spent into the held suspension (wakeNow). A take that awaits its turn with nothing waiting
 // behind it is no wait: a let-go takes it back, as rule one of T3 says, with no note where the
 // claim's connection showed every frame of its turns, since no turn of it ran, and as a cut turn
@@ -88,7 +91,10 @@ import (
 // never taken back during that turn, and a report the producer sends again across a daemon's outage
 // or a lost connection has the whole bound once the connection is whole again.
 // After a daemon start every claim reconnects with a hello, so a take or a report that reaches the
-// daemon before it arms nothing either.
+// daemon before it arms nothing either. A replacement held for the report over a view not whole is
+// bounded by the reconnect deadline instead, at which the task is taken back with the note of a cut
+// turn and the replacement runs, uncharged (replacementAtDeadline), and a replacement that no bound
+// would reach is not held (replacementHolds).
 //
 // With nothing held the bound exists for a take whose counted turn ended and whose report naming
 // its number will never come, though its process lives: its text was dropped — Claude Code never
@@ -141,7 +147,9 @@ import (
 // reportWaitsLine is the line of work that begins to wait for the report of the take's turn
 // (waitReport, waitsLine), at Info, with the task's number and what waits: "suspension", with the
 // hold's source and its deadline (the zero time for none); "relaunch", with the pass that asked for
-// it; or "wake", with the wake's kind and the hold's source.
+// it; "replacement", with what raised it ("repoint", with the process and the observation's
+// detail, or "wake", with the parked wake's kind: holdReplacement); or "wake", with the wake's kind
+// and the hold's source.
 const reportWaitsLine = "supervise: the report of the take's turn is still to come; what is held for that turn waits for it"
 
 // putBackWaitsLine is the line of a put-back that leaves work waiting for the take (putBack), at
@@ -272,8 +280,11 @@ func (m *Machine) takeAwaitsTurn() bool {
 func (w waitPhase) reportToCome() bool { return w == waitReport || w == waitTake }
 
 // workHeld is whether anything waits on the machine for the claim's turn or its take's report: a
-// held suspension or a held stale-plugin relaunch.
-func (m *Machine) workHeld() bool { return m.held != nil || m.staleRelaunch != nil }
+// held suspension, a held stale-plugin relaunch, or a replacement held for the report
+// (heldReplacement: the held repoint, or a parked replacement whose wake's turn came).
+func (m *Machine) workHeld() bool {
+	return m.held != nil || m.staleRelaunch != nil || m.heldReplacement != nil
+}
 
 // reportHolds is whether work that reaches the claim now joins the wait for the take's report
 // rather than run as the claim stands, and whether work already waiting on the take goes on

@@ -1105,7 +1105,8 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // 20261113175649_task_numbers drops the prompted column 20261029121000 adds: a database no
 // deployment has, one that recorded it and not the version under it, refuses it. So does one that
 // reads a column a version of the list adds, as t-e-54's 20261116144907 reads
-// claims.abandoned_session (20261029121200): applied before that version, it fails on the missing
+// claims.abandoned_session (20261029121200) and dispatch://INFRA-5463's 20261123212127 reads
+// claims.last_start_failure (20261029121000): applied before that version, it fails on the missing
 // column; and dispatch://INFRA-2811's 20261122160000 reads pending_task_deliveries.turn_started,
 // which 20261113175649 adds, in the function it writes. 20261119203047 is the last migration that
 // writes outbox_kind_check: it stands above main's 20261119003157, which writes it too, and main's
@@ -1123,7 +1124,7 @@ var thisRelease = map[int]bool{
 	20261113082214: true, 20261113110610: true, 20261113175649: true, 20261114031356: true,
 	20261116144907: true, 20261116165926: true, 20261117000528: true, 20261117004117: true,
 	20261117023932: true, 20261117034837: true, 20261117064152: true, 20261119003157: true,
-	20261119203047: true, 20261122160000: true,
+	20261119203047: true, 20261122160000: true, 20261123212127: true,
 }
 
 const idleRelease = 20261101222956

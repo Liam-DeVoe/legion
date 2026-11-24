@@ -46,6 +46,7 @@ const configuredImage = "ghcr.io/sjawhar/legion-worker@sha256:2f6c0e1a"
 // registers on this daemon's contract and takes the claim's next task. A claim the round still
 // serves on its old contract — one ahead of this daemon, whose plugin takes tasks — is left to it.
 func TestStalePluginBelowTheTakeContractIsRelaunchedInsideAPodRound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true, contract: oldContract},
 		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, inPod: true, contract: api.DaemonAPIVersion + 1},
@@ -114,6 +115,7 @@ func TestStalePluginBelowTheTakeContractIsRelaunchedInsideAPodRound(t *testing.T
 // stale-plugin relaunch this daemon already makes for every other contract, read at the
 // boundary the take moved the fleet across.
 func TestContractBelowTheTakeContractIsRelaunchedOntoTheCurrentPlugin(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	token := rig.tokens[claim.RoleImplementer]
 	m, ok := rig.sup.Machine(token)
@@ -217,6 +219,7 @@ func wantReleasedOntoTheImage(t *testing.T, rig *idleRig, queued []string) {
 // plugin is the control: it is kept for the relaunch that moves its plugin, behind its image as
 // every such pod is.
 func TestStalePluginClaudeRoleInAPodIsReleasedWhenIdle(t *testing.T) {
+	t.Parallel()
 	t.Run("a Claude Code role", func(t *testing.T) {
 		rig, logs := oldPluginRig(t)
 
@@ -254,6 +257,7 @@ func TestStalePluginClaudeRoleInAPodIsReleasedWhenIdle(t *testing.T) {
 // to cut. The turn's end is what releases it, at the next pass, with the idle period no part of
 // the wait.
 func TestStalePluginClaudeRoleInAPodIsReleasedAtItsTurnsEnd(t *testing.T) {
+	t.Parallel()
 	rig, _ := oldPluginRig(t)
 	ctx := context.Background()
 	if err := rig.machine.Handle(ctx, supervise.StreamTurnStart{Claim: rig.token}); err != nil {
@@ -290,6 +294,7 @@ func TestStalePluginClaudeRoleInAPodIsReleasedAtItsTurnsEnd(t *testing.T) {
 // every pass. The pod is kept under the contract hold, and one error names the claim, its
 // contract and the image; the next pass over the same pod logs nothing more.
 func TestStalePluginClaudeRoleOnTheConfiguredImageIsNotReleased(t *testing.T) {
+	t.Parallel()
 	rig, logs := oldPluginRig(t)
 	rig.rt.onImage = true
 	ctx := context.Background()
