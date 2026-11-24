@@ -3399,7 +3399,7 @@ package api
 // SupportedContracts, which names the constant rather than its number. Read the base's own number
 // and every open pull request again at the next merge rather than from this line.)
 //
-// 241: dispatch://INFRA-1117 -- the test database's own disk. Where
+// 243: dispatch://INFRA-1117 -- the test database's own disk. Where
 // `runtime.kubernetes.test_postgres_disk` sets a size, an issue pod that runs the test database
 // keeps its cluster on a generic ephemeral volume of that size in place of the `testpg` emptyDir,
 // and the launcher's command line gains `--test-postgres-disk` after `--test-postgres`
@@ -3424,11 +3424,11 @@ package api
 // From this entry the last number of answers.go's SupportedContracts is this change's own, after
 // `api.assignmentPlanContract`.
 // (A census of `const DaemonAPIVersion` at refs/pull/<n>/head over every open pull request of
-// this repository, 517 of them, taken between 2026-11-24T00:51:05Z and 01:10:32Z, read main's 220,
-// which its experiment group's entry took, above this change's 240, and every number from 221 to
-// 239 declared by another open head, and 240 declared by #4596 and #5271 as well. So 241 is the
-// lowest number above main's that no other open head declared, and this entry takes it. It stood at
-// 204, 207, 212, 216, 218 and 240 before, each the number it took at an earlier census. Read main's
-// own number and every open pull request's again at the next forward merge rather than from this
-// line.)
-const DaemonAPIVersion = 241
+// this repository, 511 of them, taken between 2026-11-24T05:52:35Z and 06:05:43Z, read main's 220,
+// which its experiment group's entry took, above this change's 241, and every number from 221 to
+// 242 declared by another open head: 240 by #5271, 241 by #4771 and #5307, and 242 by #4596 and
+// #4948. So 243 is the lowest number above main's that no other open head declared, and this entry
+// takes it. It stood at 204, 207, 212, 216, 218, 240 and 241 before, each the number it took at an
+// earlier census. Read main's own number and every open pull request's again at the next forward
+// merge rather than from this line.)
+const DaemonAPIVersion = 243
