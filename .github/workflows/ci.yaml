@@ -104,17 +104,17 @@ jobs:
     if: ${{ !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     # why: .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # why: .github/ci-notes/ci.md#the-changes-jobs-budget
+    # 1800 + 3416 = 5216 s -> 87 min.
+    timeout-minutes: 87
     outputs:
+      # why, for each output below with a `lane:` term: .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
+      # and .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
       typecheck: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.typecheck }}
-      # why: .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
-      # why: .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
       test: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:test')) && steps.filter.outputs.test || 'false' }}
       # why: .github/ci-notes/ci.md#the-fast-half-of-a-split-job-comes-back-on-every-push
       tooling_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.tooling_checks }}
       # why: .github/ci-notes/ci.md#why-the-daemons-go-suite-has-an-output-of-its-own
-      # why: .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
-      # why: .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
       daemon_go_tests: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:daemon_go_tests')) && steps.filter.outputs.daemon_go_tests || 'false' }}
       # why: .github/ci-notes/ci.md#why-the-plugin-pack-has-an-output-of-its-own
       plugin_pack: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.plugin_pack }}
@@ -184,34 +184,23 @@ jobs:
       envoy_client: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_client }}
       pi_shared: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.pi_shared }}
       pi_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.pi_envoy }}
-      # why: .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
-      # why: .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
       pi_legion: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:pi_legion')) && steps.filter.outputs.pi_legion || 'false' }}
       # why: .github/ci-notes/ci.md#the-fast-half-of-a-split-job-comes-back-on-every-push
       pi_legion_build: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.pi_legion_build }}
       dispatch_ui: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_ui }}
       # why: .github/ci-notes/ci.md#the-browser-suites-two-outputs-one-per-lane
-      # why: .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
       dispatch_browser: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_browser')) && steps.filter.outputs.dispatch_browser || 'false' }}
       # why: .github/ci-notes/ci.md#the-browser-suites-two-outputs-one-per-lane
       dispatch_browser_pr: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_pr }}
       claude_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.claude_envoy }}
-      # why: .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
-      # why: .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
       envoy_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go')) && steps.filter.outputs.envoy_go || 'false' }}
       # why: .github/ci-notes/ci.md#why-envoy-gos-build-and-checks-come-back-on-every-push
       envoy_go_build: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_go_build }}
-      # why: .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
-      # why: .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
       envoy_go_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_checks')) && steps.filter.outputs.envoy_go_checks || 'false' }}
-      # why: .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
-      # why: .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
       envoy_infra_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_infra_go')) && steps.filter.outputs.envoy_infra_go || 'false' }}
       # why: .github/ci-notes/ci.md#the-fast-half-of-a-split-job-comes-back-on-every-push
       envoy_infra_build: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_infra_build }}
       text_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.text_checks }}
-      # why (these six outputs): .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
-      # why: .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
       envoy_go_race: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race')) && steps.filter.outputs.envoy_go_race || 'false' }}
       envoy_go_race_api: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race_api')) && steps.filter.outputs.envoy_go_race_api || 'false' }}
       envoy_go_claim_model: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_claim_model')) && steps.filter.outputs.envoy_go_claim_model || 'false' }}
@@ -219,15 +208,12 @@ jobs:
       dispatch_memory: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_memory')) && steps.filter.outputs.dispatch_memory || 'false' }}
       dispatch_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_multiprocess')) && steps.filter.outputs.dispatch_multiprocess || 'false' }}
       # why: .github/ci-notes/ci.md#the-two-build-job-builds-the-previous-release-and-runs-both-halves-against
-      # why: .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
       dispatch_two_builds: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_two_builds')) && steps.filter.outputs.dispatch_two_builds || 'false' }}
       # why: .github/ci-notes/ci.md#the-two-build-jobs-go-step-alone-behind-a-gate-of-its-own
       dispatch_two_builds_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_two_builds_go }}
       listener_server_change: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.listener_server_change }}
       broker_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.broker_multiprocess }}
       airlock_lean: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.airlock_lean }}
-      # why: .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
-      # why: .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
       envoy_smoke: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_smoke')) && steps.filter.outputs.envoy_smoke || 'false' }}
       envoy_e2e_local: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_e2e_local }}
       envoy_session_stall: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_session_stall }}
@@ -235,7 +221,6 @@ jobs:
       ci_filters: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_filters }}
       ci_images: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_images }}
       # why: .github/ci-notes/ci.md#the-two-jobs-that-prove-the-retries-and-why-neither-runs-in-a-merge-group
-      # why: .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
       download_retry: ${{ github.event_name == 'merge_group' && 'false' || github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:download_retry')) && steps.filter.outputs.download_retry || 'false' }}
       download_retry_sites: ${{ github.event_name == 'merge_group' && 'false' || github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.download_retry_sites }}
       download_retry_images: ${{ github.event_name == 'merge_group' && 'false' || github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.download_retry_images }}
@@ -247,28 +232,60 @@ jobs:
       # why: .github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own
       ref_is_main: ${{ steps.ref.outputs.is_main }}
     steps:
-      # why: .github/ci-notes/ci.md#on-pull_request-dornypaths-filter-reads-the-file-list-from-the-api-and-reads
-      - if: github.event_name != 'pull_request'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # why: .github/ci-notes/ci.md#the-changes-job-computes-its-filters-when-it-runs
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 3
         with:
           persist-credentials: false
-      # why: .github/ci-notes/ci.md#on-a-pull-request-this-job-reads-the-changed-files-from-the
-      - if: github.event_name == 'pull_request'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # why: .github/ci-notes/ci.md#the-changes-job-computes-its-filters-when-it-runs (no Go cache)
+      - continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          sparse-checkout: .github/ci-filters.yaml
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
+          go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
+      - name: Setup Bun
+        continue-on-error: true
+        timeout-minutes: 57
+        uses: ./.github/actions/setup-bun
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        continue-on-error: true
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
+      # why: .github/ci-notes/ci.md#the-changes-jobs-budget
+      # 315 + 65 + 1050 = 1430 s -> 24 min.
+      - name: Compute every filter from what each job reads
+        timeout-minutes: 24
+        env:
+          CI_FILTERS_BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+        run: .github/scripts/ci-filters-generate.sh "$RUNNER_TEMP/ci-filters.yaml"
+      - name: Keep the filters this run computed
+        timeout-minutes: 3
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-filters
+          path: ${{ runner.temp }}/ci-filters.computed.yaml
+          retention-days: 7
       # why: .github/ci-notes/ci.md#why-the-filter-step-is-skipped-on-a-dispatched-run
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
+        timeout-minutes: 3
         if: github.event_name != 'workflow_dispatch'
         with:
           predicate-quantifier: some-with-excludes
-          filters: .github/ci-filters.yaml
+          filters: ${{ runner.temp }}/ci-filters.yaml
       # why: .github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own
       - name: Read whether this run's ref is exactly refs/heads/main
         id: ref
+        timeout-minutes: 1
         run: if [ "$GITHUB_REF" = refs/heads/main ]; then echo is_main=true; else echo is_main=false; fi >> "$GITHUB_OUTPUT"
 
   lint:
