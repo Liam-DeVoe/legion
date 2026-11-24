@@ -472,14 +472,18 @@ func (e *Engine) placeToken(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 }
 
 // stepToken is the claim token of the agent that does the work of place on w, issue's walk, whose
-// role is role and which runs as at: the one function that makes the token of a step's agent,
-// which each entry takes (enter) and writes to the step's phases row (record.PhaseRow.Claim) and
-// to its step record (startStep). A place whose agent is the owner (Walk.OwnerAt: a step of the key
-// owner, or the retro of a task whose retro is the owner's) is run by the architect that owns the
-// issue now (ownerAgent), as an acceptance the owner does is (startAgent). Where AgentAt names an
-// agent, it is that agent's token (claim.AgentToken), so the steps of one key are one claim; where
-// it names none — the merge, and every place of a run with no plan rows — it is the role's own
-// token (R20).
+// role is role and which runs as at: the workflow's one function that makes the token of a step's
+// agent, which each entry takes (enter) and writes to the step's phases row (record.PhaseRow.Claim)
+// and to its step record (startStep). A place whose agent is the owner (Walk.OwnerAt: a step of the
+// key owner, or the retro of a task whose retro is the owner's) is run by the architect that owns
+// the issue now (ownerAgent), as an acceptance the owner does is (startAgent). Where AgentAt names
+// an agent, it is that agent's token (claim.AgentToken), so the steps of one key are one claim;
+// where it names none — the merge, and every place of a run with no plan rows — it is the role's
+// own token (R20). A launch's addressing makes a stored step's token apart from this, by
+// record.StepToken (the daemon's stepWorkersOf): the same agent's token where the step's agent is
+// not the owner, and for a step of the key owner the issue's own architect by rule
+// (record.OwnerClaim), where this names the architect that runs the owner's step now, which can be
+// the architect above.
 func (e *Engine) stepToken(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, place record.TaskPlace, at phase.Phase, role claim.Role) (claim.Token, error) {
 	if w.OwnerAt(place) {
 		return e.ownerAgent(ctx, tx, issue, at)
