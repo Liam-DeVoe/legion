@@ -7,17 +7,20 @@ label turns on that one output, and a label that names no output turns on nothin
 (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request); and it holds a
 dispatched run's selection and the workflow's cancel key to what they promise: a dispatch of main
 selects every job, a dispatch of a branch selects what a merge group with the same verdicts
-selects, and a newer dispatch of a branch cancels that branch's older one
+selects and its filters are measured against its merge base with main as a merge group's are
+against its base, and a newer dispatch of a branch cancels that branch's older one
 (.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job).
 
 It reads the expressions themselves rather than a copy of them, so a change to an output's text
 is what the harness tests. It runs the `changes` job's steps that carry an `id` the way the runner
 would: a step whose `if:` is false is skipped and its outputs read as null; a `run:` step runs in
 bash with its `env:` evaluated and GITHUB_EVENT_NAME, GITHUB_REF, GITHUB_SHA and GITHUB_OUTPUT
-set, and its outputs are what it wrote there; the `filter` step's outputs are the verdicts given.
-It evaluates the subset of GitHub's expression language those use: string, boolean, number and
-null literals; the contexts `github.event_name`, `github.ref`, `github.sha`,
+set, and its outputs are what it wrote there; the `filter` step's outputs are the verdicts given,
+and the `base` step's `sha` is the --base given, since that step fetches main's history to find
+it. It evaluates the subset of GitHub's expression language those use: string, boolean, number
+and null literals; the contexts `github.event_name`, `github.ref`, `github.sha`,
 `github.event.pull_request.number`, `github.event.pull_request.labels.*.name`,
+`github.event.pull_request.base.sha`, `github.event.merge_group.base_sha`,
 `inputs.<name>` (a workflow_dispatch input this workflow declares), `steps.<id>.outputs.<name>`
 and `steps.<id>.outputs`; `!`, `==`, `!=`, `&&`, `||` and parentheses; and the functions
 `contains` and `toJSON`. `&&` and `||` yield an operand, as GitHub's do (a non-empty string such
@@ -25,16 +28,22 @@ as 'false' is truthy), `==` and `!=` compare strings without regard to case, and
 array asks whether an element equals the item. Anything else, an unknown function or a context it
 does not model, is refused by name with exit 2, never read as false.
 
-Usage: ci_router_outputs.py <workflow> --event <name> [--ref <ref>] [--sha <sha>] [--input <name>=<value>]...
-  [--label <name>]... [--verdict <filter>=<value>]... [--verdicts <true|false>] [--filter-step | --concurrency]
+Usage: ci_router_outputs.py <workflow> --filters <file> --event <name> [--ref <ref>] [--sha <sha>]
+  [--base <sha>] [--input <name>=<value>]... [--label <name>]... [--verdict <filter>=<value>]...
+  [--verdicts <true|false>] [--filter-step | --generate-step | --concurrency]
        ci_router_outputs.py <workflow> --label-readers
-Prints `<output>=<value>` for each output of the `changes` job, in the file's order. --verdicts
-sets every filter's verdict (default true); --verdict overrides one. --ref defaults to a pull
-request's merge ref, the queue's branch, or refs/heads/main for any other event; --sha to forty
-1s. --filter-step prints whether the filter step runs and the `base` and `ref` it is handed;
---concurrency prints the workflow's concurrency `group` and `cancel-in-progress`. --label-readers
-prints, one per line, each output whose expression reads the pull request's labels, found in the
-text rather than by evaluating it, so a broken term cannot drop an output from that list.
+Prints `<output>=<value>` for each output of the `changes` job, in the file's order. --filters is
+the changes job's filters, which it computes when it runs (.github/scripts/ci-filters-generate.sh)
+and no file of the repository holds; the filter names are its keys. --verdicts sets every filter's
+verdict (default true); --verdict overrides one. --ref defaults to a pull request's merge ref, the
+queue's branch, or refs/heads/main for any other event; --sha to forty 1s. --base is the commit
+the run is measured against, forty 3s by default: a pull request's base, a merge group's base, or
+the merge base with main the `base` step finds on a dispatch. --filter-step prints whether the
+filter step runs and the `base` and `ref` it is handed; --generate-step prints the
+CI_FILTERS_BASE the filter generation step is handed; --concurrency prints the workflow's
+concurrency `group` and `cancel-in-progress`. --label-readers prints, one per line, each output
+whose expression reads the pull request's labels, found in the text rather than by evaluating it,
+so a broken term cannot drop an output from that list.
 Run from anywhere; ci.yaml's test job runs its harness."""
 import argparse
 import json
@@ -60,12 +69,13 @@ class Refused(Exception):
 
 
 # The contexts an expression may read, whole: the event's name, the run's ref and commit, the pull
-# request's number and label names, a workflow_dispatch input, and a step's outputs or one of
-# them. A read of anything else, `github.event.pull_request` or `github.event` as a whole among
-# them, is refused, so an output can read the labels only through the path --label-readers finds
-# in its text.
+# request's number, label names and base commit, the merge group's base commit, a workflow_dispatch
+# input, and a step's outputs or one of them. A read of anything else, `github.event.pull_request`
+# or `github.event` as a whole among them, is refused, so an output can read the labels only
+# through the path --label-readers finds in its text.
 MODELLED = re.compile(r"github\.event_name|github\.ref|github\.sha|github\.event\.pull_request\.number"
-                      r"|github\.event\.pull_request\.labels\.\*\.name|inputs\.[A-Za-z0-9_-]+"
+                      r"|github\.event\.pull_request\.labels\.\*\.name|github\.event\.pull_request\.base\.sha"
+                      r"|github\.event\.merge_group\.base_sha|inputs\.[A-Za-z0-9_-]+"
                       r"|steps\.[A-Za-z0-9_-]+\.outputs(?:\.[A-Za-z0-9_-]+)?")
 
 
@@ -261,7 +271,7 @@ def run_step(step, context, evaluator):
     return outputs
 
 
-def run_steps(job, context, evaluator, verdicts):
+def run_steps(job, context, evaluator, verdicts, base):
     """Each step of the job that carries an `id`, in order, into context["steps"]."""
     for step in job.get("steps") or []:
         step_id = step.get("id")
@@ -269,6 +279,8 @@ def run_steps(job, context, evaluator, verdicts):
             continue
         if not condition(step, evaluator):
             outputs = Skipped()
+        elif step_id == "base":
+            outputs = {"sha": base}
         elif "run" in step:
             outputs = run_step(step, context, evaluator)
         elif step_id == "filter":
@@ -303,11 +315,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("workflow")
     parser.add_argument("--event")
+    parser.add_argument("--filters")
     parser.add_argument("--ref")
     parser.add_argument("--sha", default="1" * 40)
+    parser.add_argument("--base", default="3" * 40)
     parser.add_argument("--input", action="append", default=[])
     parser.add_argument("--label-readers", action="store_true")
     parser.add_argument("--filter-step", action="store_true")
+    parser.add_argument("--generate-step", action="store_true")
     parser.add_argument("--concurrency", action="store_true")
     parser.add_argument("--label", action="append", default=[])
     parser.add_argument("--verdict", action="append", default=[])
@@ -320,14 +335,14 @@ def main():
             if "github.event.pull_request.labels" in str(expression):
                 print(name)
         return 0
-    if not args.event:
-        parser.error("--event is required unless --label-readers is given")
-    filters = yaml.safe_load(Path(args.workflow).parent.parent.joinpath("ci-filters.yaml").read_text())
+    if not args.event or not args.filters:
+        parser.error("--event and --filters are required unless --label-readers is given")
+    filters = yaml.safe_load(Path(args.filters).read_text())
     verdicts = {name: args.verdicts for name in filters}
     for pair in args.verdict:
         name, _, value = pair.partition("=")
         if name not in verdicts:
-            print(f"ci_router_outputs: --verdict {pair} names no filter of ci-filters.yaml", file=sys.stderr)
+            print(f"ci_router_outputs: --verdict {pair} names no filter of {args.filters}", file=sys.stderr)
             return 2
         verdicts[name] = value
     ref = args.ref or {"pull_request": "refs/pull/1/merge",
@@ -337,7 +352,9 @@ def main():
         context = {
             "github": {"event_name": args.event, "ref": ref, "sha": args.sha,
                        "event": {"pull_request": {"number": 1 if pull_request else None,
-                                                  "labels": [{"name": label} for label in args.label]}}},
+                                                  "labels": [{"name": label} for label in args.label],
+                                                  "base": {"sha": args.base if pull_request else None}},
+                                 "merge_group": {"base_sha": args.base if args.event == "merge_group" else None}}},
             "inputs": dispatch_inputs(document, args.event, args.input),
             "steps": {},
         }
@@ -348,13 +365,20 @@ def main():
             print(f"cancel-in-progress={text_of(truthy(interpolate(concurrency.get('cancel-in-progress', False), evaluator)))}")
             return 0
         changes = document["jobs"]["changes"]
-        run_steps(changes, context, evaluator, verdicts)
+        run_steps(changes, context, evaluator, verdicts, args.base)
         if args.filter_step:
             step = next(s for s in changes.get("steps") or [] if s.get("id") == "filter")
             given = step.get("with") or {}
             print(f"runs={text_of(not isinstance(context['steps']['filter']['outputs'], Skipped))}")
             for key in ("base", "ref"):
                 print(f"{key}={text_of(interpolate(given.get(key, ''), evaluator))}")
+            return 0
+        if args.generate_step:
+            step = next((s for s in changes.get("steps") or [] if "ci-filters-generate.sh" in str(s.get("run", ""))), None)
+            if step is None:
+                raise Refused("the changes job has no step that runs ci-filters-generate.sh")
+            base = interpolate((step.get("env") or {}).get("CI_FILTERS_BASE", ""), evaluator)
+            print(f"filters-base={text_of(base)}")
             return 0
     except Refused as refusal:
         print(f"ci_router_outputs: {refusal}", file=sys.stderr)

@@ -16,10 +16,16 @@
 # changes job's own steps and the workflow's own `concurrency:`
 # (.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job):
 # a dispatch of main selects every job whatever the filters say, a dispatch of a branch selects
-# what a merge group with the same verdicts selects and diffs its own commit with main,
-# `every-job` selects every job on a branch, and a newer dispatch of a branch cancels that
-# branch's older one while a dispatch of main is never cancelled. Copies of ci.yaml with one of
-# those terms broken show that each case fails without it.
+# what a merge group with the same verdicts selects and diffs its own commit with main, the filter
+# generation measures a branch's dispatch against its merge base with main as it measures a merge
+# group against its base, `every-job` selects every job on a branch, and a newer dispatch of a
+# branch cancels that branch's older one while a dispatch of main is never cancelled. Copies of
+# ci.yaml with one of those terms broken show that each case fails without it.
+#
+# The filter names the outputs read verdicts of are the changes job's filters, which no file of the
+# repository holds: the job computes them when it runs. The script reads them from the file
+# CI_FILTERS_FILE names - the test job hands it the file this run's changes job computed - and,
+# with none given, from this tree's, computed here with `check-ci-filters.sh generate`.
 #
 # Run from anywhere: .github/scripts/ci-router-outputs.test.sh
 # CI runs it in ci.yaml's test job.
@@ -35,12 +41,23 @@ source "$script_dir/test-lib.sh"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
+filters=${CI_FILTERS_FILE:-}
+if [ -z "$filters" ]; then
+  filters=$work/computed-filters.yaml
+  if ! "$script_dir/check-ci-filters.sh" generate "$filters" > "$work/generate.log" 2>&1; then
+    tail -20 "$work/generate.log" >&2
+    echo "ci-router-outputs.test.sh: no CI_FILTERS_FILE is given, and \`check-ci-filters.sh generate\` could not compute the changes job's filters" >&2
+    exit 1
+  fi
+fi
+
 # outputs_of <workflow> <argument>...: every output as `name=value`, sorted, for one event and set
-# of labels; outputs <argument>... reads this repository's own ci.yaml.
+# of labels, the filter names read from the computed filters; outputs <argument>... reads this
+# repository's own ci.yaml.
 outputs_of() {
   local workflow=$1
   shift
-  "$script_dir/ci_router_outputs.py" "$workflow" "$@" | sort
+  "$script_dir/ci_router_outputs.py" "$workflow" --filters "$filters" "$@" | sort
 }
 outputs() { outputs_of "$repo/.github/workflows/ci.yaml" "$@"; }
 # value <outputs text> <name>: one output's value.
@@ -128,12 +145,20 @@ for label in lane:no_such_output lane:typecheck lane:envoy-go "lane:${held[0]}x"
   check "$label leaves every output as an unlabelled pull request has it" "$(is "$got" "$baseline")"
 done
 
-# broken_copy <dir> <output> <text> <replacement>: a copy of this repository's ci.yaml and filters
-# under <dir> with <text> changed to <replacement> on that output's line alone (neither holds a
-# `|`, which the sed below delimits with).
+echo "case: a verdict for a filter the computed filters do not hold is refused, naming their file"
+set +e
+err=$("$script_dir/ci_router_outputs.py" "$repo/.github/workflows/ci.yaml" --filters "$filters" \
+  --event pull_request --verdict no_such_filter=false 2>&1 >/dev/null)
+status=$?
+set -e
+check "exits 2" "$(is "$status" 2)"
+check "names the verdict and the file" "$(contains "$err" "--verdict no_such_filter=false names no filter of $filters\$")"
+
+# broken_copy <dir> <output> <text> <replacement>: a copy of this repository's ci.yaml under <dir>
+# with <text> changed to <replacement> on that output's line alone (neither holds a `|`, which the
+# sed below delimits with).
 broken_copy() {
   mkdir -p "$1/.github/workflows"
-  cp "$repo/.github/ci-filters.yaml" "$1/.github/ci-filters.yaml"
   sed -E "/^ +$2: /s|$3|$4|" "$repo/.github/workflows/ci.yaml" > "$1/.github/workflows/ci.yaml"
   cmp -s "$repo/.github/workflows/ci.yaml" "$1/.github/workflows/ci.yaml" && echo "broken_copy: $2 has no $3" >&2
   echo "$1/.github/workflows/ci.yaml"
@@ -164,7 +189,7 @@ broken=$(broken_copy "$work/whole-pr" envoy_smoke \
   "contains(toJSON(github.event.pull_request), 'lane:envoy_smoke')")
 check "the copy differs from ci.yaml" "$(is "$(cmp -s "$broken" "$repo/.github/workflows/ci.yaml" && echo same)" "")"
 set +e
-err=$("$script_dir/ci_router_outputs.py" "$broken" --event pull_request 2>&1 >/dev/null)
+err=$("$script_dir/ci_router_outputs.py" "$broken" --filters "$filters" --event pull_request 2>&1 >/dev/null)
 status=$?
 set -e
 check "exits 2" "$(is "$status" 2)"
@@ -180,7 +205,7 @@ on_of() { selecting "$1" | sed -n 's/=true$//p' | tr '\n' ' '; }
 off_of() { selecting "$1" | grep -v '=true$' | cut -d= -f1 | tr '\n' ' ' || true; }
 # How many outputs select a job, read from the file itself, so a case that reads fewer fails.
 n_selecting=$(python3 -c 'import sys, yaml; print(len(yaml.safe_load(open(sys.argv[1]))["jobs"]["changes"]["outputs"]) - 2)' "$ci")
-mapfile -t filters < <(python3 -c 'import sys, yaml; print("\n".join(yaml.safe_load(open(sys.argv[1]))))' "$repo/.github/ci-filters.yaml")
+mapfile -t names < <(python3 -c 'import sys, yaml; print("\n".join(yaml.safe_load(open(sys.argv[1]))))' "$filters")
 old=1111111111111111111111111111111111111111
 new=2222222222222222222222222222222222222222
 
@@ -197,13 +222,13 @@ check "it reads all $n_selecting outputs that select a job" "$(is "$(selecting "
 check "none of them is true" "$(is "$(on_of "$got")" "")"
 
 echo "case: a dispatch of a branch selects what a merge group with the same verdicts selects"
-check "the filters file holds filters to try" "$(is "$([ "${#filters[@]}" -gt 1 ] && echo yes)" yes)"
+check "the computed filters hold filters to try" "$(is "$([ "${#names[@]}" -gt 1 ] && echo yes)" yes)"
 for parity in 0 1 all none; do
   args=(--verdicts false)
   case $parity in
     all) args=(--verdicts true) ;;
     none) ;;
-    *) for i in "${!filters[@]}"; do [ $((i % 2)) -ne "$parity" ] || args+=(--verdict "${filters[$i]}=true"); done ;;
+    *) for i in "${!names[@]}"; do [ $((i % 2)) -ne "$parity" ] || args+=(--verdict "${names[$i]}=true"); done ;;
   esac
   dispatched=$(outputs --event workflow_dispatch --ref refs/heads/feature "${args[@]}")
   queued=$(outputs --event merge_group "${args[@]}")
@@ -233,7 +258,7 @@ got=$(outputs --event workflow_dispatch --ref refs/tags/v1 --verdicts false)
 check "another tag: every one of them is true" "$(is "$(off_of "$got")" "")"
 
 # filter_step <argument>...: whether the filter step runs, and the base and ref it is handed.
-filter_step() { "$script_dir/ci_router_outputs.py" "$ci" --filter-step "$@" | tr '\n' ' '; }
+filter_step() { "$script_dir/ci_router_outputs.py" "$ci" --filters "$filters" --filter-step "$@" | tr '\n' ' '; }
 echo "case: the filter step diffs a dispatched branch's own commit with main, and reads a merge group's and a pull request's own event"
 check "a dispatch of a branch: base main, ref its commit" \
   "$(is "$(filter_step --event workflow_dispatch --ref refs/heads/feature --sha "$old")" "runs=true base=main ref=$old ")"
@@ -244,11 +269,33 @@ check "a dispatch of a tag skips the step" "$(contains "$(filter_step --event wo
 check "a merge group: neither input, so its own base_sha..head_sha" "$(is "$(filter_step --event merge_group)" "runs=true base= ref= ")"
 check "a pull request: neither input, so the API's file list" "$(is "$(filter_step --event pull_request)" "runs=true base= ref= ")"
 
+# generate_step_of <workflow> <argument>...: the CI_FILTERS_BASE the filter generation is handed.
+generate_step_of() {
+  local workflow=$1
+  shift
+  "$script_dir/ci_router_outputs.py" "$workflow" --filters "$filters" --generate-step "$@"
+}
+merge_base=3333333333333333333333333333333333333333
+echo "case: the filter generation measures a dispatched branch against its merge base with main, as a merge group against its base"
+# The generation holds a change to how the filters are computed against the base tree's filters
+# only when it is handed a base (.github/ci-notes/ci.md#the-changes-job-computes-its-filters-when-it-runs):
+# a branch's dispatch handed none would select by its own engine alone, where its merge group does not.
+check "a dispatch of a branch: the merge base the base step finds" \
+  "$(is "$(generate_step_of "$ci" --event workflow_dispatch --ref refs/heads/feature --base "$merge_base")" "filters-base=$merge_base")"
+check "a merge group: its base" "$(is "$(generate_step_of "$ci" --event merge_group --base "$merge_base")" "filters-base=$merge_base")"
+check "a pull request: its base" "$(is "$(generate_step_of "$ci" --event pull_request --base "$merge_base")" "filters-base=$merge_base")"
+check "a dispatch of main: none, since it selects every job" \
+  "$(is "$(generate_step_of "$ci" --event workflow_dispatch --ref refs/heads/main --base "$merge_base")" "filters-base=")"
+check "every-job: none" \
+  "$(is "$(generate_step_of "$ci" --event workflow_dispatch --ref refs/heads/feature --input every-job=true --base "$merge_base")" "filters-base=")"
+check "a dispatch of a tag: none" \
+  "$(is "$(generate_step_of "$ci" --event workflow_dispatch --ref refs/tags/main --base "$merge_base")" "filters-base=")"
+
 # concurrency_of <workflow> <argument>...: the run's concurrency group and cancel-in-progress.
 concurrency_of() {
   local workflow=$1
   shift
-  "$script_dir/ci_router_outputs.py" "$workflow" --concurrency "$@" | tr '\n' ' '
+  "$script_dir/ci_router_outputs.py" "$workflow" --filters "$filters" --concurrency "$@" | tr '\n' ' '
 }
 echo "case: a newer dispatch of a branch cancels the older one; a dispatch of main never is"
 check "a pull request keys on its number and cancels" \
@@ -268,11 +315,10 @@ check "  while another branch is another group" \
 check "a branch spelled Main keys on its commit, since the expression ignores case, and is never cancelled" \
   "$(is "$(concurrency_of "$ci" --event workflow_dispatch --ref refs/heads/Main --sha "$old")" "group=ci-$old cancel-in-progress=false ")"
 
-# copy_with <dir> <text> <replacement>: a copy of this repository's ci.yaml and filters under <dir>
-# with the one occurrence of <text> replaced; it fails when <text> is not there exactly once.
+# copy_with <dir> <text> <replacement>: a copy of this repository's ci.yaml under <dir> with the one
+# occurrence of <text> replaced; it fails when <text> is not there exactly once.
 copy_with() {
   mkdir -p "$1/.github/workflows"
-  cp "$repo/.github/ci-filters.yaml" "$1/.github/ci-filters.yaml"
   python3 - "$ci" "$1/.github/workflows/ci.yaml" "$2" "$3" <<'PY'
 import sys
 source, target, text, replacement = sys.argv[1:]
@@ -321,9 +367,24 @@ broken=$(copy_with "$work/no-dispatch-key" "github.event_name == 'workflow_dispa
 check "a dispatch of a branch then keys on its commit" \
   "$(contains "$(concurrency_of "$broken" --event workflow_dispatch --ref refs/heads/feature --sha "$old")" "^group=ci-$old ")"
 
+echo "case: a generation step handed no merge base fails the branch case"
+broken=$(copy_with "$work/no-merge-base" ' || steps.base.outputs.sha' '')
+check "a dispatch of a branch then hands the generation no base" \
+  "$(is "$(generate_step_of "$broken" --event workflow_dispatch --ref refs/heads/feature --base "$merge_base")" "filters-base=")"
+check "  while a merge group still hands its own" \
+  "$(is "$(generate_step_of "$broken" --event merge_group --base "$merge_base")" "filters-base=$merge_base")"
+
+echo "case: a base step that runs on every dispatch fails the dispatch-of-main case"
+# edited-migrations-base.sh exits 2 on a dispatch of main that names no migration-base, which would
+# fail the changes job of every bypass check.
+broken=$(copy_with "$work/base-every-dispatch" "github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job" \
+  "github.event_name == 'workflow_dispatch'")
+check "a dispatch of main then runs the base step" \
+  "$(is "$(generate_step_of "$broken" --event workflow_dispatch --ref refs/heads/main --base "$merge_base")" "filters-base=$merge_base")"
+
 echo "case: an expression this reader does not model is refused, never read as false"
 mkdir -p "$work/.github/workflows"
-printf 'f: []\n' > "$work/.github/ci-filters.yaml"
+printf 'f: []\n' > "$work/filters.yaml"
 cat > "$work/.github/workflows/ci.yaml" <<'YAML'
 jobs:
   changes:
@@ -331,10 +392,10 @@ jobs:
       x: ${{ github.actor == 'someone' && 'true' || 'false' }}
 YAML
 set +e
-err=$("$script_dir/ci_router_outputs.py" "$work/.github/workflows/ci.yaml" --event pull_request 2>&1 >/dev/null)
+err=$("$script_dir/ci_router_outputs.py" "$work/.github/workflows/ci.yaml" --filters "$work/filters.yaml" --event pull_request 2>&1 >/dev/null)
 status=$?
 set -e
 check "exits 2" "$(is "$status" 2)"
 check "names the output and the context" "$(contains "$err" 'output x: context github.actor is outside the modelled contexts')"
 
-summary "ci.yaml's changes outputs turn on what full-ci, the lane labels and a dispatch's ref and diff name, and its cancel key cancels only a branch's older dispatch"
+summary "ci.yaml's changes outputs turn on what full-ci, the lane labels and a dispatch's ref and diff name, its filter generation is measured against each diff's base, and its cancel key cancels only a branch's older dispatch"
