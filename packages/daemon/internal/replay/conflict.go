@@ -977,12 +977,14 @@ type conflictDraw struct {
 	conflicted bool
 }
 
-// nextDraw is the place of the next draw of p's stretch (stretchDraw), counted as made, and the
-// place of p's issue's latest draw (driver.lastDraw).
+// nextDraw is the place of the next draw of p's stretch (stretchDraw), counted as made under the
+// stretch's place with no count (driver.stretchDraws), and the place of p's issue's latest draw
+// (driver.lastDraw).
 func (d *driver) nextDraw(p *piece) stretchDraw {
-	at := stretchDraw{issue: p.issue, start: p.start, phase: p.phase}
-	at.n = d.stretchDraws[at]
-	d.stretchDraws[at]++
+	stretch := stretchDraw{issue: p.issue, start: p.start, phase: p.phase}
+	at := stretch
+	at.n = d.stretchDraws[stretch]
+	d.stretchDraws[stretch]++
 	d.lastDraw[p.issue] = at
 	return at
 }

@@ -351,14 +351,22 @@ func phaseLoopsWindow(t *testing.T, fromTesting bool) Window {
 		{SHA: "7c4d2e9f1a3b5067b1c2d3e4f5a6b7c8d9e0f1a2", At: clock(10, 40), Branch: "main"},
 	}
 	if fromTesting {
-		rootThrough(b, "ACME-3", "a3", clock(11, 0), clock(11, 15), moveAt(11, 30, phase.Implementing, workflow.TriggerPlannerCompleted),
-			moveAt(11, 45, phase.Testing, workflow.TriggerImplementationReady), moveAt(12, 0, phase.Implementing, workflow.TriggerConflict),
-			moveAt(12, 25, phase.Testing, workflow.TriggerImplementationReady))
+		testingConflictLoop(b)
 		merges = append(merges, Merge{SHA: "9f2b6d4a8c1e3057c2d3e4f5a6b7c8d9e0f1a2b3", At: clock(11, 50), Branch: "main"})
 	}
 	window := b.build()
 	window.Merges = map[string][]Merge{builtRepository: merges}
 	return window
+}
+
+// testingConflictLoop is ACME-3 of phaseLoopsWindow's loop from testing: a root promoted at 11:00
+// that works 15 minutes in each phase to testing at 11:45, where a conflict moves it back at 12:00;
+// its loop is 25 minutes in implementing, and it is back in testing at 12:25 to the window's end.
+func testingConflictLoop(b *windowBuilder) {
+	b.t.Helper()
+	rootThrough(b, "ACME-3", "a3", clock(11, 0), clock(11, 15), moveAt(11, 30, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(11, 45, phase.Testing, workflow.TriggerImplementationReady), moveAt(12, 0, phase.Implementing, workflow.TriggerConflict),
+		moveAt(12, 25, phase.Testing, workflow.TriggerImplementationReady))
 }
 
 // backInTesting is ACME-1's moves in a replay of phaseLoopsWindow whose drawn conflict returns it
@@ -652,6 +660,65 @@ func TestALoopFromAnEarlierPhaseTakesTheIssueBackThroughItsOwnWork(t *testing.T)
 		{From: phase.Reviewing, To: phase.Implementing, Trigger: workflow.TriggerReviewRejected},
 	}
 	checkACME1Moves(t, earlierLoopWindow(t), 1, want, []time.Time{clock(9, 10), clock(9, 40), clock(10, 0), clock(10, 30), clock(11, 0)})
+}
+
+// cyclingLoopWindow is phaseLoopsWindow with its loop from testing, to 15:00 and with no commit of
+// the base branch: ACME-1 stands in testing at the window's start, its tester fails it at 09:30, and
+// it works in implementing to the window's end; ACME-2's loop leaves reviewing at 10:45 and is back
+// there at 11:15; ACME-3's loop leaves testing at 12:00 and is back there at 12:25. The three
+// stretches inside the window, ACME-2's two and ACME-3's first, hold two conflicts and no merge, so
+// every stretch draws at a chance of 2/3, ACME-1's too, which began in the reach and is no part of
+// the fit; and a conflict drawn in testing is given ACME-3's loop, the window's one loop left from
+// testing.
+func cyclingLoopWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(15, 0))
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.reaches(2 * time.Hour)
+	b.capped(3)
+	b.boot(clock(7, 0))
+	phaseLoopsRoots(b)
+	testingConflictLoop(b)
+	return b.build()
+}
+
+// A stretch whose work a drawn conflict's loop gives its issue once more draws again at that work's
+// end, by a draw of its own: the place of each draw counts the draws of its stretch before it
+// (stretchDraw), so the stretch after a loop is drawn as the model says, never by the draw that
+// ended the one before it. The test replays cyclingLoopWindow under legion-v20.42.5, the rule it
+// ran, at seed 1, where the first three draws of ACME-1's stretch are 0.37, 0.23 and 0.73 against
+// its chance of 2/3. The first, at 09:30, makes a conflict: ACME-1 moves back to implementing, to
+// testing at 09:55 after ACME-3's loop, and runs its own testing, 40 minutes, once more. The second,
+// at 10:35, makes a conflict too, and the same loop and testing follow; the third, at 11:40, makes
+// none, and ACME-1's tester fails it as recorded. A run that drew each draw after the second at the
+// second's place would make a conflict at every end of that testing, and send ACME-1 round the loop
+// every 65 minutes to the window's end. The test fails where ACME-1 moves otherwise or at other
+// moments, where a draw's place does not count the draws its stretch made before it in the run, or
+// where the replay refuses a move.
+func TestAStretchAfterADrawnLoopTakesADrawOfItsOwn(t *testing.T) {
+	replayDSN(t)
+	var draws []conflictDraw
+	out := t.TempDir()
+	result, err := Run(context.Background(), RunConfig{Window: cyclingLoopWindow(t), Rule: replayedRule(t, "legion-v20.42.5"), Branch: MainBranch,
+		Seed: 1, Slowdown: 1, PGDSN: replayDSN(t), Out: out, onDraw: func(draw conflictDraw) { draws = append(draws, draw) }})
+	if err != nil {
+		t.Fatalf("replay the window under legion-v20.42.5: %v", err)
+	}
+	log := replayLog(t, out)
+	checkMovesAt(t, 1, "ACME-1", log, replayedMoves(log), slices.Concat(backInTesting[:2], backInTesting),
+		[]time.Time{clock(9, 30), clock(9, 55), clock(10, 35), clock(11, 0), clock(11, 40)})
+	before := map[stretchDraw]int{}
+	for _, draw := range draws {
+		t.Logf("%s: %v against %v, a conflict: %t", drawPlace(draw.at), draw.u, draw.chance, draw.conflicted)
+		stretch := draw.at
+		stretch.n = 0
+		if draw.at.n != before[stretch] {
+			t.Errorf("the run's draw %d of a stretch drew at the place %s", before[stretch]+1, drawPlace(draw.at))
+		}
+		before[stretch]++
+	}
+	if refused := result.Divergence.Refused; len(refused) > 0 {
+		t.Errorf("the replay refused %+v", refused)
+	}
 }
 
 // The branch Merges zero sets the conflict model's merges term to zero and keeps its base and its
