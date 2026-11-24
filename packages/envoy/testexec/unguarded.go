@@ -1,6 +1,7 @@
 package testexec
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -76,7 +77,7 @@ import (
 func Unguarded(root string) ([]string, error) {
 	module, err := modulePath(filepath.Join(root, "go.mod"))
 	if err != nil {
-		return nil, fmt.Errorf("read no module at %s: it holds no go.mod, so it is not the root of the module whose writes the check reads: %w", root, err)
+		return nil, fmt.Errorf("read no module at %s: %w", root, err)
 	}
 	dirs, tests := map[string][]string{}, 0
 	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -134,11 +135,15 @@ func Unguarded(root string) ([]string, error) {
 // every other place calls.
 const WriterPackage = "github.com/sjawhar/envoy/programfile"
 
-// modulePath is the module path the go.mod at path declares.
+// modulePath is the module path the go.mod at path declares. Its error says what is wrong: no
+// go.mod is at path, the go.mod there cannot be read, or it declares no module.
 func modulePath(path string) (string, error) {
 	body, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "", fmt.Errorf("it holds no go.mod, so it is not the root of the module whose writes the check reads: %w", err)
+	case err != nil:
+		return "", fmt.Errorf("its go.mod could not be read: %w", err)
 	}
 	for line := range strings.Lines(string(body)) {
 		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module"); ok && rest != "" && (rest[0] == ' ' || rest[0] == '\t') {
@@ -148,7 +153,7 @@ func modulePath(path string) (string, error) {
 			return strings.TrimSpace(rest), nil
 		}
 	}
-	return "", fmt.Errorf("%s declares no module", path)
+	return "", fmt.Errorf("its go.mod declares no module (it has no module line), so it is not the root of a module whose writes the check reads: %s", path)
 }
 
 // unguardedInPackage is Unguarded for the Go files of one directory. writer says the directory is

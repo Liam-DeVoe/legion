@@ -398,10 +398,12 @@ func followed(t *testing.T, dir string) {
 }
 
 // Unguarded refuses, naming the root and what it could not read, a root that is no module's: the
-// parent of a module's directory, or a directory inside one, holds no go.mod. It refuses a module
-// root under which it read no test file, because the module holds none or because each one is in
-// another module below it. A check of such a root would name no write and pass while it read
-// nothing. A module root with one test file and no write is named nothing and no error.
+// parent of a module's directory, or a directory inside one, holds no go.mod. It refuses a root
+// whose go.mod declares no module, or cannot be read, saying that rather than that it holds none.
+// It refuses a module root under which it read no test file, because the module holds none or
+// because each one is in another module below it. A check of such a root would name no write and
+// pass while it read nothing. A module root with one test file and no write is named nothing and
+// no error.
 func TestUnguardedRefusesARootUnderWhichItReadsNoTestFile(t *testing.T) {
 	t.Parallel()
 	const test = "package beside\n\nimport \"testing\"\n\nfunc TestParallel(t *testing.T) { t.Parallel() }\n"
@@ -415,15 +417,24 @@ func TestUnguardedRefusesARootUnderWhichItReadsNoTestFile(t *testing.T) {
 	writeUnder(t, nested, "go.mod", "module example.com/outer\n")
 	writeUnder(t, nested, "inner/go.mod", "module example.com/inner\n")
 	writeUnder(t, nested, "inner/beside_test.go", test)
-	for _, row := range []struct{ what, root, want string }{
-		{"the parent of a module's directory", parent, "holds no go.mod"},
-		{"a directory inside a module", filepath.Join(parent, "module", "beside"), "holds no go.mod"},
-		{"a module with no test file", noTests, "read no Go test file under"},
-		{"a module whose one test file is in another module below it", nested, "read no Go test file under"},
+	noModule := t.TempDir()
+	writeUnder(t, noModule, "go.mod", "go 1.27\n")
+	writeUnder(t, noModule, "beside/beside_test.go", test)
+	unreadable := t.TempDir()
+	writeUnder(t, unreadable, "go.mod/README", "a directory where the go.mod should be\n")
+	writeUnder(t, unreadable, "beside/beside_test.go", test)
+	for _, row := range []struct{ what, root, want, notWant string }{
+		{"the parent of a module's directory", parent, "holds no go.mod", ""},
+		{"a directory inside a module", filepath.Join(parent, "module", "beside"), "holds no go.mod", ""},
+		{"a root whose go.mod declares no module", noModule, "its go.mod declares no module", "holds no go.mod"},
+		{"a root whose go.mod is a directory", unreadable, "its go.mod could not be read", "holds no go.mod"},
+		{"a module with no test file", noTests, "read no Go test file under", ""},
+		{"a module whose one test file is in another module below it", nested, "read no Go test file under", ""},
 	} {
 		got, err := Unguarded(row.root)
-		if got != nil || err == nil || !strings.Contains(err.Error(), row.want) || !strings.Contains(err.Error(), row.root) {
-			t.Errorf("Unguarded on %s (%s) = %v, %v; want no names and an error naming the root and saying %q", row.what, row.root, got, err, row.want)
+		if got != nil || err == nil || !strings.Contains(err.Error(), row.want) || !strings.Contains(err.Error(), row.root) ||
+			row.notWant != "" && strings.Contains(err.Error(), row.notWant) {
+			t.Errorf("Unguarded on %s (%s) = %v, %v; want no names and an error naming the root and saying %q, not %q", row.what, row.root, got, err, row.want, row.notWant)
 		}
 	}
 	if got, err := Unguarded(filepath.Join(parent, "module")); err != nil || len(got) != 0 {
