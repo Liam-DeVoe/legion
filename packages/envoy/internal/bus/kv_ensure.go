@@ -353,29 +353,14 @@ func bucketMissing(err error) bool {
 		errors.Is(err, nats.ErrStreamNotFound) || errors.Is(err, jetstream.ErrStreamNotFound)
 }
 
-// raiseReplicas raises the stream of the existing bucket to replicas copies when it has fewer, and
-// returns the copies it had then, 0 when it left the bucket alone: the keeper's raise, made again
-// at its next pass (raiseStream). Its read of the stream is a read of a stream's state, sent again
-// while the server leaves it unanswered, each send up to its read limit, for as long as ctx lasts
-// (readAgain), as updateStream's read after an update is: a cluster that answers no read within
-// the JetStream context's wait has said nothing of the bucket, so a read sent once would log a
-// raise that failed over a question nobody answered. One copy needs no read: every stream has at
-// least one.
-func raiseReplicas(ctx context.Context, js nats.JetStreamContext, bucket string, replicas int) (int, error) {
-	if replicas <= 1 {
-		return 0, nil
-	}
-	info, err := readBucketStream(ctx, js, bucket)
-	if err != nil {
-		return 0, err
-	}
-	return raiseStream(ctx, js, info, replicas)
-}
-
-// readBucketStream is raiseReplicas's read of the stream of bucket, sent again while the server
-// leaves it unanswered (readAgain), its error naming the raise it was for:
-// `raise KV_<bucket>: ...`. The keeper calls it apart from the raise (keepBuckets), to know which
-// of the raise's two requests an error is the answer to.
+// readBucketStream is the keeper's read of the stream of bucket before it raises the bucket
+// (keepBuckets), its error naming the raise it was for: `raise KV_<bucket>: ...`. It is a read of
+// a stream's state, sent again while the server leaves it unanswered, each send up to its read
+// limit, for as long as ctx lasts (readAgain), as updateStream's read after an update is: a cluster
+// that answers no read within the JetStream context's wait has said nothing of the bucket, so a
+// read sent once would log a raise that failed over a question nobody answered. The keeper sends
+// it apart from the raise (raiseStream), to know which of the raise's two requests an error is the
+// answer to.
 func readBucketStream(ctx context.Context, js nats.JetStreamContext, bucket string) (*nats.StreamInfo, error) {
 	stream := "KV_" + bucket
 	info, err := readAgain(ctx, stream+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })

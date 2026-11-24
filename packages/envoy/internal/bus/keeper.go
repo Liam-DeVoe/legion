@@ -56,7 +56,7 @@ func (c *Client) startKeeper(cfg nats.StreamConfig, buckets []string, interval t
 
 // keep is the keeper: every interval it puts back what the deployment's settings and this binary
 // ask of the stream (keepStream) and raises each of buckets, the program's own (WithKeptBuckets),
-// back to the deployment's copies (raiseReplicas), until the client stops. A start's reconcile can
+// back to the deployment's copies (keepBuckets), until the client stops. A start's reconcile can
 // lose to a concurrent start with other settings or subjects, since JetStream's stream update has
 // no compare-and-swap (ensureStreamWithConfig), and an operator can lower either by hand; the
 // keeper ends both within one period. A pass waits for a live connection: a pass while the client
@@ -132,10 +132,10 @@ func keeperStep(ctx context.Context, run func(ctx context.Context) error) error 
 
 // keepBuckets raises each of buckets back to replicas copies, one keeper step each: the read of
 // the bucket's stream (readBucketStream), then the update that raises it when the read found
-// fewer copies (raiseStream), as raiseReplicas makes them; and logs what each raise came to. One
-// copy needs no read, as raiseReplicas says, so a keeper of one copy asks nothing. A bucket that
-// does not exist yet, one the program opens only for a feature it has not configured, is skipped
-// without a line: the program creates it at the deployment's copies when it opens it.
+// fewer copies (raiseStream); and logs what each raise came to. One copy needs no read, since every
+// stream has at least one, so a keeper of one copy asks nothing. A bucket that does not exist yet,
+// one the program opens only for a feature it has not configured, is skipped without a line: the
+// program creates it at the deployment's copies when it opens it.
 //
 // A request of a raise the server refuses for want of a grant (grantRefused), the read or the
 // update, holds that bucket's next ask for keeperNoGrantBackoff (refusedBuckets), while every

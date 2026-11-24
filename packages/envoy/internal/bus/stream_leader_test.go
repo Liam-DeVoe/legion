@@ -103,6 +103,19 @@ func hasLeader(t *testing.T, js nats.JetStreamContext, stream string) bool {
 	return info.Cluster != nil && info.Cluster.Leader != ""
 }
 
+// raiseAsAnotherProgram raises bucket to three copies as another program's keeper does: the read
+// of its stream (readBucketStream), then the update that raises it (raiseStream).
+func raiseAsAnotherProgram(t *testing.T, js nats.JetStreamContext, bucket string) {
+	t.Helper()
+	info, err := readBucketStream(t.Context(), js, bucket)
+	if err != nil {
+		t.Fatalf("another program's read of %s: %v", bucket, err)
+	}
+	if _, err := raiseStream(t.Context(), js, info, 3); err != nil {
+		t.Fatalf("another program's raise: %v", err)
+	}
+}
+
 // A start that finds a bucket another program raised a moment ago, whose new group has not elected
 // its leader yet, waits for that leader before it answers. Its own raise is nothing (the bucket has
 // the copies already), and the other program's raise was answered at once, with the stream
@@ -116,9 +129,7 @@ func TestAStartThatFindsAJustRaisedBucketAnswersOnceItHasALeader(t *testing.T) {
 	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
 		t.Fatalf("create the one-copy bucket: %v", err)
 	}
-	if _, err := raiseReplicas(t.Context(), js, bucket, 3); err != nil {
-		t.Fatalf("another program's raise: %v", err)
-	}
+	raiseAsAnotherProgram(t, js, bucket)
 	kv, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3})
 	if err != nil {
 		t.Fatalf("a start that finds the raised bucket: %v", err)
@@ -143,9 +154,7 @@ func TestAStartAtOneCopyThatFindsAJustRaisedBucketAnswersOnceItHasALeader(t *tes
 	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
 		t.Fatalf("create the one-copy bucket: %v", err)
 	}
-	if _, err := raiseReplicas(t.Context(), js, bucket, 3); err != nil {
-		t.Fatalf("another program's raise: %v", err)
-	}
+	raiseAsAnotherProgram(t, js, bucket)
 	kv, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1})
 	if err != nil {
 		t.Fatalf("a start at one copy that finds the raised bucket: %v", err)

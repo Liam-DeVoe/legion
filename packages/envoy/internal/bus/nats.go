@@ -584,7 +584,7 @@ func Connect(urls []string, options ...ConnectOption) (*Client, error) {
 // copies, the byte limit, the stream's id, the age, the duplicate window and discard that a
 // concurrent start or an operator took away, adds back each of this binary's subjects the stream
 // lacks that overlaps none it carries, and removes no subject (keepStream). It also raises each
-// bucket WithKeptBuckets names that has fewer copies than WithReplicas' count (raiseReplicas).
+// bucket WithKeptBuckets names that has fewer copies than WithReplicas' count (keepBuckets).
 //
 // Every process of the deployed services calls it: envoy-listener and envoy-dispatch's server.
 // It also reads the deployed stream's subjects every streamSubjectsRefresh, as Connect's client does.
