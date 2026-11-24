@@ -62,13 +62,13 @@ export interface PaneSelectionOptions {
   /** The address this list is on. The selection is written into its `?item=`. */
   filter: InboxRoute;
   /** Whether the reader's own write took the row with this id out of the list - their answer,
-   *  snooze or dismiss - rather than the server on its own. */
+   *  snooze, dismiss, Assign to me or hand-on - rather than the server on its own. */
   leftByReader: (id: string) => boolean;
   /** The list's root, where the selected row's own element is looked up. */
   listRef: RefObject<HTMLElement | null>;
-  /** Below the column's width, the row the reading view showed left the Inbox on its own, and
-   *  the list is back at that place. */
-  onOpenRowLeft: () => void;
+  /** Below the column's width, the row with this id, which the reading view showed, left the list
+   *  without the reader's own write, and the list is back at that place. */
+  onOpenRowLeft: (id: string) => void;
   /** Opens the folded band, for an `?item=` naming a row the reader deferred. */
   openFoldedBand: () => void;
   /** Whether this list selects at all: the Inbox page does at every width, the drawer never
@@ -377,7 +377,7 @@ export function usePaneSelection({
         filter.item !== undefined &&
         paneSubject.current?.kept !== true
       ) {
-        if (selectedId !== undefined && !leftByReader(selectedId)) onOpenRowLeft();
+        if (selectedId !== undefined && !leftByReader(selectedId)) onOpenRowLeft(selectedId);
         select(undefined);
       }
       return;
@@ -422,7 +422,7 @@ export function usePaneSelection({
     // and says the row left.
     if (!columns && selectedId !== undefined && !leftByReader(selectedId)) {
       returnTo.current = visible.some((placed) => rowId(placed.row) === next) ? next : undefined;
-      onOpenRowLeft();
+      onOpenRowLeft(selectedId);
       select(undefined);
       return;
     }
@@ -450,11 +450,13 @@ export function usePaneSelection({
   // Below the column's width, the commit that closes a row's reading view brings the list back
   // at that row: it takes the focus, so the keys walk on from it, and is scrolled to the middle
   // of the screen. A layout effect, so the row is placed in the commit that shows the list
-  // again rather than one frame after the list painted at its top.
+  // again rather than one frame after the list painted at its top. Only a row a reading view was
+  // drawn for is remembered: the column's own row, dropped as the window narrows, never had
+  // one, so the focus stays where the reader has it - in the search box, say.
   const lastSelected = useRef<string | undefined>(undefined);
   useLayoutEffect(() => {
     const left = lastSelected.current;
-    lastSelected.current = selectedId;
+    lastSelected.current = columns || columnPickNarrowed ? undefined : selectedId;
     if (!pane || columns || left === undefined || selectedId !== undefined) {
       return;
     }

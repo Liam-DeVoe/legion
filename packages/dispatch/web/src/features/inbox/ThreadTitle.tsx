@@ -28,9 +28,11 @@ export function useThreadLine(thread: MyReplyRow): string {
  * part of a short row that is neither the owner link nor a control, where the pointer selects
  * the row (`selectRow` in the browser suite).
  *
- * The short row draws it as the link `o` follows (`data-inbox-owner`); the drawer's card draws it
- * as plain text, beside its **Open**. Each host sizes its own line, as the three-site owner line
- * does (`ThreadOwnerLine` in `AskOwnerLink.tsx`); what unread looks like is this one place.
+ * The short row draws it as the link `o` follows to the thread's own page at every width
+ * (`data-inbox-owner`); below 1280 px a plain click on it opens the row in place instead
+ * (`onOpen`). The drawer's card draws it as plain text, beside its **Open**. Each host sizes its
+ * own line, as the three-site owner line does (`ThreadOwnerLine` in `AskOwnerLink.tsx`); what
+ * unread looks like is this one place.
  */
 export function ThreadTitle({
   className,

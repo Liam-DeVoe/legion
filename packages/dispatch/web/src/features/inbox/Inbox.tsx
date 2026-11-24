@@ -829,10 +829,18 @@ export function Inbox({
     changeFilter({ ...filter, q: next === "" ? undefined : next });
   };
   const agentText = useAgentText();
+  /** The asks the reader wrote to from this list - a snooze, Assign to me, a hand-on - kept past
+   *  the write: one that lands before the read that drops its row is still the reader's own move
+   *  when that row leaves the list. */
+  const writtenHere = useRef<Set<string>>(new Set());
+  const recordOwnWrite = (askId: string) => {
+    writtenHere.current.add(askId);
+  };
   // Rows (by ask id) whose "Assign to me" write is in flight or failed: their control stays
   // mounted through the optimistic assignment and the rollback out of it (see `AssignToMe`).
   const [assigning, setAssigning] = useState<ReadonlySet<string>>(() => new Set());
   const onAssignLive = useCallback((askId: string, live: boolean) => {
+    if (live) writtenHere.current.add(askId);
     setAssigning((current) => {
       if (current.has(askId) === live) return current;
       const next = new Set(current);
@@ -845,14 +853,11 @@ export function Inbox({
   // when Later is folded, so `Snoozing…` and a refusal are not unmounted by the fold the
   // optimistic update triggers (see `SnoozeControl`).
   const [snoozing, setSnoozing] = useState<ReadonlySet<string>>(() => new Set());
-  /** Below 1280 px, whether the row the reader was reading left the Inbox on its own - withdrawn,
-   *  resolved, answered elsewhere - so the list they are back at says so. */
+  /** Below 1280 px, whether the row the reader was reading left their Inbox on its own -
+   *  withdrawn, resolved, answered elsewhere - so the list they are back at says so. */
   const [rowLeft, setRowLeft] = useState(false);
-  /** The asks the reader snoozed from this list, kept past the write: a snooze that lands before
-   *  the read that drops its row is still the reader's own move when that row leaves. */
-  const snoozedHere = useRef<Set<string>>(new Set());
   const onSnoozeLive = useCallback((askId: string, live: boolean) => {
-    if (live) snoozedHere.current.add(askId);
+    if (live) writtenHere.current.add(askId);
     setSnoozing((current) => {
       if (current.has(askId) === live) return current;
       const next = new Set(current);
@@ -890,6 +895,7 @@ export function Inbox({
   // ends with the write that took it.
   const [handingOn, setHandingOn] = useState<ReadonlySet<string>>(() => new Set());
   const onHandOnLive = useCallback((askId: string, live: boolean) => {
+    if (live) writtenHere.current.add(askId);
     if (
       live &&
       !presented.current.some((placed) => placed.row.kind === "ask" && placed.row.ask.id === askId)
@@ -944,6 +950,11 @@ export function Inbox({
   const threads = useInboxThreadRows({ asksOnly, listRef, show });
   /** Every row this list could hold before its five fields narrow it: what the bar counts. */
   const candidates = [...askRows, ...threads.rows];
+  /** Whether the row with this id is still in the reader's Inbox, whatever this list's filters,
+   *  section or agent narrow it to: the Inbox read itself, and the thread side of it. */
+  const inInbox = (id: string): boolean =>
+    (adoptedInbox ?? []).some((ask) => ask.id === id) ||
+    threads.rows.some((row) => rowId(row) === id);
   // The filters and the typed text both decide what is listed, with two exceptions that
   // outrank them all: a row whose "Assign to me" write is live stays, and so does one whose
   // hand-on is. Taking a question under the Unassigned filter is exactly the first case - the
@@ -1040,14 +1051,18 @@ export function Inbox({
     columns,
     filter,
     leftByReader: (id) =>
-      snoozedHere.current.has(id) ||
+      writtenHere.current.has(id) ||
       snoozing.has(id) ||
       bulkSnoozing > 0 ||
       dismissedHere(id) ||
       dismissWrite.pending.has(id) ||
       answered.current === id,
     listRef,
-    onOpenRowLeft: () => setRowLeft(true),
+    // The status line is for a row gone from the reader's Inbox, not one that only left this
+    // list's filter or section - a priority changed elsewhere, say - which is still there.
+    onOpenRowLeft: (id) => {
+      if (!inInbox(id)) setRowLeft(true);
+    },
     openFoldedBand: useCallback(() => openFoldedBand(LATER_GROUP_KEY), [openFoldedBand]),
     pane,
     presented,
@@ -1419,7 +1434,17 @@ export function Inbox({
       id: "open",
       keys: "o",
       label: "Open the row's issue, document or thread",
-      run: () => inHand("[data-inbox-owner]")?.click(),
+      run: () => {
+        const owner = inHand("[data-inbox-owner]");
+        // Below 1280 px with no row open, a thread row's title opens the row in place on a plain
+        // click (`ThreadTitle`'s `onOpen`), and a script's click is one. `o` is the way to the
+        // thread's own page, as it is beside the column, so it follows the link itself.
+        if (pane && !paneShown && handRow()?.kind !== "ask" && owner instanceof HTMLAnchorElement) {
+          window.location.assign(owner.href);
+          return;
+        }
+        owner?.click();
+      },
       when: () => inHand("[data-inbox-owner]") !== null,
     },
     {
@@ -1783,7 +1808,7 @@ export function Inbox({
       onClear={clearSelection}
       onDismiss={dismissPick}
       onPick={(until) => {
-        for (const id of selectedAsks) snoozedHere.current.add(id);
+        for (const id of selectedAsks) writtenHere.current.add(id);
         snoozePick(until);
       }}
       onPickerFocus={(from) => {
@@ -1947,6 +1972,7 @@ export function Inbox({
                     <div className="min-h-0 min-w-0" onBlur={forgetPaneReturn} ref={holdPane}>
                       <ReadingPane
                         onAnswered={recordAnswered}
+                        onAssignWrite={recordOwnWrite}
                         onSnoozeLive={onSnoozeLive}
                         row={subject}
                         viewer={viewer}
@@ -1992,6 +2018,7 @@ export function Inbox({
                     <div className="min-h-0 min-w-0">
                       <ReadingPane
                         onAnswered={recordAnswered}
+                        onAssignWrite={recordOwnWrite}
                         onSnoozeLive={onSnoozeLive}
                         row={subject}
                         viewer={viewer}

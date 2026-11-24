@@ -243,6 +243,23 @@ test("below 1280 px a plain click on a thread row's title opens the row in place
   }
 });
 
+test("below 1280 px `o` on a focused thread row goes to the thread's own page, not the row's view", async () => {
+  const user = userEvent.setup();
+  const assign = spyOn(window.location, "assign").mockImplementation(() => undefined);
+  renderInbox(seeded([replyRow("c1"), replyRow("c9")]));
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
+    const row = document.querySelector<HTMLElement>('[data-inbox-row="reply:c9"]') as HTMLElement;
+    const title = row.querySelector<HTMLAnchorElement>("a[data-inbox-owner]") as HTMLAnchorElement;
+    row.focus();
+    await user.keyboard("o");
+    expect(assign).toHaveBeenCalledWith(title.href);
+    expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument();
+  } finally {
+    assign.mockRestore();
+  }
+});
+
 test("a row a refused dismiss put back is the reader's hand's again, held under the next read", async () => {
   const user = userEvent.setup();
   const dismissed = answerInboxDismisses();

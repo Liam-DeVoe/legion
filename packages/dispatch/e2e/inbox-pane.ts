@@ -82,16 +82,12 @@ export async function selectRow(page: Page, askId: string): Promise<void> {
   await expect(open).toBeVisible();
 }
 
-/** Below the column's width, the reading view's own Inbox control, which brings the list back at
- *  the row it showed; nothing to do where no view is open or the column stands beside the
- *  list. */
+/** Below the column's width, presses the open reading view's own Inbox control, which brings the
+ *  list back at the row it showed; nothing to do where the column stands beside the list. The
+ *  view must be open: a row that finds the list instead has not reached the state it claims. */
 export async function backToList(page: Page): Promise<void> {
   if (hasReadingPane(page)) return;
-  const state = await settledState("the Inbox", [
-    ["view", readingView(page)],
-    ["list", inboxList(page)],
-  ]);
-  if (state === "list") return;
+  await expect(readingView(page)).toBeVisible();
   await readingView(page).getByRole("button", { exact: true, name: "Inbox" }).click();
   await expect(readingView(page)).toHaveCount(0);
   await expect(inboxList(page)).toBeVisible();

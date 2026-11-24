@@ -64,7 +64,7 @@ opened while it stands in place of the list. In the Inbox drawer they act on the
 | `l` | Move the focus into the reading pane, which the arrow keys, Page Up, Page Down, Space, Home and End then scroll (nothing in the drawer, or below 1280 px with no row open) |
 | `Enter` | Answer the selected ask (moves into its answer box, opening the note field of a decision block first); below 1280 px, on a focused row, open it in place of the list |
 | `1` – `9` | Pick option 1–9 of the selected ask; below 1280 px, on a focused row, open it and pick there |
-| `o` | Open the row's issue, document or thread |
+| `o` | Open the row's issue, document or thread on its own page; below 1280 px a focused thread row's `o` goes to the thread's page too, where a tap on its title opens the row in place |
 | `y` | Copy the selected row's reference; below 1280 px, on a focused ask row, open it and copy from its head |
 | `x` | Tick or untick the selected ask, for a snooze of several at once |
 | `h` | Snooze the selected ask, or every ticked ask; below 1280 px, on a focused row, open it at its **Snooze** |

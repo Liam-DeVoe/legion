@@ -102,7 +102,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
   const hers = await createIssue({ project: "CORE", title: "Alice's rollout" }, { login: "alice" });
   expect(hers.assignee).toBe("alice");
   const moved = await createAsk(hers.key, { question: "Which rollout flag?" }, asker);
-  await createAsk(hers.key, { question: "Which region goes first?" }, asker);
+  const stays = await createAsk(hers.key, { question: "Which region goes first?" }, asker);
   const his = await createIssue({ project: "CORE", title: "Bob's migration" }, { login: "bob" });
   expect(his.assignee).toBe("bob");
   await createAsk(his.key, { question: "Drop the legacy column?" }, asker);
@@ -172,14 +172,16 @@ test("a person hands an ask to another person and it moves between the two Inbox
     ).toBeVisible();
 
     // 2. Alice hands it to bob with the control on the question's card, in the view her row
-    // opens, which names her as the person it waits on until she does. The view then reads her
-    // next question, as the column does, and she goes back to the list.
+    // opens, which names her as the person it waits on until she does. The hand-on is her own
+    // write, so the view then reads her next question, as the column does, and she goes back to
+    // the list from there.
     await selectRow(alicePage, moved.id);
     const rowControl = handOnControl(inboxPane(alicePage), moved.id);
     await expect(rowControl).toHaveCount(1);
     await expect(rowControl).toHaveValue("alice");
     await expect(inboxPane(alicePage)).toContainText("Asked of alice");
     await handTo(rowControl, "bob");
+    await expect(alicePage.locator(`[data-inbox-reading-row="${stays.id}"]`)).toBeVisible();
     await backToList(alicePage);
     await handsOff(alicePage);
 

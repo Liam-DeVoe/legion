@@ -3416,12 +3416,98 @@ test("below 1280 px `1`-`9` and `y` on a focused ask row open it and act in its 
   }
 });
 
-test("a search typed beside the column keeps the column's own pick, so narrowing shows the list", async () => {
+test("below 1280 px the reader's own Assign to me under Unassigned moves the view to the next row, as the column does, and says nothing left", async () => {
+  const user = userEvent.setup();
+  const orphan = (id: string, key: string, question: string) =>
+    issueAsk(
+      { id, issue: { assignee: null, key, title: "Nobody's issue" }, issue_key: key, question },
+      null
+    );
+  const rows = [
+    orphan("ask-oa", "CORE-3", "First orphan?"),
+    orphan("ask-ob", "CORE-4", "Second orphan?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const { unmount } = renderInbox("/?assignee=unassigned");
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["ask-oa", "ask-ob"]));
+    await user.click(shortRow("ask-oa"));
+    const view = await screen.findByTestId("inbox-reading-view");
+    await user.click(within(view).getByRole("button", { name: "Assign CORE-3 to me" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-3", { assignee: "alice" }, keyedAttempt)
+    );
+    getInbox.mockResolvedValue([
+      {
+        ...(rows[0] as InboxRow),
+        issue: { assignee: "alice", key: "CORE-3", title: "Nobody's issue" },
+        waiting_on_person: "alice",
+      },
+      rows[1] as InboxRow,
+    ]);
+    await act(async () => {
+      save.resolve(narrowIssueOf(rows[0] as InboxRow, "alice"));
+      await save.promise;
+    });
+
+    await waitFor(() => expect(address()).toBe("/?item=ask-ob&assignee=unassigned"));
+    expect(screen.getByTestId("inbox-reading-view").getAttribute("data-inbox-reading-row")).toBe(
+      "ask-ob"
+    );
+    expect(screen.queryByText("This item left your Inbox.")).toBeNull();
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+test("below 1280 px an open row that only leaves the list's filter goes back to the list without saying it left the Inbox", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?", { priority: 1 }),
+    inboxIssue("ask-b", "CORE-2", "Which format?", { priority: 1 }),
+  ];
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { queryClient, unmount } = renderInbox("/?priority=P1");
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-b"]));
+    await user.click(shortRow("ask-a"));
+    await screen.findByTestId("inbox-reading-view");
+    await user.unhover(shortRow("ask-a"));
+
+    // Somebody else moves the issue to P2: the question is still the reader's, out of P1.
+    served = [{ ...(rows[0] as InboxRow), priority: 2 }, rows[1] as InboxRow];
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ["inbox"] });
+    });
+    await waitFor(() => expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument());
+    expect(address()).toBe("/?priority=P1");
+    expect(screen.queryByText("This item left your Inbox.")).toBeNull();
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+test("a search typed beside the column keeps the column's own pick, so narrowing shows the list and leaves the focus in the search box", async () => {
+  const user = userEvent.setup();
   const width = movableReadingPaneWidth(1440);
   const rows = [
-    inboxIssue("ask-a", "CORE-1", "Which approach?", {
-      options: [{ label: "Ship" }, { label: "Hold" }],
-    }),
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
     inboxIssue("ask-b", "CORE-2", "Which format?"),
   ];
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
@@ -3430,24 +3516,19 @@ test("a search typed beside the column keeps the column's own pick, so narrowing
   const { unmount } = renderInbox();
 
   try {
-    const pane = await screen.findByTestId("inbox-pane");
+    await screen.findByTestId("inbox-pane");
     await waitFor(() => expect(address()).toBe("/?item=ask-a"));
-    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
-    await within(pane).findByRole("radio", { name: "Ship" });
-    // The text goes in as one change, in an act this row awaits.
-    await act(async () => {
-      fireEvent.change(screen.getByRole("searchbox", { name: "Search asks" }), {
-        target: { value: "approach" },
-      });
-    });
+    const search = screen.getByRole("searchbox", { name: "Search asks" });
+    await user.type(search, "approach");
     await waitFor(() => expect(address()).toBe("/?item=ask-a&q=approach"));
-    // The search narrows the list to the one row it matches, which is what the reader sees.
-    await waitFor(() => expect(rowIds()).toEqual(["ask-a"]));
 
+    // Narrowing drops the column's own pick, which no reading view was ever drawn for: the
+    // reader is still typing, so the focus stays in the box rather than moving to a row.
     act(() => width.setWidth(1279));
     await waitFor(() => expect(address()).toBe("/?q=approach"));
     expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument();
     expect(screen.getByTestId("inbox-list").closest("[hidden]")).toBeNull();
+    expect(search).toHaveFocus();
   } finally {
     unmount();
     width.restore();

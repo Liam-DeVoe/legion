@@ -404,6 +404,13 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[13] }
   ),
   ...answers("usePaneSelection | - | form | (columnPickNarrowed) ? …", { reason: REASONS[13] }),
+  ...answers("usePaneSelection | - | form | (columns || columnPickNarrowed) ? …", {
+    reason: REASONS[13],
+  }),
+  ...answers(
+    'Inbox | - | form | if (pane && !paneShown && handRow()?.kind !== "ask" && owner instanceof HTMLAnchorElement) return …',
+    { reason: REASONS[13] }
+  ),
   ...answers(
     "usePaneSelection | - | form | if (!columns && id === undefined && entry.inboxOverList === true) return …",
     { reason: REASONS[13] }
