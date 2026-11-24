@@ -26,16 +26,18 @@ const COLUMNS = [
   "Role",
   "Type",
   "Agent",
-  "Model",
+  "Last model",
   "Attempt",
   "Started",
   "Ended",
   "Result",
+  "Set model",
+  "Answered by",
 ] as const;
 
 /** A field the record does not hold: a merge GitHub made has no agent, a run that has not
  *  answered yet has no model, a run that started before the release that records steps has no
- *  start. */
+ *  start, and a record that names no set model has none. */
 const NONE = "—";
 
 function Cell({ children, className = "" }: { children: ReactNode; className?: string }) {
@@ -111,6 +113,25 @@ function Identifier({ value }: { value: string }): ReactNode {
       </Fragment>
     );
   });
+}
+
+/** The models that answered a run's agent, as `answeredText` writes them. Each model with its
+ *  calls and its share stays whole, and the list is offered a break after each comma, as a model
+ *  id is at each slash, so a narrow column wraps it between models. A model whose own name holds
+ *  a comma is offered a break there too. */
+function Answered({ text }: { text: string }): ReactNode {
+  const parts = text.split(",");
+  // Each part is keyed by the text up to and including it, which no other part of the list shares.
+  return parts.map((part, index) => (
+    <Fragment key={parts.slice(0, index + 1).join(",")}>
+      {index === 0 ? null : (
+        <>
+          ,<wbr />
+        </>
+      )}
+      <span className="whitespace-nowrap">{part}</span>
+    </Fragment>
+  ));
 }
 
 /** How the run ended, or that it runs: a failed or stopped run that sent its task back names
@@ -205,6 +226,12 @@ function TaskTable({ rows, task }: { rows: readonly StepRow[]; task: string }): 
                   <Cell className={textPrimaryOnSurface}>
                     <Result row={row} />
                   </Cell>
+                  <Cell className={`font-mono break-words ${textSecondaryOnSurface}`}>
+                    <Identifier value={row.setModel} />
+                  </Cell>
+                  <Cell className={`font-mono ${textSecondaryOnSurface}`}>
+                    <Answered text={row.answered} />
+                  </Cell>
                 </tr>
               ))}
             </tbody>
@@ -265,14 +292,14 @@ function useCatchUp(issueKey: string, shown: boolean): void {
 
 /**
  * The steps Legion ran on the issue (`GET /issues/{key}/steps`): one table per task, in the order
- * of each task's first step, and one row per run of a step - its role, type, agent, model,
- * attempt, start, end and result. The records are the Legion daemon's; this tab only reads them,
- * and only through its catch-up (`useCatchUp`) and Retry, so the query fetches nothing on its
- * own: it is never enabled, and a read that failed is asked again by the catch-up's next read,
- * not by the app's retry policy, whose retries no cleanup of the tab could stop. A failed read
- * shows alone only while the tab has drawn nothing; after a read that answered, the failure and
- * its Retry stand above the rows that read drew, since nothing may read again until the next
- * start or Retry.
+ * of each task's first step, and one row per run of a step - its role, type, agent, last model,
+ * attempt, start, end and result, the model its role was set to and the models that answered.
+ * The records are the Legion daemon's; this tab only reads them, and only through its catch-up
+ * (`useCatchUp`) and Retry, so the query fetches nothing on its own: it is never enabled, and a
+ * read that failed is asked again by the catch-up's next read, not by the app's retry policy,
+ * whose retries no cleanup of the tab could stop. A failed read shows alone only while the tab
+ * has drawn nothing; after a read that answered, the failure and its Retry stand above the rows
+ * that read drew, since nothing may read again until the next start or Retry.
  */
 export function StepsTab({ active, issueKey }: { active: boolean; issueKey: string }): ReactNode {
   const query = useQuery({ ...issueStepsQuery(issueKey), enabled: false, retry: false });

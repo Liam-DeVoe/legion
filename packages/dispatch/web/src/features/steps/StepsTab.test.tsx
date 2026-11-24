@@ -36,10 +36,10 @@ function bodyRows(table: HTMLElement): string[][] {
     );
 }
 
-// One table per task, in the server's order, each run one row with nine columns: step, role,
-// type, agent, model, attempt, start, end and result. A review that failed says where it sent the
-// task back to, a run that has not ended says it runs, and a field the record does not hold reads
-// as a dash rather than as an empty cell.
+// One table per task, in the server's order, each run one row with eleven columns: step, role,
+// type, agent, last model, attempt, start, end, result, set model and the models that answered. A
+// review that failed says where it sent the task back to, a run that has not ended says it runs,
+// and a field the record does not hold reads as a dash rather than as an empty cell.
 test("the Steps tab draws each task's runs as a table, a running run as running", async () => {
   const tab = renderTab(async () => ({
     issue: "CORE-1",
@@ -63,7 +63,19 @@ test("the Steps tab draws each task's runs as a table, a running run as running"
       within(table)
         .getAllByRole("columnheader")
         .map((header) => header.textContent)
-    ).toEqual(["Step", "Role", "Type", "Agent", "Model", "Attempt", "Started", "Ended", "Result"]);
+    ).toEqual([
+      "Step",
+      "Role",
+      "Type",
+      "Agent",
+      "Last model",
+      "Attempt",
+      "Started",
+      "Ended",
+      "Result",
+      "Set model",
+      "Answered by",
+    ]);
     const rows = bodyRows(table);
     expect(rows.map((cells) => [cells[0], cells[1], cells[5], cells[8]])).toEqual([
       ["2", "implementer", "1", "passed"],
@@ -83,6 +95,88 @@ test("the Steps tab draws each task's runs as a table, a running run as running"
       )
     ).toEqual(["2026-11-16T09:00:00Z", "2026-11-16T09:40:00Z"]);
     expect(tab.listSteps).toHaveBeenCalledWith("CORE-1");
+  } finally {
+    tab.restore();
+  }
+});
+
+// The five records the route's test writes and reads back, as `dispatch steps` prints them, with
+// the tab's own dash for no set model: one with only the fields a record held before the set model
+// and the answers, and the model X, one still running, and three set to the model A, with no
+// counts, with 41 calls of A and 3 of B, and with no call.
+test("the Steps tab names each run's last model, its set model and the models that answered", async () => {
+  const tab = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [
+      {
+        steps: [
+          record({ id: "main-fields", model: "X" }),
+          record({ ended_at: null, id: "running", model: "", result: "" }),
+          record({ attempt: 2, id: "no-counts", model: "A", set_model: "A" }),
+          record({
+            answers: [
+              { calls: 41, model: "A" },
+              { calls: 3, model: "B" },
+            ],
+            attempt: 3,
+            id: "counts",
+            model: "A",
+            set_model: "A",
+          }),
+          record({ answers: [], attempt: 4, id: "no-call", model: "", set_model: "A" }),
+        ],
+        task: "default",
+      },
+    ],
+  }));
+
+  try {
+    const table = await screen.findByRole("table", { name: "Steps of task default" });
+    const rows = bodyRows(table);
+    expect(rows.map((cells) => [cells[4], cells[9], cells[10]])).toEqual([
+      ["X", "—", "unknown"],
+      ["—", "—", "running"],
+      ["A", "A", "unknown"],
+      ["A", "A", "A=41(93%),B=3(7%)"],
+      ["—", "A", "none"],
+    ]);
+  } finally {
+    tab.restore();
+  }
+});
+
+// The cell names each model with its calls and its share whole, and a narrow column breaks the
+// list only after a comma, as a model id breaks only at its hyphens and after its slash.
+test("the Steps tab breaks the models that answered only after a comma", async () => {
+  const tab = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [
+      {
+        steps: [
+          record({
+            answers: [
+              { calls: 41, model: "anthropic/claude-opus-5-5" },
+              { calls: 3, model: "anthropic/claude-opus-5" },
+            ],
+            id: "implement-1",
+            set_model: "anthropic/claude-opus-5-5",
+          }),
+        ],
+        task: "default",
+      },
+    ],
+  }));
+  try {
+    const table = await screen.findByRole("table", { name: "Steps of task default" });
+    const answered = within(table).getAllByRole("cell")[10];
+    expect(answered?.textContent).toBe(
+      "anthropic/claude-opus-5-5=41(93%),anthropic/claude-opus-5=3(7%)"
+    );
+    expect(answered?.querySelectorAll("wbr")).toHaveLength(1);
+    expect(answered?.querySelector("wbr")?.previousSibling?.textContent).toBe(",");
+    for (const whole of ["anthropic/claude-opus-5-5=41(93%)", "anthropic/claude-opus-5=3(7%)"]) {
+      expect(within(table).getByText(whole).className).toContain("whitespace-nowrap");
+    }
   } finally {
     tab.restore();
   }
