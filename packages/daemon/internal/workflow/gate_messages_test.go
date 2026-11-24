@@ -247,13 +247,14 @@ func TestAGateEventThatMovesNothingTellsNobody(t *testing.T) {
 
 // Under more than one gated step, the message is of the standing of every step the deployment
 // gates, not of the one row the event names. The merger merges on it, and the merger's own start
-// is held while any required step is closed (the outbox's designGateClosed over
-// classify.StandingGate), so an "opened" message sent while another document is still under
-// review would merge a head whose design nobody has approved (dispatch://INFRA-714/spec R5,
-// under the steps INFRA-1272 gates). The opening is told at the spec's own approval and at no
-// earlier event: the merger and the architect each took the versions before the two new ones, so
-// each is owed their news, and each is told the opening by the task that carries it, its told row
-// recording the opening as owed once the spec's approval opens the gate, and not before.
+// is held while a registered step is closed (the outbox's mergeHold, which reads
+// classify.StandingGate once a step of the gate has opened), so an "opened" message sent while
+// another document is still under review would merge a head whose design nobody has approved
+// (dispatch://INFRA-714/spec R5, under the steps INFRA-1272 gates). The opening is told at the
+// spec's own approval and at no earlier event: the merger and the architect each took the
+// versions before the two new ones, so each is owed their news, and each is told the opening by
+// the task that carries it, its told row recording the opening as owed once the spec's approval
+// opens the gate, and not before.
 func TestTheGateMessageIsOfEveryGatedStepAndNotTheOneTheEventNames(t *testing.T) {
 	pool := migratedPool(t)
 	seedMergingRoot(t, pool)
@@ -287,8 +288,9 @@ func TestTheGateMessageIsOfEveryGatedStepAndNotTheOneTheEventNames(t *testing.T)
 	assertOpeningsOwed(t, pool, gatedRoot, gatedRoot+"/architect", gatedRoot+"/holder")
 }
 
-// The message and the merger's start hold ask one question, so they read one predicate
-// (classify.StandingGate, the outbox's designGateClosed). A step the deployment gates that
+// The message and the merger's start hold of a gate that has opened ask one question, so they
+// read one predicate (classify.StandingGate, which the outbox's mergeHold reads through
+// classify.MergeHold once a step of the gate has opened). A step the deployment gates that
 // nothing has registered names no document, so the hold passes it over; a message decided over a
 // predicate that let such a step hold the work would say nothing at all while the hold moved,
 // which is what a step list that grew left behind (dispatch://INFRA-714/spec R5).

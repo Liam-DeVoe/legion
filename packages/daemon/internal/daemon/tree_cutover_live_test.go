@@ -591,9 +591,9 @@ func TestTheTreeCutoverLive(t *testing.T) {
 			architect, held.Tree, session, relaunch.Tree, registered.Tree)
 
 		// The gate the merger's hold reads is A2's own, and the state shows no approved version of
-		// it. The hold (the outbox's designGateClosed) reads the gate root on the Dispatch chain, as
-		// the state's tree does, and holds a merger on a registered step that no approval opened
-		// (classify.StandingGate).
+		// it. The hold (the outbox's mergeHold) reads the gate root on the Dispatch chain, as the
+		// state's tree does. A2 holds its own gate and none of its rows has opened, so a step the
+		// deployment gates that has no row holds its merger (classify.MergeHold).
 		if gate := state.Issues[a2].DesignGate; gate != nil && gate.ApprovedVersion != nil {
 			t.Fatalf("the state shows the design gate of %s approved at version %d, want no approved version: nobody designed %s as a root\nstate %s",
 				a2, *gate.ApprovedVersion, a2, body)
@@ -605,13 +605,13 @@ func TestTheTreeCutoverLive(t *testing.T) {
 			t.Fatalf("read %s: %v (recorded %t)", a2, err, issue != nil)
 		}
 		hold := &outbox{pool: pool, records: record.NewStore(), gatedSteps: r.cfg.Gates.Steps()}
-		gateRoot, closed, err := hold.designGateClosed(t.Context(), *issue)
+		gateRoot, step, stepRegistered, err := hold.mergeHold(t.Context(), *issue)
 		if err != nil || gateRoot != a2 {
 			t.Fatalf("the merger's hold of %s reads the design gate of %q (%v), want the gate of %s itself, not of %s", a2, gateRoot, err, a2, a)
 		}
-		treeNote("the state shows no approved version of %s's own gate, and the merger's hold reads the gate of %s (closed %t)", a2, gateRoot, closed)
+		treeNote("the state shows no approved version of %s's own gate, and the merger's hold reads the gate of %s (held by step %q, registered %t)", a2, gateRoot, step, stepRegistered)
 		treeNote("gates.design is off on this rig. It gates no step, so that hold holds no merger here")
-		treeNote("%s holds no step, and a step with no row holds no merger. Under root-issues, its merger waits once its architect's register_gate writes a step that is not approved", a2)
+		treeNote("%s holds no row, and none of its steps has opened. Under root-issues its merger waits for the spec step, which has no row, until its architect registers that document and a person approves it", a2)
 
 		// A's sign-off and close wait on nothing of A2's: none of the three readers of the hold on
 		// them (workflow.Engine.acceptanceHeld) names it.

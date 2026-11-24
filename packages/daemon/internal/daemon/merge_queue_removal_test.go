@@ -482,9 +482,10 @@ func newDequeueRig(t *testing.T) *dequeueRig {
 // suspended claim is one the idle release suspended: released, its session kept. An issue in
 // implementing has its implementer released too. No phase row is written, so no role of the
 // issue is behind its entry and the slot repair starts no worker of it (workflow.OwedEntry).
-// gateClosed records the root's design gate closed by a newer version of its spec than the one
-// approved, and the merger's phase as having taken that approved version, as the upgrade's seed
-// or the phase's entry records it (design_news_told).
+// The root's design gate holds its spec approved at the latest version, so no gate holds its
+// merger, and gateClosed records it closed by a newer version of its spec than the one approved
+// instead. Either way the merger's phase is recorded as having taken the approved version, as the
+// upgrade's seed or the phase's entry records it (design_news_told).
 func (r *dequeueRig) seed(t *testing.T, stands phase.Phase, merger supervise.ClaimState, gateClosed bool) dequeueIssue {
 	t.Helper()
 	index := len(r.issues) + 1
@@ -501,12 +502,12 @@ func (r *dequeueRig) seed(t *testing.T, stands phase.Phase, merger supervise.Cla
 		if err := r.records.PutPullRequest(ctx, tx, openPullRequest(issue)); err != nil {
 			return err
 		}
-		if !gateClosed {
-			return nil
+		approved, latest := 1, 1
+		if gateClosed {
+			latest = 2
 		}
-		approved := 1
 		if err := r.records.PutGate(ctx, tx, record.DesignGate{Issue: key, Step: record.DesignStepSpec, ArtifactID: "spec-" + key,
-			LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true}); err != nil {
+			LatestVersion: latest, ApprovedVersion: &approved, EverOpened: true}); err != nil {
 			return err
 		}
 		return r.records.RaiseTold(ctx, tx, key, record.AudienceHolder, raisedTo(map[record.DesignStep]int{record.DesignStepSpec: approved}), time.Now().UTC())

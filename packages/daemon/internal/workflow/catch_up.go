@@ -164,6 +164,7 @@ func queueCatchUpOn(ctx context.Context, tx pgx.Tx, store record.Store, steps []
 		}
 		catchUp.Decided, catchUp.Kept = decided, kept
 		reason = fmt.Sprintf("the tree of %s at generation %d as the daemon records it now; start or resume it as your role says", issue.Key, issue.Generation)
+		reason += unregisteredClause(issue.Key, waits.unregistered)
 	}
 	if len(waits.accepting) > 0 {
 		reason += fmt.Sprintf("; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move)", strings.Join(waits.accepting, ", "))
@@ -318,6 +319,34 @@ type treeWaits struct {
 	// (record.Chains.HoldsOwnGate): its catch-up states its gate steps, and names what is kept for
 	// it.
 	holdsGate bool
+	// unregistered is the gated steps of the issue's own gate that hold no row, where no hand-over
+	// of the release before carried the issue in (record.CatchUp.HandedOver), in the order the
+	// catch-up states them (unregisteredClause).
+	unregistered []record.DesignStep
+}
+
+// unregisteredClause is what a catch-up's reason says of steps, the gated steps of key's own gate
+// that nobody has registered (treeWaits.unregistered): it names them, and says that the architect
+// registers the document of each one and requests the person's approval, "" for none. Such a step
+// holds the tree's work (record.TreeGate.Required), and the merge of an issue none of whose steps
+// has opened and that no hand-over carried in without a gate (classify.MergeHold): an issue a
+// release before kept at work in another tree and that became a root with no gate of its own is
+// such an issue, and its architect's prompt tells it to register an unregistered step only for a
+// carried gate. So this daemon text tells it at its relaunch under its own key and at each later
+// catch-up. A root a hand-over carried in is named nothing here, with its gate or without one:
+// its prompt says which steps it registers, and the merge of one carried in without a gate waits
+// on no step that has no row. A step no person approves (`gates.design: off`) is not named either,
+// since its registration opens it at once and no merge waits on it.
+func unregisteredClause(key string, steps []record.DesignStep) string {
+	if len(steps) == 0 {
+		return ""
+	}
+	each := "that step"
+	if len(steps) > 1 {
+		each = "each of those steps"
+	}
+	return fmt.Sprintf("; no document is registered for the %s of %s: register the document of %s with register_gate and request the person's approval",
+		stepsPhrase(steps), key, each)
 }
 
 // treeCatchUp is what issue's architect acts on as the Dispatch chain shows it (R18 of
@@ -328,7 +357,9 @@ type treeWaits struct {
 // (ArchitectCarried, the issue's own record), and each design-gate step it must hold open and how
 // it stands. The steps are the ones its tree's work waits on (record.TreeGate.Required), so a
 // criteria row the architect registered beside a deployment that gates spec and not criteria is
-// listed after the spec, gated as the spec is. An issue under a gate holder registers no gate and
+// listed after the spec, gated as the spec is. Each gated step that holds no row, where no
+// hand-over carried the issue in, is named in the reason too, with what the architect does about it
+// (treeWaits.unregistered, unregisteredClause). An issue under a gate holder registers no gate and
 // was carried in by no hand-over, so its catch-up states no step and is neither handed over nor
 // carried.
 //
@@ -348,6 +379,7 @@ type treeWaits struct {
 // failed, as the phase-finished notice is, so the reason names them beside the accepting list.
 func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, chains *record.Chains, issue record.Issue) (record.CatchUp, treeWaits, error) {
 	catchUp := record.CatchUp{Generation: issue.Generation, Gates: []record.CatchUpGate{}}
+	var unregistered []record.DesignStep
 	// The issues it lists are the issue itself and every issue in Legion's work under it on the
 	// Dispatch chain (record.Chains.Under), in key order, and the gate it states is the issue's own
 	// where it holds one on that chain (record.Chains.HoldsOwnGate).
@@ -378,11 +410,14 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 				}
 			} else {
 				stated.Unregistered = true
+				if stated.Gated && !catchUp.HandedOver {
+					unregistered = append(unregistered, step)
+				}
 			}
 			catchUp.Gates = append(catchUp.Gates, stated)
 		}
 	}
-	waits := treeWaits{holdsGate: holdsGate}
+	waits := treeWaits{holdsGate: holdsGate, unregistered: unregistered}
 	members := []record.Issue{issue}
 	for _, under := range chains.Under(issue.Key) {
 		if member, recorded := chains.Record(under); recorded {

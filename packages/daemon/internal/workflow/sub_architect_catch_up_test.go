@@ -162,7 +162,10 @@ func TestASubArchitectsReadyIsToldItsOwnSubtree(t *testing.T) {
 // does name a child directly under it whose architect has failed, retired or been suspended, or
 // never started, since that child's acceptance then walks up to the root's.
 func TestARootsCatchUpNamesOnlyTheAcceptancesItsArchitectOwns(t *testing.T) {
-	const root = "the tree of LEGION-1 at generation 1 as the daemon records it now; start or resume it as your role says"
+	// Nothing registered the root's gate, so its reason names its spec step before the issues
+	// waiting in accepting.
+	const root = "the tree of LEGION-1 at generation 1 as the daemon records it now; start or resume it as your role says" +
+		"; no document is registered for the spec step of LEGION-1: register the document of that step with register_gate and request the person's approval"
 	const child = "the issues under LEGION-2, which you own, at generation 2 as the daemon records them now; start or resume your issue as your role says"
 	awaiting := func(base, keys string) string {
 		return base + "; in accepting, waiting for your acceptance, which no worker gives: " + keys + " (read the evidence, then sign_off or request_backward_move)"

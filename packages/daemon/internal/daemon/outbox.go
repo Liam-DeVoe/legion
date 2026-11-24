@@ -4438,33 +4438,73 @@ func (r *outbox) launchOf(ctx context.Context, issue record.Issue) (issueLaunch,
 	return launch, nil
 }
 
-// designGateClosed says whether the design gate of the issue's gate root is closed, which holds
-// the merger's start (supervise): the gate is the gate root's, the nearest issue at or above it in
-// Legion's work that holds its own gate on the Dispatch chain (record.Chains.GateRoot), so every
-// issue under that root reads the same rows, and it is closed when a step the tree is gated on
-// holds a row no approval has opened (classify.StandingGate, the first such step in the configured
-// order). The steps are the deployment's and a criteria row the gate root's architect registered
-// beside a deployment of spec alone (record.TreeSteps), so a new version of that Verification
-// document holds the merger as a new spec version does. A gate root with no row for a step —
-// nothing registered one, or the project's design gate is off, which registers it approved —
-// holds nothing on that step: nobody can be waiting on a document the record does not know. It is
-// read just before the row acts, as every other fence of a row is. root is the gate root read, for
-// the wait's words.
-func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (root string, closed bool, err error) {
-	var gates map[record.DesignStep]record.DesignGate
+// gateAbove is the design gate of an issue's gate root as a hold of a row reads it just before the
+// row acts (readGateAbove): root is the gate root, the nearest issue at or above the issue in
+// Legion's work that holds its own gate on the Dispatch chain (record.Chains.StateTree), so every
+// issue under that root reads the same rows; ownGate says whether that root is the issue itself
+// (record.Chains.HoldsOwnGate); and rows are the root's rows by step.
+type gateAbove struct {
+	root    string
+	ownGate bool
+	rows    map[record.DesignStep]record.DesignGate
+}
+
+// readGateAbove reads issue's gateAbove in a read-only transaction of its own, as every other
+// fence of a row is read.
+func (r *outbox) readGateAbove(ctx context.Context, issue record.Issue) (gateAbove, error) {
+	var above gateAbove
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		chains, err := record.ReadChainsOf(ctx, tx, r.records, issue.Project, []string{issue.Key})
 		if err != nil {
 			return err
 		}
-		root = chains.StateTree(issue.Key)
-		gates, err = r.records.GatesOf(ctx, tx, root)
+		above.root = chains.StateTree(issue.Key)
+		above.ownGate = above.root == issue.Key && chains.HoldsOwnGate(issue.Key)
+		above.rows, err = r.records.GatesOf(ctx, tx, above.root)
 		return err
 	}); err != nil {
-		return "", false, fmt.Errorf("read the design gate above %s: %w", issue.Key, err)
+		return gateAbove{}, fmt.Errorf("read the design gate above %s: %w", issue.Key, err)
 	}
-	_, closed = classify.StandingGate(r.gatedSteps, gates)
-	return root, closed, nil
+	return above, nil
+}
+
+// designGateClosed says whether the design gate of the issue's gate root is closed for a role
+// other than the merger, which holds a held message to such a role (deliverHeld): it is closed
+// when a step the tree is gated on holds a row no approval has opened (classify.StandingGate, the
+// first such step in the configured order), the rule the message of a gate that closed or opened
+// reads too (workflow's tellGateMoved), so the hold keeps no role from a message after it was told
+// the gate opened. The steps are the deployment's and a criteria row the gate root's architect
+// registered beside a deployment of spec alone (record.TreeSteps). A gate root with no row for a
+// step — nothing registered one, or the project's design gate is off, which registers it approved
+// — holds nothing on that step: no role was told of a gate the record does not know. root is the
+// gate root read, for the wait's words. The merger's own hold is mergeHold.
+func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (root string, closed bool, err error) {
+	above, err := r.readGateAbove(ctx, issue)
+	if err != nil {
+		return "", false, err
+	}
+	_, closed = classify.StandingGate(r.gatedSteps, above.rows)
+	return above.root, closed, nil
+}
+
+// mergeHold is what holds the merge of issue now (classify.MergeHold over the rows of its gate
+// root, readGateAbove): the gate root read, the step that holds the merge ("" for none) and
+// whether a row of that step is registered. An issue that holds its own gate and none of whose
+// rows has ever stood open is held by a gated step that has no row, as its start is, unless a
+// hand-over of the release before carried it in without a gate, which its own record says; every
+// other issue is held by a registered step that no approval has opened, as designGateClosed reads
+// it.
+func (r *outbox) mergeHold(ctx context.Context, issue record.Issue) (root string, step record.DesignStep, registered bool, err error) {
+	above, err := r.readGateAbove(ctx, issue)
+	if err != nil {
+		return "", "", false, err
+	}
+	step, _, held := classify.MergeHold(r.gatedSteps, above.rows, above.ownGate, issue)
+	if !held {
+		return above.root, "", false, nil
+	}
+	_, registered = above.rows[step]
+	return above.root, step, registered, nil
 }
 
 // startNewsOf is what a start carries of news of the approved design, or that the start finishes
@@ -4518,12 +4558,18 @@ func (r *outbox) startNewsOf(ctx context.Context, row record.OutboxRow, issue re
 }
 
 // mergerWaitsForTheDesignGate is the one role fence a start carries: the merger merges nothing
-// while its tree's design gate is closed, because a new version of the spec is with its reviewer
-// and what may merge is what that review decides (dispatch://INFRA-714/spec R5). It answers a
-// wait error for a merger start the gate holds, which leaves the start on the row's backoff as a
-// check start waits on its look (checkLookHolds), and nil for every other role and an open gate.
-// The gate opening releases the row's next try, and tells every phase worker of the tree and the
-// root's architect as well (workflow's tellGateMoved).
+// while a step of its tree's design gate holds the merge (mergeHold), because a new version of the
+// spec is with its reviewer and what may merge is what that review decides
+// (dispatch://INFRA-714/spec R5), or because nobody has approved the design of an issue that holds
+// its own gate and that no hand-over of the release before carried in without a gate (R19 of
+// dispatch://INFRA-3320: its merger waits for the gates its start waits for).
+// It answers a wait error for a merger start the gate holds, which leaves the start on the row's
+// backoff as a check start waits on its look (checkLookHolds), and nil for every other role and
+// an open gate. The wait's words name the step; for a step with no registered document they say
+// that the issue's architect registers the document of that step and requests the person's
+// approval, which its catch-up says to it too (workflow's treeCatchUp). The gate opening releases
+// the row's next try, and tells every phase worker of the tree and the root's architect as well
+// (workflow's tellGateMoved).
 //
 // It also waits while the merger's member is owed news of the approved design that no start can
 // carry yet, its change set not recorded, read or unavailable, or its earlier version neither read
@@ -4540,12 +4586,16 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 	if role != claim.RoleMerger {
 		return nil
 	}
-	root, closed, err := r.designGateClosed(ctx, issue)
+	root, step, registered, err := r.mergeHold(ctx, issue)
 	if err != nil {
 		return err
 	}
-	if closed {
-		return wait.Errorf("the merger of %s waits for the design gate of %s to open", issue.Key, root)
+	switch {
+	case step != "" && !registered:
+		return wait.Errorf("the merger of %s waits for the %s step of the design gate of %s, which has no registered document: the architect of %s registers the document of that step with register_gate and requests the person's approval",
+			issue.Key, step, root, root)
+	case step != "":
+		return wait.Errorf("the merger of %s waits for the design gate of %s to open at its %s step", issue.Key, root, step)
 	}
 	unrecorded, err := r.mergerNewsUnrecorded(ctx, issue)
 	if err != nil || !unrecorded {

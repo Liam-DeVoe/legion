@@ -1493,12 +1493,15 @@ func raisesApproval(before record.DesignGate, held bool, after record.DesignGate
 // criteria row its architect registered beside a deployment that gates spec and not criteria) is
 // closed with a row of its own (classify.StandingGate). So a new version of a registered
 // Verification document closes it as a new spec version does. It is the one predicate the message
-// and the merger's start hold both read — the hold asks it as the outbox's designGateClosed — so a
-// member is never told the gate opened while the hold still holds its merger, nor left untold when
-// the hold lets it go. A step the deployment gates that nothing has registered holds the tree's
-// work (FirstClosedStep) but names no document, so nobody can be asked about it and nothing can be
-// said of it: it is why the message reads StandingGate rather than DesignGatesOpen, and the one
-// difference between them.
+// and the merger's start hold both read once a step of the gate has opened — the hold asks it
+// through classify.MergeHold, as the outbox's mergeHold — so a member is never told the gate
+// opened while the hold still holds its merger, nor left untold when the hold lets it go. Before
+// any step has opened, the hold of an issue that holds its own gate and that no hand-over of the
+// release before carried in without a gate also waits on a gated step that has no row, and no
+// opening can be told then, since an opening is an approval. A step the deployment gates that
+// nothing has registered holds the tree's work (FirstClosedStep) but names no document, so nobody
+// can be asked about it and nothing can be said of it: it is why the message reads StandingGate
+// rather than DesignGatesOpen, and the one difference between them.
 func (e *Engine) standingGateOpen(gates map[record.DesignStep]record.DesignGate) bool {
 	_, held := classify.StandingGate(e.cfg.Steps, gates)
 	return !held

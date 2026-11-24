@@ -569,7 +569,9 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		}
 
 		claimReady(t, pool, engine, basisAncestor, claim.RoleArchitect, 1)
+		// P registered no gate of its own, so its reason names its spec step before the roots.
 		want := "the tree of LEGION-100 at generation 1 as the daemon records it now; start or resume it as your role says" +
+			"; no document is registered for the spec step of LEGION-100: register the document of that step with register_gate and request the person's approval" +
 			"; resting on the approval of LEGION-100 and still in the workflow: " + restingNamed +
 			" (the daemon refuses the sign-off and the close of LEGION-100 while any of them is; each root's own architect, or a person, moves it)"
 		if got := lastCatchUpReason(t, pool); got != want {
