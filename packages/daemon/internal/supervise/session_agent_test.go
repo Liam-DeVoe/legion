@@ -115,12 +115,12 @@ func TestAStartForAnotherAgentLeavesTheClaimsSessionBehind(t *testing.T) {
 }
 
 // The agent a start for another step's agent starts is new on that step, not the agent of the
-// session left behind, so its first task says so in a sentence of its own: the session the claim
-// ran before was another agent's, and it reads the branch and the earlier steps' records to learn
-// what was done. It is not told to check before it repeats work it never did, the sentence an
-// agent whose own session was lost is told. The control, a session the operator's fresh session
-// left behind, is told that sentence still. The fault: the new agent read another agent's session
-// as its own lost work.
+// session left behind: the claim records the session it left as the earlier agent's, another
+// agent's than the one it records now (AbandonedSession.OfAnotherAgent), and the new agent's first
+// task names that session, the issue's branch and the command that reads the earlier steps'
+// records, the sentence abandonedTask gives a session of another agent. The control, a session the
+// operator's fresh session left behind, is recorded as the same agent's. The fault: the session
+// left behind was recorded as the new agent's own, which abandonedTask tells as its own lost work.
 func TestTheFirstTaskOfANewAgentOnAHeldNameSaysItIsNewOnTheStep(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -171,11 +171,11 @@ func TestTheFirstTaskOfANewAgentOnAHeldNameSaysItIsNewOnTheStep(t *testing.T) {
 // session failed before one registered. The claim then records that agent still, an abandoned
 // session nobody was told of, and the cause of the forget that agent's launches were built with.
 // The start for the new agent leaves no session behind, but what the claim keeps of that loss is
-// the other agent's: the new agent's launch is built with no cause of a forget
-// (Claim.SessionLost), and its first task says it is new on the step and that the session before
-// was another agent's. The fault: the new agent was told, in its prompt and in its first task,
-// that a session of its own was lost, and to check what it did before it repeated work it never
-// did.
+// the other agent's: the new agent's launch is built with no cause of a forget (Claim.SessionLost),
+// the claim records the lost session as another agent's than the new one
+// (AbandonedSession.OfAnotherAgent), the record abandonedTask tells a session of another agent by,
+// and the first task names that session. The fault: the lost session was recorded with no agent,
+// so the new agent was told, in its first task, that a session of its own was lost.
 func TestANewAgentIsNotToldAnotherAgentsLostSessionAsItsOwn(t *testing.T) {
 	c := byIDClaim(StateRetired, 3)
 	c.SessionAgent = stepAgentA
@@ -202,8 +202,9 @@ func TestANewAgentIsNotToldAnotherAgentsLostSessionAsItsOwn(t *testing.T) {
 		t.Errorf("the spawn for %s was built at generation %d with SessionLost %q; want the spawn's, at %d, with no cause: the session lost was %s's",
 			keyAgentB, built.Generation, built.SessionLost, starts[0].Spec.Generation, stepAgentA)
 	}
-	if got := r.claim().SessionAgent; got != keyAgentB {
-		t.Fatalf("the claim records the agent %q of its session, want %q", got, keyAgentB)
+	if got := r.claim(); got.SessionAgent != keyAgentB || got.Abandoned.Agent != stepAgentA || !got.Abandoned.OfAnotherAgent(got.SessionAgent) {
+		t.Fatalf("the claim records the agent %q of its session and the lost session %+v; want %s's, and %s lost as %s's, another agent's",
+			got.SessionAgent, got.Abandoned, keyAgentB, idSession, stepAgentA)
 	}
 	r.registerFresh()
 	base := len(r.prompts())
