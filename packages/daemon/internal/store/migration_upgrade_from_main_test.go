@@ -136,9 +136,9 @@ import (
 // The applied sequence of the copy of Dispatch's issues (20261121170714) is applied after all of
 // these and touches no outbox_kind_check: it adds dispatch_issues.applied_seq at its default, 0, on
 // every row it finds. So the design news stays the last word of that check.
-// The key of a phases row by its step (20261122062637) touches no outbox_kind_check: it writes the
+// The key of a phases row by its step (20261124044450) touches no outbox_kind_check: it writes the
 // primary key of phases over step_task and step_place, which the plan of an issue (20261117034837)
-// added, and every row it finds keeps its step (migration_20261122062637_test.go).
+// added, and every row it finds keeps its step (migration_20261124044450_test.go).
 // The roles of a deployment (20261123181746) are named here too: the migration writes the role
 // checks of `claims`, `phases` and `issue_releases` and the phase checks of `issues` again, each
 // wider than the check it replaces, so every row an upgrade finds passes them
@@ -176,8 +176,8 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717, 20261121170714,
-	20261122062637, 20261123181746, 20261123203837, 20261123203838, 20261123203839, 20261123203840,
-	20261123203841, 20261123203842,
+	20261123181746, 20261123203837, 20261123203838, 20261123203839, 20261123203840, 20261123203841,
+	20261123203842, 20261124044450,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -195,12 +195,12 @@ var thisBranchsMigrations = []int{
 // issue's 20261117034837, dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
 // 20261117200337, dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's 20261119203047,
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, the key of
-// a phases row by its step's 20261122062637, the roles of a deployment's 20261123181746, the name
-// of each step's agent's 20261123203837, the claim of each resume's 20261123203838, the claim of
-// each backstop's 20261123203839, the claims a release suspended's 20261123203840, the record that
-// a claim took another role's 20261123203841 and the repair of the open resume per claim's
-// 20261123203842. That is why the loop below holds the list rather than counting it, so that a
+// dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, the roles of
+// a deployment's 20261123181746, the name of each step's agent's 20261123203837, the claim of each
+// resume's 20261123203838, the claim of each backstop's 20261123203839, the claims a release
+// suspended's 20261123203840, the record that a claim took another role's 20261123203841, the
+// repair of the open resume per claim's 20261123203842 and the key of a phases row by its step's
+// 20261124044450. That is why the loop below holds the list rather than counting it, so that a
 // version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 

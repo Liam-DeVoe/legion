@@ -1,4 +1,4 @@
--- 20261122062637_phase_step_key.up.sql — the phases row of a step (record's store.go and
+-- 20261124044450_phase_step_key.up.sql — the phases row of a step (record's store.go and
 -- record.go).
 --
 -- The key of phases is the issue, the role and the step the row runs (step_task, step_place),
@@ -46,6 +46,6 @@
 -- begin;
 -- delete from phases p using phases q where p.issue = q.issue and p.role = q.role and (p.entry, p.step_task, p.step_place) < (q.entry, q.step_task, q.step_place);
 -- alter table phases drop constraint phases_pkey, add primary key (issue, role);
--- delete from schema_version where version = 20261122062637;
+-- delete from schema_version where version = 20261124044450;
 -- commit;
 alter table phases drop constraint phases_pkey, add primary key (issue, role, step_task, step_place);
