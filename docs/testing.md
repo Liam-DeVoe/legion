@@ -618,27 +618,15 @@ to this; `lockwaittest`'s package documentation gives why, what was measured, an
 
 ## A file a test runs
 
-A Go test that writes a file it then runs (a fake command, a stand-in script, a stub on `PATH`)
-can see the run fail with `ETXTBSY`: a fork of the test process holds the write descriptor until
-its exec. The code a deployment runs meets the same fault, since the daemon starts git, gh and
-tmux from many goroutines. `programfile.Write` (`packages/envoy/programfile`) is the one writer of
-such a file: it holds `syscall.ForkLock` for reading from the open to the close, so no fork falls
-inside the write, and it sets the mode exactly. `testexec.WriteFile` is its `os.WriteFile` shape
-for a test. Every file that is no test file writes such a file with it, a package whose tests call
-`Parallel` in its test files, a test-support package (a name that begins or ends with `test`) in
-every file, and any test that starts a command from another goroutine wherever it writes one; in a
-package whose tests run one at a time only the running test can fork, so `os.WriteFile` is safe in
-its tests. Each module's `internal/textcheck` holds those files to this with `testexec.Unguarded`,
-which leaves out `programfile.Write` alone, reads a mode masked to hold no execute bit
-(`perm&^0o111`) as none, and fails on a directory with no `go.mod` or no test file. Its doc comment
-lists the forms it names and misses, and `testexec`'s package documentation the failure that was
-measured: a write in a missed form needs `programfile.Write`, or `testexec.WriteFile` in a test,
-by hand; a file a command such as `cp` writes needs nothing.
-
-A test of a place that writes such a file starts `testexec.ForkBeside` and runs the file as soon as
-it is written, many times; it fails on a run refused with `ETXTBSY`. A kernel that runs a busy
-program, as gVisor does, skips such a test, except under `GITHUB_ACTIONS`, where it fails; any
-other answer (a `TMPDIR` mounted `noexec`, no `/bin/sh`) fails it, naming the answer.
+A file a process writes and then runs (a script, a helper git runs, a fake command, a stub on
+`PATH`) can fail to run with `ETXTBSY` when another goroutine of the process forks during the
+write. Code a deployment runs writes such a file with `programfile.Write`
+(`packages/envoy/programfile`), and a test writes one with `testexec.WriteFile`. Each module's
+`internal/textcheck` holds its files to this with `testexec.RequireGuarded`; a write in a form the
+guard does not see still needs `programfile.Write`, or `testexec.WriteFile` in a test, by hand. A
+test of a place that writes such a file runs it with `testexec.RunsBeside`. The package docs say
+the rest: `programfile.Write` the writer's contract, `testexec.Unguarded` the forms the guard names
+and misses and what it leaves out, and `testexec.RunsBeside` when such a test skips.
 
 ## A Go test that opens a NATS client
 

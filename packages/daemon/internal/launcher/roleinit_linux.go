@@ -435,11 +435,9 @@ func configHomeComplete(own string) (bool, error) {
 	return marker.Mode().IsRegular(), nil
 }
 
-// copyRegular copies the regular file source to target, which it creates with perm exactly, by
-// programfile.Write. A copy keeps an execute bit, so the file may be a program that something in
-// the role runs from its config home, and Write keeps every fork of the process out of the span
-// the file is open for writing, so no child holds it then (ETXTBSY). role-init starts no process
-// while it copies, so nothing forks there today; Write keeps that so if one comes to.
+// copyRegular copies the regular file source to target, which it creates with perm exactly. A copy
+// keeps an execute bit, so the file may be a program that something in the role runs from its
+// config home, and programfile.Write writes it.
 func copyRegular(source, target string, perm fs.FileMode) error {
 	in, err := os.Open(source)
 	if err != nil {

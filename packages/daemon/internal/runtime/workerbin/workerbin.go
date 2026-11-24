@@ -112,10 +112,8 @@ func Path(path, root string) string {
 }
 
 // installScript writes one 0700 script into a 0700 directory, replacing any earlier one atomically:
-// it writes the script under a new hidden name beside it and renames it over the old one. The
-// write is programfile.Write's, since an agent may run the script by name as soon as the rename
-// lands, and a child the process forked inside an unguarded write would hold it open for writing
-// then, which the kernel refuses (ETXTBSY); the rename does not change the file a child holds.
+// it writes the script under a new hidden name beside it and renames it over the old one. An agent
+// runs the script by name off its PATH as soon as the rename lands, so programfile.Write writes it.
 func installScript(dir, name, contents string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", dir, err)

@@ -5,8 +5,9 @@
 // file one goroutine wrote and closed can then still be open for writing in a child another
 // goroutine just started, and a run of it in that span fails. Write keeps every fork of the
 // process out of the span the file is open for writing, so no child the process starts holds it
-// when it runs. Every place that writes such a file, in the code a deployment runs and in tests,
-// writes it with Write.
+// when it runs. Every place that writes such a file writes it with Write: the code a deployment
+// runs directly, and a test through testexec.WriteFile. testexec.RunsBeside runs a test of such a
+// place beside forks, and testexec.Unguarded names a write by package os that should be a Write.
 package programfile
 
 import (
