@@ -140,12 +140,12 @@ type recomposedCatchUp struct {
 // process ended that the row was queued with (record.CatchUp.Relaunch,
 // workflow.CatchUpReason): that sentence is of what ended before the launch, which this read does
 // not restate. It writes Decided again from the decisions the row claimed (Kept), each asked of the
-// gates this read holds (workflow.ReadKeptGates, workflow.KeptDecisionsTask), so an approval that
-// followed a kept decision while the row waited drops it from the text. It deletes nothing: the
-// row's queueing claimed those decisions, and its settling stays keyed to the whole of Kept, so the
-// publish forgets a dropped decision with the rest, which the approval answered. A catch-up an
-// earlier release queued with Decided and no Kept is told as its row holds it. It is nil for every
-// other notice. The transaction stays read-only.
+// gates this read holds (workflow.ReadKeptGates, workflow.KeptDecisionsTask), so a kept decision
+// that stopped being the person's word while the row waited (workflow.SupersedingApproval) drops
+// from the text. It deletes nothing: the row's queueing claimed those decisions, and its settling
+// stays keyed to the whole of Kept, so the publish forgets a dropped decision with the rest. A
+// catch-up an earlier release queued with Decided and no Kept is told as its row holds it. It is
+// nil for every other notice. The transaction stays read-only.
 func (r *outbox) readNoticeTree(ctx context.Context, row record.OutboxRow, payload record.Notice) (record.Issue, treeSnapshot, *recomposedCatchUp, error) {
 	var issue record.Issue
 	var tree treeSnapshot

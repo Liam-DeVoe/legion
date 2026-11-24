@@ -48,9 +48,11 @@
 -- bundleIssueWorkspace), and the end of the issue's work deletes it too (daemon's
 -- dropReleasedWork). The issue is told that the daemon keeps this work, so no such path may reach
 -- it. The row keeps what the workspace_bundles row held, with refused_pod_uid and refused_at for
--- the pod the refusal answered and when. Nothing in the daemon reads this table again, changes a
--- row of it or deletes one: it is an operator's, who finds a row by the issue and the release the
--- message on the issue names, and deletes it once the work is carried out.
+-- the pod the refusal answered and when. Nothing in the daemon changes a row of this table or
+-- deletes one, and it reads one again only after a take whose commit outcome stayed unknown, to
+-- learn whether that take's refusal committed (store.RefusedWorkspaceBundle): the table is an
+-- operator's, who finds a row by the issue and the release the message on the issue names, and
+-- deletes it once the work is carried out.
 --
 -- claims.update_repository is the repository the pod of the claim's update round was built from,
 -- as that pod named it at the round's open, whatever drift opened the round

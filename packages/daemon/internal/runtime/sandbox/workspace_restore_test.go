@@ -76,21 +76,21 @@ func bundleStore(t *testing.T) *store.Store {
 }
 
 // takeBundle is st's take of a release's saved work for a pod of the rig's project, as the daemon
-// wires it into the runtime (internal/daemon's savedWorkspaceBundle), read by the rule of a
-// deployment that configures no rename (ghrepo.Renames.Left).
+// wires it into the runtime (internal/daemon's savedWorkspaceBundle), read by the comparison of a
+// deployment that configures no rename (ghrepo.Renames.Same).
 func takeBundle(st *store.Store) runtime.SavedWorkspaceBundle {
 	return func(ctx context.Context, issue, podUID, podRepo string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
-		return st.TakeWorkspaceBundleForRestore(ctx, testProject, issue, podUID, podRepo, podCreated, ghrepo.Renames{}.Left)
+		return st.TakeWorkspaceBundleForRestore(ctx, testProject, issue, podUID, podRepo, podCreated, ghrepo.Renames{}.Same)
 	}
 }
 
 // dropHeldBundle is st's drop of a release's saved work that a kept volume of a pod of the rig's
 // project holds, as the daemon wires it into the runtime (internal/daemon's heldWorkspaceBundle),
-// read by the rule of a deployment that configures no rename (ghrepo.Renames.Left), as takeBundle
-// reads it.
+// read by the comparison of a deployment that configures no rename (ghrepo.Renames.Same), as
+// takeBundle reads it.
 func dropHeldBundle(st *store.Store) runtime.HeldWorkspaceBundleDrop {
 	return func(ctx context.Context, issue, podUID, podRepo string, keptSince time.Time) (runtime.WorkspaceBundle, bool, error) {
-		return st.DropHeldWorkspaceBundle(ctx, testProject, issue, podUID, podRepo, keptSince, ghrepo.Renames{}.Left)
+		return st.DropHeldWorkspaceBundle(ctx, testProject, issue, podUID, podRepo, keptSince, ghrepo.Renames{}.Same)
 	}
 }
 

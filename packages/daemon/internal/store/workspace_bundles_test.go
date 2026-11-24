@@ -26,10 +26,10 @@ const releasedPodUID = "pod-being-released"
 // (TestABundleOfAnotherRepositoryThanThePodsIsRefusedAndKept).
 const savedRepo = "acme/widgets"
 
-// noRenames is the rule every take of these tests decides whether two repositories differ by but
-// the rename's own: a deployment's that configures no rename (ghrepo.Renames.Left), which
-// compares names without regard to case.
-var noRenames = ghrepo.Renames{}.Left
+// noRenames is the comparison every take of these tests reads two repository names by but the
+// rename's own: a deployment's that configures no rename (ghrepo.Renames.Same), which compares
+// names without regard to case.
+var noRenames = ghrepo.Renames{}.Same
 
 // unrecordBundleRepository leaves issue's bundle row with no repository, as a row an earlier
 // release saved is, which wrote none: the save refuses a bundle that names none
@@ -554,7 +554,7 @@ func TestABundleAKeptVolumeHoldsIsDroppedWithoutItsBody(t *testing.T) {
 // (TestABundleOfAnotherRepositoryThanThePodsIsRefusedAndKept).
 //
 // The drop decides by the take's own rule (bundleOffer.refusedForRepository, over
-// ghrepo.Renames.Left), against the pod's repository and never the issue's record. A configured
+// ghrepo.Renames.Same), against the pod's repository and never the issue's record. A configured
 // rename's two names are one repository, and a pod of the bundle's own repository works in the
 // workspace the work came off whatever the record names now: each of those drops the bundle as
 // before. A bundle that names no repository is work of a repository nothing recorded, and a pod
@@ -563,24 +563,24 @@ func TestABundleAKeptVolumeHoldsIsDroppedWithoutItsBody(t *testing.T) {
 func TestAKeptVolumeDropsNoBundleOfAnotherRepositoryThanItsPods(t *testing.T) {
 	at := time.Date(2026, 11, 2, 9, 30, 0, 0, time.UTC)
 	keptSince := at.Add(-time.Hour)
-	renamed := ghrepo.MustRenames(ghrepo.MustRename(savedRepo, "acme/gadgets")).Left
+	renamed := ghrepo.MustRenames(ghrepo.MustRename(savedRepo, "acme/gadgets")).Same
 	for _, tc := range []struct {
 		name      string
 		saved     string
 		recorded  string
 		pod       string
-		left      func(saved, pod string) bool
+		same      func(saved, pod string) bool
 		dropped   bool
 		afterTake runtime.WorkspaceBundleTake
 	}{
-		{name: "the pod is a clone of another repository", saved: savedRepo, recorded: savedRepo, pod: "zeta/tools", left: noRenames,
+		{name: "the pod is a clone of another repository", saved: savedRepo, recorded: savedRepo, pod: "zeta/tools", same: noRenames,
 			afterTake: runtime.WorkspaceBundleRefusedRepository},
-		{name: "the pod is a clone of the rename's other name", saved: savedRepo, recorded: "acme/gadgets", pod: "acme/gadgets", left: renamed, dropped: true},
+		{name: "the pod is a clone of the rename's other name", saved: savedRepo, recorded: "acme/gadgets", pod: "acme/gadgets", same: renamed, dropped: true},
 		{name: "the pod is a clone of the bundle's repository, which the record has left", saved: savedRepo, recorded: "zeta/tools", pod: savedRepo,
-			left: noRenames, dropped: true},
-		{name: "the pod's repository is unknown", saved: savedRepo, recorded: savedRepo, pod: "", left: noRenames,
+			same: noRenames, dropped: true},
+		{name: "the pod's repository is unknown", saved: savedRepo, recorded: savedRepo, pod: "", same: noRenames,
 			afterTake: runtime.WorkspaceBundleRefusedRepository},
-		{name: "the bundle names no repository", saved: "", recorded: "zeta/tools", pod: "zeta/tools", left: noRenames,
+		{name: "the bundle names no repository", saved: "", recorded: "zeta/tools", pod: "zeta/tools", same: noRenames,
 			afterTake: runtime.WorkspaceBundleRefusedRepository},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -595,7 +595,7 @@ func TestAKeptVolumeDropsNoBundleOfAnotherRepositoryThanItsPods(t *testing.T) {
 			if tc.saved == "" {
 				unrecordBundleRepository(t, s, "INFRA-945")
 			}
-			held, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, "INFRA-945", "pod-after-the-release", tc.pod, keptSince, tc.left)
+			held, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, "INFRA-945", "pod-after-the-release", tc.pod, keptSince, tc.same)
 			if err != nil || dropped != tc.dropped {
 				t.Fatalf("a pod of %q of a kept Sandbox made before the save, of an issue on %q with a bundle of %q, dropped %t (%v); want %t",
 					tc.pod, tc.recorded, tc.saved, dropped, err, tc.dropped)
@@ -614,7 +614,7 @@ func TestAKeptVolumeDropsNoBundleOfAnotherRepositoryThanItsPods(t *testing.T) {
 			if pod, outcome := bundleAttempt(t, s, "INFRA-945"); pod != "" || outcome != "" {
 				t.Fatalf("the drop left the attempt %q spent on %q, want no attempt", outcome, pod)
 			}
-			if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, bundleProject, "INFRA-945", "pod-after-the-release", tc.pod, at.Add(time.Minute), tc.left); err != nil || take != tc.afterTake {
+			if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, bundleProject, "INFRA-945", "pod-after-the-release", tc.pod, at.Add(time.Minute), tc.same); err != nil || take != tc.afterTake {
 				t.Fatalf("the take after the drop was answered %v (%v), want %v", take, err, tc.afterTake)
 			}
 			kept := refusedBundles(t, s, "INFRA-945")
@@ -804,7 +804,9 @@ func refusedBundles(t *testing.T, s *Store, issue string) []refusedBundle {
 // of another repository than that pod's. The pod's clone holds none of the saved commits' bases,
 // so the bundle is refused however new that pod is. The refusal is the bundle's one attempt, and
 // the bundle moves whole to workspace_bundles_refused: the work is in the database alone, and the
-// daemon writes on the issue where it is (internal/daemon's bundleRepositoryMessage).
+// daemon writes on the issue where it is (internal/daemon's bundleRepositoryMessage). The refusal
+// reads back for the pod it was refused to, and for no other (RefusedWorkspaceBundle), as the take
+// answered it: the read a take whose commit outcome stayed unknown makes.
 func TestABundleOfAnotherRepositoryThanThePodsIsRefusedAndKept(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
@@ -845,6 +847,15 @@ func TestABundleOfAnotherRepositoryThanThePodsIsRefusedAndKept(t *testing.T) {
 		got.refused != "pod-of-the-new-repository" || !got.at.Equal(at) || !bytes.Equal(got.bundle, saved.Bundle) {
 		t.Fatalf("the refused bundle is kept as release %d of %s at %s off %s, refused to %s, saved %s, %d bytes; want the row as it was saved, refused to the pod that asked",
 			got.release, got.repo, got.head, got.sourcePod, got.refused, got.at, len(got.bundle))
+	}
+	back, found, err := s.RefusedWorkspaceBundle(ctx, "INFRA-945", "pod-of-the-new-repository")
+	if err != nil || !found || back.Release != 11 || back.Repo != savedRepo || back.Head != saved.Head || !back.At.Equal(at) ||
+		back.PodUID != releasedPodUID || !maps.Equal(back.Bookmarks, saved.Bookmarks) || len(back.Bundle) != 0 {
+		t.Fatalf("the refusal to the pod that asked reads back as %+v with %d bytes, found %t (%v); want release 11 of %s at %s, its bookmarks and no body",
+			back, len(back.Bundle), found, err, savedRepo, saved.Head)
+	}
+	if _, found, err := s.RefusedWorkspaceBundle(ctx, "INFRA-945", "pod-after-an-eviction"); err != nil || found {
+		t.Fatalf("a refusal to another pod reads back as found %t (%v), want none: the bundle was refused to the pod that asked", found, err)
 	}
 	// The attempt is spent: every pod after it is answered nothing at all.
 	if got, take, err := s.TakeWorkspaceBundleForRestore(ctx, bundleProject, "INFRA-945", "pod-after-an-eviction", savedRepo, at.Add(time.Hour), noRenames); err != nil || take != runtime.WorkspaceBundleNone {
@@ -998,26 +1009,26 @@ func TestABundleWithNoRepositoryIsRefusedAndKept(t *testing.T) {
 	}
 }
 
-// Whether the bundle's repository and the asking pod's are two repositories is the daemon's one
-// rule (ghrepo.Renames.Left), the rule a pod built from a repository is read by too, and not a
-// comparison of the two names alone. A configured rename's two names are one repository: a
-// bundle saved under the old name, asked for by a pod built from the new one, is the work of the
-// clone the pod holds and is sent. The same save with no rename configured is refused, which is
-// what shows that the rename is what sent it. A pod whose repository the runtime could not read
-// is a clone nobody knows, and an unknown is never taken for a match: that pod is refused the
-// bundle, although left reads an empty name as no difference.
+// Whether the bundle's repository and the asking pod's are one repository is the daemon's
+// comparison of two repository names (ghrepo.Renames.Same), and not a comparison of the two
+// names alone. A configured rename's two names are one repository: a bundle saved under the old
+// name, asked for by a pod built from the new one, is the work of the clone the pod holds and is
+// sent. The same save with no rename configured is refused, which is what shows that the rename
+// is what sent it. A pod whose repository the runtime could not read is a clone nobody knows, and
+// an unknown is never taken for a match: that pod is refused the bundle, which the take decides
+// before it asks same anything.
 func TestABundleOfARenamedRepositoryIsSent(t *testing.T) {
 	at := time.Date(2026, 11, 2, 9, 30, 0, 0, time.UTC)
-	renamed := ghrepo.MustRenames(ghrepo.MustRename(savedRepo, "acme/gadgets")).Left
+	renamed := ghrepo.MustRenames(ghrepo.MustRename(savedRepo, "acme/gadgets")).Same
 	for _, tc := range []struct {
 		name string
 		pod  string
-		left func(saved, pod string) bool
+		same func(saved, pod string) bool
 		want runtime.WorkspaceBundleTake
 	}{
-		{name: "the pod is a clone of the rename's other name", pod: "acme/gadgets", left: renamed, want: runtime.WorkspaceBundleSend},
-		{name: "no rename is configured", pod: "acme/gadgets", left: noRenames, want: runtime.WorkspaceBundleRefusedRepository},
-		{name: "the pod's repository is unknown", pod: "", left: renamed, want: runtime.WorkspaceBundleRefusedRepository},
+		{name: "the pod is a clone of the rename's other name", pod: "acme/gadgets", same: renamed, want: runtime.WorkspaceBundleSend},
+		{name: "no rename is configured", pod: "acme/gadgets", same: noRenames, want: runtime.WorkspaceBundleRefusedRepository},
+		{name: "the pod's repository is unknown", pod: "", same: renamed, want: runtime.WorkspaceBundleRefusedRepository},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -1028,7 +1039,7 @@ func TestABundleOfARenamedRepositoryIsSent(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			read, take, err := s.TakeWorkspaceBundleForRestore(ctx, bundleProject, "INFRA-945", "pod-replacement", tc.pod, at.Add(time.Minute), tc.left)
+			read, take, err := s.TakeWorkspaceBundleForRestore(ctx, bundleProject, "INFRA-945", "pod-replacement", tc.pod, at.Add(time.Minute), tc.same)
 			if err != nil || take != tc.want {
 				t.Fatalf("the replacement pod was answered %v (%v), want %v", take, err, tc.want)
 			}

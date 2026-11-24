@@ -564,7 +564,7 @@ var installReadRetry = bootprobe.Retry{Initial: 30 * time.Second, Max: 10 * time
 var recoveryHoldBound = defaultHoldWarnEvery
 
 // installReadAttempt bounds one read of GitHub or Dispatch a preparation or the rename pass makes:
-// as long as any one GitHub call the boot waits for (appMintAttempt), so a GitHub that answers
+// as long as any one GitHub call the boot waits for (appCallBounds.attempt), so a GitHub that answers
 // slowly is still answered for, while a read GitHub has not answered by then is a read that did
 // not answer, and a repository GitHub hangs on is read again later rather than holding up the
 // rest. It bounds each installation read (readInstallations), each webhook App check
@@ -576,7 +576,7 @@ var recoveryHoldBound = defaultHoldWarnEvery
 // Nothing bounds the refresher's preparation as a whole: it prepares repositoryReads repositories
 // at once, so its preparation of n repositories, four reads each, takes at most
 // ceil(n / repositoryReads) × 4 of these. The follow pass bounds all its reads together
-// (appMintAttempt, followListing), which is why it reads each repository once (readCorrection).
+// (callBounds().attempt, followListing), which is why it reads each repository once (readCorrection).
 var installReadAttempt = 15 * time.Second
 
 // repositoryReads is how many repositories the refresher prepares at once.
@@ -850,11 +850,11 @@ func (w *workflowRuntime) prepareAtStart(ctx context.Context) {
 
 // recordedRepositories is each distinct repository a record of the project names, as the record
 // keeps GitHub's spelling of it (record.Issue.GitHubRepo, repositoriesOf), sorted, read in one
-// read-only transaction bounded by appMintAttempt; a record that keeps no GitHub spelling is passed
+// read-only transaction bounded by the App-call attempt bound (callBounds); a record that keeps no GitHub spelling is passed
 // by, and one whose spelling is no <owner>/<name> refuses the read, as it refuses the boot
 // (heardAtBoot).
 func (w *workflowRuntime) recordedRepositories(ctx context.Context) ([]ghrepo.Repository, error) {
-	read, cancel := context.WithTimeout(ctx, appMintAttempt)
+	read, cancel := context.WithTimeout(ctx, w.callBounds().attempt)
 	defer cancel()
 	var issues []record.Issue
 	if err := store.TransactWith(read, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -964,11 +964,9 @@ func isDue(at, now time.Time) bool { return !at.IsZero() && !at.After(now) }
 //  3. The unread repositories recovered (recoverRepositories), at once when leaveUnread,
 //     leaveForRecovery or readAnswered wakes it (recoverWake, markUnread), and on installReadRetry
 //     while any repository is unread or to recover (unreadReasons, recoveringReasons). While a held
-//     recovery has release waits to tell and time left to recoveryHoldBound (recoveryHoldLeft), the
-//     wait is cut to that time, so the bound is checked when it falls, not up to a backoff later;
-//     such a cut wait does not move the backoff on. Once the bound has passed, a run that did not
-//     tell the waits waits the backoff as any failed run does, so a failure past the bound never
-//     turns the refresher into a busy loop.
+//     recovery has release waits to tell, the wait is cut to the time left to recoveryHoldBound,
+//     or to none once that time is up, until a run begins past the bound; recoveryHoldLeft's doc
+//     has the rule. Such a cut wait does not move the backoff on.
 //  4. The heard set published again (republishHeard), at once when a record's own consumer update
 //     was refused (hearRecorded, heardWake), and on installReadRetry while it fails (heardPending).
 //  5. A held default branch read again (rereadHeldBranches), at the end of each rate limit a
@@ -1002,7 +1000,7 @@ func (w *workflowRuntime) refreshRepositories(ctx context.Context) {
 		owed := w.followReasons()
 		follow.stand(len(owed) != 0, now)
 		recoverAt, cut := recovery.due, false
-		if left, held := w.recoveryHoldLeft(); held && left > 0 && !recoverAt.IsZero() && now.Add(left).Before(recoverAt) {
+		if left, due := w.recoveryHoldLeft(); due && !recoverAt.IsZero() && now.Add(left).Before(recoverAt) {
 			recoverAt, cut = now.Add(left), true
 		}
 		heldAt := w.heldDue()
@@ -1088,7 +1086,7 @@ func (w *workflowRuntime) refreshRepositories(ctx context.Context) {
 func (w *workflowRuntime) republishHeard(ctx context.Context) error {
 	w.heardMu.Lock()
 	defer w.heardMu.Unlock()
-	publish, cancel := context.WithTimeout(ctx, appMintAttempt)
+	publish, cancel := context.WithTimeout(ctx, w.callBounds().attempt)
 	defer cancel()
 	var recorded []ghrepo.Repository
 	err := store.TransactWith(publish, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -1140,7 +1138,7 @@ func (w *workflowRuntime) heldDue() time.Time {
 
 // rereadHeldBranches is the refresher's fifth job: each default branch held through a rate limit
 // whose limit has ended by now (heldThroughLimit) is read again (defaultBranches.Named, bounded by
-// appMintAttempt), and one GitHub's limit refuses again is held again, which names it once more
+// the App-call attempt bound, callBounds), and one GitHub's limit refuses again is held again, which names it once more
 // (Named, onHold).
 func (w *workflowRuntime) rereadHeldBranches(ctx context.Context, now time.Time) {
 	w.heldMu.Lock()
@@ -1153,7 +1151,7 @@ func (w *workflowRuntime) rereadHeldBranches(ctx context.Context, now time.Time)
 	}
 	w.heldMu.Unlock()
 	for _, read := range due {
-		attempt, cancel := context.WithTimeout(ctx, appMintAttempt)
+		attempt, cancel := context.WithTimeout(ctx, w.callBounds().attempt)
 		_, err := w.defaultBranches.Named(attempt, read.repo)
 		cancel()
 		if err != nil && ctx.Err() == nil {
@@ -1173,7 +1171,7 @@ func (w *workflowRuntime) rereadHeldBranches(ctx context.Context, now time.Time)
 // request made before it starts; a read that fails is logged and run again on installReadRetry.
 func (w *workflowRuntime) refreshLive(ctx context.Context) error {
 	before := w.repositories.liveNames()
-	read, cancel := context.WithTimeout(ctx, appMintAttempt)
+	read, cancel := context.WithTimeout(ctx, w.callBounds().attempt)
 	err := serializedTx(read, w.pool, "serialize the read of the live records with admission", func(ctx context.Context, tx pgx.Tx) error {
 		return w.refreshCacheRepositories(ctx, tx)
 	})
@@ -1190,14 +1188,24 @@ func (w *workflowRuntime) refreshLive(ctx context.Context) error {
 }
 
 // recoveryHoldLeft is the time left to recoveryHoldBound for a recovery whose listing is held with
-// release waits to tell, zero once the bound has passed, and whether one is. The waits are those of
-// the repositories to recover and of the repositories left unread alike: a pass that would let one
-// of the latter go puts it back while the listing is held (recoverRepositories), and its waits are
-// told at the bound as the former's are, so the refresher's wait is cut to the bound for both.
+// release waits to tell, zero once the bound has passed, and whether a run is due at that time: one
+// is, until a run of the recovery has begun with the bound passed (recoveryBoundChecked). The waits
+// are those of the repositories to recover and of the repositories left unread alike: a pass that
+// would let one of the latter go puts it back while the listing is held (recoverRepositories), and
+// its waits are told at the bound as the former's are, so the refresher's wait is cut to the bound
+// for both.
+//
+// A bound that passed while another job of the refresher ran (a read of the live records, say) is
+// still due: the refresher's wait was cut to it before that job began, and the loop that comes
+// back from the job finds no time left, so the run is due at once. Once a run has begun past the
+// bound, whatever it then meets (a listing that fails, a notice that fails, GitHub failing again),
+// the next run waits the backoff, so a fault past the bound never turns the refresher into a busy
+// loop. A run that begins just before the bound and fails after it is followed by one more run
+// at once, which begins past the bound.
 func (w *workflowRuntime) recoveryHoldLeft() (time.Duration, bool) {
 	w.recoveringMu.Lock()
 	defer w.recoveringMu.Unlock()
-	if w.recoveryHeldSince.IsZero() {
+	if w.recoveryHeldSince.IsZero() || w.recoveryBoundChecked {
 		return 0, false
 	}
 	waits := false
@@ -1282,6 +1290,11 @@ func (w *workflowRuntime) recoveringReasons() []string {
 // fact.
 func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	w.recoveringMu.Lock()
+	// A run that begins with the hold's bound passed is the run the bound was due for: the next
+	// one waits the backoff, whatever this one meets (recoveryHoldLeft).
+	if !w.recoveryHeldSince.IsZero() && time.Since(w.recoveryHeldSince) >= recoveryHoldBound {
+		w.recoveryBoundChecked = true
+	}
 	repos := make(map[string]bool, len(w.recovering)+len(w.unread))
 	maps.Copy(repos, w.recovering)
 	for repo := range w.unread {
@@ -1313,7 +1326,7 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 		return
 	}
 	names := slices.Sorted(maps.Keys(repos))
-	attempt, cancel := context.WithTimeout(ctx, appMintAttempt)
+	attempt, cancel := context.WithTimeout(ctx, w.callBounds().attempt)
 	defer cancel()
 	issues, err := w.dispatch.ListIssues(attempt, w.dispatchProject, nil)
 	// todo is each repository, lowercased, that an unrecorded todo issue of the listing that
@@ -1418,7 +1431,7 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	}
 	w.recoveringMu.Lock()
 	if !heldBack {
-		w.recoveryHeldSince = time.Time{}
+		w.recoveryHeldSince, w.recoveryBoundChecked = time.Time{}, false
 	}
 	for _, repo := range answered {
 		delete(w.recovering, repo)
@@ -2135,7 +2148,7 @@ func (w *workflowRuntime) hearRepository(ctx context.Context, repo ghrepo.Reposi
 	slices.SortFunc(heard, func(a, b ghrepo.Repository) int {
 		return strings.Compare(strings.ToLower(a.String()), strings.ToLower(b.String()))
 	})
-	update, cancel := context.WithTimeout(context.WithoutCancel(ctx), appMintAttempt)
+	update, cancel := context.WithTimeout(context.WithoutCancel(ctx), w.callBounds().attempt)
 	defer cancel()
 	if err := w.updateSubscription(update, heard); err != nil {
 		return err
@@ -2568,9 +2581,10 @@ func (w *workflowRuntime) recordOf(ctx context.Context, key string) (*record.Iss
 // its start, for who set the label (labelSetter, intake.DispatchIssue.LabelSetter): a person's
 // label queues the root through the outbox, a session's wakes the controller as today, and the
 // event that reaches the daemon says the label is there, not who put it there. It is one paged
-// read per such event, outside the fact lock as the rest of the preparation reads, and a failed
-// read leaves the event to be retried. A recorded root a person moved back to triage is never
-// queued again, so its log is not read.
+// read per such event, outside the fact lock as the rest of the preparation reads. A failed read
+// fails the preparation, so the event is delivered again; a log that does not decode fails it at
+// every delivery, so the intake gives the event up at its bound. A recorded root a person moved
+// back to triage is never queued again, so its log is not read.
 func (w *workflowRuntime) prepareRepository(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error) {
 	return w.prepareIssue(ctx, issue, true)
 }
@@ -2626,13 +2640,14 @@ func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.Dispatc
 	return w.withAncestry(ctx, prepared, nil, observe)
 }
 
-// labelSetter is the kind of the Dispatch actor that added the label to key, read from the issue's
-// whole Dispatch event log, from sequence 0, by intake.LabelSetter's rule: one paged read per call,
-// outside the fact lock as the rest of a preparation reads, for an event's preparation
-// (prepareIssue) and the boot listing's (reconcileListing) alike. A read that fails, or a log the
-// daemon cannot decode, is an error naming the key, for the caller to fail the preparation on, so
-// the event or the listing is read again rather than applied with a setter nobody read: a setter
-// of "" would keep today's triage wake for a label a person set.
+// labelSetter is the kind of the Dispatch actor that added the label to key, by
+// intake.LabelSetter's rule. It reads the issue's whole Dispatch event log from sequence 0, in one
+// paged read, outside the fact lock. A read that fails is an error that wraps the client's error,
+// which can be a *dispatch.EventLogError, for a page of the log the client cannot read, or a
+// Dispatch refusal (*dispatch.Error). A log that does not decode is an error that wraps a
+// *dispatch.EventLogError too. Each error names the key. No error comes with a setter, since a
+// caller must not apply a setter nobody read: a setter of "" would keep today's triage wake for a
+// label a person set.
 func (w *workflowRuntime) labelSetter(ctx context.Context, key string) (string, error) {
 	events, err := w.dispatch.EventsAfter(ctx, key, 0)
 	if err != nil {
@@ -2654,6 +2669,18 @@ func (w *workflowRuntime) labelSetter(ctx context.Context, key string) (string, 
 // event to be retried. Every other review or version event — a session's or Dispatch's own review,
 // a changes request, a carried approval, a version — asks Dispatch nothing and is applied as
 // decoded, with no view, which queues nothing.
+//
+// The view is the issue as it is now, so it cannot say whether the status changed after the
+// approval. For an approval that needs the issue's whole Dispatch event log
+// (intake.DispatchArtifact.NeedsEventLog: one that can queue its root by that view and carries a
+// sequence to place it by), a second read takes that log, and the first change of the issue's
+// status after the approval is set on the fact (StatusChangedSeq, by
+// intake.DispatchArtifact.WithStatusChange), so the workflow refuses an approval after which the
+// person parked the root again, however late it is applied or replayed. That read is one paged
+// read of the issue's whole log, the same read labelSetter makes for an unrecorded issue's
+// admission event, made under the same AckWait bound the intake puts on the whole preparation, the
+// issue read's included. A failed read, or a log the daemon cannot decode, fails the preparation
+// with an error naming the key, so the event is delivered again, as a failed issue read is.
 func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.DispatchArtifact) (intake.DispatchArtifact, error) {
 	if !fact.PersonApproval() {
 		return fact, nil
@@ -2663,6 +2690,16 @@ func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.Dispa
 		return fact, fmt.Errorf("read %s from Dispatch before applying a person's approval of its document %s: %w", fact.Key, fact.ArtifactID, err)
 	}
 	fact.Issue = &issue
+	if !fact.NeedsEventLog() {
+		return fact, nil
+	}
+	events, err := w.dispatch.EventsAfter(ctx, fact.Key, 0)
+	if err != nil {
+		return fact, fmt.Errorf("read the event log of %s from Dispatch for a change of its status after the approval at %d: %w", fact.Key, fact.Mark.Seq, err)
+	}
+	if fact, err = fact.WithStatusChange(events); err != nil {
+		return fact, fmt.Errorf("read a change of the status of %s after the approval at %d from its event log: %w", fact.Key, fact.Mark.Seq, err)
+	}
 	return fact, nil
 }
 
@@ -2935,11 +2972,10 @@ func (w *workflowRuntime) prepareHandover(ctx context.Context, handover intake.H
 // another repository, which that listing reads GitHub for none of (prepareRecorded), so the
 // issue's change is read once the boot is over rather than at its next event. That is also what
 // covers the follow a skipped correction asks for at its commit (workflow.Config.FollowIssue,
-// requestFollowOf), and the one the refresher's backfill asks for after its fill's commit
-// (backfillLater), where the process stopped after the commit and before the ask: the record the
-// skip or the fill left can disagree with Dispatch only where Dispatch now resolves the issue
-// elsewhere, and the next boot's listing reads every recorded issue's resolution, following each
-// one resolved to another repository and telling each one resolved to none as any pass does.
+// requestFollowOf), where the process stopped after the commit and before the ask: the record the
+// skip left can disagree with Dispatch only where Dispatch now resolves the issue elsewhere, and
+// the next boot's listing reads every recorded issue's resolution, following each one resolved to
+// another repository and telling each one resolved to none as any pass does.
 func (w *workflowRuntime) requestFollow() {
 	w.followMu.Lock()
 	w.followEvery = true
@@ -2950,15 +2986,15 @@ func (w *workflowRuntime) requestFollow() {
 
 // requestFollowOf asks the refresher for a follow of the recorded issue key alone: an event's or
 // a hand-over's preparation whose correction's reads GitHub did not answer (prepareIssue,
-// prepareHandover), the engine at the commit of a fact whose correction it did not write because
-// the record moved after the fact was prepared or because the fact was prepared while the issue
-// had no record and read GitHub for no correction (workflow.Config.FollowIssue), and the
-// refresher's backfill for each record it filled (backfillLater). Each leaves a record that can
-// hold another repository than Dispatch resolves the issue to — a correction that wrote nothing,
-// or a fill from a listing read before an event that wrote nothing — so without the follow
-// nothing in the running process would read the change again until the issue's next event or the
-// next boot. The follow reads that issue alone, so it reads no other issue's waiting change sooner
-// than that issue's own next event or the next boot would.
+// prepareHandover), and the engine at the commit of a fact whose correction it did not write
+// because the record moved after the fact was prepared or because the fact was prepared while the
+// issue had no record, or while its record held no repository (the refresher's backfill filled it
+// meanwhile, backfillLater), and so read GitHub for no correction (workflow.Config.FollowIssue).
+// Each leaves a record that can hold another repository than Dispatch resolves the issue to — a
+// correction that wrote nothing — so without the follow nothing in the running process would read
+// the change again until the issue's next event or the next boot. The follow reads that issue
+// alone, so it reads no other issue's waiting change sooner than that issue's own next event or
+// the next boot would.
 //
 // A key no owed follow covers yet wakes the refresher, which follows it at once. A key already
 // covered (followEvery set, or followOwed naming it) is counted and wakes nothing, because a pass
@@ -2993,7 +3029,7 @@ func (w *workflowRuntime) requestFollowOf(key string) {
 // owed follows are of follow what Dispatch resolves them to: every recorded issue once a boot's
 // listing asked for it (followEvery), and otherwise each issue followOwed names. It takes them,
 // and the count of follows asked for, in one step under followMu, so whatever is asked for after
-// it is owed to the next pass. The pass reads within one bound (appMintAttempt) whatever number
+// it is owed to the next pass. The pass reads within one bound (callBounds().attempt) whatever number
 // of issues it moves, which is why it reads GitHub once per repository (readCorrection).
 //
 // A pass that fails is logged and owes again everything it took (oweFollows), so the refresher
@@ -3036,7 +3072,7 @@ func (w *workflowRuntime) followRecorded(ctx context.Context) {
 		w.oweFollows(false, left)
 		w.log.Warn("workflow: the follow of Dispatch's resolution left recorded issues unread, its bound having cut it short or GitHub "+
 			"not having answered for the repository they move onto; it wrote what it read, and its next pass reads them again",
-			"left", len(left), "bound", appMintAttempt.String())
+			"left", len(left), "bound", w.callBounds().attempt.String())
 		return
 	}
 	w.followApplied.Store(follows)
@@ -3079,14 +3115,14 @@ func (w *workflowRuntime) followReasons() []string {
 // record is prepared as an event's is (prepareRecorded), outside the transaction, and the pass
 // reads GitHub at most once per repository whatever number of issues move onto it (followReads).
 //
-// The reads are bounded as one (appMintAttempt). A pass whose bound ends while it prepares stops
+// The reads are bounded as one (callBounds().attempt). A pass whose bound ends while it prepares stops
 // at the issue it was preparing: a read the bound cut short answered for the bound, not for
 // GitHub, so it is no refusal and leaves no repository unread (correctionReads), and that issue
 // and every one after it are left owed (left) for the next pass to read. An issue whose
 // correction's reads GitHub did not answer is left owed too (correctionRead.unanswered), while the
 // pass goes on to the next: its correction would write nothing, and the next pass reads it
 // again, until GitHub answers. The corrections the pass prepared, whose reads GitHub answered,
-// are written all the same; the write is bounded on its own (appMintAttempt), since the reads'
+// are written all the same; the write is bounded on its own (callBounds().attempt), since the reads'
 // bound has ended by then. With only set (the issues the follows owed are of, which
 // followRecorded hands on), the pass prepares those issues alone; nil prepares every one.
 //
@@ -3108,7 +3144,7 @@ func (w *workflowRuntime) followReasons() []string {
 // records are read first, so a project the workflow records no issue of asks Dispatch for no
 // listing.
 func (w *workflowRuntime) followListing(ctx context.Context, only map[string]bool) (left map[string]bool, err error) {
-	reading, cancelReads := context.WithTimeout(ctx, appMintAttempt)
+	reading, cancelReads := context.WithTimeout(ctx, w.callBounds().attempt)
 	defer cancelReads()
 	var issues []record.Issue
 	if err := store.TransactWith(reading, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -3154,7 +3190,7 @@ func (w *workflowRuntime) followListing(ctx context.Context, only map[string]boo
 	if len(follow) == 0 {
 		return left, nil
 	}
-	writing, cancelWrite := context.WithTimeout(ctx, appMintAttempt)
+	writing, cancelWrite := context.WithTimeout(ctx, w.callBounds().attempt)
 	defer cancelWrite()
 	if err := store.Transact(writing, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := intake.SerializeFacts(ctx, tx); err != nil {

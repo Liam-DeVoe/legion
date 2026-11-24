@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // The work a release saved out of a pod is work of the repository that pod was built from. A
@@ -106,8 +107,90 @@ func TestRepositoryCorrectionTellsTheIssueWhereItsSavedWorkIs(t *testing.T) {
 	}
 }
 
+// A take's refusal for the repository can commit while the commit's reply is lost and the store
+// cannot say, within the take's bound, that it committed: the take answers
+// store.ErrCommitOutcomeUnknown (store.Store.TakeWorkspaceBundleForRestore), and the bundle is in
+// workspace_bundles_refused all the same. No later take answers that refusal, since the row is
+// gone from workspace_bundles, so the daemon reads that table for a refusal of the issue to the
+// pod that asked (store.Store.RefusedWorkspaceBundle) and, finding it, tells the issue and answers
+// the refusal as it does one that committed. Here the store answers again only half a pause after
+// the take's bound has ended, so the take's own wait for the outcome cannot learn it and the
+// read's first try is refused: the read is tried again until it answers (refusalRead), so the
+// next try finds the refusal whatever order the goroutines run in. Control: without that read the
+// take answers its error, and the issue is told nothing.
+func TestABundleRefusalWhoseCommitOutcomeStaysUnknownIsToldOnTheIssue(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Implementing, Generation: 1,
+		Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
+	putOutboxIssue(t, pool, records, issue)
+	st := outboxTreeStore(t, pool, issue.Key)
+
+	at := time.Date(2026, 11, 2, 9, 30, 0, 0, time.UTC)
+	saved := runtime.WorkspaceBundle{
+		Bundle:    []byte("PACK the work of the old repository"),
+		Head:      "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
+		Bookmarks: map[string]string{"legion/LEGION-208": "dffe88ae2f793e13436cef3921adc988433fbd4e"},
+		At:        at,
+		PodUID:    releasedPodUID,
+		Repo:      issue.Repo,
+	}
+	if err := st.PutWorkspaceBundle(ctx, issue.Key, 11, saved); err != nil {
+		t.Fatalf("save the released workspace's bundle: %v", err)
+	}
+	correctRecord(t, pool, records, issue.Key, "zeta/tools", "main", time.Now().UTC())
+
+	faulted, fault := faultedStoreOf(t, st)
+	logs, log := watchedLog()
+	var told []string
+	take := tellBundleRepositoryRefused(faulted, "legion", unrenamed,
+		func(_ context.Context, key, body string) error {
+			if key != issue.Key {
+				t.Errorf("the daemon wrote on %s, want %s: the work is that issue's", key, issue.Key)
+			}
+			told = append(told, body)
+			return nil
+		}, log)
+
+	fired := fault.Cut("update workspace_bundles", testdb.CutAfterCommitRefusing)
+	taking, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	// The store answers again half a pause after the take's bound has ended, which is when the
+	// take stops waiting for the outcome: the read's first try, made at once, is refused.
+	stop := context.AfterFunc(taking, func() { time.AfterFunc(bundleRefusalReadPause/2, func() { fault.Refuse(false) }) })
+	defer stop()
+	refused, outcome, err := take(taking, issue.Key, "pod-of-the-new-repository", "zeta/tools", at.Add(time.Minute))
+	testdb.Met(t, fired)
+	if len(told) != 1 {
+		t.Fatalf("the daemon wrote %d messages on the issue, the take answering %v (%v); want the one the refusal earns:\n%s",
+			len(told), outcome, err, strings.Join(told, "\n---\n"))
+	}
+	if err != nil || outcome != runtime.WorkspaceBundleRefusedRepository || len(refused.Bundle) != 0 {
+		t.Fatalf("the pod of the new repository was answered %v with %d bytes (%v), want the bundle refused for its repository and nothing sent",
+			outcome, len(refused.Bundle), err)
+	}
+	if got := count(logs, "did not learn whether it committed"); got != 1 {
+		t.Fatalf("the daemon logged %d lines of a take whose outcome stayed unknown, want 1: the refusal was read back, not answered by the take; log=%q", got, logs.String())
+	}
+	body := told[0]
+	for _, want := range []string{
+		"acme/widgets",
+		saved.Head,
+		"legion/LEGION-208",
+		"dffe88ae2f793e13436cef3921adc988433fbd4e",
+		at.Format(time.RFC3339),
+		"in the table `workspace_bundles_refused`. The row has the issue `LEGION-208` and the release_id `11`.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the message on the issue does not name %q:\n%s", want, body)
+		}
+	}
+}
+
 // A rename is no move. A deployment that configures acme/widgets as renamed to acme/gadgets reads
-// the two names as one repository wherever it compares them (repositories.left), so a pod built
+// the two names as one repository wherever it compares them (ghrepo.Renames.Same), so a pod built
 // from the new name is a clone of the repository the saved work is of, as no pod built from the
 // old name is replaced for it either (repositoryDrift). The clone the pod holds has the saved
 // commits, and the bundle is sent to it, with nothing written on the issue.
@@ -129,9 +212,9 @@ func TestARenamedRepositorysBundleIsRestored(t *testing.T) {
 	}
 	correctRecord(t, pool, records, issue.Key, "acme/gadgets", "main", time.Now().UTC())
 
-	mapping := newRepositories("LEGION", ghrepo.MustRenames(ghrepo.MustRename("acme/widgets", "acme/gadgets")))
+	same := ghrepo.MustRenames(ghrepo.MustRename("acme/widgets", "acme/gadgets")).Same
 	var told []string
-	take := tellBundleRepositoryRefused(st, "legion", mapping.left,
+	take := tellBundleRepositoryRefused(st, "legion", same,
 		func(_ context.Context, _, body string) error {
 			told = append(told, body)
 			return nil

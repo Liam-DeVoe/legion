@@ -987,8 +987,7 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		if !sends {
 			return m.relaunchAfterDrop(ctx)
 		}
-		m.startSend(conn, *m.claim.Pending)
-		return nil
+		return m.startSend(ctx, conn)
 	}
 	// The question a restart left — whether the turn the agent may be in is the pending
 	// delivery's — is asked once, here. Left armed, it would make the next task the running
@@ -1066,8 +1065,7 @@ func (m *Machine) sendPending(ctx context.Context) error {
 			return err
 		}
 	}
-	m.startSend(conn, *p)
-	return nil
+	return m.startSend(ctx, conn)
 }
 
 // asksRoot says whether a delivery's send waits on whether the root of this claim's tree has an
@@ -1184,11 +1182,11 @@ func renderedID(was string, news, held []byte) string {
 
 // rewritePending writes the pending delivery back under id with task as its text, and kept and
 // news as the decisions and the news it carries, then holds that delivery in memory: the one
-// persist-and-swap of a held task read again at its send (currentRootTask, currentNews), each of
-// which keeps its own rule for when to rewrite and when to retire. Its callers render the task's
-// text and its news together, so news is always what task names. The write comes first, so a
-// restart reads the task the send that follows carries, and a failed write leaves memory as the
-// record holds it.
+// persist-and-swap of a held task read again at its send (currentRootTask, currentNews,
+// currentWorkingCopy), each of which keeps its own rule for when to rewrite and when to retire.
+// Its callers render the task's text and its news together, so news is always what task names.
+// The write comes first, so a restart reads the task the send that follows carries, and a failed
+// write leaves memory as the record holds it.
 func (m *Machine) rewritePending(ctx context.Context, id, task string, kept, news []byte) error {
 	next := *m.claim.Pending
 	next.ID, next.Task, next.Kept, next.News = id, task, kept, news
@@ -1541,21 +1539,29 @@ func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (streaming, 
 	return state.IsStreaming, true
 }
 
-// startSend runs one prompt on its own goroutine and posts its outcome back to the machine. The
-// task is marked as put to the agent before the goroutine starts (Delivery.Prompted), whatever
-// the agent then answers: from here on, a prompt of it has gone out. Of the claim's two untold
-// records, this marks which the prompt carries the sentence of, as message composed it
-// (Machine.carried), and tells neither, as confirmCarrying states. Whether the send adopts the
-// working copy first is decided here, under the machine's lock, so the goroutine acts on the claim
-// the hold in sendPending was decided against.
+// startSend sends the pending delivery: it writes the task's working copy line from the record
+// first (currentWorkingCopy), then runs one prompt on its own goroutine and posts its outcome back
+// to the machine. It is the one place a prompt goes out, so no send of a worker's task, the first
+// or any resend after a busy answer, a lost answer or a relaunch, goes out with the line its start
+// was composed with. The task is marked as put to the agent before the goroutine starts
+// (Delivery.Prompted), whatever the agent then answers: from here on, a prompt of it has gone
+// out. Of the claim's two untold records, this marks which the prompt carries the sentence of, as
+// message composed it (Machine.carried), and tells neither, as confirmCarrying states. Whether the
+// send adopts the working copy first is decided here, under the machine's lock, so the goroutine
+// acts on the claim the hold in sendPending was decided against.
 //
 // The news of the approved design this prompt carries is the pending delivery's own (d.News, as
-// sendPending's render left it), and nothing keeps a second copy of it: every rendering takes a new
-// id (currentNews, currentRootTask) and the fence passes only an outcome of the pending id
-// (fenceOutcome), so while this send is the pending delivery's, the pending delivery's News is what
-// it carries. Its acknowledgement records that news with the prompt (acked), and a turn taken for
-// the task's while the send is in flight credits the same (turnAnswers).
-func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
+// sendPending's render and currentWorkingCopy left it), and nothing keeps a second copy of it:
+// every rendering takes a new id (currentNews, currentRootTask, currentWorkingCopy) and the fence
+// passes only an outcome of the pending id (fenceOutcome), so while this send is the pending
+// delivery's, the pending delivery's News is what it carries. Its acknowledgement records that
+// news with the prompt (acked), and a turn taken for the task's while the send is in flight
+// credits the same (turnAnswers).
+func (m *Machine) startSend(ctx context.Context, conn runtime.Conn) error {
+	if err := m.currentWorkingCopy(ctx); err != nil {
+		return err
+	}
+	d := *m.claim.Pending
 	token, generation, role, loc := m.claim.Token, m.claim.Generation, m.claim.Role, m.claim.Locator
 	adopting := m.adopts(d)
 	prompt, carried := d.message(m.claim)
@@ -1595,6 +1601,46 @@ func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 		m.idle.Broadcast()
 		m.mu.Unlock()
 	}()
+	return nil
+}
+
+// currentWorkingCopy writes a phase worker's held task back to the working copy it names now
+// (Deps.WorkingCopy): its working copy line, which the start that queued it composed from the
+// issue's record then, written again from the record as it stands at this send. A correction of
+// the issue's repository can land while the task waits (the claim held it behind a turn, a busy
+// agent, a launch, a pod the correction replaced), and the directory of the repository the issue
+// left is the one a kept volume still holds and no role may work in. Only a task that names a
+// phase is asked: a worker's task is a task of a phase, and a task of news alone (NewsOnly) holds
+// none of the phase's text. A read that fails sends nothing, as a failed read of a root
+// architect's held task does (currentRootTask): the task stays pending, unsent and charged
+// nothing, and the next trigger asks again, so no send carries the line the record has moved
+// from and none goes without one.
+//
+// A task the answer leaves as it is is sent as it is. One it rewrites is persisted before it is
+// sent, so a restart reads the task this send carries, under a new id (rotateTaskID): the shim
+// answers a send under an id it already holds from its own record without forwarding it
+// (shimwire's Dedupe), so an earlier send of this task under the same id, whose prompt named the
+// directory the record has moved from, would be the one the agent read.
+func (m *Machine) currentWorkingCopy(ctx context.Context) error {
+	p := m.claim.Pending
+	if m.deps.WorkingCopy == nil || p.Phase == "" || p.NewsOnly {
+		return nil
+	}
+	task, news, err := m.deps.WorkingCopy(ctx, m.claim, *p)
+	if err != nil {
+		return fmt.Errorf("read the working copy the task held for %s names now: %w", m.claim.Token, err)
+	}
+	if task == p.Task && bytes.Equal(news, p.News) {
+		return nil
+	}
+	was := p.ID
+	id := rotateTaskID(was)
+	if err := m.rewritePending(ctx, id, task, p.Kept, news); err != nil {
+		return err
+	}
+	m.log.Info("supervise: the working copy this task names was read again from the record; the task is sent naming it as it stands",
+		"delivery", id, "was", was, "issue", m.claim.Issue)
+	return nil
 }
 
 // adopts is whether sending d hands the claim's working copy the role's App identity first
@@ -1860,21 +1906,21 @@ func interruptedTask(cause string) string {
 }
 
 // abandonedTask begins the first prompt given to the agent that replaced a session the claim
-// abandoned (forgetSession): one the provider refused out of its budget, one an operator retried
+// abandoned (forgetSession): one whose last turns the provider refused, one an operator retried
 // with --fresh-session, or one no session store holds any more. Nothing in a new session says
 // that an older one existed, so a worker reading an empty transcript takes its task for a fresh
 // start and does again what is already pushed (dispatch://INFRA-714, item 4 of the refusal
-// section). It names the session that was left behind and why in the words the claim recorded —
-// for a refused session the provider's own, the size it refused at among them — and then the two
-// things that outlive a session: the issue's branch, and the handoff records its phases wrote on
-// the Dispatch issue. The controller is told neither, since it works no checkout. last is whether
-// this sentence is the last one before the task, and so ends in the task's own instruction: in
-// front of a task with no record's sentence after it. Where the record's sentence follows it
-// (EndedWork.Tells), that sentence is the last and carries the instruction instead
+// section). It names the session that was left behind and why in the words the claim recorded,
+// and then the two things that outlive a session: the issue's branch, and the handoff records its
+// phases wrote on the Dispatch issue. The controller is told neither, since it works no checkout.
+// last is whether this sentence is the last one before the task, and so ends in the task's own
+// instruction: in front of a task with no record's sentence after it. Where the record's sentence
+// follows it (EndedWork.Tells), that sentence is the last and carries the instruction instead
 // (relaunchSentence); in front of the daemon's own delivery of a relaunch's record, which has no
 // task (Delivery.Relaunch), neither carries one (Delivery.message).
 //
-// The reason is the provider's own text read into an agent's prompt, so it is quoted as a Go
+// The reason can be far-side text read into an agent's prompt — a runtime's account of a death,
+// or the provider's own words in a failure an earlier daemon wrote — so it is quoted as a Go
 // string with %q, the way a check run's name is where the daemon reads one into a prompt
 // (workflow's namedConclusions): the quotes bound it, and a newline or a quote inside it is
 // escaped rather than ending the sentence that carries it, so no refusal text can read as an

@@ -24,4 +24,7 @@ body: |-
   (a hand-over, or an event that arrives late, after a pass over Dispatch's listing at the same
   sequence) writes nothing either, and the daemon owes that issue the same read, so the record ends
   on what Dispatch resolves then. The one-time rename pass writes a configured pair's new name on a
-  saved bundle too, so the bundle is still restored once the pair is removed.
+  saved bundle too, so the bundle is still restored once the pair is removed. A worker's task names
+  in its `Working copy:` line the directory of the repository the record holds when the task is
+  sent, not when it was written, so a task held across a correction, and one sent again after it,
+  names the new repository's workspace.

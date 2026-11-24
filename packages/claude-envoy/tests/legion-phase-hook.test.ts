@@ -728,9 +728,11 @@ test("a settle that says what it waits on buys the quiet wait, and is reminded o
 // provider would refuse that one the same way, as it did for dispatch://INFRA-264's implementer.
 // One timer is armed all the same, because the task that refused turn carried ended with it and
 // nothing else would wake this worker: a single transient refusal would otherwise leave the issue
-// idle. What stops the reminding of a session the provider refuses for ever is the daemon failing
-// the claim at `launch_failure_limit` and answering then that it owes nothing, which the test
-// below this one holds.
+// idle. A refusal that can clear fails no claim (dispatch://INFRA-4508), so the reminders keep
+// their pace; the daemon fails the claim at once for a refusal whose status cannot clear, a
+// reminder's own turn included, which it judges from the bridge's turn-outcome report, and
+// answers then that it owes nothing, and the test below this one holds that a failed claim's
+// session is reminded of nothing.
 test("a turn that ended on an API error carries no continuation, and is woken once by its timer", async () => {
   const { endpoint, record, inbox, close } = await harness({
     record: recorded("active", 0, { lastMessage: "I pushed the branch." }),
@@ -771,8 +773,8 @@ test("a turn that ended on an API error carries no continuation, and is woken on
   }
 })
 
-// The daemon failing this role's claim is its word that this session is finished: the retry it
-// starts runs in a session of its own, and the daemon answers that the failed claim owes nothing.
+// The daemon failing this role's claim is its word that this session is finished, and the daemon
+// answers that the failed claim owes nothing.
 // It is what ends the reminding here, since this host sees a refused turn only as the
 // `StopFailure` of the turn it refused: the timer that turn arms asks the daemon, and reminds
 // nothing.

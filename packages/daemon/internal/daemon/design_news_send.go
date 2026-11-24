@@ -103,9 +103,9 @@ func (w *workflowRuntime) designNews(ctx context.Context, c supervise.Claim, d s
 	if len(d.News) == 0 {
 		return d.Task, d.News, nil
 	}
-	var carried record.DeliveryNews
-	if err := json.Unmarshal(d.News, &carried); err != nil {
-		return "", nil, fmt.Errorf("decode the news the task held for %s carries: %w", c.Token, err)
+	carried, err := heldNews(c, d.News)
+	if err != nil {
+		return "", nil, err
 	}
 	var sent renderedNews
 	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -124,6 +124,17 @@ func (w *workflowRuntime) designNews(ctx context.Context, c supervise.Claim, d s
 		return "", nil, nil
 	}
 	return sent.task, sent.news, nil
+}
+
+// heldNews is news, the news a held task of c carries (supervise.Delivery.News), decoded: the one
+// read of it every send of such a task makes before it renders or writes it again (designNews,
+// workflowRuntime.narrowedNews, workflowRuntime.workingCopy), each of which encodes its own answer.
+func heldNews(c supervise.Claim, news []byte) (record.DeliveryNews, error) {
+	var carried record.DeliveryNews
+	if err := json.Unmarshal(news, &carried); err != nil {
+		return record.DeliveryNews{}, fmt.Errorf("decode the news the task held for %s carries: %w", c.Token, err)
+	}
+	return carried, nil
 }
 
 // renderedNews is a task of news as the one render says it (renderNews): its text, the news the

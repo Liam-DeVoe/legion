@@ -80,13 +80,14 @@ func Charges(o runtime.Outcome) bool {
 }
 
 // failureCause is the word a claim fails under when the launch or the death budget runs out on
-// o, or when o ends the claim by itself (a provider error that cannot clear, and a run of turns
-// the provider refused that reached the launch failure limit, turnOutcome): the one place an
-// outcome becomes the cause that is stored, served and shown (FailureCause). The prompt budget
-// fails a claim under its own word whatever event spent it (CausePromptRetiresExhausted,
-// chargePrompt), since what ran out there is the retirements and not the event. An outcome with
-// no cause of its own is CauseUnrecorded, which no live path reaches: every caller names one of
-// the members below, and relaunchAfterFailure asks it of no outcome the policy charges nothing.
+// o, or when o ends the claim by itself (a provider error that cannot clear, whether it ended a
+// prompt's turn or a turn that ran no prompt of the daemon's, providerErrorTurnEnded; a run of
+// turns the provider refused fails no claim, turnOutcome): the one place an outcome becomes the
+// cause that is stored, served and shown (FailureCause). The prompt budget fails a claim under its
+// own word whatever event spent it (CausePromptRetiresExhausted, chargePrompt), since what ran out
+// there is the retirements and not the event. An outcome with no cause of its own is
+// CauseUnrecorded, which no live path reaches: every caller names one of the members below, and
+// relaunchAfterFailure asks it of no outcome the policy charges nothing.
 func failureCause(o runtime.Outcome) FailureCause {
 	switch o {
 	case runtime.OutcomeProcessDied:

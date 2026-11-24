@@ -26,10 +26,11 @@ import (
 //
 // The columns are every one the migrations give the repository an issue or its work is on now:
 // issues.repo and issues.github_repo (0047, 0048), pull_requests.repo (0004),
-// production_checks.repo (0049), repo_notes.resolved_repo (0047) and workspace_bundles.repo
+// cleared_pull_requests.repo (20261120144241), production_checks.repo (0049),
+// repo_notes.resolved_repo (0047) and workspace_bundles.repo
 // (20261112012123_issue_repository_correction), the repository a saved bundle's work is of.
 // That last one is written because the take compares it with the repository of the pod that
-// asks, which a launch builds from the record, through the pair (ghrepo.Renames.Left): left on
+// asks, which a launch builds from the record, through the pair (ghrepo.Renames.Same): left on
 // the old name, a bundle saved before the pass would read as work of another repository than a
 // pod built from the new name once the pair is removed from `repository_renames`, and that pod's
 // restore would refuse it; and it is counted, so the rows the pass logs as left hold the
@@ -41,7 +42,9 @@ import (
 // correction's history and decides nothing that compares it with a pair;
 // issues.repo_change_pending, Dispatch's own name for a change still to be made, which the
 // issue's next event writes again from Dispatch; and workspace_bundles_refused.repo, work the
-// restore refused, which nothing in the daemon reads again and an operator carries out by hand.
+// restore refused, which an operator carries out by hand and which the daemon compares with
+// nothing: it reads the row again only by its issue and pod, to tell the issue of a refusal whose
+// commit it could not confirm (store.Store.RefusedWorkspaceBundle).
 // Every
 // comparison is made without case (`lower(col) = lower(from)`), as every read of a repository
 // name in the record is, so a row in any spelling of the old name is written; the new name is
@@ -56,17 +59,18 @@ type RenameTable string
 
 // The tables whose columns hold a repository name, one constant each.
 const (
-	RenameTableIssues           RenameTable = "issues"
-	RenameTablePullRequests     RenameTable = "pull_requests"
-	RenameTableProductionChecks RenameTable = "production_checks"
-	RenameTableRepoNotes        RenameTable = "repo_notes"
-	RenameTableWorkspaceBundles RenameTable = "workspace_bundles"
+	RenameTableIssues              RenameTable = "issues"
+	RenameTablePullRequests        RenameTable = "pull_requests"
+	RenameTableClearedPullRequests RenameTable = "cleared_pull_requests"
+	RenameTableProductionChecks    RenameTable = "production_checks"
+	RenameTableRepoNotes           RenameTable = "repo_notes"
+	RenameTableWorkspaceBundles    RenameTable = "workspace_bundles"
 )
 
 // RenameTables are the tables whose columns hold a repository name, in the order the rename pass
 // writes and logs them.
-var RenameTables = []RenameTable{RenameTableIssues, RenameTablePullRequests, RenameTableProductionChecks, RenameTableRepoNotes,
-	RenameTableWorkspaceBundles}
+var RenameTables = []RenameTable{RenameTableIssues, RenameTablePullRequests, RenameTableClearedPullRequests, RenameTableProductionChecks,
+	RenameTableRepoNotes, RenameTableWorkspaceBundles}
 
 // RenameCandidate is one issue whose stored rows name a rename's old name: Rows is how many rows
 // of each table (RenameTables) do, which is what its write changes, and Spellings each spelling
@@ -96,6 +100,8 @@ func RenameCandidates(ctx context.Context, tx pgx.Tx, project, from string, keys
 			and ($3::text[] is null or key = any($3))`},
 		{RenameTablePullRequests, `select p.issue, p.repo, ''::text from pull_requests p join issues i on i.key = p.issue
 			where i.project = $1 and lower(p.repo) = lower($2) and ($3::text[] is null or p.issue = any($3))`},
+		{RenameTableClearedPullRequests, `select c.issue, c.repo, ''::text from cleared_pull_requests c join issues i on i.key = c.issue
+			where i.project = $1 and lower(c.repo) = lower($2) and ($3::text[] is null or c.issue = any($3))`},
 		{RenameTableProductionChecks, `select c.issue, c.repo, ''::text from production_checks c join issues i on i.key = c.issue
 			where i.project = $1 and lower(c.repo) = lower($2) and ($3::text[] is null or c.issue = any($3))`},
 		{RenameTableRepoNotes, `select n.issue, n.resolved_repo, ''::text from repo_notes n
@@ -164,9 +170,9 @@ type RenameCollision struct {
 
 // RenameIssueRepository writes to over from, compared without case, on each column of issue's
 // rows that holds a repository name: its record's repository and GitHub's spelling of it, its pull
-// request, its production check, its repository note and its saved bundle. It runs in the
-// caller's transaction, so the rows of one issue are written together or not at all, and a write
-// of rows that name to already changes nothing.
+// request, the pull requests a new generation of it cleared, its production check, its repository
+// note and its saved bundle. It runs in the caller's transaction, so the rows of one issue are
+// written together or not at all, and a write of rows that name to already changes nothing.
 //
 // Its pull request row is deleted instead where the new name would make it a second row of one
 // repository and branch: pull_requests_repo_branch (0004) is unique on (repo, branch), and the
@@ -174,6 +180,12 @@ type RenameCollision struct {
 // so another issue's row on the new name in any spelling and on the same branch already holds that
 // key. The row under the new name stays, and the deletion is returned for the pass to log, naming
 // both issues.
+//
+// A cleared pull request's row is merged into the row to already holds for the same number, where
+// there is one, since cleared_pull_requests is keyed on (repo, number): the merged row keeps the
+// later clock and the later clear of the two and names issue. A row of to in another spelling is
+// another key and stays beside it; the clock's read takes the latest of every spelling
+// (ClearedPullRequestClock).
 func RenameIssueRepository(ctx context.Context, tx pgx.Tx, issue, from, to string) (RenameWrite, error) {
 	written := RenameWrite{Rows: map[RenameTable]int{}}
 	tag, err := tx.Exec(ctx, `update issues set
@@ -208,6 +220,21 @@ func RenameIssueRepository(ctx context.Context, tx pgx.Tx, issue, from, to strin
 		collision.Issue = issue
 		written.Deleted = &collision
 	}
+
+	var cleared int
+	if err := tx.QueryRow(ctx, `with moved as (
+			delete from cleared_pull_requests where issue = $1 and lower(repo) = lower($2)
+			returning number, head_updated_at, cleared_at),
+		merged as (
+			insert into cleared_pull_requests (repo, number, issue, head_updated_at, cleared_at)
+			select $3, number, $1, max(head_updated_at), max(cleared_at) from moved group by number
+			on conflict (repo, number) do update set issue = excluded.issue,
+				head_updated_at = greatest(cleared_pull_requests.head_updated_at, excluded.head_updated_at),
+				cleared_at = greatest(cleared_pull_requests.cleared_at, excluded.cleared_at))
+		select count(*) from moved`, issue, from, to).Scan(&cleared); err != nil {
+		return RenameWrite{}, fmt.Errorf("write %s over %s on the cleared pull requests of %s: %w", to, from, issue, err)
+	}
+	written.Rows[RenameTableClearedPullRequests] = cleared
 
 	for _, write := range []struct {
 		table RenameTable

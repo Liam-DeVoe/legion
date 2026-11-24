@@ -406,6 +406,24 @@ func withoutHeldKey(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// withoutIntakeGiveUpsKey is a state body with no `intakeGiveUps`, which is what a caller below
+// intakeGiveUpsContract is served (api's withoutIntakeGiveUps). It serves the table below as
+// withoutQuietKeys does: a row's baseline is the full state with exactly the keys that row's own
+// contract holds back taken out of it.
+func withoutIntakeGiveUpsKey(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	delete(served, "intakeGiveUps")
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its give-ups: %v", body, err)
+	}
+	return encoded
+}
+
 // withoutEntryKeys is a state body with no issue carrying `phaseEntry` or `givenEntry`, which is
 // what a caller below phaseEntriesContract is served of a state that carries them (api's
 // withoutPhaseEntries). It serves the table below as withoutQuietKeys does: a row's baseline is
@@ -576,16 +594,16 @@ func servedAt(t *testing.T, body []byte, contract int) []byte {
 // each issue's two entry numbers, the issues the record holds in the workflow, each issue's
 // tree quiet time, what each reviewing issue's round waits on from GitHub, each issue's
 // experiment assignments, the two times of each issue's entry task, each repository's `apps`, the
-// four keys of a correction of an issue's repository and the repository caches' word for the
-// source of their capability row among the keys it is served without, and its repositories block
-// in the shape contract 152 gave it, since such a pod is below every row of stateNarrowings and
-// of valueStrips. The measure of a tree that has stopped is read in finer grain by
-// quiet_time_test.go, and the two times by architect_handshake_test.go. A pod at this contract,
-// and a caller in no pod — the operator's `legion state`, whose open-rounds line reads both
-// fields, whose queue line reads those wakes and whose tool-call line reads the step records —
-// are served everything. The claims are the state snapshot's own, so there is no readable state
-// whose caller's contract is unknown: a snapshot without them is no state, and the route refuses
-// it.
+// four keys of a correction of an issue's repository, the repository caches' word for the source
+// of their capability row and the intake's give-ups among the keys it is served without, and its
+// repositories block in the shape contract 152 gave it, since such a pod is below every row of
+// stateNarrowings and of valueStrips. The measure of a tree that has stopped is read in finer
+// grain by quiet_time_test.go, and the two times by architect_handshake_test.go. A pod at this
+// contract, and a caller in no pod — the operator's `legion state`, whose open-rounds line reads
+// both fields, whose queue line reads those wakes and whose tool-call line reads the step records
+// — are served everything. The claims are the state snapshot's own, so there is no readable
+// state whose caller's contract is unknown: a snapshot without them is no state, and the route
+// refuses it.
 func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(supervise.PodUpdateContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
@@ -684,6 +702,12 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// rows served this daemon's own body are served the word, and every other row the row
 		// without it.
 		caches bool
+		// giveUps is whether the caller is served `intakeGiveUps`, the intake's open give-ups
+		// (intakeGiveUpsContract, the contract that added them): a pod whose claims record a
+		// contract below shapedAnswersContract is not served the key and a pod at or above it is
+		// (podContracts counts no such claim), and a caller that states a contract below
+		// intakeGiveUpsContract is not (TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps).
+		giveUps bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -734,22 +758,23 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// reading reaches: the project's pause is served too, and every key a later row of
 		// stateNarrowings adds is held back, the claim views' keys of contract 193, the
 		// repositories block this daemon writes, which is served in contract 152's shape, each
-		// assignment's `plan` and the four repository keys among them. The repository caches' row
-		// is served without its `source` here as in every band below, the value
-		// cachesSourceContract added.
+		// assignment's `plan`, the state's `intakeGiveUps` of contract 228 and the four repository
+		// keys among them. The repository caches' row is served without its `source` here as in
+		// every band below, the value cachesSourceContract added.
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: pauseContract, assigned: true, times: true, apps: true, pause: true},
 		// A pod whose claims record shapedAnswersContract, the contract from which every build
 		// states its contract in the header. Such a pod is in no pod reading: podContracts leaves
 		// out a claim at shapedAnswersContract or above. So the reading falls through to the body
 		// this daemon writes, which carries every key and every value, the repositories block
-		// repositoriesLiveContract writes, each assignment's `plan`, the four of a repository
-		// correction and the caches source among them, and the row names DaemonAPIVersion.
-		// repositoriesLiveContract, assignmentPlanContract and repositoryCorrectionContract stand
-		// above shapedAnswersContract, so a caller between them is served their bands by its
-		// header alone (contract_shapes_test.go).
-		{name: "a pod at the contract from which every build states its own", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, correction: true, caches: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, correction: true, caches: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, correction: true, caches: true},
+		// repositoriesLiveContract writes, each assignment's `plan`, `intakeGiveUps`, the four of a
+		// repository correction and the caches source among them, and the row names
+		// DaemonAPIVersion. repositoriesLiveContract, assignmentPlanContract, intakeGiveUpsContract
+		// and repositoryCorrectionContract stand above shapedAnswersContract, so a caller between
+		// them is served their bands by its header alone (contract_shapes_test.go,
+		// TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps).
+		{name: "a pod at the contract from which every build states its own", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, correction: true, caches: true, giveUps: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, correction: true, caches: true, giveUps: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, correction: true, caches: true, giveUps: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -825,6 +850,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				if !tc.caches {
 					want = withoutCachesSources(t, want)
 				}
+				if !tc.giveUps {
+					want = withoutIntakeGiveUpsKey(t, want)
+				}
 				want = servedAt(t, want, tc.contract)
 				if withoutLowestContract(t, body) != withoutLowestContract(t, want) {
 					t.Fatalf("state = %s, want the state as this row's contract is served it, %s", body, want)
@@ -892,6 +920,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			if !tc.refresh {
 				delete(want, ClaimsToRefreshField)
 			}
+			// Every row that reaches here is below intakeGiveUpsContract too.
+			delete(want, "intakeGiveUps")
 			delete(want, "contract")
 			delete(want, "paused")
 			if !tc.rounds {

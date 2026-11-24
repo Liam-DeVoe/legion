@@ -44,18 +44,24 @@ func keptJSON(kept *record.KeptDecisions) ([]byte, error) {
 // parked-decision notice of its own, and the decision is kept for the root's next architect start.
 // It runs in a transaction of its own that marks key processed and owns the commit hook the write
 // registers (projectRecords, store.OnCommit), so the notice's lane wakes as it commits. It does
-// nothing for a kind that is no spec decision. Every outcome logs one line that pairs the
+// nothing for a kind that is no spec decision, nor for a changes request the person has since
+// replaced with a newer one of the same document (workflow.ChangesSuperseded): the workflow tells
+// such a request when it arrives after the newer one — late, or replayed from a message the intake
+// gave up on, however late — and kept now it would take the newer decision's place, and its
+// claim, under the document's ref. Every outcome logs one line that pairs the
 // undelivered row with what became of its decision: sent, kept for a root that waits for its slot,
-// not relayed (by no person, on a root that is no parked tree, on a tree that hears it, or on a
-// root with no record), or handled before under the same key, by an earlier run or another row
-// carrying the same notice, whose own line said what became of it. The line is a hook of the
-// transaction, so it is logged once the transaction has committed.
+// not relayed (by no person, on a root that is no parked tree, on a tree that hears it, on a root
+// with no record, or replaced since), or handled before under the same key, by an earlier run or
+// another row carrying the same notice, whose own line said what became of it. The line is a hook
+// of the transaction, so it is logged once the transaction has committed.
 //
 // A decision that is no longer the person's word is not relayed: the gates of the issue it was
-// made on, as the record holds them now, are asked (decisionSuperseded), and the controller is not
-// told to act on a review the person's own approval took the place of, nor on an approval the gate
-// no longer holds. The relay carries the notice's facts of the review (record.RelayParkedDecision),
-// so the publish of a relayed changes request asks again of the same decision (controllerNotice).
+// made on, as the record holds them now, are asked (workflow.NoticeSuperseded, the question
+// decisionSuperseded asks), and the controller is not told to act on a review the person's own
+// approval took the place of, nor on an approval the gate no longer holds. The same read of the
+// gates says whether a newer changes request replaced it (workflow.ChangesSuperseded). The relay
+// carries the notice's facts of the review (record.RelayParkedDecision), so the publish of a
+// relayed changes request asks again of the same decision (controllerNotice).
 func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice record.Notice, key string, row int64) error {
 	decision, ok := record.SpecDecision(notice.Kind)
 	if !ok {
@@ -63,7 +69,7 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 	}
 	args := []any{"row", row, "kind", notice.Kind, "issue", issue, "root", root, "key", key}
 	now := r.now().UTC()
-	outcome, fresh, recorded := record.RelayNone, false, false
+	outcome, fresh, recorded, replaced := record.RelayNone, false, false, false
 	var superseded *workflow.Supersession
 	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		store.OnCommit(ctx, func() {
@@ -74,10 +80,12 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 				r.log.Info("outbox parked decision not relayed: its root has no record", args...)
 			case superseded != nil && superseded.By == nil:
 				r.log.Info("outbox parked decision not relayed: the gate no longer holds the approval it reports",
-					append(args, "version", notice.Version, "approved", superseded.By)...)
+					append(args, "version", notice.Version)...)
 			case superseded != nil:
 				r.log.Info("outbox parked decision not relayed: the person's approval followed it",
-					append(args, "version", notice.Version, "approved", superseded.By)...)
+					append(args, "version", notice.Version, "approved", superseded.By.Version)...)
+			case replaced:
+				r.log.Info("outbox parked decision not relayed: a newer changes request of its document replaced it", append(args, "ref", notice.Ref, "version", notice.Version)...)
 			case outcome == record.RelaySent:
 				r.log.Info("outbox parked decision sent to the controller", args...)
 			case outcome == record.RelayKept:
@@ -100,8 +108,17 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 			return err
 		}
 		recorded = true
-		if superseded, err = r.decisionSuperseded(ctx, tx, issue, notice, decision); err != nil || superseded != nil {
+		gates, err := r.records.GatesOf(ctx, tx, issue)
+		if err != nil {
 			return err
+		}
+		if superseded = workflow.NoticeSuperseded(gates, r.gatedSteps, issue, notice, decision); superseded != nil {
+			return nil
+		}
+		if decision == record.DecisionDesignChangesRequested {
+			if replaced = workflow.ChangesSuperseded(gates, issue, notice); replaced {
+				return nil
+			}
 		}
 		// The decision is kept at Dispatch's mark of the review it reports (record.Notice.Review),
 		// so a later approval is weighed against it by Dispatch's order and not by this clock;
@@ -133,8 +150,8 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 // release puts on every design decision's notice and on the relay of one
 // (workflow.NoticeSuperseded). A notice an earlier release queued carries no mark and no
 // document, and is asked at its version alone. The line each caller logs for a decision that no
-// longer stands names the approved version that took its place, or none where no approval did
-// (workflow.Supersession.By).
+// longer stands names the approved version that took its place, and no approved version where no
+// approval did (workflow.Supersession.By).
 func (r *outbox) decisionSuperseded(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice, decision record.DecisionKind) (*workflow.Supersession, error) {
 	gates, err := r.records.GatesOf(ctx, tx, issue)
 	if err != nil {

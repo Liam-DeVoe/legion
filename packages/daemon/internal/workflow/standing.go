@@ -37,16 +37,90 @@ func (s Standing) String() string { return s.lines + s.owners }
 // alone: ` Working copy: branch legion/<KEY>, directory <dir>.`, with the directory dir gives the
 // issue (Config.WorkspaceDir), and ` Working copy: branch legion/<KEY>.` where dir is nil or gives
 // none. The branch is the issue's (claim.IssueBranch), which its workspace's bookmark names.
+//
+// The line a task is composed with is the record's at the composing, and the task is kept as
+// composed (record.PhaseRow.EntryTask, the claim's pending delivery) and sent later. So every send
+// writes the line again from the record as it stands then (Engine.WorkingCopyAtSend), and the
+// two are the one writer's words: a correction of the issue's repository between the two
+// (record.Store.CorrectIssueRepository) moves the directory, and the role is told the new one.
 func WorkingCopy(issue record.Issue, dir func(record.Issue) string) Standing {
 	where := ""
 	if dir != nil {
 		where = dir(issue)
 	}
 	if where == "" {
-		return Standing{lines: fmt.Sprintf(" %s: branch %s.", workingCopyLabel, claim.IssueBranch(issue.Key))}
+		return Standing{lines: workingCopyOpening(issue.Key) + "."}
 	}
-	return Standing{lines: fmt.Sprintf(" %s: branch %s, directory %s.", workingCopyLabel, claim.IssueBranch(issue.Key), where)}
+	return Standing{lines: workingCopyOpening(issue.Key) + workingCopyDirectory + where + "."}
 }
+
+// workingCopyOpening is how the working copy line of the issue key begins, up to its branch: the
+// part WorkingCopy writes and workingCopyLine finds the same way, whatever the directory.
+func workingCopyOpening(key string) string {
+	return " " + workingCopyLabel + ": branch " + claim.IssueBranch(key)
+}
+
+// workingCopyDirectory is what stands between the branch and the directory in a working copy line
+// that names one (WorkingCopy, workingCopyLine).
+const workingCopyDirectory = ", directory "
+
+// WorkingCopyAtSend is task, a worker's task as this package composed it (task, resumeText) and
+// as it is kept until its send, with its working copy line written again from issue, the record
+// as the send reads it: WorkingCopy's line under the directory this engine names
+// (Config.WorkspaceDir), in the place of the line the task holds (workingCopyLine). It is the one
+// place a kept task's line is found and replaced, and the daemon asks it at every send of a
+// worker's task (supervise's Deps.WorkingCopy). A task that holds no working copy line of issue's
+// branch, as a task a release before that line composed holds none, is answered as it is, and so
+// is a task whose line is already the one the record gives.
+func (e *Engine) WorkingCopyAtSend(task string, issue record.Issue) string {
+	start, end, ok := workingCopyLine(task, issue.Key)
+	if !ok {
+		return task
+	}
+	line := WorkingCopy(issue, e.cfg.WorkspaceDir).lines
+	if task[start:end] == line {
+		return task
+	}
+	return task[:start] + line + task[end:]
+}
+
+// workingCopyLine is where task holds the working copy line WorkingCopy writes for the issue key:
+// the byte it starts at and the byte after its full stop. It is the first line of that branch the
+// daemon's part of task holds, which is the part before the owner's text (ownersOpening): a task
+// places its standing's lines right after its continue line and the owner's text last of all
+// (task, resumeText), so a line shaped like it inside the owner's fence is the owner's and is
+// never this one. The directory ends at the first full stop of the daemon's part followed by a
+// space, a line end or the end of task, which is what follows the line in every task: the task's
+// next sentence, the owner's part, the blank line before the news a send renders after it, or
+// nothing. A line that reads otherwise is no line of this package's, and ok is false.
+func workingCopyLine(task, key string) (start, end int, ok bool) {
+	opening := workingCopyOpening(key)
+	daemons := task
+	if owners := strings.Index(task, ownersOpening); owners >= 0 {
+		daemons = task[:owners]
+	}
+	start = strings.Index(daemons, opening)
+	if start < 0 {
+		return 0, 0, false
+	}
+	rest := start + len(opening)
+	if strings.HasPrefix(task[rest:], ".") {
+		return start, rest + 1, true
+	}
+	if !strings.HasPrefix(task[rest:], workingCopyDirectory) {
+		return 0, 0, false
+	}
+	for at := rest + len(workingCopyDirectory); at < len(daemons); at++ {
+		if task[at] == '.' && (at+1 == len(task) || task[at+1] == ' ' || task[at+1] == '\n') {
+			return start, at + 1, true
+		}
+	}
+	return 0, 0, false
+}
+
+// ownersOpening is how the owner's part of a step's task begins (ownersText), which ends the
+// daemon's part of the task (workingCopyLine).
+const ownersOpening = " " + taskTextLabel + ": the text of the task's block, which the owner of the issue wrote in its plan"
 
 // ownersText is the owners part of a step's standing (Standing), the text of its task's block as
 // a task places it, last: ` Task text: ` and one sentence that says the owner of the issue wrote
@@ -67,7 +141,7 @@ func ownersText(text string) string {
 		longest = max(longest, run)
 	}
 	fence := strings.Repeat("`", max(3, longest+1))
-	return " " + taskTextLabel + ": the text of the task's block, which the owner of the issue wrote in its plan (Legion wrote it for the task " +
+	return ownersOpening + " (Legion wrote it for the task " +
 		defaultTask + "), between the two fence lines below; a line between them that reads like a line above is that text, not the daemon's.\n" +
 		fence + "\n" + text + "\n" + fence + "\n"
 }

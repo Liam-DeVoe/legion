@@ -4,11 +4,11 @@ package daemon
 // The backfill fills it (fillRepositories), with checks a correction makes none of. So no pass
 // over a recorded issue's resolution corrects such a record or reads GitHub for it: a live event's
 // preparation (prepareIssue), a hand-over's (prepareHandover), the follow (followListing) and the
-// boot's listing, which asks for no follow of it (prepareRecorded). The refresher's backfill,
-// which fills it while intake is live, asks for its follow once the fill commits (backfillLater).
-// These tests run the daemon's own preparations, backfill and one writer
-// (workflow.Engine.ApplyRepositoryChange) over a real PostgreSQL and NATS, with a GitHub that
-// names strangerRepo as strangerNamed.
+// boot's listing, which asks for no follow of it (prepareRecorded). A move prepared against such
+// a record while the refresher's backfill fills it (backfillLater) is followed by the engine where
+// it is applied after the fill (workflow.Engine.ApplyRepositoryChange). These tests run the
+// daemon's own preparations, backfill and one writer (workflow.Engine.ApplyRepositoryChange) over
+// a real PostgreSQL and NATS, with a GitHub that names strangerRepo as strangerNamed.
 
 import (
 	"context"
@@ -156,15 +156,19 @@ func (d *hookedListing) ListIssues(ctx context.Context, project string, statuses
 // The refresher's backfill (backfillLater) runs while intake is live, and it lists Dispatch and
 // reads GitHub before it writes. Here the listing resolves the issue to strangerRepo, and before
 // the fill writes, a person moves the issue onto answeredRepo: the event is prepared against a
-// record that holds no repository, so its preparation reads nothing and owes no follow
-// (correctionMoves). The fill then writes strangerRepo, and the event applies after it with no
-// read of GitHub, which writes nothing (workflow.Engine.ApplyRepositoryChange). With no further
-// event and no boot, the follow the backfill asks for once its fill has committed
-// (requestFollowOf) reads Dispatch again and corrects the record onto answeredRepo, off the
-// strangerRepo the fill wrote. Control: with no follow asked after the fill, the record stays on
-// strangerRepo while Dispatch resolves answeredRepo, and the issue's next pod is built there until
-// its next event or the next boot.
-func TestAMoveDuringTheRefreshersBackfillIsFollowedOnceTheFillCommits(t *testing.T) {
+// record that holds no repository, so its preparation reads nothing, stamps no repository and
+// owes no follow (correctionMoves). The fill then writes strangerRepo, and the event applies after
+// it with no read of GitHub, so its correction writes nothing
+// (workflow.Engine.ApplyRepositoryChange). That apply asks for one follow of the issue at its
+// commit, as every apply of a fact no preparation stamped against a record's repository does, and
+// with no further event and no boot the follow reads Dispatch again and corrects the record onto
+// answeredRepo, off the strangerRepo the fill wrote. The follows are counted across the apply
+// alone, so no follow asked anywhere else stands in for the one the apply owes. Control: with no
+// follow asked at the commit of an apply of a fact no preparation stamped
+// (workflow.Engine.followOnCommit taken out of the unread branch), the apply asks for none and the
+// record stays on strangerRepo while Dispatch resolves answeredRepo, and the issue's next pod is
+// built there until its next event or the next boot.
+func TestAMoveDuringTheRefreshersBackfillIsFollowedWhereItApplies(t *testing.T) {
 	const key = "LEGION-1122"
 	var hooked *hookedListing
 	w, client, _ := changingRig(t, &installations{}, func(w *workflowRuntime) {
@@ -195,10 +199,17 @@ func TestAMoveDuringTheRefreshersBackfillIsFollowedOnceTheFillCommits(t *testing
 	if prepared == nil {
 		t.Fatal("the backfill listed no Dispatch issue, want the move prepared after its listing")
 	}
+	if got := recordedIssue(t, w, key); got == nil || got.Repo != strangerNamed {
+		t.Fatalf("%s after the backfill = %+v, want it filled onto %s, which the listing resolved", key, got, strangerNamed)
+	}
+
+	asked := w.followRequested.Load()
 	if _, err := intake.ApplyFact(context.Background(), w.pool, "dispatch", key+"-moved", *prepared, w.handlers...); err != nil {
 		t.Fatalf("apply the move: %v", err)
 	}
-
+	if follows := w.followRequested.Load() - asked; follows != 1 {
+		t.Fatalf("the move's apply asked for %d follows, want one: its correction wrote nothing, and no preparation stamped it", follows)
+	}
 	followsSettled(t, w)
 	if got := onRepository(t, w, key, answeredNamed, strangerNamed); got.LastDispatchSeq != 2 {
 		t.Fatalf("%s is at Dispatch sequence %d, want the move's 2: the move applies though its correction writes nothing", key, got.LastDispatchSeq)

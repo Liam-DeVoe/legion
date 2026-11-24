@@ -27,12 +27,13 @@ import (
 // the issue on in the transaction that records it, so an issue standing in accepting is always
 // still waiting for it; every other phase ends with its worker's completion, which moves the
 // issue too. A recorded completion answers nothing here: the merger's is recorded and moves no
-// issue.
+// issue. The pull request's state is all it reads, so it reads the row alone
+// (record.Store.PullRequestRow).
 func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (bool, error) {
 	if issue.Phase != phase.Merging {
 		return false, nil
 	}
-	pr, err := store.PullRequest(ctx, tx, issue.Key)
+	pr, err := store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil {
 		return false, err
 	}
@@ -635,7 +636,9 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // row whose work is sent and the rows are read once (admit's owedEntryRoles).
 //
 // The row's EntryTask is that work: the text the transition composed and wrote in the same
-// transaction as the number it raised (enter), so it is sent as it stands.
+// transaction as the number it raised (enter), so it is sent as it stands, but for its working
+// copy line, which every send of a worker's task writes again from the record as it stands then
+// (WorkingCopyAtSend).
 //
 // A row carrying no task is sent the phase's resume task instead (ResumeTask), which says to
 // carry the work on rather than beginning it. Two rows are in that state: one the upgrade to the

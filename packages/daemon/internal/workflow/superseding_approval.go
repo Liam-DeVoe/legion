@@ -1,8 +1,6 @@
 package workflow
 
 import (
-	"log/slog"
-
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -28,20 +26,14 @@ type Approval struct {
 	Version int
 }
 
-// LogValue is how a log line names a: the version approved, or "none" for a nil a, which is the
-// Supersession.By of a decision that no approval replaced.
-func (a *Approval) LogValue() slog.Value {
-	if a == nil {
-		return slog.StringValue("none")
-	}
-	return slog.IntValue(a.Version)
-}
-
 // Supersession is what SupersedingApproval answers for a person's decision that is no longer
 // their word. By is the approval the gate records in its place, which a sender may name. It is
 // nil where the gate records no approval, so none replaced the decision: an approval that a later
-// changes request cleared (classify.ApplyDesignGateEvent). A sender names a version only where By
-// is set. Only an approval replaces a changes request, so By is always set for one.
+// changes request cleared (classify.ApplyDesignGateEvent), or one of a document the gate no longer
+// holds, its step holding another document with none approved. For an approval of a document the
+// gate no longer holds, a By that is set is the approval of that other document. A sender names a
+// version only where By is set. Only an approval replaces a changes request, so By is always set
+// for one.
 type Supersession struct {
 	By *Approval
 }
@@ -56,14 +48,16 @@ type Supersession struct {
 // (resumeTask), the decisions and the approval kept for an architect's start or catch-up
 // (KeptDecisionsTask, again at each send and each delivery; the kept approval through
 // StepApprovalStands), the controller's relay of a decision nobody in its tree hears (the daemon's
-// parkDecision, and again at a relayed changes request's publish, its controllerNotice) and the
-// news of an approved version at each send of the task that carries it (StepApprovalStands, which
-// the daemon's itemStands asks); the clear of a generation asks it too, before it deletes the
-// gates of the issues it clears, of each decision kept on them and each changes request the
-// outbox holds on them (Engine.ClearGeneration). It holds the guards that choose which of
-// classify's two rules is asked of a decision, listed below, so a new step kind or a change to how
-// a decision is read is made here once. Which decisions a sender asks about is the sender's: of
-// the queued notices, record.ChangesRequest is the one rule for which rows a reader asks again.
+// parkDecision, and again at a relayed changes request's publish, its controllerNotice; and the
+// relay of a person's approval whose handover a later change of the root's status refused,
+// Engine.refuseHandover) and the news of an approved version at each send of the task that carries
+// it (StepApprovalStands, which the daemon's itemStands asks); the clear of a generation asks it
+// too, before it deletes the gates of the issues it clears, of each decision kept on them and
+// each changes request the outbox holds on them (Engine.ClearGeneration). It holds the guards
+// that choose which of the two rules is asked of a decision, listed below, and the rule for an
+// approval itself, so a new step kind or a change to how a decision is read is made here once.
+// Which decisions a sender asks about is the sender's: of the queued notices,
+// record.ChangesRequest is the one rule for which rows a reader asks again.
 //
 // It answers nil while the decision stands, and otherwise what took its place (Supersession).
 // A decision of either kind stands at each of these guards, in the order they are asked, because
@@ -78,13 +72,15 @@ type Supersession struct {
 //     record.DesignStep.OrSpec);
 //   - a step no person approves (its approval is its registration's: record.TakesStep).
 //
-// Past them an approval stands while the gate still holds it (classify.DesignApprovalStands): the
-// document approved (d.Artifact, or the document the gate holds where the sender knows none), at
-// the version approved (d.Version, or the version the gate holds approved where the sender knows
-// none). Its mark is not asked: a person who approves the same version again after a changes
-// request gives the same word again, under a new mark. An approval the gate no longer holds is
-// superseded: a later changes request cleared it, or the gate now holds another version approved
-// or another document.
+// Past them an approval stands while the gate still holds it, which this function compares itself,
+// so no other function can ask it: the gate's row holds the document approved (d.Artifact, or the
+// document the gate holds where the sender knows none), and its approved version is the version
+// approved (d.Version, or the version the gate holds approved where the sender knows none). A new
+// version that closed the gate since leaves it standing: the gate keeps that approval as the
+// version a person approved below the latest. Its mark is not asked: a person who approves the
+// same version again after a changes request gives the same word again, under a new mark. An
+// approval the gate no longer holds is superseded: a later changes request cleared it, or the gate
+// now holds another version approved or another document.
 //
 // Past them a changes request stands where the gate holds no approval, or now holds another
 // document than the one reviewed, where the sender knows it (d.Artifact). Otherwise the gate is
@@ -114,7 +110,7 @@ func SupersedingApproval(gate *record.DesignGate, gated bool, d Decision) *Super
 		if version == 0 && gate.ApprovedVersion != nil {
 			version = *gate.ApprovedVersion
 		}
-		if classify.DesignApprovalStands(*gate, artifact, version) {
+		if gate.ArtifactID == artifact && gate.ApprovedVersion != nil && *gate.ApprovedVersion == version {
 			return nil
 		}
 		return &Supersession{By: gateApproval(*gate)}
