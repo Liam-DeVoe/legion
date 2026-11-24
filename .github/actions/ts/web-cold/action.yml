@@ -1,0 +1,29 @@
+name: web-cold
+description: >-
+  The step of ci.yaml's web-cold job, the held part of the ts job: the Dispatch dashboard's web
+  tests once more, cold, a mode this change brought into CI, which the merge queue runs, and a pull
+  request with full-ci or lane:web_cold. It ran in the dispatch-ui leg of ts, which passed the 10
+  minutes a pull request's job is held to with it (9.5 to 10.5 minutes in the head's dispatch
+  runs). The job runs on ubuntu-24.04-arm, as that leg does, after its checkout and its Bun
+  (.github/actions/setup-bun).
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: bun install --frozen-lockfile
+    # The web tests once more, cold: packages/dispatch's `test:web:cold`, the web lane with the
+    # preload web/src/__tests__/hold-lazy-loads.ts, which holds back each module the web app
+    # loads lazily for 1 s once a file's rows have begun. A row that reads text or a part such a
+    # module renders without waiting for it then fails here, where in the web lane it fails only
+    # when the order puts it first among its file's rows. It is the web-cold lane that
+    # .github/workflows/dispatch-unit-repeat.yaml repeats under several seeds, run once: a
+    # preload changes what the files judge, so a lane a tool repeats with one runs in a job ci-ok
+    # needs too (.github/scripts/check-test-reach.sh, rule 7). One run of it took at most 101 s
+    # in that workflow (run 44339340132). It reads contracts built for Dispatch, which
+    # build:contracts builds first.
+    - name: Test dispatch dashboard with each lazy load held back
+      shell: bash
+      working-directory: packages/dispatch
+      run: |
+        bun run build:contracts
+        bun run test:web:cold web/src

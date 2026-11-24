@@ -26,6 +26,8 @@ runs:
     - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: packages/envoy/go.mod
+        go-download-base-url: https://go.dev/dl
+        token: ''
         cache: false
     # gotestsum, which the race step below runs the package under, through database-skips.sh and
     # .github/scripts/go-test.sh, on PATH for every later step.

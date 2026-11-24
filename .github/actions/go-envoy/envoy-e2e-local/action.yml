@@ -1,9 +1,12 @@
 name: envoy-e2e-local
 description: >-
   The envoy-e2e-local leg of ci.yaml's go-envoy job, which carries that old check-run name: the
-  local end-to-end acceptance of e2e-local.sh with its refusal test, and the bucket refill on a real
-  listener and NATS. The leg runs on ubuntu-24.04-arm. A failed run leaves its evidence as the
-  artifact go-envoy-envoy-e2e-local-evidence.
+  local end-to-end acceptance of e2e-local.sh with its refusal test. The bucket refill on a real
+  listener and NATS, a test this change brought into CI, is the envoy-e2e-refill leg's of the
+  envoy-held job (.github/actions/go-envoy/envoy-e2e-refill): with it this leg took 9.8 to 10.8
+  minutes in the head's dispatch runs, past the 10 a pull request's job is held to. The leg runs
+  on ubuntu-24.04-arm. A failed run leaves its evidence as the artifact
+  go-envoy-envoy-e2e-local-evidence.
 # why: .github/ci-notes/ci.md#what-the-local-end-to-end-job-runs
 runs:
   using: composite
@@ -15,6 +18,8 @@ runs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: packages/envoy/go.mod
+        go-download-base-url: https://go.dev/dl
+        token: ''
         cache: false
     # go-envoy: the listener and natsd e2e-local.sh builds.
     - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -37,16 +42,6 @@ runs:
       shell: bash
       working-directory: packages/envoy
       run: bash scripts/e2e-local.sh
-    # The listener keeps its copy of a bucket while it reads the bucket again, and refuses its two
-    # list routes, with no active-sessions sample, while it cannot stand behind that copy
-    # (INFRA-261): five scenarios against a real listener and a NATS server of the script's own,
-    # each one `CHECK <scenario>` line, and a run that missed the window it was there to observe is
-    # a FAIL. Its ports (E2E_REFILL_NATS_PORT, E2E_REFILL_PORT) are its own, and the acceptance run
-    # above has stopped its servers by the time this starts.
-    - name: Bucket refill on a real listener and NATS
-      shell: bash
-      working-directory: packages/envoy
-      run: bash scripts/e2e-refill.sh --out out/e2e-refill
     # The name carries no run attempt, and the upload overwrites, so a re-run's evidence replaces
     # the failed attempt's.
     - if: failure()
@@ -55,6 +50,4 @@ runs:
         name: go-envoy-envoy-e2e-local-evidence
         path: |
           packages/envoy/out/e2e
-          packages/envoy/out/e2e-refill
-          !packages/envoy/out/e2e-refill/bin
         overwrite: true

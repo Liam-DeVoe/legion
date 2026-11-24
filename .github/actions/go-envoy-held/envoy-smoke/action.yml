@@ -13,6 +13,8 @@ runs:
     - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: packages/envoy/go.mod
+        go-download-base-url: https://go.dev/dl
+        token: ''
         cache: false
     - uses: ./.github/actions/install-gotestsum
     # Every image the build or the test starts (testnats.HubImage and the smoke image's base

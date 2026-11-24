@@ -1,0 +1,102 @@
+name: tooling-checks
+description: >-
+  The tooling-checks leg of ci.yaml's scripts job, which carries main's check-run name
+  `tooling-checks / tooling-checks`: the checks of this repository's own tooling a pull request
+  runs - the Claude Code plugin build as the release builds it and its build input list, the
+  changelog fold, the guides' semantic line breaks, and the lint and typecheck of the scripts under
+  scripts/ that are no workspace. The `*.test.sh` harnesses and the Bun suites of scripts/ are the
+  test leg's of the scripts-held job (.github/actions/scripts/test), which the merge queue runs.
+  The leg runs on ubuntu-24.04-arm, after the job's checkout.
+# why: .github/ci-notes/ci.md#what-the-tooling-checks-job-runs
+runs:
+  using: composite
+  steps:
+    - name: Setup Bun
+      uses: ./.github/actions/setup-bun
+
+    - name: Install dependencies
+      shell: bash
+      run: bun install --frozen-lockfile
+
+    # The very command release.yaml's claude_envoy_build runs, so a pull request whose source
+    # that job would refuse fails this leg, and with it the required ci-ok, instead of merging
+    # and then failing every release. What it builds and checks:
+    # packages/claude-envoy/scripts/verify-build.sh.
+    - name: Build, check and pack the Claude Code plugin as the release does
+      shell: bash
+      working-directory: packages/claude-envoy
+      run: bun run verify-build "$RUNNER_TEMP/claude-envoy-built.tar"
+
+    # release.yaml's $CLAUDE_ENVOY_VERSION_ARGS covers scripts/build-inputs.txt, so a build input
+    # missing from it is one no release bumps a version for.
+    - name: Check the Claude Code plugin's build input list covers what the build reads
+      shell: bash
+      working-directory: packages/claude-envoy
+      run: bun test tests/build-inputs.test.ts
+
+    - uses: ./.github/actions/install-changie
+
+    # Nothing renders a changelog fragment between the merge and the release that first ships
+    # it, so a fragment changie refuses would fail that release's build job, and every run
+    # after it, until a fix merges. This renders every fragment of every listed package here
+    # instead, inside a required check, in the leg that installs changie.
+    - name: Check every changelog fragment renders
+      shell: bash
+      run: |
+        # shellcheck disable=SC2046 # the file is the package list, split on purpose
+        .github/scripts/release-push.sh fold-check $(<.github/changelog-packages)
+
+    # The guides' own layout, in this leg because it installs Bun's dependencies, which the
+    # test's Markdown parser needs (scripts/semantic-line-breaks.guides.test.ts:6-8).
+    - name: Check the guides' semantic line breaks
+      shell: bash
+      run: bun test scripts/semantic-line-breaks.guides.test.ts
+
+    - name: Lint the Dispatch census script
+      shell: bash
+      run: bunx biome check --error-on-warnings scripts/dispatch
+
+    # scripts/dispatch is no workspace; the root package pins its TypeScript and Bun types.
+    - name: Typecheck the Dispatch census script
+      shell: bash
+      run: bunx tsc --noEmit -p scripts/dispatch
+
+    - name: Lint the GitHub App registration script
+      shell: bash
+      run: bunx biome check --error-on-warnings scripts/github-apps
+
+    # scripts/github-apps is no workspace either; the root package pins its TypeScript and Bun types.
+    - name: Typecheck the GitHub App registration script
+      shell: bash
+      run: bunx tsc --noEmit -p scripts/github-apps
+
+    - name: Lint the session message-wait script
+      shell: bash
+      run: bunx biome check --error-on-warnings scripts/sessions
+
+    # scripts/sessions is no workspace either; the root package pins its TypeScript and Bun types.
+    # The suite itself is the sessions-script leg's: it creates a session-store database of its
+    # own and refuses without one. The lint and the typecheck stay here, since they need none
+    # and share this leg's Bun.
+    - name: Typecheck the session message-wait script
+      shell: bash
+      run: bunx tsc --noEmit -p scripts/sessions
+
+    - name: Lint the approval-eval statistics
+      shell: bash
+      run: bunx biome check --error-on-warnings scripts/approval-eval
+
+    # scripts/approval-eval is no workspace either; the root package pins its TypeScript and Bun types.
+    - name: Typecheck the approval-eval statistics
+      shell: bash
+      run: bunx tsc --noEmit -p scripts/approval-eval
+
+    # scripts/e2e is no workspace either; the root package pins its TypeScript and Bun types.
+    # The program is every TypeScript file there: the drivers and model stand-ins the
+    # agent-harness, daemon-live and envoy-session-stall jobs run under bun, which no step
+    # typechecks before it runs them, and the libraries and Bun tests beside them, the plan
+    # ratings read's test among them, whose answer is typed to the contract
+    # (@legion/contracts's own types).
+    - name: Typecheck the e2e scripts and their libraries
+      shell: bash
+      run: bunx tsc --noEmit -p scripts/e2e

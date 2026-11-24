@@ -43,6 +43,8 @@ runs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: packages/envoy/go.mod
+        go-download-base-url: https://go.dev/dl
+        token: ''
         cache: false
     # go-envoy-test: these legs build and run the test binary of every package of the envoy
     # module, a set no other job builds, so they keep a family of their own.

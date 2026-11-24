@@ -15,6 +15,8 @@ runs:
     - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: packages/envoy/go.mod
+        go-download-base-url: https://go.dev/dl
+        token: ''
         cache: false
     # No Go cache family: the proxyrules package imports the standard library and internal/fold,
     # which imports nothing. The mutants step's proxy patches test internal/cipher/proxy, whose

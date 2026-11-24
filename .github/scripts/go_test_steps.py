@@ -125,11 +125,13 @@ WORKSPACE_MARK = "\0workspace\0/"
 class AuditedScript:
     """A script a step runs, read by a person: the module it moves into before its tests, the one
     `go test` it runs there for each argument list a step passes it (the run:'s text after the
-    script's path, "" for none), and the SHA-256 of the text that reading was of."""
+    script's path, "" for none), and the SHA-256 of the text that reading was of. `modules` names
+    another module for an argument list that moves the script elsewhere (a `-C <module>`)."""
 
     module: str
     commands: dict[str, str]
     sha256: str
+    modules: dict[str, str] = field(default_factory=dict)
 
 
 # The tests envoy-go's "Count the store-form rows on each backend" names, in the order its run:
@@ -215,6 +217,29 @@ AUDITED_SCRIPTS = {
             "run": "go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -json -count=1 -race",
         },
         sha256="12b041dd237b98f67f376deea73a5e6261f87abae38fec7757a1b1c33710d25a",
+    ),
+    # It moves into the module its -C names (`cd "$module"`; packages/envoy without one), builds a
+    # hooked copy of nats-server, and with -jsonfile runs one .github/scripts/go-test.sh over the
+    # packages after its flags, which runs gotestsum, whose first run is one `go test -json
+    # -count=1 -tags odatrace -race -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder'` of
+    # them in a copy of the workspace that links that copy (`env GOWORK=…`); -server picks the
+    # hooked version and changes no flag of the command. Its `go test -list` first runs no test.
+    # go-daemon's last plain leg passes the first argument list below, the envoy-go-race leg of
+    # go-envoy-held the other two.
+    "packages/envoy/scripts/forced-order.sh": AuditedScript(
+        module="packages/envoy",
+        commands={
+            "-C packages/daemon -jsonfile go-daemon-forced-order.json ./internal/testnats/":
+                "go test -json -count=1 -tags odatrace -race -timeout 10m -run '^TestForcedOrder' ./internal/testnats/",
+            "-jsonfile go-envoy-held-envoy-go-race-forced-order.json ./internal/testnats/hooktest/":
+                "go test -json -count=1 -tags odatrace -race -timeout 10m -run '^TestForcedOrder' "
+                "./internal/testnats/hooktest/",
+            "-server 2.10.29 -jsonfile go-envoy-held-envoy-go-race-forced-order-v2.json ./internal/testnats/hooktest/":
+                "go test -json -count=1 -tags odatrace -race -timeout 10m -run '^TestForcedOrder' "
+                "./internal/testnats/hooktest/",
+        },
+        modules={"-C packages/daemon -jsonfile go-daemon-forced-order.json ./internal/testnats/": "packages/daemon"},
+        sha256="b9e64cda9ebff07761b04c93267691b04460463120095012f304b0224b0be825",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
@@ -622,7 +647,8 @@ def audited_step(workflow: str, job: str, name: str, workdir: str, script: str) 
         raise Refused(f"{label}: {path} has SHA-256 {digest}, and its AUDITED_SCRIPTS entry was "
                       f"read from {entry.sha256}; read the script again and update the entry's "
                       "commands and digest in .github/scripts/go_test_steps.py")
-    return Step(workflow=workflow, job=job, name=name, workdir=entry.module, script=entry.commands[arguments])
+    return Step(workflow=workflow, job=job, name=name, workdir=entry.modules.get(arguments, entry.module),
+                script=entry.commands[arguments])
 
 
 def commands_of(step: Step, answer: Answer) -> list[GoTest]:

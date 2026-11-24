@@ -105,6 +105,8 @@ runs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: packages/daemon/go.mod
+        go-download-base-url: https://go.dev/dl
+        token: ''
         cache: false
 
     # The skill-scenario rig's daemon-pane.go belongs to no module (it runs with `go run -overlay`

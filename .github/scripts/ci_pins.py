@@ -76,6 +76,10 @@ EVENT_GATES = [
      "github.event_name == 'merge_group'"),
     (".github/workflows/ci.yaml", "pr-title", "Refuse a re-run attempt of a merge-group run",
      "github.event_name == 'merge_group'"),
+    # ci-ok holds a failing verdict of a merge group's first attempt until its group is the front
+    # of the queue (.github/scripts/ci-ok-hold.sh); a pull request has no queue to wait for.
+    (".github/workflows/ci.yaml", "ci-ok", "Hold a failing verdict until this group is the front of the queue",
+     "github.event_name == 'merge_group'"),
     # dispatch-two-builds-same runs on a merge group alone (a leg the matrix excludes otherwise).
     (".github/workflows/ci.yaml", "go-envoy-held", "strategy.matrix.exclude",
      "github.event_name != 'merge_group' && 'dispatch-two-builds-same' || ''"),

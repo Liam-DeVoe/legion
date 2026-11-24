@@ -1,0 +1,81 @@
+name: envoy-infra-build
+description: >-
+  The envoy-infra-build leg of ci.yaml's go-envoy job, which carries main's check-run name
+  `envoy-infra-build / envoy-infra-build`: the envoy-infra module's formatting, its two vets (its
+  live-test tags included, and as macOS compiles it) and its unit tests under the race detector,
+  which a pull request runs. Its live tests against nats-server are the envoy-infra-go leg's of the
+  envoy-held job (.github/actions/go-envoy/envoy-infra-go), which the merge queue runs. The leg
+  runs on ubuntu-24.04-arm.
+# why: .github/ci-notes/ci.md#the-envoy-infra-module-its-own-workspace-and-its-live-tests
+runs:
+  using: composite
+  steps:
+    - id: setup-go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: packages/envoy/infra/go.mod
+        go-download-base-url: https://go.dev/dl
+        token: ''
+        cache: false
+    # go-envoy-infra, under the key .github/workflows/ci-caches.yaml's envoy-infra job fills: the
+    # runner's architecture, the Go version and the hash of the files that choose the module
+    # versions, so a run whose module files main has already filled restores an entry built from
+    # the same versions.
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+        key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum') }}
+        restore-keys: ${{ format('go-envoy-infra-{0}-{1}-', runner.os, runner.arch) }}
+    # gotestsum, which the unit step below runs its tests under, through scripts/race-unit.sh and
+    # .github/scripts/go-test.sh, on PATH for every later step.
+    - uses: ./.github/actions/install-gotestsum
+    - name: Check Go formatting
+      shell: bash
+      working-directory: packages/envoy/infra
+      run: |
+        unformatted=$(gofmt -l .)
+        if [ -n "$unformatted" ]; then
+          echo "::error::gofmt -l lists files that are not gofmt-formatted; run gofmt -w on them:"
+          echo "$unformatted"
+          exit 1
+        fi
+    - name: Vet envoy-infra, its live-test tags included
+      shell: bash
+      working-directory: packages/envoy/infra
+      run: go vet -tags pulumilive,natslive ./...
+    # The same vet as macOS compiles the module: its commands ship for darwin
+    # (.github/envoy-infra-targets.json), and a file with no build constraint that uses a symbol
+    # only a `//go:build linux` file defines compiles on this runner and nowhere else. The vet runs
+    # once per tag set .github/scripts/go_build_tags.py reads off the module's own build
+    # constraints, so a file under a tag that lands later, or under a negated one, is vetted too.
+    # One darwin architecture is enough: no file of the module tells amd64 from arm64 on darwin.
+    - name: Vet envoy-infra for darwin, its live-test tags included
+      shell: bash
+      working-directory: packages/envoy/infra
+      run: |
+        flags=$(python3 ../../../.github/scripts/go_build_tags.py . darwin arm64)
+        while IFS= read -r flag; do
+          echo "Vetting for darwin with $flag"
+          GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
+        done <<< "$flags"
+    # Every package of the module except internal/textcheck, whose tests are the text-check job's:
+    # a change to only what they read must not start this leg, and they must not run twice.
+    # scripts/race-unit.sh lists the packages, drops that one and runs them under gotestsum
+    # (.github/scripts/go-test.sh) with -count=1 -race, its jsonfile envoy-infra-go-unit.json;
+    # ci-caches.yaml's envoy-infra fill runs the same script's compile mode, so the race objects
+    # the cache holds are the ones this step links, and neither caller can name another package or
+    # flag than the other. Under the race detector: the gate's tests drive an httptest server from
+    # a child process, whose handler shares state with the test, and two of them raced that way
+    # unseen while this step ran without it.
+    - name: Unit test envoy-infra
+      shell: bash
+      working-directory: packages/envoy/infra
+      env:
+        TESTCONTAINERS_RYUK_DISABLED: "true"
+      run: scripts/race-unit.sh run
+    - if: always()
+      uses: ./.github/actions/go-test-upload
+      with:
+        name: envoy-infra-go-unit

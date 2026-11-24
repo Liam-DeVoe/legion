@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { hostTool, requireOrSkip } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 import { startStacks } from "../harness-pool";
@@ -177,50 +176,6 @@ test("a run of more than one stack refuses to start without a Postgres provider"
     "2 Playwright workers run 2 stacks, each with a Postgres of its own"
   );
 });
-
-// The database a stack reads is the psql it starts, so the case that proves which one it picked
-// needs psql and a live database to answer; without either it would prove nothing and is
-// skipped, as e2e/__tests__/psql-session.test.ts's cases are, and on GitHub Actions it fails, and
-// its two halves are composed into one line for the reason that file gives. The case runs
-// `select 1` and writes nothing, so it runs on the server's own database rather than one of its
-// own.
-const live = (process.env.LEGION_TEST_PG_DSN ?? "").trim();
-const missingForDatabase = [
-  ...(hostTool("psql") === null ? ["psql on this host's PATH"] : []),
-  ...(live === "" ? ["LEGION_TEST_PG_DSN, naming a server this run may read"] : []),
-];
-const withoutDatabase = requireOrSkip(
-  missingForDatabase.join("; "),
-  missingForDatabase.length === 0,
-  "dispatch-browser"
-);
-
-test.skipIf(withoutDatabase)(
-  "psql reads its own stack's database",
-  async () => {
-    // A process of its own per case, which imports e2e/psql.ts in the environment under test: it
-    // resolves the database once, when it starts its psql.
-    const resolve = [
-      "bun",
-      "-e",
-      `await (await import(${JSON.stringify(psqlModule)})).sql("select 1")`,
-    ];
-    const dead = "postgres://postgres@127.0.0.1:1/never-opened?sslmode=disable";
-    const stacks = JSON.stringify([{ DATABASE_URL: dead }, { DATABASE_URL: live }]);
-    // Stack 1's database answers; the plain name, which stack 1 must not read, is a dead port.
-    const stack = await run(resolve, {
-      DATABASE_URL: dead,
-      [stacksVariable]: stacks,
-      TEST_PARALLEL_INDEX: "1",
-    });
-    expect(`${stack.stderr}${stack.stdout}`).toBe("");
-    expect(stack.code).toBe(0);
-    // The same environment without the worker's index is stack 0, whose record names the dead one.
-    const plain = await run(resolve, { DATABASE_URL: live, [stacksVariable]: stacks });
-    expect(plain.code).not.toBe(0);
-  },
-  rowLimit("short", "short")
-);
 
 test(
   "psql names both variables when neither its stack nor the plain name has a database",

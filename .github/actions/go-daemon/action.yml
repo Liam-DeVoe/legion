@@ -1,25 +1,28 @@
 name: The Go daemon's tests, one leg's share
 description: >-
-  The steps of ci.yaml's go-daemon job, which runs the old daemon-go job's tests in legs: the Go
-  daemon's own tests - the plain step over every package of packages/daemon but the five
+  The steps of ci.yaml's go-daemon job, which runs the old daemon-go job's tests in legs. The
+  three daemon-go legs run the plain step over every package of packages/daemon but the five
   concurrent ones and the text checks, less the two pure table pins of internal/supervise, which
-  the text-check job runs by name and this step skips by name, and the race step over those five
-  packages - split between the legs at run time by .github/scripts/go-test-split.sh, so each test,
-  one added later included, runs in exactly one leg; and, in the last leg alone, the intake's drain
-  bound, what the race build cannot run and the Stage 1 live proof, which builds ./cmd/legion and
-  boots it against the job's Postgres. ci.yaml's daemon-go job carries the old check-run name
-  `daemon-go / daemon-go` and passes only when every leg passed (.github/scripts/leg-verdict.sh).
+  the text-check job runs by name and this step skips by name, split between them at run time by
+  .github/scripts/go-test-split.sh, so each test, one added later included, runs in exactly one
+  leg; and, in the last of them alone, the intake's drain bound, what the race build cannot run,
+  the daemon's forced-order tests and the Stage 1 live proof, which builds ./cmd/legion and boots
+  it against the job's Postgres. ci.yaml's daemon-go job carries the old check-run name
+  `daemon-go / daemon-go` and passes only when those three passed (.github/scripts/leg-verdict.sh).
+  The two daemon-go-race legs run the race step over those five packages, split between them the
+  same way, as main's daemon-go-race job runs it beside daemon-go
+  (.github/ci-notes/ci-job-daemon-go.md says why), and ci.yaml's daemon-go-race job carries that
+  job's check-run name, `daemon-go / daemon-go-race`.
 
-  Three legs, where the measured times would hold two (each leg's mean at most 22 minutes in the
-  runs of 2026-11-20 and 2026-11-21: 21.5 and 18.4 for two, 13.3, 18.1 and 13.3 for three):
-  go-test-split.sh hands go test one -run of the leg's share, and the plain step's share of two
-  legs is about 136 KB of test names, past the 131,072 bytes Linux takes in one argument
-  (MAX_ARG_STRLEN), where three legs hand it about 91 KB. Each leg's timeout-minutes (ci.yaml) is
-  at least its slowest share with no rerun, plus one run of each of its steps' ten longest tests,
-  plus 3 minutes a step for the rerun's package set-up: 28, 38 and 30 minutes, the last with the
-  steps no leg splits. Each go test -timeout fires before that, less the leg's set-up and the
-  steps before it: the plain step's 15 minutes a package, and the race step's, the race-timeout
-  input, 18 minutes in the first and last legs and 28 in the second.
+  Three plain legs, where the measured times would hold two: go-test-split.sh hands go test one
+  -run of the leg's share, and the plain step's share of two legs is about 136 KB of test names,
+  past the 131,072 bytes Linux takes in one argument (MAX_ARG_STRLEN), where three legs hand it
+  about 91 KB. The race step's share of three legs took 7, 13.5 and 9 minutes in run 45292147224
+  (each leg's time less its set-up and its plain share), about 30 in all, past the 22 minutes a
+  leg is held to, so it takes two legs of its own. Each leg's timeout-minutes (ci.yaml) is its
+  measured time plus its largest -timeout plus 6 minutes, rounded up: the plain step's 15 minutes a
+  package, the forced-order step's 10 in the last plain leg, and the race step's, the race-timeout
+  input, in the race legs.
 
   Everything here is what those steps need and nothing else: the job's Postgres service, through
   LEGION_TEST_PG_DSN, BROKER_TEST_DATABASE_URL and LEGION_E2E_PG_DSN - the daemon's unit tests'
@@ -45,16 +48,22 @@ description: >-
   uploaded as go-test-go-daemon-<leg>-<step>.
 inputs:
   leg:
-    description: This leg's number, 1 to `legs`.
+    description: This leg's number, 1 to `legs`, among the plain legs or among the race legs.
     required: true
   legs:
-    description: How many legs the job's matrix holds; the last one also runs the steps no leg splits.
+    description: >-
+      How many legs of its kind the job's matrix holds, plain or race; the last plain one also runs
+      the steps no leg splits.
     required: true
   race-timeout:
     description: >-
-      The race step's -timeout, below the leg's timeout-minutes less its set-up and the plain
-      step's slowest share, so that a hung test prints the goroutine dump that names it before the
-      runner cancels the job (ci.yaml's go-daemon job gives each leg's).
+      Empty for a plain leg. For a race leg, the race step's -timeout, below the leg's
+      timeout-minutes less its set-up, so that a hung test prints the goroutine dump that names it
+      before the runner cancels the job (ci.yaml's go-daemon job gives each leg's).
+    required: false
+    default: ''
+  postgres:
+    description: The id of the job's Postgres service container (ci.yaml's `job.services.postgres.id`).
     required: true
 runs:
   using: composite
@@ -63,6 +72,8 @@ runs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: packages/daemon/go.mod
+        go-download-base-url: https://go.dev/dl
+        token: ''
         cache: false
 
     # go-daemon, shared with typecheck, plugin-pack, daemon-live and pi-legion.
@@ -161,6 +172,7 @@ runs:
     # name the same tests, which .github/scripts/check-ci-layout.sh's rule 22 holds, so the skip and
     # the runs cannot come to name different tests. -timeout 15m bounds each package's test binary.
     - name: Test the Go daemon
+      if: inputs.race-timeout == ''
       shell: bash
       working-directory: packages/daemon
       env:
@@ -174,7 +186,7 @@ runs:
         pkgs=$(go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/intake|internal/shimwire|internal/textcheck)$')
         run=$(../../.github/scripts/go-test-split.sh "${{ inputs.leg }}" "${{ inputs.legs }}" $pkgs)
         ../../.github/scripts/go-test.sh --jsonfile "go-daemon-${{ inputs.leg }}-plain.json" --packages "$pkgs" -- -count=1 -timeout 15m -run "$run" -skip '^(TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub|TestABurstableIssuePodRendersLive|TestNoTwoEventTypesShareAKind|TestShareVolumesMountInAnIssuePodLive|TestStage4aSandboxRuntimeLive|TestStage4bControllerRestartOnTheKindRigLive|TestStage4bDaemonRestartsOnTheKindRigLive|TestStage4bListenerAddressMoveOnTheKindRigLive|TestStage4bSandboxTreeOnTheKindRigLive|TestStage4bStreamMoveOnTheKindRigLive|TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive|TestTheControllerOrphanSweepLive|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
-    - if: always()
+    - if: always() && inputs.race-timeout == ''
       uses: ./.github/actions/go-test-upload
       with:
         name: go-daemon-${{ inputs.leg }}-plain
@@ -185,9 +197,9 @@ runs:
     # with Postgres 3 ms away. The test runs either way; without the variable it logs the time
     # and holds no bound. internal/intake runs in the race step below, whose detector would
     # change the time, so this step runs that one test again without the detector, with the
-    # bound, in the last leg alone.
+    # bound, in the last plain leg alone.
     - name: Hold the intake's drain to its bound
-      if: inputs.leg == inputs.legs
+      if: inputs.race-timeout == '' && inputs.leg == inputs.legs
       shell: bash
       working-directory: packages/daemon
       env:
@@ -199,7 +211,7 @@ runs:
         LEGION_RUN_FUZZ_ITERS: ${{ github.event_name == 'pull_request' && '2000' || '' }}
         LEGION_KEPT_PROPERTY_RUNS: ${{ github.event_name == 'pull_request' && '8' || '' }}
       run: ../../.github/scripts/go-test.sh --jsonfile "go-daemon-${{ inputs.leg }}-drain.json" --packages ./internal/intake/ -- -count=1 -run '^TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent$'
-    - if: always() && inputs.leg == inputs.legs
+    - if: always() && inputs.race-timeout == '' && inputs.leg == inputs.legs
       uses: ./.github/actions/go-test-upload
       with:
         name: go-daemon-${{ inputs.leg }}-drain
@@ -223,7 +235,7 @@ runs:
     # subject, but its product code starts no goroutine and uses no sync, so it runs in the plain
     # step instead. The detector needs cgo, which the runners have gcc for. The lane tests hold a
     # fake clock, so they are deterministic under it. go-test-split.sh splits the five packages'
-    # tests between the legs, listed under -race as this step builds them.
+    # tests between the two race legs, listed under -race as this step builds them.
     #
     # The -timeout is the leg's (the race-timeout input): internal/daemon took up to 570 s whole on
     # the green runs of 2026-11-02 and 2026-11-03 and ran go test's ten-minute default out on main
@@ -232,12 +244,38 @@ runs:
     # The -skip is the tests of internal/daemon that jobs of their own run, in one pattern
     # that names the tests of five -run lists: the plugin-pack job's three
     # (a fourth test of that package loading a plugin on the real Oh My Pi
-    # stays here, TestThePromptReferenceProbeOnTheRealOhMyPi); the daemon-live job's ten
-    # whole-daemon live tests; the agent-harness job's five live proofs that drive real Oh My Pi
+    # stays here, TestThePromptReferenceProbeOnTheRealOhMyPi); the daemon-live job's whole-daemon
+    # live tests; the agent-harness job's five live proofs that drive real Oh My Pi
     # panes, and its Claude Code backend proof on tmux; and the kind job's tests, which the plain
     # step above skips too. A test run twice is a test whose second
     # run tells nobody anything.
+    #
+    # internal/daemon's scratch-Dispatch tests (startScratchDispatchOn) start the real Dispatch
+    # server on a database of the job's service, and one Dispatch process opens up to
+    # store.ConnectionsPerProcess connections (116): more than PostgreSQL's default
+    # max_connections of 100 allows, before the five packages' own pools. So a race leg raises the
+    # service to what a Dispatch test lane needs, as every lane that starts a Dispatch process
+    # raises its own, and samples the service's client connections every 2 s while its race step
+    # runs; the step after it prints the peak against max_connections, so a change that makes the
+    # tests open more at once shows here before it shows as a 53300 refusal. The go run of the
+    # sizing script builds envoy's internal/dispatch/store/cmd/connections after the cache restore,
+    # so it reads the restored module cache.
+    - name: Size the service for this lane's Dispatch processes
+      if: inputs.race-timeout != ''
+      shell: bash
+      env:
+        POSTGRES_CONTAINER: ${{ inputs.postgres }}
+      run: .github/scripts/pg-connection-ceiling.sh "$POSTGRES_CONTAINER"
+    - name: Sample the service's connections while the race tests run
+      if: inputs.race-timeout != ''
+      shell: bash
+      env:
+        POSTGRES_CONTAINER: ${{ inputs.postgres }}
+      run: |
+        # shellcheck disable=SC2016 # $1 and $2 are the inner bash's arguments, expanded there
+        nohup bash -c 'while :; do docker exec "$1" psql -U postgres -Atc "select count(*) from pg_stat_activity where backend_type = '"'"'client backend'"'"'" >> "$2" 2>/dev/null; sleep 2; done' _ "$POSTGRES_CONTAINER" "$RUNNER_TEMP/pg-connections.txt" >/dev/null 2>&1 &
     - name: Test the concurrent packages under the race detector
+      if: inputs.race-timeout != ''
       shell: bash
       working-directory: packages/daemon
       env:
@@ -250,20 +288,32 @@ runs:
       run: |
         run=$(../../.github/scripts/go-test-split.sh "${{ inputs.leg }}" "${{ inputs.legs }}" -race ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/ ./internal/intake/ ./internal/shimwire/)
         ../../.github/scripts/go-test.sh --jsonfile "go-daemon-${{ inputs.leg }}-race.json" --packages "./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/ ./internal/intake/ ./internal/shimwire/" -- -count=1 -race -timeout "${{ inputs.race-timeout }}" -run "$run" -skip '^(TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive|TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub|TestABurstableIssuePodRendersLive|TestABusyAgentIsSentItsTaskOnceAndARelaunchSaysWhatItEndedLive|TestAConflictKeepsThePhaseAndTakesNoTurnOverLive|TestAPhaseEntryConvergesOnARunningDaemonLive|TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive|TestAQueuedRootUnderALiveTreeJoinsItLive|TestEveryChildThatStartsRunsUnderItsOwnArchitectLive|TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive|TestHandoffRecordsLive|TestLateCompletionsThroughTheRealLegionToolLive|TestPlanRatingsLive|TestReviewRangeLive|TestShareVolumesMountInAnIssuePodLive|TestStage4aSandboxRuntimeLive|TestStage4bControllerRestartOnTheKindRigLive|TestStage4bDaemonRestartsOnTheKindRigLive|TestStage4bListenerAddressMoveOnTheKindRigLive|TestStage4bSandboxTreeOnTheKindRigLive|TestStage4bStreamMoveOnTheKindRigLive|TestStepRecordsLive|TestTheAgentModelCheckOnTheRealOhMyPi|TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive|TestTheClaudeCodeImplementerRegistersCompletesThroughItsStopHookAndResumesLive|TestTheControllerOrphanSweepLive|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive|TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive|TestTheRealPluginsOnTheRealOhMyPi)$'
-    - if: always()
+    - if: always() && inputs.race-timeout != ''
       uses: ./.github/actions/go-test-upload
       with:
         name: go-daemon-${{ inputs.leg }}-race
+    - name: Report the service's peak connections
+      if: always() && inputs.race-timeout != ''
+      shell: bash
+      env:
+        POSTGRES_CONTAINER: ${{ inputs.postgres }}
+      run: |
+        allowed=$(docker exec "$POSTGRES_CONTAINER" psql -U postgres -Atc "show max_connections")
+        if [ -s "$RUNNER_TEMP/pg-connections.txt" ]; then
+          echo "pg connections: the peak of $(sort -n "$RUNNER_TEMP/pg-connections.txt" | tail -n 1) over $(wc -l < "$RUNNER_TEMP/pg-connections.txt") samples, max_connections ${allowed}"
+        else
+          echo "pg connections: UNKNOWN, no sample was taken (max_connections ${allowed})"
+        fi
 
     # What the race step's packages hold that the race build cannot run, run plain by name, in the
-    # last leg, the race step's packages' tests under `//go:build !race` and those that read
+    # last plain leg, the race step's packages' tests under `//go:build !race` and those that read
     # raceEnabled, which check-test-reach.sh holds to a run). The first is internal/launcher's call-graph walk,
     # under `//go:build !race`: it loads the launcher's whole program from source and builds its
     # call graph twice, which without the detector took about a minute at a 2.3 GB peak, and the
     # detector multiplies both. It took 21 s at most in the runs of 2026-11-20 and 2026-11-21, so 5
     # minutes leave the leg's bound room for its dump.
     - name: Test what the race build cannot run
-      if: inputs.leg == inputs.legs
+      if: inputs.race-timeout == '' && inputs.leg == inputs.legs
       shell: bash
       working-directory: packages/daemon
       env:
@@ -274,17 +324,37 @@ runs:
         LEGION_RUN_FUZZ_ITERS: ${{ github.event_name == 'pull_request' && '2000' || '' }}
         LEGION_KEPT_PROPERTY_RUNS: ${{ github.event_name == 'pull_request' && '8' || '' }}
       run: ../../.github/scripts/go-test.sh --jsonfile "go-daemon-${{ inputs.leg }}-norace.json" --packages ./internal/launcher -- -count=1 -timeout 5m -run '^(TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt)$'
-    - if: always() && inputs.leg == inputs.legs
+    - if: always() && inputs.race-timeout == '' && inputs.leg == inputs.legs
       uses: ./.github/actions/go-test-upload
       with:
         name: go-daemon-${{ inputs.leg }}-norace
+
+    # The daemon's forced-order tests (packages/envoy/scripts/forced-order.sh -C packages/daemon):
+    # every TestForcedOrder test of the packages named, built with -tags odatrace and -race
+    # against the nats-server the workspace links, with the hold points
+    # packages/envoy/internal/testnats/hooks.go drives, on the server testnats.StartInProcess
+    # runs in the test process. The step names no version, so when go.mod moves to a version
+    # packages/envoy/internal/testnats/testdata/hooked has no hooks for, the script refuses it
+    # and the step fails until the hooks are ported; it also fails a package that declares no
+    # such test. The daemon refuses nats:2.10's server (envoy's natsversion.Refusal), so it has
+    # no v2.10.29 run here. Its -jsonfile runs the tests through .github/scripts/go-test.sh. It
+    # runs in the last plain leg, which ends well before the race legs: its compile of a hooked
+    # nats-server under the detector takes up to 5 minutes, beside the script's 10-minute -timeout.
+    - name: Forced-order tests of the daemon on the hooked nats-server the module links
+      if: inputs.race-timeout == '' && inputs.leg == inputs.legs
+      shell: bash
+      run: packages/envoy/scripts/forced-order.sh -C packages/daemon -jsonfile go-daemon-forced-order.json ./internal/testnats/
+    - if: always() && inputs.race-timeout == '' && inputs.leg == inputs.legs
+      uses: ./.github/actions/go-test-upload
+      with:
+        name: go-daemon-forced-order
 
     # The proof builds the daemon's ./cmd/legion and boots it against the job's Postgres, so it
     # belongs with the Go steps rather than with the script harnesses: it is the daemon's own code
     # under test. Setting LEGION_E2E_PG_DSN is what tells the script not to start a container of
     # its own, the path a run with no DSN takes.
     - name: Stage 1 live proof
-      if: inputs.leg == inputs.legs
+      if: inputs.race-timeout == '' && inputs.leg == inputs.legs
       shell: bash
       env:
         LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable

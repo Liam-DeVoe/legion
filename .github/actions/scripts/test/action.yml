@@ -1,13 +1,15 @@
 name: test
 description: >-
-  The test leg of ci.yaml's scripts job, which carries the old check-run name `test / test`: what
-  reads this repository's own tooling - the Claude Code plugin build, the changelog fold, the
+  The leg of ci.yaml's scripts-held job, which carries the old check-run name `test / test`: the
   `*.test.sh` harness of each script under .github/scripts (and of
-  scripts/priorities-seed-check.sh), and the Bun suites of scripts/. A selected scripts job runs
-  every harness of this leg: no step here tests an output of the changes job. No step needs a
-  database (the session message-wait suite is the sessions-script leg's), and the harness that
-  builds a binary of this head is the private-names-port leg's. The leg runs on
-  ubuntu-24.04-arm, after the job's checkout.
+  scripts/priorities-seed-check.sh and the architecture-check action), and the Bun suites of
+  scripts/, which the merge queue runs, and a pull request with full-ci or lane:test. The checks a
+  pull request runs - the Claude Code plugin build, the changelog fold, the guides' layout and the
+  scripts' lint and typecheck - are the tooling-checks leg's of the scripts job
+  (.github/actions/scripts/tooling-checks). A selected scripts-held job runs every harness of this
+  leg: no step here tests an output of the changes job. No step needs a database (the session
+  message-wait suite is the sessions-script leg's), and the harness that builds a binary of this
+  head is the private-names-port leg's. The leg runs on ubuntu-24.04-arm, after the job's checkout.
 # why: .github/ci-notes/ci.md#what-the-test-job-runs-and-how-each-harness-step-is-gated
 runs:
   using: composite
@@ -19,36 +21,9 @@ runs:
       shell: bash
       run: bun install --frozen-lockfile
 
-    # The very command release.yaml's claude_envoy_build runs, so a pull request whose source
-    # that job would refuse fails this leg, and with it the required ci-ok, instead of merging
-    # and then failing every release. What it builds and checks:
-    # packages/claude-envoy/scripts/verify-build.sh.
-    - name: Build, check and pack the Claude Code plugin as the release does
-      shell: bash
-      working-directory: packages/claude-envoy
-      run: bun run verify-build "$RUNNER_TEMP/claude-envoy-built.tar"
-
-    # release.yaml's $CLAUDE_ENVOY_VERSION_ARGS covers scripts/build-inputs.txt, so a build input
-    # missing from it is one no release bumps a version for.
-    - name: Check the Claude Code plugin's build input list covers what the build reads
-      shell: bash
-      working-directory: packages/claude-envoy
-      run: bun test tests/build-inputs.test.ts
-
-    # release-push.test.sh renders its fold-notes cases with the real changie, and the step
-    # below renders this checkout's own fragments with it; where changie is absent, as on a
-    # developer's machine, those cases print a SKIP line and count nothing.
+    # release-push.test.sh renders its fold-notes cases with the real changie; where changie is
+    # absent, as on a developer's machine, those cases print a SKIP line and count nothing.
     - uses: ./.github/actions/install-changie
-
-    # Nothing renders a changelog fragment between the merge and the release that first ships
-    # it, so a fragment changie refuses would fail that release's build job, and every run
-    # after it, until a fix merges. This renders every fragment of every listed package here
-    # instead, inside a required check, in the leg that installs changie.
-    - name: Check every changelog fragment renders
-      shell: bash
-      run: |
-        # shellcheck disable=SC2046 # the file is the package list, split on purpose
-        .github/scripts/release-push.sh fold-check $(<.github/changelog-packages)
 
     # GH_TOKEN: its comparison of push-tag's pinned host keys with the ones GitHub publishes
     # reads them with `gh api meta`, and fails on GitHub Actions without an answer.
@@ -75,12 +50,6 @@ runs:
     - name: Test the priorities seed
       shell: bash
       run: bun test scripts/priorities-seed.test.ts
-
-    # The guides' own layout, in this leg because it installs Bun's dependencies, which the
-    # test's Markdown parser needs (scripts/semantic-line-breaks.guides.test.ts:6-8).
-    - name: Check the guides' semantic line breaks
-      shell: bash
-      run: bun test scripts/semantic-line-breaks.guides.test.ts
 
     - name: Test the Bun pin check
       shell: bash
@@ -188,6 +157,12 @@ runs:
       shell: bash
       run: .github/scripts/go-tagged-tests.test.sh
 
+    # The label terms of ci.yaml's changes outputs, evaluated from ci.yaml itself: full-ci, the
+    # lane labels and a label that names nothing.
+    - name: Test the router outputs' label terms
+      shell: bash
+      run: .github/scripts/ci-router-outputs.test.sh
+
     - name: Test ci-ok's verdict
       shell: bash
       run: .github/scripts/ci-ok.test.sh
@@ -236,6 +211,21 @@ runs:
       shell: bash
       run: .github/scripts/dispatch-browser-run-reads.test.sh
 
+    # Reading one of dispatch-browser.yaml's merge job, run through that job's own call over
+    # fixture blob directories and a stand-in for its jobs read: what it says of the legs for
+    # each way its download and selection steps can end, a download that never ran among them,
+    # which it once reported as legs that sent no blob (run 44754426131, attempt 1).
+    - name: Test the browser lane's reading of its rows
+      shell: bash
+      run: .github/scripts/dispatch-browser-reading-rows.test.sh
+
+    # gh-read.sh's wait for a spent API budget, with the real gh against a local stand-in
+    # GitHub; its last case reads this job's own Runner.Worker, which only a runner has, and the
+    # JOB_TIMEOUT_MINUTES ci.yaml's scripts-held job sets.
+    - name: Test the wait for a spent API budget and the retry ladder (a stand-in GitHub)
+      shell: bash
+      run: .github/scripts/gh-read.test.sh
+
     # The memory and CPU sampler dispatch-browser.yaml's two browser steps run, over fixture
     # sample files: its two readings are pure functions of those files, so the numbers and the
     # notice titles are held here, where no browser and no runner are needed.
@@ -247,6 +237,19 @@ runs:
       shell: bash
       run: .github/scripts/race_memory.test.sh
 
+    # The machine watch's test runs as the first process of its own unprivileged user, mount and
+    # PID namespaces, so no sampler it starts outlives it, and its falling-least case watches a
+    # tmpfs it mounts in a further namespace, so that no other writer moves the free space it
+    # reads; both fail rather than skip under GITHUB_ACTIONS. Ubuntu 24.04 restricts unprivileged
+    # user namespaces with an AppArmor sysctl, so the leg turns it off on its throwaway runner, as
+    # go-daemon does (`|| true`: a runner image without the key restricts nothing), and the
+    # unshare after it is the verdict that the restriction is gone.
+    - name: Allow unprivileged user namespaces (the machine watch's test)
+      shell: bash
+      run: |
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+        unshare --user --map-root-user --mount --pid --fork --mount-proc true
+
     - name: Test the machine watch
       shell: bash
       run: .github/scripts/disk_watch.test.sh
@@ -255,62 +258,25 @@ runs:
       shell: bash
       run: bash scripts/priorities-seed-check.test.sh
 
-    - name: Lint the Dispatch census script
+    - name: Test the architecture-check action's go-path mode
       shell: bash
-      run: bunx biome check --error-on-warnings scripts/dispatch
-
-    # scripts/dispatch is no workspace; the root package pins its TypeScript and Bun types.
-    - name: Typecheck the Dispatch census script
-      shell: bash
-      run: bunx tsc --noEmit -p scripts/dispatch
+      run: .github/actions/architecture-check/check.test.sh
 
     - name: Test the Dispatch census script
       shell: bash
       run: bun test scripts/dispatch
 
-    - name: Lint the GitHub App registration script
-      shell: bash
-      run: bunx biome check --error-on-warnings scripts/github-apps
-
-    # scripts/github-apps is no workspace either; the root package pins its TypeScript and Bun types.
-    - name: Typecheck the GitHub App registration script
-      shell: bash
-      run: bunx tsc --noEmit -p scripts/github-apps
-
-    - name: Lint the session message-wait script
-      shell: bash
-      run: bunx biome check --error-on-warnings scripts/sessions
-
-    # scripts/sessions is no workspace either; the root package pins its TypeScript and Bun types.
-    # The suite itself is the sessions-script leg's: it creates a session-store database of its
-    # own and refuses without one. The lint and the typecheck stay here, since they need none
-    # and share this leg's Bun.
-    - name: Typecheck the session message-wait script
-      shell: bash
-      run: bunx tsc --noEmit -p scripts/sessions
-
-    - name: Lint the approval-eval statistics
-      shell: bash
-      run: bunx biome check --error-on-warnings scripts/approval-eval
-
-    # scripts/approval-eval is no workspace either; the root package pins its TypeScript and Bun types.
-    - name: Typecheck the approval-eval statistics
-      shell: bash
-      run: bunx tsc --noEmit -p scripts/approval-eval
-
     - name: Test the approval-eval statistics
       shell: bash
       run: bun test scripts/approval-eval
 
-    # scripts/e2e is no workspace either; the root package pins its TypeScript and Bun types.
-    # The program is every TypeScript file there: the drivers and model stand-ins the
-    # agent-harness, daemon-live and envoy-session-stall jobs run under bun, which no step
-    # typechecks before it runs them, and the libraries and Bun tests beside them, the plan
-    # ratings read's test among them, whose answer is typed to the contract
-    # (@legion/contracts's own types).
-    - name: Typecheck the e2e scripts and their libraries
+    # scripts/search-measure's psql helper: the password a DSN carries reaches psql in PGPASSWORD
+    # alone, in no argument. A stand-in psql answers, so it needs no Postgres; the runner's own
+    # python3 runs it.
+    - name: Test the search-measure psql helper
       shell: bash
-      run: bunx tsc --noEmit -p scripts/e2e
+      working-directory: scripts/search-measure
+      run: python3 -m unittest -v pg_test
 
     # Go, but no Actions cache: what runs go here is the held-port build of the envoy listener
     # below, the CI-filter check's go list over a scratch module, the build-tag lister and the Go
@@ -321,6 +287,8 @@ runs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: packages/daemon/go.mod
+        go-download-base-url: https://go.dev/dl
+        token: ''
         cache: false
 
     # After setup-go: go-test.test.sh below runs .github/scripts/go-test.sh, and so gotestsum,
@@ -335,9 +303,10 @@ runs:
       run: sudo apt-get update && sudo apt-get install -y --no-install-recommends strace
 
     # After setup-go: held-port.test.ts builds the real envoy-listener and hands it a held socket.
+    # nats-image.test.ts is the lint leg's, a job a pull request runs, so it runs there alone.
     - name: Test the e2e scripts' libraries
       shell: bash
-      run: bun test scripts/e2e/lib
+      run: bun test --path-ignore-patterns=scripts/e2e/lib/nats-image.test.ts scripts/e2e/lib
 
     # After setup-go: the darwin vet case runs go list over a module of its own, and every case
     # reads this checkout's workflows, actions and Go tests.

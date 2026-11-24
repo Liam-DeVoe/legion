@@ -1,0 +1,62 @@
+name: pi-legion-build
+description: >-
+  The pi-legion-build leg of ci.yaml's pi job, which carries main's check-run name
+  `pi-legion-build / pi-legion-build`: the typecheck and the release's pack of packages/pi-legion,
+  which a pull request runs. Its tests are the pi-legion leg's of the pi-held job
+  (.github/actions/pi/pi-legion), which the merge queue runs. The leg runs on ubuntu-24.04-arm, as
+  every leg of ci.yaml that needs no x86_64 machine runs: what kept pi-legion on ubuntu-24.04 is
+  the pinned Oh My Pi build, whose release ships linux-x64 alone, and this leg installs none. It
+  runs after the job's checkout and its Bun (.github/actions/setup-bun).
+
+  Its 10 minutes are the parts of pi-legion's budget this leg runs, at their slowest: the set-up
+  and the checkout (15 s, with no NATS service), setup-bun (2), the workspace install and
+  contracts' build (14), the typecheck (16), the pack, the upload and the ci-ok report (4), the
+  post steps (5) and the job's own clock over its steps (5): 61 s, measured on ubuntu-24.04. Ten
+  minutes is about ten times that, room for a slow runner and a cold Bun download, and it still
+  cuts off a hung pack long before pi-legion's 28.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: bun install --frozen-lockfile
+
+    - name: Build contracts for pi-legion
+      shell: bash
+      working-directory: packages/contracts
+      run: bun run build
+
+    - name: Typecheck pi-legion
+      shell: bash
+      working-directory: packages/pi-legion
+      run: bun run typecheck
+
+    # The release's pack (release.yaml's pi_legion_build job), which is also this leg's build: the
+    # manifest pointed at the one bundle, then scripts/pi-plugin-prepack.sh, which bundles
+    # legion.ts, writes dist/THIRD_PARTY_NOTICES (failing the pack on a bundled package whose
+    # license cannot be determined) and stages this plugin's six skills. The listing shows the
+    # tarball ships those, its agents/, and nothing of the Envoy plugin's: no envoy.js, none of
+    # its skills.
+    - name: Pack pi-legion
+      shell: bash
+      working-directory: packages/pi-legion
+      run: |
+        jq '.omp.extensions = ["dist/legion.js"]' package.json > "$RUNNER_TEMP/package.json"
+        mv "$RUNNER_TEMP/package.json" package.json
+        bun pm pack --destination ../../out/pr-artifacts
+        listing=$RUNNER_TEMP/pi-legion-listing
+        tar tzf ../../out/pr-artifacts/*.tgz > "$listing"
+        for shipped in package/dist/legion.js package/dist/THIRD_PARTY_NOTICES package/dist/skills/legion-worker/SKILL.md package/agents/deep-worker.md; do
+          grep -qxF "$shipped" "$listing" || { echo "::error::the pi-legion tarball does not ship $shipped"; exit 1; }
+        done
+        for envoy in package/dist/envoy.js package/dist/skills/dispatch/; do
+          if grep -qF "$envoy" "$listing"; then
+            echo "::error::the pi-legion tarball ships $envoy, which is the Envoy plugin's"
+            exit 1
+          fi
+        done
+
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: pi-legion-pr
+        path: out/pr-artifacts/*.tgz
+        overwrite: true

@@ -1,9 +1,11 @@
 name: dispatch-ui
 description: >-
   The dispatch-ui leg of ci.yaml's ts job, which carries that old check-run name: the proof
-  editor's typecheck and tests, and the Dispatch dashboard's typecheck, unit tests (each lane, and
-  the web lane once more with each lazy load held back), build and checks. The leg runs on
-  ubuntu-24.04-arm, after the job's checkout and its Bun (.github/actions/setup-bun).
+  editor's typecheck and tests, and the Dispatch dashboard's typecheck, unit tests (each lane),
+  build and checks. The web lane once more with each lazy load held back, a mode this change
+  brought into CI, is the web-cold job's (.github/actions/ts/web-cold): with it this leg took 9.5
+  to 10.5 minutes in the head's dispatch runs, past the 10 a pull request's job is held to. The
+  leg runs on ubuntu-24.04-arm, after the job's checkout and its Bun (.github/actions/setup-bun).
 # why: .github/ci-notes/ci.md#the-dashboards-and-the-proof-editors-lint-typecheck-unit-tests-build-and
 runs:
   using: composite
@@ -57,13 +59,15 @@ runs:
       run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
 
     # `bun run test` leaves out the three files of e2e/__tests__ whose rows need a PostgreSQL:
-    # psql-session.test.ts and the psql row of harness-stacks.test.ts, which read a server
+    # psql-session-postgres.test.ts and harness-stacks-postgres.test.ts, which read a server
     # LEGION_TEST_PG_DSN names, and second-global-setup.test.ts, which starts two stacks'
     # Postgres through DISPATCH_E2E_PG_BIN. This leg has no Postgres, and on GitHub Actions
     # those gates fail the file rather than skip it (@legion/test-fixtures/host-tools). The
-    # three are packages/dispatch's `bun run test:postgres`, which the postgres-rows job of
-    # .github/workflows/dispatch-browser.yaml runs on both of its lanes, in the image that
-    # carries PostgreSQL 18, on a server that step starts.
+    # three hold only rows main runs in no job of ci.yaml (psql-session.test.ts and
+    # harness-stacks.test.ts, whose rows need none, run here as main runs them); they are
+    # packages/dispatch's `bun run test:postgres`, which the postgres-rows job of
+    # .github/workflows/dispatch-browser.yaml runs in its full lane, in the image that carries
+    # PostgreSQL 18, on a server that step starts.
     #
     # This step runs both lanes in random order, which packages/dispatch/bunfig.toml sets. Each
     # lane prints its own ` --seed=<n>` in its summary. A red row that failed from the order is
@@ -73,20 +77,6 @@ runs:
       shell: bash
       working-directory: packages/dispatch
       run: bun run test
-
-    # The web tests once more, cold: packages/dispatch's `test:web:cold`, the web lane with the
-    # preload web/src/__tests__/hold-lazy-loads.ts, which holds back each module the web app
-    # loads lazily for 1 s once a file's rows have begun. A row that reads text or a part such a
-    # module renders without waiting for it then fails here, where in the web lane it fails only
-    # when the order puts it first among its file's rows. It is the web-cold lane that
-    # .github/workflows/dispatch-unit-repeat.yaml repeats under several seeds, run once: a
-    # preload changes what the files judge, so a lane a tool repeats with one runs in a job ci-ok
-    # needs too (.github/scripts/check-test-reach.sh, rule 7). One run of it took at most 101 s
-    # in that workflow (run 44339340132). The step above built contracts, which it reads.
-    - name: Test dispatch dashboard with each lazy load held back
-      shell: bash
-      working-directory: packages/dispatch
-      run: bun run test:web:cold web/src
 
     # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
     # cannot be determined; the listing shows the build shipped it.

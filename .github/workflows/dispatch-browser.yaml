@@ -301,7 +301,10 @@ jobs:
   # why: .github/ci-notes/dispatch-browser.md#the-bun-rows-that-need-a-postgresql-and-why-they-are-a-job-of-this-file
   # 120 + 240 + 451 = 811 s, 13 min 31 s, rounded up to 14 minutes.
   postgres-rows:
+    name: ${{ 'postgres-rows' }}
     needs: binaries
+    # Its files hold only rows main runs in no job of ci.yaml, so it runs in the full lane alone.
+    if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 14
     container:
@@ -317,14 +320,14 @@ jobs:
         timeout-minutes: 2
         continue-on-error: true
         with:
-          name: dispatch-e2e-binaries
+          name: ${{ inputs.job }}-binaries
           path: packages/envoy/out/dispatch-e2e-binaries-1
       - name: Download the binaries again, after a first attempt that did not complete
         if: steps.binaries.outcome != 'success'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         timeout-minutes: 2
         with:
-          name: dispatch-e2e-binaries
+          name: ${{ inputs.job }}-binaries
           path: packages/envoy/out/dispatch-e2e-binaries-2
       - name: Place the binaries of the attempt that completed
         env:
@@ -367,14 +370,14 @@ jobs:
         timeout-minutes: 2
         continue-on-error: true
         with:
-          name: dispatch-e2e-binaries
+          name: ${{ inputs.job }}-binaries
           path: packages/envoy/out/dispatch-e2e-binaries-1
       - name: Download the binaries again, after a first attempt that did not complete
         if: steps.binaries.outcome != 'success'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         timeout-minutes: 2
         with:
-          name: dispatch-e2e-binaries
+          name: ${{ inputs.job }}-binaries
           path: packages/envoy/out/dispatch-e2e-binaries-2
       - name: Place the binaries of the attempt that completed
         env:
@@ -424,7 +427,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: dispatch-browser-recordings-${{ github.run_attempt }}
+          name: ${{ inputs.job }}-recordings-${{ github.run_attempt }}
           path: ${{ runner.temp }}/fresh
           if-no-files-found: ignore
 

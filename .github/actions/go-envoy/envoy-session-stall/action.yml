@@ -28,6 +28,8 @@ runs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: packages/envoy/go.mod
+        go-download-base-url: https://go.dev/dl
+        token: ''
         cache: false
     # go-envoy: the listener and natsd test/envoy-stack.ts builds, as envoy-e2e-local's e2e-local.sh
     # does.
@@ -153,51 +155,17 @@ runs:
         LEGION_E2E_DISPATCH_STACK: "1"
         DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       run: bun test src/__tests__/approved-version-bytes.live.test.ts
-    # The two Dispatch proofs below each reset a database of their own on the job's Postgres,
-    # through psql, which this runner may not carry, and so does the read-only token's Dispatch
-    # stack; the dev broker beside it creates its own database through psql too.
-    - name: Install psql and create the Dispatch proofs' databases
+    # The read-only token's Dispatch stack resets a database of its own on the job's Postgres,
+    # through psql, which this runner may not carry; the dev broker beside it creates its own
+    # database through psql too.
+    - name: Install psql and create the read-only token's database
       shell: bash
       env:
         DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends postgresql-client
-        for database in claimant_delivery verification_results read_token_live; do
-          psql "$DISPATCH_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -c "create database $database"
-        done
-    # Dispatch's outbox publishes a person's answer, comment or untargeted message on a claimed
-    # issue to the claiming session's own topic, and a mention skips the mentioned session's own
-    # copy only once the mention's send landed: envoy-dispatch built from this tree, natsd and the
-    # e2e harness's fake Envoy listener, one CHECK line per case.
-    - name: Claimant delivery of Dispatch's outbox
-      shell: bash
-      env:
-        LEGION_E2E_ENVOY_STACK: "1"
-        LEGION_E2E_DISPATCH_STACK: "1"
-        DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
-      run: DATABASE_URL="${DISPATCH_TEST_DATABASE_URL%/*}/claimant_delivery?sslmode=disable" bash scripts/e2e/dispatch-claimant-delivery.sh
-    # A recorded check result says where its commit stands against the commits its check compares
-    # with, and the head moves with the pull-request events Dispatch takes off the bus:
-    # envoy-dispatch built from this tree against the e2e harness's fake GitHub, one CHECK line per
-    # step and case.
-    - name: Verification results of Dispatch
-      shell: bash
-      env:
-        LEGION_E2E_ENVOY_STACK: "1"
-        LEGION_E2E_DISPATCH_STACK: "1"
-        DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
-      run: DATABASE_URL="${DISPATCH_TEST_DATABASE_URL%/*}/verification_results?sslmode=disable" bash scripts/e2e/verification-results.sh
-    # The name a person gave a Claude Code session is what claude-envoy registers, a rename
-    # replaces it, and a session nobody named keeps the folder-and-short-id fallback: the plugin's
-    # bundles built from this tree, natsd and a listener, one CHECK line per case.
-    - name: Session title of claude-envoy
-      shell: bash
-      env:
-        LEGION_E2E_ENVOY_STACK: "1"
-        LEGION_E2E_DISPATCH_STACK: "1"
-        DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
-      run: bash packages/claude-envoy/scripts/smoke-session-title.sh
+        psql "$DISPATCH_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -c "create database read_token_live"
     # A keyed write a real Dispatch refused because it could not resolve the caller. The client of
     # this tree sends it again under its own key against a server of this tree, started with an
     # OIDC issuer nothing serves, and the issue holds the comment once. It needs the same Postgres

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# packages/envoy/scripts/forced-order.sh [-C <module dir>] [-server 2.15.1|2.10.29] [-drop <hold point>]... <package>...
+# packages/envoy/scripts/forced-order.sh [-C <module dir>] [-server 2.15.1|2.10.29] [-drop <hold point>]... [-jsonfile <name>] <package>...
 #
 # Runs the forced-order tests of each package on the hooked nats-server: every test named
 # TestForcedOrder…, built with -tags odatrace and -race, against a nats-server whose own code
@@ -33,6 +33,12 @@
 #                    holding there fails without it. A name no hook call of that version's hooks
 #                    passes is refused before the build, so a mistyped point cannot "fail" a test
 #                    on a compile error instead. Repeatable.
+#   -jsonfile <name> runs the tests through .github/scripts/go-test.sh, which runs them under
+#                    gotestsum with that jsonfile (<job>-<leg>-<step>.json, in go-test.sh's
+#                    reports directory) and, in a merge group, runs a test that failed once more,
+#                    as every go test of a CI job runs; gotestsum's standard-verbose output is
+#                    `go test -v`'s, which the check below reads. Without it the tests run under a
+#                    plain `go test -v`, as on a developer's machine with no gotestsum.
 #
 # It fails, naming the package, when a package it is given declares no TestForcedOrder test, or
 # runs none (every one it declares skipped), so a step that names a package whose tests were
@@ -45,6 +51,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 envoy="$(dirname "$here")"
+go_test="$(dirname "$(dirname "$envoy")")/.github/scripts/go-test.sh"
 hooked="$envoy/internal/testnats/testdata/hooked"
 nats_server='github.com/nats-io/nats-server/v2'
 
@@ -54,13 +61,14 @@ die() {
 }
 
 usage() {
-  echo "usage: forced-order.sh [-C <module dir>] [-server 2.15.1|2.10.29] [-drop <hold point>]... <package>..." >&2
+  echo "usage: forced-order.sh [-C <module dir>] [-server 2.15.1|2.10.29] [-drop <hold point>]... [-jsonfile <name>] <package>..." >&2
   exit 2
 }
 
 module="$envoy"
 server=""
 drops=()
+jsonfile=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -C)
@@ -78,6 +86,12 @@ while [ $# -gt 0 ]; do
     -drop)
       [ $# -ge 2 ] || usage
       drops+=("$2")
+      shift 2
+      ;;
+    -jsonfile)
+      [ $# -ge 2 ] || usage
+      [ -n "$2" ] || die "-jsonfile '' names no jsonfile"
+      jsonfile="$2"
       shift 2
       ;;
     -h | --help) usage ;;
@@ -227,9 +241,15 @@ empty="$(awk '
 # of a line for each top-level test that ran (`--- SKIP:` for one that skipped), and ends each
 # package's output, which it prints as one block, with that package's own `ok` or `FAIL` line. A
 # package whose every forced-order test skipped would end in `ok`: its line is printed as a FAIL
-# line instead, and the run fails. The go command stays a line of its own, the text
-# .github/scripts/ci_job_reads.py pins.
+# line instead, and the run fails. With -jsonfile, go-test.sh runs gotestsum, whose
+# standard-verbose output is those same lines, under the environment the go command above takes
+# (`env GOWORK=…`, the copy of the workspace or GOWORK=off), in this module's directory; the
+# -modfile of a module with no workspace is one of the flags it hands go test.
 run_forced_order_tests() {
+  if [ -n "$jsonfile" ]; then
+    "${go_cmd[@]:0:${#go_cmd[@]}-1}" "$go_test" --jsonfile "$jsonfile" --packages "$*" -- "${flags[@]}" -count=1 -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder'
+    return
+  fi
   "${go_cmd[@]}" test "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder' "$@"
 }
 run_forced_order_tests "$@" 2>&1 | awk '

@@ -602,9 +602,16 @@ DISPATCH_NAMES = {
     "ci-ok": f"${{{{ {DISPATCH_OFF_MAIN} && 'ci-ok (dispatch)' || 'ci-ok' }}}}",
     "pr-title": "${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}",
 }
+# The verdict job's step that sets every other ci-ok on the head to its conclusion, and the one
+# `if:` it carries: it runs after a failed verdict (always()), on no dispatch but one of exactly
+# refs/heads/main, since every other ci-ok on such a head is a pull request's or the queue's, and
+# not where the hold step runs (HOLD_TERM): a merge group's first attempt whose verdict failed,
+# where every ci-ok posted on the head is failure already and the hold must be the job's last
+# step (.github/scripts/ci-ok-hold.sh's header).
 RECONCILE_STEP = "Set every other ci-ok on this head to this job's conclusion"
+HOLD_TERM = "steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1'"
 RECONCILE_IF = (f"${{{{ always() && (github.event_name != 'workflow_dispatch' || "
-                f"needs.changes.outputs.{REF_OUTPUT} == 'true') }}}}")
+                f"needs.changes.outputs.{REF_OUTPUT} == 'true') && !({HOLD_TERM}) }}}}")
 
 
 def json_env(env: dict, name: str, kind, problems: list):
@@ -749,8 +756,11 @@ def check_ci_ok(documents: dict, problems: list) -> None:
                                                 f"{REPORT_CHANGES}`, so the called job cannot report to ci-ok"))
             called = (documents.get(str(job["uses"]).removeprefix("./")) or {}).get("jobs") or {}
             lasts = [((j or {}).get("steps") or [])[-1] for j in called.values() if (j or {}).get("steps")]
+            # A file two jobs call (dispatch-browser.yaml) reports for the job its `job` input names.
+            reported = {job_id} | ({"${{ inputs.job }}"} if str((job.get("with") or {}).get("job", "")) == job_id
+                                    else set())
             if not any((s or {}).get("uses") == REPORT_ACTION and str(s.get("if", "")).startswith("always()")
-                       and str((s.get("with") or {}).get("job", "")) == job_id
+                       and str((s.get("with") or {}).get("job", "")) in reported
                        and str((s.get("with") or {}).get("changes", "")) == "${{ inputs.ci-ok-changes }}"
                        and str((s.get("with") or {}).get("job-status", "")) == REPORT_STATUS for s in lasts):
                 problems.append(error(WORKFLOW, f"{job['uses']}, which job {job_id} calls, has no job whose last step "

@@ -74,6 +74,8 @@ runs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: ${{ (inputs.leg == 'session-settings' || inputs.leg == 'plugin-smokes' || inputs.leg == 'nats-callout-sessions') && 'packages/envoy/go.mod' || 'packages/daemon/go.mod' }}
+        go-download-base-url: https://go.dev/dl
+        token: ''
         cache: false
 
     # go-envoy-test, restored only, for the reason
