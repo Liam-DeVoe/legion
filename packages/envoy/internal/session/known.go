@@ -82,9 +82,12 @@ const (
 // that registered within KnownSessionRetention, whether it is registered now or not. Its Topics
 // are the topics the session's interest row stores (store.Interest.Topics), and its session
 // consumer's filter holds each of them a consumer can filter on (bus.CanFilterOn,
-// cmd/listener's sessionConsumerFilter), a topic no stream subject captures yet among them, so a
-// record counts exactly the sessions a stored publish reaches: such a topic matches no stored
-// publish until a subject captures it, and the consumer delivers each one from then on.
+// cmd/listener's sessionConsumerFilter), a topic no stream subject captures yet among them: such a
+// topic matches no stored publish until a subject captures it, and the consumer delivers each one
+// from then on. A record can still name a topic that filter's rule drops since it was written, the
+// notice lane of a controller role its session no longer holds among them, which no write rewrites
+// while the session is stopped, so a publish's count judges each record's topics by that rule
+// (cmd/listener's recipientCounts, store.LaneHolders.Keeps).
 //
 // The record holds nothing else, and not the client instance id in particular, which only a role
 // claim's arbitration reads (cmd/listener/role_holder.go), and that reads the live session entry.
