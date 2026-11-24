@@ -300,7 +300,9 @@ func TestACancelAfterAWakeOfARoleTheReleaseRecordedStartsTheRoleOnceWithNoWake(t
 // that earlier release. No cancel resumes the implementer, so the wake's start is its one start,
 // and the cancel keeps the resume. This release took no pod, so the cancel makes the resume name
 // release 0, whether the project runs or is paused. No pause holds it, and its kind and its seen
-// release stay.
+// release stay. The control is a wake of the architect, whose stop the mark records, taken in the
+// same way: a cancel made while the project is paused keeps it as a held wake of the pause
+// (holdWakesUnderPause).
 func TestACancelPairsTheKeptWakeOfARoleItsMarkDoesNotRecordWithNoRelease(t *testing.T) {
 	for _, paused := range []bool{false, true} {
 		t.Run(map[bool]string{false: "the project runs", true: "the project is paused"}[paused], func(t *testing.T) {
@@ -337,8 +339,10 @@ func TestACancelPairsTheKeptWakeOfARoleItsMarkDoesNotRecordWithNoRelease(t *test
 					release, held, earlier)
 			}
 			var pause Pause
+			var architectsPause func() int64
 			resumed := []claim.Role{claim.RoleArchitect}
 			if paused {
+				architectsPause = architectsWake(t, st, at)
 				pause, _ = pauseLegion(t, st, at)
 				resumed = nil
 			}
@@ -352,7 +356,32 @@ func TestACancelPairsTheKeptWakeOfARoleItsMarkDoesNotRecordWithNoRelease(t *test
 				t.Errorf("the implementer's resume after the cancel = release %d, pause %d, seen release %d, kind %s; want release 0, no pause, seen release %d and kind %s: the release took no pod, and the wake's start still resumes the claim",
 					release, held, seen, kind, earlier, pods.WakeRoleMessage)
 			}
+			if paused {
+				if held := architectsPause(); held != pause.ID {
+					t.Errorf("control: the architect's resume after the cancel is held by pause %d, want pause %d: the mark records the architect, so the paused cancel keeps its wake as a held wake of the pause",
+						held, pause.ID)
+				}
+			}
 		})
+	}
+}
+
+// architectsWake takes a wake of the root's architect at at, and answers a read of the pause
+// that holds the resume of that wake, 0 for none (pod_resumes.pause_id).
+func architectsWake(t *testing.T, st *Store, at time.Time) func() int64 {
+	t.Helper()
+	ctx := context.Background()
+	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", pods.WakeRoleMessage, at, 0); err != nil || !taken {
+		t.Fatalf("take the architect's wake = %t, %v; want it taken", taken, err)
+	}
+	return func() int64 {
+		t.Helper()
+		var pause int64
+		if err := st.Pool().QueryRow(ctx, `select coalesce(pause_id, 0) from pod_resumes
+			where project = 'legion' and issue = $1 and role = 'architect'`, rootIssue).Scan(&pause); err != nil {
+			t.Fatalf("read the architect's resume: %v", err)
+		}
+		return pause
 	}
 }
 
@@ -366,7 +395,9 @@ func TestACancelPairsTheKeptWakeOfARoleItsMarkDoesNotRecordWithNoRelease(t *test
 // runs or is paused. The wake's start stays, for the operator's resume to run, and the role's next
 // wake is taken. The control is the same trace with the claim still `released`: the cancel keeps
 // the resume and pairs it with release 0 (pairUnrecordedWakesWithNoRelease), and that resume
-// refuses the next wake, since the start brings the role back.
+// refuses the next wake, since the start brings the role back. No pause holds that kept resume.
+// The control of that is a wake of the architect, whose stop the mark records, in the paused
+// rows: the paused cancel keeps it as a held wake of the pause (holdWakesUnderPause).
 func TestACancelDeletesTheWakeOfARoleItsMarkDoesNotRecordThatAnotherPathTookOver(t *testing.T) {
 	for _, tc := range []struct {
 		name              string
@@ -396,8 +427,11 @@ func TestACancelDeletesTheWakeOfARoleItsMarkDoesNotRecordThatAnotherPathTookOver
 			if tc.takenOver {
 				rootClaim(t, st, claim.RoleImplementer, supervise.StateSuspended, supervise.SuspendedByOperator)
 			}
+			var pause Pause
+			var architectsPause func() int64
 			if tc.paused {
-				pauseLegion(t, st, at)
+				architectsPause = architectsWake(t, st, at)
+				pause, _ = pauseLegion(t, st, at)
 			}
 
 			if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow,
@@ -413,6 +447,12 @@ func TestACancelDeletesTheWakeOfARoleItsMarkDoesNotRecordThatAnotherPathTookOver
 				and release_id = 0 and pause_id is null`, rootIssue)
 			if resumes != kept || paired != kept {
 				t.Errorf("the implementer's resumes after the cancel = %d, %d of them paired with release 0; want %d of each", resumes, paired, kept)
+			}
+			if tc.paused {
+				if held := architectsPause(); held != pause.ID {
+					t.Errorf("control: the architect's resume after the cancel is held by pause %d, want pause %d: the mark records the architect, so the paused cancel keeps its wake as a held wake of the pause",
+						held, pause.ID)
+				}
 			}
 			if starts := startsOfTheRoot(t, st); !slices.Contains(starts, "implementer||the wake's task|"+pods.WakeChecks+"||") {
 				t.Errorf("queued starts after the cancel = %q, want the implementer's wake start among them", starts)

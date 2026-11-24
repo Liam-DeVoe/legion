@@ -22,13 +22,14 @@ import (
 // resume, of that release. RecordPodRelease points at itself each such wake it can read, and a
 // take reads the newest recorded release. Two transactions that run at once must not each miss
 // the other: here the wake's take has read the releases and inserted its resume, and the
-// release's record starts before the take commits. The record may wait for the take; the test
-// commits the take two seconds after the record starts, or as soon as the record returns.
+// release's record starts before the take commits. The test commits the take once the record
+// waits for the take's lock on the release mark, or once the record returns.
 //
-// The idle rig's held-stop row (internal/daemon, AWakeDuringAHeldStopBringsThePodBackOnce) met
-// this order on a loaded pod at 90768ceb: the daemon logged "outbox: released the idle pod of an
-// issue" at 05:48:13.283 and "wake: a released pod is coming back" at 05:48:13.316, and the row
-// failed with the release recorded and its one resume naming release 0.
+// The idle rig's held-stop row (internal/daemon, AWakeDuringAHeldStopBringsThePodBackOnce) meets
+// this order on a loaded pod: the daemon's record of the release and the wake's take of the
+// implementer come within a few milliseconds of each other. Without the lock, the record would
+// not read the take's resume, so the release would be recorded and its one resume would name
+// release 0.
 func TestAWakeTakenWhileItsReleaseIsRecordedNamesThatRelease(t *testing.T) {
 	store := migratedStore(t)
 	ctx := context.Background()
@@ -46,6 +47,10 @@ func TestAWakeTakenWhileItsReleaseIsRecordedNamesThatRelease(t *testing.T) {
 	if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeAgentMessage, at.Add(-time.Second), 0); err != nil || !taken {
 		t.Fatalf("take the implementer's wake = %t, %v; want it taken", taken, err)
 	}
+	var take int32
+	if err := tx.QueryRow(ctx, `select pg_backend_pid()`).Scan(&take); err != nil {
+		t.Fatalf("read the take's backend: %v", err)
+	}
 
 	recordCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -60,16 +65,22 @@ func TestAWakeTakenWhileItsReleaseIsRecordedNamesThatRelease(t *testing.T) {
 		done <- recorded{id, err}
 	}()
 	var rec recorded
-	waited := false
-	select {
-	case rec = <-done:
-	case <-time.After(2 * time.Second):
-		waited = true
+	returned := false
+	if !testwait.Holds(20*time.Second, 20*time.Millisecond, func() bool {
+		select {
+		case rec = <-done:
+			returned = true
+			return true
+		default:
+		}
+		return blockedBy(t, store, take)
+	}) {
+		t.Fatal("control: the record neither waited for the take's lock on the release mark nor returned")
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the wake's transaction: %v", err)
 	}
-	if waited {
+	if !returned {
 		rec = <-done
 	}
 	if rec.err != nil {
@@ -118,6 +129,10 @@ func TestAWakeTakenWhileItsReleaseIsCancelledLeavesNoResume(t *testing.T) {
 	if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeAgentMessage, at, 0); err != nil || !taken {
 		t.Fatalf("take the implementer's wake = %t, %v; want it taken", taken, err)
 	}
+	var take int32
+	if err := tx.QueryRow(ctx, `select pg_backend_pid()`).Scan(&take); err != nil {
+		t.Fatalf("read the take's backend: %v", err)
+	}
 
 	cancelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -127,16 +142,22 @@ func TestAWakeTakenWhileItsReleaseIsCancelledLeavesNoResume(t *testing.T) {
 		done <- err
 	}()
 	var cancelErr error
-	waited := false
-	select {
-	case cancelErr = <-done:
-	case <-time.After(2 * time.Second):
-		waited = true
+	returned := false
+	if !testwait.Holds(20*time.Second, 20*time.Millisecond, func() bool {
+		select {
+		case cancelErr = <-done:
+			returned = true
+			return true
+		default:
+		}
+		return blockedBy(t, store, take)
+	}) {
+		t.Fatal("control: the cancel neither waited for the take's lock on the release mark nor returned")
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the wake's transaction: %v", err)
 	}
-	if waited {
+	if !returned {
 		cancelErr = <-done
 	}
 	if cancelErr != nil {
@@ -151,6 +172,17 @@ func TestAWakeTakenWhileItsReleaseIsCancelledLeavesNoResume(t *testing.T) {
 	if resumes != 0 {
 		t.Errorf("pod_resumes holds %d resumes after the cancel, want none: the release was cancelled, so the pod never went away and no released pod came back", resumes)
 	}
+}
+
+// blockedBy is whether a backend of the database waits for a lock that backend holds
+// (pg_blocking_pids): what the rows of this file wait for before they end that backend's
+// transaction.
+func blockedBy(t *testing.T, st *Store, backend int32) bool {
+	t.Helper()
+	var waiting bool
+	err := st.Pool().QueryRow(context.Background(), `select exists (select 1 from pg_stat_activity
+		where $1 = any(pg_blocking_pids(pid)))`, backend).Scan(&waiting)
+	return err == nil && waiting
 }
 
 // Window 1 of round 9's class search (dispatch://INFRA-3589): the workflow's wake closes a
@@ -236,12 +268,7 @@ func TestAWakeWhileANewerReleaseIsRecordedClosesTheOldResumeAndTakesItsOwn(t *te
 		})
 		done <- w
 	}()
-	if !testwait.Holds(20*time.Second, 20*time.Millisecond, func() bool {
-		var waiting bool
-		err := store.Pool().QueryRow(ctx, `select exists (select 1 from pg_stat_activity
-			where $1 = any(pg_blocking_pids(pid)))`, holder).Scan(&waiting)
-		return err == nil && waiting
-	}) {
+	if !testwait.Holds(20*time.Second, 20*time.Millisecond, func() bool { return blockedBy(t, store, holder) }) {
 		t.Fatal("the wake never waited for the record's lock on the release mark")
 	}
 	if err := rec.Commit(ctx); err != nil {

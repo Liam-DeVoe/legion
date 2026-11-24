@@ -278,7 +278,7 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, w
 			if err := stopReleasedForPause(ctx, tx, project, issue, held, roles, standing, paused); err != nil {
 				return err
 			}
-			if err := holdWakesUnderPause(ctx, tx, project, issue, roles, wake, held.ID); err != nil {
+			if err := holdWakesUnderPause(ctx, tx, project, issue, stillReleased, wake, held.ID); err != nil {
 				return err
 			}
 			if err := retellWakesOf(ctx, tx, project, issue, stillReleased, wake, last, paused.WakeTask); err != nil {
@@ -290,7 +290,7 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, w
 			}
 			return deleteIssueRelease(ctx, tx, project, issue)
 		}
-		dropped, err := dropWakesUnderRelease(ctx, tx, project, issue, roles, wake, last)
+		dropped, err := dropWakesUnderRelease(ctx, tx, project, issue, stillReleased, wake, last)
 		if err != nil {
 			return err
 		}
@@ -397,14 +397,16 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 // names the pause and release 0, as every held wake's resume does
 // (pod_resumes_held_wake_pairs_with_no_release, decision 15 of dispatch://INFRA-3759). Its kind,
 // its times and its seen release stay. These are the resumes that dropWakesUnderRelease deletes
-// while the project runs.
-func holdWakesUnderPause(ctx context.Context, tx pgx.Tx, project, issue string, roles []releasedRole, wake, pause int64) error {
+// while the project runs. roles are the names of the claims of the mark's set that are still
+// suspended as `released` (stillReleasedRoles). The cancel reads those names once and gives the
+// same names to each of its acts on them.
+func holdWakesUnderPause(ctx context.Context, tx pgx.Tx, project, issue string, roles []string, wake, pause int64) error {
 	if len(roles) == 0 {
 		return nil
 	}
 	if _, err := tx.Exec(ctx, `update pod_resumes set pause_id = $5, release_id = 0
 		where project = $1 and issue = $2 and id > $3 and role = any($4) and pause_id is null`,
-		project, issue, wake, releasedRoleNames(roles), pause); err != nil {
+		project, issue, wake, roles, pause); err != nil {
 		return fmt.Errorf("make the wakes taken while the release of %s stood held wakes of pause %d: %w", issue, pause, err)
 	}
 	return nil
@@ -614,7 +616,9 @@ func pairUnrecordedWakesWithNoRelease(ctx context.Context, tx pgx.Tx, project, i
 // release's last row, that have a wake's own shape (wakeStartRow). A root architect's entry start
 // and a production check's look are no wake's start: they stay, and their tasks are not the
 // wake's. A role with no such resume keeps every start it has, since no wake of it was taken
-// under the mark. A cancel calls it before it queues its own resumes (CancelIssueRelease).
+// under the mark. A cancel calls it before it queues its own resumes (CancelIssueRelease). roles
+// are the names of the claims of the mark's set that are still suspended as `released`, as for
+// holdWakesUnderPause.
 //
 // It answers, for each role whose wake it dropped, the wake kind, the detail and the task of the
 // start it deleted, the newest of each, which the cancel hands its builder (DroppedWake). The kind
@@ -625,7 +629,7 @@ func pairUnrecordedWakesWithNoRelease(ctx context.Context, tx pgx.Tx, project, i
 // deleted start an earlier daemon queued, which carries a task and no detail (retellStarts says
 // why): its resume then carries no task of the wake. The transaction logs why once it commits, and
 // the line carries the deleted task, since the row is gone (logStartWithoutDetail).
-func dropWakesUnderRelease(ctx context.Context, tx pgx.Tx, project, issue string, roles []releasedRole, wake, last int64) (map[claim.Role]DroppedWake, error) {
+func dropWakesUnderRelease(ctx context.Context, tx pgx.Tx, project, issue string, roles []string, wake, last int64) (map[claim.Role]DroppedWake, error) {
 	if len(roles) == 0 {
 		return nil, nil
 	}
@@ -638,7 +642,7 @@ func dropWakesUnderRelease(ctx context.Context, tx pgx.Tx, project, issue string
 				coalesce(outbox.payload->>'task', '') as task, outbox.payload->>'wakeDetail' as detail)
 		select w.role, coalesce(s.kind, ''), coalesce(s.id, 0), coalesce(s.task, ''), s.detail from woken w left join started s on s.role = w.role
 		order by w.id desc, s.id desc`,
-		project, issue, wake, releasedRoleNames(roles), last)
+		project, issue, wake, roles, last)
 	if err != nil {
 		return nil, fmt.Errorf("delete the wakes taken while the release of %s stood: %w", issue, err)
 	}

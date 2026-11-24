@@ -80,12 +80,13 @@ func wakeSpec(logs *lockedBuffer) ConsumerSpec {
 }
 
 // R6: a daemon reads every report on the wake subject, and a role report of another project is
-// no fact. The consumer acknowledges it with no transaction, so it leaves no processed_events row.
-// An agent report names a session and no project, and a listener_ready report names neither, so
-// both decode as before. The daemon's project is INFRA, whose token is infra. A role is read in
-// either form of its name: the token alone, or a project and then the token. A role of INFRA named
-// under INFRA is a wake of its token. In the new form, a role of another project is no fact, and
-// so is a role named under another project.
+// no fact. The consumer acknowledges it with no transaction, so it runs no handler and leaves no
+// processed_events row. The control is a role report of INFRA's own role, consumed the same way:
+// it runs the handler once and leaves its row. An agent report names a session and no project,
+// and a listener_ready report names neither, so both decode as before. The daemon's project is
+// INFRA, whose token is infra. A role is read in either form of its name: the token alone, or a
+// project and then the token. A role of INFRA named under INFRA is a wake of its token. In the new
+// form, a role of another project is no fact, and so is a role named under another project.
 func TestAWakeReportForAnotherProjectIsNoFact(t *testing.T) {
 	at := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
 	millis := strconv.FormatInt(at.UnixMilli(), 10)
@@ -98,20 +99,17 @@ func TestAWakeReportForAnotherProjectIsNoFact(t *testing.T) {
 		}
 		return decoded.Fact
 	}
-
-	t.Run("(a) a role of the project bet is no fact and is acknowledged with no row", func(t *testing.T) {
-		payload := roleReport("legion-bet-bet-12-implementer")
-		if fact := decode(t, "wake-bet", payload); fact != nil {
-			t.Fatalf("decoded fact = %#v, want none for a role of another project", fact)
-		}
-
+	// consumed is one delivery of payload under id, consumed by consumeMessage with a handler
+	// that counts its runs: the runs, and whether processed_events holds a row for id. It fails
+	// the test unless the delivery is answered with one acknowledgement and nothing else.
+	consumed := func(t *testing.T, id, payload string) (called int, processed bool) {
+		t.Helper()
 		pool := migratedPool(t)
-		called := 0
 		handler := handlerFunc(func(context.Context, pgx.Tx, Fact) (Result, error) {
 			called++
 			return Result{}, nil
 		})
-		delivery := &wakeDelivery{data: envelopeJSON(t, "wake-bet", "envoy", payload)}
+		delivery := &wakeDelivery{data: envelopeJSON(t, id, "envoy", payload)}
 		if !consumeMessage(context.Background(), delivery, wakeSpec(&lockedBuffer{}), nil, pool, []Handler{handler}, &issueNames{}, newDroppedSettlements()) {
 			t.Fatal("consumeMessage = false, want the report handled")
 		}
@@ -119,16 +117,34 @@ func TestAWakeReportForAnotherProjectIsNoFact(t *testing.T) {
 		if acks != 1 || len(delays) != 0 || len(others) != 0 {
 			t.Fatalf("answers = %d acknowledgements, naks after %v, others %v; want one acknowledgement and nothing else", acks, delays, others)
 		}
+		if err := pool.QueryRow(context.Background(), `select exists (select 1 from processed_events where event_id = $1)`,
+			id).Scan(&processed); err != nil {
+			t.Fatalf("read processed_events: %v", err)
+		}
+		return called, processed
+	}
+
+	t.Run("(a) a role of the project bet is no fact and is acknowledged with no row", func(t *testing.T) {
+		payload := roleReport("legion-bet-bet-12-implementer")
+		if fact := decode(t, "wake-bet", payload); fact != nil {
+			t.Fatalf("decoded fact = %#v, want none for a role of another project", fact)
+		}
+		called, processed := consumed(t, "wake-bet", payload)
 		if called != 0 {
 			t.Fatalf("the handler ran %d times, want never for another project's role report", called)
 		}
-		var processed bool
-		if err := pool.QueryRow(context.Background(), `select exists (select 1 from processed_events where event_id = $1)`,
-			"wake-bet").Scan(&processed); err != nil {
-			t.Fatalf("read processed_events: %v", err)
-		}
 		if processed {
 			t.Fatal("processed_events holds the report of another project's role, want no row")
+		}
+	})
+
+	t.Run("control: a role of the project infra runs the handler once and leaves its row", func(t *testing.T) {
+		called, processed := consumed(t, "wake-infra-consumed", roleReport("legion-infra-infra-12-implementer"))
+		if called != 1 {
+			t.Fatalf("the handler ran %d times, want once for a role report of the daemon's own project", called)
+		}
+		if !processed {
+			t.Fatal("processed_events holds no row for the report of the project's own role, want its row")
 		}
 	})
 

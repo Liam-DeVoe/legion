@@ -365,10 +365,10 @@ func LatestPodRelease(ctx context.Context, tx pgx.Tx, project, issue string) (in
 
 // OpenPodResume is the newest wake of issue's role with no first turn yet, the project pause that
 // held it (pod_resumes.pause_id, 0 for a wake no pause held), and whether there is one: the resume
-// a pod-ready or first-turn observation stamps, and the resume a delivery wake meets when the take
-// refuses it (internal/daemon's wakeForDelivery), which says by the pause whether that resume is a
-// pause's held wake waiting on its start (decision 15 of dispatch://INFRA-3759). It is read rather
-// than remembered so a daemon that restarted between the wake and the first turn still stamps it.
+// a pod-ready or first-turn observation stamps. It is read rather than remembered so a daemon that
+// restarted between the wake and the first turn still stamps it. The delivery wake's take reads
+// the same resume in its own transaction (openPodResume, TakeDeliveryWake), and answers its pause
+// where that resume refuses the take (DeliveryWake.OpenResumePause).
 func (s *Store) OpenPodResume(ctx context.Context, project, issue string, role claim.Role) (id, pause int64, found bool, err error) {
 	err = TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		id, pause, found, err = openPodResume(ctx, tx, project, issue, role)

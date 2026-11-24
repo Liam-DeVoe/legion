@@ -508,11 +508,30 @@ func TestAWokenRoleReadsATrueWakeText(t *testing.T) {
 			"A message that Envoy did not keep, such as one sent with keep: false, does not reach you, and its sender must send it again.")
 	})
 
-	t.Run("(h) neither says nothing kept the message", func(t *testing.T) {
-		for _, kind := range []string{pods.WakeAgentMessage, pods.WakeRoleMessage} {
-			for _, stop := range []WakeStop{StoppedByRelease, StoppedByPause} {
-				if task := WakeTask(kind, "detail", stop); strings.Contains(task, "nothing kept") {
-					t.Errorf("WakeTask(%s, stop %d) = %q, want no claim that nothing kept the message", kind, stop, task)
+	t.Run("(h) each message wake's whole text, under each stop", func(t *testing.T) {
+		const pausePreamble = "Your project was paused, and its pause stopped your session. This wake started it again. " +
+			"Your pod, your workspace and any work you had not pushed are as you left them. "
+		for _, tc := range []struct {
+			stop           WakeStop
+			preamble, away string
+		}{
+			{stop: StoppedByRelease, preamble: preamble, away: "while your pod was gone"},
+			{stop: StoppedByPause, preamble: pausePreamble, away: "while your session was stopped"},
+		} {
+			for _, wake := range []struct{ kind, detail, want string }{
+				{kind: pods.WakeAgentMessage, detail: "session-implementer",
+					want: tc.preamble + "The wake is a message somebody sent to your session (session-implementer) " + tc.away + ". " +
+						"A message that Envoy or Dispatch stored for your session reaches this session, for 72 hours after it was stored. " +
+						"A message that neither stored, such as a direct send that Envoy refused, does not reach you, and its sender must send it again."},
+				{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer",
+					want: tc.preamble + "The wake is a message somebody published to your role topic (legion-LEGION-208-implementer) " + tc.away + ". " +
+						"A message that Envoy kept for your role reaches this session, for one hour after Envoy kept it. " +
+						"It comes as an Envoy card that shows kept_at, possibly before this task. " +
+						"When that hour ends before a session takes the message, Envoy drops it and tells its sender. " +
+						"A message that Envoy did not keep, such as one sent with keep: false, does not reach you, and its sender must send it again."},
+			} {
+				if got := WakeTask(wake.kind, wake.detail, tc.stop); got != wake.want {
+					t.Errorf("WakeTask(%s, stop %d) = %q, want %q", wake.kind, tc.stop, got, wake.want)
 				}
 			}
 		}

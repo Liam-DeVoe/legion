@@ -68,12 +68,23 @@ type DeliveryWake struct {
 	// NotReleased is a claim whose row the record does not hold as suspended by a release: the
 	// call took nothing, since something already brought the role back or took the claim over.
 	NotReleased bool
-	// WakeStartQueued is, where the role's open resume refused the take, that a wake's own start
-	// of the role is queued (wakeStartRow): the start of the wake that took that resume, which has
-	// not run yet. The open resume is then a wake on its way, not a fault: the start of a workflow
-	// wake taken while a release stood runs only once the release's teardown row leaves the outbox
-	// (record's outboxInOrder), and a pause's held wake runs its start at the pause's resume. The
-	// caller logs such a refusal at debug (internal/daemon's logRefusedByOpenResume).
+	// OpenResumePause and WakeStartQueued say, where the role's open resume refused the take, what
+	// that resume is, as the take read it in its own transaction (OpenPodResume). The caller logs
+	// the refusal from them and reads nothing itself (internal/daemon's logRefusedByOpenResume).
+	//
+	// OpenResumePause is the project pause that held that resume (pod_resumes.pause_id): the
+	// resume is then that pause's held wake (decision 15 of dispatch://INFRA-3759). It is 0 for a
+	// resume that no pause held.
+	//
+	// WakeStartQueued is that a wake's own start of the role is queued (wakeStartRow): the start
+	// of the wake that took that resume, which has not run yet. The open resume is then a wake on
+	// its way, not a fault: the start of a workflow wake taken while a release stood runs only
+	// once the release's teardown row leaves the outbox (record's outboxInOrder), and a pause's
+	// held wake runs its start at the pause's resume. The caller logs such a refusal at debug.
+	//
+	// Both are zero where the take's read found no open resume. A resume that another wake took
+	// after that read can still refuse the take, and then both are zero too.
+	OpenResumePause int64
 	WakeStartQueued bool
 }
 
@@ -112,10 +123,10 @@ type DeliveryWake struct {
 // its mark. A role with an open resume refuses the take whatever is queued, so the take records
 // nothing, and the caller resumes the role in process as it always did (internal/daemon's
 // wakeForDelivery): the pause's held wake, whose start is queued for the pause's resume, and a
-// workflow wake whose start has not run. Both are normal, and the call answers WakeStartQueued
-// for them: for a role with an open resume it reads whether a wake's own start of the role is
-// queued (wakeStartQueued), so the caller can tell such a wake from a resume with no start behind
-// it.
+// workflow wake whose start has not run. Both are normal, and the call answers what that open
+// resume is for them: the pause that held it (OpenResumePause), and whether a wake's own start of
+// the role is queued (wakeStartQueued, WakeStartQueued). The caller can then tell such a wake
+// from a resume with no start behind it, with no read of its own.
 //
 // The caller read the claim as released from its machine, outside this transaction, and a start
 // can run and finish between that read and the read of the queued starts: the cancel's start
@@ -176,7 +187,7 @@ func (s *Store) TakeDeliveryWake(ctx context.Context, project, issue string, tok
 		if wake.InRelease, err = lockReleaseMark(ctx, tx, project, issue); err != nil || wake.InRelease {
 			return err
 		}
-		_, _, open, err := openPodResume(ctx, tx, project, issue, role)
+		_, pause, open, err := openPodResume(ctx, tx, project, issue, role)
 		if err != nil {
 			return err
 		}
@@ -187,7 +198,8 @@ func (s *Store) TakeDeliveryWake(ctx context.Context, project, issue string, tok
 		} else if wake.WakeStartQueued, err = wakeStartQueued(ctx, tx, issue, role, generation); err != nil {
 			return err
 		}
-		pause, _, err := records.PauseOfWake(ctx, tx, issue, token, mark)
+		wake.OpenResumePause = pause
+		held, _, err := records.PauseOfWake(ctx, tx, issue, token, mark)
 		if err != nil {
 			return err
 		}
@@ -200,7 +212,7 @@ func (s *Store) TakeDeliveryWake(ctx context.Context, project, issue string, tok
 		if wake.NotReleased = !released; wake.NotReleased {
 			return nil
 		}
-		wake.Taken, err = records.TakePodWake(ctx, tx, issue, role, pods.WakeDelivery, at, pause)
+		wake.Taken, err = records.TakePodWake(ctx, tx, issue, role, pods.WakeDelivery, at, held)
 		return err
 	})
 	return wake, err

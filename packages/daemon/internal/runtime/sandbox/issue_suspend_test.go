@@ -234,7 +234,9 @@ func issueSecrets(sandbox string) []string {
 // before they ask authorize. The daemon's authorize of a release commits the release where it acts
 // (store.Store.CommitIssueRelease), and a committed release is never cancelled. A refusal after
 // that commit would come on every attempt, and the release would never end. The refusal leaves the
-// Sandbox, its pod and its Secrets as the launch made them.
+// Sandbox, its pod and its Secrets as the launch made them. The control is each end of the issue's
+// own Sandbox, whose labels name the issue and its tree: it asks authorize once, and where
+// authorize answers false it acts on nothing.
 func TestASandboxOfAnotherProjectIssueOrTreeIsRefusedBeforeAuthorize(t *testing.T) {
 	for _, end := range []struct {
 		name string
@@ -299,6 +301,30 @@ func TestASandboxOfAnotherProjectIssueOrTreeIsRefusedBeforeAuthorize(t *testing.
 				}
 			})
 		}
+		t.Run("control: "+end.name+" of the issue's own Sandbox asks authorize once", func(t *testing.T) {
+			g := newRig(t, nil)
+			loc := g.spawn(childSpec(t))
+			name := SandboxName(childToken)
+			g.clearActions()
+			var asked atomic.Int32
+			refuse := func(context.Context) (bool, error) {
+				asked.Add(1)
+				return false, nil
+			}
+
+			if err := end.call(g.r, g.ctx, childIssue, testTree, refuse); err != nil {
+				t.Fatalf("%s of the issue's own Sandbox = %v, want no error: authorize answered that it does not act", end.name, err)
+			}
+			if n := asked.Load(); n != 1 {
+				t.Fatalf("%s asked authorize %d times, want once: the Sandbox is the issue's own", end.name, n)
+			}
+			if s := g.sandbox(name); s == nil || s.mode() != modeRunning {
+				t.Fatalf("after %s that authorize refused the Sandbox is %+v, want it Running as the launch left it", end.name, s)
+			}
+			if pod := g.pod(name); pod == nil || string(pod.UID) != loc.Sandbox.PodUID {
+				t.Fatalf("after %s that authorize refused the pod is %+v, want the launch's %s", end.name, pod, loc.Sandbox.PodUID)
+			}
+		})
 	}
 }
 

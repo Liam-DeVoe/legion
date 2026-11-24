@@ -352,8 +352,7 @@ func TestACancelAfterASettlementWakeTellsTheRoleTheSettlement(t *testing.T) {
 	const cancelled = "An idle release of your issue's pod stopped your role, and that release did not finish, so your role goes on in the same pod. " +
 		"Your session, your workspace and any work you had not pushed are as you left them. "
 	const settled = "The wake is a CI settlement on your pull request's head: head1 failed build. Read the checks before you decide anything."
-	if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Task != cancelled+settled ||
-		strings.Contains(starts[0].Task, "pod had been released") {
+	if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Task != cancelled+settled {
 		t.Fatalf("queued starts = %+v, want the cancel's one start of the implementer with the task %q: the settlement reaches the role only through it, and the pod never went away",
 			starts, cancelled+settled)
 	}
@@ -434,7 +433,7 @@ func TestACancelWhileThePausedProjectTellsTheKeptWakeThatThePauseStoppedTheRole(
 	rows.Close()
 	want := workflow.WakeTask(pods.WakeChecks, detail, workflow.StoppedByPause)
 	if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Task != want ||
-		starts[0].WakeKind != pods.WakeChecks || starts[0].Pause != pause || strings.Contains(starts[0].Task, "pod had been released") {
+		starts[0].WakeKind != pods.WakeChecks || starts[0].Pause != pause {
 		t.Fatalf("queued starts = %+v, want the kept wake's one start of the implementer, of the %s wake held by pause %d, with the task %q: the release took no pod, and the pause owes the role its launch",
 			starts, pods.WakeChecks, pause, want)
 	}

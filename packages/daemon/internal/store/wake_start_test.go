@@ -445,7 +445,7 @@ func TestACommittedReleaseIsNeverCancelled(t *testing.T) {
 }
 
 // A runtime read that does not act commits nothing: the release whose claim an operator took over
-// before the runtime asked is cancelled, as it was before the commit existed.
+// before the runtime asked is cancelled, as a release that no runtime read committed is.
 func TestARuntimeReadThatDoesNotActCommitsNothing(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()

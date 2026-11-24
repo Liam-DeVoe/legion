@@ -93,9 +93,9 @@ func (t clearRefusedOnce) ClearIssueRelease(ctx context.Context, project, issue 
 // before any step that can fail. Here the teardown's last step fails, so its row runs again. That
 // attempt finishes the release whatever happened meanwhile: it asks the runtime nothing, cancels
 // nothing, keeps the bundle of unpushed work for the pod that replaces this one, and records no
-// second release. Before, the attempt read the mark again: a claim an operator took over in
-// between made it cancel a release whose pod was gone, which deleted the bundle, and an attempt
-// with nothing new took the pod a second time and recorded a second release.
+// second release. An attempt that read the mark again would cancel a release whose pod was gone
+// where an operator took a claim over in between, and that cancel would delete the bundle. An
+// attempt with nothing new would take the pod a second time and record a second release.
 func TestATeardownThatFailsAfterItsPodIsGoneFinishesOnItsNextAttempt(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -155,8 +155,8 @@ func TestATeardownThatFailsAfterItsPodIsGoneFinishesOnItsNextAttempt(t *testing.
 // after the pod is gone, which leaves no record of the release, and the row runs again after a
 // claim of the pod was taken over or the pod was given work. That attempt finishes the release: it
 // asks the runtime again, records the release once, keeps the bundle of unpushed work for the next
-// pod, and cancels nothing. Before, it read the mark again and cancelled a release whose pod was
-// gone, which deleted the bundle.
+// pod, and cancels nothing. An attempt that read the mark again would cancel a release whose pod
+// was gone, and that cancel would delete the bundle.
 func TestATeardownWhoseRuntimeFailsAfterItTookThePodFinishesOnItsNextAttempt(t *testing.T) {
 	for _, tc := range teardownInterleavings {
 		t.Run(tc.name, func(t *testing.T) {
@@ -193,8 +193,8 @@ func TestATeardownWhoseRuntimeFailsAfterItTookThePodFinishesOnItsNextAttempt(t *
 // in the same daemon, and in a daemon restarted from the store alone (idleRig.restarted). The
 // runtime's read committed the release (store's CommitIssueRelease), so that attempt finishes
 // it: it asks the runtime again, records the release once, keeps the bundle of unpushed work for
-// the next pod, and cancels nothing. Before, it read the mark again and cancelled a release whose
-// pod was gone, which deleted the bundle.
+// the next pod, and cancels nothing. An attempt that read the mark again would cancel a release
+// whose pod was gone, and that cancel would delete the bundle.
 func TestATeardownWhoseRecordFailsOnceFinishesOnItsNextAttempt(t *testing.T) {
 	for _, tc := range teardownInterleavings {
 		for _, restart := range []bool{false, true} {

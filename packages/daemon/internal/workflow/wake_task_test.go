@@ -137,11 +137,15 @@ func TestATakenOverWakeTaskIsTheTaskOfAWakeOfACancelledRelease(t *testing.T) {
 	const appended = " The review round's two sentences follow the wake's task."
 	const cancelled = "An idle release of your issue's pod stopped your role, and that release did not finish, so your role goes on in the same pod. " +
 		"Your session, your workspace and any work you had not pushed are as you left them. "
-	for _, tc := range []struct{ kind, detail, says string }{
+	for _, tc := range []struct {
+		kind, detail, says string
+		// away is whether the wake's sentence names the time the role was away (releaseAway).
+		away bool
+	}{
 		{kind: pods.WakeChecks, detail: "head1 failed build", says: "The wake is a CI settlement on your pull request's head: head1 failed build."},
-		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer",
+		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer", away: true,
 			says: "role topic (legion-LEGION-208-implementer) while your session was stopped. A message that Envoy kept for your role reaches this session"},
-		{kind: pods.WakeAgentMessage, detail: "session-1",
+		{kind: pods.WakeAgentMessage, detail: "session-1", away: true,
 			says: "sent to your session (session-1) while your session was stopped. A message that Envoy or Dispatch stored for your session reaches this session"},
 		{kind: pods.WakeBackstop, detail: "the backstop armed for LEGION-208's implementer came due",
 			says: "The wake is the release's backstop running out: the backstop armed for LEGION-208's implementer came due."},
@@ -149,11 +153,17 @@ func TestATakenOverWakeTaskIsTheTaskOfAWakeOfACancelledRelease(t *testing.T) {
 	} {
 		for _, suffix := range []string{"", appended} {
 			released := WakeTask(tc.kind, tc.detail, StoppedByRelease) + suffix
+			// The control: the task the retell is given says that the pod went away, in the words
+			// the retell must not keep.
+			if !strings.HasPrefix(released, wakePreamble) || tc.away != strings.Contains(released, releaseAway) {
+				t.Fatalf("control: WakeTask(%s, %q, StoppedByRelease) = %q, want it to begin %q, and to name %q only for a message wake (here %t)",
+					tc.kind, tc.detail, released, wakePreamble, releaseAway, tc.away)
+			}
 			got := TakenOverWakeTask(tc.kind, tc.detail, released)
 			if !strings.HasPrefix(got, cancelled) || !strings.Contains(got, tc.says) || !strings.HasSuffix(got, suffix) ||
-				strings.Contains(got, "had been released") || strings.Contains(got, "while your pod was gone") {
-				t.Errorf("TakenOverWakeTask(%s, %q, %q) = %q, want it to begin %q, say %q, end %q, and say nothing of a pod that went away",
-					tc.kind, tc.detail, released, got, cancelled, tc.says, suffix)
+				strings.Contains(got, wakePreamble) || strings.Contains(got, releaseAway) {
+				t.Errorf("TakenOverWakeTask(%s, %q, %q) = %q, want it to begin %q, say %q, end %q, and hold neither %q nor %q",
+					tc.kind, tc.detail, released, got, cancelled, tc.says, suffix, wakePreamble, releaseAway)
 			}
 		}
 	}

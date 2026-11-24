@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -485,7 +484,7 @@ func TestARecordedReleaseTellsAHeldWakeThatTheReleaseTookItsPod(t *testing.T) {
 	rows.Close()
 	want := workflow.WakeTask(pods.WakeChecks, detail, workflow.StoppedByRelease)
 	if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Task != want ||
-		starts[0].WakeKind != pods.WakeChecks || starts[0].Pause != pause || strings.Contains(starts[0].Task, "Your project was paused") {
+		starts[0].WakeKind != pods.WakeChecks || starts[0].Pause != pause {
 		t.Fatalf("queued starts = %+v, want the held wake's one start of the implementer, of the %s wake held by pause %d, with the task %q: the release took the pod",
 			starts, pods.WakeChecks, pause, want)
 	}

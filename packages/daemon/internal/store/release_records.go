@@ -179,9 +179,9 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, er
 	var id int64
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		id = 0
-		var recorded int64
-		err := tx.QueryRow(ctx, `select released_id from issue_releases where project = $1 and issue = $2 for update`,
-			rel.Project, rel.Issue).Scan(&recorded)
+		var recorded, last int64
+		err := tx.QueryRow(ctx, `select released_id, last_row from issue_releases where project = $1 and issue = $2 for update`,
+			rel.Project, rel.Issue).Scan(&recorded, &last)
 		marked := err == nil
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("lock the release mark: %w", err)
@@ -198,14 +198,21 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, er
 			rel.Project, rel.Issue, int64(rel.Generation), strings.Join(rel.Roles, ","), rel.At, rel.BundleBytes).Scan(&id); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `update pod_resumes r set release_id = case when r.pause_id is null then $3::bigint else 0 end,
+		rows, err := tx.Query(ctx, `with pointed as (update pod_resumes r set release_id = case when r.pause_id is null then $3::bigint else 0 end,
 			seen_release = $3, at = greatest(r.at, $4), clock_at = greatest(r.clock_at, $4)
 			from issue_releases m where m.project = $1 and m.issue = $2 and r.project = m.project and r.issue = m.issue
-			and r.id > m.wake_row and r.role = any(m.suspended) and r.first_turn_at is null and r.closed_at is null`,
-			rel.Project, rel.Issue, id, rel.At); err != nil {
+			and r.id > m.wake_row and r.role = any(m.suspended) and r.first_turn_at is null and r.closed_at is null
+			returning r.role)
+			select distinct role from pointed`,
+			rel.Project, rel.Issue, id, rel.At)
+		if err != nil {
 			return fmt.Errorf("point the wakes taken during the release at it: %w", err)
 		}
-		if err := retellWakesUnderRelease(ctx, tx, rel.Project, rel.Issue, rel.WakeTask); err != nil {
+		woken, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return fmt.Errorf("point the wakes taken during the release at it: %w", err)
+		}
+		if err := retellWakesUnderRelease(ctx, tx, rel.Issue, woken, last, rel.WakeTask); err != nil {
 			return err
 		}
 		if marked {
@@ -223,30 +230,28 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, er
 }
 
 // retellWakesUnderRelease rewrites the task of each start that a wake taken under the release's
-// mark queued, for the release's record (RecordPodRelease). The wakes are the ones the record
-// points at itself: a resume of a role of the mark's suspended set above the mark's wake_row,
-// with no first turn and not closed. Their starts are the starts of that role above the mark's
-// last_row that have a wake's own shape (wakeStartRow). A root architect's entry start and a
-// production check's look are no wake's start, and keep their task. retell answers the task a
-// start carries from now on, from the wake kind and the detail the start carries
+// mark queued, for the release's record (RecordPodRelease). roles are the roles of the wakes that
+// the record points at itself, as its update returns them: each role of the mark's suspended set
+// that has a resume above the mark's wake_row with no first turn and not closed. The update
+// changes none of the columns that choose those resumes, so this reads the starts of the same
+// roles and does not choose them again. The starts are the starts of those roles above last, the
+// mark's last_row, that have a wake's own shape (wakeStartRow). A root architect's entry start
+// and a production check's look are no wake's start, and keep their task. retell answers the
+// task a start carries from now on, from the wake kind and the detail the start carries
 // (record.SuperviseRequest.WakeKind and WakeDetail), which its task was rendered with, and from
 // the task it carries now (PodRelease.WakeTask). The role's resume shows only that such a wake was
 // taken: its kind can be another wake's. A start of a role with no such resume is no such wake's,
 // and keeps its task, and so does a start an earlier daemon queued with no detail (retellStarts).
-// With no mark or a nil retell, it writes nothing.
-func retellWakesUnderRelease(ctx context.Context, tx pgx.Tx, project, issue string, retell func(kind, detail, task string) string) error {
-	if retell == nil {
+// With no role or a nil retell, it writes nothing. A record with no mark points at no resume, so
+// it has no role.
+func retellWakesUnderRelease(ctx context.Context, tx pgx.Tx, issue string, roles []string, last int64, retell func(kind, detail, task string) string) error {
+	if retell == nil || len(roles) == 0 {
 		return nil
 	}
 	return retellStarts(ctx, tx, issue, retell, `select outbox.id, outbox.payload->>'role', coalesce(outbox.payload->>'task', ''),
-		outbox.payload->>'wakeKind', outbox.payload->>'wakeDetail'
-		from issue_releases m join outbox on outbox.issue = m.issue and outbox.id > m.last_row and `+wakeStartRow+`
-			and outbox.payload->>'role' = any(m.suspended)
-		join lateral (select 1 from pod_resumes r where r.project = m.project and r.issue = m.issue
-			and r.id > m.wake_row and r.role = outbox.payload->>'role' and r.first_turn_at is null and r.closed_at is null
-			limit 1) woken on true
-		where m.project = $1 and m.issue = $2
-		order by outbox.id`, project, issue)
+		outbox.payload->>'wakeKind', outbox.payload->>'wakeDetail' from outbox
+		where outbox.issue = $1 and outbox.id > $2 and `+wakeStartRow+` and outbox.payload->>'role' = any($3)
+		order by outbox.id`, issue, last, roles)
 }
 
 // retellStarts rewrites, through tx, the task of each start that query reads of the wakes taken
