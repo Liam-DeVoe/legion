@@ -546,7 +546,8 @@ export function createLegionTool(deps: {
         "register_plan (issue, artifactId, version) gives Legion the plan of an issue you own: a document on that issue, by its id, slug " +
         "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
         "steps its task runs, in the order they run: some of `planner implementer tester reviewer acceptance:owner` and of the roles " +
-        "the deployment defines, no two of the task's agents starting with one role, with `implementer` in it, before each " +
+        "the deployment defines, no two of the task's agents starting with one role, though one role can stand at two steps " +
+        "(`implementer:a reviewer implementer:a`, or `implementer reviewer:a implementer:a`), with `implementer` in it, before each " +
         "`tester`, `reviewer` or `acceptance:owner` " +
         "step and after each other step of the type implementation; a step may carry a key after its role: acceptance carries `owner` " +
         "and no other, any other role any key but `owner` or none, and the steps of one key run as one agent in one claim and one " +
