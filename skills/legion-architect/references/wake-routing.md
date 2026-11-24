@@ -38,7 +38,7 @@ Where a row says to ask a person, a child's own architect sends the question to 
 
 ## A capped pull request
 
-Judge a `pr-blocked` cap by `counted`, the rounds it counts, not by `conflict_rounds`, the conflict rounds it leaves out.
+A `pr-blocked` reason reads `<n> rounds counted, <m> conflict rounds not counted`: judge the cap by `<n>`.
 Only requests for changes count: no tester's fail, no move back.
 Read what every counted round found, choose one, act on it, and post the rounds you read and the choice as a `dispatch comment`:
 

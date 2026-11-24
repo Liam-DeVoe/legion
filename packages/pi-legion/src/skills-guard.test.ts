@@ -1035,7 +1035,7 @@ test("the skills' sentences that held only in the default steps hold for every o
       /^(?![\s\S]*reviewed head is accepted)/,
     ]),
     ...lacks("legion-retro/SKILL.md", [
-      /Read the review \(`--phase review`\) where it has a reviewer step, at the version `handoff_version` names where your task's `handoff_phase` is `review`/,
+      /Read the review \(`--phase review`\) where it has a reviewer step, at the version your `Handoff:` line names when that line names one/,
       /^(?![\s\S]*the review at the version your task's `Handoff:` line names)/,
       // A task may have no acceptance step, so retro reads no change as accepted.
       /the merger's: the change passed every step of its task, and the merger decides at the merge/,
