@@ -727,11 +727,13 @@ func entryWork(issue record.Issue, row record.PhaseRow, at Standing) string {
 	return resumeText(issue, at)
 }
 
-// StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
-// promotion brings back (admit's startMidPhaseMembers), on the resume task of the phase it stands
-// in (resumeTaskOn), on the one walk of its run it reads for that task and the entry it raises,
-// which the start ends, for the tester of a parent, with the sentence that asks it to test the
-// head merged with its base's tip (enter).
+// StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's first run
+// brings back — its promotion, or the admission pass that finds the tree running when its design
+// gate opened first (admit's startMidPhaseMembers, returnMembersOfRunningTrees) — on the resume
+// task of the phase it stands in (resumeTaskOn), on the one walk of its run it reads for that task
+// and the entry it raises, which the start ends, for the tester of a parent, with the sentence that
+// asks it to test the head merged with its base's tip (enter). Both are the promotion's start
+// here: the pass's return is the one the promotion would have made.
 //
 // It raises the entry, where the promotion's other role starts raise none: the promotion is
 // handing that role its work again, and the re-admission cleared the task its entry named with
@@ -1415,7 +1417,8 @@ func HeldNotice(issue record.Issue) record.Notice {
 // ChildReenteredNotice is the notice the architect above a re-entered child is told, whichever path
 // re-enters it: reenterChild for a live tree's reopened child, or admission's
 // reenterStrandedChildren for one a reopen declined to re-enter for want of the label until its
-// root's own promotion made the tree live.
+// tree's first run made the tree live: its root's promotion, or the admission pass that finds a
+// re-admitted tree running first.
 func ChildReenteredNotice(child, root string) record.Notice {
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: fmt.Sprintf("%s is todo; it runs again under %s", child, root)}
 }

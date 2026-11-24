@@ -171,8 +171,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 
 // IssueRecordFields is every field of `record.Issue`, in the order the record declares them. No
 // field of it is a secret and none is the operator route's alone, so every entry is served to
-// the agent surfaces or withheld, as bookkeeping or, for ReleasedForWaitAt, MovedAt and
-// TreeStalledToldAt, for the reason its own entry gives.
+// the agent surfaces or withheld, as bookkeeping or, for ReleasedForWaitAt, MovedAt,
+// TreeStalledToldAt and MembersOwed, for the reason its own entry gives.
 var IssueRecordFields = []RecordFieldDecision{
 	{Field: "Key", Column: ColumnAgents, Keys: []string{"key"}, Reason: "the issue the whole view is about"},
 	{Field: "Tree", Column: ColumnAgents, Keys: []string{"tree"},
@@ -221,6 +221,8 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "the phase start a parent held when a child of it was open, and the children that held it (`children_wait_children`), which the daemon resumes it with when no open child is left, naming the children that merged during the wait: its own record of what to do at the return, which no surface carries"},
 	{Field: "ChildrenWaitedAt", Column: ColumnWithheld,
 		Reason: "when the parent last waited on its children, which the late-completion guard compares a phase entry against after the return: the daemon's own mark, reaching no surface"},
+	{Field: "MembersOwed", Column: ColumnWithheld,
+		Reason: "the mark that a re-admission still owes its tree's members their return, which the root's promotion or the pass that finds its tree running clears in the same transaction that brings them back: it is the daemon's own record of a return still to make, and a reader acts on what it causes, the members' starts and their places in `admission.waiting`"},
 }
 
 // AssignmentRecordFields is every field of `record.Assignment`, in the order the record declares
