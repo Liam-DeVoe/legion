@@ -22328,6 +22328,9 @@ console.log(JSON.stringify(args));
         // An instance of its own (the query), as each row of this file loads one: the build source
         // it is given is that instance's module state.
         const entry = await import("./envoy.ts?connection-build");
+        // The query names no file, so `entry` is untyped; its factory is read through
+        // `EnvoyModule`, so a call of it left without `await` fails Biome's noFloatingPromises.
+        const { default: envoyExtension }: EnvoyModule = entry;
         const commit = "0123456789abcdef0123456789abcdef01234567";
         const rows = [
           { stamp: `${commit}\n`, packed: true, want: `omp-ses_build legion@${commit}` },
@@ -22349,7 +22352,7 @@ console.log(JSON.stringify(args));
             ui: sessionContext().ui,
           };
           const fixture = createPi();
-          await entry.default(fixture.pi);
+          await envoyExtension(fixture.pi);
           names.length = 0;
           await fixture.handlers.get("session_start")?.({}, context);
           await fixture.handlers.get("session_shutdown")?.({}, context);

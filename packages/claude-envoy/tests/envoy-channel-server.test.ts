@@ -9,7 +9,6 @@ import { NATS_AUTH_VAR } from "@legion/envoy-client/nats-credential"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
-import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { Server, Subprocess } from "bun"
 import { nkeys } from "nats"
@@ -49,9 +48,9 @@ import { isolatePaneEnvironment } from "./pane-environment"
 import { beforeTheGuard, collected, ROW_GUARD_MS, rowStarted } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
-// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
-// is a hang guard, not a verdict, for every row of this file that states none of its own.
-setDefaultTimeout(HANG_GUARD_MS)
+// Every row's hang guard (`ROW_GUARD_MS`, 120 s, `./row-deadline.ts`), set above the first row:
+// Bun holds `setDefaultTimeout` only for the rows registered after it.
+setDefaultTimeout(ROW_GUARD_MS)
 
 isolatePaneEnvironment()
 
@@ -958,7 +957,6 @@ const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 // fixed 20 s decided these rows before: at a load near 1,000 a server that wrote that cache into
 // its empty HOME first had not answered its `initialize` in 20 s.
 beforeEach(rowStarted)
-setDefaultTimeout(ROW_GUARD_MS)
 
 /**
  * Runs the channel server as Claude Code does, in `env.HOME` with `env` as its whole environment:
