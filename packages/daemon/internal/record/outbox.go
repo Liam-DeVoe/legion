@@ -1388,8 +1388,8 @@ func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 // is there to read through. It is the check of the release of a pod no claim owns
 // (workflow.UnownedPodRelease), inside that release's mark, and, with Close, of the close of a left
 // pod with no live claim, which marks no release and stops no role: its clean read queues the
-// Sandbox suspension alone, fenced on TurnStart. On such a row Role is the issue's architect, the
-// role a decline tells (workspace-kept, WorkspaceKeptNotice), since no live role is there to tell.
+// Sandbox suspension alone, fenced on TurnStart. Such a row names no Role, since no role's shim
+// reads it; a decline it records tells the issue's architect (workspace-kept, WorkspaceKeptNotice).
 // A release before these two fields refuses a row that carries either (DisallowUnknownFields), so
 // a rollback waits for such rows to run (docs/kubernetes.md, "Rolling back the release that keeps
 // no saved workspace").
@@ -2371,8 +2371,8 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")
 		}
 	case IssueWorkspaceCheck:
-		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 || value.Role == "" {
-			return fmt.Errorf("a release's workspace check requires its tree, both workflow generations and the role whose shim reads the workspace")
+		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 || (value.Role == "") != value.Launcher {
+			return fmt.Errorf("a release's workspace check requires its tree, both workflow generations and the role whose shim reads the workspace, and names no role where the pod's launcher reads it")
 		}
 		if value.Launcher && len(value.CloseRoles) > 0 {
 			return fmt.Errorf("a workspace check the pod's launcher reads stops no role, so it names no close roles")

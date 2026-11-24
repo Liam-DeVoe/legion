@@ -655,29 +655,40 @@ func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now tim
 // leftPodCloseRows is the close of a pod whose issue left the workflow as outbox rows
 // (workflow.LeftPodClose): one row, and no other, the workspace check (record.IssueWorkspaceCheck),
 // which queues the stops and the suspension only where its read finds nothing that origin does not
-// hold (checkLeftPodWorkspace), since those delete the disk. A pod with a live claim is read
-// through the open phase's worker where it is live, else the first live role (CloseRoles). A pod
-// with no live claim runs no role to read through, so its pod's launcher reads it (Launcher and
-// Close, R6 of dispatch://INFRA-3271), and the role the check names is the issue's architect, whom
-// a decline tells (keptMessage). The rows carry no release and the store writes them with no mark
-// (store.IdleReleaseMark.Close).
+// hold (checkLeftPodWorkspace), since those delete the disk. A close that is Read runs no role to
+// read through, so its pod's launcher reads the pod (launcherCheck, with Close: R6 of
+// dispatch://INFRA-3271); any other close names its live roles, and is read through the open
+// phase's worker where it is live, else the first live role (CloseRoles). The rows carry no
+// release and the store writes them with no mark (store.IdleReleaseMark.Close).
 func leftPodCloseRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
-	check := record.IssueWorkspaceCheck{Tree: view.Tree, Generation: view.Generation,
-		TreeGeneration: view.Root.Generation, TurnStart: view.NewestTurnStart()}
-	if len(decision.Roles) == 0 {
-		check.Role, check.Launcher, check.Close, check.PodUID = claim.RoleArchitect, true, true, view.PodUID
+	var check record.IssueWorkspaceCheck
+	if decision.Read {
+		check = launcherCheck(view)
+		check.Close = true
 	} else {
-		check.Role, check.CloseRoles = decision.Roles[0], decision.Roles
+		check = record.IssueWorkspaceCheck{Tree: view.Tree, Generation: view.Generation,
+			TreeGeneration: view.Root.Generation, Role: decision.Roles[0], CloseRoles: decision.Roles}
 		if open := workflow.OpenPhaseRole(view.Phase); slices.Contains(decision.Roles, open) {
 			check.Role = open
 		}
 	}
+	check.TurnStart = view.NewestTurnStart()
 	row, err := record.NewOutboxRow(view.Issue, check, now)
 	if err != nil {
 		return store.IdleReleaseMark{}, fmt.Errorf("encode the workspace check of %s's close: %w", view.Issue, err)
 	}
 	return store.IdleReleaseMark{Generation: view.Generation, Close: true,
 		Rows: []store.IdleReleaseRow{{Kind: string(row.Kind), Payload: row.Payload}}}, nil
+}
+
+// launcherCheck is the workspace check the pod's launcher reads where no role process runs in the
+// pod (record.IssueWorkspaceCheck.Launcher, R6 of dispatch://INFRA-3271): of the release of a pod no
+// claim owns and, with Close, of the close of a left pod with no live claim. It names no role,
+// since no role's shim reads it, and names the pod the pass read the runtime holding, which binds
+// the read and the teardown or suspension a clean read lets through (PodUID).
+func launcherCheck(view pods.IdleView) record.IssueWorkspaceCheck {
+	return record.IssueWorkspaceCheck{Tree: view.Tree, Generation: view.Generation,
+		TreeGeneration: view.Root.Generation, Launcher: true, PodUID: view.PodUID}
 }
 
 // leftPodStopsAfterCheck is the decision the close's workspace check makes once its read found
@@ -744,7 +755,7 @@ func leftPodStopRows(view pods.IdleView, decision workflow.IdleDecision, now, tu
 // check first (record.IssueWorkspaceCheck, Launcher): no role process runs in the pod, so its
 // launcher reads the workspace, and a read that finds work that origin does not hold, or that
 // cannot be made, declines the release and keeps the pod (checkIssueWorkspace, R6 of
-// dispatch://INFRA-3271). The check names the issue's architect, whom that decline tells. The
+// dispatch://INFRA-3271, launcherCheck), and that decline tells the issue's architect. The
 // teardown waits for the check (store.IssueRelease), and a start or a turn of a claim of the issue
 // after the mark cancels it (store's releaseOvertaken), so a read a later turn could make stale
 // deletes nothing. A release of a pod whose Sandbox keeps a volume the next pod mounts deletes no
@@ -775,9 +786,9 @@ func unownedReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now 
 	// PodUID): a release that reads nothing binds none.
 	pod := ""
 	if decision.Read {
-		pod = view.PodUID
-		if err := add(record.IssueWorkspaceCheck{Tree: view.Tree, Generation: view.Generation,
-			TreeGeneration: view.Root.Generation, Role: claim.RoleArchitect, Launcher: true, PodUID: pod}, false); err != nil {
+		check := launcherCheck(view)
+		pod = check.PodUID
+		if err := add(check, false); err != nil {
 			return store.IdleReleaseMark{}, err
 		}
 	}

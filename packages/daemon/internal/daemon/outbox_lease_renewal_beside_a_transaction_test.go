@@ -109,7 +109,7 @@ func TestALeaseRenewalThatFindsItsRowGoneSaysWhy(t *testing.T) {
 		mustOutboxRow(t, "LEGION-210", record.IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7,
 			Role: claim.RoleImplementer}, now),
 		mustOutboxRow(t, "LEGION-211", record.IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7,
-			Role: claim.RoleArchitect, Launcher: true, Close: true, PodUID: "pod-a"}, now),
+			Launcher: true, Close: true, PodUID: "pod-a"}, now),
 	}
 	for _, row := range rows {
 		enqueueOutbox(t, pool, records, row)
