@@ -1,8 +1,5 @@
-import { readFileSync } from "node:fs";
+import { type Browser, expect, type Locator, test } from "@playwright/test";
 
-import { type Browser, devices, expect, type Locator, test } from "@playwright/test";
-
-import { type FakeSession, setLiveSessions } from "./agents";
 import {
   answerAsk,
   createAsk,
@@ -14,22 +11,19 @@ import {
   patchIssue,
   resolveAsk,
 } from "./api";
+import { type Drawn, holds, holdsAt } from "./ask-header-reader";
 import {
-  type Drawn,
-  type FieldReading,
-  holds,
-  holdsAt,
-  type Lines,
-  type Reading,
-  type Rect,
-  readAtHostWidth,
-} from "./ask-header-reader";
+  ANSWERED_BLOCK,
+  asker,
+  cardHeader,
+  containerWidth,
+  DEFAULT_FONT,
+  resetToPlanner,
+  seedAnsweredBlock,
+} from "./ask-header-rows";
 import { expectRootFont, LARGE_FONT, setDefaultFont, XL } from "./default-font";
 import { documentEditor, indexedBlockAsk, marginCard, setSheet } from "./editor";
-import { askCard, inboxPane } from "./inbox-pane";
-import { replyRowId } from "./inbox-threads";
-import { resetDatabase } from "./seed";
-import { sessionIds } from "./session-ids";
+import { askCard } from "./inbox-pane";
 import { asUser } from "./users";
 
 /**
@@ -57,85 +51,25 @@ import { asUser } from "./users";
  *
  * The sweeps read at that 16 px default. Two rows read again at a reader's own 20 px one, set
  * through Chromium's `Page.setFontSizes` and so run under `chromium` alone, where every `rem` is
- * 20 px and every width a layout switches at moves with it: the three container sizes below, and
- * `xl`. They read each header just under and at each container size alone rather than every
- * width, on both sides of `xl`, and hold the same five assertions there.
+ * 20 px and every width a layout switches at moves with it: the three container sizes
+ * (`e2e/ask-header-rows.ts`), and `xl`. They read each header just under and at each container
+ * size alone rather than every width, on both sides of `xl`, and hold the same five assertions
+ * there.
  *
- * The rows after the sweeps read headers at the one width a reader meets each at, through the
- * same reader (`readHeader`, `e2e/ask-header-reader.ts`, which holds what every row of this file
- * reads with and no row) a sweep reads each of its widths with: the Inbox card at 1280 px,
- * the margin card beside a 1280 px document, the Inbox card on an iPhone 13, a closed issue's
- * answered block at 1280, 1024, 768 and 390 px, and the same block in the Inbox's narrowest
- * reading pane. Each holds the five assertions there, and what that width draws: the layout the
- * row's width picks, the line each part stands on, and the block's height against `main`'s.
+ * The rows that read headers at the one width a reader meets each at are
+ * `e2e/ask-header-at-width.e2e.ts`'s, and hold the same five assertions there. What the rows of
+ * both files share - the session that asks, the answered block they seed, the widths a layout
+ * switches at and what a card's and that block's headers draw - is `e2e/ask-header-rows.ts`'s.
  *
- * Each row's failures name the widths they were read at. Three controls were run against this
- * file, each from a build of its own: round 8's copy control wrapping as one more item of its
- * line, round 9's stacked layout at every width, and round 10's one line that never wraps at
- * every width. Each control's diff, and every row it reddened with the widths and the failure
- * messages, are recorded in dispatch://INFRA-341/artifact/r16-header-controls-txt.
+ * Each row's failures name the widths they were read at. Three controls were run against these
+ * rows and those of `e2e/ask-header-at-width.e2e.ts`, each from a build of its own: round 8's
+ * copy control wrapping as one more item of its line, round 9's stacked layout at every width,
+ * and round 10's one line that never wraps at every width. Each control's diff, and every row it
+ * reddened with the widths and the failure messages, are recorded in
+ * dispatch://INFRA-341/artifact/r16-header-controls-txt.
  */
 
-/** The one session every ask here is asked by, and whose turn an agent's turn is: its title is
- *  the longest name a header draws, the name that has to give up its width. */
-const planner: FakeSession = {
-  capabilities: ["steer"],
-  dir: "/workspaces/planner",
-  last_seen: 1_700_000_000_000,
-  machine_id: "e2e",
-  roles: [],
-  session_id: sessionIds.planner,
-  title: "Release planner for the ledger mirror",
-};
-
-const asker = { actor: { id: sessionIds.planner, kind: "session" as const }, as: "agent" as const };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-  await setLiveSessions([planner]);
-});
-
-/** The sheet the three layout widths are named in, as container sizes of its `@theme`. */
-const STYLESHEET = readFileSync(new URL("../web/src/styles.css", import.meta.url), "utf8");
-
-/** The browser's own default font size, which every row reads at unless it says otherwise: the
- *  px of a `rem`, since nothing in `styles.css` sizes the root. */
-const DEFAULT_FONT = 16;
-
-/** The width `styles.css`'s `@theme` names `--container-<name>`, in px of a root whose `rem` is
- *  `rem` px: the one place each layout width is written, so these rows read the width the
- *  classes do. */
-function containerWidth(name: string, rem = DEFAULT_FONT): number {
-  const found = new RegExp(`--container-${name}:\\s*([\\d.]+)rem;`).exec(STYLESHEET);
-  if (found?.[1] === undefined) {
-    throw new Error(`web/src/styles.css's @theme names no --container-${name} in rem`);
-  }
-  return Number(found[1]) * rem;
-}
-
-/** From this width a read-only decision block's header is one line, below it rows
- *  (`--container-ask-block-line`, 36rem). */
-const ASK_BLOCK_LINE = containerWidth("ask-block-line");
-/** From this width an ask card's row is one line (`--container-ask-card-line`, 27.5rem). */
-const ASK_CARD_LINE = containerWidth("ask-card-line");
-/** From this width to `ASK_CARD_LINE` an ask card's row is two lines beside its copy control,
- *  and below it the phone's layout (`--container-ask-card-two-lines`, 19.5rem). */
-const ASK_CARD_TWO_LINES = containerWidth("ask-card-two-lines");
-
-/** The Inbox card's row (`CardAskHeader`): one line from `ASK_CARD_LINE`, two below it. */
-const CARD_LINES: Lines = [
-  [ASK_CARD_LINE, 1, 1],
-  [0, 2, 2],
-];
-
-/** A read-only decision block's header (`BlockAskHeader`): from `ASK_BLOCK_LINE` one line, with
- *  "Answered by" on it or on the next; below, the urgency, `Decision` and the label - in two
- *  lines where even those do not fit beside the copy control - then who asked, then who
- *  answered. */
-const ANSWERED_BLOCK_LINES: Lines = [
-  [ASK_BLOCK_LINE, 1, 2],
-  [0, 3, 4],
-];
+test.beforeEach(resetToPlanner);
 
 /** The header widths a layout switches at, at a root whose `rem` is `rem` px: just under each of
  *  the three container sizes, and at it. */
@@ -154,25 +88,6 @@ function atRem(drawn: Drawn, rem: number): Drawn {
     lines: drawn.lines?.map(
       ([from, least, most]) => [(from / DEFAULT_FONT) * rem, least, most] as const
     ),
-  };
-}
-
-/** The header's own parts of a card, at each place a card is drawn. */
-function cardHeader(options: { anchored: boolean; notched: boolean; turn: boolean }): Drawn {
-  return {
-    fields: {
-      asked: "[data-ask-card-asked]",
-      asker: "[data-ask-card-asked] span.truncate[title]",
-      copy: "[data-copy-ref] button",
-      label: "[data-ask-state-label]",
-      "live link": '[data-ask-card-asked] a[aria-label^="Open live conversation"]',
-      time: "[data-ask-card-asked] time",
-      ...(options.turn ? { turn: '[data-testid^="turn-"]' } : {}),
-      ...(options.notched ? { urgency: "[data-ask-urgency-notch]" } : {}),
-      ...(options.anchored ? { anchor: ":scope > blockquote" } : {}),
-    },
-    lines: CARD_LINES,
-    row: "[data-ask-card-row]",
   };
 }
 
@@ -370,22 +285,6 @@ test("the margin card's header holds its layout from 216 px to its widest, whoev
 const CARDED_BLOCK: Drawn = {
   fields: { decision: "strong", urgency: "[data-dispatch-ask-pill]" },
   lines: [[0, 1, 1]],
-  row: "header",
-};
-
-/** A closed issue's answered block, whose own header draws everything. */
-const ANSWERED_BLOCK: Drawn = {
-  fields: {
-    answered: "[data-dispatch-ask-answered]",
-    asked: "[data-dispatch-ask-asked]",
-    asker: "[data-dispatch-ask-asked] > [title]",
-    copy: "[data-copy-ref] button",
-    decision: "strong",
-    label: "[data-ask-state-label]",
-    time: "[data-dispatch-ask-asked] time",
-    urgency: "[data-dispatch-ask-pill]",
-  },
-  lines: ANSWERED_BLOCK_LINES,
   row: "header",
 };
 
@@ -626,427 +525,6 @@ test("at a 20 px default font a closed issue's answered block's header holds its
         switchWidths(LARGE_FONT),
         `a closed issue's answered block, at ${viewport} px with a ${LARGE_FONT} px default font`
       );
-    }
-  } finally {
-    await alice.close();
-  }
-});
-
-/** A field a host-width row reads, which the header must draw: a reading without it fails the
- *  row, naming it. */
-function drawnField(reading: Reading, name: string): FieldReading & { readonly span: Rect } {
-  const field = reading.fields[name];
-  if (field?.span == null) {
-    throw new Error(`the header draws no ${name}: ${reading.failures.join("; ")}`);
-  }
-  return { ...field, span: field.span };
-}
-
-/** The first and the last line of its row a field stands on. */
-function firstLine(field: FieldReading): number {
-  return Math.min(...field.lines);
-}
-
-function lastLine(field: FieldReading): number {
-  return Math.max(...field.lines);
-}
-
-/** Where a read-only decision block's header puts its parts at the width its host draws it, read
- *  as every sweep reads them: the lines they stand on, whether who asked shares the label's line
- *  or takes one under it, whether "Answered by" follows the copy control or takes a line under
- *  it, and the header's own height. And what is drawn rather than the boxes around it: a line too
- *  narrow for its parts drew the time past the end of who asked's own box, over the copy
- *  control, and pushed the control past the header's edge. */
-async function blockLayout(header: Locator) {
-  const reading = await readAtHostWidth(header, ANSWERED_BLOCK);
-  const answered = drawnField(reading, "answered");
-  const asked = drawnField(reading, "asked");
-  const copy = drawnField(reading, "copy");
-  const label = drawnField(reading, "label");
-  const time = drawnField(reading, "time");
-  const { head } = reading;
-  return {
-    answeredAfterCopy: answered.lines.includes(firstLine(label))
-      ? answered.span.left >= copy.span.right
-      : firstLine(answered) > Math.max(lastLine(copy), lastLine(label)),
-    answeredUnderAsked: firstLine(answered) > lastLine(asked),
-    askedOnLabelRow: asked.lines.includes(firstLine(label)),
-    copyAtRightEnd: Math.abs(head.right - copy.span.right) <= 1,
-    copyInsideHeader: copy.span.left >= head.left - 1 && copy.span.right <= head.right + 1,
-    copyOnLabelRow: copy.lines.includes(firstLine(label)),
-    failures: reading.failures,
-    height: Math.round(head.bottom - head.top),
-    rows: reading.lines,
-    timeClearOfCopy:
-      !time.lines.some((line) => copy.lines.includes(line)) ||
-      time.span.right <= copy.span.left + 1,
-    timeInsideHeader: time.span.right <= head.right + 1,
-  };
-}
-
-/** An issue whose spec holds one decision block, asked by the long-titled session and answered,
- *  with the time the server says the answer was given. Each row closes the issue once it has
- *  seeded what it needs on it: a closed issue's answered block draws its own header, since no
- *  card under it carries the provenance. */
-async function seedAnsweredBlock() {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue(
-    {
-      project: "CORE",
-      spec: 'Intro.\n\n:::ask{#decide urgency="blocking" multiple="false" state="open"}\nWhich way?\n\n- Left\n- Right\n:::\n',
-      title: "Closed block header",
-    },
-    asker
-  );
-  const blockAsk = await indexedBlockAsk(issue.key, "decide");
-  const answered = await answerAsk(blockAsk.id, {
-    expected_edited_at: null,
-    selected: ["Left"],
-    text: "Left.",
-  });
-  if (answered.answer === null) throw new Error("the answered ask holds no answer");
-  return { answeredAt: answered.answer.at, blockAsk, issue };
-}
-
-/** What the block header's two layouts hold wherever they are drawn: none of the five failures,
- *  the time clear of the copy control and both inside the header, the control on the label's
- *  line. */
-const BLOCK_HEADER_DRAWN = {
-  copyInsideHeader: true,
-  copyOnLabelRow: true,
-  failures: [],
-  timeClearOfCopy: true,
-  timeInsideHeader: true,
-} as const;
-
-/** From `ASK_BLOCK_LINE` of header: one line, who asked on the label's line, "Answered by" after
- *  the copy control or under the line. */
-const BLOCK_HEADER_LINE = {
-  ...BLOCK_HEADER_DRAWN,
-  answeredAfterCopy: true,
-  askedOnLabelRow: true,
-} as const;
-
-/** Below `ASK_BLOCK_LINE` of header: rows, the copy control at the end of the label's, who asked
- *  under it and "Answered by" under that. */
-const BLOCK_HEADER_ROWS = {
-  ...BLOCK_HEADER_DRAWN,
-  answeredUnderAsked: true,
-  askedOnLabelRow: false,
-  copyAtRightEnd: true,
-} as const;
-
-/**
- * The read-only block's header at each width this row reads it at, for this seed. The heights
- * and rows at 1280, 1024 and 768 px are `main`'s at c69be928, before the header drew a state
- * label: this seed, its page clock pinned as this row pins it, counted as this row counts rows,
- * on a build of that tree served by its own harness. There it was 80 px in three rows in the
- * 491 px column 1280 px leaves beside the margin (the urgency and `Decision`; who asked, when
- * and the copy control; who answered), 44 px in one row in the 939 px column at 1024, and 68
- * px in two in the 683 px column at 768 - below 1280 px every button is a 44 px box
- * (`web/src/styles.css`), the copy control with them. A label that made the header taller
- * there, or pushed "Answered by" to a row of its own at 1024, fails it. A phone's 305 px header
- * is held to its rows alone: `main` wrapped who asked onto two lines there, 112 px to these
- * rows' 92.
- *
- * The time is the one part of this seed whose width moves, so the row pins it: at 1024 the one
- * row leaves 70 px to spare on `main` and 7 px here, and a time as wide as "5 minutes ago"
- * puts "Answered by" on a row of its own on both. The family the text is drawn in is pinned
- * too: the browser image the suite runs in answers `sans-serif` as DejaVu Sans, as the runner
- * did (`.github/docker/browser.Dockerfile`), and so do the machines these figures were read on.
- */
-const BLOCK_HEADER_AT: Readonly<Record<number, Record<string, unknown>>> = {
-  390: { ...BLOCK_HEADER_ROWS, rows: 3 },
-  768: { ...BLOCK_HEADER_LINE, height: 68, rows: 2 },
-  1024: { ...BLOCK_HEADER_LINE, height: 44, rows: 1 },
-  1280: { ...BLOCK_HEADER_ROWS, height: 80, rows: 3 },
-};
-
-test("a read-only decision block's header is one wrapping row where its line fits and rows of their own where it does not, as tall as main's from 768 to 1280 px @phone", async ({
-  browser,
-}) => {
-  const { answeredAt, issue } = await seedAnsweredBlock();
-  await patchIssue(issue.key, { status: "done" });
-  const alice = await asUser(browser, "alice");
-  try {
-    const page = await alice.newPage();
-    // The page's `Date` is held at the moment the server says the block was answered, its
-    // timers left running, so both of the header's times read "just now" however long the row
-    // takes, whatever the page's clock says against the server's: the width of each time is
-    // part of what the row measures (`BLOCK_HEADER_AT`).
-    await page.clock.setFixedTime(answeredAt);
-    await page.goto(`/issues/${issue.key}`);
-    const header = documentEditor(page).locator(
-      '[data-dispatch-ask-block="decide"] header[data-ask-header]'
-    );
-    await expect(header.locator("[data-dispatch-ask-answered]")).toBeVisible();
-    await expect(header.locator("time")).toHaveText(["just now", "just now"]);
-    const viewport = page.viewportSize();
-    if (viewport === null) throw new Error("the page has no viewport");
-    // The header picks its layout by its own width, not the viewport's. A desktop project reads
-    // it from 1280 down to a phone's 390 px, a phone project at its own width.
-    const widths = viewport.width < 768 ? [viewport.width] : [1280, 1024, 768, 390];
-    for (const width of widths) {
-      const expected = BLOCK_HEADER_AT[width];
-      if (expected === undefined) throw new Error(`no layout is written down for ${width} px`);
-      await page.setViewportSize({ height: viewport.height, width });
-      await expect
-        .poll(() => blockLayout(header), {
-          message: `the block header's rows at ${width} px`,
-        })
-        .toMatchObject(expected);
-    }
-    // A name the row cuts is still there whole, in the tooltip of the part that truncates.
-    await expect(header.locator("[data-dispatch-ask-asked] > [title]")).toHaveAttribute(
-      "title",
-      new RegExp(`^${planner.title} · `)
-    );
-  } finally {
-    await alice.close();
-  }
-});
-
-test("a closed issue's answered block in the narrowest reading pane draws its time clear of its copy control, and the control inside its header", async ({
-  browser,
-}) => {
-  const { blockAsk, issue } = await seedAnsweredBlock();
-  // The asker's reply under the reader's answer keeps the ask's thread in the reader's Inbox as
-  // a Reply row after the close, and the pane opens a decision block's thread in its document.
-  await createComment(issue.key, { ask_id: blockAsk.id, body: "Left it is." }, asker);
-  await patchIssue(issue.key, { status: "done" });
-  const alice = await asUser(browser, "alice");
-  try {
-    const page = await alice.newPage();
-    // The pane shows from 1280 px (`READING_PANE_QUERY`), where its narrowest is narrowest.
-    await page.setViewportSize({ height: 900, width: 1280 });
-    await page.goto("/");
-    const row = page.locator(`[data-inbox-row="${replyRowId(blockAsk.id)}"]`);
-    await row.locator("time").first().click();
-    await expect(row).toHaveAttribute("data-inbox-selected", "true");
-    // The reader drags the line between the list and the pane as far right as it goes, where
-    // the pane keeps 30% of the two columns (`PaneDivider`): about 266 px.
-    const divider = page.getByTestId("inbox-pane-divider");
-    await expect(divider).toBeVisible();
-    // The wait above drew the divider, and a drawn element has a box.
-    const line = await divider.boundingBox();
-    if (line === null) throw new Error("the Inbox draws no pane divider");
-    const y = line.y + line.height / 2;
-    await page.mouse.move(line.x + line.width / 2, y);
-    await page.mouse.down();
-    await page.mouse.move(1279, y, { steps: 5 });
-    await page.mouse.up();
-    await expect(divider).toHaveAttribute("aria-valuenow", "30");
-    const header = inboxPane(page).locator(
-      '[data-dispatch-ask-block="decide"] header[data-ask-header]'
-    );
-    await expect(header.locator("[data-dispatch-ask-answered]")).toBeVisible();
-    await expect
-      .poll(() => blockLayout(header), {
-        message: "the block header in the narrowest reading pane",
-      })
-      .toMatchObject(BLOCK_HEADER_ROWS);
-  } finally {
-    await alice.close();
-  }
-});
-
-/** The session whose ask the card rows leave waiting on the reader, under a name short enough to
- *  draw whole on a phone's line. */
-const shortPlanner: FakeSession = { ...planner, title: "Planner" };
-
-/** The long-titled session whose ask the card rows hand back to it: its name is the turn an
- *  agent holds, the one part of the card's line that gives up width. */
-const ledger: FakeSession = {
-  ...planner,
-  dir: "/workspaces/ledger",
-  session_id: sessionIds.tester,
-};
-
-/** Two anchored asks on one issue's spec: the short-titled planner's, waiting on the reader, and
- *  the long-titled session's, whose turn the reader's question handed back to it. */
-async function seedTurns() {
-  await setLiveSessions([shortPlanner, ledger]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({
-    project: "CORE",
-    spec: "## Specification\n\nThe mirror replays the ledger on a cold start.\n",
-    title: "Copy control",
-  });
-  const yours = await createAsk(
-    issue.key,
-    {
-      anchor: { artifact: "spec", quote: "replays the ledger" },
-      question: "Does a cold start replay the ledger?",
-    },
-    asker
-  );
-  const theirs = await createAsk(
-    issue.key,
-    {
-      anchor: { artifact: "spec", quote: "cold start" },
-      question: "Which mirror keeps the budget?",
-    },
-    { actor: { id: ledger.session_id, kind: "session" }, as: "agent" }
-  );
-  await createComment(issue.key, { ask_id: theirs.id, body: "Which mirror do you mean?" });
-  await expect
-    .poll(() => getAsk(theirs.id), { intervals: [50, 50, 100, 200, 500] })
-    .toMatchObject({ ask: { waiting_on: "agent" } });
-  return {
-    issue,
-    turns: [
-      { ask: yours, asker: shortPlanner, turn: "Waiting on you" },
-      { ask: theirs, asker: ledger, turn: `Waiting on ${ledger.title}` },
-    ],
-  };
-}
-
-/** An ask card's own line at the width its host draws it, read as every sweep reads it: the
- *  width of its `@container` row, the one condition that picks its layout (`CardAskHeader`: one
- *  line from `ASK_CARD_LINE`, two lines beside the copy control from `ASK_CARD_TWO_LINES`, the
- *  phone's lines below that), the viewport's width, which no longer picks it and which a row
- *  reads only to say which reader it stands for, whether the copy control shares the label's
- *  line, whether who asked and when opens a line of its own under that one, and whether the
- *  asker's name is drawn whole. The row and who asked are read by their own marks, so a row that
- *  lost either says which. */
-async function cardLine(card: Locator, name: string) {
-  await expect(card.locator("[data-ask-header] [data-copy-ref] button")).toBeVisible();
-  const viewport = card.page().viewportSize();
-  if (viewport === null) throw new Error("the page has no viewport");
-  const drawn = cardHeader({ anchored: true, notched: false, turn: true });
-  const reading = await readAtHostWidth(card.locator("[data-ask-header]").first(), {
-    ...drawn,
-    fields: { ...drawn.fields, name: `[data-ask-card-asked] [title="${name}"]` },
-  });
-  const asked = drawnField(reading, "asked");
-  const copy = drawnField(reading, "copy");
-  const label = drawnField(reading, "label");
-  const asker = drawnField(reading, "name");
-  const { row } = reading;
-  if (row === null) throw new Error(`the card draws no row: ${reading.failures.join("; ")}`);
-  return {
-    askerOwnLine:
-      firstLine(asked) > Math.max(lastLine(label), lastLine(copy)) &&
-      Math.abs(asked.span.left - row.left) <= 1,
-    askerWhole: asker.drawn >= asker.whole - 0.5,
-    copyOnLabelLine: copy.lines.includes(firstLine(label)),
-    failures: reading.failures,
-    row: row.right - row.left,
-    viewport: viewport.width,
-  };
-}
-
-test("the Inbox card's copy control ends the label's one line, whoever's turn it is", async ({
-  browser,
-}) => {
-  const { turns } = await seedTurns();
-  const alice = await asUser(browser, "alice");
-  try {
-    const page = await alice.newPage();
-    await page.goto("/");
-    for (const { ask, asker: author, turn } of turns) {
-      const card = await askCard(page, ask.id);
-      await expect(card.getByTestId(`turn-${ask.id}`)).toContainText(turn);
-      const line = await cardLine(card, `${author.title} · ${author.session_id}`);
-      expect(line.failures, `${turn}: the Inbox card's header at its own width`).toEqual([]);
-      // The card's widest layout: a row of `ASK_CARD_LINE` or more, where label, turn, asker and
-      // copy control are one line.
-      expect(line.row, `${turn}: the Inbox card's row is 27.5rem or wider`).toBeGreaterThanOrEqual(
-        ASK_CARD_LINE
-      );
-      expect(line.copyOnLabelLine, `${turn}: the copy control is on the label's line`).toBe(true);
-    }
-  } finally {
-    await alice.close();
-  }
-});
-
-test("the margin card's copy control stands beside its two lines, on the label's, whoever's turn it is", async ({
-  browser,
-}) => {
-  const { issue, turns } = await seedTurns();
-  const alice = await asUser(browser, "alice");
-  try {
-    const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}`);
-    await page.getByRole("tab", { name: "Spec" }).click();
-    for (const { ask, asker: author, turn } of turns) {
-      const card = marginCard(page, ask.id);
-      await expect(card.getByTestId(`turn-${ask.id}`)).toContainText(turn);
-      const line = await cardLine(card, `${author.title} · ${author.session_id}`);
-      expect(line.failures, `${turn}: the margin card's header at its own width`).toEqual([]);
-      // The margin: a row from `ASK_CARD_TWO_LINES` to under `ASK_CARD_LINE`, which breaks the
-      // label and turn from the asker and stands the copy control beside both lines. The
-      // viewport check no longer picks that layout; it says this row reads the margin as a
-      // desktop reader does, at `md` or wider.
-      expect(line.viewport, `${turn}: the viewport is md or wider`).toBeGreaterThanOrEqual(768);
-      expect(line.row, `${turn}: the margin card's row is 19.5rem or wider`).toBeGreaterThanOrEqual(
-        ASK_CARD_TWO_LINES
-      );
-      expect(line.row, `${turn}: the margin card's row is under 27.5rem`).toBeLessThan(
-        ASK_CARD_LINE
-      );
-      expect(line.copyOnLabelLine, `${turn}: the copy control is on the label's line`).toBe(true);
-    }
-  } finally {
-    await alice.close();
-  }
-});
-
-/** The answer box of `card` as it is drawn before it holds anything: its content box's height,
- *  read from its border box, and its line height, both in px. */
-async function answerBox(card: Locator): Promise<{ content: number; line: number }> {
-  return card.locator("[data-ask-answer]").evaluate((box) => {
-    const style = getComputedStyle(box);
-    const edges = ["borderTopWidth", "borderBottomWidth", "paddingTop", "paddingBottom"] as const;
-    const around = edges.reduce((sum, edge) => sum + Number.parseFloat(style[edge]), 0);
-    return {
-      content: box.getBoundingClientRect().height - around,
-      line: Number.parseFloat(style.lineHeight),
-    };
-  });
-}
-
-test("on a phone the Inbox card's copy control ends the label's line, the asker has the next line whole and the answer box is two lines tall, whoever's turn it is @phone", async ({
-  browser,
-}) => {
-  const { turns } = await seedTurns();
-  const alice = await asUser(browser, "alice", devices["iPhone 13"]);
-  try {
-    const page = await alice.newPage();
-    await page.goto("/");
-    for (const { ask, asker: author, turn } of turns) {
-      const card = await askCard(page, ask.id);
-      await expect(card.getByTestId(`turn-${ask.id}`)).toContainText(turn);
-      const title = `${author.title} · ${author.session_id}`;
-      const line = await cardLine(card, title);
-      expect(line.failures, `${turn}: the phone card's header at its own width`).toEqual([]);
-      // A phone: a row under `ASK_CARD_TWO_LINES`, where the copy control ends the label's line
-      // and the asker has the next line to itself. The viewport check no longer picks that
-      // layout; it says this row reads the card as a phone does, under `md`, where the copy
-      // control and the live link are 44 px touch boxes.
-      expect(line.viewport, `${turn}: the viewport is under md`).toBeLessThan(768);
-      expect(line.row, `${turn}: the phone card's row is under 19.5rem`).toBeLessThan(
-        ASK_CARD_TWO_LINES
-      );
-      expect(line.copyOnLabelLine, `${turn}: the copy control is on the label's line`).toBe(true);
-      expect(line.askerOwnLine, `${turn}: the asker opens the next line`).toBe(true);
-      await expect(card.locator(`[data-ask-header] [title="${title}"]`)).toHaveText(author.title);
-      // A name that fits that line is drawn whole. The agent's own title does not fit it at
-      // all - 223 px of name beside the live link and the time, which leave it 160 - so it
-      // truncates there whatever the copy control does, and its tooltip holds it whole.
-      if (author === ledger) continue;
-      expect(line.askerWhole, `${turn}: the asker's name is not cut short`).toBe(true);
-    }
-    // The answer box draws two of its lines, its placeholder's two at a phone's width: the touch
-    // floor's 44 px (`web/src/styles.css`) is one line, which cut the placeholder mid-line.
-    for (const { ask, turn } of turns) {
-      const box = await answerBox(await askCard(page, ask.id));
-      expect(box.line, `${turn}: the answer box has no line height in px`).toBeGreaterThan(0);
-      expect(
-        box.content,
-        `${turn}: the answer box is under two of its lines tall`
-      ).toBeGreaterThanOrEqual(2 * box.line - 0.5);
     }
   } finally {
     await alice.close();

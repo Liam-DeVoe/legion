@@ -470,9 +470,10 @@ function CardAskHeader({
             the first line, and the asker's line is the card's whole width, which is what reads a
             name whole beside its live link (`e2e/agent-name.e2e.ts`).
             `e2e/ask-header-sweep.e2e.ts` sweeps the row from 216 px up at both control sizes,
-            and holds the control to the label's line in all three layouts at the widths a reader
-            meets them (the Inbox at 1280 px, the margin, a phone), reading the line and the
-            asker by their own marks (`data-ask-card-row`, `data-ask-card-asked`). */}
+            and `e2e/ask-header-at-width.e2e.ts` holds the control to the label's line in all
+            three layouts at the widths a reader meets them (the Inbox at 1280 px, the margin, a
+            phone), reading the line and the asker by their own marks (`data-ask-card-row`,
+            `data-ask-card-asked`). */}
         <span className="flex min-w-0 items-center gap-x-1.5 @max-ask-card-two-lines:flex-wrap">
           <span
             className={`flex min-w-0 items-center gap-x-1.5 ${tooltips ? "whitespace-nowrap " : ""}@max-ask-card-line:flex-wrap @max-ask-card-line:[&>[data-ask-state-label]]:py-0 @max-ask-card-two-lines:contents`}

@@ -65,9 +65,11 @@ export const realStackReasons: Record<string, string> = {
   "artifacts.e2e.ts": "uploads, version compare, document sockets and a 503 refetch",
   "ask-answer-area.e2e.ts":
     "Answer, Ask back and Reply are writes the rows re-read, the picked session's message is read back from the fake Envoy, and the decision-block rows answer inside the live document",
-  "ask-blocks.e2e.ts":
-    "decision answers the server records, and pastes in the live document editor",
+  "ask-blocks.e2e.ts": "decision answers the server records",
+  "ask-blocks-paste.e2e.ts": "pastes in the live document editor",
   "ask-concurrent-edit.e2e.ts": "two editors crossing in one `/ws/doc` room",
+  "ask-header-at-width.e2e.ts":
+    "every header it reads is in a state the server derives from the row's own seeded writes - the agent's turn the reader's reply hands back, and a decision block's ask indexed out of the spec and answered on an issue the row closes - and the margin card's and the decision block's headers are drawn inside the live document, whose Yjs socket no recording replays",
   "ask-header-sweep.e2e.ts":
     "every state a header is swept in is one the server derives from the row's own seeded writes - the agent's turn the reader's reply hands back, the decision blocks' asks indexed out of the spec, and the ask a closed issue's close resolves - and the margin card's and the decision block's headers are drawn inside the live document, whose Yjs socket no recording replays",
   "ask-part-references.e2e.ts": "the reference and backlink index the server builds from the write",
@@ -180,6 +182,8 @@ export const realStackReasons: Record<string, string> = {
     "writes a reply and re-reads the thread; live event feed; lands in the document's live room",
   "issue-page-g.e2e.ts":
     "the rows draw what the server stored and indexed - a document's blocks, the decisions read, a result, the one batched read of names - on the new page the reader's stored preference turns on",
+  "issue-page-g-long-rows.e2e.ts":
+    "its rows seed sixty-six long replies through the server and read where the drawn page cuts them as it opens and as it jumps, on the new page the reader's stored preference turns on",
   "issue-page-g-view.e2e.ts":
     "its rows seed long planner replies through the server, three of them taller than the view, and read where the drawn page lays them out as it jumps, on the new page the reader's stored preference turns on",
   "issue-page-look.e2e.ts":

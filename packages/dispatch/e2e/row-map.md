@@ -201,8 +201,10 @@ such a row loses is feedback on the pull request itself.
 | `e2e/architecture.e2e.ts` | a status write must move the server-computed bar; the server's import refusal is the assertion |
 | `e2e/artifacts.e2e.ts` | uploads, version compare, document sockets and a 503 refetch |
 | `e2e/ask-answer-area.e2e.ts` | Answer, Ask back and Reply are writes the rows re-read, the picked session's message is read back from the fake Envoy, and the decision-block rows answer inside the live document |
-| `e2e/ask-blocks.e2e.ts` | decision answers the server records, and pastes in the live document editor |
+| `e2e/ask-blocks-paste.e2e.ts` | pastes in the live document editor |
+| `e2e/ask-blocks.e2e.ts` | decision answers the server records |
 | `e2e/ask-concurrent-edit.e2e.ts` | two editors crossing in one `/ws/doc` room |
+| `e2e/ask-header-at-width.e2e.ts` | every header it reads is in a state the server derives from the row's own seeded writes - the agent's turn the reader's reply hands back, and a decision block's ask indexed out of the spec and answered on an issue the row closes - and the margin card's and the decision block's headers are drawn inside the live document, whose Yjs socket no recording replays |
 | `e2e/ask-header-sweep.e2e.ts` | every state a header is swept in is one the server derives from the row's own seeded writes - the agent's turn the reader's reply hands back, the decision blocks' asks indexed out of the spec, and the ask a closed issue's close resolves - and the margin card's and the decision block's headers are drawn inside the live document, whose Yjs socket no recording replays |
 | `e2e/ask-part-references.e2e.ts` | the reference and backlink index the server builds from the write |
 | `e2e/asked-of-cli.e2e.ts` | runs the real `dispatch open-asks` against the server and reads the person it names, which the server's own expression answers, before and after a hand-on made in a browser |
@@ -276,6 +278,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/inbox-view.e2e.ts` | a priority write must arrive live |
 | `e2e/inbox.e2e.ts` | writes a reply and re-reads the thread; live event feed; lands in the document's live room |
 | `e2e/issue-page-d.e2e.ts` | each row signs in for real and turns the new page on through that login's stored preference, and the view row's counts are the server's coverage, results and block reads of the seeded issue |
+| `e2e/issue-page-g-long-rows.e2e.ts` | its rows seed sixty-six long replies through the server and read where the drawn page cuts them as it opens and as it jumps, on the new page the reader's stored preference turns on |
 | `e2e/issue-page-g-view.e2e.ts` | its rows seed long planner replies through the server, three of them taller than the view, and read where the drawn page lays them out as it jumps, on the new page the reader's stored preference turns on |
 | `e2e/issue-page-g.e2e.ts` | the rows draw what the server stored and indexed - a document's blocks, the decisions read, a result, the one batched read of names - on the new page the reader's stored preference turns on |
 | `e2e/issue-page-h.e2e.ts` | the seed's approvals, claim, blockers and pins are the server's own, and one row writes each control's value through Dispatch and reads it back after a reload |

@@ -1,11 +1,13 @@
-// The one reader of an ask header's geometry, which every row of `ask-header-sweep.e2e.ts` reads
-// its headers through (dispatch://INFRA-341, R1). `readHeader` reads, in the page, what a header
-// draws at the width it has; a sweep is that reading at every width from `NARROWEST` up, `STEP` px
-// at a time, the way a host of that width would draw it; a switch-width row is that reading at the
-// widths a layout switches at alone; and a host-width row is one reading at the width its host
-// draws the header at. Each reading fails on the five checks that file's head names. What each
-// place draws (`Drawn`) and what each row holds it to stay in that file, beside its rows: this
-// module is what they read with, and holds no row.
+// The one reader of an ask header's geometry, which every row of `ask-header-sweep.e2e.ts` and
+// `ask-header-at-width.e2e.ts` reads its headers through (dispatch://INFRA-341, R1).
+// `readHeader` reads, in the page, what a header draws at the width it has; a sweep is that
+// reading at every width from `NARROWEST` up, `STEP` px at a time, the way a host of that width
+// would draw it; a switch-width row is that reading at the widths a layout switches at alone; and
+// a host-width row is one reading at the width its host draws the header at. Each reading fails
+// on the five checks `ask-header-sweep.e2e.ts`'s head names. What each place draws (`Drawn`) and
+// what each row holds it to stay beside the rows, in those two files and in
+// `ask-header-rows.ts`, which holds what both share: this module is what they read with, and
+// holds no row.
 import { expect, type Locator } from "@playwright/test";
 
 /** The width the sweep starts from: just under the narrowest header a host draws, which is the
@@ -13,7 +15,7 @@ import { expect, type Locator } from "@playwright/test";
  *  and 217 px of a decision block's, where round 10's fault was. */
 const NARROWEST = 216;
 /** The width every header is swept to at least: past the widest layout switch (the block's
- *  `ASK_BLOCK_LINE`, `ask-header-sweep.e2e.ts`), and the width of a tablet's widest header. A
+ *  `ASK_BLOCK_LINE`, `ask-header-rows.ts`), and the width of a tablet's widest header. A
  *  header its host draws wider is swept to its own width. */
 const WIDEST = 960;
 const STEP = 4;
@@ -59,9 +61,9 @@ export interface FieldReading {
 }
 
 /** What a header draws at one width: the reading every assertion of `ask-header-sweep.e2e.ts`
- *  is made on. */
+ *  and `ask-header-at-width.e2e.ts` is made on. */
 export interface Reading {
-  /** Each failure of the five that file's head names. */
+  /** Each failure of the five `ask-header-sweep.e2e.ts`'s head names. */
   readonly failures: readonly string[];
   /** Each field of `Drawn.fields` the header draws, by name. */
   readonly fields: Readonly<Record<string, FieldReading>>;

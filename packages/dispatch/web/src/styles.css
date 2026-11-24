@@ -27,7 +27,7 @@
 /* The three widths an ask header's layout switches at (`features/inbox/AskHeader.tsx`), each a
    width of the header's own row, which is its `@container`, and never the viewport's. Named
    here once as container sizes, so every class reads one of them by name (`@max-ask-block-line:`
-   and the like) and `e2e/ask-header-sweep.e2e.ts` reads these same values:
+   and the like) and `e2e/ask-header-rows.ts` reads these same values:
      - `ask-block-line`: from it a read-only decision block's header is one line; below it, rows;
      - `ask-card-line`: from it an ask card's row is one line;
      - `ask-card-two-lines`: from it to `ask-card-line` the card's row is two lines beside the
