@@ -136,7 +136,7 @@ func TestSharedRulesSitInCommonOnceAndRoleRulesInTheirCores(t *testing.T) {
 		readSource       = "read the code that already does the nearest thing"
 		noDefer          = "Nothing needed for correctness is deferred"
 		fastChecks       = "run the repository's fast local checks"
-		testerRunsTheApp = "read CI for everything static"
+		testerRunsTheApp = "Never run a lane again as a whole"
 		redTest          = "the test itself is not theirs to change"
 		dontModify       = "make the tester's red test pass; do not modify it"
 	)
@@ -158,8 +158,8 @@ func TestSharedRulesSitInCommonOnceAndRoleRulesInTheirCores(t *testing.T) {
 	contains("core/oracle.md", readSource, true)
 	contains("core/oracle.md", noDefer, false)
 	// The implementer runs the repository's fast local checks before a push; the tester runs the
-	// application and reads CI for the static lanes (dispatch://LEGION-631), so the rule to rerun
-	// them is the implementer's alone.
+	// application and its own checks, never a lane as a whole, and reads no CI, so the rule to rerun
+	// a lane is the implementer's alone.
 	contains("core/implementer.md", fastChecks, true)
 	contains("core/tester.md", fastChecks, false)
 	contains("core/tester.md", testerRunsTheApp, true)
@@ -708,7 +708,7 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 func TestCIResultRulesLiveInRolePrompts(t *testing.T) {
 	for _, pin := range []struct{ file, rule string }{
 		{"tester.md", "A `before_merge` check reads yes at the head you test when a pass of it counts at that commit and no fail does, whichever role recorded the pass: that is Dispatch's rule, so the implementer's pass alone already reads yes, and your own run and record of each check with no `ci_check` are still owed before you complete."},
-		{"tester.md", "A pass and a fail at any open head make the check not known; count it as a test failure and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
+		{"tester.md", "A pass and a fail at any open head make the check not known; count it as a test failure and do not wait for a later result."},
 		{"reviewer.md", "A pass and a fail at any open head make the check not known: request changes at once, naming the check, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
 		{"architect.md", "A pass and a fail at any open head make the check not known: send the issue back at once, naming the check, do not accept it, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
 		{"architect-root.md", "A pass and a fail at any open head make the check not known: send the issue back at once, naming the check, do not accept it, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
@@ -719,10 +719,15 @@ func TestCIResultRulesLiveInRolePrompts(t *testing.T) {
 		{"implementer.md", "For a check CI proves, copy the `Pull request line` under this pull request's head from `dispatch results` into the body's `Checks` line; record no result for it."},
 		// R14: the state at the head decides, whoever recorded the pass, so the reviewer's gate asks
 		// no pass of a named role, and its merge-gate order reads the testing step by its states.
-		{"core/reviewer.md", "every `before_merge` check of the issue's Verification document reading yes on that head's line in `dispatch results --issue <issue>`, whoever recorded the pass: Dispatch's state decides your approval, and no role's pass is needed beside it."},
+		// The review and the acceptance read the states of each check a CI job runs too: the
+		// reviewer approves only when each check reads yes at the head it reviews, and the
+		// architect accepts only when each reads yes at each open head of the issue.
+		{"core/reviewer.md", "every `before_merge` check of the issue's Verification document, a check carrying `ci_check` among them, reading yes on that head's line in `dispatch results --issue <issue>`, whoever recorded the pass: Dispatch's state decides your approval, and no role's pass is needed beside it."},
 		{"core/reviewer.md", "A check carrying `ci_check` is CI's, and its state comes from its results from CI:"},
-		{"reviewer.md", "refuse it while any such check does not read yes on the line of that head under the check in `dispatch results --issue <issue>`, naming each by its block id. That state decides, whoever recorded the pass: for a check carrying `ci_check` it comes from its results from CI, and a pass at another commit is none."},
+		{"reviewer.md", "refuse it while any such check, a check carrying `ci_check` among them, does not read yes on the line of that head under the check in `dispatch results --issue <issue>`, naming each by its block id. That state decides, whoever recorded the pass: for a check carrying `ci_check` it comes from its results from CI, and a pass at another commit is none."},
 		{"reviewer.md", "(the testing step passed, each check reading yes at the head it tested → your approval"},
+		{"architect.md", "read at the issue's own head: each must read yes at each open head of the issue, a check carrying `ci_check` among them, which `dispatch results --issue <issue>` shows."},
+		{"architect-root.md", "read at the issue's own head: each must read yes at each open head of the issue, a check carrying `ci_check` among them, which `dispatch results --issue <issue>` shows."},
 	} {
 		text := strings.Join(strings.Fields(rolePart(t, pin.file)), " ")
 		if !strings.Contains(text, pin.rule) {
@@ -737,6 +742,13 @@ func TestCIResultRulesLiveInRolePrompts(t *testing.T) {
 			if strings.Contains(text, gate) {
 				t.Errorf("%s still asks a pass of a named role: %q", file, gate)
 			}
+		}
+	}
+	// The acceptance's gate was worded as a pass standing at one head, which says neither that the
+	// state decides nor that each open head of the issue is read.
+	for _, file := range []string{"architect.md", "architect-root.md"} {
+		if text := foldWhitespace(rolePart(t, file)); strings.Contains(text, "each needs a pass standing at that head") {
+			t.Errorf("%s still gates the acceptance on a pass standing at one head", file)
 		}
 	}
 }

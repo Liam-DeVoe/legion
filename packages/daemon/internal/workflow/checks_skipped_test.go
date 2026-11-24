@@ -379,7 +379,7 @@ func TestTheWakeTaskNamesSkippedChecksSkipped(t *testing.T) {
 		rig := newWakeRig(t)
 		rig.apply("settled", settlement("head1"))
 		oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks)
-		want := woken + "head1 passed every check. Read the checks before you decide anything."
+		want := woken + "head1 passed every check. Nothing moved on it."
 		if task := wakeStarts(t, rig.pool)[0].Task; task != want {
 			t.Fatalf("the woken role's task = %q, want today's %q", task, want)
 		}

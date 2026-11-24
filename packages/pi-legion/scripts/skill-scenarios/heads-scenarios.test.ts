@@ -134,11 +134,11 @@ test("a world added to the catalog alone reaches rig.sh, heads-world.ts, seed.ts
     ranWith,
     probed: JSON.parse(probed.stdout.toString()),
     usage: usage.includes(
-      "architect-pass-and-fail [no-verdict-fail|no-verdict-pass|no-verdict]|ci-pass-and-fail"
+      "architect-pass-and-fail [no-verdict-fail|no-verdict-pass|ci-check-fail|ci-check-fail-other-head|no-verdict]|ci-pass-and-fail"
     ),
   }).toEqual({
     batch: "exit=0 ",
-    runs: ["", " no-verdict-fail", " no-verdict-pass", " no-verdict"]
+    runs: ["", " no-verdict-fail", " no-verdict-pass", " ci-check-fail", " ci-check-fail-other-head", " no-verdict"]
       .map((which, at) => `run architect-pass-and-fail head 1 ${at + 1} 1700000000${which}\n`)
       .join(""),
     run: "exit=0 ",

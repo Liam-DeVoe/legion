@@ -58,7 +58,7 @@ const STATE_DECIDES = "R14: the state at the head decides, whoever recorded the 
 const PUT_BACK: readonly (readonly [string, string, string])[] = [
   [
     CORE_REVIEWER,
-    "and every `before_merge` check of the issue's Verification document reading yes on that head's line in `dispatch results --issue <issue>`, whoever recorded the pass: Dispatch's state decides your approval, and no role's pass is needed beside it.",
+    "and every `before_merge` check of the issue's Verification document, a check carrying `ci_check` among them, reading yes on that head's line in `dispatch results --issue <issue>`, whoever recorded the pass: Dispatch's state decides your approval, and no role's pass is needed beside it.",
     "and a pass standing for every `before_merge` check of the issue's Verification document at that head, from the implementer and from the tester both, which `dispatch results --issue <issue>` prints on that head's line under each check: a line that names one of the two roles alone is no pass for your approval.",
   ],
   [
@@ -68,7 +68,7 @@ const PUT_BACK: readonly (readonly [string, string, string])[] = [
   ],
   [
     REVIEWER,
-    "refuse it while any such check does not read yes on the line of that head under the check in `dispatch results --issue <issue>`, naming each by its block id. That state decides, whoever recorded the pass: for a check carrying `ci_check` it comes from its results from CI, and a pass at another commit is none.",
+    "refuse it while any such check, a check carrying `ci_check` among them, does not read yes on the line of that head under the check in `dispatch results --issue <issue>`, naming each by its block id. That state decides, whoever recorded the pass: for a check carrying `ci_check` it comes from its results from CI, and a pass at another commit is none.",
     "refuse it while any such check has no pass standing at that head from the implementer and from the tester both (from CI, for a check carrying `ci_check`), naming each by its block id, and read `dispatch results --issue <issue>` for it, on the line of that head under the check, which names its state and its roles: a line that names one of the two roles alone is no pass for your approval, and a pass at another commit is none.",
   ],
   [
