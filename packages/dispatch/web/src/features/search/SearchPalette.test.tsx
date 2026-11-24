@@ -300,7 +300,11 @@ test("a deleted post's hit draws the deleted line where its snippet would be", a
     expect(line()?.querySelector("time")).toHaveAttribute("datetime", "2026-10-02T00:00:00Z");
     expect(option(deleted)?.textContent).not.toContain("edited");
     expect(option(standing)?.querySelector("[data-post-deleted]")).toBeNull();
-    expect(option(standing)?.textContent).toContain("Discuss the astrolabe diagram.");
+    // The standing hit's snippet renders once the lazily loaded Markdown engine arrives, which
+    // the cold lane holds back, and the deleted line above needs no engine: wait for it too.
+    await waitFor(() =>
+      expect(option(standing)?.textContent).toContain("Discuss the astrolabe diagram.")
+    );
   } finally {
     search.mockRestore();
     view.unmount();
