@@ -1,14 +1,15 @@
 /** The priorities page over one recorded answer of the priorities read: the section of priority
  *  work in backlog or icebox with the row of an issue that a live priority covers and that stands
- *  in backlog, the priorities table sorted by the column an older link names, and the layouts a
- *  reader's browser kept under the names the page used before. Each reads what the browser draws
- *  from that fixed answer and what it keeps in its own storage, and none of it is a claim about
- *  what the server decides, so the row runs against a recording rather than against a harness
- *  (packages/dispatch/README.md, "The stubbed layer"). The browser's storage is seeded before the
- *  page loads, as the release before left it: the page moves those layouts on its first render
- *  (`moveTableStore` and `renameStoredColumns`, `web/src/features/project/issues-table-storage.ts`),
- *  and it reads the address's column id the same way (`PRIORITY_FORMER_IDS`). */
-import { expect } from "@playwright/test";
+ *  in backlog, the priorities table sorted and filtered by the column an older link names, and the
+ *  layouts a reader's browser kept under the names the page used before. Each reads what the
+ *  browser draws from that fixed answer and what it keeps in its own storage, and none of it is a
+ *  claim about what the server decides, so the row runs against a recording rather than against a
+ *  harness (packages/dispatch/README.md, "The stubbed layer"). Each load after the first starts
+ *  from a storage seeded as the release before left it: the page moves those layouts on its first
+ *  render (`moveTableStore` and `renameStoredColumns`,
+ *  `web/src/features/project/issues-table-storage.ts`), and it reads the address's column id the
+ *  same way (`PRIORITY_FORMER_IDS`). */
+import { expect, type Page } from "@playwright/test";
 
 import { createIssue, createPriority, createProject, patchIssue } from "./api";
 import { stubbed } from "./stub/stub-test";
@@ -39,6 +40,22 @@ const formerPrioritiesLayout = {
   visibility: { [FORMER_COLUMN_ID]: true },
 };
 
+/** The priorities table's layout as another reader stored it: the backlog column hidden. */
+const formerHiddenLayout = { visibility: { [FORMER_COLUMN_ID]: false } };
+
+/** Loads `target` from a storage that holds `layouts` and nothing else, as a fresh page of a
+ *  reader of the release before would. The page is on the app's origin already, so its storage is
+ *  the one the next load reads. */
+async function loadWithStorage(page: Page, target: string, layouts: Record<string, unknown>) {
+  await page.evaluate((seeded) => {
+    localStorage.clear();
+    for (const [key, layout] of Object.entries(seeded)) {
+      localStorage.setItem(key, JSON.stringify(layout));
+    }
+  }, layouts);
+  await page.goto(target);
+}
+
 const test = stubbed(async () => {
   await createProject({ key: "CORE", name: "Core" });
   const priority = await createPriority({ owner: "alice", title: "Ship the daemon everywhere" });
@@ -51,20 +68,9 @@ test("the priorities page lists priority work in backlog or icebox and moves the
   page,
   scene,
 }) => {
-  // Before the page's own scripts run, so its first render meets the storage the release before
-  // left. The page loads once, so the seed is written once.
-  await page.addInitScript(
-    (layouts) => {
-      for (const [key, layout] of Object.entries(layouts)) {
-        localStorage.setItem(key, JSON.stringify(layout));
-      }
-    },
-    { [FORMER_BACKLOG_KEY]: formerBacklogLayout, [PRIORITIES_KEY]: formerPrioritiesLayout }
-  );
-  await page.goto(`/priorities?p.sort=${FORMER_COLUMN_ID}`);
-
-  // The section of priority work in backlog or icebox, and the row of the issue that stands in
-  // backlog under the live priority.
+  // The first load, from an empty storage: the section of priority work in backlog or icebox,
+  // and the row of the issue that stands in backlog under the live priority.
+  await page.goto("/priorities");
   const section = page.getByRole("region", { name: "Priority work in backlog or icebox" });
   await expect(
     section.getByRole("heading", { exact: true, name: "Priority work in backlog or icebox" })
@@ -82,11 +88,17 @@ test("the priorities page lists priority work in backlog or icebox and moves the
   await expect(row.getByRole("link", { name: scene.priority })).toBeVisible();
   await expect(row.getByText("Backlog", { exact: true })).toBeVisible();
 
-  // The priorities table is sorted by the backlog column, which the address names by its
-  // former id, and it draws that column where the reader put it: before In flight.
+  // The second load, from the layouts the release before stored, at an older link's sort: the
+  // priorities table is sorted by the backlog column, which the address names by its former id,
+  // and it draws that column at the reader's width and where the reader put it, before In flight.
+  await loadWithStorage(page, `/priorities?p.sort=${FORMER_COLUMN_ID}`, {
+    [FORMER_BACKLOG_KEY]: formerBacklogLayout,
+    [PRIORITIES_KEY]: formerPrioritiesLayout,
+  });
   const priorities = page.getByRole("table", { name: "Priorities table" });
   const backlogHeader = priorities.getByRole("columnheader", { name: /^In backlog or icebox/ });
   await expect(backlogHeader).toHaveAttribute("aria-sort", "ascending");
+  expect((await backlogHeader.boundingBox())?.width).toBeCloseTo(240, -1);
   const headers = await priorities.getByRole("columnheader").allTextContents();
   const at = (start: string) => headers.findIndex((text) => text.trim().startsWith(start));
   expect(at("In backlog or icebox")).toBeGreaterThan(-1);
@@ -108,4 +120,23 @@ test("the priorities page lists priority work in backlog or icebox and moves the
     order: ["owner", "backlog", "in-flight", "waiting"],
     visibility: { backlog: true },
   });
+
+  // The third load, from a layout that hid the backlog column under its former id, at an older
+  // link's filter on that column: the column stays hidden, and the filter is read as the
+  // column's, so the table shows the row that holds the count. A count no row holds, under the
+  // same former id, shows none, so the filter is applied rather than dropped.
+  const priorityRow = priorities.getByRole("row", { name: new RegExp(scene.priority) });
+  await loadWithStorage(page, `/priorities?p.f.${FORMER_COLUMN_ID}=1`, {
+    [PRIORITIES_KEY]: formerHiddenLayout,
+  });
+  await expect(priorityRow).toBeVisible();
+  await expect(backlogHeader).toHaveCount(0);
+  await expect
+    .poll(async () => (await stored(PRIORITIES_KEY))?.visibility)
+    .toEqual({ backlog: false });
+  await loadWithStorage(page, `/priorities?p.f.${FORMER_COLUMN_ID}=7`, {
+    [PRIORITIES_KEY]: formerHiddenLayout,
+  });
+  await expect(priorities).toBeVisible();
+  await expect(priorityRow).toHaveCount(0);
 });
