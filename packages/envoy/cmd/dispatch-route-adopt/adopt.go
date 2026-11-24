@@ -347,16 +347,31 @@ func sharedCode(name string, content []byte) (string, error) {
 				if string(content[offset(n.Cond.Pos()):offset(n.Cond.End())]) != "s.deps.TestHooksEnabled" {
 					return true
 				}
-				// The test hooks' rows, `rows = append(rows, routeRow{...}, ...)`: the rows alone are
-				// cut, so another statement the branch writes in the hooks' block is still compared.
+				// The test hooks' rows, `rows = append(rows, routeRow{...}, ...)`: each run of routeRow
+				// operands is cut, and nothing else, so another statement or another append the branch
+				// writes in the hooks' block is still compared.
 				ast.Inspect(n.Body, func(inner ast.Node) bool {
 					call, ok := inner.(*ast.CallExpr)
 					if !ok {
 						return true
 					}
-					if fun, named := call.Fun.(*ast.Ident); named && fun.Name == "append" && len(call.Args) > 1 {
-						cuts = append(cuts, cut{offset(call.Args[1].Pos()), offset(call.Args[len(call.Args)-1].End())})
-						return false
+					first := -1
+					for index, arg := range call.Args {
+						if literal, isLiteral := arg.(*ast.CompositeLit); isLiteral {
+							if ident, isIdent := literal.Type.(*ast.Ident); isIdent && ident.Name == "routeRow" {
+								if first < 0 {
+									first = index
+								}
+								if index == len(call.Args)-1 {
+									cuts = append(cuts, cut{offset(call.Args[first].Pos()), offset(arg.End())})
+								}
+								continue
+							}
+						}
+						if first >= 0 {
+							cuts = append(cuts, cut{offset(call.Args[first].Pos()), offset(call.Args[index-1].End())})
+							first = -1
+						}
 					}
 					return true
 				})

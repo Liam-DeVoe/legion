@@ -320,7 +320,8 @@ func TestTheAdoptStepIsNotRunTwiceOverOneMerge(t *testing.T) {
 }
 
 // A statement the branch writes in the test hooks' block, beside their rows, is shared code the
-// person must carry: the hooks' rows alone are cut before the comparison.
+// person must carry: the hooks' routeRow operands alone are cut before the comparison, so a
+// planted statement and an edit to another append's operands both show, and the rows do not.
 func TestAStatementInTheHooksBlockIsSharedCode(t *testing.T) {
 	table := fixture(t, oldTableFixture)
 	const hooks = "if s.deps.TestHooksEnabled {\n"
@@ -328,20 +329,28 @@ func TestAStatementInTheHooksBlockIsSharedCode(t *testing.T) {
 	if at < 0 {
 		t.Fatal("the frozen table has no test hooks' block")
 	}
-	planted := table[:at+len(hooks)] + "\t\tpanic(\"shared-hook-change\")\n" + table[at+len(hooks):]
-	before, err := sharedCode(tableFile, []byte(table))
-	if err != nil {
-		t.Fatal(err)
+	inHooks := func(statement string) string {
+		return table[:at+len(hooks)] + "\t\t" + statement + "\n" + table[at+len(hooks):]
 	}
-	after, err := sharedCode(tableFile, []byte(planted))
-	if err != nil {
-		t.Fatal(err)
+	shared := func(text string) string {
+		t.Helper()
+		code, err := sharedCode(tableFile, []byte(text))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return code
 	}
-	if before == after || !strings.Contains(after, "shared-hook-change") {
-		t.Fatal("a statement planted in the hooks' block is cut out with the hooks' rows, so its edit would be dropped unreported")
-	}
+	before := shared(table)
 	if strings.Contains(before, "/api/v1/live/_test/disconnect") {
 		t.Fatal("the hooks' rows are not cut out of the shared code")
+	}
+	if after := shared(inHooks(`panic("shared-hook-change")`)); after == before || !strings.Contains(after, "shared-hook-change") {
+		t.Fatal("a statement planted in the hooks' block is cut out with the hooks' rows, so its edit would be dropped unreported")
+	}
+	noteBefore := shared(inHooks(`notes := append([]string{}, "before-shared-hook-value"); _ = notes`))
+	noteAfter := shared(inHooks(`notes := append([]string{}, "after-shared-hook-value"); _ = notes`))
+	if noteBefore == noteAfter {
+		t.Fatal("an edit to another append's operands in the hooks' block is cut out with the hooks' rows")
 	}
 }
 
