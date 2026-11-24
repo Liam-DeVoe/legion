@@ -2346,16 +2346,10 @@ runs a second time, in a file small enough to start when this one is too large t
 
 It also holds every step a filter gates that names a script a gate's Run lists go commands of
 (forced-order.sh, pg-connection-ceiling.sh, ...) to a Run of that script, in a gate of each filter
-that gates the step, that cites the step. It reads the step's run: text, the with: values it
-hands an action and a local composite action's steps, with the values it can know put in: the
-workspace, env:, a called workflow's and an action's inputs, an action's directory, matrix values
-(include rows too), `env['X']`, literals of an expression and shell defaults; a command
-substitution or a brace expansion stands for any text in its word, and globs are read as the shell
-reads them. It evaluates no expression function and no computed index: such an expression fails
-the step, saying the check cannot evaluate it, when one of its literals or the values it reads
-could make a declared script's name (`format('buil{0}.sh', x)`). It does not read a word that is
-wholly a value it cannot know, a `${X%...}` or `${X/a/b}` expansion, or a name a command builds
-at run time; those pass. The script's header lists each form.
+that gates the step, that cites the step. Which forms of a step it reads, which it refuses as
+forms it cannot evaluate, and which pass unread are in rule 4's script-half paragraph of
+check-ci-filters.sh's header. Where a step fails because the check cannot evaluate how it builds
+the script's name, write the script's path as a literal, in the step or in a literal env: entry.
 
 ## What the proof editor's offline proof shows
 

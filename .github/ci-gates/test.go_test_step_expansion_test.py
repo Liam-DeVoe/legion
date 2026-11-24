@@ -3,6 +3,8 @@ GATE = harness("go_test_step_expansion_test", "Test the go test step expansion",
         f"{SCRIPTS}/go-test-step-expansion.test.sh", [
     (f"{SCRIPTS}/go-test-step-expansion.py", "the module under test, loaded by path (go-test-step-expansion.test.sh:42)"),
     (f"{SCRIPTS}/ci_filter_coverage.py", "the module imports it for step_workdir and called_workflows"),
+    (f"{SCRIPTS}/script_words.py", "the word reader that engine imports"),
+    (f"{SCRIPTS}/shell_commands.py", "the shell scanner the word reader imports"),
     (f"{SCRIPTS}/workflow_paths.py", "the path model that engine imports"),
     (f"{SCRIPTS}/go_build_tags.py", "the Go build-tag module that engine imports"),
     (".github/workflows/ci-job-envoy-go-race-docs.yaml", "its two-steps case reads this file's own go test line, the wrapper one"),
