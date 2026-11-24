@@ -98,11 +98,18 @@ const routeHint =
 
 const titleRefusals = new Set(["CAP_EXCEEDED", "ISSUE_CLOSED"]);
 
+/** The Status list's trigger carries this attribute, valued with the status it shows (`Todo`
+ *  shows `todo`): the issue page's `s` and Escape find the trigger by it, since the shared list
+ *  hands out no element of its own, and a reader outside the page (the docs' screenshots) reads
+ *  the status off it as it read a select's value. */
 const STATUS_TRIGGER_ATTRIBUTE = "data-issue-status";
-const STATUS_MARKS: ListMarks = { trigger: { [STATUS_TRIGGER_ATTRIBUTE]: "" } };
-/** The Status list's trigger, which the issue page's `s` and Escape find it by: the shared list
- *  hands out no element of its own. */
+/** The Status list's trigger (`STATUS_TRIGGER_ATTRIBUTE`). */
 export const STATUS_TRIGGER_SELECTOR = `[${STATUS_TRIGGER_ATTRIBUTE}]`;
+
+/** The Status list's marks: its trigger's attribute, valued with the status it shows. */
+function statusMarks(shown: string): ListMarks {
+  return { trigger: { [STATUS_TRIGGER_ATTRIBUTE]: shown } };
+}
 
 /** Whether `input` is the Status pill's pick alone: that control shows its write in the shell's
  *  indicator and rolls back on a refusal, where every other header field holds its draft and
@@ -532,7 +539,7 @@ export function IssueHeader({
               chevron={false}
               emptyMessage="No status matches that."
               label="Status"
-              marks={STATUS_MARKS}
+              marks={statusMarks(shownStatus)}
               mode="single"
               onOpenChange={(next) => (next ? statusPress.onClick() : setStatusOpen(false))}
               onPick={(picked) => {
