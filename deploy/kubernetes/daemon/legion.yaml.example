@@ -612,6 +612,12 @@ runtime:
 #                                      # calls and each call's output tokens; per gh call, its time and the
 #                                      # output the model reads; gh calls per answer; questions answered
 #                                      # at once; and USD the project spends a UTC day
+#   web_search:                        # optional: the loop's web_search tool, one Anthropic web search per
+#     model: anthropic/claude-opus-5-5 # call, at most 3 per answer, on the anthropic provider above; the
+#     price_per_search: 0.01           # model must be one prices names. price_per_search is USD per
+#                                      # search, a plain number, not per million tokens. Without the block,
+#                                      # or without an anthropic provider, the loop offers no web_search
+#                                      # tool, and boot's answers: tools line says why
 
 # The daemon reports, at boot, in `legion state` and to the controller on every tick, each worker
 # capability the deployment's own configuration closes or leaves open (LEGION-578): the secrets

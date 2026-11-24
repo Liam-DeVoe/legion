@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/websearch"
 )
 
 // process takes q one step on from where it stands: a question not yet appended is answered (its
@@ -137,6 +138,15 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 		}()
 		dispatchTool = opened
 	}
+	// The answer's web_search tool, where the daemon's answers configures one.
+	var webSearch answer.WebSearch
+	if l.cfg.WebSearchTools != nil {
+		opened, err := l.cfg.WebSearchTools.Open(q.ID)
+		if err != nil {
+			return fmt.Errorf("open the web_search tool: %w", err)
+		}
+		webSearch = opened
+	}
 	// The pause is read again before the question's first gh call, a lookup of an earlier call's
 	// outcome, as the answer reads it before its first model call.
 	if l.paused() {
@@ -156,7 +166,7 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 		Question:      answer.Question{ID: q.ID, Text: origin.Text, Asker: origin.Asker, Where: origin.Where},
 		MayAskNothing: q.MayAskNothing, Earlier: earlier,
 		Providers: l.cfg.Answers.Providers, Prices: l.cfg.Answers.Prices, Bounds: l.cfg.Answers.Bounds,
-		GH: tool, Dispatch: dispatchTool, Paused: l.cfg.Paused, Log: l.cfg.Log,
+		GH: tool, Dispatch: dispatchTool, WebSearch: webSearch, Paused: l.cfg.Paused, Log: l.cfg.Log,
 	})
 	if reply.CostUSD > 0 {
 		if spendErr := l.cfg.Store.AddAnswerSpend(context.WithoutCancel(ctx), l.cfg.Project, now, reply.CostUSD); spendErr != nil {
@@ -235,7 +245,8 @@ func (l *Loop) appended(ctx context.Context, q store.AnswerQuestion, origin Orig
 // nothing, or one whose target cannot be read, stays of unknown outcome. A dispatch call the
 // daemon stopped during is looked up nowhere, since its mark is no key Dispatch can be searched
 // by: dispatchtool.UnknownOutcome is recorded as its result, which tells the model to read
-// Dispatch before it writes again.
+// Dispatch before it writes again. A web search the daemon stopped during is neither looked up nor
+// made again: websearch.UnknownOutcome is recorded as its result.
 func (l *Loop) earlierCalls(ctx context.Context, q store.AnswerQuestion, tool Tool) ([]store.AnswerToolCall, error) {
 	calls, err := l.cfg.Store.AnswerToolCalls(ctx, q.ID)
 	if err != nil {
@@ -245,8 +256,13 @@ func (l *Loop) earlierCalls(ctx context.Context, q store.AnswerQuestion, tool To
 		if call.Result != nil {
 			continue
 		}
-		outcome := dispatchtool.UnknownOutcome
-		if call.Tool != store.ToolDispatch {
+		var outcome string
+		switch call.Tool {
+		case store.ToolDispatch:
+			outcome = dispatchtool.UnknownOutcome
+		case store.ToolWebSearch:
+			outcome = websearch.UnknownOutcome
+		default:
 			found, err := tool.Lookup(ctx, call.Seq)
 			switch {
 			case errors.Is(err, ghtool.ErrNotAWrite):

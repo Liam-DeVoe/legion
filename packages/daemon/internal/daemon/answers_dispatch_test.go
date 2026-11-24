@@ -109,7 +109,8 @@ func TestAKubernetesDaemonFindsDispatchWhereTheWorkerImageKeepsIt(t *testing.T) 
 // lists each tool the loop offers and which names each tool it does not offer by its own key, with
 // why; an after_merge check reads it on INFRA. `legion config check` says the same in one line. A
 // daemon that found dispatch hands the loop a dispatch tool, which opens each answer's directory
-// under the state directory; one that found none hands it none.
+// under the state directory; one that found none hands it none. Its answers configure no
+// web_search tool, which the line names with why (TestTheBootLineNamesWebSearchOfferedOrWhyNot).
 func TestTheBootLineNamesTheLoopsToolsAndADaemonWithNoDispatchOffersNone(t *testing.T) {
 	stateDir, token := t.TempDir(), dispatchTokenFileOf(t)
 	shim := executable(t, t.TempDir(), "dispatch")
@@ -118,14 +119,15 @@ func TestTheBootLineNamesTheLoopsToolsAndADaemonWithNoDispatchOffersNone(t *test
 	cfg := config.Config{StateDir: stateDir, Answers: &config.Answers{Bounds: config.AnswerBounds{GHCall: 30 * time.Second, GHOutputChars: 60000, GHCalls: 20}},
 		DispatchURL: "https://dispatch.internal.example", DispatchTokenFile: token}
 	const why = "no dispatch command on PATH or at /opt/legion/pi-envoy/bin/dispatch (set LEGION_DISPATCH_PATH)"
+	const noSearch = "; web_search: no answers.web_search block (set its model and price_per_search)"
 	for _, c := range []struct {
 		name  string
 		found dispatchFound
 		tools []any
 		line  string
 	}{
-		{name: "dispatch found", found: dispatchFound{dispatch: shim, bunDir: bunDir, tokenFile: token}, tools: []any{"gh", "dispatch"}, line: "answers: tools [gh dispatch]"},
-		{name: "no dispatch", found: dispatchFound{absent: why}, tools: []any{"gh"}, line: "answers: tools [gh]; dispatch: " + why},
+		{name: "dispatch found", found: dispatchFound{dispatch: shim, bunDir: bunDir, tokenFile: token}, tools: []any{"gh", "dispatch"}, line: "answers: tools [gh dispatch]" + noSearch},
+		{name: "no dispatch", found: dispatchFound{absent: why}, tools: []any{"gh"}, line: "answers: tools [gh]; dispatch: " + why + noSearch},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var logs bytes.Buffer
@@ -155,7 +157,7 @@ func TestTheBootLineNamesTheLoopsToolsAndADaemonWithNoDispatchOffersNone(t *test
 			if reason, named := lines[0]["dispatch"]; named != (c.found.absent != "") || named && reason != c.found.absent {
 				t.Errorf("the line names dispatch as %v (%t), want %q", reason, named, c.found.absent)
 			}
-			if got := loopToolsOf(c.found).String(); got != c.line {
+			if got := loopToolsOf(c.found, *cfg.Answers).String(); got != c.line {
 				t.Errorf("legion config check's line is %q, want %q", got, c.line)
 			}
 
@@ -192,11 +194,12 @@ func TestConfigCheckNamesTheLoopsToolsAsBootDoes(t *testing.T) {
 	shim := executable(t, dir, "dispatch")
 	binary(t, dir, "bun")
 	cfg := config.Config{Answers: &config.Answers{}, DispatchURL: "https://dispatch.internal.example", DispatchTokenFile: dispatchTokenFileOf(t)}
-	if line, ok := AnswersToolsLine(cfg, environLookup([]string{"PATH=" + dir, "LEGION_DISPATCH_PATH=" + shim})); !ok || line != "answers: tools [gh dispatch]" {
+	const noSearch = "; web_search: no answers.web_search block (set its model and price_per_search)"
+	if line, ok := AnswersToolsLine(cfg, environLookup([]string{"PATH=" + dir, "LEGION_DISPATCH_PATH=" + shim})); !ok || line != "answers: tools [gh dispatch]"+noSearch {
 		t.Errorf("AnswersToolsLine = %q, %t; want the line naming gh and dispatch", line, ok)
 	}
 	if line, ok := AnswersToolsLine(cfg, environLookup([]string{"PATH=" + t.TempDir(), "LEGION_DISPATCH_PATH=" + shim})); !ok ||
-		line != "answers: tools [gh]; dispatch: no bun for "+shim+", which runs on it (set LEGION_BUN_PATH, or put bun on PATH)" {
+		line != "answers: tools [gh]; dispatch: no bun for "+shim+", which runs on it (set LEGION_BUN_PATH, or put bun on PATH)"+noSearch {
 		t.Errorf("AnswersToolsLine with no bun = %q, %t; want the line naming why dispatch is not offered", line, ok)
 	}
 	cfg.Answers = nil

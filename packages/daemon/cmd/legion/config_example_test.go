@@ -531,10 +531,11 @@ func answersCheckOK(tools string) string {
 // the daemon it runs (the pin ghroute.ReadsProvenCheckTag holds), its conversation store's URL
 // file read, and its placeholder api_key_command, which sh could not run, never run — a key is
 // read for each model call, never by the check. The check names the loop's tools as the boot line
-// does: gh and dispatch, found by LEGION_DISPATCH_PATH and LEGION_BUN_PATH, and gh alone, saying
-// why, where no bun runs dispatch. Without that pin, or without the setting, the same file is
-// refused, naming what is missing, since a Kubernetes daemon's gh tool would then have no check to
-// run before any call.
+// does: gh, dispatch, found by LEGION_DISPATCH_PATH and LEGION_BUN_PATH, and web_search, which the
+// block's web_search configures on its anthropic provider; dispatch not offered, saying why, where
+// no bun runs it; and web_search not offered, saying why, where the block sets no web_search.
+// Without that pin, or without the setting, the same file is refused, naming what is missing,
+// since a Kubernetes daemon's gh tool would then have no check to run before any call.
 func TestTheShippedExamplesAnswersBlockPassesCheckConfig(t *testing.T) {
 	gh := filepath.Join(t.TempDir(), "gh")
 	if err := os.WriteFile(gh, []byte("\x7fELF\x02\x01\x01\x00"), 0o755); err != nil {
@@ -563,13 +564,29 @@ func TestTheShippedExamplesAnswersBlockPassesCheckConfig(t *testing.T) {
 		t.Setenv("LEGION_BUN_PATH", "")
 		t.Setenv("PATH", t.TempDir())
 		checkShippedExamplePrints(t, uncommentAnswers, files,
-			answersCheckOK("answers: tools [gh]; dispatch: no bun for "+dispatch+", which runs on it (set LEGION_BUN_PATH, or put bun on PATH)"))
+			answersCheckOK("answers: tools [gh web_search]; dispatch: no bun for "+dispatch+", which runs on it (set LEGION_BUN_PATH, or put bun on PATH)"))
+	})
+	t.Run("with no web_search block", func(t *testing.T) {
+		setting(t)
+		t.Setenv(leakguard.TagVariable, ghroute.ReadsProvenCheckTag)
+		t.Setenv("LEGION_BUN_PATH", bun)
+		withoutSearch := func(example string) string {
+			uncommented := uncommentAnswers(example)
+			start := strings.Index(uncommented, "\n  web_search:")
+			end := strings.Index(uncommented, "\n\n# The daemon reports")
+			if start < 0 || end < start {
+				t.Fatalf("the uncommented example holds no web_search block before the capabilities note")
+			}
+			return uncommented[:start] + uncommented[end:]
+		}
+		checkShippedExamplePrints(t, withoutSearch, files,
+			answersCheckOK("answers: tools [gh dispatch]; web_search: no answers.web_search block (set its model and price_per_search)"))
 	})
 	t.Run("with the worker image's pin", func(t *testing.T) {
 		setting(t)
 		t.Setenv(leakguard.TagVariable, ghroute.ReadsProvenCheckTag)
 		t.Setenv("LEGION_BUN_PATH", bun)
-		config := checkShippedExamplePrints(t, uncommentAnswers, files, answersCheckOK("answers: tools [gh dispatch]"))
+		config := checkShippedExamplePrints(t, uncommentAnswers, files, answersCheckOK("answers: tools [gh dispatch web_search]"))
 		cfg, err := configpkg.LoadForValidation(config, func(name string) string {
 			if name == "LEGION_POSTGRES_DSN" {
 				return "postgres://127.0.0.1:1/legion"
@@ -579,8 +596,9 @@ func TestTheShippedExamplesAnswersBlockPassesCheckConfig(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cfg.Answers == nil || len(cfg.Answers.Providers) != 2 || len(cfg.Answers.Prices) != 2 || cfg.Answers.ConversationStore.DSNFile == "" {
-			t.Fatalf("the uncommented answers block settled as %+v, want both providers, both prices and the store's file", cfg.Answers)
+		if cfg.Answers == nil || len(cfg.Answers.Providers) != 2 || len(cfg.Answers.Prices) != 2 || cfg.Answers.ConversationStore.DSNFile == "" ||
+			cfg.Answers.WebSearch == nil || *cfg.Answers.WebSearch != (configpkg.AnswerWebSearch{Model: "anthropic/claude-opus-5-5", PricePerSearch: 0.01}) {
+			t.Fatalf("the uncommented answers block settled as %+v, want both providers, both prices, the store's file and the web search", cfg.Answers)
 		}
 	})
 	t.Run("with no pin", func(t *testing.T) {

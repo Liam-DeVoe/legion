@@ -163,14 +163,20 @@ type loopTools struct {
 	absent  [][2]string
 }
 
-// loopToolsOf is the loop's tools with dispatch as boot found it: gh, which boot refuses to start
-// without, and dispatch where boot found its command.
-func loopToolsOf(dispatch dispatchFound) loopTools {
+// loopToolsOf is the loop's tools with dispatch as boot found it and web_search as answers
+// configures it: gh, which boot refuses to start without; dispatch where boot found its command;
+// and web_search where answers offers it (config.Answers.WebSearchOff).
+func loopToolsOf(dispatch dispatchFound, answers config.Answers) loopTools {
 	tools := loopTools{offered: []string{"gh"}}
 	if dispatch.dispatch != "" {
 		tools.offered = append(tools.offered, "dispatch")
 	} else {
 		tools.absent = append(tools.absent, [2]string{"dispatch", dispatch.absent})
+	}
+	if off := answers.WebSearchOff(); off == "" {
+		tools.offered = append(tools.offered, "web_search")
+	} else {
+		tools.absent = append(tools.absent, [2]string{"web_search", off})
 	}
 	return tools
 }
@@ -190,8 +196,8 @@ func (t loopTools) attrs() []any {
 }
 
 // String is the line as `legion config check` prints it, in the words of the boot's line:
-// `answers: tools [gh dispatch]`, and after the list, for each tool the loop does not offer,
-// `; <tool>: <why>`.
+// `answers: tools [gh dispatch web_search]`, and after the list, for each tool the loop does not
+// offer, `; <tool>: <why>`.
 func (t loopTools) String() string {
 	line := fmt.Sprintf("%s [%s]", answersToolsLine, strings.Join(t.offered, " "))
 	for _, absent := range t.absent {
@@ -201,13 +207,13 @@ func (t loopTools) String() string {
 }
 
 // AnswersToolsLine is `legion config check`'s line naming the answer loop's tools, read from the
-// daemon's environment (lookup) as boot reads it (answersDispatch, loopToolsOf), and false for a
-// configuration without answers, whose daemon runs no loop.
+// daemon's environment (lookup) as boot reads it (answersDispatch) and from cfg's answers
+// (loopToolsOf), and false for a configuration without answers, whose daemon runs no loop.
 func AnswersToolsLine(cfg config.Config, lookup func(string) (string, bool)) (string, bool) {
 	if cfg.Answers == nil {
 		return "", false
 	}
-	return loopToolsOf(answersDispatch(lookup, cfg.DispatchURL, cfg.DispatchTokenFile, dispatchInstall)).String(), true
+	return loopToolsOf(answersDispatch(lookup, cfg.DispatchURL, cfg.DispatchTokenFile, dispatchInstall), *cfg.Answers).String(), true
 }
 
 // answersLeakCheck is where the shared public leak check comes from that the answer loop's gh tool

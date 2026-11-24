@@ -197,6 +197,9 @@ var settingsEmitted = map[string]string{
 	"Answers.Providers":                              "answers.providers",
 	"Answers.Prices":                                 "answers.prices",
 	"Answers.Bounds":                                 "answers.bounds",
+	"Answers.WebSearch":                              "answers.web_search",
+	"AnswerWebSearch.Model":                          "answers.web_search.model",
+	"AnswerWebSearch.PricePerSearch":                 "answers.web_search.price_per_search",
 	"AnswerEndpoint.BaseURL":                         "answers.providers.<provider>.base_url",
 	"AnswerEndpoint.Credential":                      "answers.providers.<provider>.api_key_source (the key the file names, api_key_file or api_key_command, and nothing of the key, its command or its file)",
 	"AnswerPrice.Input":                              "answers.prices.<model>.input",
@@ -559,11 +562,13 @@ const settingsAnswersBlock = `answers:
     openai/gpt-6.1: {input: 1.25, output: 10, cache_write: 0, cache_read: 0.125}
   conversation_store: {dsn_file: /var/run/legion/CONVERSATIONS_DSN}
   bounds: {model_calls: 3, daily_usd: 12.5}
+  web_search: {model: anthropic/claude-opus-5-5, price_per_search: 0.01}
 `
 
 // An `answers` block reaches the settings as each provider's base URL, its userinfo masked, and
-// the name of its key's source; the prices; and every bound, the defaults filled in. No key, key
-// command, key file, conversation store file or credential-shaped key reaches the wire.
+// the name of its key's source; the prices; every bound, the defaults filled in; and its
+// web_search block's model and price per search, which a block without one leaves out. No key,
+// key command, key file, conversation store file or credential-shaped key reaches the wire.
 func TestSettingsOfAnAnswersBlockCarriesNoCredential(t *testing.T) {
 	settings := SettingsOf(loadSettingsFile(t, settingsFixtureFile+settingsAnswersBlock))
 	encoded, err := json.Marshal(settings)
@@ -571,8 +576,9 @@ func TestSettingsOfAnAnswersBlockCarriesNoCredential(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	answers := keysOf(t, keysOf(t, encoded)["answers"])
-	assertKeys(t, "settings.answers", answers, []string{"providers", "prices", "bounds"})
+	assertKeys(t, "settings.answers", answers, []string{"providers", "prices", "bounds", "web_search"})
 	assertKeys(t, "settings.answers.providers.anthropic", keysOf(t, keysOf(t, answers["providers"])["anthropic"]), []string{"base_url", "api_key_source"})
+	assertKeys(t, "settings.answers.web_search", keysOf(t, answers["web_search"]), []string{"model", "price_per_search"})
 
 	want := &AnswersSettings{
 		Providers: map[string]AnswerProviderSettings{
@@ -587,10 +593,17 @@ func TestSettingsOfAnAnswersBlockCarriesNoCredential(t *testing.T) {
 			AnswerSeconds: 180, ModelCalls: 3, OutputTokens: 4000, GHSeconds: 30, GHOutputChars: 60000, GHCalls: 20,
 			Concurrent: 4, DailyUSD: 12.5,
 		},
+		WebSearch: &AnswerWebSearchSettings{Model: "anthropic/claude-opus-5-5", PricePerSearch: 0.01},
 	}
 	if !reflect.DeepEqual(settings.Answers, want) {
 		t.Errorf("answers = %+v, want %+v", settings.Answers, want)
 	}
+	without := strings.Replace(settingsAnswersBlock, "  web_search: {model: anthropic/claude-opus-5-5, price_per_search: 0.01}\n", "", 1)
+	encodedWithout, err := json.Marshal(SettingsOf(loadSettingsFile(t, settingsFixtureFile+without)))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	assertKeys(t, "settings.answers without web_search", keysOf(t, keysOf(t, encodedWithout)["answers"]), []string{"providers", "prices", "bounds"})
 
 	for _, planted := range []string{
 		"fixture-gateway-password", "/var/run/legion/ANTHROPIC_MODEL_KEY", "fixture-openai-key-command",

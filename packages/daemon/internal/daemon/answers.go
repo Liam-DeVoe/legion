@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -25,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/websearch"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -40,9 +42,10 @@ type answering struct {
 // attachAnswers builds the answer loop over its configuration (answersLoop), and under kubernetes
 // first installs the shared public leak check its gh tool's guard runs (answersTools), refusing
 // the boot only over a cause that is not GitHub's trouble (appTransient). It logs the loop's tools
-// in one line (answersToolsLine): gh, and dispatch where boot found its command, or why not. stop
-// ends the install where it still runs in the background and waits for it to end, which the
-// daemon does as it stops. Without `answers` it builds nothing, and stop does nothing.
+// in one line (answersToolsLine): gh, dispatch where boot found its command, and web_search where
+// answers configures it, or why not. stop ends the install where it still runs in the background
+// and waits for it to end, which the daemon does as it stops. Without `answers` it builds nothing,
+// and stop does nothing.
 func (w *workflowRuntime) attachAnswers(ctx context.Context, cfg config.Config, p plan, s *supervision, st *store.Store) (stop func(), err error) {
 	if w.answers == nil {
 		return func() {}, nil
@@ -55,7 +58,7 @@ func (w *workflowRuntime) attachAnswers(ctx context.Context, cfg config.Config, 
 	if err != nil {
 		return nil, fmt.Errorf("the answer loop: %w", err)
 	}
-	w.log.Info(answersToolsLine, loopToolsOf(p.answers.dispatch).attrs()...)
+	w.log.Info(answersToolsLine, loopToolsOf(p.answers.dispatch, *cfg.Answers).attrs()...)
 	w.answers.loop = answerloop.New(w.answersLoop(cfg, p, s, st, client, tools))
 	return stop, nil
 }
@@ -63,7 +66,8 @@ func (w *workflowRuntime) attachAnswers(ctx context.Context, cfg config.Config, 
 // answersLoop is the answer loop's configuration over the daemon's store, its Dispatch client
 // (client, posting in an agent's name), its Envoy listener, supervision's answer gate, the issue
 // record, the gh tool (tools, answersTools'), the dispatch tool where boot found its command
-// (answersDispatchTools), the conversation store and the project's pause flag.
+// (answersDispatchTools), the web_search tool where answers configures it (answersWebSearchTools),
+// the conversation store and the project's pause flag.
 func (w *workflowRuntime) answersLoop(cfg config.Config, p plan, s *supervision, st *store.Store, client answerloop.Dispatch, tools ghTools) answerloop.Config {
 	// The loop reads the flag the machines read (supervise.Deps.Paused), and the resume pokes it
 	// (projectPause.Resumed). A daemon that holds no pause leaves it never paused.
@@ -78,9 +82,10 @@ func (w *workflowRuntime) answersLoop(cfg config.Config, p plan, s *supervision,
 		Project: p.project, Answers: *cfg.Answers, Store: st, Dispatch: client,
 		Envoy: notify.New(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]), Gate: s.answerGate,
 		Issues: recordFacts{w}, Tools: tools, DispatchTools: answersDispatchTools(cfg, p.answers.dispatch, st, w.log),
-		Conversations: answerloop.Harnesses{OpenSQL: conversationStore(*cfg.Answers, p.answers)},
-		PassOn:        controllerPassOn{pool: w.pool, records: w.records, now: time.Now, log: w.log},
-		Decisions:     routedDecisions{outbox: w.outbox, now: time.Now, log: w.log},
+		WebSearchTools: answersWebSearchTools(*cfg.Answers, st, w.log),
+		Conversations:  answerloop.Harnesses{OpenSQL: conversationStore(*cfg.Answers, p.answers)},
+		PassOn:         controllerPassOn{pool: w.pool, records: w.records, now: time.Now, log: w.log},
+		Decisions:      routedDecisions{outbox: w.outbox, now: time.Now, log: w.log},
 		AppID: func(role claim.Role) string {
 			if appauth.AppRoleFor(role) == appauth.Implement {
 				return cfg.GitHubApps.Implement.AppID
@@ -343,6 +348,34 @@ type dispatchTools struct{ host dispatchtool.Host }
 
 func (d dispatchTools) Open(session, question string) (answerloop.DispatchTool, error) {
 	return dispatchtool.Open(d.host, session, question)
+}
+
+// answersWebSearchTools is the answer loop's web_search tool where answers offers it
+// (config.Answers.WebSearchOff): each answer's searches run on answers.providers.anthropic, on
+// answers.web_search.model, priced at its answers.prices entry and answers.web_search's
+// price_per_search, under answers.bounds, and are recorded in the daemon's store. Where answers
+// offers none it is nil, and the loop offers no web_search tool.
+func answersWebSearchTools(answers config.Answers, st *store.Store, log *slog.Logger) answerloop.WebSearchTools {
+	if answers.WebSearchOff() != "" {
+		return nil
+	}
+	search := answers.WebSearch
+	return webSearchTools{host: websearch.Host{
+		Endpoint: answers.Providers[config.AnswerAnthropic], Model: strings.TrimPrefix(search.Model, string(config.AnswerAnthropic)+"/"),
+		Price: answers.Prices[search.Model], PricePerSearch: search.PricePerSearch, Bounds: answers.Bounds,
+		Calls: st, Log: log, Now: time.Now,
+	}}
+}
+
+// webSearchTools opens the web_search tool of one answer (websearch.Open) under the daemon's host.
+type webSearchTools struct{ host websearch.Host }
+
+func (t webSearchTools) Open(question string) (answer.WebSearch, error) {
+	opened, err := websearch.Open(t.host, question)
+	if err != nil {
+		return nil, err
+	}
+	return opened, nil
 }
 
 // controllerPassOn passes a question to the controller: in one transaction it marks the question

@@ -294,11 +294,12 @@ func offerOf(t *testing.T, r recorded) offered {
 
 // The loop's tool list holds its tools, and the Verification document names this test: gh, which
 // every model call offers; dispatch, Dispatch's own command run as the agent's session, which a
-// model call offers where the daemon found the command (Request.Dispatch); and web_search, the
-// third, which its own change adds. Each offered tool is named with its input schema and its
-// description, and the system prompt names each.
+// model call offers where the daemon found the command (Request.Dispatch); and web_search, one web
+// search the daemon runs, which a model call offers where answers.web_search configures it
+// (Request.WebSearch). Each offered tool is named with its input schema and its description, and
+// the system prompt names each.
 func TestTheLoopsToolListHoldsItsThreeTools(t *testing.T) {
-	for _, name := range []string{"gh", "dispatch"} {
+	for _, name := range []string{"gh", "dispatch", "web_search"} {
 		if !slices.ContainsFunc(tools, func(t tool) bool { return t.name == name }) {
 			t.Fatalf("the loop's tools %v hold no %s", tools, name)
 		}
@@ -309,6 +310,7 @@ func TestTheLoopsToolListHoldsItsThreeTools(t *testing.T) {
 	)
 	req := anthropicRequest(t, s, &stubGH{}, 1)
 	req.Dispatch = &stubDispatch{}
+	req.WebSearch = &stubWebSearch{}
 	if _, err := Answer(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
@@ -319,8 +321,9 @@ func TestTheLoopsToolListHoldsItsThreeTools(t *testing.T) {
 	}
 	gh, hasGH := offered["gh"]
 	at, hasDispatch := offered["dispatch"]
-	if len(body.Tools) != 2 || !hasGH || !hasDispatch || body.Tools[gh].InputSchema.Properties["args"].Type != "array" {
-		t.Fatalf("the call offers tools %+v, want gh taking args, an array, and dispatch", body.Tools)
+	search, hasWebSearch := offered["web_search"]
+	if len(body.Tools) != 3 || !hasGH || !hasDispatch || !hasWebSearch || body.Tools[gh].InputSchema.Properties["args"].Type != "array" {
+		t.Fatalf("the call offers tools %+v, want gh taking args, an array, dispatch and web_search", body.Tools)
 	}
 	dispatch := body.Tools[at]
 	if dispatch.InputSchema.Properties["args"].Type != "array" || dispatch.InputSchema.Properties["stdin"].Type != "string" {
@@ -335,10 +338,26 @@ func TestTheLoopsToolListHoldsItsThreeTools(t *testing.T) {
 			t.Errorf("the dispatch tool's description lacks %q:\n%s", want, dispatch.Description)
 		}
 	}
-	if len(body.System) == 0 || !strings.Contains(body.System[0].Text, "`gh`") || !strings.Contains(body.System[0].Text, "`dispatch`") {
-		t.Errorf("the system prompt %+v does not name gh and dispatch", body.System)
+	webSearch := body.Tools[search]
+	if query := webSearch.InputSchema.Properties["query"]; len(webSearch.InputSchema.Properties) != 1 || query.Type != "string" || query.Description == "" {
+		t.Errorf("the call offers web_search as %+v, want it taking query alone, a described string", webSearch)
 	}
-
+	for _, want := range []string{
+		"The daemon runs one web search for you", "facts your conversation and your other tools do not hold",
+		"at most 3 times in this answer", "Your reply must name the address of each source you use",
+	} {
+		if !strings.Contains(webSearch.Description, want) {
+			t.Errorf("the web_search tool's description lacks %q:\n%s", want, webSearch.Description)
+		}
+	}
+	if len(body.System) == 0 {
+		t.Fatal("the call carries no system prompt")
+	}
+	for _, name := range []string{"`gh`", "`dispatch`", "`web_search`"} {
+		if !strings.Contains(body.System[0].Text, name) {
+			t.Errorf("the system prompt does not name %s:\n%s", name, body.System[0].Text)
+		}
+	}
 	// An answer whose request carries no dispatch tool, a daemon that found no dispatch command,
 	// is offered gh alone, and its prompt names no dispatch.
 	if _, err := Answer(context.Background(), anthropicRequest(t, s, &stubGH{}, 1)); err != nil {

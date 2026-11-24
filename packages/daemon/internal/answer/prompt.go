@@ -6,14 +6,17 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+
+	"github.com/sjawhar/legion/daemon/internal/websearch"
 )
 
 // systemPrompt is the short system prompt the agent's resumed conversation runs under: who it is
 // and that it answers while it is not running, its tools (the list of those its request offers,
 // gh named, and the sentence on where gh runs and what every call names that the gh tool's
-// description and its refusals carry too: ghtool.Usage.Checkout; and dispatch, where the request
-// offers it, named with the session it runs as), the Legion footer and the loop's mark the tools
-// put on what they post, the bounds of each tool's calls, the work it declines, and the reply form.
+// description and its refusals carry too: ghtool.Usage.Checkout; dispatch, where the request
+// offers it, named with the session it runs as; and web_search, where the request offers it, with
+// the sources its reply names), the Legion footer and the loop's mark the tools put on what they
+// post, the bounds of each tool's calls, the work it declines, and the reply form.
 func systemPrompt(req Request) string {
 	offered := req.offeredTools()
 	names := make([]string, len(offered))
@@ -29,12 +32,22 @@ func systemPrompt(req Request) string {
 	if req.Dispatch != nil {
 		fmt.Fprintf(&b, "The `dispatch` tool is Dispatch's own command line, run as your own session, %s: read any issue with it, and reply with a comment or a message where the message asks you to; its description lists the commands it runs, and it refuses every other. Every comment or message you post with it carries the loop's mark, which the tool adds. ", req.Agent.Session)
 	}
-	b.WriteString("The other tools your conversation used (reading and editing files, running commands, your Legion and Envoy tools) are not available now: do not call them. ")
-	if req.Dispatch != nil {
-		fmt.Fprintf(&b, "This answer may make at most %d gh calls, at most %d dispatch calls, counted apart from its gh calls, and %d model calls; your last model call offers no tool and must be your reply.\n\n", req.Bounds.GHCalls, req.Bounds.GHCalls, req.Bounds.ModelCalls)
-	} else {
-		fmt.Fprintf(&b, "This answer may make at most %d gh calls and %d model calls; your last model call offers no tool and must be your reply.\n\n", req.Bounds.GHCalls, req.Bounds.ModelCalls)
+	if req.WebSearch != nil {
+		b.WriteString("The `web_search` tool runs one web search for you: use it only for facts your conversation and your other tools do not hold, and name in your reply the address of each source you use. ")
 	}
+	b.WriteString("The other tools your conversation used (reading and editing files, running commands, your Legion and Envoy tools) are not available now: do not call them. ")
+	bounds := []string{fmt.Sprintf("at most %d gh calls", req.Bounds.GHCalls)}
+	if req.Dispatch != nil {
+		bounds = append(bounds, fmt.Sprintf("at most %d dispatch calls, counted apart from its gh calls", req.Bounds.GHCalls))
+	}
+	if req.WebSearch != nil {
+		bounds = append(bounds, fmt.Sprintf("at most %d web searches", websearch.MaxSearches))
+	}
+	and := " and "
+	if len(bounds) > 1 {
+		and = ", and "
+	}
+	fmt.Fprintf(&b, "This answer may make %s%s%d model calls; your last model call offers no tool and must be your reply.\n\n", strings.Join(bounds, ", "), and, req.Bounds.ModelCalls)
 	b.WriteString("Decline work your tools cannot do, such as work that needs your working copy or a run of your phase: say plainly that you cannot do it now and what it needs, and do not promise to do it later. Say plainly when you do not know.\n\n")
 	b.WriteString("Your reply is exactly one JSON object and nothing else, no code fence: {\"kind\": ..., \"text\": ..., \"needs\": ...}, all three always there. The kinds:\n")
 	b.WriteString("- \"answered\": text is your answer to the message; needs is \"\".\n")

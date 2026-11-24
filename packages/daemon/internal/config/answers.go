@@ -12,10 +12,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
 
-// answersKey is the `answers` block; conversationStoreKey its connection to the conversation store.
+// answersKey is the `answers` block; conversationStoreKey its connection to the conversation store,
+// and webSearchKey its web_search tool.
 const (
 	answersKey           = "answers"
 	conversationStoreKey = answersKey + ".conversation_store"
+	webSearchKey         = answersKey + ".web_search"
 )
 
 // AnswerProvider is a model provider the answer loop calls, a key of `answers.providers`.
@@ -50,6 +52,32 @@ type Answers struct {
 	ConversationStore ConversationStore
 	// Bounds are the loop's limits, each the file's or its default.
 	Bounds AnswerBounds
+	// WebSearch is `answers.web_search` as the file wrote it, nil where it sets none. The loop
+	// offers its web_search tool only where WebSearchOff is "".
+	WebSearch *AnswerWebSearch
+}
+
+// AnswerWebSearch is the settled `answers.web_search`, the loop's web_search tool: Model, the
+// Anthropic model each search runs on, as answers.prices names it (`anthropic/<model>`), whose
+// price there prices a search call's tokens; and PricePerSearch, USD per web search the provider
+// runs, a plain number and not per million tokens.
+type AnswerWebSearch struct {
+	Model          string
+	PricePerSearch float64
+}
+
+// WebSearchOff is why the loop offers no web_search tool, "" where it offers one: the file sets no
+// answers.web_search block, or answers.providers names no anthropic, the provider every search runs
+// on. The boot's `answers: tools` line and `legion config check` name it; nothing else of the loop
+// changes for it.
+func (a Answers) WebSearchOff() string {
+	if a.WebSearch == nil {
+		return "no " + webSearchKey + " block (set its model and price_per_search)"
+	}
+	if _, ok := a.Providers[AnswerAnthropic]; !ok {
+		return answersKey + ".providers names no anthropic, the provider every search runs on"
+	}
+	return ""
 }
 
 // AnswerEndpoint is one `answers.providers.<provider>` entry: the base URL the provider's API is
@@ -111,9 +139,10 @@ type ConversationStore struct {
 
 // AnswerBounds are `answers.bounds`: how long one answer may take, how many model calls it may make
 // and how many tokens each may write; how long one `gh` or `dispatch` call may run and how much of
-// its output the model reads; how many calls of each tool one answer may make, counted per tool
-// (at most GHCalls gh calls, and apart from them at most GHCalls dispatch calls); how many
-// questions the project answers at once; and how many USD the project spends a UTC day.
+// its output, or of a web search's result, the model reads; how many gh and dispatch calls one
+// answer may make, counted per tool (at most GHCalls gh calls, and apart from them at most GHCalls
+// dispatch calls; a web search has a bound of its own, websearch.MaxSearches); how many questions
+// the project answers at once; and how many USD the project spends a UTC day.
 type AnswerBounds struct {
 	Answer        time.Duration
 	ModelCalls    int
@@ -140,6 +169,7 @@ type answersFile struct {
 	providers map[AnswerProvider]AnswerEndpoint
 	prices    map[string]AnswerPrice
 	bounds    AnswerBounds
+	webSearch *AnswerWebSearch
 	// storeSet is whether the file sets conversation_store at all; dsnFile and user are its keys,
 	// "" when unset.
 	storeSet      bool
@@ -163,6 +193,9 @@ func readAnswers(value *yaml.Node, key string) (*answersFile, error) {
 		return nil, err
 	}
 	if read.prices, err = readAnswerPrices(fields["prices"], key+".prices", read.providers); err != nil {
+		return nil, err
+	}
+	if read.webSearch, err = readAnswerWebSearch(fields["web_search"], key+".web_search", read.providers, read.prices); err != nil {
 		return nil, err
 	}
 	if store := fields["conversation_store"]; store != nil {
@@ -320,6 +353,49 @@ func readAnswerPrice(value *yaml.Node, key string) (AnswerPrice, error) {
 	return price, nil
 }
 
+// readAnswerWebSearch reads `answers.web_search`, nil for an unset or null block: model, an
+// Anthropic model id (`anthropic/<model>`), since every search is Anthropic's web search tool on
+// its Messages API, and price_per_search, a non-negative number of USD per search, both required.
+// Where providers names anthropic, model must be one prices prices, since a search call's tokens
+// are priced there. Where it names none, the block is held to its shape all the same and the loop
+// offers no tool (Answers.WebSearchOff): prices can then price no Anthropic model, so that one
+// rule waits for the provider.
+func readAnswerWebSearch(value *yaml.Node, key string, providers map[AnswerProvider]AnswerEndpoint, prices map[string]AnswerPrice) (*AnswerWebSearch, error) {
+	if value == nil {
+		return nil, nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("%s must be a mapping of model and price_per_search", key)
+	}
+	fields, err := describedMembers(value, key, webSearchKey)
+	if err != nil {
+		return nil, err
+	}
+	model, err := requiredString(fields["model"], key+".model", ": the Anthropic model each search runs on, anthropic/<model> as "+answersKey+".prices names it")
+	if err != nil {
+		return nil, err
+	}
+	if match := answerModelID.FindStringSubmatch(model); match == nil || AnswerProvider(match[1]) != AnswerAnthropic {
+		return nil, fmt.Errorf("%s.model is %q, which is no Anthropic model: every search runs on Anthropic's Messages API with its web search tool, so name an anthropic/<model>", key, model)
+	}
+	price, err := readNumber(fields["price_per_search"], key+".price_per_search")
+	if err != nil {
+		return nil, err
+	}
+	if price == nil {
+		return nil, fmt.Errorf("%s.price_per_search is required: USD per search, a plain number and not per million tokens", key)
+	}
+	if *price < 0 {
+		return nil, fmt.Errorf("%s.price_per_search must be a non-negative number", key)
+	}
+	if _, ok := providers[AnswerAnthropic]; ok {
+		if _, priced := prices[model]; !priced {
+			return nil, fmt.Errorf("%s.model %s has no price in %s.prices, which prices each search's tokens; price it there", key, model, answersKey)
+		}
+	}
+	return &AnswerWebSearch{Model: model, PricePerSearch: *price}, nil
+}
+
 // readConversationStore reads `answers.conversation_store`'s two keys; which one the runtime's
 // store needs is resolveAnswers' to say.
 func readConversationStore(value *yaml.Node, key string) (dsnFile, user string, err error) {
@@ -433,6 +509,7 @@ func resolveAnswers(file fileConfig, configDir string, cfg *Config) error {
 		Prices:            read.prices,
 		ConversationStore: store,
 		Bounds:            read.bounds,
+		WebSearch:         read.webSearch,
 	}
 	for provider, endpoint := range read.providers {
 		if endpoint.Credential.File != "" {

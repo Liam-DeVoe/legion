@@ -516,12 +516,21 @@ type CapabilitiesSettings struct {
 
 // AnswersSettings is `answers` without its credentials: each provider's base URL and which key
 // source the file names, never the key, the command that prints it or the path of its file; the
-// prices; and the settled bounds. The conversation store's connection (`conversation_store`, the
-// path of a file holding the store's URL or the login the daemon signs in as) is left out whole.
+// prices; the settled bounds; and the web_search block where the file sets one. The conversation
+// store's connection (`conversation_store`, the path of a file holding the store's URL or the login
+// the daemon signs in as) is left out whole.
 type AnswersSettings struct {
 	Providers map[string]AnswerProviderSettings `json:"providers"`
 	Prices    map[string]AnswerPriceSettings    `json:"prices"`
 	Bounds    AnswerBoundsSettings              `json:"bounds"`
+	WebSearch *AnswerWebSearchSettings          `json:"web_search,omitempty"`
+}
+
+// AnswerWebSearchSettings is `answers.web_search`: the model each search runs on and USD per
+// search.
+type AnswerWebSearchSettings struct {
+	Model          string  `json:"model"`
+	PricePerSearch float64 `json:"price_per_search"`
 }
 
 // AnswerProviderSettings is one `answers.providers.<provider>` entry: its base URL, and
@@ -695,6 +704,9 @@ func answersSettingsOf(answers *config.Answers) *AnswersSettings {
 	}
 	for model, price := range answers.Prices {
 		settings.Prices[model] = AnswerPriceSettings{Input: price.Input, Output: price.Output, CacheWrite: price.CacheWrite, CacheRead: price.CacheRead}
+	}
+	if search := answers.WebSearch; search != nil {
+		settings.WebSearch = &AnswerWebSearchSettings{Model: search.Model, PricePerSearch: search.PricePerSearch}
 	}
 	return settings
 }

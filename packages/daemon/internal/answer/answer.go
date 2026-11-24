@@ -1,8 +1,9 @@
 // Package answer is the daemon's model loop: it answers one question to an agent that is not
 // running, as that agent, by resuming the agent's own conversation on the model the conversation
-// last ran on, with the loop's tools (the slice in tools.go: gh, and dispatch where the daemon
-// found the dispatch command), and returns the agent's reply in its structured form, the turns to
-// append to the conversation, and what the answer cost.
+// last ran on, with the loop's tools (the slice in tools.go: gh, dispatch where the daemon found
+// the dispatch command, and web_search where answers.web_search configures it), and returns the
+// agent's reply in its structured form, the turns to append to the conversation, and what the
+// answer cost, its web searches' cost included.
 //
 // The model calls themselves are agentloop's (github.com/sjawhar/envoy/agentloop), the one model
 // loop the daemon and Dispatch share and the only import of Grafana's SDK: the providers, the
@@ -12,9 +13,9 @@
 // the provider cut at output_tokens are all its. This package is its caller: it builds the
 // request (the conversation as agentloop's messages, the system prompt, the reply form as the
 // request's Final schema, the form's own rules as its Check, the gh tool described for the
-// agent's repository and the dispatch tool for its session, the last call's message, the bounds
-// and the endpoint `answers.providers` names, whose key is read again for every call), decides
-// the faults that need no model call
+// agent's repository, the dispatch tool for its session and the web_search tool, the last call's
+// message, the bounds and the endpoint `answers.providers` names, whose key is read again for
+// every call), decides the faults that need no model call
 // (no_provider, no_price, unknown_format), refuses an answer whose calls the provider metered
 // nothing for (unmetered), maps agentloop's faults onto the daemon's own reasons, ends a run the
 // project's pause comes during before its next model call or gh call (ErrPaused), and reads the
@@ -44,6 +45,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatchtool"
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/websearch"
 )
 
 // Kind is what the agent's reply is.
@@ -144,6 +146,14 @@ type Dispatch interface {
 	Run(ctx context.Context, call dispatchtool.Call) dispatchtool.Result
 }
 
+// WebSearch runs one web_search call the model makes (websearch.Call): its seq among the answer's
+// calls of every tool, its number among the answer's web searches alone, an earlier run's
+// counted, and its input; and answers what the model reads of it and what it cost. The daemon's is
+// the answer's *websearch.Answer, which refuses a search past websearch.MaxSearches.
+type WebSearch interface {
+	Run(ctx context.Context, call websearch.Call) websearch.Result
+}
+
 // Agent is the stopped agent that answers: its role, its issue, its session and the phase the
 // daemon has it in; and GHUsage, how it calls the gh tool (its issue's repository and, where the
 // daemon's record holds one, the issue's pull request), which the gh tool's description and the
@@ -192,6 +202,9 @@ type Request struct {
 	// Dispatch runs the dispatch tool's calls; nil is a daemon that found no dispatch command,
 	// whose model is offered no dispatch tool.
 	Dispatch Dispatch
+	// WebSearch runs the web_search tool's calls; nil is a daemon whose answers configures no
+	// web_search tool (config.Answers.WebSearchOff), whose model is offered none.
+	WebSearch WebSearch
 	// Paused says whether the project is paused; nil is never paused. It is read before the
 	// first model call, before each gh call and as each model call ends, once the gh calls it
 	// asked for have returned, and a run that finds the project paused ends with ErrPaused
@@ -231,10 +244,14 @@ type Reply struct {
 	Append conversation.Append
 	// Calls is how many model calls the answer made, a cut call made again included; Usage
 	// their tokens and costs summed, cache writes and reads included, reasoning counted as
-	// output; CostUSD the sum of its costs.
-	Calls   int
-	Usage   conversation.Usage
-	CostUSD float64
+	// output; WebSearches the searches its web_search calls made and WebSearchUSD what those
+	// calls cost, their tokens at the search model's price and their searches' fee, none of it
+	// in Usage; and CostUSD the sum of every cost, its model calls' and its web searches'.
+	Calls        int
+	Usage        conversation.Usage
+	WebSearches  int
+	WebSearchUSD float64
+	CostUSD      float64
 }
 
 // The provider APIs the loop calls, as a conversation names them; each is the protocol agentloop
@@ -268,12 +285,15 @@ func Answer(ctx context.Context, req Request) (Reply, error) {
 	if reply.Fault != "" {
 		reply.Kind = NotAnswered
 	}
+	// costUSD is the line's tokens at the model's prices plus webSearchUSD, what its web searches
+	// cost, so a reader recomputes it from the line alone.
 	attrs := []any{
 		"question", req.Question.ID, "issue", req.Agent.Issue, "role", req.Agent.Role, "session", req.Agent.Session,
 		"model", req.Conversation.Model, "kind", reply.Kind, "fault", reply.Fault, "calls", reply.Calls,
 		"inputTokens", reply.Usage.InputTokens, "outputTokens", reply.Usage.OutputTokens,
 		"cacheWriteTokens", reply.Usage.CacheWriteTokens, "cacheReadTokens", reply.Usage.CacheReadTokens,
-		"reasoningTokens", reply.Usage.ReasoningTokens, "costUSD", reply.CostUSD,
+		"reasoningTokens", reply.Usage.ReasoningTokens, "webSearches", reply.WebSearches, "webSearchUSD", reply.WebSearchUSD,
+		"costUSD", reply.CostUSD,
 	}
 	if reply.Detail != "" {
 		attrs = append(attrs, "detail", reply.Detail)
@@ -371,6 +391,12 @@ func answer(ctx context.Context, req Request) (Reply, error) {
 	question := userMessage(req)
 	// The gh tool adds each call's output to what the agent has in front of it (inFront).
 	front := &inFront{history: history, question: question}
+	// The web_search tool's calls are metered on their way to req's tool (searchSpend), so their
+	// cost is the answer's whichever way the run ends.
+	spend := &searchSpend{}
+	if req.WebSearch != nil {
+		spend.search, req.WebSearch = req.WebSearch, spend
+	}
 	result, runErr := agentloop.Run(ctx, agentloop.Request{
 		Model:   r.agentModel(req.Conversation.ThinkingLevel),
 		System:  systemPrompt(req),
@@ -415,7 +441,9 @@ func answer(ctx context.Context, req Request) (Reply, error) {
 		},
 		Log: req.Log,
 	})
-	reply := Reply{Calls: len(result.Steps), Usage: usageOf(result.Usage, r.price), CostUSD: result.Usage.CostUSD}
+	reply := Reply{Calls: len(result.Steps), Usage: usageOf(result.Usage, r.price)}
+	reply.WebSearches, reply.WebSearchUSD = spend.spent()
+	reply.CostUSD = result.Usage.CostUSD + reply.WebSearchUSD
 	if runErr != nil && ctx.Err() != nil {
 		return reply, fmt.Errorf("answer: %w", ctx.Err())
 	}
@@ -436,6 +464,32 @@ func answer(ctx context.Context, req Request) (Reply, error) {
 		finish(&reply, req, result, front)
 	}
 	return reply, nil
+}
+
+// searchSpend is the web_search tool of one run as toolSet runs it: each call runs on search, the
+// request's own tool, and what it made and cost is summed. agentloop runs a tool call on a
+// goroutine of its own, so the sums are held under a lock.
+type searchSpend struct {
+	search   WebSearch
+	mu       sync.Mutex
+	searches int
+	usd      float64
+}
+
+func (s *searchSpend) Run(ctx context.Context, call websearch.Call) websearch.Result {
+	result := s.search.Run(ctx, call)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.searches += result.Searches
+	s.usd += result.CostUSD
+	return result
+}
+
+// spent is the searches the run's web_search calls made and their USD so far.
+func (s *searchSpend) spent() (int, float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.searches, s.usd
 }
 
 // inFront is what the agent has in front of it as it replies, whose words a reply may be without

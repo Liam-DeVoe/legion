@@ -12,7 +12,7 @@ import (
 
 // AnswerToolCall is one call of a tool the answer loop ran for a stopped agent (answer_tool_calls):
 // the question it answered and the call's place among that answer's calls of every tool, the tool
-// that ran it (ToolGH, ToolDispatch, or web_search), its arguments as run, for a gh call the App
+// that ran it (ToolGH, ToolDispatch or ToolWebSearch), its arguments as run, for a gh call the App
 // role whose token ran it and the owner whose gh directory it ran with (empty for any other tool),
 // and when it started. Result, Exit and FinishedAt are what FinishAnswerToolCall wrote: Result nil
 // is a call whose outcome is unknown, since the daemon stopped while it ran; Exit nil a call whose
@@ -30,11 +30,11 @@ type AnswerToolCall struct {
 	FinishedAt *time.Time
 }
 
-// The loop's tools as answer_tool_calls names them (its tool column's check, which takes
-// web_search as well).
+// The loop's tools as answer_tool_calls names them (its tool column's check).
 const (
-	ToolGH       = "gh"
-	ToolDispatch = "dispatch"
+	ToolGH        = "gh"
+	ToolDispatch  = "dispatch"
+	ToolWebSearch = "web_search"
 )
 
 // ErrAnswerToolCallRecorded is StartAnswerToolCall's refusal of a call whose question and seq

@@ -1716,7 +1716,7 @@ It runs under either runtime.
 
 The code: `packages/daemon/internal/answerloop` (the question pipeline:
 intake, classification, one writer per conversation, posting, passing on), `internal/answer` (the model loop, which builds the request and reads the reply but makes its model calls through `packages/envoy/agentloop`, the loop the daemon and Dispatch share and this repository's only import of Grafana's AI SDK for Go), `internal/conversation` (`omp` and `claude`:
-each harness's conversation read as it rebuilds it on resume, and appended to in its own format), `internal/ghtool` (the loop's `gh` tool), `internal/dispatchtool` (the loop's `dispatch` tool) and `internal/agenthistory` (the record of conversations the loop answers from, and its mirror in the Envoy listener's agent registry).
+each harness's conversation read as it rebuilds it on resume, and appended to in its own format), `internal/ghtool` (the loop's `gh` tool), `internal/dispatchtool` (the loop's `dispatch` tool), `internal/websearch` (the loop's `web_search` tool) and `internal/agenthistory` (the record of conversations the loop answers from, and its mirror in the Envoy listener's agent registry).
 
 ### Configuration
 
@@ -1730,6 +1730,9 @@ answers:
   conversation_store:                # runtime: kubernetes only
     dsn_file: ./conversations-dsn    # under session_store postgres; under cloudsql-iam, user: <the daemon's IAM login>
   bounds: { answer_seconds: 180, model_calls: 8, output_tokens: 4000, gh_seconds: 30, gh_output_chars: 60000, gh_calls: 20, concurrent: 4, daily_usd: 50 }
+  web_search:                        # optional: the loop's web_search tool, on the anthropic provider
+    model: anthropic/claude-opus-5-5 # an anthropic/<model> that prices names
+    price_per_search: 0.01           # USD per search, a plain number, not per million tokens
 ```
 
 - `providers` (without it, the loop is off): At least one of `anthropic` (Anthropic's Messages API) and `openai` (OpenAI's Responses API); no other key.
@@ -1767,16 +1770,26 @@ answers:
 
 - `bounds.gh_seconds` (30): How long one `gh` or `dispatch` call may run.
 
-- `bounds.gh_output_chars` (60000): How much of a `gh` or `dispatch` call's output the model reads; the rest is cut with a note saying how much.
+- `bounds.gh_output_chars` (60000): How much of a `gh` or `dispatch` call's output, or of a `web_search` call's result, the model reads; the rest is cut with a note saying how much.
   It also bounds the daemon's own `gh` reads for an answer, the lookup of a call's comment or review after a restart among them, at `gh_output_chars` times `gh_calls` characters, and a read past that bound is refused rather than cut.
 
-- `bounds.gh_calls` (20): Calls per answer of each tool, counted per tool: at most this many `gh` calls, and apart from them at most this many `dispatch` calls.
+- `bounds.gh_calls` (20): `gh` and `dispatch` calls per answer, counted per tool: at most this many `gh` calls, and apart from them at most this many `dispatch` calls.
   Each tool's count holds an earlier run's calls of the same question, and a call past it is refused as the tool's result, naming the bound.
+  `web_search` has a bound of its own, 3 searches an answer ([The `web_search` tool](#the-web_search-tool)).
 
 - `bounds.concurrent` (4): Conversations the project answers at once; the questions to one conversation always run one after another.
 
 - `bounds.daily_usd` (50): USD the project spends on answers per UTC day.
   The limit is checked before each answer starts, and the answers already running when the day reaches it can take the day past it, by at most `concurrent` answers' cost.
+
+- `web_search.model` (required in the block): The model each search of the loop's `web_search` tool runs on ([The `web_search` tool](#the-web_search-tool)), `anthropic/<model>` as `prices` names it.
+  A model of another provider, or no model id, is refused, and so, where `providers` names `anthropic`, is a model `prices` does not price, since each search call's tokens are priced there.
+
+- `web_search.price_per_search` (required in the block): USD per web search the provider runs, a plain non-negative number, not per million tokens like `prices`.
+  A search that answers an error is not charged.
+
+Without a `web_search` block, or where `providers` names no `anthropic`, the loop offers no `web_search` tool and nothing else changes; boot's `answers: tools` line says why (below).
+A block missing either key, or naming a model it cannot run on, is refused at load, naming the key and the reason, as every other malformed key of `answers` is.
 
 Each count is a positive integer, each `_seconds` a positive whole number of seconds, and `daily_usd` a positive number;
 a key the block does not model is refused by name.
@@ -1803,10 +1816,11 @@ A script is taken, since the Envoy plugin's `dispatch` is a `/bin/sh` shim that 
 The worker image keeps it at that last path, and its `PATH` does not hold that directory, so a Kubernetes daemon finds it there.
 `bun` is `LEGION_BUN_PATH`, which must be an absolute executable, else the first `bun` on `PATH`.
 A daemon that names no `dispatch_url`, finds no `dispatch`, or finds no `bun` for it offers no `dispatch` tool, and everything else runs as before.
-Boot logs the loop's tools in one line, `answers: tools`, whose `tools` key lists the tools the loop offers (`["gh","dispatch"]`), with one key named for each tool it does not offer, holding why, such as `"dispatch":"no dispatch command on PATH or at /opt/legion/pi-envoy/bin/dispatch (set LEGION_DISPATCH_PATH)"`.
-`legion config check` prints the same in one line, `answers: tools [gh dispatch]`, or `answers: tools [gh]; dispatch: <why>`.
+Boot logs the loop's tools in one line, `answers: tools`, whose `tools` key lists the tools the loop offers (`["gh","dispatch","web_search"]`), with one key named for each tool it does not offer, holding why, such as `"dispatch":"no dispatch command on PATH or at /opt/legion/pi-envoy/bin/dispatch (set LEGION_DISPATCH_PATH)"`.
+`web_search`'s is `no answers.web_search block (set its model and price_per_search)` or `answers.providers names no anthropic, the provider every search runs on`.
+`legion config check` prints the same in one line, `answers: tools [gh dispatch web_search]`, or, for each tool not offered, `answers: tools [gh]; dispatch: <why>; web_search: <why>`.
 While the loop is on, `legion state --json` shows the block under `settings.answers`, and while it is off it shows none, as without `answers`:
-each provider's `base_url` and `api_key_source` (which key names it), the prices and the settled bounds, never a key, a key's command or file, or the conversation store's connection.
+each provider's `base_url` and `api_key_source` (which key names it), the prices, the settled bounds, and `web_search`'s `model` and `price_per_search` where the block sets it, never a key, a key's command or file, or the conversation store's connection.
 `deploy/kubernetes/daemon/legion.yaml.example` carries the block, commented out.
 
 ### How a question reaches it
@@ -1952,11 +1966,13 @@ when the agent it answers is stopped too, the listener hands that answer to its 
 
 ### Cost and logs
 
-Every answer logs one line, `answers: answered`, with `question`, `issue`, `role`, `session`, `model`, `kind`, `fault`, `calls`, `inputTokens`, `outputTokens`, `cacheWriteTokens`, `cacheReadTokens`, `reasoningTokens` and `costUSD`, each summed over every model call of the answer, cache writes included, at `prices`.
+Every answer logs one line, `answers: answered`, with `question`, `issue`, `role`, `session`, `model`, `kind`, `fault`, `calls`, `inputTokens`, `outputTokens`, `cacheWriteTokens`, `cacheReadTokens` and `reasoningTokens`, each summed over every model call of the answer, cache writes included;
+`webSearches`, the searches its `web_search` calls made, and `webSearchUSD`, what those calls cost, their tokens at the search model's `prices` and their searches' fee ([The `web_search` tool](#the-web_search-tool));
+and `costUSD`, the model calls' tokens at `prices` plus `webSearchUSD`, so the line alone recomputes it.
 An answer the project's pause stopped carries `paused` too, set to true.
 The cost is added to the project's spend for the UTC day, kept in the daemon's store so a restart keeps it;
 the spend is checked before each answer, so the answer that crosses `daily_usd` finishes, and every question after it that day gets the daemon's `over_limit` reply.
-Beside it: one `answers: question` line per change of a question's state, one `answers: gh` line per `gh` call naming the App (its role and configured id) and the owner it ran as, one `answers: dispatch` line per `dispatch` call naming the question, the seq, the session it ran as, the command, its arguments and its exit (and its refusal, for a call the tool refused), and `answers: question passed to the controller` once per question passed on.
+Beside it: one `answers: question` line per change of a question's state, one `answers: gh` line per `gh` call naming the App (its role and configured id) and the owner it ran as, one `answers: dispatch` line per `dispatch` call naming the question, the seq, the session it ran as, the command, its arguments and its exit (and its refusal, for a call the tool refused), one `answers: web_search` line per `web_search` call naming the question, the seq, the query, its searches and its `costUSD` (and its error, for a search that failed or that the tool refused), and `answers: question passed to the controller` once per question passed on.
 Boot logs the loop's tools once, `answers: tools` ([Configuration](#configuration)).
 
 ### The `gh` tool, a security decision
@@ -2090,6 +2106,37 @@ The daemon runs it as the agent's own session, with the Dispatch token it gives 
 - **Bounds and records.**
   Each call runs within `gh_seconds` and its output is cut at `gh_output_chars`, as a `gh` call's is, and an answer makes at most `gh_calls` `dispatch` calls, counted apart from its `gh` calls.
   Each call is recorded in `answer_tool_calls` with `tool` `dispatch` and no App or owner, before it runs and finished after with what the model read and its exit; a refused call is recorded with its refusal, and a call whose start cannot be recorded does not run.
+
+### The `web_search` tool
+
+`web_search` is the loop's third tool: one web search, which the daemon runs for the agent and offers where `answers.web_search` configures it and `providers` names `anthropic` ([Configuration](#configuration)).
+
+- **What the model is told.**
+  The tool's description says it is one web search the daemon runs, that it is for facts the agent's conversation and its other tools do not hold, that the answer may search at most 3 times, and that the reply must name the address of each source it uses.
+  Its input is `query`, one required string.
+  The system prompt names it beside the other tools, with its bound.
+
+- **One Messages call.**
+  Each call is one `POST <providers.anthropic.base_url>/v1/messages`, with the key and the headers the loop's own Anthropic calls carry (`x-api-key`, the key read again for the call, and `anthropic-version: 2023-06-01`), so a gateway that takes the loop's calls takes it, and no redirect is followed.
+  It runs on `web_search.model`, with `max_tokens` the `output_tokens` bound, one user message asking for a search of the query and a brief answer naming its sources, and Anthropic's own web search tool, `{"type":"web_search_20250305","name":"web_search","max_uses":1}`, which the provider runs.
+  It is bounded by the answer's own time, `answer_seconds`.
+
+- **What the model reads.**
+  The reply's text, then `Sources:` and the address of each source the reply's search results and its text's citations name, each once, in order, cut at `gh_output_chars` as a `gh` call's output is.
+  A search the provider answered with an error, an answer other than `200`, and a body that is no Messages response are each an error result naming the cause, never the key.
+
+- **At most 3 searches per answer.**
+  An earlier run's calls of the same question count, as each tool's bound counts them, and the fourth call is refused as the tool's result, naming the bound, before any request is made.
+
+- **Cost.**
+  Each call costs its tokens at `web_search.model`'s `prices` plus its searches times `web_search.price_per_search`.
+  The searches are counted from the reply's search result blocks, never from a usage counter, and a result block holding an error is a failed search, which is not charged.
+  The cost is the answer's, so it counts toward `daily_usd` and is in the `answers: answered` line's `costUSD` and `webSearchUSD` ([Cost and logs](#cost-and-logs)).
+  A gateway's own cost header, LiteLLM's `x-litellm-response-cost`, does not count the search fee, so the daemon's own sum is the cost.
+
+- **Records.**
+  Each call is recorded in `answer_tool_calls` with `tool` `web_search`, its query its one argument and no App or owner, before its request is made and finished after with what the model read, exit `0` for a search the provider answered and `1` for one that failed; a refused call is recorded with its refusal and no exit, and a call whose start cannot be recorded makes no request.
+  A search the daemon stopped during is neither made again nor looked up: the next run is told `The daemon stopped while this search ran; its result is unknown.`
 
 ### The conversation stores
 

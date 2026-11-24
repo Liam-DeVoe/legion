@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/dispatchtool"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/websearch"
 )
 
 // tool is one of the loop's tools: its name, what the model reads of it and the JSON schema of
@@ -26,12 +27,14 @@ type tool struct {
 }
 
 // tools are the loop's tools, which the system prompt names and every model call of an answer
-// offers where its request does (Request.offeredTools): gh, and dispatch where the daemon found the
-// dispatch command.
+// offers where its request does (Request.offeredTools): gh, dispatch where the daemon found the
+// dispatch command, and web_search where answers.web_search configures it.
 var tools = []tool{
 	{name: store.ToolGH, description: ghDescription, schema: ghSchema, run: runGH},
 	{name: store.ToolDispatch, description: dispatchDescription, schema: dispatchSchema, run: runDispatch,
 		offered: func(req Request) bool { return req.Dispatch != nil }},
+	{name: store.ToolWebSearch, description: webSearchDescription, schema: webSearchSchema, run: runWebSearch,
+		offered: func(req Request) bool { return req.WebSearch != nil }},
 }
 
 // offeredTools are the tools req offers, in the list's order.
@@ -162,6 +165,44 @@ type dispatchArgsSchema struct {
 	AdditionalProperties bool     `json:"additionalProperties"`
 }
 
+// webSearchDescription is what the model reads of the web_search tool: one web search, which the
+// daemon runs; that it is for facts the agent's conversation and its other tools do not hold; its
+// bound, websearch.MaxSearches an answer; and that the reply names the address of each source it
+// uses.
+func webSearchDescription(Request) string {
+	return "Search the web. The daemon runs one web search for you, on Anthropic's web search, and answers with what " +
+		"the search found and the address of each source. Use it only for facts your conversation and your other tools " +
+		fmt.Sprintf("do not hold, such as a public project's current release or an outside service's documentation. You may search at most %d times in this answer. ", websearch.MaxSearches) +
+		"Your reply must name the address of each source you use."
+}
+
+// webSearchSchema is the JSON schema of the web_search tool's input: one property, query, a
+// string, required, and no other property.
+func webSearchSchema(Request) json.RawMessage {
+	var schema webSearchArgsSchema
+	schema.Type = "object"
+	schema.Properties.Query.Type = "string"
+	schema.Properties.Query.Description = "What to search the web for, as you would write it into a search engine."
+	schema.Required = []string{"query"}
+	encoded, _ := json.Marshal(schema)
+	return encoded
+}
+
+// webSearchArgsSchema is the shape of the web_search tool's input schema (webSearchSchema): query,
+// a string, required, and no other property. It is one Go value marshalled once, as ghArgsSchema
+// is.
+type webSearchArgsSchema struct {
+	Type       string `json:"type"`
+	Properties struct {
+		Query struct {
+			Type        string `json:"type"`
+			Description string `json:"description"`
+		} `json:"query"`
+	} `json:"properties"`
+	Required             []string `json:"required"`
+	AdditionalProperties bool     `json:"additionalProperties"`
+}
+
 // toolSet is the loop's tools req offers as agentloop offers and runs them, each call's output
 // given to add as the model reads it (inFront.add). The project's pause is read before each call
 // (Request.Paused): a call it finds paused does not run, and answers a refusal. agentloop runs a
@@ -171,8 +212,9 @@ type dispatchArgsSchema struct {
 //
 // Each call is handed its number among the answer's calls of its own tool, from 1, counted on
 // from the calls of that tool an earlier run of the question made (Request.Earlier), which is what
-// that tool's bound reads: an answer's gh calls and its dispatch calls are counted apart, while
-// every call's seq, the one agentloop numbers it with, counts the calls of every tool.
+// that tool's bound reads: an answer's gh calls, its dispatch calls and its web searches are
+// counted apart, while every call's seq, the one agentloop numbers it with, counts the calls of
+// every tool.
 func toolSet(req Request, add func(string)) []agentloop.Tool {
 	offered := req.offeredTools()
 	set := make([]agentloop.Tool, len(offered))
@@ -258,4 +300,13 @@ func runDispatch(ctx context.Context, req Request, call agentloop.ToolCall, n in
 	default:
 		return result.Output, false
 	}
+}
+
+// runWebSearch runs one web_search call through the request's WebSearch, numbered as runGH numbers
+// a gh call, n its number among the answer's web searches, with the model's input as it gave it,
+// which the tool reads its query from. What the model reads is the search's result, a refused or
+// failed search's as an error result.
+func runWebSearch(ctx context.Context, req Request, call agentloop.ToolCall, n int) (string, bool) {
+	result := req.WebSearch.Run(ctx, websearch.Call{Seq: call.Index, N: n, Input: string(call.Input)})
+	return result.Output, result.IsError
 }
