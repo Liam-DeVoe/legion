@@ -92,11 +92,13 @@ case $1 in
     [ $# -ge 2 ] || refuse "$1 needs a target"
     mode=$1 target=$2
     shift 2
-    case $mode in
-      list) for_target "$target" go -C packages/daemon list "$@" ./cmd/legion ;;
-      env) for_target "$target" go -C packages/daemon env "$@" ;;
-      modules) for_target "$target" go -C packages/daemon list -m -f '{{.GoMod}}' ;;
-    esac
+    if [ "$mode" = list ]; then
+      for_target "$target" go -C packages/daemon list "$@" ./cmd/legion
+    elif [ "$mode" = env ]; then
+      for_target "$target" go -C packages/daemon env "$@"
+    else
+      for_target "$target" go -C packages/daemon list -m -f '{{.GoMod}}'
+    fi
     ;;
   *) refuse "unknown mode $1" ;;
 esac

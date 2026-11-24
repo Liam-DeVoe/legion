@@ -2557,7 +2557,7 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/release-push.sh",
          "symlinked into every fixture beside it: the check runs its version-paths"),
         (f"{SCRIPTS}/release-build-legion.sh",
-         "symlinked into every fixture beside it: the check runs its targets, list and env modes"),
+         "symlinked into every fixture beside it: the check runs its targets, list, env and modules modes"),
         (f"{SCRIPTS}/release-build-legion.test.sh",
          "the step's second harness, which tests the build script's build and modes and sources test-lib.sh too"),
     ]),
@@ -4082,7 +4082,7 @@ GATES = [
     # different steps, so they do not collide.
     gate("go_notices", "lint", step=RELEASE_PATHS_STEP, runs=legion_release_paths_runs(), reads=reads(
         (RELEASE_PATHS_CHECK, at("lint", RELEASE_PATHS_STEP)),
-        (RELEASE_BUILD_LEGION, f"{RELEASE_PATHS_CHECK} runs its targets, list and env modes"),
+        (RELEASE_BUILD_LEGION, f"{RELEASE_PATHS_CHECK} runs its targets, list, env and modules modes"),
         (f"{SCRIPTS}/release-push.sh", f"{RELEASE_PATHS_CHECK} runs its version-paths"),
         (".github/workflows/release.yaml", f"{RELEASE_PATHS_CHECK} reads its LEGION_VERSION_ARGS"),
         (GO_TARGETS, f"{RELEASE_BUILD_LEGION}'s targets: jq reads it"),
