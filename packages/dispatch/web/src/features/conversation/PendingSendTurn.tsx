@@ -25,9 +25,10 @@ import type { SessionSends } from "./useSessionSends";
  * still being tried past its deadline with Stop trying; or refused with why, Retry and Discard.
  * The session's live view and its Agents row both show it, and either's controls act on the
  * same write (`useSessionSends`). It leaves once Dispatch makes it, and the stored message takes
- * its place. It is a row to the page's focus rescue by the row marker (`row-marker.ts`), not by
- * list markup: in the live view it is a turn of the transcript, whose stored turns are no list,
- * so a list around the held turns would read to a screen reader as a list the transcript is not.
+ * its place. It is a row to the page's focus hand-offs by the row marker (`row-marker.ts`), not
+ * by list markup: in the live view it is a turn of the transcript, whose stored turns are no
+ * list, so a list around the held turns would read to a screen reader as a list the transcript
+ * is not.
  *
  * The draft is drawn by the renderer, as the message it becomes will be: its line breaks and
  * formatting as the stored message shows them, and a mention the picker wrote as the party's

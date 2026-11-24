@@ -660,6 +660,57 @@ test("Tab inside an IME composition moves no chip, where a plain Tab would", asy
   }
 });
 
+// Safari sends the key that ends an input method's composition after the composition's end,
+// unmarked - `isComposing` false - with keyCode 229 (WebKit bug 165004): that key is the
+// composition's as well. In the bar's box an arrow moves no highlight and Enter opens no row, and
+// in the filter panel's Author box Enter takes no author. The plain Enter after it takes the
+// author.
+test("keys that end an IME composition in Safari, at keyCode 229, move no highlight, open no row and take no author", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    const box = await searchFor(user, "astrolabe");
+    // Two rows at least, so an arrow the bar took would move the highlight off the first.
+    const [first, second] = screen.getAllByRole("option");
+    if (first === undefined || second === undefined)
+      throw new Error("the palette listed fewer than two options");
+    expect(box).toHaveAttribute("aria-activedescendant", first.id);
+    for (const key of ["ArrowDown", "ArrowUp", "Enter"]) {
+      // `fireEvent` answers false for a key whose default was cancelled, which the bar does to
+      // each key it spends. user-event has no form for this: it cannot mark a key as an IME
+      // composition.
+      const kept = fireEvent.keyDown(box, { isComposing: false, key, keyCode: 229 });
+      expect(kept, `${key} at keyCode 229`).toBe(true);
+      expect(box, `${key} at keyCode 229`).toHaveAttribute("aria-activedescendant", first.id);
+    }
+    expect(screen.getByTestId("current-route").textContent).toBe("/");
+
+    await openFilters(user);
+    const author = screen.getByRole("searchbox", { name: "Author" });
+    await user.click(author);
+    await user.paste("alice");
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(author, { isComposing: false, key: "Enter", keyCode: 229 });
+    // The chip stands in the bar's line and at the top of the Filter panel (R8), so each read
+    // counts both.
+    expect(
+      screen.queryAllByRole("button", { name: "Remove Author alice filter" }),
+      "an Enter at keyCode 229 took the author"
+    ).toEqual([]);
+
+    await user.keyboard("{Enter}");
+    expect(
+      (await screen.findAllByRole("button", { name: "Remove Author alice filter" })).length
+    ).toBeGreaterThan(0);
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 function issueHit(key: string): SearchResult {
   return {
     href: `/issues/${key}`,

@@ -26,17 +26,19 @@ const PRESET_IDS: readonly string[] = SNOOZE_PRESETS.map((preset) => preset.id);
 
 const ROW_SNOOZE_ATTRIBUTE = "data-inbox-snooze";
 const ROW_SNOOZE_MARKS: ListMarks = { trigger: { [ROW_SNOOZE_ATTRIBUTE]: "" } };
-/** The row's own Snooze list's trigger, which the Inbox's `h` finds by it and focuses: the shared
- *  list hands out no element of its own. */
+/** The trigger of each Snooze list this control draws, which the Inbox's `h` finds by it and
+ *  focuses - the row's own, or, with the reading column on, the column head's: the shared list
+ *  hands out no element of its own. */
 export const ROW_SNOOZE_SELECTOR = `[${ROW_SNOOZE_ATTRIBUTE}]`;
 
 /**
  * The Snooze badge and the list it opens: the badge is the trigger of the shared list's single
  * pick (`MultiSelect`) of `snooze.ts`'s presets, and the list's text box narrows them as the
- * reader types. A row's own Snooze (`SnoozeControl`) and the selection bar's (`Inbox.tsx`) are
- * this control. The badge shows `badge` for the eye alone (`aria-hidden`), so the trigger's name
- * is `label` alone, whatever the badge says. A pick hands `onPick` the moment its preset names,
- * computed at the pick, not when the page rendered. While `held` - a write is out that the pick
+ * reader types. A row's own Snooze, the reading column head's and the short row's (each a
+ * `SnoozeControl`), and the selection bar's (`Inbox.tsx`) are this control. The badge shows
+ * `badge` for the eye alone (`aria-hidden`), so the trigger's name is `label` alone, whatever the
+ * badge says. A pick hands `onPick` the moment its preset names, computed at the pick, not when
+ * the page rendered. While `held` - a write is out that the pick
  * would race - the trigger is `aria-disabled`, never `disabled`, so it keeps the reader's focus:
  * a press of it opens no list, and a pick from a list that stood open as the hold began writes
  * nothing.
@@ -118,11 +120,10 @@ export function SnoozePick({
  * it, while its pick's write is out and through the commit after its answer. An un-snooze takes
  * the row out of its window at once the same way, where the list would be drawn in Un-snooze's
  * place, so Un-snooze stays drawn, held, while its write is out and through the commit after its
- * answer. The press is the reader's, and the row's going after the answer is that press's doing
- * (`causedByReader`) only while its control - for a pick, the trigger of the list it was made in -
- * is still in the page and held: the row goes with its held control, so the page's rescue hands
- * the focus on as it does for Dismiss and Assign to me, to the same control in the row that moves
- * up into the row's place. That is a row's own Snooze. In the reading column's head
+ * answer. The press is the reader's, and its control - for a pick, the trigger of the list it was
+ * made in - stays in the page and held until the row goes with it after the answer, so the focus
+ * stays on that control until then, and a second press on it does nothing. That is a row's own
+ * Snooze. In the reading column's head
  * (`ReadingPaneHead`) the control goes with the question the column shows, and the Inbox's own
  * hand-off sends the focus to the column's focus stop instead (`Inbox.tsx`). A control taken away
  * at the press would leave the row's going to drop the focus onto the page.

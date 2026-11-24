@@ -1,6 +1,6 @@
 import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for blur, submit, focus, one edit inside a single act batch, and one repeated identical selection
+// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for blur, submit, focus, one edit inside a single act batch, and one pick repeated inside a single act batch
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -478,15 +478,20 @@ test("IssuePage ignores same-task duplicate route saves", async () => {
 });
 
 test("IssuePage ignores a same-task duplicate status save", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const { unmount } = renderIssuePage();
 
   try {
-    const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
-    // The same selection delivered twice in one task is what the guard under test ignores, and
-    // user-event's `selectOptions` cannot deliver a selection the control already holds.
-    fireEvent.change(status, { target: { value: "backlog" } });
-    fireEvent.change(status, { target: { value: "backlog" } });
+    const status = await screen.findByRole("button", { name: pickNamed("Status") });
+    await user.click(status);
+    const backlog = within(panelOf(status)).getByRole("option", { name: "Backlog" });
+    // The same pick delivered twice in one task is what the guard under test ignores, and a
+    // user-event press of the row closes the list before a second one can reach it.
+    act(() => {
+      fireEvent.click(backlog);
+      fireEvent.click(backlog);
+    });
 
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt);
@@ -807,14 +812,14 @@ test("IssuePage drains a title draft after a different issue write settles", asy
   const { unmount } = renderIssuePage();
 
   try {
-    const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
-    await user.selectOptions(status, "backlog");
+    const status = await screen.findByRole("button", { name: pickNamed("Status") });
+    await pickIn(user, () => status, "Backlog");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
 
-    // The status select takes focus when it is used, which would blur (and submit) an open title
-    // editor as a click does in a browser; open the editor after that write is away.
+    // The Status takes focus when it is used, which would blur (and submit) an open title editor
+    // as a click does in a browser; open the editor after that write is away.
     const title = await openTitleEditor();
     await user.clear(title);
     await user.click(title);
@@ -843,9 +848,9 @@ test("IssuePage does not submit a route that was typed but never saved", async (
   const { unmount } = renderIssuePage();
 
   try {
-    const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
+    const status = await screen.findByRole("button", { name: pickNamed("Status") });
     const route = await openRouteEditor();
-    await user.selectOptions(status, "backlog");
+    await pickIn(user, () => status, "Backlog");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
@@ -980,8 +985,8 @@ test("IssuePage retries a failed drained title before sending the queued route",
   const { unmount } = renderIssuePage();
 
   try {
-    const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
-    await user.selectOptions(status, "backlog");
+    const status = await screen.findByRole("button", { name: pickNamed("Status") });
+    await pickIn(user, () => status, "Backlog");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
@@ -1722,7 +1727,7 @@ test("IssuePage sends a refused title no second time as a status pick lands afte
     });
     await screen.findByText("Could not update this issue.");
 
-    await user.selectOptions(await screen.findByLabelText("Status"), "backlog");
+    await pickIn(user, () => screen.getByRole("button", { name: pickNamed("Status") }), "Backlog");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
@@ -1809,8 +1814,8 @@ test("IssuePage sends a route that waited behind a failed status write ahead of 
   const { queryClient, unmount } = renderIssuePage();
 
   try {
-    const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
-    await user.selectOptions(status, "backlog");
+    const status = await screen.findByRole("button", { name: pickNamed("Status") });
+    await pickIn(user, () => status, "Backlog");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
@@ -2160,13 +2165,13 @@ test("a board move then a header status change land in press order after an outa
     </QueryClientProvider>
   );
   try {
-    const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
+    const status = await screen.findByRole("button", { name: pickNamed("Status") });
     let moved: Promise<void> | undefined;
     act(() => {
       moved = moveCard?.("CORE-1", "in_progress", 0);
     });
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    await user.selectOptions(status, "backlog");
+    await pickIn(user, () => status, "Backlog");
     up = true;
     act(() => {
       window.dispatchEvent(new Event("online"));

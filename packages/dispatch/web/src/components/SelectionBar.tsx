@@ -1,4 +1,5 @@
 import {
+  type KeyboardEvent,
   type ReactNode,
   type Ref,
   type RefObject,
@@ -12,10 +13,14 @@ import { spaceTaken } from "../features/shell/ViewportAnchor";
 import { card, dangerText, focusVisibleRing, textPrimaryOnCanvas } from "../theme/classes";
 import { CONTROL, type ControlSize } from "./control-names";
 import {
+  ARM_ON_PRESS,
   aboveSightNow,
+  armHandOff,
+  armOnPress,
   causedByReader,
   focusOwnStop,
   inSightNow,
+  isRowMark,
   type MovedUp,
   outOfSight,
   pressOnRowMark,
@@ -135,8 +140,8 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
   };
 }
 
-/** Puts the focus on a list's own stop with no scroll, as the page's rescue gives a region its
- *  own (`focusOwnStop`). It is where the selection bar's hand-off ends when no row in sight can
+/** Puts the focus on a list's own stop with no scroll, as a component's hand-off gives a region
+ *  its own (`focusOwnStop`). It is where the selection bar's hand-off ends when no row in sight can
  *  take the focus, the emptied list included, since the page's search box takes typed text the
  *  reader never chose. Answers null, so a page's `returnFocus` can end with it and leave the bar
  *  nothing to move. */
@@ -347,9 +352,12 @@ function markShown(
  * elsewhere moves nothing, and neither does one whose going left the focus somewhere other than
  * the body, since the reader put it there, nor the later going of a control the reader had moved
  * the focus off, nor the going of one they had scrolled out of their sight - the bar's line of
- * actions scrolls sideways (`outOfSight`). A going the reader did not cause - a refetch that
- * drops every marked row and empties the bar - the bar leaves to the page's focus rescue, which
- * lands it in no row and scrolls nothing.
+ * actions scrolls sideways (`outOfSight`). Nor does a going the reader did not cause - a refetch
+ * that drops every marked row and empties the bar - which leaves the focus on the body, in no row,
+ * and scrolls nothing. The press these read is the one that armed the hand-off (`armHandOff`): a
+ * press on the bar's own actions arms it at the bar's root (`armOnPress`), and so does Escape from
+ * a control inside the bar (`armOnBarKey`); a press on a row's mark arms it while the bar is
+ * drawn. A going with nothing armed leaves the focus on the body and scrolls nothing.
  */
 export function SelectionBar({ returnFocus, ...bar }: SelectionBarProps): ReactNode {
   // Set by the drawn bar to what held the focus when the focus dropped with it - the bar's
@@ -382,6 +390,18 @@ const BAR_BOX: Record<ControlSize, string> = {
   compact: "px-2 py-1",
 };
 
+/** The bar's own arming of its hand-off at its root, for a key: what every component's root arms
+ *  for (`armOnPress`), and Escape from a control inside the bar besides, which the bar's hand-off
+ *  counts as the reader's own (`SelectionBar`): Escape there clears the selection the bar holds,
+ *  where a component's root reads it as the reader leaving a control. */
+function armOnBarKey(event: KeyboardEvent<HTMLDivElement>): void {
+  if (event.key === "Escape" && event.target instanceof Element) {
+    armHandOff(event.target, event.currentTarget);
+  } else {
+    armOnPress(event);
+  }
+}
+
 /** The bar itself, mounted exactly while it is drawn, so its going is its own unmount. */
 function DrawnBar({
   barRef,
@@ -411,6 +431,22 @@ function DrawnBar({
         wentHolding.current = document.activeElement;
     };
   }, [ref, wentHolding]);
+  // A press on a row's mark arms the hand-off while the bar is drawn (`armHandOff`), as a press
+  // on the bar's own actions does at its root: unticking the last marked row by its mark takes
+  // the bar away, and that going is the reader's (`pressOnRowMark`). Heard on the document, in
+  // its capture phase, since the rows are the page's and stand outside the bar.
+  useEffect(() => {
+    const armOnMark = (event: Event) => {
+      const { target } = event;
+      if (target instanceof Element && isRowMark(target)) armHandOff(target);
+    };
+    document.addEventListener("click", armOnMark, true);
+    document.addEventListener("change", armOnMark, true);
+    return () => {
+      document.removeEventListener("click", armOnMark, true);
+      document.removeEventListener("change", armOnMark, true);
+    };
+  }, []);
   // After every render that leaves the bar drawn. A press can take the focused control out of a
   // bar that stays - **Select all** - and the removal drops the focus onto the body with no
   // unmount for the cleanup above to read it in, so it is read here: the control gone from the
@@ -430,6 +466,8 @@ function DrawnBar({
       aria-label={label}
       className={`fixed inset-x-2 top-14 z-30 mx-auto flex w-fit max-w-[calc(100vw-1rem)] flex-col gap-2 rounded-2xl border text-sm shadow-xl outline-none focus-visible:ring-2 sm:top-auto sm:bottom-4 ${BAR_BOX[size]} ${card} ${textPrimaryOnCanvas} ${focusVisibleRing}`}
       data-control={CONTROL.selectionBar}
+      {...ARM_ON_PRESS}
+      onKeyDownCapture={armOnBarKey}
       onFocus={(event) => {
         focused.current = event.target;
       }}

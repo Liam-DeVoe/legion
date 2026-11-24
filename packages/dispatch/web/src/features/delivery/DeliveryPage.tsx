@@ -8,7 +8,7 @@ import { deliveryMeasuresQuery, deliveryTimelineQuery } from "../../api/queries"
 import type { DeliverySessionGroup, DeliveryTimelineWithMeasures } from "../../api/types";
 import { ControlRow } from "../../components/ControlRow";
 import type { FilterChip } from "../../components/filter-chips";
-import { useFocusPlace } from "../../components/focus-place";
+import { ARM_ON_PRESS, useFocusPlace } from "../../components/focus-place";
 import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import { useNestedPanels } from "../../components/useNestedPanels";
@@ -767,9 +767,10 @@ export function DeliveryPage(): ReactNode {
   const counted = !query.isPlaceholderData && search === state.filters.search.trim();
   return (
     <section className="flex flex-col gap-3 xl:h-[calc(100dvh-3rem)]">
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only notes which control of the header took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), so the header needs no role of its own. */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the focus handler only notes which control of the header took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), and the capture handlers only arm that hand-off at a press inside the header (`armOnPress`), so the header needs no role of its own. */}
       <header
         className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1"
+        {...ARM_ON_PRESS}
         onFocus={noteFocus}
       >
         <h1 className={`text-xl font-bold ${textPrimaryOnCanvas}`}>Delivery timeline</h1>

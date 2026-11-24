@@ -11,6 +11,7 @@ import type { BarActionProps } from "./BarAction";
 import { DOTS_GLYPH } from "./bar-look";
 import { CONTROL, type ControlSize } from "./control-names";
 import { DisplayMenu, type DisplayMenuProps } from "./DisplayMenu";
+import { armHandOff } from "./focus-place";
 import { heldPress } from "./held-press";
 import { PanelTrigger } from "./PanelTrigger";
 import { ViewPanel } from "./ViewPanel";
@@ -78,8 +79,11 @@ function PanelItem({
 }
 
 /** One item of **More**. A check item leaves the menu open, so the reader can flip the next; any
- *  other press shuts the menu, putting the reader back on **More**, before it acts. A refused
- *  item is held (`aria-disabled`) and a press on it does nothing. */
+ *  other press shuts the menu, putting the reader back on **More**, before it acts, and arms the
+ *  hand-off on **More** there (`armHandOff`): the press acts from **More** now, so **More**'s
+ *  going - its last action leaving, as **Mark all read** does once nothing is unread - is the
+ *  press's doing, and the bar hands the focus on (`ControlRow`). A refused item is held
+ *  (`aria-disabled`) and a press on it does nothing. */
 function Item({ action, close }: { action: BarActionProps; close: () => void }): ReactNode {
   const { checked, icon, label, onPress, panel, refusal } = action;
   if (panel !== undefined) return <PanelItem action={action} panel={panel} />;
@@ -113,6 +117,8 @@ function Item({ action, close }: { action: BarActionProps; close: () => void }):
       {...described}
       {...heldPress(refusal !== undefined, () => {
         close();
+        const more = document.activeElement;
+        if (more?.getAttribute("data-control") === CONTROL.moreMenu) armHandOff(more);
         onPress();
       })}
     >

@@ -1,7 +1,15 @@
+/**
+ * The hold on a control while the write or the read its press started is out: `aria-disabled` and
+ * a press that does nothing (`heldPress`), a read-only text field (`heldField`), a hold through
+ * the commit after the write's answer (`useHeldThroughAnswer`), and a hold past the write's
+ * landing until a read comes back (`useHeldUntilRead`). `StepButton`, `PanelTrigger`,
+ * `QueryError`'s Retry and the pages' own pressed controls use it, and `RefusableButton`'s `busy`
+ * holds by the same rule.
+ */
 import { useEffect, useRef, useState } from "react";
 
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
-import { beginAnswerHold } from "./focus-place";
+import { holdHandOff } from "./focus-place";
 
 /**
  * What a button spreads onto itself to be held while it cannot be pressed - its write is out,
@@ -37,12 +45,15 @@ export function heldField(held: boolean): {
 
 /**
  * Whether a control whose press started a write is held: from the first render with `pending`
- * until the commit after `pending` turns false. A list that holds the write itself, as the Inbox
- * does a row's snooze (`useAskSnoozeWrites`) and its Assign to me (`AskAssignWritesProvider`),
- * lets go of the row in the answer's own commit, while this hold is still on. The hold is part of
- * the action of the reader's press that started the write while it is on (`beginAnswerHold`), so
- * the page's rescue reads the row's going as the press's doing (`causedByReader`), and the focus
- * goes to the control now at the row's place rather than to the body.
+ * until the commit after `pending` turns false. So the pressed control stays focusable, and takes
+ * no second press, while its write and the read after it are out. A list that holds the write
+ * itself, as the Inbox does a row's snooze (`useAskSnoozeWrites`) and its Assign to me
+ * (`AskAssignWritesProvider`), lets go of the row in the answer's own commit, while this hold is
+ * still on. The hold keeps the armed hand-off of the press that started the write live while it
+ * is on (`holdHandOff`), so where the press was armed at a component's root (`armOnPress`), that
+ * component's hand-off reads the going of what the press held as the press's doing
+ * (`causedByReader`), as the selection bar's does when its Snooze lands. With nothing armed, the
+ * hold arms nothing.
  */
 export function useHeldThroughAnswer(pending: boolean): boolean {
   const [answering, setAnswering] = useState(false);
@@ -52,7 +63,7 @@ export function useHeldThroughAnswer(pending: boolean): boolean {
     return () => setAnswering(false);
   }, [pending]);
   const held = pending || answering;
-  useEffect(() => (held ? beginAnswerHold() : undefined), [held]);
+  useEffect(() => (held ? holdHandOff() : undefined), [held]);
   return held;
 }
 

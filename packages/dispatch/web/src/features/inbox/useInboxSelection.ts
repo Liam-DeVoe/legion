@@ -308,9 +308,9 @@ export function useInboxSelection({
       // The bar's going and its hand-off are one render. This runs outside any event of the
       // reader's, so React would commit it at normal priority and run the bar's hand-off, a
       // passive effect (`SelectionBar`), in a later task; in Firefox, which fires no `focusout`
-      // for the removed Snooze trigger, the page's rescue can check the loss first and hand the
-      // focus elsewhere. `flushSync` commits the going here and runs the bar's effects with it,
-      // as the project List's bar does (`issues-table-actions.ts`).
+      // for the removed Snooze trigger, the reader's next key could reach the page before the
+      // bar's hand-off has placed the focus. `flushSync` commits the going here and runs the bar's
+      // effects with it, as the project List's bar does (`issues-table-actions.ts`).
       flushSync(() => {
         setSnoozing(new Set());
         setSnoozeRefusal(snoozeRefusalText(failed, ids.length));

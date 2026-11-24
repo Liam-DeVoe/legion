@@ -23,6 +23,7 @@ import type {
 } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
+import { ARM_ON_PRESS } from "../../components/focus-place";
 import { useHeldThroughAnswer, useHeldUntilRead } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -94,6 +95,7 @@ import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
 import { meInboxReadsBack } from "./one-read-cache";
 import { AskAnswerWritesContext } from "./outstanding-answers";
+import { landAfterOwnSend } from "./own-send-landing";
 import { clarificationRefusal, useAskAnswerForm } from "./useAskAnswerForm";
 
 const answerAsk = (id: string, input: AnswerAskInput, bounds: WriteBounds): Promise<Ask> =>
@@ -248,13 +250,13 @@ function handOffFocus(form: HTMLElement): void {
  *  focus.
  *
  *  Where the reader's own answer takes the form's row away - in an Inbox, whose rows of the ask
- *  the answer takes out (the own-answer rule, R1) - the form goes with no hand-off of its own
- *  (`leaveToRescue`): the focus it held is the page's to place. The page's rescue reads that loss
- *  as the reader's press while the answer's hold is on (`useHeldThroughAnswer`), and the reading
- *  column hands a focus it lost to its own stop, the region named Question body, once it draws
- *  the row the Inbox selects next (`Inbox.tsx`'s own hand-off; the Inbox page's open items, "A
- *  component's own hand-off"). */
-function useFormRef(leaveToRescue: {
+ *  the answer takes out (the own-answer rule, R1) - the form hands the focus on by the Inbox's
+ *  rule for that loss instead (`ownAnswerTakesRow`, `landAfterOwnSend`): in the list, to the first
+ *  control of what now stands in the row's place, else to the nearest control before it; in the
+ *  reading column, nothing here, since the column hands a focus it lost to its own stop, the
+ *  region named Question body, once it draws the row the Inbox selects next (`Inbox.tsx`'s own
+ *  hand-off; the Inbox page's open items, "A component's own hand-off"). */
+function useFormRef(ownAnswerTakesRow: {
   readonly current: boolean;
 }): [
   { current: HTMLFormElement | null },
@@ -267,10 +269,11 @@ function useFormRef(leaveToRescue: {
       if (form === null) return undefined;
       return () => {
         formRef.current = null;
-        if (!leaveToRescue.current) handOffFocus(form);
+        if (ownAnswerTakesRow.current) landAfterOwnSend(form);
+        else handOffFocus(form);
       };
     },
-    [leaveToRescue]
+    [ownAnswerTakesRow]
   );
   return [formRef, track];
 }
@@ -412,8 +415,8 @@ export function AskCard({
   // Inbox, out of the row, which then lets the row go) with nothing the card could act on
   // afterwards; the same hand-off as a vanishing form, in the commit that disables it, before the
   // browser looks.
-  // Whether the form's going is the reader's own answer taking its row away, which leaves the
-  // focus to the page's rescue (`useFormRef`); set below, once the card knows its answer's state.
+  // Whether the form's going is the reader's own answer taking its row away, which the form hands
+  // on by the Inbox's rule for it (`useFormRef`); set below, once the card knows its answer's state.
   const answerTakesRow = useRef(false);
   const [formRef, trackForm] = useFormRef(answerTakesRow);
   useLayoutEffect(() => {
@@ -485,8 +488,9 @@ export function AskCard({
   // ends at the latest at the write deadline from the press (`SEND_DEADLINE_MS`), and at once on a
   // refusal, which gives Send back with its error. While it holds, the form refuses a submit, so a
   // second press of Send sends nothing, before the landing and after it. It is part of the
-  // reader's press (`useHeldThroughAnswer`), so the page's rescue reads what the answer takes away
-  // as the reader's doing. Off an Inbox no row leaves, and Send is held while its write is out, as
+  // reader's press (`useHeldThroughAnswer`), which keeps the press armed at the form live, so the
+  // form's own landing reads what the answer takes away as the reader's doing (`landAfterOwnSend`).
+  // Off an Inbox no row leaves, and Send is held while its write is out, as
   // every control the card refuses is.
   const queryClient = useQueryClient();
   const inInbox = useContext(AskAnswerWritesContext) !== undefined;
@@ -830,6 +834,9 @@ export function AskCard({
     <Fragment key="answer">
       <form
         className="mt-3 space-y-3"
+        // In an Inbox a press inside the form arms its hand-off (`armOnPress`), for the landing
+        // after the reader's own answer takes the row away (`useFormRef`).
+        {...(inInbox ? ARM_ON_PRESS : {})}
         // While the card refuses a submit sends nothing: a press of Answer, or Enter in an
         // option, still reaches it then (`refusing`), and so does a press of the Send its own
         // answer holds in an Inbox (`answerHeld`).

@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { jump, realClock } from "../../__tests__/fake-clock";
-import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
+import { afterFrameAndTasks } from "../../__tests__/frames";
 import { pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
@@ -45,16 +45,15 @@ interface DrawnEditor {
 }
 
 /** The editor over `groups`, as the Delivery page draws it; `draw` draws it again, over the same
- *  client, over the groups a live update brings, as the page does. `rescued` draws it in the
- *  shell's main content with the page's focus rescue mounted on it (`RescuedMain`), as the app
- *  shell mounts it. */
+ *  client, over the groups a live update brings, as the page does. `inMain` draws it in the
+ *  shell's main content, as the app shell draws it. */
 function renderEditor(
   groups: readonly DeliverySessionGroup[] = [],
   values: {
     agents?: readonly Agent[];
     titles?: Readonly<Record<string, string>>;
     counts?: Readonly<Record<string, number>>;
-    rescued?: boolean;
+    inMain?: boolean;
   } = {}
 ): DrawnEditor {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -72,9 +71,7 @@ function renderEditor(
     return (
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
-          <KeymapProvider>
-            {values.rescued ? <RescuedMain>{drawn}</RescuedMain> : drawn}
-          </KeymapProvider>
+          <KeymapProvider>{values.inMain ? <main>{drawn}</main> : drawn}</KeymapProvider>
         </QueryClientProvider>
       </MemoryRouter>
     );
@@ -364,22 +361,22 @@ test("a group's buttons held for a live update that never comes are free again a
   }
 });
 
-/** Lets the write that `pressed` made land, with the page's focus rescue mounted and Chromium's
- *  way with a button that turns disabled (`emulateChromiumFocusFixup`): `pressed` is held by
- *  `aria-disabled`, which no engine takes the focus off, and keeps the focus. Then draws `next`,
- *  the live update carrying the write, and lets the rescue answer. */
+/** Lets the write that `pressed` made land, with Chromium's way with a button that turns disabled
+ *  (`emulateChromiumFocusFixup`): `pressed` is held by `aria-disabled`, which no engine takes the
+ *  focus off, and keeps the focus. Then draws `next`, the live update carrying the write, and
+ *  waits a frame and two tasks. */
 async function landAndDraw(
   pressed: HTMLButtonElement,
   next: readonly DeliverySessionGroup[],
   editor: DrawnEditor
 ): Promise<void> {
   await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));
-  await afterRescue();
+  await afterFrameAndTasks();
   expect(pressed).toHaveAttribute("aria-disabled", "true");
   expect(pressed.disabled).toBe(false);
   expect(named(document.activeElement)).toBe(named(pressed));
   editor.draw(next);
-  await afterRescue();
+  await afterFrameAndTasks();
 }
 
 // A card's button is held from its press until the live update carrying its write is drawn, by
@@ -396,7 +393,7 @@ test("Rename pressed keeps the focus through its write, and once the live update
   const answer = Promise.withResolvers<DeliverySessionGroup>();
   const update = spyOn(api, "updateDeliverySessionGroup").mockReturnValue(answer.promise);
   const restoreFocus = emulateChromiumFocusFixup();
-  const editor = renderEditor([crew], { rescued: true });
+  const editor = renderEditor([crew], { inMain: true });
   try {
     const group = screen.getByRole("group", { name: "Release crew" });
     const name = within(group).getByLabelText("Name") as HTMLInputElement;
@@ -408,7 +405,7 @@ test("Rename pressed keeps the focus through its write, and once the live update
     await user.click(rename);
     await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
     // The write is out: Rename keeps the focus, held.
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(named(document.activeElement)).toBe("Rename");
     expect(rename).toHaveAttribute("aria-disabled", "true");
     await act(async () => answer.resolve(renamed));
@@ -433,7 +430,7 @@ test("Add selected keeps the focus once the live update draws the group with the
   const added = { ...crew, sessions: ["s2", "s9", "s3"], updated_at: "2026-10-11T00:01:00Z" };
   const update = spyOn(api, "updateDeliverySessionGroup").mockResolvedValue(added);
   const restoreFocus = emulateChromiumFocusFixup();
-  const editor = renderEditor([crew], { rescued: true });
+  const editor = renderEditor([crew], { inMain: true });
   try {
     const group = screen.getByRole("group", { name: "Release crew" });
     await user.click(screen.getByRole("checkbox", { name: "Reviewer" }));
@@ -453,15 +450,14 @@ test("Add selected keeps the focus once the live update draws the group with the
 });
 
 // A member's Remove goes with that member by design. It keeps the focus while its write is out
-// and until the live update carrying it is drawn. The card stays, keyed by the group's id, so the
-// rescue answers the Remove's going inside it: the focus lands on the Remove of the member that
-// moved up into its place, never on the Name box of a card drawn anew.
-test("a member's Remove, gone with its member, hands the focus to the next member's Remove", async () => {
+// and until the live update carrying it is drawn. The card stays through that update, keyed by
+// the group's id, never drawn anew.
+test("a member's Remove keeps the focus, held, until the live update that takes it away with its member is drawn, and the card stays", async () => {
   const user = userEvent.setup();
   const removed = { ...crew, sessions: ["s9"], updated_at: "2026-10-11T00:01:00Z" };
   const update = spyOn(api, "updateDeliverySessionGroup").mockResolvedValue(removed);
   const restoreFocus = emulateChromiumFocusFixup();
-  const editor = renderEditor([crew], { rescued: true });
+  const editor = renderEditor([crew], { inMain: true });
   try {
     const group = screen.getByRole("group", { name: "Release crew" });
     const remove = within(group).getByRole("button", {
@@ -470,10 +466,6 @@ test("a member's Remove, gone with its member, hands the focus to the next membe
     await user.click(remove);
     await landAndDraw(remove, [removed], editor);
 
-    const next = within(group).getByRole("button", { name: "Remove session:s9…" });
-    await waitFor(() => expect(next).toHaveFocus());
-    await afterRescue();
-    expect(document.activeElement).toBe(next);
     expect(screen.getByRole("group", { name: "Release crew" })).toBe(group);
   } finally {
     restoreFocus();
@@ -483,16 +475,13 @@ test("a member's Remove, gone with its member, hands the focus to the next membe
 });
 
 // Delete group keeps the focus while its write is out and until the live update carrying it is
-// drawn. Of the only group, that update takes the Groups section away with its card, so the rescue
-// walks the focus back through the dialog. The control before the lost place is Create group, held
-// with nothing to create but in the Tab order (`aria-disabled`), which takes no typed text: the
-// walk lands on it, and the reader's next key is typed into no field they never chose, never the
-// "New group name" box before it.
-test("Delete group of the only group walks the focus back to the held Create group, never into the New group name box", async () => {
+// drawn. Of the only group, that update takes the Groups section away with its card. Create
+// group stays held then, with nothing to create, but in the Tab order (`aria-disabled`).
+test("Delete group of the only group keeps the focus, held, until its live update takes the card away, and Create group stays held", async () => {
   const user = userEvent.setup();
   const remove = spyOn(api, "deleteDeliverySessionGroup").mockResolvedValue(undefined);
   const restoreFocus = emulateChromiumFocusFixup();
-  const editor = renderEditor([crew], { rescued: true });
+  const editor = renderEditor([crew], { inMain: true });
   try {
     const group = screen.getByRole("group", { name: "Release crew" });
     const deleting = within(group).getByRole("button", {
@@ -502,11 +491,7 @@ test("Delete group of the only group walks the focus back to the held Create gro
     await landAndDraw(deleting, [], editor);
 
     const createGroup = screen.getByRole("button", { name: "Create group" });
-    await waitFor(() => expect(named(document.activeElement)).toBe("Create group"));
-    await afterRescue();
-    expect(document.activeElement === createGroup).toBe(true);
     expect(createGroup.getAttribute("aria-disabled")).toBe("true");
-    expect(screen.getByLabelText("New group name")).not.toHaveFocus();
   } finally {
     restoreFocus();
     cleanup();
@@ -514,18 +499,16 @@ test("Delete group of the only group walks the focus back to the held Create gro
   }
 });
 
-// A press is the cause of what its write and the live update carrying it take away, and of
-// nothing after. Once that update is drawn the card's hold has let go (`useHoldUntilDrawn`), and
-// Rename is held only because the name is now the stored one, which is nothing the press does. So
-// the card deleted on another device after that is a loss the reader did not cause: the focus
-// goes to the open modal dialog's own stop, never to the session list's link before the card's
-// place, where a walk back would land.
-test("a card deleted on another device after its Rename by Enter was drawn leaves the focus on the dialog", async () => {
+// Rename pressed by Enter is held from its press until the live update carrying its write is
+// drawn (`useHoldUntilDrawn`), by `aria-disabled`, which Chromium does not take the focus off. It
+// keeps the focus through the write and once that update is drawn, held then because the name is
+// now the stored one.
+test("a Rename by Enter keeps the focus, held, through its write and once its live update is drawn", async () => {
   const user = userEvent.setup();
   const renamed = { ...crew, name: "Ship crew", updated_at: "2026-10-11T00:01:00Z" };
   const update = spyOn(api, "updateDeliverySessionGroup").mockResolvedValue(renamed);
   const restoreFocus = emulateChromiumFocusFixup();
-  const editor = renderEditor([crew], { rescued: true });
+  const editor = renderEditor([crew], { inMain: true });
   try {
     const group = screen.getByRole("group", { name: "Release crew" });
     const name = within(group).getByLabelText("Name") as HTMLInputElement;
@@ -539,13 +522,6 @@ test("a card deleted on another device after its Rename by Enter was drawn leave
     await landAndDraw(rename, [renamed], editor);
     expect(named(document.activeElement)).toBe("Rename");
     expect(rename).toHaveAttribute("aria-disabled", "true");
-
-    editor.draw([]);
-    await afterRescue();
-    expect(screen.getByRole("dialog", { name: "Session groups" })).toHaveFocus();
-    expect(
-      screen.getByRole("link", { name: "Open live conversation with Reviewer" })
-    ).not.toHaveFocus();
   } finally {
     restoreFocus();
     cleanup();
@@ -554,18 +530,16 @@ test("a card deleted on another device after its Rename by Enter was drawn leave
 });
 
 // The live update carrying a write can be drawn before the write's answer comes back. The card's
-// hold waits for that update, which is drawn already, so the landing puts on no hold, and the
-// press that made the write ends a frame and a task after its answer. So the card deleted on
-// another device after that is a loss the reader did not cause: the focus goes to the open modal
-// dialog's own stop, never to the session list's link before the card's place.
-test("a Rename whose live update is drawn before its answer holds nothing once it lands, so a card deleted on another device after that leaves the focus on the dialog", async () => {
+// hold waits for that update, which is drawn already, and Rename, held because the name is now the
+// stored one, keeps the focus once the answer lands.
+test("a Rename whose live update is drawn before its answer keeps the focus once the answer lands", async () => {
   const user = userEvent.setup();
   const renamed = { ...crew, name: "Ship crew", updated_at: "2026-10-11T00:01:00Z" };
   // Held, and given inside `act` after the press, as docs/testing.md ("The act rule of a Dispatch
   // unit test") says.
   const answer = Promise.withResolvers<DeliverySessionGroup>();
   const update = spyOn(api, "updateDeliverySessionGroup").mockReturnValue(answer.promise);
-  const editor = renderEditor([crew], { rescued: true });
+  const editor = renderEditor([crew], { inMain: true });
   try {
     const group = screen.getByRole("group", { name: "Release crew" });
     const name = within(group).getByLabelText("Name") as HTMLInputElement;
@@ -579,16 +553,9 @@ test("a Rename whose live update is drawn before its answer holds nothing once i
     editor.draw([renamed]);
     await act(async () => answer.resolve(renamed));
     await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));
-    // A frame and a task, by when the press whose action has been answered has ended.
-    await afterRescue();
+    // A frame and two tasks after the answer, Rename still holds the focus.
+    await afterFrameAndTasks();
     expect(named(document.activeElement)).toBe("Rename");
-
-    editor.draw([]);
-    await afterRescue();
-    const dialog = screen.getByRole("dialog", { name: "Session groups" });
-    expect(document.activeElement === dialog ? "the dialog" : named(document.activeElement)).toBe(
-      "the dialog"
-    );
   } finally {
     cleanup();
     update.mockRestore();
@@ -597,18 +564,16 @@ test("a Rename whose live update is drawn before its answer holds nothing once i
 
 // The live update carrying a write can come in the same batch as the write's answer. The landing
 // puts the card's hold on, and the render that would draw that hold draws the update's version
-// already, so it lets the hold go before any commit has drawn it. The hold's part in the press's
-// action ends with it, and the press ends a frame and a task after its answer. So the card deleted
-// on another device after that is a loss the reader did not cause: the focus goes to the open
-// modal dialog's own stop, never to the session list's link before the card's place.
-test("a Rename whose live update comes in the same batch as its answer holds nothing once both are drawn, so a card deleted on another device after that leaves the focus on the dialog", async () => {
+// already, so it lets the hold go before any commit has drawn it. Rename, held because the name
+// is now the stored one, keeps the focus once both are drawn.
+test("a Rename whose live update comes in the same batch as its answer keeps the focus once both are drawn", async () => {
   const user = userEvent.setup();
   const renamed = { ...crew, name: "Ship crew", updated_at: "2026-10-11T00:01:00Z" };
   // Held, and given inside `act` after the press, as docs/testing.md ("The act rule of a Dispatch
   // unit test") says.
   const answer = Promise.withResolvers<DeliverySessionGroup>();
   const update = spyOn(api, "updateDeliverySessionGroup").mockReturnValue(answer.promise);
-  const editor = renderEditor([crew], { rescued: true });
+  const editor = renderEditor([crew], { inMain: true });
   try {
     const group = screen.getByRole("group", { name: "Release crew" });
     const name = within(group).getByLabelText("Name") as HTMLInputElement;
@@ -629,72 +594,41 @@ test("a Rename whose live update comes in the same batch as its answer holds not
       expect(editor.queryClient.isMutating()).toBe(0);
       editor.draw([renamed]);
     });
-    // A frame and a task, by when the press whose action has been answered has ended.
-    await afterRescue();
+    // A frame and two tasks after both are drawn, Rename still holds the focus.
+    await afterFrameAndTasks();
     expect(named(document.activeElement)).toBe("Rename");
-
-    editor.draw([]);
-    await afterRescue();
-    const dialog = screen.getByRole("dialog", { name: "Session groups" });
-    expect(document.activeElement === dialog ? "the dialog" : named(document.activeElement)).toBe(
-      "the dialog"
-    );
   } finally {
     cleanup();
     update.mockRestore();
   }
 });
 
-// So for a press on another control of the dialog: Create group, its group made and drawn, and
-// the button held after it with its name box emptied. The press is the cause of what its write
-// takes away and of nothing after the write has landed, though a press in the dialog counts for a
-// loss anywhere in it. With the focus put on the other card's Rename with no press, that card
-// deleted on another device leaves the focus on the dialog's own stop, whether the engine fires a
-// `focusout` for Rename as the card goes (Chromium) or none (Firefox and WebKit).
-test("a card deleted on another device after a Create group landed leaves the focus on the dialog", async () => {
-  for (const withFocusout of [true, false]) {
-    const user = userEvent.setup();
-    const made: DeliverySessionGroup = {
-      ...crew,
-      id: "22222222-2222-2222-2222-222222222222",
-      name: "Night crew",
-      sessions: ["s1"],
-    };
-    const create = spyOn(api, "createDeliverySessionGroup").mockResolvedValue(made);
-    const editor = renderEditor([crew], { rescued: true });
-    try {
-      await user.click(screen.getByRole("checkbox", { name: "Planner one" }));
-      await user.click(screen.getByLabelText("New group name"));
-      await user.paste("Night crew");
-      await user.click(screen.getByRole("button", { name: "Create group" }));
-      await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));
-      editor.draw([crew, made]);
-      await afterRescue();
-      expect(
-        screen.getByRole("button", { name: "Create group" }).getAttribute("aria-disabled")
-      ).toBe("true");
-      const rename = within(screen.getByRole("group", { name: "Release crew" })).getByRole(
-        "button",
-        { name: "Rename" }
-      );
-      act(() => rename.focus());
-      act(() => {
-        // happy-dom fires no `focusout` for a focused element taken away; Chromium fires one
-        // during the removal, while the element is still in the page.
-        if (withFocusout) rename.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
-        editor.draw([made]);
-      });
-      await afterRescue();
-      expect(screen.getByRole("dialog", { name: "Session groups" })).toHaveFocus();
-      expect(
-        within(screen.getByRole("group", { name: "Night crew" })).getByRole("button", {
-          name: "Rename",
-        })
-      ).not.toHaveFocus();
-    } finally {
-      cleanup();
-      create.mockRestore();
-    }
+// Create group, its group made and drawn, is held after it with its name box emptied: it has
+// nothing to create.
+test("Create group stays held once its group is made and drawn", async () => {
+  const user = userEvent.setup();
+  const made: DeliverySessionGroup = {
+    ...crew,
+    id: "22222222-2222-2222-2222-222222222222",
+    name: "Night crew",
+    sessions: ["s1"],
+  };
+  const create = spyOn(api, "createDeliverySessionGroup").mockResolvedValue(made);
+  const editor = renderEditor([crew], { inMain: true });
+  try {
+    await user.click(screen.getByRole("checkbox", { name: "Planner one" }));
+    await user.click(screen.getByLabelText("New group name"));
+    await user.paste("Night crew");
+    await user.click(screen.getByRole("button", { name: "Create group" }));
+    await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));
+    editor.draw([crew, made]);
+    await afterFrameAndTasks();
+    expect(screen.getByRole("button", { name: "Create group" }).getAttribute("aria-disabled")).toBe(
+      "true"
+    );
+  } finally {
+    cleanup();
+    create.mockRestore();
   }
 });
 

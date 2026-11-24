@@ -4,7 +4,6 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { RescuedMain } from "../../__tests__/focus-rescue";
 import { api } from "../../api/client";
 import type { Agent, AskFollower, Subscriber } from "../../api/types";
 import { AskRecipients, type AskRecipientsProps } from "./AskRecipients";
@@ -40,7 +39,6 @@ export async function renderRecipients({
   }),
   props = {},
   removeFollower = async () => {},
-  rescued = false,
   subscribers = [],
 }: {
   /** An Error rejects the agent registry read, as an unreachable Envoy listener does. */
@@ -50,9 +48,6 @@ export async function renderRecipients({
   client?: QueryClient;
   props?: Partial<AskRecipientsProps>;
   removeFollower?: AskRecipientsProps["removeFollower"];
-  /** Draws the card in the shell's main content with the page's focus rescue mounted on it
-   *  (`RescuedMain`), as the app shell mounts it. */
-  rescued?: boolean;
   /** An Error rejects the subscribers fetch, as an unreachable Envoy listener does. */
   subscribers?: Subscriber[] | Error;
 } = {}) {
@@ -89,9 +84,7 @@ export async function renderRecipients({
     );
     return (
       <MemoryRouter>
-        <QueryClientProvider client={queryClient}>
-          {rescued ? <RescuedMain>{card}</RescuedMain> : card}
-        </QueryClientProvider>
+        <QueryClientProvider client={queryClient}>{card}</QueryClientProvider>
       </MemoryRouter>
     );
   };

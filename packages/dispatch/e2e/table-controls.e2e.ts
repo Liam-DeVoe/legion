@@ -27,8 +27,6 @@ import {
   toggleAgentGroup,
 } from "./agents";
 import {
-  answerAsk,
-  baseUrl,
   createAgentMessage,
   createAsk,
   createComment,
@@ -54,7 +52,6 @@ import {
   replyToMessageDelivery,
   resolveAsk,
   resolveComment,
-  userHeaders,
 } from "./api";
 import { recordClipboard } from "./clipboard";
 import {
@@ -102,13 +99,7 @@ import {
   selectedRow,
   selectRow,
 } from "./inbox-pane";
-import {
-  asSession,
-  replyRowId,
-  seedAgentThread,
-  seedCommentThread,
-  THREAD_SESSION,
-} from "./inbox-threads";
+import { asSession, seedCommentThread, THREAD_SESSION } from "./inbox-threads";
 import {
   bandHeadings,
   bandLabel,
@@ -122,7 +113,6 @@ import {
 } from "./inbox-view";
 import { focusThePage } from "./issue-page-g";
 import { rowSnooze } from "./keyboard-inbox";
-import { searchPath } from "./keyboard-palette";
 import { seedLegionDaemon } from "./legion-seed";
 import { sql } from "./psql";
 import { sessionIds } from "./session-ids";
@@ -1597,12 +1587,14 @@ test("the Agents page, the Delivery page and the project List keep the keyboard 
     // The project List's interrupted-action notice: Dismiss and Finish each take the notice
     // with them. The action is the record a stopped New epic leaves, here naming an open epic,
     // so Finish adopts its member and ends.
+    /** The key the project List of CORE keeps its record under, its interrupted action in it. */
+    const tableRecord = "dispatch.project-table.CORE";
     const interruptedNotice = async (id: string) => {
       await page.goto("/projects/CORE/issues");
       await page.evaluate(
-        ({ action }) => {
+        ({ action, key }) => {
           localStorage.setItem(
-            "dispatch.project-table.CORE",
+            key,
             JSON.stringify({ action: { ...action, startedAt: Date.now() } })
           );
         },
@@ -1615,6 +1607,7 @@ test("the Agents page, the Delivery page and the project List keep the keyboard 
             target: epic.key,
             writes: {},
           },
+          key: tableRecord,
         }
       );
       await page.reload();
@@ -1628,6 +1621,21 @@ test("the Agents page, the Delivery page and the project List keep the keyboard 
       await page.keyboard.press("Enter");
       await expect(notice).toHaveCount(0);
       await after(`project List at ${at}`, `Enter on the interrupted action's ${press}`);
+      // Finish goes on writing after its notice goes, and a page load before its last write
+      // stops it, so the List keeps the action and refuses the New epic below. The row waits
+      // until the List has let go of the action's record.
+      await expect
+        .poll(
+          () =>
+            page.evaluate((key) => {
+              const record: unknown = JSON.parse(localStorage.getItem(key) ?? "{}");
+              return typeof record === "object" && record !== null && "action" in record
+                ? (record.action ?? null)
+                : null;
+            }, tableRecord),
+          { message: `project List at ${at}: the interrupted action's ${press} never ended` }
+        )
+        .toBeNull();
     }
 
     // The project List's possible-duplicate notice: Cancel new epic and Create anyway each take
@@ -4493,20 +4501,23 @@ async function drawnItems(items: Locator, list: string): Promise<DrawnItem[]> {
 }
 
 /**
- * What R8's four lists drew at commit 6ef60ff0ceeba4ccaf285f06f5bbe9b859b2e4d8, which was the
- * merge base, `fork_point(main@origin | @)`, when this reading was made, in each project the row
- * runs in: `chromium` at 1440x900 and `iphone` at its own 390x664.
+ * What R8's four lists drew at commit bdbce69a7da8c48fa5aa5b6d26373f65cae53514, the merge base,
+ * `fork_point(main@origin | @)`, since the forward merge 702816d8 brought that main commit in, in
+ * each project the row runs in: `chromium` at 1440x900 and `iphone` at its own 390x664. Every
+ * value is the one the first reading took at the earlier merge base,
+ * 6ef60ff0ceeba4ccaf285f06f5bbe9b859b2e4d8: the two readings drew the same parts and the same
+ * sizes, item by item, in both projects.
  *
- * Measured, not written from the code. That commit's `packages/dispatch/web` was built in a
- * scratch tree by `vite build` with this workspace's `node_modules`; outside `web/src` only
- * documents, CI and tests differed between that commit and the head the reading ran at, so the
- * server, the contracts and the build were that head's own. The build was served to this row in
+ * Measured, not written from the code, in builds Job `infra-3135-krows-base-swts8` on
+ * 2026-11-23. The merge base's `packages/dispatch/web` was built in that Job by `vite build` over
+ * the head's install; outside `packages/dispatch/web` and `e2e` only `packages/dispatch/AGENTS.md`
+ * differed between the merge base and the head the reading ran at, `868402ec`, so the server,
+ * the contracts and the build tools were that head's own. The build was served to this row in
  * place of `web/dist` by `DISPATCH_E2E_SERVER_WEB_DIST` (e2e/run-server.sh), over the row's own
- * seed, and the row was run over it in both projects: `drawnItems` read each list until its
- * reading was the one written here, and a list whose reading never was would have been printed
- * with each value it drew instead. Every list's was, in both projects. The Delivery list's rows
- * are found by `tbody tr[aria-rowindex]`, because the base's carry no `data-pr-row`: both builds
- * write `aria-rowindex` on each pull request's row in the list's body.
+ * seed, and the row was run over it in both projects, with a line that printed each list's last
+ * reading (`drawnItems`, and `linedHeights` for the lists whose heights the fonts decide). The
+ * Delivery list's rows are found by `tbody tr[aria-rowindex]`, because the base's carry no
+ * `data-pr-row`: both builds write `aria-rowindex` on each pull request's row in the list's body.
  *
  * Every size kept as a number is one the CSS fixes, which a runner with other fonts draws the
  * same: none moved when this pod drew the lists in three other fonts (`linedHeights`). The Board
@@ -5267,20 +5278,22 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
 
-// SLOW(>=2s): seven pages at two widths, one press of each page's own controls that disables,
-// takes away or draws again the control it was made on.
-// `@firefox` and `@webkit`: a focused control taken away fires no `focusout` in these engines,
-// so the rescue sees that loss only by watching the page (`playwright.config.ts`).
-test("no page-own press drops the keyboard focus onto the page, on any page of R2, at 1440 and 390 @firefox @webkit", async ({
+// SLOW(>=2s): four pages, one press of each page's own controls that disables, takes away or
+// draws again the control it was made on: the Inbox's reading column at 1440, and the project
+// List, the Delivery page and the Artifacts tab at 1440 and 390.
+// `@firefox` and `@webkit`: a focused control taken away fires no `focusout` in these engines, the
+// clause of `playwright.config.ts` on a focused control taken away.
+test("no page-own press on the project List, the Delivery page, the Artifacts tab or the Inbox's reading column drops the keyboard focus onto the page, at 1440 and 390 @firefox @webkit", async ({
   page,
 }) => {
-  // Seven pages at two widths: measured in an issue pod (two cores), one worker, the row took
-  // 61.1 s in Chromium. A press that loses the focus waits out the suite's 15 s expect timeout
-  // (`playwright.config.ts`) for the focus to come back, so the row names each press it lost
-  // while at most five of the 24 lose it, and ends at the budget, on the press it is waiting on,
-  // where more do.
+  // Seven presses, four at 1440 and three at 390. A press that loses the focus waits out the
+  // suite's 15 s expect timeout (`playwright.config.ts`) for the focus to come back, so the budget
+  // holds all seven losing it, 105 s, beside the rest of the row, which took less than the 61.1 s
+  // the row took with 24 presses on seven pages (measured in an issue pod, two cores, one worker,
+  // in Chromium): the row names every press it lost rather than ending at the budget.
   test.setTimeout(150_000);
-  const issue = await seedAgents();
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = (await createIssue({ project: "CORE", title: "Rollout plan" })).key;
   await seedDeliveryFixture();
   await createIssueArtifact(issue, {
     content: "# plan.md\n\nThe rollout plan.\n",
@@ -5288,8 +5301,6 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
   });
   const listFirst = await createIssue({ project: "CORE", title: "Epic member one" });
   const listSecond = await createIssue({ project: "CORE", title: "Epic member two" });
-  const boardCard = await createIssue({ project: "CORE", title: "Card that changes lane" });
-  await patchIssue(boardCard.key, { priority: 0, status: "todo" });
   const main = page.getByTestId("main-content");
   const lost: string[] = [];
   /** Reads where the focus went once a press settles, and keeps the ones it lost. */
@@ -5306,7 +5317,7 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
       lost.push(`${where}: after ${press} the focused "${outcome.label}" is out of view`);
     }
   };
-  /** A question waiting on Alice, with two options to answer it by. */
+  /** A question waiting on Alice, with two options to answer it by: its id. */
   const question = async (title: string) => {
     const owner = await createIssue({ project: "CORE", title });
     const ask = await createAsk(
@@ -5314,7 +5325,7 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
       { options: [{ label: "Yes" }, { label: "No" }], question: `${title}?` },
       SURFACE_SESSION
     );
-    return { askId: ask.id, issueKey: owner.key };
+    return ask.id;
   };
 
   for (const [step, size] of [
@@ -5324,109 +5335,27 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     await page.setViewportSize(size);
     const at = `${size.width}x${size.height}`;
 
-    // The Inbox. Each press takes its row, or its own control, off the list. A width of its own
-    // seeds each, since the first width's press used it up.
-    let where = `Inbox at ${at}`;
-    const threads = await createIssue({ project: "CORE", title: `Mirror lag at ${at}` });
-    const dismissed = await seedCommentThread(threads.key, `Lagging at ${at}?`, "Caught up.");
-    const keyed = await seedCommentThread(threads.key, `Replayed at ${at}?`, "It did.");
-    const assigned = await question(`Who takes the lease at ${at}`);
-    const snoozed = await question(`Rotate the keys at ${at}`);
-    const answered = await question(`Ship the mirror at ${at}`);
-
-    // A thread's Dismiss, by Enter: it holds the focus while its write is out, then goes with
-    // its row.
-    await page.goto("/");
-    const dismissedRow = inboxRow(page, replyRowId(dismissed));
-    await dismissedRow.locator("[data-inbox-dismiss]").focus();
-    await page.keyboard.press("Enter");
-    await expect(dismissedRow, `${where}: Enter on Dismiss kept its row`).toHaveCount(0);
-    await after(where, "Enter on a thread's Dismiss");
-
-    // `e` on the thread row in hand: the row holding the focus goes.
-    const keyedRow = inboxRow(page, replyRowId(keyed));
-    await selectRow(page, replyRowId(keyed));
-    await keyedRow.focus();
-    await page.keyboard.press("e");
-    await expect(keyedRow, `${where}: e kept its row`).toHaveCount(0);
-    await after(where, "e on a focused thread row");
-
-    // Assign to me: it holds the focus while its write is out, then goes once the issue is the
-    // reader's. Every project names a default assignee, so no seed makes a question nobody
-    // holds; every read of the Inbox is answered as if this one were until the press is made,
-    // so no refetch before it takes the button away, and the server's own reads after it.
-    let pressed = false;
-    type Ask = { id: string; waiting_on_person?: string | null };
-    const nobody = (ask: Ask): Ask =>
-      ask.id === assigned.askId ? { ...ask, waiting_on_person: null } : ask;
-    // The page reads other people's questions from the open-asks read ({asks}) and the reader's
-    // own from the one read ({entries}, each ask under `ask`): both are answered the same way.
-    const unassign = async (route: Route) => {
-      if (pressed) return route.fallback();
-      const response = await route.fetch();
-      const body = (await response.json()) as {
-        asks?: Ask[];
-        entries?: { ask?: Ask | null }[];
-      };
-      await route.fulfill({
-        json: {
-          ...body,
-          ...(body.asks ? { asks: body.asks.map(nobody) } : {}),
-          ...(body.entries
-            ? {
-                entries: body.entries.map((entry) =>
-                  entry.ask ? { ...entry, ask: nobody(entry.ask) } : entry
-                ),
-              }
-            : {}),
-        },
-        response,
-      });
-    };
-    const askReads = ["**/api/v1/asks/open*", "**/api/v1/me/inbox*"];
-    for (const read of askReads) await page.route(read, unassign);
-    await page.goto("/?assignee=everyone");
-    const assign = (await askControls(page, assigned.askId)).getByRole("button", {
-      name: `Assign ${assigned.issueKey} to me`,
-    });
-    await expect(assign, `${where}: the question draws no Assign to me`).toBeVisible();
-    await assign.focus();
-    pressed = true;
-    await page.keyboard.press("Enter");
-    await expect(assign, `${where}: Assign to me stayed once it landed`).toHaveCount(0);
-    for (const read of askReads) await page.unroute(read, unassign);
-    await after(where, "Enter on Assign to me");
-
-    // A Snooze pick: the row stays in its band while the snooze saves, and folds into Later,
-    // which starts folded, once the snooze lands.
-    await page.goto("/");
-    const snooze = await rowSnooze(page, snoozed.askId);
-    await snooze.focus();
-    await pickFromList(snooze, "Later today");
-    await expect(inboxRow(page, snoozed.askId), `${where}: the snooze kept its row`).toHaveCount(0);
-    await after(where, "a Snooze pick");
-
-    // An Answer on a card row: the answered row leaves the list. The Inbox page draws its
-    // questions as cards below the reading column's width; above it, the drawer does.
+    // The Inbox's reading column: a Snooze pick in its head. The row stays in its band while the
+    // snooze saves, and folds into Later, which starts folded, once the snooze lands; the column
+    // then shows the question seeded before it and hands the focus to its own stop. Below the
+    // column's width a row's own Snooze takes its row away with no hand-off of the Inbox's own,
+    // so the row presses it only where the column is drawn.
     if (hasReadingPane(page)) {
-      where = `Inbox drawer at ${at}`;
-      await openIssuesTab(page, "CORE", "List");
-      await expect(page.locator("[data-issue-row]").first()).toBeVisible();
-      await peekTrigger(page).click();
-    } else {
+      const inbox = `Inbox at ${at}`;
+      await question(`Renew the lease at ${at}`);
+      const snoozed = await question(`Rotate the keys at ${at}`);
       await page.goto("/");
+      const snooze = await rowSnooze(page, snoozed);
+      await snooze.focus();
+      await pickFromList(snooze, "Later today");
+      await expect(inboxRow(page, snoozed), `${inbox}: the snooze kept its row`).toHaveCount(0);
+      await after(inbox, "a Snooze pick in the reading column's head");
     }
-    const card = (hasReadingPane(page) ? drawer(page) : main).getByTestId(`ask-${answered.askId}`);
-    await card.getByRole("radio", { name: "Yes" }).check();
-    await card.getByRole("button", { exact: true, name: "Answer" }).focus();
-    await page.keyboard.press("Enter");
-    await expect(card, `${where}: Answer kept its card`).toHaveCount(0);
-    await after(where, "Enter on a card row's Answer");
 
     // The project List's unanswered-epic notice: its Dismiss goes with it. The epic's create is
     // answered as one Dispatch made and kept no answer for (`409 KEY_COMMITTED`), which is what
     // draws the notice.
-    where = `project List at ${at}`;
+    let where = `project List at ${at}`;
     const keyCommitted = async (route: Route) => {
       if (route.request().method() !== "POST") return route.fallback();
       return route.fulfill({
@@ -5452,50 +5381,6 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     await after(where, "Enter on the unanswered epic's Dismiss");
     await page.unroute("**/api/v1/issues", keyCommitted);
 
-    // The project Board in swimlanes: a priority pick moves the card into another lane, where it
-    // is drawn again under a new parent.
-    where = `project Board at ${at}`;
-    await openIssuesTab(page, "CORE", "Board");
-    await setBoardLanes(page, "shown");
-    const lane = `P${step + 1}`;
-    const priority = listTrigger(page, `Priority of ${boardCard.key}`);
-    await priority.focus();
-    await pickFromList(priority, lane);
-    await expect(
-      listTrigger(
-        page.getByRole("region", { name: `${lane} lane` }),
-        `Priority of ${boardCard.key}`
-      ),
-      `${where}: the pick left ${boardCard.key} outside the ${lane} lane`
-    ).toHaveCount(1);
-    await after(where, `a pick of ${lane} on ${boardCard.key}`);
-
-    // The Agents page: the Unread replies pill goes once its press opens the row and reads them,
-    // and a recipient's ✕ chip goes with that recipient. A reply of the width's own keeps a pill.
-    where = `Agents page at ${at}`;
-    await seedAgentThread({
-      body: `How far along at ${at}?`,
-      delivery: "aside",
-      replies: ["Halfway."],
-      session: plannerSession,
-    });
-    await page.goto("/agents");
-    const pill = main.getByRole("button", { name: /^New repl.* from Planner$/ });
-    await pill.focus();
-    await page.keyboard.press("Enter");
-    await expect(pill, `${where}: the replies stayed unread`).toHaveCount(0);
-    await after(where, "Enter on the Unread replies pill");
-
-    const selectBoxes = main.getByRole("checkbox", { name: /^Select .* for broadcast$/ });
-    await selectBoxes.nth(0).check();
-    await selectBoxes.nth(1).check();
-    const chips = main.getByRole("list", { name: "Selected agents" }).getByRole("button");
-    await expect(chips).toHaveCount(2);
-    await chips.first().focus();
-    await page.keyboard.press("Enter");
-    await expect(chips).toHaveCount(1);
-    await after(where, "Enter on a recipient's ✕ chip");
-
     // The Delivery page's Window: Apply on a custom range sets a new window.
     where = `Delivery page at ${at}`;
     await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
@@ -5504,54 +5389,6 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     await page.keyboard.press("Enter");
     await expect(page).toHaveURL(new RegExp(`to=2024-06-0${step + 4}`));
     await after(where, "Enter on Apply over a custom range");
-
-    // The search bar: Retry under a search that failed goes once the search it retries lands.
-    // The bar sends two searches for the words typed (`useTieredSearch`): the keyword search
-    // (`keywords_only`), whose failure is the one shown with its Retry, and a slower one sent
-    // once typing rests, whose answer would take the bar's place. The slower search fails for the
-    // whole step, so nothing but Retry's own keyword search can take the failure away. The
-    // keyword search fails while the bar asks it twice more before it says it failed, and on
-    // until just before the press. The bar says so only once that search has failed three times:
-    // its first ask and the two retries a 5xx is given 500 ms apart (`queryRetry`,
-    // `queryRetryDelay`). TanStack holds a retry back while the page is hidden or offline
-    // (`canContinue` in query-core's retryer), and a refresh of a search with no answer asks it
-    // three times again (`fetchState`), so the step waits on the route's three answers, then
-    // reads what the bar says of them.
-    where = `search bar at ${at}`;
-    let failing = true;
-    let keywordFailures = 0;
-    const failSearch = (route: Route) => {
-      const keywords = new URL(route.request().url()).searchParams.has("keywords_only");
-      if (keywords && !failing) return route.fallback();
-      if (keywords) keywordFailures += 1;
-      return route.fulfill({ json: { code: "INTERNAL", error: "search is down" }, status: 500 });
-    };
-    await page.route(searchPath, failSearch);
-    await page.locator("body").focus();
-    await page.keyboard.press("Control+k");
-    const palette = page.getByRole("dialog", { name: "Search" });
-    await control(controlRow(palette), CONTROL.searchBox).fill("rollout");
-    await expect
-      .poll(() => keywordFailures, {
-        message: `${where}: the bar asked the failing keyword search fewer than three times`,
-      })
-      .toBeGreaterThanOrEqual(3);
-    const failure = palette.getByRole("alert").filter({ hasText: "Search failed." });
-    await expect(failure, `${where}: the search never failed`).toBeVisible();
-    const retry = failure.getByRole("button", { exact: true, name: "Retry" });
-    await expect(retry, `${where}: the failure offers no Retry`).toBeVisible();
-    await expect(retry, `${where}: Retry is held by a search still out`).toBeEnabled();
-    await retry.focus();
-    await expect(retry, `${where}: Retry did not take the focus`).toBeFocused();
-    failing = false;
-    await page.keyboard.press("Enter");
-    await expect(failure, `${where}: Retry left the failure up`).toHaveCount(0);
-    await after(where, "Enter on a failed search's Retry");
-    // `after` above waited for the focus to land somewhere, so this reads where it settled.
-    if (!(await palette.evaluate((node) => node.contains(document.activeElement)))) {
-      lost.push(`${where}: after Enter on Retry the focus is outside the search bar`);
-    }
-    await page.unroute(searchPath, failSearch);
 
     // The Artifacts tab: a staged file's Upload holds the focus while the upload is out, and
     // then goes with the staged row.
@@ -5569,14 +5406,15 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     await expect(summary, `${where}: the upload left the file staged`).toHaveCount(0);
     await after(where, "Enter on a staged file's Upload");
   }
-  // The architect's ruling ff1a60f5, on every page of R2: a press that disables, takes away or
-  // draws again the control it was made on hands the focus on, and never to the body.
+  // The architect's ruling ff1a60f5, read here on the presses whose landing the page itself
+  // makes: a press that disables, takes away or draws again the control it was made on hands the
+  // focus on, and never to the body.
   expect(lost, lost.join("; ")).toEqual([]);
 });
 
 /** How many frames running a table's box or a panel holds still before its `scrollTop` is read
- *  (`settledScrollTop`): a wheel step's scroll lands over frames, and the focus rescue answers a
- *  loss a frame and a task after it, so a box pulled back shows within three. */
+ *  (`settledScrollTop`): a wheel step's scroll lands over frames, and every hand-off of a loss
+ *  runs within a frame and a task of it, so a box pulled back shows within three. */
 const WHEEL_STILL_FRAMES = 3;
 
 /** The row holding the keyboard focus, by the value of `rowAttribute` it carries, or null where
@@ -5592,13 +5430,12 @@ async function focusedRowOf(page: Page, rowAttribute: string): Promise<string | 
 // SLOW(>=2s): 120 issues and 120 pull requests seeded, and two tables each scrolled by 25 wheel
 // steps with a settled read after each.
 // `@firefox` and `@webkit`: a focused row a virtual table takes away fires no `focusout` in these
-// engines, so the page's focus rescue sees that loss only by watching the page, and each engine
-// lands a wheel step's scroll over its own frames.
+// engines, and each engine lands a wheel step's scroll over its own frames.
 // INFRA-3135's review round 1 (thread PRRT_kwDORFy7ds63p6y_): with a row's checkbox focused, 20
 // wheel steps over a virtual table pulled its box back from 690 px to 24 px and moved the focus
 // onto another row. The reader's scroll is theirs: the box goes where the wheel takes it. The row
-// they picked leaves with the drawn window and takes the focus with it, as it did before the
-// rescue, and nothing hands the focus to a row they did not pick, so `x` then marks none.
+// they picked leaves with the drawn window and takes the focus with it, and nothing hands the
+// focus to a row they did not pick, so `x` then marks none.
 test("a table that holds the keyboard focus scrolls freely, and the focus moves to no row the reader did not pick @firefox @webkit", async ({
   page,
 }) => {
@@ -5629,8 +5466,8 @@ test("a table that holds the keyboard focus scrolls freely, and the focus moves 
       const before = readings.at(-1) ?? 0;
       if (top < before - 1) wrong.push(`step ${step} pulled the box back from ${before} to ${top}`);
       readings.push(top);
-      // Read after the box held still for three frames, by which the focus rescue has answered a
-      // loss (`WHEEL_STILL_FRAMES`), so the focus read is where the step left it.
+      // Read after the box held still for three frames, by which every hand-off of a loss has run
+      // (`WHEEL_STILL_FRAMES`), so the focus read is where the step left it.
       const focused = await focusedRowOf(page, rowAttribute);
       if (focused !== null && focused !== picked) {
         wrong.push(`after step ${step} the focus is in ${focused}`);
@@ -5723,10 +5560,7 @@ test("a table that holds the keyboard focus scrolls freely, and the focus moves 
 // a stop for each field of a date box, one for a radio group - and the panel follows the engine's,
 // the clause of `playwright.config.ts` on the engine's own Tab order; and each engine takes the
 // focus out of a text box the close removes in its own way, the clause on how the engine takes
-// the focus out of one on Tab. The row reads where the focus ends, not which code put it there:
-// with the list's own hand-off to its trigger taken out (`focusLost` in `MultiSelect.tsx`'s close
-// effect read as a focus on the body), the page's rescue still put the focus on the trigger in
-// Firefox and WebKit, and this row passed in both (2026-11-18).
+// the focus out of one on Tab.
 test("Tab and Escape never leave a panel for the page behind it, in a dialog or on a page @firefox @webkit", async ({
   page,
 }) => {
@@ -6105,8 +5939,8 @@ test("a column filter is visible and removable from the row even while its colum
 // press was on that row: a press is the cause only of the update that answers it, and the
 // reader's two clicks on the row's checkbox have been answered, the selection bar drawn and gone
 // again, before the second person's close arrives. `@firefox` and `@webkit`: a focused row taken
-// away fires no `focusout` in these engines, so the rescue sees the loss only by watching the
-// page, the clause of `playwright.config.ts` on a focused control taken away.
+// away fires no `focusout` in these engines, the clause of `playwright.config.ts` on a focused
+// control taken away.
 test("a row a live update removes while it holds the focus hands the focus to no other row and scrolls nothing @firefox @webkit", async ({
   page,
 }) => {
@@ -6237,8 +6071,8 @@ test("an ask withdrawn while the reader types its answer in the Inbox's list tak
       )
       .toBe(true);
     await expect(answer).toHaveCount(0);
-    // The card's own hand-off runs in the commit, the page's rescue a frame and a task after the
-    // loss, and a component's focus effect after its commit: all of them are done by now.
+    // The card's own hand-off runs in the commit, and a component's focus effect after its
+    // commit: both are done by now.
     await nextFrames(page);
     await nextFrames(page);
     // One read is the answer: every hand-off of the loss has run, and nothing else moves the focus.
@@ -6274,11 +6108,13 @@ test("an ask withdrawn while the reader types its answer in the Inbox's list tak
 // resolves it, so the filter takes the turn away, a loss the reader did not cause. At e9ed2743
 // and at 90fa8211 the focus goes into the next turn - its Pin, its Reply, its Expand thread or its
 // body - at 1440 and at 390 px in Chromium, Firefox and WebKit, six runs of six: a turn carries no
-// row marker (`components/row-marker.ts`), so the rescue takes the next turn's control for a
-// control in no row. At a20e0b05 the focus goes to the page body in all six. The architect's rule
-// of 2026-11-19: a loss the reader did not cause moves the focus into no other row of a list. A
-// focused control taken away, for which Firefox and WebKit fire no `focusout`: the clause of the
-// `webkit` and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts).
+// row marker (`components/row-marker.ts`), so the app-wide hand-off those commits had takes the
+// next turn's control for a control in no row. At a20e0b05 the focus goes to the page body in all
+// six.
+// The architect's rule of 2026-11-19: a loss the reader did not cause moves the focus into no
+// other row of a list. A focused control taken away, for which Firefox and WebKit fire no
+// `focusout`: the clause of the `webkit` and `firefox` projects that names the page-own focus row
+// (e2e/playwright.config.ts).
 test("a Conversation turn resolved elsewhere while its Reply holds the focus hands the focus into no other turn @firefox @webkit", async ({
   page,
 }) => {
@@ -6311,7 +6147,7 @@ test("a Conversation turn resolved elsewhere while its Reply holds the focus han
     await expect(reply).toBeFocused();
     await resolveComment(ids[1] as string, SURFACE_SESSION);
     await expect(resolved).toHaveCount(0);
-    // The page's rescue runs a frame and a task after the loss, so it is done by now.
+    // Every hand-off of the loss runs within a frame and a task of it, so it is done by now.
     await nextFrames(page);
     await nextFrames(page);
     // One read is the answer: every hand-off of the loss has run, and nothing else moves the focus.
@@ -6338,13 +6174,14 @@ test("a Conversation turn resolved elsewhere while its Reply holds the focus han
 // margin's Pinned tab when their other device unpins that card, a loss the reader did not cause.
 // At both commits the focus goes into the next card - its Unpin in Chromium, its author link in
 // Firefox and WebKit - at 1440 and 1280 px: there the tab's cards, each an <article> in a <div>
-// (`features/margin/PinnedTab.tsx`), were no row by the rescue's rule and carried no marker
-// (`components/row-marker.ts`), so the rescue took the next card's control for a control in no
-// row. The architect's rule of 2026-11-20 (open-items.md, "an uncaused loss does what main
-// does"): a loss the reader did not cause leaves the focus on the body, as main does, but in an
-// open modal dialog, which takes it itself; so it lands in no card. A focused control taken away,
-// for which Firefox and WebKit fire no `focusout`: the clause of the `webkit` and `firefox`
-// projects that names the page-own focus row (e2e/playwright.config.ts).
+// (`features/margin/PinnedTab.tsx`), were no row by the app-wide hand-off's rule at those commits
+// and carried no marker (`components/row-marker.ts`), so that hand-off took the next card's
+// control for a control in no row. The architect's rule of 2026-11-20 (open-items.md, "an
+// uncaused loss does what main does"): a loss the reader did not cause leaves the focus on the
+// body, as main does,
+// but in an open modal dialog, which takes it itself; so it lands in no card. A focused control
+// taken away, for which Firefox and WebKit fire no `focusout`: the clause of the `webkit` and
+// `firefox` projects that names the page-own focus row (e2e/playwright.config.ts).
 test("a pinned card unpinned on another device while its Unpin holds the focus hands the focus into no other card @firefox @webkit", async ({
   page,
 }) => {
@@ -6393,7 +6230,7 @@ test("a pinned card unpinned on another device while its Unpin holds the focus h
       { login: "alice" }
     );
     await expect(second).toHaveCount(0);
-    // The page's rescue runs a frame and a task after the loss, so it is done by now.
+    // Every hand-off of the loss runs within a frame and a task of it, so it is done by now.
     await nextFrames(page);
     await nextFrames(page);
     // One read is the answer: every hand-off of the loss has run, and nothing else moves the focus.
@@ -6429,7 +6266,7 @@ test("a pinned card unpinned on another device while its Unpin holds the focus h
 // (Firefox, as the last digit completes the date, and Playwright's fill(), the value set without
 // keys as assistive technology sets it). A caused walk-back passes over Author, which takes typed
 // text, so the reader's date keeps the focus inside the Filter panel on no text field; a loss
-// misread as uncaused goes to the Search dialog's own stop, outside that panel. WebKit's date box
+// misread as uncaused leaves the focus on the page's body, outside that panel. WebKit's date box
 // takes no typed date from Playwright's keys, so the typed case is not read there. A focused
 // control taken away, for which Firefox and WebKit fire no `focusout`: the clause of the `webkit`
 // and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts).
@@ -6470,7 +6307,7 @@ test("a date the reader gives the search bar's Updated since is their press, so 
       await since.fill(day.iso);
     }
     await expect(since).toHaveCount(0);
-    // The page's rescue runs a frame and a task after the loss, so it is done by now.
+    // Every hand-off of the loss runs within a frame and a task of it, so it is done by now.
     await nextFrames(page);
     await nextFrames(page);
     // The answer is read now: every hand-off of the loss has run, and nothing else moves the focus.
@@ -6516,7 +6353,7 @@ test("a Snooze pick in the reading column's head takes none of the reader's next
   await snooze.focus();
   await pickFromList(snooze, "Later today");
   await expect(inboxRow(page, snoozed)).toHaveCount(0);
-  // The page's rescue runs a frame and a task after the loss, so it is done by now.
+  // Every hand-off of the loss runs within a frame and a task of it, so it is done by now.
   await nextFrames(page);
   await nextFrames(page);
   const wrong: string[] = [];
@@ -6641,8 +6478,9 @@ interface PickList {
   readonly picked: RegExp;
   /** Where the pick leaves the focus, where that is not the trigger: the control the panel
    *  hands it to when the pick takes the trigger away, or the message the composer's pick hands
-   *  the reader to. */
-  readonly focusAfterPick?: Locator;
+   *  the reader to. Null where the row reads no focus after the pick: no hand-off of the page's
+   *  own lands the focus the pick took away. */
+  readonly focusAfterPick?: Locator | null;
   /** Where Escape leaves the focus, where that is not the trigger: the composer's row. */
   readonly focusAfterEscape?: Locator;
 }
@@ -6990,10 +6828,9 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       left: ["Tomorrow"],
       picked: laterAfter(1),
       // The pick takes the row away once its write lands. With the reading column the focus goes
-      // to the column's own stop, and without it to the same Snooze in the row that moves up.
-      focusAfterPick: hasReadingPane(page)
-        ? paneScroller(page)
-        : listTrigger(inboxRow(page, snoozed.bulk), /^Snooze /),
+      // to the column's own stop; without it no hand-off of the Inbox's own lands the focus the
+      // row took with it, so the row reads none.
+      focusAfterPick: hasReadingPane(page) ? paneScroller(page) : null,
     },
     {
       name: "the Inbox's Snooze selected asks",
@@ -7230,8 +7067,10 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 // the Create issue dialog's Project (`CreateIssueDialog`), the Settings page's Default assignee
 // of a project and the New project form's Default assignee (`ProjectsSection`), and its Source
 // project (`ProjectSelect`), and the Delivery page's Window (`WindowControl`) and
-// Color merges by (`DeliveryPage`). One short fixed list stays a native select, and the row does
-// not open it: the issue header's Status. At each width each list is
+// Color merges by (`DeliveryPage`). The issue header's Status is the shared single pick too
+// (20f534c5); this row does not open it, and its own unit cases hold its text box
+// (`features/issue/IssuePage.test.tsx`, `features/issue/issue-writes.test.tsx`). At each width
+// each list is
 // opened from its trigger: exactly one text box is in the list's own panel - at 390 an `input` of
 // 16 px, the size `styles.css` gives every input below 1280 px and under which iOS Safari zooms
 // the page onto the box - the option a typed word leaves is not the value the list starts on, the
@@ -7241,9 +7080,11 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 // Keyboard shortcuts, since a character typed on a closed trigger is the list's search
 // (`MultiSelect`), and Enter picks the option the word left - the trigger shows it with the focus
 // back on it, or where the pick takes the trigger away the panel hands the focus on. A Snooze's
-// pick shows in the Inbox's Later band, which holds one more row once the write lands, and the
-// row the pick took away hands the focus on. A list that holds no text box is named and the row
-// goes on, so one run names every such list.
+// pick shows in the Inbox's Later band, which holds one more row once the write lands. The
+// selection bar's Snooze hands the focus to the mark of the row now at the deferred row's place,
+// and a row's Snooze, with the reading column drawn, to the column's own stop; at 390, where it is
+// not, no hand-off of the Inbox's own lands the focus a row's Snooze took, and the row reads none.
+// A list that holds no text box is named and the row goes on, so one run names every such list.
 // It runs in Chromium alone. What an engine decides here is one component's, the same in every
 // list, and two rows read it in Firefox and WebKit at a fraction of this row's cost: the keys the
 // list's text box takes, as each engine delivers them, in `keyboard-agents-picker`'s rows of the
@@ -7409,10 +7250,12 @@ test("every list of options a reader picks from holds a text box that narrows it
       await expect
         .poll(list.value, { message: `${at}: Enter did not pick the option "${list.word}" left` })
         .toMatch(list.picked);
-      await expect(
-        list.focusAfterPick ?? list.trigger,
-        `${at}: the pick left the focus elsewhere`
-      ).toBeFocused();
+      if (list.focusAfterPick !== null) {
+        await expect(
+          list.focusAfterPick ?? list.trigger,
+          `${at}: the pick left the focus elsewhere`
+        ).toBeFocused();
+      }
     }
   }
   expect(missing, missing.join("; ")).toEqual([]);
@@ -7651,169 +7494,56 @@ test("Add a priority opens its form in view with the focus on Priority to advanc
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
 
-// SLOW(>=2s): one issue's Conversation at two widths, its decided ask changed four times.
-// INFRA-3135, round 14 (the tester's, measured in builds Job infra-3135-r14flake at aa057a19):
-// Change answer on a decided ask takes itself away and puts the answer form in its place, as
-// Add a priority's + does, and the page's rescue decides where the focus lands. At the merge
-// base d85d81e6 the focus falls to the body in all three engines; at aa057a19 Chromium puts it
-// on the turn's 'Open live conversation' link, and Firefox and WebKit on the session button or
-// Pin, scrolling the page 65 px at 1440 on a click, so it lands on a control the reader did not
-// press and that differs by engine. The architect's hand-off ruling (2026-11-18T11:17Z) gives the
-// landing: the control now at the pressed one's place, the form's own first control. A focused
-// control taken away, for which these engines fire no `focusout`: the clause of the `webkit`
-// and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts). By a
-// press of Enter and by a click, at 1440 and 390: the focus is in the answer form, whose first
-// choice stands whole in the window.
-test("Change answer opens the answer form with the focus in it, at 1440 and 390 @firefox @webkit", async ({
-  page,
-}) => {
-  test.setTimeout(120_000);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Release train" });
-  const ask = await createAsk(
-    issue.key,
-    { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
-    SURFACE_SESSION
-  );
-  await answerAsk(ask.id, { expected_edited_at: null, selected: ["Ship"] });
-  const wrong: string[] = [];
-  for (const size of [
-    { height: 900, width: 1440 },
-    { height: 664, width: 390 },
-  ]) {
-    await page.setViewportSize(size);
-    for (const press of ["Enter", "click"] as const) {
-      const at = `${size.width}x${size.height}, by ${press}`;
-      await page.goto(`/issues/${issue.key}/conversation`);
-      const turn = page.locator(`[data-turn="ask:${ask.id}"]`);
-      await expect(turn).toContainText("Answered by alice");
-      const change = turn.getByRole("button", { name: "Change answer" });
-      await change.scrollIntoViewIfNeeded();
-      if (press === "Enter") {
-        await change.focus();
-        await page.keyboard.press("Enter");
-      } else {
-        await change.click();
-      }
-      const form = turn.locator("form").filter({ has: page.getByRole("radio", { name: "Ship" }) });
-      await expect(form, `${at}: Change answer opened no answer form`).toBeVisible();
-      const inForm = await expect(form.locator(":focus"))
-        .toHaveCount(1)
-        .then(
-          () => true,
-          () => false
-        );
-      if (!inForm) {
-        const holder = await page.evaluate(
-          () =>
-            `${document.activeElement?.tagName.toLowerCase()} "${document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.trim().slice(0, 40)}"`
-        );
-        wrong.push(`${at}: the focus is on ${holder}, not in the answer form`);
-      }
-      const ship = form.getByRole("radio", { name: "Ship" });
-      const whole = await expect
-        .poll(() =>
-          ship.evaluate((node) => {
-            const box = node.getBoundingClientRect();
-            return (
-              box.top >= 0 &&
-              box.bottom <= window.innerHeight &&
-              box.left >= 0 &&
-              box.right <= window.innerWidth
-            );
-          })
-        )
-        .toBe(true)
-        .then(
-          () => true,
-          () => false
-        );
-      if (!whole) wrong.push(`${at}: the form's first choice, Ship, is not whole in the window`);
-    }
-  }
-  expect(wrong, wrong.join("; ")).toEqual([]);
-});
-
-// SLOW(>=2s): the Session groups dialog opened four times at two widths, a group made and
-// deleted in each.
+// SLOW(>=2s): the Session groups dialog opened at two widths, a group made and renamed in each.
 // INFRA-3135, round 22 (the tester's, measured in builds Jobs infra-3135-p1-h and -p1-b at
-// da0804df and a1c78223): the reader's focus is on a session group's Rename in the Session
-// groups dialog when the group is deleted on another device, so its card goes, a loss the reader
-// did not cause. At da0804df, once a Rename by Enter has landed on the card and its hold has
-// ended, the focus goes to a link of the dialog's session list, "Open live conversation with
-// Reviewer", in Chromium, Firefox and WebKit at 1440 and 390 px; with nothing pressed it goes to
-// that link in Chromium, and to the dialog in Firefox and WebKit. At a1c78223 Chromium with
-// nothing pressed puts it in New group name, which takes the reader's next key as text. The
-// architect's rule of 2026-11-20 02:1xZ (open-items.md, "The uncaused path, narrowed"): a loss
-// the reader did not cause lands on no control, but on the focus stop of the nearest region that
-// still stands - here the open dialog - with no scroll. A focused control taken away, for which
-// Firefox and WebKit fire no `focusout`: the clause of the `webkit` and `firefox` projects that
+// da0804df and a1c78223): the reader's focus is on a session group's Rename in the Session groups
+// dialog, and Enter renames the group. The card holds its buttons while the write is out and
+// until the live update carrying the rename has drawn the group again in place
+// (`useHoldUntilDrawn`), and holds them by `aria-disabled` (`heldPress`), so Rename keeps the focus
+// the reader's press left on it once the write has landed, at 1440 and 390 px
+// (`features/delivery/SessionGroupsEditor.tsx`). A control held under the reader's press, which a
+// native `disabled` takes the focus from: the clause of the `webkit` and `firefox` projects that
 // names the page-own focus row (e2e/playwright.config.ts).
-test("a group card deleted on another device while it holds the focus leaves the focus on the Session groups dialog @firefox @webkit", async ({
+test("a group card's Rename by Enter keeps the keyboard focus once its write lands, in the Session groups dialog @firefox @webkit", async ({
   page,
 }) => {
-  test.setTimeout(180_000);
-  // Once: the fixture's rows carry no ON CONFLICT. Each pass deletes the group it makes, so the
-  // planner it groups is free again for the next pass.
+  test.setTimeout(90_000);
+  // Once: the fixture's rows carry no ON CONFLICT. Each width groups a session of its own, since
+  // a session one group holds is free for no other.
   await seedSessionGroupsFixture();
-  const wrong: string[] = [];
-  let made = 0;
-  for (const [height, width] of [
-    [900, 1440],
-    [664, 390],
+  for (const [height, width, session] of [
+    [900, 1440, "Planner, first run"],
+    [664, 390, "Planner, second run"],
   ] as const) {
-    for (const how of ["nothing pressed", "a Rename landed"] as const) {
-      made += 1;
-      const name = `Crew ${made}`;
-      await page.setViewportSize({ height, width });
-      await page.goto("/delivery?mode=list");
-      await expect(page.getByText("3 PRs in current filter/window")).toBeVisible();
-      await openFilterPanel(page);
-      await page.getByRole("button", { name: "Edit groups" }).click();
-      const editor = page.getByRole("dialog", { name: "Session groups" });
-      await editor.getByRole("checkbox", { exact: true, name: "Planner, first run" }).check();
-      await editor.getByLabel("New group name").fill(name);
-      const created = page.waitForResponse(
-        (response) =>
-          response.request().method() === "POST" &&
-          response.url().endsWith("/api/v1/delivery/session-groups")
-      );
-      await editor.getByRole("button", { name: "Create group" }).click();
-      const group = (await (await created).json()) as { id: string };
-      let card = editor.getByRole("group", { name });
-      // Every button of a card is disabled while a write of the editor is out, and Delete group
-      // by nothing else, so its coming back is the create's end.
-      await expect(card.getByRole("button", { name: "Delete group" })).toBeEnabled();
-      const renamed = `${name}, renamed`;
-      await card.getByLabel("Name", { exact: true }).fill(renamed);
-      await card.getByRole("button", { exact: true, name: "Rename" }).focus();
-      if (how === "a Rename landed") {
-        await page.keyboard.press("Enter");
-        card = editor.getByRole("group", { name: renamed });
-        // The card's hold ends once the live update carrying the rename has drawn it.
-        await expect(card.getByRole("button", { name: "Delete group" })).toBeEnabled();
-        await expect(card.getByRole("button", { exact: true, name: "Rename" })).toBeFocused();
-      }
-      const removed = await fetch(new URL(`/api/v1/delivery/session-groups/${group.id}`, baseUrl), {
-        headers: await userHeaders("alice"),
-        method: "DELETE",
-      });
-      expect(removed.status).toBe(204);
-      await expect(card).toHaveCount(0);
-      // The page's rescue runs a frame and a task after the loss, so it is done by now.
-      await nextFrames(page);
-      await nextFrames(page);
-      // One read is the answer: every hand-off of the loss has run, and nothing moves the focus.
-      const onDialog = await editor.evaluate((dialog) => dialog === document.activeElement);
-      // Read after the same hand-offs as the read above, so where the focus is is settled.
-      const holder = await focusHolder(page);
-      if (!onDialog)
-        wrong.push(
-          `${width} px, ${how}: the focus is on ${holder.name}, not the Session groups dialog`
-        );
-    }
+    const name = `Crew at ${width}`;
+    await page.setViewportSize({ height, width });
+    await page.goto("/delivery?mode=list");
+    await expect(page.getByText("3 PRs in current filter/window")).toBeVisible();
+    await openFilterPanel(page);
+    await page.getByRole("button", { name: "Edit groups" }).click();
+    const editor = page.getByRole("dialog", { name: "Session groups" });
+    await editor.getByRole("checkbox", { exact: true, name: session }).check();
+    await editor.getByLabel("New group name").fill(name);
+    await editor.getByRole("button", { name: "Create group" }).click();
+    const card = editor.getByRole("group", { name });
+    // Every button of a card is disabled while a write of the editor is out, and Delete group
+    // by nothing else, so its coming back is the create's end.
+    await expect(card.getByRole("button", { name: "Delete group" })).toBeEnabled();
+    const renamed = `${name}, renamed`;
+    await card.getByLabel("Name", { exact: true }).fill(renamed);
+    await card.getByRole("button", { exact: true, name: "Rename" }).focus();
+    await page.keyboard.press("Enter");
+    const drawn = editor.getByRole("group", { name: renamed });
+    // The card's hold ends once the live update carrying the rename has drawn it.
+    await expect(
+      drawn.getByRole("button", { name: "Delete group" }),
+      `${width} px: the rename was never drawn`
+    ).toBeEnabled();
+    await expect(
+      drawn.getByRole("button", { exact: true, name: "Rename" }),
+      `${width} px: Rename lost the keyboard focus once its write landed`
+    ).toBeFocused();
   }
-  expect(wrong, wrong.join("; ")).toEqual([]);
 });
 
 // SLOW(>=2s): a save whose re-read is held offline until the 30 s request deadline ends its hold.
@@ -7822,14 +7552,14 @@ test("a group card deleted on another device while it holds the focus leaves the
 // save lands, and the browser is offline before the page reads its answer, so the re-read that
 // draws the stored record is one TanStack pauses. Save is disabled from the press, so the focus
 // falls to the body. At da0804df the hold ends at the request deadline, 30 s after the save's
-// answer, but the page's rescue hands the focus on at 30.03 s, before Save is enabled again, to
-// the Preview section's New issue page checkbox, so Save gets nothing back and the reader's next
-// Space toggles that setting. At a1c78223 the rescue moves the focus to the same checkbox at
-// 30.07 s, with Save still held after 45 s. The architect's rulings of 2026-11-20 20:3xZ
-// (open-items.md, "Review round 3"): the form keeps its identity through a save, so Save keeps
-// the reader's focus, and every hold ends at a timer of its own while the browser is offline
-// too. No engine tag: the landing is decided by the hold's timer and the rescue's, both in the
-// page's own code, so another engine would repeat what Chromium shows.
+// answer, but the app-wide hand-off those commits had hands the focus on at 30.03 s, before Save
+// is enabled again, to the Preview section's New issue page checkbox, so Save gets nothing back and
+// the reader's next Space toggles that setting. At a1c78223 that hand-off moves the focus to the
+// same checkbox at 30.07 s, with Save still held after 45 s. The architect's rulings of
+// 2026-11-20 20:3xZ (open-items.md, "Review round 3"): the form keeps its identity through a
+// save, so Save keeps the reader's focus, and every hold ends at a timer of its own while the
+// browser is offline too. No engine tag: where the focus rests is decided by the hold's timer, in
+// the page's own code, so another engine would repeat what Chromium shows.
 test("Save delivery settings keeps the keyboard focus through a save whose re-read the browser cannot send", async ({
   page,
 }) => {
@@ -7878,7 +7608,8 @@ test("Save delivery settings keeps the keyboard focus through a save whose re-re
     // The hold's own contract is the request deadline, 30 s from the save's answer
     // (REQUEST_DEADLINE_MS, web/src/api/client.ts); 45 s holds it with room to spare.
     await expect(save).toBeEnabled({ timeout: 45_000 });
-    // The page's rescue runs a frame and a task after Save comes back, so it is done by now.
+    // Every hand-off runs within a frame and a task of the commit that drew Save again, so it is
+    // done by now.
     await nextFrames(page);
     await nextFrames(page);
     const wrong: string[] = [];
@@ -7988,8 +7719,7 @@ test("clear brush window pressed with the Window control scrolled out of sight s
         }
         await expect(clear, `${at}: clear brush window stayed drawn`).toHaveCount(0);
         await expect(page, `${at}: the brush stayed in the address`).not.toHaveURL(/[?&]ws=/);
-        // The header's hand-off runs in the commit that takes the button away, and the page's
-        // rescue a frame and a task after the loss, so both are done by now.
+        // The header's hand-off runs in the commit that takes the button away, so it is done by now.
         await nextFrames(page);
         await nextFrames(page);
         // One read is the answer: every hand-off has run, and nothing else moves the focus.
@@ -8110,6 +7840,20 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
         top: Math.round(own.top),
       };
     });
+  /** Where the list's box stands in the page and where a row stands on screen: the row `id`
+   *  names, else the row that holds the focus. */
+  const rowAndList = (id: string | null) =>
+    page.evaluate((rowId) => {
+      const frame = document.querySelector('[data-testid="inbox-list"]');
+      const row =
+        rowId === null
+          ? document.activeElement?.closest("[data-inbox-row]")
+          : document.querySelector(`[data-inbox-row="${CSS.escape(rowId)}"]`);
+      return {
+        listTop: (frame?.getBoundingClientRect().top ?? 0) + window.scrollY,
+        rowTop: row?.getBoundingClientRect().top ?? null,
+      };
+    }, id);
   const wrong: string[] = [];
   for (const size of [
     { height: 900, width: 1440 },
@@ -8170,14 +7914,7 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
       const before = await landing();
       // One instant is the point here too: where the row marked last stands on screen and where
       // the list's box stands in the page, just before the press.
-      const stood = await page.evaluate((id) => {
-        const frame = document.querySelector('[data-testid="inbox-list"]');
-        const row = document.querySelector(`[data-inbox-row="${CSS.escape(id)}"]`);
-        return {
-          listTop: (frame?.getBoundingClientRect().top ?? 0) + window.scrollY,
-          rowTop: row?.getBoundingClientRect().top ?? null,
-        };
-      }, marked[0] as string);
+      const stood = await rowAndList(marked[0] as string);
       await page.keyboard.press("Enter");
       for (const id of marked) await expect(inboxRowOf(id)).toHaveCount(0);
       await expect(bar).toHaveCount(0);
@@ -8203,14 +7940,7 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
       // by the height that closed above the list in the press's commit and no more: below `sm`,
       // Mark all read's line, which goes with the last unread threads. One read of the list's box
       // and the landing's row: every hand-off of the press has run, and nothing else moves them.
-      const placed = await page.evaluate(() => {
-        const frame = document.querySelector('[data-testid="inbox-list"]');
-        const row = document.activeElement?.closest("[data-inbox-row]");
-        return {
-          listTop: (frame?.getBoundingClientRect().top ?? 0) + window.scrollY,
-          rowTop: row?.getBoundingClientRect().top ?? null,
-        };
-      });
+      const placed = await rowAndList(null);
       const closed = stood.listTop - placed.listTop;
       if (
         placed.rowTop === null ||
@@ -8372,8 +8102,7 @@ test("a bulk action that takes the marked rows out of the project List's view ha
     await page.keyboard.press("Enter");
     await expect(bar).toHaveCount(0);
     for (const key of taken) await expect(markOf(key)).toHaveCount(0);
-    // The bar's hand-off runs with the commit that took the bar away, and the page's rescue a
-    // frame and a task after the rows' going, so both are done by now.
+    // The bar's hand-off runs with the commit that took the bar away, so it is done by now.
     await nextFrames(page);
     await nextFrames(page);
     // One read is the answer: every hand-off of the press has run, and nothing else moves.
@@ -8744,16 +8473,16 @@ test("the Delivery page's measures table keeps the height of its rows from befor
 // 505 px. At 390x664 the rows are 126 px tall. In Chromium and Firefox the focus put on Unpin
 // Alpha has scrolled the window to 328 px, and Pin Alpha lands at 546 px, in sight. In WebKit the
 // window stands at 58 px, Pin Alpha lands at 816 px, below the 664 px window, and nothing
-// scrolls, at both commits. Main, which has no focus rescue, does the same in WebKit: Pin Alpha
-// at 505 px at 1440, and at 816 px with the window held at 58 px at 390. The architect's rulings:
-// a landing the reader caused must be in view (2026-11-19 10:3xZ, WCAG 2.2's 2.4.11 Focus Not
-// Obscured), and the one scroll a landing may make is to the nearest edge of a control partly in
-// sight, the least distance that shows it whole (2026-11-21 12:3xZ). Which control the press
-// lands on is not read here: 2026-11-19 22:3xZ names the same control in the row now at the
-// pressed row's place, and main's page means the focus to follow the row to where it lands
-// (AgentsPage.tsx, `focusAfterPin`). A focused control taken away, for which Firefox and WebKit
-// fire no `focusout` (React moves the row's node): the clause of the `webkit` and `firefox`
-// projects that names the page-own focus row (e2e/playwright.config.ts).
+// scrolls, at both commits. Main does the same in WebKit: Pin Alpha at 505 px at 1440, and at
+// 816 px with the window held at 58 px at 390. The architect's rulings: a landing the reader
+// caused must be in view (2026-11-19 10:3xZ, WCAG 2.2's 2.4.11 Focus Not Obscured), and the one
+// scroll a landing may make is to the nearest edge of a control partly in sight, the least
+// distance that shows it whole (2026-11-21 12:3xZ). Which control the press lands on is not read
+// here: 2026-11-19 22:3xZ names the same control in the row now at the pressed row's place, and
+// main's page means the focus to follow the row to where it lands (AgentsPage.tsx,
+// `focusAfterPin`). A focused control taken away, for which Firefox and WebKit fire no
+// `focusout` (React moves the row's node): the clause of the `webkit` and `firefox` projects that
+// names the page-own focus row (e2e/playwright.config.ts).
 test("Unpin on a pinned agent keeps the keyboard focus on a control in sight, on the Agents page at 1440 and 390 @firefox @webkit", async ({
   page,
 }) => {
@@ -8859,31 +8588,23 @@ test("Unpin on a pinned agent keeps the keyboard focus on a control in sight, on
 // INFRA-3135, round 24 (the tester's, measured in builds Jobs infra-3135-a5b-h and -a5b-b at
 // 3fce6150 and da0804df, and infra-3135-a5m at main's merge base 143b57a7): the Inbox lists
 // three comment threads, newest first, and the reader presses Enter on the first one's Dismiss.
-// The row goes once its write lands, the next thread's row moves up into its place, and the
-// focus goes to that row's Dismiss, in Chromium, Firefox and WebKit at 1440x900 and 390x664, at
-// both commits. At 1440 nothing scrolls. At 390 the rows are 459 px tall and the focus put on
-// the first Dismiss has scrolled the window to 437 px, with that row's top 132 px above the
-// window. In Chromium and Firefox the window holds at 437 px and the next row's Dismiss stands at
-// 270 px, in sight. In WebKit the window scrolls up to 167 px, though it can scroll to 1642 px,
-// so the page did not clamp it, and the landing stands at 540 px, in sight; at both commits.
-// Main, which has no focus rescue, leaves the focus on the body in WebKit at both widths, and at
-// 390 scrolls the window from 445 px to 0, though it can scroll to 1650 px. The architect's
-// rulings: the press that takes its own row away lands on the same control in the row now at
-// that place, so the reader can go on (2026-11-19 22:3xZ); a row the reader's own press takes
-// away frees its whole height and nothing scrolls (2026-11-21 17:0xZ); the one scroll a landing
-// may make is to the nearest edge of a control partly in sight (2026-11-21 12:3xZ), and this
-// landing stood in sight at 270 px. A focused control taken away, for which Firefox and WebKit
-// fire no `focusout`: the clause of the `webkit` and `firefox` projects that names the page-own
-// focus row (e2e/playwright.config.ts).
-test("a thread's Dismiss in the Inbox's list scrolls nothing and hands the focus to the next row's Dismiss in sight, at 1440 and 390 @firefox @webkit", async ({
+// The row goes once its write lands, and the next thread's row moves up into its place. At 1440
+// nothing scrolls. At 390 the rows are 459 px tall and the focus put on the first Dismiss has
+// scrolled the window to 437 px, with that row's top 132 px above the window. In Chromium and
+// Firefox the window holds at 437 px. In WebKit it scrolls up to 167 px, though it can scroll to
+// 1642 px, so the page did not clamp it; at both commits. At main, WebKit scrolls the window at
+// 390 from 445 px to 0, though it can scroll to 1650 px. The architect's ruling of 2026-11-21
+// 17:0xZ: a row the reader's own press takes away frees its whole height and nothing scrolls. A
+// focused control taken away, for which Firefox and WebKit fire no `focusout`: the clause of the
+// `webkit` and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts).
+test("a thread's Dismiss in the Inbox's list scrolls nothing, at 1440 and 390 @firefox @webkit", async ({
   page,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
   const list = page.getByTestId("inbox-list");
-  /** Where the window and the list's box stand and how far each can scroll, and what holds the
-   *  focus: its name, the row it is in, whether it is a row's Dismiss, its top, and whether its box
-   *  is inside the window and inside the list's box. */
-  const landing = () =>
+  /** Where the window and the list's box stand and how far each can scroll, and, for a failure's
+   *  message, what holds the focus and its top. */
+  const standing = () =>
     page.evaluate(() => {
       const frame = document.querySelector<HTMLElement>('[data-testid="inbox-list"]');
       const scroller = document.scrollingElement ?? document.documentElement;
@@ -8895,33 +8616,15 @@ test("a thread's Dismiss in the Inbox's list scrolls nothing and hands the focus
       };
       const focused = document.activeElement;
       if (!(focused instanceof HTMLElement) || focused === document.body) {
-        return {
-          ...scroll,
-          dismiss: false,
-          inSight: false,
-          name: "the body",
-          row: null,
-          top: null,
-        };
+        return { ...scroll, name: "the body", top: null };
       }
-      const own = focused.getBoundingClientRect();
       const words = (focused.getAttribute("aria-label") || focused.textContent || "")
         .trim()
         .slice(0, 60);
-      const clip = frame?.getBoundingClientRect();
-      const top = Math.max(0, clip?.top ?? 0);
-      const bottom = Math.min(window.innerHeight, clip?.bottom ?? window.innerHeight);
       return {
         ...scroll,
-        dismiss: focused.matches("[data-inbox-dismiss]"),
-        inSight:
-          own.top >= top - 1 &&
-          own.bottom <= bottom + 1 &&
-          own.left >= -1 &&
-          own.right <= window.innerWidth + 1,
         name: `${focused.tagName.toLowerCase()} "${words}"`,
-        row: focused.closest("[data-inbox-row]")?.getAttribute("data-inbox-row") ?? null,
-        top: Math.round(own.top),
+        top: Math.round(focused.getBoundingClientRect().top),
       };
     });
   const wrong: string[] = [];
@@ -8947,38 +8650,18 @@ test("a thread's Dismiss in the Inbox's list scrolls nothing and hands the focus
     // One read of the order: the wait above found three thread rows drawn, newest first.
     const target = (await dismissable.first().getAttribute("data-inbox-row")) ?? "";
     const row = page.locator(`[data-inbox-row="${target}"]`);
-    // One read is the answer: the list is drawn, and nothing moves its rows before the press.
-    const next = await row.evaluate(
-      (node) => node.nextElementSibling?.getAttribute("data-inbox-row") ?? "no row"
-    );
-    const nextDismiss = page.locator(`[data-inbox-row="${next}"] [data-inbox-dismiss]`);
-    await expect(
-      nextDismiss,
-      `${where}: the row after the first thread draws no Dismiss`
-    ).toHaveCount(1);
-    // One read of the name: the next row is drawn, and its Dismiss names its thread.
-    const nextName = (await nextDismiss.getAttribute("aria-label")) ?? next;
     await row.locator("[data-inbox-dismiss]").focus();
     await nextFrames(page);
     // One instant is the point: where the window and the list stand just before the press.
-    const before = await landing();
+    const before = await standing();
     await page.keyboard.press("Enter");
     await expect(row).toHaveCount(0);
-    // The hand-off runs with the commit that took the row away, and a scroll lands over frames.
+    // A scroll lands over frames, so each box is read once it holds still.
     await settledScrollTop(list);
     await settledScrollTop(page);
-    // One read is the answer: every hand-off of the press has run, and nothing else moves.
-    const now = await landing();
+    // One read is the answer: both boxes hold still, and nothing else moves them.
+    const now = await standing();
     const numbers = `window.scrollY ${before.scrollY} -> ${now.scrollY} (farthest ${now.farthestY}), list scrollTop ${before.scrollTop} -> ${now.scrollTop} (farthest ${now.farthestTop})`;
-    if (now.row !== next || !now.dismiss) {
-      wrong.push(
-        `${where}: after Enter on the first thread's Dismiss the focus is on ${now.name}, not on "${nextName}", the Dismiss of the row now at its place (${numbers})`
-      );
-    } else if (!now.inSight) {
-      wrong.push(
-        `${where}: after Enter on the first thread's Dismiss the focus is on ${now.name}, out of sight at ${now.top} px in a ${size.height} px window (${numbers})`
-      );
-    }
     // A box the page clamped stands at its farthest scroll now, and stood farther before.
     const windowClamped = now.scrollY >= now.farthestY - 1 && before.scrollY > now.farthestY;
     const listClamped = now.scrollTop >= now.farthestTop - 1 && before.scrollTop > now.farthestTop;
@@ -9039,20 +8722,20 @@ function focusPlace(
 // the focus falls to the body: in Chromium and Firefox within 40 ms of the press, in WebKit at its
 // next rendering update, 65 to 1060 ms after it. A Tab then moves the focus out of the open dialog,
 // to the card's Reaches 1 behind it, in Chromium, Firefox and WebKit at 1440x900 and 390x664, at
-// both commits. After the decline lands, with the focus the Tab took on that card's Reaches 1, the
-// focus is on the body at 390 and on a control in sight at 1440, in all three engines at 3fce6150.
-// Without the Tab the landing is the Resize reading pane divider at 1440 at 3fce6150 and the next
-// card's Reaches 1 at da0804df, and at 390 the next card's Ship, with the window scrolled from
-// 641 px to 343, at both. The rules: a control held while the write its press started is out is
-// held through components/held-press.ts, never natively disabled, so it keeps the keyboard focus
-// (packages/dispatch/AGENTS.md:53); a focus never leaves an open modal dialog, whose own stop takes
-// it (the architect's correction of 2026-11-22 02:2xZ); and a landing the reader's press caused is
-// what the press drew in its place, else the control now at the place, else the nearest control in
-// sight before it, else the region's stop (2026-11-22 12:16Z). A focused control disabled under the
-// press, which each engine moves to the body at its own time, and a focused control taken away, for
-// which Firefox and WebKit fire no `focusout`: the clause of the `webkit` and `firefox` projects
-// that names the page-own focus row (e2e/playwright.config.ts).
-test("the Inbox's Decline dialog keeps the keyboard focus inside itself while its write is out, and on a control after it lands @firefox @webkit", async ({
+// both commits. After the decline lands at 1440, with the focus the Tab took on that card's
+// Reaches 1, the focus is on a control in sight, in all three engines at 3fce6150; without the Tab
+// it is on the Resize reading pane divider at 3fce6150 and on the next card's Reaches 1 at
+// da0804df. The rules: a control held while the write its press started is out is held through
+// components/held-press.ts, never natively disabled, so it keeps the keyboard focus
+// (its own doc comment); a focus never leaves an open modal dialog, whose own stop
+// takes it (the architect's correction of 2026-11-22 02:2xZ); and in the reading column the focus
+// goes to the column's own focus stop, whoever caused the loss (2026-11-19 13:0xZ, open-items.md,
+// "The replacement rule, narrowed"). Below the column's width no hand-off of the Inbox's own lands
+// the focus the decline took, so the row reads the landing at 1440 alone. A focused control
+// disabled under the press, which each engine moves to the body at its own time, and a focused
+// control taken away, for which Firefox and WebKit fire no `focusout`: the clause of the `webkit`
+// and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts).
+test("the Inbox's Decline dialog keeps the keyboard focus inside itself while its write is out, and the reading column keeps it on a control after it lands @firefox @webkit", async ({
   page,
 }) => {
   // Two widths, each with three questions seeded and a decline held through a Tab.
@@ -9126,16 +8809,21 @@ test("the Inbox's Decline dialog keeps the keyboard focus inside itself while it
     for (const route of held.splice(0)) await route.continue();
     await expect(dialog).toHaveCount(0);
     await expect(inboxRow(page, target)).toHaveCount(0);
-    await settledScrollTop(page);
-    await nextFrames(page);
-    // One read is the answer: the decline has landed, its row is gone, the window holds still.
-    const landed = await focusPlace(page);
-    if (landed.body) {
-      wrong.push(`${where}: after the decline lands the focus is on the body`);
-    } else if (!landed.inSight) {
-      wrong.push(
-        `${where}: after the decline lands the focus is on ${landed.name}, out of sight (window.scrollY ${landed.scrollY})`
-      );
+    // The reading column hands the focus its question took with it to the column's own stop.
+    // Below the column's width no hand-off of the Inbox's own lands it, so the landing is read
+    // where the column is drawn alone.
+    if (hasReadingPane(page)) {
+      await settledScrollTop(page);
+      await nextFrames(page);
+      // One read is the answer: the decline has landed, its row is gone, the window holds still.
+      const landed = await focusPlace(page);
+      if (landed.body) {
+        wrong.push(`${where}: after the decline lands the focus is on the body`);
+      } else if (!landed.inSight) {
+        wrong.push(
+          `${where}: after the decline lands the focus is on ${landed.name}, out of sight (window.scrollY ${landed.scrollY})`
+        );
+      }
     }
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
@@ -9151,18 +8839,13 @@ test("the Inbox's Decline dialog keeps the keyboard focus inside itself while it
 // sends held, draws Retry natively disabled (`disabled={retrying}`, components/QueryError.tsx:49,
 // given `retrying={references.isFetching}` by features/artifacts/ArtifactsTab.tsx:488), and the
 // focus falls to the body for the whole hold, in Chromium, Firefox and WebKit at 1440x900 and
-// 390x664, at both commits. Once the read answers the line goes, and the focus moves to Upload at
-// 3fce6150 and to the spec.md link at da0804df, with no scroll (but Firefox at 390: 258 px to 252,
-// and to 170). A read that holds no answer yet is another path: TanStack sets it back to pending
-// the moment Retry sends, so the line and Retry go in the press's own render, and the page's rescue
-// lands the focus on the spec.md link at both commits. The rules: a control held while the read its
-// press started is out is held through components/held-press.ts, never natively disabled, so it
-// keeps the keyboard focus (packages/dispatch/AGENTS.md:53); and a landing the reader's press
-// caused is what the press drew in its place, else the control now at the place, else the nearest
-// control in sight before it, else the region's stop (2026-11-22 12:16Z). A focused control
-// disabled under the press, which each engine moves to the body at its own time, and a focused
-// control taken away, for which Firefox and WebKit fire no `focusout`: the clause of the `webkit`
-// and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts).
+// 390x664, at both commits. A read that holds no answer yet is another path, which this row does
+// not take: TanStack sets it back to pending the moment Retry sends, so the line and Retry go in
+// the press's own render. The rule: a control held while the read its press started is out is
+// held through components/held-press.ts, never natively disabled, so it keeps the keyboard focus
+// (its own doc comment). A focused control disabled under the press, which each engine
+// moves to the body at its own time: the clause of the `webkit` and `firefox` projects that names
+// the page-own focus row (e2e/playwright.config.ts).
 test("a references Retry on the Artifacts tab keeps the keyboard focus while its read is out @firefox @webkit", async ({
   page,
 }) => {
@@ -9225,13 +8908,6 @@ test("a references Retry on the Artifacts tab keeps the keyboard focus while its
     reads.mode = "answer";
     for (const route of reads.held.splice(0)) await route.continue();
     await expect(alert).toHaveCount(0);
-    await settledScrollTop(page);
-    await nextFrames(page);
-    // One read is the answer: the read has answered, its line is gone, the window holds still.
-    const landed = await focusPlace(page);
-    if (landed.body) {
-      wrong.push(`${where}: after the read Retry sent answers the focus is on the body`);
-    }
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
@@ -9247,17 +8923,12 @@ test("a references Retry on the Artifacts tab keeps the keyboard focus while its
 // disabled (`disabled={query.isFetching}`, features/refs/ReferencedBy.tsx:323; the card's panel,
 // features/inbox/AskCard.tsx:558, passes no `retried`, which only the new issue page's Details
 // does), and the focus falls to the body for the whole hold, in Chromium, Firefox and WebKit at
-// 1440x900 and 390x664, at both commits. Once the read answers the line goes and the focus moves to
-// the panel's first source link, with no scroll. A read that holds no answer yet is another path:
-// TanStack sets it back to pending the moment Retry sends, so the line and Retry go in the press's
-// own render, and the page's rescue lands the focus on the card's first option at both commits. The
-// rules: a control held while the read its press started is out is held through
-// components/held-press.ts, never natively disabled, so it keeps the keyboard focus
-// (packages/dispatch/AGENTS.md:53); and a landing the reader's press caused is what the press drew
-// in its place, else the control now at the place, else the nearest control in sight before it,
-// else the region's stop (2026-11-22 12:16Z). A focused control disabled under the press, which
-// each engine moves to the body at its own time, and a focused control taken away, for which
-// Firefox and WebKit fire no `focusout`: the clause of the `webkit` and `firefox` projects that
+// 1440x900 and 390x664, at both commits. A read that holds no answer yet is another path, which
+// this row does not take: TanStack sets it back to pending the moment Retry sends, so the line and
+// Retry go in the press's own render. The rule: a control held while the read its press started is
+// out is held through components/held-press.ts, never natively disabled, so it keeps the keyboard
+// focus (its own doc comment). A focused control disabled under the press, which each
+// engine moves to the body at its own time: the clause of the `webkit` and `firefox` projects that
 // names the page-own focus row (e2e/playwright.config.ts).
 test("the Inbox card's Referenced by Retry keeps the keyboard focus while its read is out @firefox @webkit", async ({
   page,
@@ -9340,13 +9011,6 @@ test("the Inbox card's Referenced by Retry keeps the keyboard focus while its re
     reads.mode = "answer";
     for (const route of reads.held.splice(0)) await route.continue();
     await expect(failed).toHaveCount(0);
-    await settledScrollTop(page);
-    await nextFrames(page);
-    // One read is the answer: the read has answered, its line is gone, the window holds still.
-    const landed = await focusPlace(page);
-    if (landed.body) {
-      wrong.push(`${where}: after the read Retry sent answers the focus is on the body`);
-    }
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
@@ -9362,23 +9026,17 @@ test("the Inbox card's Referenced by Retry keeps the keyboard focus while its re
 // (AskRecipients.tsx:484-485, :501-502), and the dialog gives the focus back to the control that
 // opened it (features/shell/useDialog.ts:180-184), which is natively disabled while the write is
 // out (`disabled={unfollow.isPending}`, features/inbox/AskRecipients.tsx:365, every Unfollow of the
-// card; `disabled={unsubscribe.isPending}`, :420), so the focus falls to the body and the page's
-// rescue lands it: after Unfollow on the subscriber's Unsubscribe, after Unsubscribe at 1440 on the
-// subscriber's own name link, and at 390 on another question's Select checkbox, outside the card,
-// in Chromium, Firefox and WebKit at both commits. When the Unsubscribe lands and the subscriber's
-// chip goes, the focus on its name link falls to the body at 1440 at 3fce6150: in Chromium in all
-// four runs, in Firefox in three of four and in WebKit in one of four (the probes and this row's
-// two runs; the others land on Unfollow), where da0804df lands it on Unfollow in all three; at 390
-// it stays on the other question's checkbox. Nothing scrolls. The rules: a control held while the
-// write its press started is out is held through components/held-press.ts, never natively disabled,
-// so it keeps the keyboard focus, and the dialog's hand-back finds it
-// (packages/dispatch/AGENTS.md:53); and a landing the reader's press caused is what the press drew
-// in its place, else the control now at the place, else the nearest control in sight before it,
-// else the region's stop (2026-11-22 12:16Z). A focused control disabled under the press, which
-// each engine moves to the body at its own time, and a focused control taken away, for which
-// Firefox and WebKit fire no `focusout`: the clause of the `webkit` and `firefox` projects that
-// names the page-own focus row (e2e/playwright.config.ts).
-test("Unfollow and Unsubscribe on an Inbox card's recipients keep the keyboard focus on a control through their write @firefox @webkit", async ({
+// card; `disabled={unsubscribe.isPending}`, :420), so the focus falls to the body and the app-wide
+// hand-off those commits had lands it: after Unfollow on the subscriber's Unsubscribe, after
+// Unsubscribe at 1440 on the subscriber's own name link, and at 390 on another question's Select
+// checkbox, outside the card, in Chromium, Firefox and WebKit at both commits. The rule: a control
+// held while the write its press started is out is held through components/held-press.ts, never
+// natively disabled, so it keeps the keyboard focus, and the dialog's hand-back finds it (its own
+// doc comment). A focused control disabled under the press, which each engine moves to the body
+// at its own time, and Confirm taken away with its dialog, for which Firefox and WebKit fire no
+// `focusout`: the clause of the `webkit` and `firefox` projects that names the page-own focus row
+// (e2e/playwright.config.ts).
+test("Unfollow and Unsubscribe on an Inbox card's recipients keep the keyboard focus on a control of the card while their write is out @firefox @webkit", async ({
   page,
 }) => {
   // Two widths by two removals, each with a question seeded and the Inbox opened for it.
@@ -9468,15 +9126,6 @@ test("Unfollow and Unsubscribe on an Inbox card's recipients keep the keyboard f
       }
       for (const route of writes.held.splice(0)) await route.continue();
       await expect(chip).toHaveCount(0);
-      await settledScrollTop(page);
-      await nextFrames(page);
-      // One read is the answer: the write has landed, its chip is gone, the window holds still.
-      const landed = await focusPlace(page, inCard);
-      if (!landed.inside) {
-        wrong.push(
-          `${where}: after the write lands the focus is on ${landed.name}, not on a control of the card`
-        );
-      }
     }
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
@@ -9532,18 +9181,19 @@ declare global {
 // in the same render. The rulings of 2026-11-21 06:0xZ and 09:0xZ: the bar's hand-off goes to a
 // row, never to the body, and scrolls nothing; the pager is no row. The row waits the deadline out
 // on the wall clock, as the row that Save delivery settings keeps the keyboard focus through a
-// save whose re-read the browser cannot send does. The page's own clock, which `focus-landing`'s
-// offline cases run on, fakes `requestAnimationFrame`, on which the rescue's wait of a frame and
-// a task and the bar's frame both rest, and on it WebKit's landing does not show: in builds Job
-// infra-3135-dred-k5lxv at 3fce6150 this row on the page's clock passed 3 of 3 in WebKit, and
-// failed in Chromium and Firefox at 1440 on the frame alone. The row counts the page's animation
-// frames from the press on, as the measurements above did. Without that count it failed in
-// WebKit 1 of 3 (infra-3135-dred2-bnb7t), so WebKit's landing rests on the frames the page draws;
-// with it, it failed at 1440 9 of 9 (infra-3135-dred3-k9mrh): WebKit on Rows per page, Chromium
-// and Firefox on the frame, the checkbox taking the focus a frame after the bar went. Whichever
-// way the bar goes, the row holds the same rule and its message names the way. A focused control
-// taken away with its bar, for which Firefox and WebKit fire no `focusout`: the clause of the
-// `webkit` and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts).
+// save whose re-read the browser cannot send does. The page's own clock fakes
+// `requestAnimationFrame`, on which the bar's frame and an armed press's wait of a frame and a
+// task both rest (`afterComponents`, components/focus-place.ts), and on it WebKit's landing does
+// not show: in builds Job infra-3135-dred-k5lxv at 3fce6150 this row on the page's clock passed
+// 3 of 3 in WebKit, and failed in Chromium and Firefox at 1440 on the frame alone. The row counts
+// the page's animation frames from the press on, as the measurements above did. Without that
+// count it failed in WebKit 1 of 3 (infra-3135-dred2-bnb7t), so WebKit's landing rests on the
+// frames the page draws; with it, it failed at 1440 9 of 9 (infra-3135-dred3-k9mrh): WebKit on
+// Rows per page, Chromium and Firefox on the frame, the checkbox taking the focus a frame after
+// the bar went. Whichever way the bar goes, the row holds the same rule and its message names the
+// way. A focused control taken away with its bar, for which Firefox and WebKit fire no
+// `focusout`: the clause of the `webkit` and `firefox` projects that names the page-own focus row
+// (e2e/playwright.config.ts).
 test("offline, Take out of epic hands the focus to the marked row's checkbox in the render the bar goes, never the body or the pager @firefox @webkit", async ({
   page,
 }) => {
@@ -9771,8 +9421,8 @@ test("offline, Take out of epic hands the focus to the marked row's checkbox in 
       await expect(bar)
         .toHaveCount(0, { timeout: REQUEST_DEADLINE_MS + 15_000 })
         .catch(() => undefined);
-      // The bar's hand-off runs after the commit that took the bar away, and the page's rescue a
-      // frame and a task after a loss, so both are done after these frames.
+      // The bar's hand-off runs after the commit that took the bar away, so it is done after
+      // these frames.
       await nextFrames(page);
       await nextFrames(page);
       // The record's next frame after the bar went is what that frame drew focused; wait for

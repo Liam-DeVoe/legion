@@ -245,10 +245,10 @@ const TEXT_INPUT_TYPES: Record<string, true> = {
 
 /** Whether `element` takes typed text: a content-editable element, an `<input>` of a text-entry
  *  type (`TEXT_INPUT_TYPES`), or a `<textarea>`. A key pressed on one is the control's own
- *  (`isEditableTarget`), and the page's focus rescue reads a character typed in one as no press
- *  of the reader's (`focus-place.ts`'s `isPress`), since it only edits the field. A walk-back
- *  that hands the focus on passes over every such control (`focus-place.ts`'s `walkBack`), since
- *  the reader's next key would go into it. A date or time box plays two parts: it takes the
+ *  (`isEditableTarget`), and a character typed in one is no press of the reader's
+ *  (`focus-place.ts`'s `isPress`), since it only edits the field. A walk-back that hands the
+ *  focus on passes over every such control (`focus-place.ts`'s `walkBack`), since the reader's
+ *  next key would go into it. A date or time box plays two parts: it takes the
  *  reader's keys, so a walk-back passes over it as over a text box, and its `change` and `input`
  *  are the reader's pick, so they count as a press (`isPress`), as a select's do. */
 export function takesText(element: Element): boolean {
@@ -266,10 +266,10 @@ export function takesText(element: Element): boolean {
 /** Whether a `change` or an `input` on `element` is typing or its commit on blur, rather than the
  *  reader's pick: on an `<input>` whose value is typed text alone (`COMMIT_ON_BLUR_TYPES`), a
  *  `<textarea>`, or a content-editable element. Every other control fires both at the pick - a
- *  `<select>`, a checkbox, a radio, a file, range or color input, a date or time box - so the
- *  page's focus rescue reads either as a press of the reader's (`focus-place.ts`'s `isPress`). An
- *  `<input>` of the button family or of type hidden fires neither; it is answered false, so one
- *  sent to it would read as a pick. */
+ *  `<select>`, a checkbox, a radio, a file, range or color input, a date or time box - so a
+ *  component's focus hand-off reads either as a press of the reader's (`focus-place.ts`'s
+ *  `isPress`). An `<input>` of the button family or of type hidden fires neither; it is answered
+ *  false, so one sent to it would read as a pick. */
 export function commitsOnBlur(element: Element): boolean {
   if (element instanceof HTMLInputElement) {
     return COMMIT_ON_BLUR_TYPES[element.type] === true;
@@ -604,7 +604,7 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
  *  Strict in Vite's development build. A module loaded outside Vite has no `import.meta.env`:
  *  the browser rows import names from the app's control modules in Node (`e2e/issue-page-h.e2e.ts`
  *  imports `repoControlName`), and those modules reach this one through the shared list
- *  (`MultiSelect`) and the focus rescue (`components/focus-place.ts`). */
+ *  (`MultiSelect`) and the focus hand-offs (`components/focus-place.ts`). */
 export const appKeymap = createKeymap({ strict: import.meta.env?.DEV === true });
 
 /** Registers `bindings` under `scope` for the component's lifetime; closures stay current. */

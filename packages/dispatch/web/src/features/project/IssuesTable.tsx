@@ -9,7 +9,7 @@ import {
   useDataTable,
 } from "../../components/DataTable";
 import type { FilterChip } from "../../components/filter-chips";
-import { useFocusPlace } from "../../components/focus-place";
+import { ARM_ON_PRESS, useFocusPlace } from "../../components/focus-place";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import type { PagerOptions } from "../../components/Pager";
 import { focusListStop, useLastMarkedPlace } from "../../components/SelectionBar";
@@ -328,11 +328,13 @@ export function IssuesTable({
   // epic's Dismiss - and its focus goes to the control now at its place among the notices, else
   // the one before it. Each of these takes the focus only while the reader can see it; where none
   // is in sight, the main content's own stop takes it with no scroll (`useFocusPlace`). Where the
-  // head or the notices hold no other control, the page's rescue walks the focus back over the
-  // main content to the nearest control before them that the reader can see and that takes no
-  // typed text, so never into the search box. Only the head and the notices are counted: the
-  // selection bar, the rows and the dialogs each hand the focus on themselves. The handler sits
-  // on the List's section, which stays in every branch.
+  // head or the notices hold no other control, this hand-off walks back over the main content to
+  // the nearest control before them that the reader can see and that takes no typed text, so
+  // never into the search box. Only the head and the notices are counted: the selection bar, the
+  // rows and the dialogs each hand the focus on themselves. The handler sits on the List's
+  // section, which stays in every branch, beside the capture handlers that arm it at a press
+  // inside the section (`armOnPress`): React bubbles a column filter's portalled list's events to
+  // it too.
   const sectionRef = useRef<HTMLElement>(null);
   const noticesRef = useRef<HTMLDivElement>(null);
   const noteFocus = useFocusPlace(
@@ -456,6 +458,7 @@ export function IssuesTable({
       aria-label={name}
       className="space-y-3 sm:pb-24"
       {...TABLE_FRAME_MARK}
+      {...ARM_ON_PRESS}
       onFocus={noteFocus}
       ref={sectionRef}
     >

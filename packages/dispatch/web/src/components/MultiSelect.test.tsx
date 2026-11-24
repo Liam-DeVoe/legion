@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 // fireEvent also gives one row's press below a click with no pointer press before it, which
 // user-event has no form for either.
-// biome-ignore lint/style/noRestrictedImports: the outside-press sites below are a pointerdown with no release, which user-event has no form for.
+// biome-ignore lint/style/noRestrictedImports: the outside-press sites below are a pointerdown with no release, and the keys that end or move an IME composition are keys marked as the input method's; user-event has no form for either.
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
@@ -536,6 +536,32 @@ test("Enter, Escape and Tab that end or move an IME composition leave a single p
   }
 });
 
+// Safari sends the key that ends an input method's composition after the composition's end,
+// unmarked - `isComposing` false - with keyCode 229 (WebKit bug 165004): that Enter, Escape or Tab
+// is the input method's as well, and neither picks nor closes. The plain Enter after it picks.
+test("Enter, Escape and Tab that end an IME composition in Safari, at keyCode 229, leave a single pick open with nothing picked", async () => {
+  const user = userEvent.setup();
+  const view = render(<SingleHost initial="api" options={["api", "docs"]} />);
+  try {
+    await user.click(screen.getByRole("button", { name: pickNamed("Epic") }));
+    const box = screen.getByRole("combobox", { name: "Search epics" });
+    await user.keyboard("{ArrowDown}");
+    for (const key of ["Enter", "Escape", "Tab"]) {
+      // user-event cannot mark a key as an input method's, so the key is fired with keyCode 229.
+      fireEvent.keyDown(box, { isComposing: false, key, keyCode: 229 });
+      expect(screen.queryByRole("listbox"), `${key} at keyCode 229`).not.toBeNull();
+      expect(box, `${key} at keyCode 229`).toHaveFocus();
+    }
+    expect(screen.getByTestId("handed").textContent).toBe("");
+
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(screen.getByTestId("handed").textContent).toBe("docs");
+  } finally {
+    view.unmount();
+  }
+});
+
 /** Makes the document keep naming a focused element once it has left the page, as an engine that
  *  moves the focus off a removed element only at its next rendering update does (the HTML spec's
  *  focus fixup, `focusLost`); happy-dom names the body at once, as Chromium does. Answers what
@@ -570,7 +596,7 @@ function keepRemovedFocus(): () => void {
 // INFRA-3135, round 12: the close returned the focus to the trigger only where it had fallen to
 // the body, and an engine that moves the focus off a removed element only at its next rendering
 // update still names the text box the close took away when the close runs, so there Tab or
-// Shift+Tab out of the box left the focus to the page's rescue. A close the list makes itself puts
+// Shift+Tab out of the box left the focus to fall onto the page. A close the list makes itself puts
 // the reader on the trigger in every engine; a press outside still leaves them where it put them.
 test("where the engine still names a removed text box focused, Tab out of it puts the focus on the trigger and a press outside leaves it where it landed", async () => {
   const user = userEvent.setup();

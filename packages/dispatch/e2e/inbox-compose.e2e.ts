@@ -31,7 +31,7 @@ import { asUser } from "./users";
  * The Inbox's compose dialog: a message to one or more agents, which the control row's **New
  * message** and `n` open, sent through the Agents page's own composers and requests, with each
  * recipient's state before Send and each one's outcome after it, and the focus rules of the
- * page's rescue for its held Send and its Done.
+ * dialog's own hand-off for its held Send and its Done.
  *
  * Everything here is made up: this repository is public, so nothing names a real person, host or
  * session.

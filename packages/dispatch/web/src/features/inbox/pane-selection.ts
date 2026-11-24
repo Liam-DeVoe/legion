@@ -248,11 +248,8 @@ export function usePaneSelection({
   //
   // On the layout lane, so that the selection a commit hands on is drawn in the same task as that
   // commit. The commit that takes the selected row off the list draws no column, and takes away
-  // whatever in the column held the focus; the next row's column is then drawn before the page's
-  // focus rescue reads that loss a frame later, so the Inbox hands the focus to the new column's
-  // own focus stop first (`Inbox.tsx`). Settled on the passive lane, the column could come a
-  // commit after the rescue's frame - WebKit's at times, and every time in happy-dom, whose frame
-  // is a task away - and the rescue would have walked the focus back to a control of the list.
+  // whatever in the column held the focus; the next row's column is then drawn in the same task,
+  // and the Inbox hands the focus to the new column's own focus stop in that commit (`Inbox.tsx`).
   useLayoutEffect(() => {
     // A list that holds nothing - still loading, failed, or genuinely empty - answers no
     // address: `?item=` is left unread until there are rows to read it against.

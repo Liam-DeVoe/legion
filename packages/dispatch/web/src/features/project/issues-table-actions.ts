@@ -7,7 +7,7 @@ import { advancesIssuesParams, openAsksKey } from "../../api/queries";
 import { invalidateWaitingForPaused } from "../../api/query-client";
 import { useReadBound } from "../../api/read-bound";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
-import { beginAnswerHold } from "../../components/focus-place";
+import { holdHandOff } from "../../components/focus-place";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
 import { invalidateMeInbox } from "../inbox/one-read-cache";
@@ -192,13 +192,13 @@ export function useIssueTableActions({
     action: () => Promise<readonly string[] | undefined>,
     duplicate?: (error: ApiError) => void
   ) => {
-    // The action's whole run is part of the action of the reader's press that began it
-    // (`beginAnswerHold`), until its controls are let go. A press owns only the writes that start
-    // as it is made. An action of several writes starts its later writes after that: Start next
-    // writes one step at a time, New epic moves the issues after the create, and a batch sends
-    // `WRITES_IN_FLIGHT` writes at a time. Without this hold the press would end once its first
-    // writes were answered, and the bar's going would read as no doing of the reader's.
-    const endHold = beginAnswerHold();
+    // The action's whole run keeps the armed hand-off of the reader's press that began it live
+    // (`holdHandOff`), until its controls are let go. An action of several writes runs on after
+    // its first writes are answered: Start next writes one step at a time, New epic moves the
+    // issues after the create, and a batch sends `WRITES_IN_FLIGHT` writes at a time. Without
+    // this hold the press could end before the action did, and the bar's going would read as no
+    // doing of the reader's.
+    const endHold = holdHandOff();
     setBusy(true);
     setNotice(undefined);
     setMoved(new Set());

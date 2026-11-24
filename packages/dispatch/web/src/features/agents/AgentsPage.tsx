@@ -34,6 +34,7 @@ import { ChevronIcon, DisclosureToggle } from "../../components/DisclosureToggle
 import { EmptyState } from "../../components/EmptyState";
 import type { FilterChip } from "../../components/filter-chips";
 import {
+  ARM_ON_PRESS,
   controlsLikeRow,
   focusNoScroll,
   inSightWhole,
@@ -203,11 +204,10 @@ function AgentExchangeReply({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${label} again, as ${MODE_LABELS[delivery]}`,
     // Pending through the read that draws the new attempt: Retry and the mode changes stay held
-    // (`DeliveryRetry`) until that read takes them away, so the press is still the cause of their
-    // going (`causedByReader`). The read settles either way, and a failed one lets them go. A read
-    // that has not settled by the request deadline (`REQUEST_DEADLINE_MS`) - one paused while the
-    // browser is offline - lets them go then, and the conversation says why it is not read yet
-    // (`useReadBound`).
+    // (`DeliveryRetry`), so the pressed one keeps the focus until that read takes them away. The
+    // read settles either way, and a failed one lets them go. A read that has not settled by the
+    // request deadline (`REQUEST_DEADLINE_MS`) - one paused while the browser is offline - lets
+    // them go then, and the conversation says why it is not read yet (`useReadBound`).
     onSuccess: holdThroughRead,
     method: "POST",
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
@@ -756,9 +756,7 @@ function AgentRow({
           </span>
           {unreadReplies === 0 ? null : (
             // Opening the conversation is what reads it, so the badge opens it. It is held while
-            // the row is open, where its press, which only opens the row, does nothing: held, it
-            // keeps the press live until the conversation has read the replies and the pill goes,
-            // so the page's rescue hands the focus on from it (`causedByReader`).
+            // the row is open, where its press, which only opens the row, does nothing.
             <button
               // The pill's own words first, so the name contains the visible text and a voice
               // user can press what they read (WCAG 2.5.3, axe's
@@ -1080,9 +1078,9 @@ function AgentFilterBar({
  * as the composer's chip names it. Clear selection goes with the selection it empties, and the
  * focus it held goes to the select-all checkbox before it while the reader can see it
  * (`useFocusPlace`). While no row matches, that checkbox is disabled and the header holds no
- * other control, so the page's rescue walks the focus back over the main content to the nearest
+ * other control, so the header's own hand-off walks back over the main content to the nearest
  * control before the header that the reader can see and that takes no typed text: the Filter
- * button.
+ * button. The header arms its own hand-off at a press inside it (`armOnPress`).
  */
 function SelectionHeader({
   current,
@@ -1114,9 +1112,10 @@ function SelectionHeader({
     () => null
   );
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only notes which control of the header took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), so the header needs no role of its own.
+    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the focus handler only notes which control of the header took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), and the capture handlers only arm that hand-off at a press inside the header (`armOnPress`), so the header needs no role of its own.
     <div
       className="mb-2 flex min-h-11 items-center gap-x-2 px-[13px] md:min-h-8"
+      {...ARM_ON_PRESS}
       onFocus={noteFocus}
       ref={header}
     >

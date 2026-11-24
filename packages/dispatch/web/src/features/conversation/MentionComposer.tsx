@@ -28,6 +28,7 @@ import {
 } from "../../api/client";
 import type { Agent, AskUrgency } from "../../api/types";
 import { Chip } from "../../components/Chip";
+import { ARM_ON_PRESS } from "../../components/focus-place";
 import { useHeldThroughAnswer, useHeldUntilRead } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
@@ -62,6 +63,7 @@ import {
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus } from "../artifacts/ArtifactUpload";
 import { ASK_URGENCIES_ASCENDING, URGENCY_LABELS } from "../inbox/ask-urgency";
+import { landAfterOwnSend } from "../inbox/own-send-landing";
 import { useComposerRegistry } from "../margin/margin-context";
 import { useAgentText } from "../refs/AgentName";
 import { mentionOptions } from "../refs/party-options";
@@ -263,10 +265,10 @@ interface MentionComposerProps {
    *  read the send changes has come back - the promise `onSent` answers - and it ends at the
    *  latest at the write deadline (`SEND_DEADLINE_MS`) from the press. A refusal ends it at once,
    *  and Send is given back with the refusal shown. While it holds the field is read-only, and the
-   *  hold is part of the reader's press (`useHeldThroughAnswer`), so the page's rescue reads what
-   *  the send takes away as the reader's doing. The Inbox's reply boxes pass it: the reader's own
-   *  reply takes its thread out of their Inbox (the own-answer rule, R1), so the box goes once the
-   *  Inbox is read again. */
+   *  hold is part of the reader's press (`useHeldThroughAnswer`), which a press inside the form
+   *  arms (`armOnPress`). The Inbox's reply boxes pass it: the reader's own reply takes its thread
+   *  out of their Inbox (the own-answer rule, R1), so the box goes once the Inbox is read again,
+   *  and the focus it held goes by the Inbox's rule for that loss (`landAfterOwnSend`). */
   readonly heldSend?: boolean;
   /** Where the host hands this composer a draft the reader carried from another one with that
    *  composer's own control: the phone thread composer's Cancel reply, whose draft goes to the
@@ -648,6 +650,19 @@ export function MentionComposer({
   // meanwhile. The hold is part of the reader's press while it is on (`useHeldThroughAnswer`).
   const holding = heldSend && (sending || landedRead !== null) && holdStands;
   useHeldThroughAnswer(holding);
+  // Whether this composer's going is the reader's own held send taking its row away: out, or
+  // landed and waiting for its read. Read as the form leaves (below).
+  const ownSendOut = useRef(false);
+  ownSendOut.current = heldSend && (sending || landedRead !== null);
+  // The form leaving while the reader's own held send is out or landed hands the focus it held on
+  // by the Inbox's rule for that loss (`landAfterOwnSend`). The cleanup runs before React takes
+  // the form out of the page, so the form is still there to read.
+  useLayoutEffect(() => {
+    const form = formRef.current;
+    return () => {
+      if (form !== null && ownSendOut.current) landAfterOwnSend(form);
+    };
+  }, []);
   const sendRefusal =
     heldSend && sending
       ? "Your message is on its way."
@@ -1444,6 +1459,9 @@ export function MentionComposer({
             ? `${pickerOpen ? "z-20" : "z-[8]"} fixed inset-x-0 bottom-16 space-y-2 border-t px-4 py-2 sm:sticky sm:top-0 sm:z-20 sm:-mx-2 sm:border-b sm:px-2 ${borderDefault} ${surfaceBg}`
             : `space-y-3 rounded-xl border p-3 ${calloutInfoBorder} ${calloutInfoBg}`
       }
+      // A held Send's press arms the hand-off at the form (`armOnPress`), for the landing after
+      // the reader's own send takes the row away (`landAfterOwnSend`).
+      {...(heldSend ? ARM_ON_PRESS : {})}
       onSubmit={submit}
       ref={formRef}
     >

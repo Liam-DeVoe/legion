@@ -1,5 +1,5 @@
 import { type MutationKey, useQuery } from "@tanstack/react-query";
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useLayoutEffect, useRef, useState } from "react";
 
 import { api } from "../../api/client";
 import { agentConversationQuery, broadcastQuery } from "../../api/queries";
@@ -11,6 +11,7 @@ import type {
   Message,
   MessageDelivery,
 } from "../../api/types";
+import { ARM_ON_PRESS, causedByReader, focusLost } from "../../components/focus-place";
 import { useHeldThroughAnswer } from "../../components/held-press";
 import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
@@ -152,14 +153,23 @@ interface OutcomeRow {
 }
 
 /**
- * Each recipient's outcome, drawn where the form was, with Done first. It is read from the answer
- * and then from the send's own read, which delivery events refresh: `GET /api/v1/broadcasts/{id}`
- * for a broadcast, `GET /api/v1/messages/{id}` for a message to one session, and
- * `GET /api/v1/comments/{id}` for the comment that mentions it where an issue was picked, that
- * session's delivery of it. A send to one session is no broadcast, so it never reads left out. A
- * read that fails keeps the answer's outcomes and says so beside them.
+ * Each recipient's outcome, drawn where the form was, with Done first (`doneRef`, which the
+ * dialog's hand-off focuses). It is read from the answer and then from the send's own read, which
+ * delivery events refresh: `GET /api/v1/broadcasts/{id}` for a broadcast,
+ * `GET /api/v1/messages/{id}` for a message to one session, and `GET /api/v1/comments/{id}` for
+ * the comment that mentions it where an issue was picked, that session's delivery of it. A send
+ * to one session is no broadcast, so it never reads left out. A read that fails keeps the
+ * answer's outcomes and says so beside them.
  */
-function SentOutcomes({ onDone, sent }: { onDone: () => void; sent: Sent }): ReactNode {
+function SentOutcomes({
+  doneRef,
+  onDone,
+  sent,
+}: {
+  doneRef: RefObject<HTMLButtonElement | null>;
+  onDone: () => void;
+  sent: Sent;
+}): ReactNode {
   const one = sent.kind === "one" ? sent : undefined;
   const oneAnswer = one?.answer ?? null;
   const messageId = oneAnswer !== null && !isComment(oneAnswer) ? oneAnswer.id : undefined;
@@ -209,6 +219,7 @@ function SentOutcomes({ onDone, sent }: { onDone: () => void; sent: Sent }): Rea
       <button
         className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${primaryButtonBg} ${primaryButtonEnabledHoverBg}`}
         onClick={onDone}
+        ref={doneRef}
         type="button"
       >
         Done
@@ -278,8 +289,10 @@ const STATE_WORDS: Record<RecipientState, string> = {
  * ask before they discard it.
  *
  * Send is held by `aria-disabled` until the server answers; on an error it comes back with the
- * error. The answer draws each recipient's outcome in the place of the form, with Done first, so
- * the page's rescue hands the focus to Done (`controlsInPlace`). Done closes the dialog, and
+ * error. The answer draws each recipient's outcome in the place of the form, with Done first, and
+ * the dialog hands the focus the form held to Done: the reader's Send is armed at the dialog's
+ * root (`armOnPress`) and its hold keeps it live through the answer (`useHeldThroughAnswer`), so
+ * the form's going is their press's doing (`causedByReader`). Done closes the dialog, and
  * `useDialog` gives the focus back to what opened it: the New message control, the row that held
  * the focus, or the page's body where nothing had it. Mounted only while open, so it starts fresh
  * each time.
@@ -341,6 +354,21 @@ export function ComposeDialog({ onClose }: { onClose: () => void }): ReactNode {
   // out past it is still being tried under its key, which the dialog then says, with Stop trying.
   const pastDeadline = out !== null && outWrite?.status === "late";
   useHeldThroughAnswer(out !== null && !pastDeadline);
+  // The control of the form that holds the focus, noted as it takes it, and Done, which the
+  // outcomes draw first.
+  const formFocus = useRef<Element | null>(null);
+  const doneRef = useRef<HTMLButtonElement>(null);
+  // The dialog's own hand-off, in the commit that draws the outcomes in the form's place: a focus
+  // the form held, which the reader's own Send took away with the form - a loss their press made
+  // (`causedByReader`) - goes to Done, with no scroll. A focus the reader moved elsewhere
+  // meanwhile, or one already placed, stays where it is.
+  useLayoutEffect(() => {
+    const noted = formFocus.current;
+    if (sent === null || noted === null) return;
+    formFocus.current = null;
+    if (noted.isConnected || !focusLost() || !causedByReader(noted)) return;
+    doneRef.current?.focus({ preventScroll: true });
+  }, [sent]);
 
   const one = recipients.length === 1 ? recipients[0] : undefined;
   const oneSendKey = composeSendKey(one ?? "");
@@ -464,17 +492,24 @@ export function ComposeDialog({ onClose }: { onClose: () => void }): ReactNode {
     <>
       <div aria-hidden="true" className={`fixed inset-0 z-40 ${backdrop50}`} onClick={closeOrAsk} />
       <div className="pointer-events-none fixed inset-0 z-50 flex items-start justify-center xl:p-4 xl:pt-20">
+        {/* The capture handlers only arm the dialog's hand-off at a press inside it (`armOnPress`),
+            and the focus handler notes which control of the form holds the focus, for that
+            hand-off when the outcomes take the form's place. */}
         <div
           aria-label="New message"
           aria-modal="true"
           className={`pointer-events-auto max-h-[100dvh] w-full space-y-3 overflow-y-auto border p-4 shadow-2xl xl:max-h-[calc(100dvh-6rem)] xl:max-w-2xl xl:rounded-lg ${card} ${borderDefault}`}
           data-testid="compose-dialog"
+          {...ARM_ON_PRESS}
+          onFocus={(event) => {
+            formFocus.current = sent === null ? event.target : null;
+          }}
           ref={dialog.containerRef}
           role="dialog"
         >
           <h2 className={`text-base font-semibold ${textPrimaryOnSurface}`}>New message</h2>
           {sent !== null ? (
-            <SentOutcomes key="outcomes" onDone={onClose} sent={sent} />
+            <SentOutcomes doneRef={doneRef} key="outcomes" onDone={onClose} sent={sent} />
           ) : (
             <div className="space-y-3" key="form">
               <MultiSelect

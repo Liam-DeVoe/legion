@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
-import { beginAnswerHold } from "../../components/focus-place";
+import { holdHandOff } from "../../components/focus-place";
 import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 
 /**
@@ -8,11 +8,11 @@ import { SEND_DEADLINE_MS } from "../writes/keyed-write";
  * the write is still to be drawn. `version` is the write time of the record the component draws.
  * The hold is on while `version` is still the one of the render whose `hold` was called. The
  * update that carries the write brings a new version, or takes the component away, and the hold
- * ends then. So a control the reader pressed stays held until that update. The hold is part of
- * the action of the reader's press that made the write (`beginAnswerHold`) from the call of
- * `hold` until the commit that ends it, so the page's rescue reads a loss that update makes as
- * the press's doing (`causedByReader`), and the focus goes to the control now at the lost one's
- * place. An update that never comes ends the hold at the app's write deadline
+ * ends then. So a control the reader pressed stays held until that update. The hold keeps the
+ * armed hand-off of the reader's press that made the write live (`holdHandOff`) from the call of
+ * `hold` until the commit that ends it, so a component's hand-off reads a loss that update makes
+ * as the press's doing (`causedByReader`), and the focus goes to the control now at the lost
+ * one's place. An update that never comes ends the hold at the app's write deadline
  * (`SEND_DEADLINE_MS`), counted from the latest `hold`, so no control is ever locked. Answers
  * whether the hold is on, and what puts it on: called as the write lands, never on a refusal,
  * whose control comes back with its error at once. A `hold` of a render whose version a later
@@ -69,7 +69,7 @@ export function useHoldUntilDrawn(
     () => {
       if (drawn.current !== version) return;
       open.current?.answered();
-      open.current = { answered: beginAnswerHold(), version };
+      open.current = { answered: holdHandOff(), version };
       setHeldOn({ version });
     },
   ];

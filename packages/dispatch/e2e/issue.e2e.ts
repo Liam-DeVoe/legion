@@ -14,6 +14,7 @@ import {
 } from "./api";
 import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
+import { listTrigger, pickFromList } from "./filters";
 import { focusHolder } from "./focus";
 import { nextFrames } from "./frames";
 import { watchWrites } from "./keyed-writes";
@@ -269,7 +270,7 @@ test("issue header copies its key and persists its title, status, and route", as
     await issueTitle.fill("First decision revised");
     await issueTitle.press("Enter");
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ title: "First decision revised" });
-    await page.getByLabel("Status").selectOption("todo");
+    await pickFromList(listTrigger(page.getByTestId("issue-header"), "Status"), "Todo");
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ status: "todo" });
     await page.getByRole("button", { name: "Messages default to no route" }).click();
     await page.getByLabel("Message route").fill("role:legion-controller-core");
@@ -765,7 +766,7 @@ test("issue header keeps every control in a shared row on a phone and the whose-
 
     // Close shares the state row; creator, labels, subscribers, and the GitHub link share the
     // details line with the indicator — nothing but the title sits on a row of its own.
-    const stateRow = await top(page.getByLabel("Status"));
+    const stateRow = await top(listTrigger(header, "Status"));
     // `Priority of <KEY>` is the issue's own grade; the control that adds a priority the issue
     // advances is on the rail below and names that word too.
     expect(await top(page.getByLabel(/^Priority of /))).toBe(stateRow);
@@ -1016,11 +1017,10 @@ test("issue header delivers the click that ends a title edit to the control unde
 // starts the tab chord wherever the focus landed. `IssueHeader.test.tsx` sends these presses in
 // the order a browser sends them; this row has each engine send them.
 // `@firefox` and `@webkit`: the press that ends the edit blurs the title's text box - Enter by the
-// page's own `blur()`, a click on the page's text by the engine - and a commit after it takes the
-// box away and draws Edit title in its place. The page's focus rescue reads that loss as the
-// reader leaving the box only where the box still stands in the microtask it queues from the
-// box's `focusout`, so the row rests on the order in which each engine fires the blur, runs that
-// microtask and lets React commit the save (`playwright.config.ts`).
+// page's own `blur()`, a click on the page's text by the engine - and the blur saves the title and
+// closes the editor, whose commit takes the box away and draws Edit title in its place. So the row
+// rests on each engine firing that blur, and on the order in which it fires it and lets React
+// commit the save (`playwright.config.ts`).
 test("Enter in the title's editor, and a click outside it, close it and leave the next key to the page @firefox @webkit", async ({
   browser,
 }) => {
@@ -1056,11 +1056,10 @@ test("Enter in the title's editor, and a click outside it, close it and leave th
       await expect(editor).toHaveCount(0);
       await expect(heading(title)).toBeVisible();
       await expect(editTitle).toBeVisible();
-      // The page's rescue runs a frame and a task after the loss, so it is done by now.
+      // Every hand-off of the loss runs within a frame and a task of it, so it is done by now.
       await nextFrames(page);
       await nextFrames(page);
-      // One read is the answer: every hand-off of the loss has run, and nothing else moves the
-      // focus. The rescue may land it on Edit title, drawn where the editor stood.
+      // One read is the answer: every hand-off of the loss has run, and nothing else moves the focus.
       const holder = await focusHolder(page);
       expect(holder.takesText, `the focus is in ${holder.name}, which takes text`).toBe(false);
       await page.keyboard.press("x");

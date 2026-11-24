@@ -1,12 +1,13 @@
-import { expect, mock, spyOn, test } from "bun:test";
+import { expect, mock, test } from "bun:test";
 import { type ColumnDef, getCoreRowModel, useReactTable } from "@tanstack/react-table";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { layOutLine, withCss, wordsOf } from "../__tests__/chips-line";
 import { MOUSE_CSS, SIZE_CSS, sizeUnder } from "../__tests__/control-size";
-import { afterRescue, RescuedMain } from "../__tests__/focus-rescue";
+import { afterFrameAndTasks } from "../__tests__/frames";
 import { installResizeObserver } from "../__tests__/scroll-box";
 import { primaryButtonBg, tableFilterActive } from "../theme/classes";
 import type { BarActionProps } from "./BarAction";
@@ -34,20 +35,6 @@ function row(): HTMLElement {
   return found;
 }
 
-/** Puts Tailwind's rules for the bar in the document for one test. */
-function withCss(css: string): () => void {
-  const style = document.createElement("style");
-  style.textContent = css;
-  document.head.appendChild(style);
-  return () => style.remove();
-}
-
-/** A chip's words as a reader reads them: its text, without the × of its remove control or the ↗
- *  of a link beside it. */
-function wordsOf(element: Element): string {
-  return (element.textContent ?? "").replace(/[×↗]/g, "");
-}
-
 /** A chip of the bar, by the name of its remove control (`filterChips`). */
 function chip(name: string): HTMLElement {
   return screen.getByRole("button", { name: `Remove ${name} filter` });
@@ -66,43 +53,6 @@ function lineChips(): string[] {
 /** The words of each chip the open panel of `+N more` lists, in its order. */
 function panelChips(name: string): string[] {
   return within(screen.getByRole("dialog", { name })).getAllByRole("button").map(wordsOf);
-}
-
-/** The width of `+N more` in a line `layOutLine` lays out, whatever its N. */
-const MORE_WIDTH = 60;
-
-/**
- * Lays the bar out as a browser would, which happy-dom does not: the bar itself is `bar.width` px
- * wide - 0 where unset, a bar laid out nowhere, which takes the wide layout - the box the chips
- * and `+N more` share is `room.width` px wide, each chip as wide as `widths` says for its words
- * (`wordsOf`), and `+N more` `MORE_WIDTH` px; the chips stand 8 px apart (`gap-2`). Any other
- * element is a box of no width, 44 px tall. A test that changes `room.width` or `bar.width`
- * reports it to the observers (`installResizeObserver`), as a browser reports a box resized: the
- * bar reads its own width from its own box, never the window's, which stays happy-dom's 1024 px.
- * Answers what puts happy-dom's own layout back.
- */
-function layOutLine(
-  room: { readonly width: number },
-  widths: Readonly<Record<string, number>>,
-  bar: { readonly width: number } = { width: 0 }
-): () => void {
-  const removeCss = withCss(".gap-2{column-gap:8px}");
-  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: Element
-  ) {
-    if (this.getAttribute("data-control") === "control-row") {
-      return new DOMRect(0, 0, bar.width, 44);
-    }
-    const words = wordsOf(this);
-    let width = widths[words] ?? 0;
-    if (this.firstElementChild?.hasAttribute("data-chip-strip") === true) width = room.width;
-    else if (/^\+\d+ more$/.test(words)) width = MORE_WIDTH;
-    return new DOMRect(0, 0, width, 44);
-  });
-  return () => {
-    boxes.mockRestore();
-    removeCss();
-  };
 }
 
 /** Lays the bar out `bar.width` px wide, its chips' box with no room (`layOutLine`). */
@@ -1684,10 +1634,10 @@ test("a control of the bar that takes itself away hands the focus past the searc
 });
 
 /** The shell's main content holding a bar whose actions are exactly `names`, as a live update
- *  leaves them, with the page's focus rescue mounted on it as `app.tsx` mounts it. */
+ *  leaves them. */
 function LivePage({ names }: { names: readonly string[] }) {
   return (
-    <RescuedMain>
+    <main>
       <ControlRow
         actions={names.map((name) => pressAction(name))}
         trigger={{
@@ -1698,15 +1648,14 @@ function LivePage({ names }: { names: readonly string[] }) {
           open: false,
         }}
       />
-    </RescuedMain>
+    </main>
   );
 }
 
 // INFRA-3135's review round 1, R10: a live update - the last unread item read in another tab -
 // takes Mark all read away while it holds the focus, after the reader scrolled it out of their
-// sight. The bar's hand-off keeps the rescue's rule, read from the rescue's own record of what the
-// reader can see: it hands the focus to no control, so neither the next action takes it nor the
-// page is scrolled back to the bar.
+// sight. The bar's hand-off hands the focus to no control - a live update is no press of the
+// reader's - so neither the next action takes it nor the page is scrolled back to the bar.
 test("an action the reader scrolled out of sight goes with a live update and hands the focus to nothing", async () => {
   const view = render(<LivePage names={["Mark all read", "Archive all"]} />);
   try {
@@ -1718,7 +1667,7 @@ test("an action the reader scrolled out of sight goes with a live update and han
       document.dispatchEvent(new Event("scroll"));
     });
     view.rerender(<LivePage names={["Archive all"]} />);
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(screen.queryByRole("button", { name: "Mark all read" })).toBeNull();
     expect(screen.getByRole("button", { name: "Archive all" })).not.toHaveFocus();
     expect(document.activeElement).toBe(document.body);

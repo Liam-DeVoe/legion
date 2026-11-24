@@ -241,10 +241,10 @@ export function RemoveDocument({
       removedEvenIfGone(api.deleteArtifact(id, bounds), isArtifactNotFound),
     onSettled: () => submitGuard.release(),
     // Pending, and the button held, through the read of the document list that takes the row
-    // away, so the press is still the cause of the row's going (`causedByReader`). That read
-    // settles either way, and a failed one lets the button go. A read that has not settled by the
-    // request deadline (`REQUEST_DEADLINE_MS`) - one paused while the browser is offline - lets
-    // it go then, and the row says why the list is not read yet (`useReadBound`).
+    // away, so the button keeps the reader's focus until the row goes. That read settles either
+    // way, and a failed one lets the button go. A read that has not settled by the request
+    // deadline (`REQUEST_DEADLINE_MS`) - one paused while the browser is offline - lets it go
+    // then, and the row says why the list is not read yet (`useReadBound`).
     onSuccess: (_result, removed) => {
       // The read waits on a fetch the network had already paused, which that deadline ends too.
       const list = waitingForPausedReads(queryClient, () => refreshArtifact(queryClient, removed));

@@ -13,7 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
-import { afterRescue } from "../../__tests__/focus-rescue";
+import { afterFrameAndTasks } from "../../__tests__/frames";
 import { pressHeld } from "../../__tests__/held-press";
 import { pickIn } from "../../__tests__/issue-picks";
 import { listOf, panelOf, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
@@ -2267,11 +2267,10 @@ test("an agent's unread reply shows on its row and in the navigation until its c
 });
 
 // The New replies pill only opens its row, so it is held while the row is open (`heldPress`),
-// where a press of it does nothing. Held, it keeps the reader's press live until the opened
-// conversation has stored its read mark and the pill goes (`causedByReader`): the mark is out
-// across two of the page's rescue checks here, as a server slower than a frame keeps it, and the
-// rescue still hands the focus to the control now at the pill's place rather than to the page.
-test("the New replies pill is held while its row is open, a press on it then changes nothing, and its going leaves the focus in the row", async () => {
+// where a press of it does nothing: it keeps the focus, the row stays open, and no second read
+// mark is written. The pill goes once the opened conversation has stored its read mark, which is
+// out here for as long as a server slower than a frame keeps it.
+test("the New replies pill is held while its row is open, and a press on it then changes nothing", async () => {
   const user = userEvent.setup();
   const page = renderAgents({
     agentState: { "planner-session": { unread_replies: 1 } },
@@ -2309,21 +2308,11 @@ test("the New replies pill is held while its row is open, a press on it then cha
     expect(within(planner).getByText("At /dash.")).toBeTruthy();
     expect(page.putAgentState).toHaveBeenCalledTimes(1);
 
-    await afterRescue();
-    await afterRescue();
     await act(async () => {
       mark.resolve();
       await mark.promise;
     });
     await waitFor(() => expect(pill).not.toBeInTheDocument());
-    await afterRescue();
-
-    // The control now at the pill's place in the row: its Needs you pill.
-    expect(planner.contains(document.activeElement)).toBe(true);
-    expect(document.activeElement).toHaveAttribute(
-      "title",
-      "Open asks from Planner waiting on your answer"
-    );
   } finally {
     page.view.unmount();
     page.restore();
@@ -4406,10 +4395,9 @@ test("the header checkbox follows the filters and its count never hides a select
 // A press that takes its own control away hands the focus on, and never into a field that takes
 // typed text: Clear selection goes with the selection it empties, and its focus goes to the
 // select-all checkbox before it. While no row matches, that checkbox is disabled and the header
-// holds no other control, so its own hand-off moves nothing and leaves the loss to the page's
-// rescue, which the app shell mounts: its walk back passes over the disabled checkbox to the
-// Filter button, and never lands on the search box, which takes typed text. In the control bar's
-// look the Filter button says its count only while a narrowing is on.
+// holds no other control, so the header's own hand-off walks back over the main content: past the
+// disabled checkbox to the Filter button, and never onto the search box, which takes typed text. In
+// the control bar's look the Filter button says its count only while a narrowing is on.
 test("Clear selection hands its focus to the select-all checkbox, and never to the search box while no row matches", async () => {
   const user = userEvent.setup();
   const page = renderAgents();
@@ -5927,9 +5915,9 @@ test("a group heading draws no count until the reads that place a row in its gro
 });
 
 // The page's own agent row is a row of its list, as an Inbox row is of the Inbox. A session that
-// ends takes its row away with no press of the reader's, a loss they did not cause, so the app
-// shell's focus rescue hands the focus into no other agent's row, and the reader's next Space
-// marks no agent they did not pick for broadcast.
+// ends takes its row away with no press of the reader's, a loss they did not cause, so the focus
+// goes into no other agent's row, and the reader's next Space marks no agent they did not pick for
+// broadcast.
 test("an agent's session ending under the focus hands it to no other agent's row, and Space marks nobody", async () => {
   const user = userEvent.setup();
   const [alpha, bravo, charlie] = ["Alpha", "Bravo", "Charlie"].map((title) =>
@@ -5945,7 +5933,7 @@ test("an agent's session ending under the focus hands it to no other agent's row
     page.listAgents.mockResolvedValue([alpha, charlie]);
     await refetchAgents(page.queryClient);
     await waitFor(() => expect(mark).not.toBeInTheDocument());
-    await afterRescue();
+    await afterFrameAndTasks();
 
     expect(document.activeElement?.closest("[data-agent-row]") ?? null).toBeNull();
     await user.keyboard(" ");

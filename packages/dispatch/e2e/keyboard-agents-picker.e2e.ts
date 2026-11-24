@@ -755,7 +755,7 @@ test.describe("agents page", () => {
 
   // The list is every open issue, so an issue closed after it was picked drops out of it on the
   // next read. The Issue list keeps offering the committed issue, marked closed and picked - as
-  // the issue header's Status select keeps a closed issue's own status among its options - so
+  // the issue header's Status pick keeps a closed issue's own status among its options - so
   // what the list shows, what the toggle names and where the message goes stay one issue until
   // the reader picks another; a closed issue takes comments, so the message posts there.
   test("an issue closed after the pick stays named in the list and the toggle, marked closed, and takes the message", async ({

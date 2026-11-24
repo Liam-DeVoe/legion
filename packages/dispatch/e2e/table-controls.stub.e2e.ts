@@ -2,8 +2,8 @@
  *  (six of them INFRA-3135's R2) draw them: one row of controls per page, nothing else between a
  *  page's title and its first row but the Inbox's header line, nothing a reader presses moving
  *  that first row, exactly the controls the design gives each page, one look across two pages of
- *  a size family, the Inbox's header line one line, and the Inbox still a list of rows with a
- *  reading pane beside it.
+ *  a size family, each control at the size its page passes, the Inbox's header line one line, and
+ *  the Inbox still a list of rows with a reading pane beside it.
  *
  *  Every row reads what the page draws over one fixed answer - a box's height, a computed
  *  colour, the `data-control` values in the document - so each runs against a recording rather
@@ -15,7 +15,7 @@
  */
 import { expect, type Locator } from "@playwright/test";
 
-import { CONTROL, type ControlName } from "../web/src/components/control-names";
+import { CONTROL, type ControlName, type ControlSize } from "../web/src/components/control-names";
 import { control, controlRow, openFilterPanel } from "./filters";
 import { stubbed } from "./stub/stub-test";
 import {
@@ -35,6 +35,7 @@ import {
   STUBBABLE_SURFACES,
   SURFACE_CONTROLS,
   SURFACE_SEARCH_TERM,
+  type Surface,
   type SurfaceName,
   seedSurfaces,
   straysBetween,
@@ -185,6 +186,20 @@ const PAGE_HEADER_LINE = ['h1 "Inbox"', "search box", 'link "Answered by you"'] 
 
 /** The drawer's header line: its title, the search box, and its close button. */
 const DRAWER_HEADER_LINE = ['h2 "Inbox"', "search box", 'button "Close"'] as const;
+
+/** The height each size draws a control at from `md` up and at 1280 px and over, where
+ *  `web/src/styles.css` stops raising every button to 44 px (`@media (max-width: 1279px)`): the
+ *  two recipes of `controlPadding` in `web/src/components/control-names.ts`, whose `min-h-11` is
+ *  44 px and whose compact `md:min-h-8` is 32 px, at Tailwind's 4 px a step. A column filter's
+ *  funnel takes the same two (`FILTER_TARGET`, `web/src/components/ColumnFilter.tsx`). */
+const CONTROL_HEIGHT: Record<ControlSize, number> = { comfortable: 44, compact: 32 };
+
+/** The padding of the selection bar's own box at each size - top, right, bottom and left - as
+ *  `BAR_BOX` in `web/src/components/SelectionBar.tsx` draws it: `px-4 py-2` and `px-2 py-1`. */
+const BAR_PADDING: Record<ControlSize, string> = {
+  comfortable: "8px 16px 8px 16px",
+  compact: "4px 8px 4px 8px",
+};
 
 // SLOW(>=2s): eight pages opened at each of this project's widths, which is sixteen page loads.
 test("each page draws one row of controls, and nothing else between its title and its first row @phone @pr", async ({
@@ -453,6 +468,85 @@ test("one search box and chip across the Inbox and the Board, one bar trigger ac
   await expect(control(row, CONTROL.chip)).toHaveCount(chips - 1);
 });
 
+test("each page's pager, selection bar and column filters take the size the page passes: compact on the List, comfortable on the Inbox @pr", async ({
+  page,
+  scene,
+}) => {
+  // At 1440 px the two sizes draw apart (`CONTROL_HEIGHT`); below 1280 px every button is 44 px.
+  await page.setViewportSize({ height: 900, width: 1440 });
+  /** Reads that every element `elements` finds, and it finds one at least, is `size` tall. */
+  const expectSized = async (what: string, elements: Locator, size: ControlSize) => {
+    await expect(elements.first(), `${what}: none is drawn`).toBeVisible();
+    const drawn = await elements.evaluateAll((nodes) =>
+      nodes.map((node) => ({
+        height: Math.round(node.getBoundingClientRect().height),
+        name: (node.getAttribute("aria-label") ?? node.textContent ?? "").trim(),
+      }))
+    );
+    const off = drawn
+      .filter(({ height }) => height !== CONTROL_HEIGHT[size])
+      .map(({ height, name }) => `"${name}" is ${height}px`);
+    expect(
+      off,
+      `${what}: ${off.join(", ")}, where the ${size} size is ${CONTROL_HEIGHT[size]}px`
+    ).toEqual([]);
+  };
+  /** Marks the surface's first row and hands back the selection bar that draws. */
+  const markOne = async (surface: Surface) => {
+    if (surface.select === undefined) throw new Error(`${surface.name} offers no selection`);
+    await surface.select();
+    return control(surface.root, CONTROL.selectionBar);
+  };
+  /** The padding of a box, top, right, bottom and left. */
+  const paddingOf = (box: Locator) =>
+    box.evaluate((node) => {
+      const style = getComputedStyle(node);
+      return `${style.paddingTop} ${style.paddingRight} ${style.paddingBottom} ${style.paddingLeft}`;
+    });
+
+  // The List passes `compact` to its table, which hands it on to the Pager and to each column's
+  // filter (`IssuesTable.tsx`, `DataTable.tsx`), and to its selection bar and every action in
+  // it (`IssueTableSelection`, `issues-table-page.tsx`).
+  const list = await openSurface(page, "project List", scene);
+  await expectSized(
+    "the List's pager",
+    control(list.root, CONTROL.pager).getByRole("button"),
+    "compact"
+  );
+  await expectSized(
+    "the List's column filters",
+    control(list.root, CONTROL.columnFilter),
+    "compact"
+  );
+  const listBar = await markOne(list);
+  await expectSized("the List's selection bar actions", listBar.getByRole("button"), "compact");
+  expect(await paddingOf(listBar), "the List's selection bar box is not the compact size's").toBe(
+    BAR_PADDING.compact
+  );
+
+  // The Inbox passes no size, so its selection bar is the comfortable one, and so is each action
+  // the page puts in it (`BAR_CONTROL_CLASS`, `Inbox.tsx`). The bar's Snooze pick keeps the look
+  // of every row's Snooze badge and is no such action; Dismiss is drawn for a marked thread
+  // alone, and every seeded row is an ask.
+  const inbox = await openSurface(page, "Inbox", scene);
+  for (const absent of [CONTROL.pager, CONTROL.columnFilter]) {
+    await expect(control(inbox.root, absent), `the Inbox draws a ${absent}`).toHaveCount(0);
+  }
+  const inboxBar = await markOne(inbox);
+  const actions = inboxBar
+    .getByRole("button", { exact: true, name: "Select all" })
+    .or(inboxBar.getByRole("button", { exact: true, name: "Clear selection" }));
+  await expect(
+    actions,
+    "the Inbox's selection bar lacks Select all or Clear selection"
+  ).toHaveCount(2);
+  await expectSized("the Inbox's selection bar actions", actions, "comfortable");
+  expect(
+    await paddingOf(inboxBar),
+    "the Inbox's selection bar box is not the comfortable size's"
+  ).toBe(BAR_PADDING.comfortable);
+});
+
 test("the Inbox is rows with their marks and no table, and opening one opens the reading pane at its own width @pr", async ({
   page,
   scene,
@@ -507,6 +601,28 @@ test("k-one-row: the Inbox's header line is one line, its search box after the h
   }
 });
 
+/**
+ * `k-one-row`'s rule that the page does not scroll sideways, in the drawer: neither the drawer nor
+ * its control bar holds more than its own width. The drawer is 448 px wide at 1440x900
+ * (`md:max-w-md`), and a bar kept to one line by the window's width ran 34 px past the drawer's
+ * edge there, so the drawer scrolled sideways (builds Job infra-3135-probe4-k88vm at 968e2b90).
+ */
+async function expectDrawerNotSideways(drawer: Locator, where: string): Promise<void> {
+  for (const [box, name] of [
+    [drawer, "the drawer"],
+    [controlRow(drawer), "the drawer's control bar"],
+  ] as const) {
+    const widths = await box.evaluate((node) => ({
+      client: node.clientWidth,
+      scroll: node.scrollWidth,
+    }));
+    expect(
+      widths.scroll,
+      `${where}: ${name} scrolls sideways, ${widths.scroll}px wide in ${widths.client}px`
+    ).toBeLessThanOrEqual(widths.client);
+  }
+}
+
 // SLOW(>=2s): the drawer opened, and six narrowings picked in it, at each of this project's widths.
 test("k-one-row: the drawer's header line is one line, its search box after its title and before its close button @phone @pr", async ({
   page,
@@ -521,11 +637,13 @@ test("k-one-row: the drawer's header line is one line, its search box after its 
     const surface = await openSurface(page, "Inbox drawer", scene, { phone });
     const where = `the Inbox drawer at ${size.width}x${size.height}`;
     await expectOneHeaderLine(surface.root, `${where}, no narrowing on`, DRAWER_HEADER_LINE);
+    await expectDrawerNotSideways(surface.root, `${where}, no narrowing on`);
     for (const [field, option] of INBOX_PICKS) {
       await pickInboxField(page, field, option, surface.root);
     }
     await expect(surface.firstRow).toBeVisible();
     await expectOneHeaderLine(surface.root, `${where}, six narrowings on`, DRAWER_HEADER_LINE);
+    await expectDrawerNotSideways(surface.root, `${where}, six narrowings on`);
   }
 });
 

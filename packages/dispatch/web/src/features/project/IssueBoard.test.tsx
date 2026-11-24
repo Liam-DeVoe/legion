@@ -17,7 +17,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { installCountingStorage } from "../../__tests__/counting-storage";
 import { realClock, tick } from "../../__tests__/fake-clock";
-import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
+import { afterFrameAndTasks } from "../../__tests__/frames";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { pickNamed } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
@@ -646,9 +646,9 @@ test("a board refetch asked for while a move is unanswered waits for the answer,
 });
 
 // A Board card is a row of its column's list. A refetch that takes the card holding the focus off
-// the board - another reader moved its issue on - is a loss the reader did not cause, so the app
-// shell's focus rescue, mounted here on the board's main content as the shell mounts it, hands
-// the focus into no other card: the reader's next key acts on no card they did not pick.
+// the board - another reader moved its issue on - is a loss the reader did not cause, so with the
+// board in the page's main content, as the shell draws it, the focus goes into no other card: the
+// reader's next key acts on no card they did not pick.
 test("a card a refetch takes away from under the focus hands it to no other card", async () => {
   const listIssues = spyOn(api, "listIssues").mockResolvedValue(keyboardIssues);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
@@ -657,9 +657,9 @@ test("a card a refetch takes away from under the focus hands it to no other card
     <MemoryRouter initialEntries={["/projects/CORE"]}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
-          <RescuedMain>
+          <main>
             <IssueBoard project="CORE" />
-          </RescuedMain>
+          </main>
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -676,7 +676,7 @@ test("a card a refetch takes away from under the focus hands it to no other card
       await queryClient.refetchQueries({ queryKey: boardListKey });
     });
     await waitFor(() => expect(bravo).not.toBeInTheDocument());
-    await afterRescue();
+    await afterFrameAndTasks();
 
     expect(document.activeElement?.closest("[data-board-card]") ?? null).toBeNull();
     expect(within(board).getByRole("article", { name: "CORE-3 Charlie" })).toBeInTheDocument();

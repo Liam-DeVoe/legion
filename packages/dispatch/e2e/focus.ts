@@ -55,8 +55,8 @@ export function holdsFocus(target: Locator): Promise<boolean> {
   return target.evaluate((node) => node === document.activeElement);
 }
 
-/** One frame and one task on, by when the page has drawn what it last read and its focus rescue
- *  has placed the focus. */
+/** One frame and one task on, by when the page has drawn what it last read and its components'
+ *  hand-offs have placed the focus. */
 export function frameAndTask(page: Page): Promise<void> {
   return page.evaluate(() => {
     const done = Promise.withResolvers<void>();

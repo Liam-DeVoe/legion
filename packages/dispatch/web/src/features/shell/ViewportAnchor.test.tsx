@@ -112,6 +112,8 @@ function List({
 const laidOut = () => [...document.querySelectorAll<HTMLElement>("[data-row], [data-heading]")];
 const viewportTop = (id: string) =>
   document.querySelector(`[data-row="${id}"]`)?.getBoundingClientRect().top;
+const headingTop = (id: string) =>
+  document.querySelector(`[data-heading="${id}"]`)?.getBoundingClientRect().top;
 const BANNER_HEIGHT = 52;
 const listStart = () =>
   listTop + (document.querySelector("[data-banner]") === null ? 0 : BANNER_HEIGHT);
@@ -723,8 +725,6 @@ test("the last row, focused and named as leaving, taken in a commit in which con
 // scrolls.
 test("a focused row named as leaving, the last of its group, lets the next group's heading and rows move up into the place it and its heading held", () => {
   const going = (id: string) => id === "r5";
-  const headingTop = (id: string) =>
-    document.querySelector(`[data-heading="${id}"]`)?.getBoundingClientRect().top;
   const view = render(<List headings={["r5", "r6"]} leaving={going} rows={ids(12)} />);
   try {
     setScrollY(100);
@@ -842,8 +842,6 @@ test("named rows that move to a group after the focused row, in a commit that no
 // next group's heading and rows move up into the place the heading and the rows held.
 test("a group's heading that goes with the last named rows under it lets the focused row move up by its place too", () => {
   const going = (id: string) => id === "r3" || id === "r4";
-  const headingTop = (id: string) =>
-    document.querySelector(`[data-heading="${id}"]`)?.getBoundingClientRect().top;
   const view = render(<List headings={["r3", "r5"]} leaving={going} rows={ids(12)} />);
   try {
     setScrollY(100);

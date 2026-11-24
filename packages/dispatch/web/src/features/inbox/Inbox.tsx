@@ -20,12 +20,13 @@ import { usersQuery, whoAmIQuery } from "../../api/queries";
 import type { MyReplyRow, OpenAskRow } from "../../api/types";
 import type { BarActionProps } from "../../components/BarAction";
 import { ControlRow } from "../../components/ControlRow";
+import { type ControlSize, controlPadding } from "../../components/control-names";
 import { WINDOW_OVERSCAN } from "../../components/DataTable";
 import type { DisplayMenuProps, DisplayMenuSection } from "../../components/DisplayMenu";
 import { EmptyState } from "../../components/EmptyState";
 import type { FilterChip } from "../../components/filter-chips";
-import { focusLost, SHOWN_ITEM_ATTRIBUTE } from "../../components/focus-place";
-import { heldPress } from "../../components/held-press";
+import { focusLost, focusOwnStop } from "../../components/focus-place";
+import { heldPress, useHeldThroughAnswer } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
 import { LabelPill } from "../../components/Pill";
@@ -187,8 +188,13 @@ const MARK_ALL_GLYPH = (
   </span>
 );
 
-/** One action of the selection bar, as the bar's own line draws it. */
-const BAR_ACTION_CLASS = `min-h-11 shrink-0 rounded-lg px-2 py-1 text-xs font-medium md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`;
+/** The size the Inbox draws its selection bar at, the comfortable one: the one value the bar
+ *  takes (`SelectionBar`'s `size`) and its actions' chrome reads, so the two cannot drift apart. */
+const BAR_SIZE: ControlSize = "comfortable";
+
+/** The chrome of the selection bar's actions - **Select all**, **Clear selection** and the
+ *  thread's **Dismiss** - in the recipe of the size the bar is drawn at (`BAR_SIZE`). */
+const BAR_CONTROL_CLASS = `shrink-0 rounded-lg text-sm font-medium ${controlPadding[BAR_SIZE]} ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`;
 
 /** The values a field offers, in the order its control lists them: its vocabulary, the one the
  *  address keeps the field's values by (`INBOX_FILTER_VOCABULARY`). Project is the one field
@@ -1200,12 +1206,14 @@ function DismissedBoxWindow(
  * once it is drawn. The next page is read once the window reaches the last loaded row, one
  * request for each number of loaded rows; **Show more** still reads it by key.
  *
- * A focused row the person scrolls out of the window is no loss. The page's focus rescue reads
- * the row out of sight from its capture-phase scroll listener, before the virtualizer's own
- * listener takes the row away (`outOfSight`, `components/focus-place.ts`). So the focus goes to
- * no row and nothing scrolls, and in the drawer the drawer takes the focus. Scrolled back, the
- * row is drawn again. A row a live update takes away while it is the row under the hand stays in
- * the rows the Inbox hands here (`heldRow`), so it stays drawn in its place.
+ * A focused row the person scrolls out of the window is no loss. The window takes the row away,
+ * which is no press of the person's, so the focus goes to no row and nothing scrolls: on the page
+ * it stays on the page. In the drawer, a modal dialog, a focus left on the page would reach the
+ * page behind the dialog, so the window hands it to the drawer's own stop, with no scroll, as a
+ * component hands a lost focus to its own region's stop whoever caused the loss (`focusOwnStop`).
+ * Scrolled back, the row is drawn again. A row a live update takes away while it is the row
+ * under the hand stays in the rows the Inbox hands here (`heldRow`), so it stays drawn in its
+ * place.
  */
 function DismissedRows({
   box,
@@ -1225,6 +1233,9 @@ function DismissedRows({
   const pendingFocus = useRef<string | null>(null);
   /** How many rows were loaded when the window last asked for the next page. */
   const askedAt = useRef<number | null>(null);
+  /** The focused element of a row this list draws, and that row's id, noted as it takes the
+   *  focus, for the window's own hand-off below. */
+  const focusedIn = useRef<{ readonly element: Element; readonly id: string } | null>(null);
   const drawnRow = (id: string) =>
     list.current?.querySelector<HTMLElement>(`[${ROW_ATTRIBUTE}="${CSS.escape(id)}"]`) ?? null;
 
@@ -1278,6 +1289,19 @@ function DismissedRows({
     if (index !== -1) virtualizer.scrollToIndex(index, { align: "auto" });
   }, [hand]);
 
+  // The window's own hand-off, after every commit: a focused row the window took away on the
+  // person's scroll - still a loaded row, drawn no more - hands the focus to the modal dialog the
+  // list stands in, its own stop with no scroll, and leaves it on the page anywhere else. A row
+  // that left the loaded rows is not the window's doing, and a focus already placed moves nothing.
+  useLayoutEffect(() => {
+    const noted = focusedIn.current;
+    if (noted === null || noted.element.isConnected) return;
+    focusedIn.current = null;
+    if (!focusLost() || !rows.some((row) => rowId(row) === noted.id)) return;
+    const modal = list.current?.closest<HTMLElement>('[role="dialog"][aria-modal="true"]');
+    if (modal != null) focusOwnStop(modal);
+  });
+
   const items = virtualizer.getVirtualItems();
   const first = items[0];
   const last = items.at(-1);
@@ -1293,6 +1317,11 @@ function DismissedRows({
   return (
     <ul
       className="flex flex-col gap-3"
+      onFocus={(event) => {
+        const row = event.target.closest(`[${ROW_ATTRIBUTE}]`);
+        const id = row?.getAttribute(ROW_ATTRIBUTE);
+        focusedIn.current = id == null ? null : { element: event.target, id };
+      }}
       ref={list}
       style={{
         paddingBottom:
@@ -1959,17 +1988,13 @@ function InboxBody({
   // none, and the selection's settling hands the next row the selection on the layout lane, so
   // the column is drawn again for that row in the same task (`pane-selection.ts`). The focus the
   // column held has fallen to the body, and what now stands where it was is the next question,
-  // not what the reader pressed for. The page's rescue takes nothing from another item
-  // (`showsAnother`, `components/focus-place.ts`), so without this hand-off it would walk a
-  // caused loss back to a control before the column, and leave an uncaused one on the body. So
-  // the focus goes to the column's own focus stop, with no scroll, whoever caused the loss, and
-  // `j`, `k` and Enter answer from there as they do from the body. A component may hand a lost
-  // focus to its own region's stop whoever caused the loss (`leaveUncaused`). On the layout lane
-  // too, in the commit that draws the column again, so it runs before the rescue's check a frame
-  // later, which then finds the focus placed. A focus the column lost while it still shows the
-  // same question - an editor a press opened in place - is the rescue's, and so is one that has
-  // gone somewhere by then. `focusLost`, not the body alone, so an engine that names a removed
-  // element focused until its focus fixup is read the same way.
+  // not what the reader pressed for. So the focus goes to the column's own focus stop, with no
+  // scroll, whoever caused the loss, and `j`, `k` and Enter answer from there as they do from the
+  // body. It runs on the layout lane, in the commit that draws the column again. A focus the
+  // column lost while it still shows the same question - an editor a press opened in place - is
+  // none of this hand-off's, and nor is one that has gone somewhere by then. `focusLost`, not the
+  // body alone, so an engine that names a removed element focused until its focus fixup is read
+  // the same way.
   useLayoutEffect(() => {
     const noted = paneFocus.current;
     if (noted === null || noted.element.isConnected) return;
@@ -2336,6 +2361,13 @@ function InboxBody({
     shown: bulkBarShown,
   });
 
+  // The bar's Snooze is held from its pick through the commit after its write's answer
+  // (`useHeldThroughAnswer`), as a row's own Snooze is, and the hold keeps the armed hand-off of
+  // the pick that made the write live (`holdHandOff`). So the bar's going when the write lands,
+  // with the rows it snoozed, is the reader's doing, and its hand-off lands the focus: at the
+  // reading column's width the short rows draw no Snooze of their own to hold the pick.
+  const bulkSnoozeHeld = useHeldThroughAnswer(bulkSnoozing.size !== 0);
+
   // The list waits for every read its asks come from, and says it could not load where one
   // failed, rather than drawing a list without the rows that read answers for. The header line
   // stands over it in every state, first in one fragment, so the line is the same element from
@@ -2502,9 +2534,11 @@ function InboxBody({
    * and the reader scrolling a list with the panel shut must pay for none of it.
    */
   const renderFilterControls = (): ReactNode => {
-    // What each filter control counts against: a row that survives every narrowing but that
-    // control's own, so a reader opening Priority is told what each priority holds inside the
-    // list they have already narrowed, and ticking a value never empties the list by surprise.
+    // What each filter control counts: the rows that every filter that is on keeps, but for that
+    // control's own, so a reader opening Priority is told what each priority holds under the
+    // filters they have already set. The typed text is no filter here, as on `main`: the counts
+    // leave it out, as Clear filters leaves it standing, so a value whose rows the text hides
+    // still counts them.
     const matchesOtherFields = (row: InboxListRow, field: InboxFilterField | "assignee"): boolean =>
       INBOX_FILTER_FIELDS.every(
         (other) => other === field || inFieldFilter(row, other, filters[other], viewer)
@@ -2802,6 +2836,7 @@ function InboxBody({
           : (originRow(lastMarked())?.querySelector<HTMLElement>(MARK_SELECTOR) ??
             focusListStop(listScroller.current))
       }
+      size={BAR_SIZE}
       state={barState}
     >
       {/* The picker stays while its own write is out. While Later is folded, the optimistic
@@ -2818,7 +2853,7 @@ function InboxBody({
         // records nothing, so the row outlives a pick (`onTriggerFocus`).
         <SnoozePick
           badge="Snooze"
-          held={bulkSnoozing.size !== 0}
+          held={bulkSnoozeHeld}
           label="Snooze selected asks"
           marks={BULK_PICKER_MARKS}
           onPick={snoozePick}
@@ -2830,7 +2865,7 @@ function InboxBody({
       {selectedThreads.length === 0 ? null : (
         <button
           aria-label={`${dismissLabel} selected threads`}
-          className={BAR_ACTION_CLASS}
+          className={BAR_CONTROL_CLASS}
           data-inbox-bulk-dismiss=""
           onClick={dismissPick}
           type="button"
@@ -2840,7 +2875,7 @@ function InboxBody({
       )}
       {allRows ? null : (
         <button
-          className={BAR_ACTION_CLASS}
+          className={BAR_CONTROL_CLASS}
           data-inbox-select-all=""
           onClick={selectAll}
           type="button"
@@ -2848,7 +2883,7 @@ function InboxBody({
           Select all
         </button>
       )}
-      <button className={BAR_ACTION_CLASS} onClick={clearSelection} type="button">
+      <button className={BAR_CONTROL_CLASS} onClick={clearSelection} type="button">
         Clear selection
       </button>
     </SelectionBar>
@@ -2956,16 +2991,8 @@ function InboxBody({
                     onWidthChange={setPaneWidth}
                     width={paneWidth}
                   />
-                  {/* The column names the question it shows, by which the page's rescue tells
-                        the next question drawn here from what a press drew in its place
-                        (`SHOWN_ITEM_ATTRIBUTE`). */}
                   {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only reads where the focus has already gone, so the column needs no role of its own. */}
-                  <div
-                    className="min-h-0 min-w-0"
-                    {...{ [SHOWN_ITEM_ATTRIBUTE]: rowId(subject) }}
-                    onBlur={forgetPaneReturn}
-                    ref={holdPane}
-                  >
+                  <div className="min-h-0 min-w-0" onBlur={forgetPaneReturn} ref={holdPane}>
                     <ReadingPane onAnswered={recordAnswered} row={subject} viewer={viewer} />
                   </div>
                 </>

@@ -6,7 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
-import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
+import { afterFrameAndTasks } from "../../__tests__/frames";
 import { issue } from "../../__tests__/issue-picks";
 import { pickNamed } from "../../__tests__/list-picks";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -170,18 +170,19 @@ const builder = {
 } satisfies Agent;
 
 /** The dialog over a registry of the Planner, the Reviewer and the Builder, with the app's keys
- *  bound to the window, and the page's focus rescue mounted around it where `rescued`. */
-function renderDialog({ rescued = false }: { rescued?: boolean } = {}) {
+ *  bound to the window. */
+function renderDialog() {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
   const onClose = jest.fn();
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner, reviewer, builder]);
-  const dialog = <ComposeDialog onClose={onClose} />;
   const view = render(
     <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
       <QueryClientProvider client={queryClient}>
-        <KeymapProvider>{rescued ? <RescuedMain>{dialog}</RescuedMain> : dialog}</KeymapProvider>
+        <KeymapProvider>
+          <ComposeDialog onClose={onClose} />
+        </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -262,15 +263,15 @@ test("a refused send gives Send back with its error", async () => {
   }
 });
 
-// Once a broadcast's answer lands, the outcomes take the form's place with Done first,
-// and the page's rescue puts the focus on Done. The dialog holds its Send through the answer
+// Once a broadcast's answer lands, the outcomes take the form's place with Done first, and the
+// dialog's own hand-off puts the focus on Done. The dialog holds its Send through the answer
 // (`useHeldThroughAnswer`), so the press is still live as Send goes with the form.
 test("the focus goes to Done once a broadcast's answer lands", async () => {
   const user = userEvent.setup();
   const answer = Promise.withResolvers<BroadcastCreated>();
   const createBroadcast = spyOn(api, "createBroadcast").mockReturnValue(answer.promise);
   const getBroadcast = spyOn(api, "getBroadcast").mockReturnValue(new Promise(() => {}));
-  const dialog = renderDialog({ rescued: true });
+  const dialog = renderDialog();
   try {
     await pickRecipients(user, ["Planner", "Reviewer"]);
     await write(user, "Broadcast message", "Status, please.");
@@ -280,7 +281,7 @@ test("the focus goes to Done once a broadcast's answer lands", async () => {
     expect(held).toHaveFocus();
     answer.resolve(broadcast("Status, please.", ["planner-session", "reviewer-session"], () => []));
     await screen.findByRole("region", { name: "Where your message went" });
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(screen.getByRole("button", { name: "Done" })).toHaveFocus();
   } finally {
     createBroadcast.mockRestore();

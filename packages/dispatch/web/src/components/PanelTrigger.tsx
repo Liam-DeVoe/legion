@@ -4,7 +4,7 @@ import { borderDefault, card, surfaceMutedBg, textSecondaryOnCanvas } from "../t
 import { AnchoredPanel } from "./AnchoredPanel";
 import { type BarLook, badged, barButton } from "./bar-look";
 import { CONTROL, type ControlName, type ControlSize, controlPadding } from "./control-names";
-import { useFocusPlace } from "./focus-place";
+import { ARM_ON_PRESS, useFocusPlace } from "./focus-place";
 import { heldPress } from "./held-press";
 
 /** The frame of a panel a trigger opens: a card over the page, at most 20rem tall and 16rem wide
@@ -177,8 +177,8 @@ export function PanelTrigger({
           onDismiss={() => onOpenChange(false)}
           role="dialog"
         >
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only notes which control of the panel took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), so the box needs no role of its own. */}
-          <div className="contents" onFocus={noteFocus} ref={content}>
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the focus handler only notes which control of the panel took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), and the capture handlers only arm that hand-off at a press inside the panel (`armOnPress`), so the box needs no role of its own. */}
+          <div className="contents" {...ARM_ON_PRESS} onFocus={noteFocus} ref={content}>
             {children(close)}
           </div>
         </AnchoredPanel>

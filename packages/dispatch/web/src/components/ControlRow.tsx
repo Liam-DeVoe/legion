@@ -21,7 +21,7 @@ import { ColumnsMenu, type ColumnsMenuProps } from "./ColumnsMenu";
 import { CONTROL, type ControlSize, controlIn, controlPadding } from "./control-names";
 import { DisplayMenu, type DisplayMenuProps } from "./DisplayMenu";
 import { type FilterChip, filterChips } from "./filter-chips";
-import { useFocusPlace } from "./focus-place";
+import { ARM_ON_PRESS, useFocusPlace } from "./focus-place";
 import { MoreMenu } from "./MoreMenu";
 import { PANEL_FRAME, PanelTrigger, type PanelTriggerProps } from "./PanelTrigger";
 import { SearchBox, type SearchBoxProps } from "./SearchBox";
@@ -212,7 +212,8 @@ function triggerOf(root: Element): HTMLElement | null {
  * `PanelTrigger`'s own hand-off, counting the whole panel, would land on (D26). Its check runs
  * before the panel's, a child's effect before its parent's, so it lands first. The list goes with
  * its last chip, and the panel's hand-off then lands on the control now at its place, the panel's
- * first field.
+ * first field. A chip's press arms the hand-off at the list's root (`armOnPress`), as every
+ * component that hands its focus off arms it at its own, so its going is the reader's.
  */
 function PanelChips({
   chips,
@@ -227,8 +228,13 @@ function PanelChips({
     () => null
   );
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only notes which chip of the list took the focus, for the hand-off when a commit takes that chip away (`useFocusPlace`), so the list needs no role of its own.
-    <div className="flex w-full flex-col items-start gap-2" onFocus={noteFocus} ref={list}>
+    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the focus handler only notes which chip of the list took the focus, for the hand-off when a commit takes that chip away (`useFocusPlace`), and the capture handlers only arm that hand-off at a press inside the list (`armOnPress`), so the list needs no role of its own.
+    <div
+      className="flex w-full flex-col items-start gap-2"
+      {...ARM_ON_PRESS}
+      onFocus={noteFocus}
+      ref={list}
+    >
       {filterChips(chips, size)}
     </div>
   );
@@ -394,22 +400,28 @@ export interface ControlRowProps<TData = unknown> {
  * list of chips is a focus place of its own (`PanelChips`). Its last chip takes the list with it,
  * and `PanelTrigger` then hands the focus on inside the panel, to its first field.
  *
- * Any other focused control a commit takes out of a slot while the bar stays hands the focus the
- * same way (`useFocusPlace`): to the control now at its place in that slot, else to the nearest
- * one before it, passing over every control that takes typed text, else to the trigger, else to
- * the search box, each only while the reader can see it, else to the own stop of the region the
- * bar is in - the search bar's dialog, else the main content - with no scroll. Everything after
- * the empty space is one slot, so an action that removes itself hands the focus to the control
- * after it, and **More** that goes once its last action leaves (**Mark all read** no longer
- * offered) hands it to the main action, else to the control before it. An action of the line
- * that holds the focus when the bar narrows past 640 px, and so moves into **More**, hands the
- * focus to **More**'s trigger. **Clear filters**' own rule, the trigger, comes first wherever it
- * sits. A control of a dialog, a panel or a selection bar a page draws in a slot is that region's
- * and none of the bar's, so the bar hands its focus nowhere. In a dialog or a panel, the page's
- * rescue answers a loss the reader caused inside that region, never with a control of the bar
- * outside it. In a selection bar, the bar's own hand-off (`SelectionBar`) answers a loss the
- * reader caused. The page's rescue leaves a loss there that the reader did not cause as
- * `leaveUncaused` says.
+ * Any other focused control the reader's own press takes out of a slot while the bar stays hands
+ * the focus on too (`useFocusPlace`): to the control now at its place in that slot, else to the
+ * nearest one before it, passing over every control that takes typed text, else to the trigger,
+ * each only while the reader can see it, else to the own stop of the region the bar is in - the
+ * search bar's dialog, else the main content - with no scroll. With nothing left before it in the
+ * slot and no trigger, the focus walks back from the slot's place in that region instead, since
+ * the search box takes typed text. Everything after the empty space is one slot, so an action
+ * that removes itself hands the focus to the control after it, and **More** that goes once its
+ * last action leaves (**Mark all read** no longer offered) hands it to the main action, else to
+ * the control before it. A loss is the reader's only while a press of theirs is armed
+ * (`armHandOff`): every press inside the bar arms the hand-off at the bar's root (`armOnPress`),
+ * a press in a panel the bar opens included, which React hands up through the bar, and an item of
+ * **More** arms it on **More** itself, as the menu shuts and puts the reader back there
+ * (`MoreMenu`). A control a live update or a refetch takes away, with nothing armed, leaves the
+ * focus on the page with no scroll. An action of the line that holds the focus when the bar
+ * narrows past 640 px, and so moves into **More**, hands the focus to **More**'s trigger, where
+ * that action now is, whatever narrowed the bar: the focus follows the action and lands on no
+ * other control. **Clear filters**' own rule, the trigger, comes first wherever it sits. A control
+ * of a dialog, a panel or a selection bar a page draws in a slot is that region's and none of the
+ * bar's, so the bar hands its focus nowhere, and never to a control of the bar outside that
+ * region. In a selection bar, the bar's own hand-off (`SelectionBar`) answers a loss the reader
+ * caused.
  */
 export function ControlRow<TData = unknown>({
   actions = NO_ACTIONS,
@@ -741,10 +753,11 @@ export function ControlRow<TData = unknown>({
   }
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only notes which control of a slot took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), so the bar needs no role of its own.
+    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the focus handler only notes which control of a slot took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), and the capture handlers only arm that hand-off at a press inside the bar (`armOnPress`), so the bar needs no role of its own.
     <div
       className={`flex min-w-0 flex-nowrap items-center gap-2${className === undefined ? "" : ` ${className}`}`}
       data-control={CONTROL.controlRow}
+      {...ARM_ON_PRESS}
       onFocus={onFocus}
       ref={rowRef}
     >

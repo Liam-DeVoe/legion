@@ -25,11 +25,13 @@ import { userStateQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { focusOnMount } from "../../components/focus-place";
+import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useScrollEnds } from "../../components/useScrollEnds";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { inputMethodKey } from "../../lib/input-method";
 import {
   badgePrimary,
   bgTransparent,
@@ -43,6 +45,7 @@ import {
   dangerText,
   focusBorder,
   focusVisibleRing,
+  hasFocusVisibleRing,
   inputClasses,
   linkHoverText,
   linkText,
@@ -62,7 +65,7 @@ import {
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
-import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
+import { issueStatuses, openIssueStatuses, statusText } from "../project/board-model";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
@@ -94,6 +97,19 @@ const routeHint =
   "New asks, comments, and messages on this issue wake this agent or role; replies inside a thread reach their participants directly. It is where messages go, not who is working the issue — that is the claim.";
 
 const titleRefusals = new Set(["CAP_EXCEEDED", "ISSUE_CLOSED"]);
+
+/** The Status list's trigger carries this attribute, valued with the status it shows (`Todo`
+ *  shows `todo`): the issue page's `s` and Escape find the trigger by it, since the shared list
+ *  hands out no element of its own, and a reader outside the page (the docs' screenshots) reads
+ *  the status off it as it read a select's value. */
+const STATUS_TRIGGER_ATTRIBUTE = "data-issue-status";
+/** The Status list's trigger (`STATUS_TRIGGER_ATTRIBUTE`). */
+export const STATUS_TRIGGER_SELECTOR = `[${STATUS_TRIGGER_ATTRIBUTE}]`;
+
+/** The Status list's marks: its trigger's attribute, valued with the status it shows. */
+function statusMarks(shown: string): ListMarks {
+  return { trigger: { [STATUS_TRIGGER_ATTRIBUTE]: shown } };
+}
 
 /** Whether `input` is the Status pill's pick alone: that control shows its write in the shell's
  *  indicator and rolls back on a refusal, where every other header field holds its draft and
@@ -249,6 +265,14 @@ export function IssueHeader({
   const statusSaving = updateIssue.isPending && updateIssue.variables?.status !== undefined;
   const pendingStatus = statusSaving ? updateIssue.variables?.status : undefined;
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
+  // The status the Status shows: the one its write is sending while that write is out, else the
+  // issue's.
+  const shownStatus = pendingStatus ?? issue.status;
+  const [statusOpen, setStatusOpen] = useState(false);
+  // A closed issue's Status takes no pick, and while a write of the header's fields is out it
+  // takes no second one. Either way it is held (`aria-disabled`), never disabled: it keeps the
+  // focus the reader's pick handed back to it, and a press of it opens nothing.
+  const statusHeld = isClosed || updateIssue.isPending;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
@@ -442,8 +466,9 @@ export function IssueHeader({
                 onChange={(event) => drafts.writeTitle(event.target.value)}
                 onKeyDown={(event) => {
                   // An Enter or an Escape that ends or moves an input method's composition is the
-                  // composition's: it saves nothing, discards nothing and keeps the editor open.
-                  if (event.nativeEvent.isComposing) return;
+                  // composition's (`inputMethodKey`): it saves nothing, discards nothing and keeps
+                  // the editor open.
+                  if (inputMethodKey(event.nativeEvent)) return;
                   if (event.key === "Escape") {
                     drafts.discardTitle();
                     setEditingTitle(false);
@@ -464,8 +489,8 @@ export function IssueHeader({
               // what it holds, a button's `aria-label` included. It opens the editor when the
               // reader activates it - a click, Enter or Space - and never as it takes the focus:
               // an editor that opens on focus changes the page on focus (WCAG 2.2, 3.2.1 On
-              // Focus), and the page's focus rescue can give the button the focus with no act of
-              // the reader's. A closed issue's title edits nothing, so it is the heading alone.
+              // Focus), and a focus can come to the button with no act of the reader's. A closed
+              // issue's title edits nothing, so it is the heading alone.
               <div className="relative min-w-0 flex-1">
                 <h1
                   className={`break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface}`}
@@ -496,27 +521,42 @@ export function IssueHeader({
           className="flex w-full min-w-0 flex-wrap items-center gap-2 md:w-auto"
           data-testid="issue-state-actions"
         >
-          <label
-            className={`flex min-h-11 shrink-0 items-center gap-2 rounded-full border px-2 text-sm font-semibold uppercase tracking-wide sm:px-3 md:min-h-8 xl:px-2 ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
+          {/* The Status is the shared list's single pick, whose text box narrows the statuses
+              as the reader types. Its trigger fills the pill, which draws the keyboard focus
+              ring round it as `badge-select.ts`'s wrappers do. A pick writes through
+              `updateIssueGuard` (`requestStatusSubmit`), and a pick of the status it shows
+              writes nothing, as a select set to the value it holds fires nothing. A list that
+              stood open as the hold began picks nothing. */}
+          <span
+            className={`flex min-h-11 shrink-0 items-center rounded-full border text-sm font-semibold uppercase tracking-wide md:min-h-8 has-focus-visible:ring-2 ${hasFocusVisibleRing} ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
           >
-            <span
-              aria-hidden="true"
-              className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
-            />
-            <select
-              aria-label="Status"
-              className={`min-w-0 appearance-none font-inherit outline-none disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${statusPill.text}`}
-              disabled={isClosed || updateIssue.isPending}
-              onChange={(event) => drafts.requestStatusSubmit(event.target.value)}
-              value={pendingStatus ?? issue.status}
+            <MultiSelect
+              ariaDisabled={statusHeld}
+              chevron={false}
+              emptyMessage="No status matches that."
+              label="Status"
+              marks={statusMarks(shownStatus)}
+              mode="single"
+              onOpenChange={(next) => setStatusOpen(next && !statusHeld)}
+              onPick={(picked) => {
+                if (!statusHeld && picked !== shownStatus) drafts.requestStatusSubmit(picked);
+              }}
+              open={statusOpen}
+              optionLabel={statusText}
+              options={selectableStatuses}
+              searchLabel="Search statuses"
+              triggerClassName="flex cursor-pointer items-center self-stretch rounded-full px-2 outline-none sm:px-3 xl:px-2 refused:cursor-not-allowed refused:opacity-50"
+              value={shownStatus}
             >
-              {selectableStatuses.map((status) => (
-                <option key={status} value={status}>
-                  {statusLabel(status)}
-                </option>
-              ))}
-            </select>
-          </label>
+              <span className="flex items-center gap-2">
+                <span
+                  aria-hidden="true"
+                  className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
+                />
+                {statusText(shownStatus)}
+              </span>
+            </MultiSelect>
+          </span>
           <PriorityEditor
             disabled={isClosed || updateIssue.isPending}
             issueKey={issue.key}
@@ -760,8 +800,9 @@ export function IssueHeader({
             id="issue-route"
             onChange={(event) => drafts.writeRoute(event.target.value)}
             onKeyDown={(event) => {
-              // An Escape that ends an input method's composition is the composition's.
-              if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+              // An Escape that ends an input method's composition is the composition's
+              // (`inputMethodKey`).
+              if (event.key === "Escape" && !inputMethodKey(event.nativeEvent)) {
                 drafts.discardRoute();
                 setRouteEditing(false);
               }
@@ -810,8 +851,9 @@ export function IssueHeader({
             id="issue-parent"
             onChange={(event) => drafts.writeParent(event.target.value)}
             onKeyDown={(event) => {
-              // An Escape that ends an input method's composition is the composition's.
-              if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+              // An Escape that ends an input method's composition is the composition's
+              // (`inputMethodKey`).
+              if (event.key === "Escape" && !inputMethodKey(event.nativeEvent)) {
                 drafts.discardParent();
                 setParentEditing(false);
               }

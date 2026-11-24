@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { onFakeClock, tick } from "../../__tests__/fake-clock";
-import { afterRescue } from "../../__tests__/focus-rescue";
+import { afterFrameAndTasks } from "../../__tests__/frames";
 import { heldNotDisabled } from "../../__tests__/held-press";
 import { AGENT_LIST_REFILLING, ApiError, api, REQUEST_DEADLINE_MS } from "../../api/client";
 import { DispatchQueryClient } from "../../api/query-client";
@@ -265,7 +265,7 @@ test("an Unfollow confirmed keeps the focus while its write is out, and a press 
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     // A frame and two tasks, by when the browser would have moved the focus of a control that
     // turned disabled.
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(where()).toBe("the Unfollow pressed");
     expect(heldNotDisabled(unfollow, "Unfollow")).toBe(true);
 
@@ -283,11 +283,10 @@ test("an Unfollow confirmed keeps the focus while its write is out, and a press 
 
 // An Unsubscribe is held from its confirming press until the commit after its write's answer,
 // which takes in the read of the subscribers its landing starts. So the dialog hands the focus
-// back to it while the write is out, and the chip that read takes away is the press's doing: the
-// page's rescue walks the focus back to the Unfollow before the chip's place, never the body. The
-// read is held past the press's own frame and task, as a read over the network takes longer than
-// those, so only the hold keeps the press the cause of the chip's going.
-test("an Unsubscribe confirmed keeps the focus through its write, and the read after it hands the focus to the Unfollow before its chip", async () => {
+// back to it while the write is out, and it keeps the focus through that read until the read
+// takes its chip away. The read is held past the press's own frame and task, as a read over the
+// network takes longer than those, so only the hold keeps the Unsubscribe held that long.
+test("an Unsubscribe confirmed keeps the focus through its write and the read after it, until that read takes its chip away", async () => {
   const out = Promise.withResolvers<void>();
   const unsubscribed: string[] = [];
   const unsubscribeIssueSession = spyOn(api, "unsubscribeIssueSession").mockImplementation(
@@ -297,7 +296,6 @@ test("an Unsubscribe confirmed keeps the focus through its write, and the read a
     }
   );
   const page = await renderRecipients({
-    rescued: true,
     subscribers: [subscriber("b0b0b0b0b0b0b0b0", "Platform PO")],
   });
   const stopFocusFixup = emulateChromiumFocusFixup();
@@ -307,12 +305,10 @@ test("an Unsubscribe confirmed keeps the focus through its write, and the read a
     const unsubscribe = within(viaIssue).getByRole("button", {
       name: "Unsubscribe",
     }) as HTMLButtonElement;
-    const lastUnfollow = within(section).getAllByRole("button", { name: "Unfollow" }).at(-1);
     // Where the focus is, named, as a failed check prints it.
     const where = () => {
       const active = document.activeElement;
       if (active === unsubscribe) return "the Unsubscribe pressed";
-      if (active === lastUnfollow) return "the last follower's Unfollow";
       return active?.textContent || (active?.tagName ?? "nothing");
     };
     act(() => unsubscribe.focus());
@@ -321,7 +317,7 @@ test("an Unsubscribe confirmed keeps the focus through its write, and the read a
     act(() => within(dialog).getByRole("button", { name: "Confirm" }).focus());
     await page.user.keyboard("{Enter}");
     await waitFor(() => expect(unsubscribed).toEqual(["b0b0b0b0b0b0b0b0"]));
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(where()).toBe("the Unsubscribe pressed");
     expect(heldNotDisabled(unsubscribe, "Unsubscribe")).toBe(true);
     await page.user.keyboard("{Enter}");
@@ -332,7 +328,7 @@ test("an Unsubscribe confirmed keeps the focus through its write, and the read a
     const reread = Promise.withResolvers<Subscriber[]>();
     page.getIssueSubscribers.mockImplementationOnce(() => reread.promise);
     await act(async () => out.resolve());
-    await afterRescue();
+    await afterFrameAndTasks();
     expect(where()).toBe("the Unsubscribe pressed");
     await act(async () => reread.resolve([]));
     await waitFor(() =>
@@ -340,8 +336,6 @@ test("an Unsubscribe confirmed keeps the focus through its write, and the read a
         within(section).queryByRole("list", { name: "Via issue subscription" })
       ).not.toBeInTheDocument()
     );
-    await afterRescue();
-    expect(where()).toBe("the last follower's Unfollow");
   } finally {
     stopFocusFixup();
     out.resolve();

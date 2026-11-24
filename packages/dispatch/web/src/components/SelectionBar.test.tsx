@@ -1,12 +1,11 @@
 import { expect, test } from "bun:test";
-import { act, render, renderHook, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, type ReactNode, useRef, useState } from "react";
 
 import { SIZE_CSS, sizeUnder } from "../__tests__/control-size";
 import { drawAt, drawOver, layRowsOut, watchMoves } from "../__tests__/laid-out-rows";
 import type { ControlSize } from "./control-names";
-import { useFocusRescue } from "./focus-place";
 import { ROW_MARKER } from "./row-marker";
 import { SelectionBar, useLastMarkedPlace } from "./SelectionBar";
 
@@ -105,7 +104,7 @@ test("the bar's box takes the page's size: the comfortable padding by default, t
   const padding = () =>
     sizeUnder(screen.getByRole("toolbar", { name: "Selected rows" }), SIZE_CSS).padding;
   try {
-    // The comfortable size is the bar the Inbox draws, which passes none.
+    // With no size the bar is drawn comfortable, the size the Inbox passes (`BAR_SIZE`).
     expect(padding()).toBe("8px 16px 8px 16px");
     view.rerender(bar("comfortable"));
     expect(padding()).toBe("8px 16px 8px 16px");
@@ -166,6 +165,19 @@ function rowBox(key: string): HTMLElement {
   return screen.getByRole("checkbox", { name: `Select ${key}` });
 }
 
+/** The reader's press on the bar's action named `name`, which leaves the focus on it: the click
+ *  a pointer's press makes in Chromium and Firefox. It arms the bar's hand-off (`armOnPress`), so
+ *  the commit after it in the same task that takes the bar away, or takes the action out of a bar
+ *  that stays, is the reader's doing. */
+function pressInBar(name: string): HTMLElement {
+  const action = screen.getByRole("button", { name });
+  act(() => {
+    action.focus();
+    action.click();
+  });
+  return action;
+}
+
 test("the bar going while a control inside it holds the focus hands the focus to what returnFocus names", () => {
   // Whether the bar was still in the page when it was asked where the focus goes.
   const asked: string[] = [];
@@ -175,7 +187,7 @@ test("the bar going while a control inside it holds the focus hands the focus to
   };
   const view = render(<MarkedList count={2} returnFocus={returnFocus} />);
   try {
-    act(() => screen.getByRole("button", { name: "Clear selection" }).focus());
+    pressInBar("Clear selection");
     view.rerender(<MarkedList count={0} returnFocus={returnFocus} />);
     expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
     // Not the page's body, from which a keyboard reader would start again at its first link.
@@ -210,7 +222,7 @@ test("the bar going while the focus is outside it moves nothing", () => {
     // The same going with the focus inside the bar does hand it on: what kept it still above is
     // that the bar did not hold it.
     view.rerender(<MarkedList count={1} returnFocus={returnFocus} />);
-    act(() => screen.getByRole("button", { name: "Clear selection" }).focus());
+    pressInBar("Clear selection");
     view.rerender(<MarkedList count={0} returnFocus={returnFocus} />);
     expect(rowBox("CORE-2")).toHaveFocus();
   } finally {
@@ -226,8 +238,7 @@ test("a new returnFocus on every render while the bar stays moves nothing, and t
   };
   const view = render(<MarkedList count={2} returnFocus={naming("CORE-1")} />);
   try {
-    const clear = screen.getByRole("button", { name: "Clear selection" });
-    act(() => clear.focus());
+    const clear = pressInBar("Clear selection");
     view.rerender(<MarkedList count={2} returnFocus={naming("CORE-3")} />);
     view.rerender(<MarkedList count={1} returnFocus={naming("CORE-1")} />);
     expect(clear).toHaveFocus();
@@ -305,7 +316,7 @@ test("a control the reader moved the focus off moves nothing when it later goes 
     // The same going with the focus still on Select all does hand it on: what kept it still
     // above is that the reader had moved the focus off.
     view.rerender(<MarkedList count={1} returnFocus={returnFocus} selectAll={selectAll} />);
-    act(() => selectAllButton().focus());
+    pressInBar("Select all");
     view.rerender(<MarkedList count={3} returnFocus={returnFocus} />);
     expect(rowBox("CORE-2")).toHaveFocus();
     expect(asked).toBe(1);
@@ -314,13 +325,11 @@ test("a control the reader moved the focus off moves nothing when it later goes 
   }
 });
 
-// INFRA-3135's review round 1, R10: the bar's hand-off keeps the rescue's rule. The bar's line
-// of actions scrolls sideways, and the reader had scrolled it so far that the focused Clear
-// selection was out of their sight when a refetch emptied the selection and took the bar away.
-// Read from the rescue's own record of what the reader can see, the bar hands the focus to no
-// row, so the list is not scrolled to one the reader did not pick.
+// INFRA-3135's review round 1, R10: the bar's hand-off keeps its sight rule. The bar's line of
+// actions scrolls sideways, and the reader had scrolled it so far that the focused Clear selection
+// was out of their sight when a refetch emptied the selection and took the bar away. The bar
+// hands the focus to no row, so the list is not scrolled to one the reader did not pick.
 test("the bar going with a control the reader scrolled out of sight hands the focus to nothing", () => {
-  const rescue = renderHook(() => useFocusRescue({ current: null }));
   let asked = 0;
   const returnFocus = () => {
     asked += 1;
@@ -345,7 +354,6 @@ test("the bar going with a control the reader scrolled out of sight hands the fo
     expect(asked).toBe(0);
   } finally {
     view.unmount();
-    rescue.unmount();
   }
 });
 
@@ -379,32 +387,34 @@ function MarkedTable({
 // INFRA-3135's review round 1, follow-up F4: a refetch, not the reader, empties the selection and
 // takes the bar away while it holds the focus. With no press of the reader's on the bar or on a
 // row's mark before it, the bar hands the focus to no row, so the list is not scrolled to one they
-// did not pick. The rescue, mounted here, is what records whether the reader pressed.
+// did not pick: nothing armed the bar's hand-off (`causedByReader`). As the page did before it had
+// any hand-off, the focus stays on the body, nothing scrolls, and the page is never asked where it
+// goes. One row of the state table of `focus-place.test.ts` (do).
 test("the bar emptied by a refetch with no press hands the focus to no row", () => {
-  const rescue = renderHook(() => useFocusRescue({ current: null }));
   let asked = 0;
   const returnFocus = () => {
     asked += 1;
     return rowBox("CORE-2");
   };
   const view = render(<MarkedTable count={2} returnFocus={returnFocus} />);
+  const moves = watchMoves();
   try {
     act(() => screen.getByRole("button", { name: "Clear selection" }).focus());
     view.rerender(<MarkedTable count={0} returnFocus={returnFocus} />);
     expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
     expect(rowBox("CORE-2")).not.toHaveFocus();
     expect(document.activeElement).toBe(document.body);
+    expect(moves.scrolled).toEqual([]);
     expect(asked).toBe(0);
   } finally {
+    moves.restore();
     view.unmount();
-    rescue.unmount();
   }
 });
 
-// Emptied by the reader's own Clear selection, a press on the bar: the bar hands the focus on as it
-// always has, to what the page names.
+// Emptied by the reader's own Clear selection, a click on the bar, which arms the bar's hand-off
+// at its root (`armOnPress`): the bar hands the focus on as it always has, to what the page names.
 test("the bar emptied by the reader's Clear selection hands the focus to what returnFocus names", () => {
-  const rescue = renderHook(() => useFocusRescue({ current: null }));
   let asked = 0;
   const returnFocus = () => {
     asked += 1;
@@ -412,28 +422,25 @@ test("the bar emptied by the reader's Clear selection hands the focus to what re
   };
   const view = render(<MarkedTable count={2} returnFocus={returnFocus} />);
   try {
-    const clear = screen.getByRole("button", { name: "Clear selection" });
-    act(() => clear.focus());
-    act(() => clear.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+    pressInBar("Clear selection");
     view.rerender(<MarkedTable count={0} returnFocus={returnFocus} />);
     expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
     expect(rowBox("CORE-2")).toHaveFocus();
     expect(asked).toBe(1);
   } finally {
     view.unmount();
-    rescue.unmount();
   }
 });
 
 // INFRA-3135, round 18 (the tester's): emptied by the reader's press on the last marked row's
-// mark, the bar hands the focus on too (`pressOnRowMark`). A click leaves a checkbox unfocused in
-// WebKit, so the focus is still in the bar when the press takes the last row away, and the press
-// is on no control of the bar. With `pressOnRowMark` answering false in a scratch copy of
-// e9ed2743, this file, `DataTable.test.tsx`, `Inbox.test.tsx` and `IssuesTable.test.tsx` passed
-// 254 of 254, and so did the page-own press row of `e2e/table-controls.e2e.ts` in WebKit and
-// Firefox (builds Job infra-3135-r18mk): no test read the rule.
+// mark, the bar hands the focus on too (`pressOnRowMark`). The click arms the bar's hand-off while
+// the bar is drawn, though the mark stands outside the bar, and leaves the checkbox unfocused, as
+// WebKit does, so the focus is still on Clear selection when the press takes the last row away,
+// and the press is on no control of the bar. With `pressOnRowMark` answering false in a scratch
+// copy of e9ed2743, this file, `DataTable.test.tsx`, `Inbox.test.tsx` and `IssuesTable.test.tsx`
+// passed 254 of 254, and so did the page-own press row of `e2e/table-controls.e2e.ts` in WebKit
+// and Firefox (builds Job infra-3135-r18mk): no test read the rule.
 test("the bar emptied by the reader's press on the last row's mark hands the focus to what returnFocus names", () => {
-  const rescue = renderHook(() => useFocusRescue({ current: null }));
   let asked = 0;
   const returnFocus = () => {
     asked += 1;
@@ -443,14 +450,13 @@ test("the bar emptied by the reader's press on the last row's mark hands the foc
   try {
     act(() => screen.getByRole("button", { name: "Clear selection" }).focus());
     const mark = rowBox("CORE-1");
-    act(() => mark.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+    act(() => mark.click());
     view.rerender(<MarkedTable count={0} returnFocus={returnFocus} />);
     expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
     expect(rowBox("CORE-2")).toHaveFocus();
     expect(asked).toBe(1);
   } finally {
     view.unmount();
-    rescue.unmount();
   }
 });
 
@@ -539,7 +545,7 @@ test("a press that takes away the row marked last hands the focus to the row tha
   const view = render(<PlacedList count={2} last="CORE-13" listed={PLACED_KEYS} />);
   const moves = watchMoves();
   try {
-    act(() => screen.getByRole("button", { name: "Dismiss" }).focus());
+    pressInBar("Dismiss");
     view.rerender(
       <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
     );
@@ -567,7 +573,7 @@ test("a press that takes away the row marked last, with the row now at its place
   const drawn = drawOver(head, 60, "[data-row]", 9);
   const moves = watchMoves();
   try {
-    act(() => screen.getByRole("button", { name: "Dismiss" }).focus());
+    pressInBar("Dismiss");
     view.rerender(<PlacedList count={0} last="CORE-10" listed={without(PLACED_KEYS, "CORE-10")} />);
     const list = screen.getByRole("list", { name: "Rows" });
     expect(list).toHaveFocus();
@@ -589,7 +595,7 @@ test("a press that takes away the row marked last, with the row now at its place
   const view = render(<PlacedList count={1} last="CORE-19" listed={PLACED_KEYS} />);
   const moves = watchMoves();
   try {
-    act(() => screen.getByRole("button", { name: "Dismiss" }).focus());
+    pressInBar("Dismiss");
     view.rerender(<PlacedList count={0} last="CORE-19" listed={without(PLACED_KEYS, "CORE-19")} />);
     // CORE-20 is drawn 900 px down, under the window's 768 px; CORE-18 at 800 px is under it too.
     const landing = rowBox("CORE-17");
@@ -612,7 +618,7 @@ test("a press still taking away the row marked last hands the focus to the row a
   const view = render(<PlacedList count={1} last="CORE-17" listed={PLACED_KEYS} />);
   const moves = watchMoves();
   try {
-    act(() => screen.getByRole("button", { name: "Dismiss" }).focus());
+    pressInBar("Dismiss");
     view.rerender(
       <PlacedList count={0} last="CORE-17" leaving={["CORE-17"]} listed={PLACED_KEYS} />
     );
@@ -637,7 +643,7 @@ test("a press still taking away the row marked last hands the focus to the row a
   const view = render(<PlacedList cards count={1} last="CORE-17" listed={PLACED_KEYS} />);
   const moves = watchMoves();
   try {
-    act(() => screen.getByRole("button", { name: "Dismiss" }).focus());
+    pressInBar("Dismiss");
     view.rerender(
       <PlacedList cards count={0} last="CORE-17" leaving={["CORE-17"]} listed={PLACED_KEYS} />
     );
@@ -664,7 +670,7 @@ test("a press still taking away the row marked last hands the focus to the row a
   const view = render(<PlacedList count={1} last="CORE-17" listed={PLACED_KEYS} />);
   const moves = watchMoves();
   try {
-    act(() => screen.getByRole("button", { name: "Dismiss" }).focus());
+    pressInBar("Dismiss");
     view.rerender(
       <PlacedList count={0} last="CORE-17" leaving={["CORE-17"]} listed={PLACED_KEYS} />
     );
@@ -690,7 +696,7 @@ test("a press still taking away the last row of a group reads the row after it w
   );
   const moves = watchMoves();
   try {
-    act(() => screen.getByRole("button", { name: "Dismiss" }).focus());
+    pressInBar("Dismiss");
     view.rerender(
       <PlacedList
         count={0}
@@ -721,7 +727,7 @@ test("a press that takes away the row marked last, with no row in sight at its p
   const view = render(<PlacedList count={1} last="CORE-3" listed={PLACED_KEYS} />);
   const moves = watchMoves();
   try {
-    act(() => screen.getByRole("button", { name: "Dismiss" }).focus());
+    pressInBar("Dismiss");
     view.rerender(<PlacedList count={0} last="CORE-3" listed={without(PLACED_KEYS, "CORE-3")} />);
     const list = screen.getByRole("list", { name: "Rows" });
     expect(list).toHaveFocus();
@@ -743,7 +749,7 @@ test("the row marked last still listed takes the focus as the page names it, out
   const view = render(<PlacedList count={1} last="CORE-3" listed={PLACED_KEYS} />);
   const moves = watchMoves();
   try {
-    act(() => screen.getByRole("button", { name: "Dismiss" }).focus());
+    pressInBar("Dismiss");
     view.rerender(<PlacedList count={0} last="CORE-3" listed={PLACED_KEYS} />);
     const mark = rowBox("CORE-3");
     expect(mark).toHaveFocus();
@@ -765,7 +771,7 @@ test("with no row marked, the bar gone with the focus hands it to the first row 
   const view = render(<PlacedList count={20} last={null} listed={PLACED_KEYS} />);
   const moves = watchMoves();
   try {
-    act(() => screen.getByRole("button", { name: "Dismiss" }).focus());
+    pressInBar("Dismiss");
     view.rerender(<PlacedList count={0} last={null} listed={PLACED_KEYS} />);
     expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
     const landing = rowBox("CORE-10");
@@ -790,7 +796,7 @@ test("with no row marked, a row in sight under the list's sticky head is passed 
   const drawn = drawOver(head, 60, "[data-row]", 9);
   const moves = watchMoves();
   try {
-    act(() => screen.getByRole("button", { name: "Dismiss" }).focus());
+    pressInBar("Dismiss");
     view.rerender(<PlacedList count={0} last={null} listed={PLACED_KEYS} />);
     const landing = rowBox("CORE-11");
     expect(landing).toHaveFocus();
@@ -811,7 +817,7 @@ test("with no row marked, the first row in sight that a press is still taking aw
   const view = render(<PlacedList count={20} last={null} listed={PLACED_KEYS} />);
   const moves = watchMoves();
   try {
-    act(() => screen.getByRole("button", { name: "Dismiss" }).focus());
+    pressInBar("Dismiss");
     view.rerender(<PlacedList count={0} last={null} leaving={["CORE-10"]} listed={PLACED_KEYS} />);
     const landing = rowBox("CORE-11");
     expect(landing).toHaveFocus();
@@ -830,7 +836,7 @@ test("with no row marked and no row left, the bar gone with the focus hands it t
   const view = render(<PlacedList count={20} last={null} listed={PLACED_KEYS} />);
   const moves = watchMoves();
   try {
-    act(() => screen.getByRole("button", { name: "Dismiss" }).focus());
+    pressInBar("Dismiss");
     view.rerender(<PlacedList count={0} last={null} listed={[]} />);
     const list = screen.getByRole("list", { name: "Rows" });
     expect(list).toHaveFocus();
