@@ -2,6 +2,10 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -18,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -1149,6 +1154,74 @@ meaning_comment as (
 )`
 }
 
+// The shapes a search's request line names as search_shape (noteShape): the statement the search
+// chose, noted before it runs, so a line that ends in 503 or 499 names it too: keyword is
+// searchQuery for a request that asked for keywords alone, keyword-degraded is searchQuery because
+// no embedder answered, and the three meaning shapes name meaningStatementFor's three statements
+// (meaningShape). A broadened second run names its shape followed by searchShapeBroadened, and a
+// query of stop words alone, which runs no statement, names searchShapeNone.
+const (
+	searchShapeKeyword         = "keyword"
+	searchShapeKeywordDegraded = "keyword-degraded"
+	searchShapeMeaningEvery    = "meaning-every"
+	searchShapeMeaningScoped   = "meaning-scoped"
+	searchShapeMeaningJoined   = "meaning-joined"
+	searchShapeNone            = "none"
+	searchShapeBroadened       = "+broadened"
+)
+
+// searchRequestKeyHex is how many hex characters of the HMAC a search's line keeps: 16, which is
+// 64 bits, so two different searches share a key by chance only once a log holds billions of them.
+const searchRequestKeyHex = 16
+
+// searchRequestKey is the keyed hash a search's request line names as search_key: the first
+// searchRequestKeyHex hex characters of HMAC-SHA256 under the server's searchLogKey over the
+// normalized request, one JSON array of q as the handler holds it after trimming, project,
+// number_project, status, author, updated_since in RFC 3339 UTC with nanoseconds or "", limit,
+// offset, keywords_only and trees. Two requests that differ in any of them carry two keys, and
+// one request sent again carries one, so the log counts repeats of a search without holding its
+// text. The caller is not in it: the line names the caller already, and a key that callers share
+// counts the repeats across them. The key is the server's own and is written nowhere, so neither
+// the hash of a guessed query nor any other hash a reader can make matches it.
+func (s *server) searchRequestKey(parameters searchParameters) string {
+	since := ""
+	if parameters.since != nil {
+		since = parameters.since.UTC().Format(time.RFC3339Nano)
+	}
+	// Strings, integers and booleans, which json.Marshal always encodes.
+	normalized, _ := json.Marshal([]any{parameters.text, parameters.project, parameters.numberProject,
+		parameters.status, parameters.author, since, parameters.limit, parameters.offset,
+		parameters.keywordsOnly, parameters.trees})
+	mac := hmac.New(sha256.New, s.searchLogKey)
+	mac.Write(normalized)
+	return hex.EncodeToString(mac.Sum(nil)[:searchRequestKeyHex/2])
+}
+
+// noteShape names shape on the search's request line beside its key (accesslog.NoteSearch),
+// followed by searchShapeBroadened on the second, broadened run. A search with no key - the
+// answerer's own (goingSearch), whose context is another request's - names nothing.
+func (p searchParameters) noteShape(ctx context.Context, shape string) {
+	if p.logKey == "" {
+		return
+	}
+	if len(p.broaden) > 0 {
+		shape += searchShapeBroadened
+	}
+	accesslog.NoteSearch(ctx, p.logKey, shape)
+}
+
+// meaningShape is the shape that names statement, one of meaningStatementFor's three.
+func meaningShape(statement string) string {
+	switch statement {
+	case searchQueryMeaningScoped:
+		return searchShapeMeaningScoped
+	case searchQueryMeaningJoined:
+		return searchShapeMeaningJoined
+	default:
+		return searchShapeMeaningEvery
+	}
+}
+
 func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.actingReader(w, r)
 	if !ok {
@@ -1228,6 +1301,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	parameters := searchParameters{text: searchText, project: project, numberProject: numberProject,
 		status: status, author: author, since: since, limit: limit, offset: offset,
 		keywordsOnly: keywordsOnly, trees: wantsDisplayTrees(r), reading: &reading, who: who}
+	parameters.logKey = s.searchRequestKey(parameters)
 	response, err := s.runSearch(r.Context(), parameters)
 	// A statement its bound ended found nothing, and a later search, or a narrower one, may
 	// answer: 503, naming the bound, so a caller tells it from a failure and does not send the
@@ -1305,12 +1379,13 @@ func (s *server) runSearch(ctx context.Context, parameters searchParameters) (mo
 			return model.SearchResponse{}, err
 		}
 		if nodes == 0 {
+			parameters.noteShape(ctx, searchShapeNone)
 			return model.SearchResponse{Results: []model.SearchResult{}, Limit: parameters.limit, Offset: parameters.offset}, nil
 		}
 	}
 	run := s.runKeywordOnlyDegraded
 	if parameters.keywordsOnly {
-		run = s.runFusedSearchQuery
+		run = s.runKeywordsOnly
 	} else if s.deps.Embedder != nil {
 		vector, err := s.embedQuery(ctx, parameters.text)
 		if err != nil {
@@ -1352,8 +1427,9 @@ func (s *server) runSearch(ctx context.Context, parameters searchParameters) (mo
 // runKeywordOnlyDegraded runs the keyword-only fallback and stamps the response Degraded on
 // success: the one thing both of runSearch's fallback branches (no embedder configured, or the
 // query's own embedding failing) do identically. runSearch has already run the numnode check
-// before ever reaching here.
+// before ever reaching here. It names its shape on the request line first (noteShape).
 func (s *server) runKeywordOnlyDegraded(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
+	parameters.noteShape(ctx, searchShapeKeywordDegraded)
 	response, err := s.runFusedSearchQuery(ctx, parameters)
 	if err == nil {
 		response.Degraded = contracts.SearchDegradedEmbedderUnavailable
@@ -1361,8 +1437,15 @@ func (s *server) runKeywordOnlyDegraded(ctx context.Context, parameters searchPa
 	return response, err
 }
 
+// runKeywordsOnly runs the keyword statement for a request that asked for keywords alone
+// (keywords_only), naming that shape on the request line first (noteShape).
+func (s *server) runKeywordsOnly(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
+	parameters.noteShape(ctx, searchShapeKeyword)
+	return s.runFusedSearchQuery(ctx, parameters)
+}
+
 // runFusedSearchQuery runs searchQuery, assuming nodes > 0 or an issue named by key already,
-// which its callers (runKeywordOnlyDegraded, and runSearch itself for a request that asked for
+// which its callers (runKeywordOnlyDegraded, and runKeywordsOnly for a request that asked for
 // keywords only, both after runSearch's checks) must have established first. The text is assumed
 // already validated (length, non-empty after trimming); an empty project searches every project,
 // and an empty filter narrows nothing.
@@ -1424,6 +1507,7 @@ func (s *server) runMeaningSearch(ctx context.Context, parameters searchParamete
 	filtered := parameters.filtered()
 	filled := !filtered && parameters.project != "" && embeddingProjectKeysFilled(ctx, tx)
 	statement := meaningStatementFor(parameters.project, filled, filtered)
+	parameters.noteShape(ctx, meaningShape(statement))
 	rows, err := tx.Query(ctx, statement,
 		searchMeaningQueryArguments(parameters, vector, s.deps.Embedder.Identity())...)
 	if err != nil {

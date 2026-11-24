@@ -4206,6 +4206,10 @@ Each item below names a field of the line, then what it holds.
 
   The response status.
   A handler that panicked before writing is logged as `500`; the client gets a closed connection, not a status.
+  A request that its client closed before the answer (a page that navigated away, a search the bar replaced) and that failed for that reason is logged as `499`, nginx's status for it, and no `ERROR` line calls it a server fault; it is still answered the error it met, which reaches the client only where the client half-closed and still reads.
+  A client that gave up waiting closes the same way, so a `499` also covers a request the web page abandoned at its 30-second deadline, one a proxy timed out, and one whose commit the close interrupted with its outcome unknown: its `elapsed_ms` tells a slow request (about `30000` for the page) from a page that moved on.
+  A cancel that Dispatch made itself (a handler's own deadline or context) is still a `500` with its `msg="dispatch: API handler failed"` line.
+  A keyed write (`Idempotency-Key`, Keyed writes above) runs to its end whatever its client does, so its line keeps the status the write answered.
 
 - `elapsed_ms`
 
@@ -4223,12 +4227,24 @@ Each item below names a field of the line, then what it holds.
   `token:<owner>`, `service:<subject>`, `shared-token` or `broker-token:<person>`.
   For every one but the last that session id is the caller's own text; under a broker-issued token the credential itself named it.
 
+- `search_key`
+
+  Only on a search's line (`GET /api/v1/search` and `GET /api/v1/search/results`): 16 hex characters, the first 64 bits of an HMAC-SHA256 of the normalized request.
+  The request is one JSON array of `q` after trimming, `project`, `number_project`, `status`, `author`, `updated_since` (RFC 3339 in UTC with nanoseconds, or empty), `limit`, `offset`, `keywords_only` and whether the caller reads display trees; the caller is not in it.
+  One search sent again carries one key, and two searches that differ in any of those carry two, so the log counts repeats of a search without holding its text.
+  The key of the HMAC is 32 random bytes the server makes when it starts and never writes out, so no setting names it, two processes key the same search differently, and nobody who reads the log can hash a guessed query to match it.
+
+- `search_shape`
+
+  Only on a search's line: the statement the search chose, named before it ran, so a search answered `503 SEARCH_TIMEOUT` or closed by its client names it too.
+  `keyword` (`keywords_only`), `keyword-degraded` (keywords because no embedder answered), `meaning-every` (meaning search of every project), `meaning-scoped` (of one project, once the embeddings' project fill is done) or `meaning-joined` (a search narrowed by `status`, `author` or `updated_since`, or of one project before that fill is done), each followed by `+broadened` when a query that matched nothing ran a second time over its rarest words; `none` for a query of stop words alone, which runs no statement.
+
 - `aborted`
 
   Only when the handler panicked (an artifact download whose store fails mid-stream aborts this way): `true`.
   The line is still written, and the panic still reaches the server.
 
-The line never carries a token, a cookie, a query string, a request body or a response body.
+The line never carries a token, a cookie, a query string, a request body or a response body; a search's line carries `search_key` in place of its query.
 The text in it a caller wrote, `method`, `path`, a session's `caller`, `address` and `user_agent`, is each cut to 256 bytes.
 
 A websocket resolves its caller again on every heartbeat, and that resolution does not change the line: it names the caller the connection was admitted as.

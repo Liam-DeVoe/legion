@@ -44,6 +44,11 @@ import (
 // reading is text read as the words a person wrote and the operators around them
 // (readSearchQuery), taken once by whoever builds the parameters and handed to every reader of
 // it through queryReading.
+//
+// logKey is the keyed hash of the request (searchRequestKey), which the search names on its
+// request line beside the shape of each statement it chooses (noteShape). The search route sets
+// it; the answerer's own search leaves it empty and names nothing, since the context it runs on
+// is another request's, whose line is not this search's.
 type searchParameters struct {
 	text          string
 	project       string
@@ -60,6 +65,7 @@ type searchParameters struct {
 	excluded      string
 	reading       *searchReading
 	who           model.Actor
+	logKey        string
 }
 
 // numberScope is the project a bare issue number names: the project filter when the request
