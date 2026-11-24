@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { randomInt } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -203,6 +203,78 @@ test.skipIf(!present("/proc/self/stat"))(
   // The bounded child, then the wait for what it left to leave the table, which the short bound
   // ends.
   rowLimit("short", "short")
+);
+
+// The child writes a marker of its own to each pipe, the stdout's after 250 numbered lines and
+// before a made-up password, and then sleeps past every wait of this row, so only its bound ends
+// it. The markers and the password reach it in its environment, whose values its name never
+// prints, so only what the failure says the child wrote can carry them into the message.
+test.skipIf(commandLines() === undefined)(
+  "a bounded child its bound kills fails with the last lines it wrote to each pipe",
+  async () => {
+    // A number of seconds no other process on the machine sleeps for, so every process whose
+    // command line holds it is this row's child. It is this row's own limit, so a sleep the kill
+    // missed is still listed at every read the row makes.
+    const seconds = `${rowLimit("stuckOnPurpose", "short") / 1000}.${randomInt(10_000_000, 100_000_000)}`;
+    const marks = { stderr: `stderr-${randomUUID()}`, stdout: `stdout-${randomUUID()}` };
+    const password = `made-up-${randomUUID()}`;
+    const child = {
+      argv: [
+        "bash",
+        "-c",
+        `printf 'line %s\\n' {1..250}; printf '%s\\npassword=%s\\n' "$STDOUT_MARK" "$PASSWORD"; ` +
+          `printf '%s\\n' "$STDERR_MARK" >&2; exec sleep ${seconds}`,
+      ],
+      env: {
+        PASSWORD: password,
+        PATH: process.env.PATH ?? "",
+        STDERR_MARK: marks.stderr,
+        STDOUT_MARK: marks.stdout,
+      },
+      from: import.meta.url,
+    };
+    const failure = await runBounded({ ...child, bound: "stuckOnPurpose" }).then(
+      ({ code }) => `the child ended by itself, with exit ${code}`,
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    );
+    // A killed process can take a moment to leave the process table; a survivor stays, since
+    // its sleep outlasts every wait of this row.
+    await whether(() => holding(seconds).length === 0);
+    const survivors = holding(seconds);
+    for (const [pid] of survivors) kill(pid, "SIGKILL");
+    expect(
+      survivors.map(([pid, line]) => `${pid} ${line}`),
+      "processes of a bounded child its bound killed were still listed after the short bound of " +
+        `${bounds.short} ms`
+    ).toEqual([]);
+
+    const [first = "", ...below] = failure.split("\n");
+    expect(first, "the failure's first line").toStartWith(
+      `the bounded child ${named(child)} did not end inside the stuckOnPurpose bound of ` +
+        `${bounds.stuckOnPurpose} ms: it and every process it started were killed after `
+    );
+    expect(first, "the failure's first line").toMatch(/ were killed after \d+ ms$/);
+    expect(failure, "the failure lacks the marker the child wrote to its stdout").toContain(
+      marks.stdout
+    );
+    expect(failure, "the failure lacks the marker the child wrote to its stderr").toContain(
+      marks.stderr
+    );
+    expect(failure, "the failure printed the password the child wrote").not.toContain(password);
+    expect(below.join("\n"), "what the failure says below its first line").toBe(
+      [
+        "it wrote 252 lines to its stdout, the last 200 of them here:",
+        ...Array.from({ length: 198 }, (_, at) => `  line ${53 + at}`),
+        `  ${marks.stdout}`,
+        "  password=***",
+        "it wrote 1 line to its stderr:",
+        `  ${marks.stderr}`,
+      ].join("\n")
+    );
+  },
+  // The bounded child, which its bound ends on purpose, then the wait for it to leave the table,
+  // which the short bound ends.
+  rowLimit("stuckOnPurpose", "short")
 );
 
 /** The pid, start and token of the child of every scripted kill below. A table lists its pid

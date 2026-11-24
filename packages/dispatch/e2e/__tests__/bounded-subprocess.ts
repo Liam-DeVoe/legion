@@ -7,7 +7,8 @@
  *  the short bound ends.
  *
  * That line, and the failure of a child its bound stopped, go to the run's stderr, which CI keeps
- * in a public log, so both name the child as `named` writes it.
+ * in a public log, so both name the child as `named` writes it, and each line of the child's
+ * output that the failure carries is read by `masked` (`wroteTo`).
  *
  * When a child ends, or its bound passes, `runBounded` kills every process the child started
  * (`stopTreeYielding`, which reads the process table without holding this process's event loop,
@@ -145,12 +146,24 @@
  *   `/proc/<pid>/cwd`, which took 1.3 to 11.5 s alone on that box; the driver since walks its own
  *   tree instead, and its 35 runs on 8 CPUs (`taskset`, under a CPU quota of 8) with 16 busy loops
  *   on them, on that box at a load of about 400 the same day, took 0.28 s to 2.81 s.
+ * - `stuckOnPurpose`, against 309.8 ms: how long the child of the row of
+ *   `bounded-subprocess.test.ts` that never ends by itself took from its start until both its
+ *   pipes had carried what it writes before it sleeps, 252 lines to its stdout and one to its
+ *   stderr. That row lets the bound pass and reads what the failure says the child wrote, so the
+ *   bound must pass after the child has written it. The reading is the slowest of 200 such
+ *   children started 8 at once under six busy loops, three per CPU, on a pod of 2 CPUs, on
+ *   2026-11-24; 100 started one at a time under those loops read at most 98.7 ms, and 200 one at
+ *   a time without them at most 18.0 ms. No harness lane ran beside them, and its load can be
+ *   heavier than those loops. Three times 309.8 ms, rounded up to the next 5 s, is 5 s. Every run
+ *   of the lane waits that row's whole bound, so the bound is seconds and not `short`'s minute.
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
  * laptop as in CI: a `short` child after 60 s, a stop row's driver (`stoppedLeg`) after 90 s, a
  * leg or the shapes script of the outside agent's acceptance (`legRun`) after 4 minutes, a listing
  * after 6 minutes, the generation after 6.5 minutes, a run of the Codex leg after 8 minutes, a run
- * of the edge check after 9 minutes, and the two-stack build after 30 minutes.
+ * of the edge check after 9 minutes, and the two-stack build after 30 minutes. The child of
+ * `bounded-subprocess.test.ts` that never ends by itself (`stuckOnPurpose`) is killed after 5 s,
+ * as its row means it to be.
  * A row's limit is what `rowLimit` reads from the bounds of what the row waits for, plus 30 s for
  * its own work, so the child's bound fires before the row's limit and the failure names the child.
  * The lane runs in the `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15
@@ -198,6 +211,10 @@ export const bounds = Object.freeze({
   /** One driver of a stop row of `unit-repeat.test.ts`: a copy of the repeat tool, its Bun, the
    *  stop or kill the row sends, and its names runs. */
   stoppedLeg: 90_000,
+  /** The child of the row of `bounded-subprocess.test.ts` that never ends by itself: a shell that
+   *  writes to both pipes and then sleeps, so its bound passes on purpose and the row reads the
+   *  failure. */
+  stuckOnPurpose: 5_000,
 });
 
 /** The name of a bound, which is what a row and a run name rather than a number. */
@@ -1141,6 +1158,34 @@ async function drain(
   chunks.push(decoder.decode());
 }
 
+/** How many of the last lines of each pipe a stuck child's failure carries (`wroteTo`). The last
+ *  lines are where the child stopped: the step it printed before it waited. Two hundred of each
+ *  are a few screens, enough for the steps before the wait, and keep the failure of a child that
+ *  printed for minutes to about 400 lines in CI's log. */
+const tailLines = 200;
+
+/** What a stuck child wrote to `pipe`, whose whole text is `text`, as its failure carries it: a
+ *  heading that names the pipe and how many lines the child wrote to it, then the last
+ *  `tailLines` of those lines, each read by `masked` and indented two spaces; or, where the child
+ *  wrote nothing to it, one line that says so. A line ends at a line break, or at the end of
+ *  `text` where the last one has none. `masked` reads each line on its own, so a mask never
+ *  reaches past its line: the failure goes to the run's stderr, which CI keeps in a public log,
+ *  and a child can write a connection string with its password, which is why `driverSaid` of
+ *  `replace-blocks-guard.test.ts` reads its driver's stderr through `masked` too. The indent sets
+ *  the child's lines apart from the headings, and no line of the child's then starts with
+ *  `marker`, so a caller that relays the cost lines of its child's stderr (`relaysLines`) never
+ *  relays one of them. */
+function wroteTo(pipe: "stderr" | "stdout", text: string): string {
+  const lines = text.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  if (lines.length === 0) return `it wrote nothing to its ${pipe}`;
+  const wrote = `it wrote ${lines.length} ${lines.length === 1 ? "line" : "lines"} to its ${pipe}`;
+  const shown = lines.slice(-tailLines);
+  const heading =
+    shown.length < lines.length ? `${wrote}, the last ${tailLines} of them here:` : `${wrote}:`;
+  return [heading, ...shown.map((line) => `  ${masked(line)}`)].join("\n");
+}
+
 /** Starts one child, waits for it, and answers what it did.
  *
  *  Both pipes are read to their end while the child runs, each by `drain`, and answered whole.
@@ -1165,6 +1210,10 @@ async function drain(
  *  `stopTreeYielding` kills the child and every process it started, the pipes get `pipeGrace` to
  *  end and are then cancelled, and this throws a message naming the file that started the child,
  *  the command with its arguments, the environment the caller gave it, the bound and the time
+ *  waited. Below that first line the message also carries what the child wrote before its kill:
+ *  the last `tailLines` lines of its stdout and the last `tailLines` of its stderr, each under a
+ *  heading of its own that names the pipe and how many lines the child wrote to it, and one line
+ *  for a pipe it wrote nothing to (`wroteTo`), so the failure of a stuck child shows where it
  *  waited. */
 export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
   const { argv, bound, cwd, env, from, relaysLines = false } = options;
@@ -1247,7 +1296,8 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
   if (stuck) {
     throw new Error(
       `the bounded child ${name} did not end inside the ${bound} bound of ${bounds[bound]} ms: ` +
-        `it and every process it started were killed after ${ms} ms`
+        `it and every process it started were killed after ${ms} ms\n` +
+        `${wroteTo("stdout", stdout)}\n${wroteTo("stderr", stderr)}`
     );
   }
   return { code: await child.exited, endedAt, named: name, stderr, stdout };
