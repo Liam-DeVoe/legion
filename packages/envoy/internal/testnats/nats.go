@@ -52,10 +52,10 @@ import (
 // a single-line string constant.
 const Image = "ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f"
 
-// HubImage is the NATS server image the GCP hub runs: ghcr.io/cybermonklabs/legion/ci, the copy of
-// nats:2.15.3-alpine (.github/ci-images.yaml), the server of the clustered hub. The envoy-go and
-// envoy-infra-go CI jobs read this declaration and pull the image before their tests run; keep it
-// a single-line string constant.
+// HubImage is the NATS server image the clustered hub runs: ghcr.io/cybermonklabs/legion/ci, the
+// copy of nats:2.15.3-alpine (.github/ci-images.yaml). The envoy-go and envoy-infra-go CI jobs read
+// this declaration and pull the image before their tests run; keep it a single-line string
+// constant.
 const HubImage = "ghcr.io/cybermonklabs/legion/ci@sha256:558394a23dd3c36f2d3a64b51865fd09908010e80a542cea5e75c2af543ed62a"
 
 // VMHubImage is the NATS server image the VM hub runs: ghcr.io/cybermonklabs/legion/ci, the copy of

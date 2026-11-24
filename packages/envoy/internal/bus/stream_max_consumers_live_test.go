@@ -35,8 +35,9 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// liveServerArgs are the JetStream arguments the GCP hub runs nats-server with, without its
-// monitor port: the store the server keeps for the run lives at /data, as the hub's does.
+// liveServerArgs are the JetStream arguments the VM hub (gcp:NatsHub) runs nats-server with,
+// without its monitor port: the store the server keeps for the run lives at /data, as the hub's
+// does.
 var liveServerArgs = []string{"-js", "--store_dir", "/data"}
 
 // olderServerDeployedCap is the cap the stream carries where a subtest wants a start to raise one

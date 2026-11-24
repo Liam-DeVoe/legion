@@ -43,7 +43,8 @@ const (
 	liveHealthWindow = 60 * time.Second
 )
 
-// hubServerArgs are the arguments the GCP hub runs nats-server with.
+// hubServerArgs are the arguments the VM hub (gcp:NatsHub, gcp/cloudconfig.go) runs nats-server
+// with.
 var hubServerArgs = []string{"-js", "--store_dir", "/data", "-m", "8222"}
 
 // serverViolation matches a permissions violation nats-server logs, capturing its kind (Publish or

@@ -4291,11 +4291,14 @@ and its stream message get, stream info and key write aimed the same way take no
 status and a synchronous ack's empty reply, each aimed at the stream-delete API, delete a scratch
 stream with no subscriber, the edge's own direct delete refused and the same pull and ack answered
 on its inbox as controls. Those five rows run on both hubs' servers. Every reach into the API they
-pin is the VM hub's nats-server 2.15.1 (`testnats.VMHubImage`), which keeps it until the VM hub is
-removed, and that image and those rows go with it. The clustered hub's 2.15.3
-(`testnats.HubImage`) refuses each one: a publish whose reply is under `$JS.` at the publish, a
-push consumer delivering under `$JS.API.` at its create, and a republish there by suppressing it,
-each row with a control that the same route works to a plain subject.
+pin is nats-server 2.15.1's (`testnats.VMHubImage`). The deployment renders the edge set on the
+clustered hub alone, and its 2.15.3 (`testnats.HubImage`) refuses each one: a publish whose reply
+is under `$JS.` at the publish, a push consumer delivering under `$JS.API.` at its create, and a
+republish there by suppressing it, each row with a control that the same route works to a plain
+subject. So no deployed edge has these reaches, and day one's acceptance of the edge's stream
+delete, until the hub ran 2.15.3, is met. Of the users these rows run, only the listener's is one
+the VM hub renders: its direct get, the direct-get row's control, still reaches the API there. The
+rows keep their 2.15.1 half, and `testnats.VMHubImage`, until the VM hub is removed.
 `cmd/listener/edge_live_test.go` runs the listener under the set: it starts, relays a send, is
 reached by a role message through a shared listener, takes a role another session holds and is
 relayed a role message of a role another session holds, with no refusal, and its start ends,

@@ -73,8 +73,9 @@ func present(t *testing.T, admin natsgo.JetStreamContext, name string) bool {
 // reach. The clustered hub's 2.15.3 (testnats.HubImage) refuses every one of them: a $JS. reply at
 // the publish (client.go:4599, isReservedReply), a push consumer delivering on one at its create
 // (consumer.go:825, isReservedDestination), and a republish into one by suppressing it
-// (stream.go:7421-7425), each at v2.15.3. The VM hub's row and VMHubImage go when the VM hub is
-// removed.
+// (stream.go:7421-7425), each at v2.15.3. The deployment renders the edge set on the clustered hub
+// alone, so the VM hub's half is a record of what 2.15.1 does, not a reach a deployed edge holds;
+// it and VMHubImage go when the VM hub is removed.
 var apiReachServers = []struct {
 	name, image string
 	// reaches is whether the server delivers a JetStream answer aimed at $JS.API.
