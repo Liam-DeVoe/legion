@@ -332,9 +332,10 @@ func newOwnerStepsClientLive(t *testing.T) *ownerStepsClientLive {
 // versionFile is the file whose DaemonAPIVersion line names a tree's daemon API contract.
 const versionFile = "packages/daemon/internal/api/version.go"
 
-// olderClient builds the plugin of the release before: the commit releaseBefore names, taken with
-// `git archive` into a directory of the run's own and given node_modules of its own with
-// `bun install --frozen-lockfile`, as busy-relaunch-delivery.sh builds its base tree.
+// olderClient builds the plugin of a release from before the owner's plan: the commit
+// releaseBefore names, taken with `git archive` into a directory of the run's own and given
+// node_modules of its own with `bun install --frozen-lockfile`, as busy-relaunch-delivery.sh builds
+// its base tree.
 func (l *ownerStepsClientLive) olderClient() {
 	t := l.t
 	t.Helper()
@@ -345,16 +346,19 @@ func (l *ownerStepsClientLive) olderClient() {
 	l.run(tree, "tar", "-xf", archive)
 	l.run(tree, "bun", "install", "--frozen-lockfile")
 	l.oldTree, l.oldContract = tree, contract
-	l.note("the plugin of the release before: %s (%s), at contract %d, the newest commit below contract %d on the first-parent line of %s; its tree in %s with its own bun install",
-		commit, l.run(l.root, "git", "log", "-1", "--format=%cs %s", commit), contract, api.DaemonAPIVersion, ref, tree)
+	l.note("the plugin of the release before the owner's plan: %s (%s), at contract %d, the newest commit below contract %d on the first-parent line of %s; its tree in %s with its own bun install",
+		commit, l.run(l.root, "git", "log", "-1", "--format=%cs %s", commit), contract, api.OwnerPlanContract, ref, tree)
 }
 
 // releaseBefore answers the newest commit of main's first-parent line whose DaemonAPIVersion is
-// below this daemon's, its contract, and the ref the walk read main from. That is what is deployed
-// before this checkout: in a pull request's run, the main it merges into; on main, the commit
-// before the last change of the contract. main is origin/main in a clone that holds its history;
-// a shallow clone (CI's checkout) fetches main from origin, deeper each time the walk reaches the
-// end of what it fetched.
+// below api.OwnerPlanContract, its contract, and the ref the walk read main from. That is a release
+// from before the owner's plan landed: its client lacks the planRegister and taskStop routes and
+// reads an issue's holdReason with the one literal `escalated`, which is what older-client-reads
+// asserts, so the ceiling is the contract that added those routes and reasons, not this daemon's
+// own contract (newest-below-DaemonAPIVersion would land on OwnerPlanContract or above once the
+// contract bumps past it, and that release already has the routes). main is origin/main in a clone
+// that holds its history; a shallow clone (CI's checkout) fetches main from origin, deeper each time
+// the walk reaches the end of what it fetched.
 func (l *ownerStepsClientLive) releaseBefore() (string, int, string) {
 	t := l.t
 	t.Helper()
@@ -363,7 +367,7 @@ func (l *ownerStepsClientLive) releaseBefore() (string, int, string) {
 		if commit, contract, ok := l.firstBelow(ref); ok {
 			return commit, contract, ref
 		}
-		t.Fatalf("no commit of %s's first-parent line declares a daemon API contract below %d", ref, api.DaemonAPIVersion)
+		t.Fatalf("no commit of %s's first-parent line declares a daemon API contract below %d", ref, api.OwnerPlanContract)
 	}
 	const deepest = 4096
 	for depth := 64; depth <= deepest; depth *= 4 {
@@ -372,15 +376,15 @@ func (l *ownerStepsClientLive) releaseBefore() (string, int, string) {
 			return commit, contract, "main fetched from origin " + strconv.Itoa(depth) + " commits deep"
 		}
 	}
-	t.Fatalf("no commit of the %d of main's first-parent line fetched from origin declares a daemon API contract below %d", deepest, api.DaemonAPIVersion)
+	t.Fatalf("no commit of the %d of main's first-parent line fetched from origin declares a daemon API contract below %d", deepest, api.OwnerPlanContract)
 	return "", 0, ""
 }
 
 // firstBelow answers the newest commit of ref's first-parent line whose DaemonAPIVersion is below
-// this daemon's, and its contract.
+// api.OwnerPlanContract, and its contract.
 func (l *ownerStepsClientLive) firstBelow(ref string) (string, int, bool) {
 	for commit := range strings.FieldsSeq(l.run(l.root, "git", "rev-list", "--first-parent", ref)) {
-		if contract := declaredContract(l.t, commit, l.run(l.root, "git", "show", commit+":"+versionFile)); contract < api.DaemonAPIVersion {
+		if contract := declaredContract(l.t, commit, l.run(l.root, "git", "show", commit+":"+versionFile)); contract < api.OwnerPlanContract {
 			return commit, contract, true
 		}
 	}

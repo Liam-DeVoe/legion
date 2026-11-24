@@ -5,11 +5,12 @@
 # database of its own on LEGION_TEST_PG_DSN's server, and a fake GitHub), and makes each call the
 # `legion` tool makes through createLegionDaemonClient (packages/pi-shared/src/daemon-client.ts)
 # under bun, one run of scripts/e2e/owner-steps-client.ts per call:
-#   - older-client-tree: the driver builds the plugin of the release before itself: the newest
-#     commit of main's first-parent line whose DaemonAPIVersion is below this checkout's (origin/main
-#     in a clone that holds its history; a shallow clone, as CI's checkout is, fetches main from
-#     origin), taken with `git archive` into the run's own directory and given its own
-#     `bun install --frozen-lockfile`;
+#   - older-client-tree: the driver builds the plugin of a release from before the owner's plan
+#     itself: the newest commit of main's first-parent line whose DaemonAPIVersion is below the
+#     owner-plan contract (api.OwnerPlanContract, the one that added planRegister and taskStop), so
+#     its client lacks those routes (origin/main in a clone that holds its history; a shallow clone,
+#     as CI's checkout is, fetches main from origin), taken with `git archive` into the run's own
+#     directory and given its own `bun install --frozen-lockfile`;
 #   - control-client-plan-version-absent, client-register-plan: planRegister with the architect's
 #     grant (mintClaimGrant) answers 200 with the plan; the same call naming a version Dispatch does
 #     not hold fails the same check;

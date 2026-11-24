@@ -5674,8 +5674,8 @@ One run measured on a loaded host (load 619 to 703) took 864 s: 72 s building th
 The driver is `TestOwnerStepsClientLive` (`internal/daemon/owner_steps_client_live_test.go`, `-tags e2e`), on the rig of [`owner-steps.sh`](#owner-stepssh) (`ownerStepsRig`) over four issues of one project of the run's own, with the project's `default_steps` named so the state the client reads carries the key.
 Each call is one run of `scripts/e2e/owner-steps-client.ts` under bun: it imports `packages/pi-shared` from the tree it is given, makes the call as `packages/pi-legion/src/tools.ts` and `packages/pi-shared/src/legion-phase-ops.ts` make it, and prints what the client answered or threw as one JSON line.
 
-The plugin of the release before is built by the driver itself, in the first check: the newest commit of main's first-parent line whose `DaemonAPIVersion` is below this checkout's.
-In a pull request's run that is the main it merges into; on main it is the commit before the last change of the contract.
+The plugin of a release from before the owner's plan is built by the driver itself, in the first check: the newest commit of main's first-parent line whose `DaemonAPIVersion` is below the owner-plan contract (`api.OwnerPlanContract`, the one that added `planRegister` and `taskStop`), so its client lacks those routes and reads an issue's `holdReason` with the one literal `escalated`.
+The ceiling is that contract, not this checkout's own: once the contract bumps past the owner-plan one, the newest commit below this checkout's would itself hold the plan routes.
 A clone that holds main's history reads `origin/main` as it stands and fetches nothing; a shallow clone, as CI's checkout is, fetches main from origin 64 commits deep, then 256, 1024 and 4096, until the walk finds such a commit.
 The commit is taken with `git archive` into a directory of the run's own and given `bun install --frozen-lockfile` there, as [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh) takes its base tree, and the directory goes when the run ends.
 
