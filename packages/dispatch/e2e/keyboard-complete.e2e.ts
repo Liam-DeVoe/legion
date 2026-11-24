@@ -9028,6 +9028,8 @@ const KEY_ON_ITS_CONTROL = [
 for (const { check, control, key, where } of KEY_ON_ITS_CONTROL) {
   const first = control === "Snooze" ? "Later today" : control === "Status" ? "Todo" : "P2";
   // SLOW(>=2s): an Inbox, an issue page or a Board drawn, and its menu opened and closed.
+  // @firefox: the keys a text box takes, which the shared single pick's closed trigger reads as it
+  // opens its list (playwright.config.ts names the clause).
   test(`${check}: in ${where}, with the focus on the ${control} control, ${key} opens its menu on ${first} with every choice shown and nothing typed, and Escape writes nothing @firefox`, async ({
     page,
   }) => {
@@ -9093,6 +9095,8 @@ for (const control of ["priority", "Status"] as const) {
   const held = control === "priority" ? "P2" : "Todo";
   const check = control === "priority" ? "k-priority-menu" : "k-status-menu";
   // SLOW(>=2s): an Inbox or an issue page drawn, and its menu opened twice.
+  // @firefox: the keys a text box takes, which the shared single pick's closed trigger reads as it
+  // opens its list (playwright.config.ts names the clause).
   test(`${check}: ${control === "priority" ? "beside the reading pane" : "on today's issue page"}, ${key} then Enter writes nothing with the focus on the ${control} control, as it writes nothing from ${control === "priority" ? "the row" : "the page"} @firefox`, async ({
     page,
   }) => {
@@ -9224,6 +9228,8 @@ test("k-priority-menu: on the Inbox's cards p opens the priority menu while the 
 // lands on another element and the control does nothing.
 for (const target of ["the Later band's toggle", "the last card's Snooze"] as const) {
   // SLOW(>=2s): five asks in card mode, a control pressed with no menu open and with one open.
+  // @firefox: where the engine scrolls a list when a focus is given back between a press's
+  // mousedown and its mouseup (playwright.config.ts names the clause).
   test(`k-snooze-menu: in card mode, with the Snooze menu b opened on the first card, a press on ${target}, far down the page, closes the menu, writes nothing and acts in that one press @firefox`, async ({
     page,
   }) => {
@@ -9284,6 +9290,8 @@ async function holdKey(page: Page, key: string, repeats: number): Promise<void> 
 }
 
 // SLOW(>=2s): three questions in the reading pane, a digit held for a second.
+// @firefox: the repeats the engine sends for a held key, and where they land once the press has
+// moved the focus (playwright.config.ts names the clause).
 test("k-snooze-menu: beside the reading pane a 1 held down in the Snooze menu writes one snooze, answers nothing, and its repeats tick no option of the question R8 puts in hand @firefox", async ({
   page,
 }) => {
@@ -9326,6 +9334,8 @@ test("k-snooze-menu: beside the reading pane a 1 held down in the Snooze menu wr
 });
 
 // SLOW(>=2s): an ask in the reading pane, two keys each held for a second.
+// @firefox: the repeats the engine sends for a held key, and where they land once the press has
+// moved the focus (playwright.config.ts names the clause).
 test("k-snooze-menu: beside the reading pane a b held down opens the Snooze menu on Later today with every choice shown and nothing typed, and a p held down the priority menu on P2 @firefox", async ({
   page,
 }) => {
@@ -9595,7 +9605,8 @@ test("k-phone: right after a tap on P1 moves a card, a tap on another card's Sno
   await expect
     .poll(() => writesSent(writes), { message: "k-phone: a tap on P1 sends one write" })
     .toBe(1);
-  // The pick's write lands and the card moves into the P1 band within this second and a half.
+  // The server answers the pick's write and the card moves into the P1 band within this second
+  // and a half.
   await page.waitForTimeout(1500);
 
   const snooze = inboxRow(page, other).getByRole("button", { name: /^Snooze / });

@@ -464,6 +464,13 @@ const parallelProjects = [
   // scroll that rests on the engine's layout of the list - and `table-controls`'s row that Tab and
   // Escape never leave a panel for the page behind it, which leaves a list's text box by Tab on a
   // page and by Shift+Tab in a dialog and reads the focus on the list's trigger.
+  // The same keys on a focused closed Snooze, priority or Status trigger, which open the menu the
+  // key names with nothing typed in its box: `keyboard-complete`'s ten `k-snooze-menu`,
+  // `k-priority-menu` and `k-status-menu` rows "with the focus on the … control".
+  // Where the engine scrolls a list when a focus is given back between a press's mousedown and
+  // its mouseup: `keyboard-complete`'s two `k-snooze-menu` rows of a press "far down the page".
+  // The repeats the engine sends for a held key, and where they land once the press has moved the
+  // focus: `keyboard-complete`'s two `k-snooze-menu` rows of a key "held down".
   // When the engine delivers a key the page sends as a page is first drawn, against the layout
   // effects of the first commit that draws the shell, in which `KeymapProvider` attaches the
   // keymap's window listener: `keyboard-palette`'s row that a Ctrl+K (Cmd+K on a Mac) sent as the Inbox heading
