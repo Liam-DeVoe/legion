@@ -166,7 +166,11 @@ func ownPullRequest(iss *IssueTrace) int {
 // start lies before the inputs reach (Visit.Before) has no known M; neither is an observation of
 // the model, which is fitted on the stretches inside the window alone (windowConflicts). A merge
 // whose close waited for the issues beneath it ends its stretch at the merge (Visit.Merge), not at
-// the close's later move to done, nor open where that move falls after the window's end.
+// the close's later move to done, nor open where that move falls after the window's end. A stretch
+// conflicted where the move that ends it is a conflict (Move.conflict: the conflict trigger's, or a
+// merger's move back that the daemon's post names as one for a conflicting head), or where a merger
+// was asked inside it to merge the base forward onto a conflicting head (plan D7: a merger's
+// conflict is a conflict).
 func recordedStretches(t Trace, merges baseMerges) []Stretch {
 	var stretches []Stretch
 	for _, key := range slices.Sorted(maps.Keys(t.Issues)) {
@@ -198,13 +202,25 @@ func recordedStretches(t Trace, merges baseMerges) []Stretch {
 				if known {
 					count, unknown := merges.between(iss.Repo, own, open, out.At)
 					stretches = append(stretches, Stretch{Issue: key, Phase: in, Start: open, End: out.At, Merges: count,
-						Conflict: out.Trigger == workflow.TriggerConflict, OwnMergeUnknown: unknown})
+						Conflict: out.conflict() || iss.mergerMergedForward(open, out.At), OwnMergeUnknown: unknown})
 				}
 				open = time.Time{}
 			}
 		}
 	}
 	return stretches
+}
+
+// conflict says whether m is a conflict move: one whose cause is a conflicting head (CauseConflict),
+// the conflict trigger's or a merger's move back that the trace reads as one (mergerConflicts).
+func (m *Move) conflict() bool { return m.Cause == CauseConflict }
+
+// mergerMergedForward says whether iss's merger was asked to merge the base forward onto a
+// conflicting head (MergeForwardRound.Phase merging) after from and at or before to.
+func (iss *IssueTrace) mergerMergedForward(from, to time.Time) bool {
+	return slices.ContainsFunc(iss.MergeForwards, func(round MergeForwardRound) bool {
+		return round.Phase == phase.Merging && round.Start.After(from) && !round.Start.After(to)
+	})
 }
 
 // windowConflicts is the conflict model of t's window (spec R2; plan D3, which fits the rate on
@@ -277,7 +293,7 @@ func (m *ConflictModel) readBoots(t Trace) {
 			if from.Before(to) {
 				held[visit.Phase] += to.Sub(from)
 			}
-			if out := visit.Out; out != nil && out.Trigger == workflow.TriggerConflict && !out.At.Before(t.From) && out.At.Before(t.To) {
+			if out := visit.Out; out != nil && out.conflict() && !out.At.Before(t.From) && out.At.Before(t.To) {
 				fit := m.Phases[visit.Phase]
 				fit.Recorded++
 				if slices.ContainsFunc(spans, func(span [2]time.Time) bool { return !out.At.Before(span[0]) && out.At.Before(span[1]) }) {
@@ -841,7 +857,7 @@ func recordedLoops(s script) []conflictLoop {
 	for _, key := range slices.Sorted(maps.Keys(s.pieces)) {
 		pieces := s.pieces[key]
 		for _, p := range pieces {
-			if move := p.move(); p.ends != endMove || move == nil || move.Trigger != workflow.TriggerConflict {
+			if move := p.move(); p.ends != endMove || move == nil || !move.conflict() {
 				continue
 			}
 			loop := conflictLoop{issue: key, left: p.phase}
@@ -881,12 +897,79 @@ func (d *driver) stretchStart(p *piece) time.Time {
 	return p.start
 }
 
+// stretchDraw is the place of one draw of a stretch's conflict in a run: the issue, the recorded
+// start and the phase of the piece whose end ends the stretch, and how many draws of that stretch
+// the run made before this one (a stretch draws again where a drawn loop gives its issue the work
+// that ended it once more). It names the stretch alike under every rule and branch at one seed, so
+// two runs at one seed draw alike for each stretch both run (seedDraw).
+type stretchDraw struct {
+	issue string
+	start time.Time
+	phase phase.Phase
+	n     int
+}
+
+// FNV-1a's 64-bit offset and prime, by which a stretch's place is folded into one number
+// (stretchDraw.hash).
+const (
+	fnvOffset = 14695981039346656037
+	fnvPrime  = 1099511628211
+)
+
+// hash is at as one number: FNV-1a over its issue and its phase, each closed by a zero byte, with
+// its piece's start and its count mixed in (mix64).
+func (at stretchDraw) hash() uint64 {
+	h := uint64(fnvOffset)
+	for _, word := range [2]string{at.issue, string(at.phase)} {
+		for i := range len(word) {
+			h = (h ^ uint64(word[i])) * fnvPrime
+		}
+		h *= fnvPrime
+	}
+	h = mix64(h ^ uint64(at.start.UnixNano()))
+	return mix64(h ^ uint64(at.n))
+}
+
+// mix64 is SplitMix64's finalizer: every bit of x moves about half the bits of the result.
+func mix64(x uint64) uint64 {
+	x = (x ^ x>>30) * 0xbf58476d1ce4e5b9
+	x = (x ^ x>>27) * 0x94d049bb133111eb
+	return x ^ x>>31
+}
+
+// seedDraw seeds the run's source of conflict draws (driver.draws) for the draw of stream at at:
+// from the run's seed and the stream, and from at, its issue, its stretch's place in the record and
+// its count. A draw so reads none of the draws the run made before it, and a rule that moves when
+// or whether another stretch draws moves no draw of this one (common random numbers): two runs at
+// one seed draw alike at every place both reach.
+func (d *driver) seedDraw(at stretchDraw, stream uint64) {
+	d.drawSource.Seed(mix64(uint64(d.cfg.Seed)^stream), at.hash())
+}
+
+// conflictDraw is one draw of a stretch's conflict as a run made it (driver.drawStretch): its
+// place, the uniform draw u, the chance u was read against and whether it made a conflict.
+type conflictDraw struct {
+	at         stretchDraw
+	u, chance  float64
+	conflicted bool
+}
+
+// nextDraw is the place of the next draw of p's stretch (stretchDraw), counted as made, and the
+// place of p's issue's latest draw (driver.lastDraw).
+func (d *driver) nextDraw(p *piece) stretchDraw {
+	at := stretchDraw{issue: p.issue, start: p.start, phase: p.phase}
+	at.n = d.stretchDraws[at]
+	d.stretchDraws[at]++
+	d.lastDraw[p.issue] = at
+	return at
+}
+
 // drawStretch draws whether the head of p's stretch, from start to end in the replay, conflicts
 // with its base (spec R2, assumption 3): with M the merges into the issue's base branch strictly
-// inside the stretch but the issue's own merge, a draw u from the run's seeded source makes a
-// conflict where u is below the model's chance in p's phase, the phase the record shows the stretch
-// ending in, at M; a stretch whose M may hold its own merge is counted
-// (ConflictModel.DrawnOwnMergeUnknown).
+// inside the stretch but the issue's own merge, a draw u, seeded by the run's seed and the
+// stretch's place (seedDraw), makes a conflict where u is below the model's chance in p's phase,
+// the phase the record shows the stretch ending in, at M; a stretch whose M may hold its own merge
+// is counted (ConflictModel.DrawnOwnMergeUnknown).
 func (d *driver) drawStretch(p *piece, start, end time.Time) bool {
 	repo, own := "", 0
 	if iss, known := d.trace.Issues[p.issue]; known {
@@ -896,7 +979,13 @@ func (d *driver) drawStretch(p *piece, start, end time.Time) bool {
 	if unknown {
 		d.conflicts.DrawnOwnMergeUnknown++
 	}
-	return d.draws.Float64() < d.conflicts.Chance(p.phase, merges)
+	at := d.nextDraw(p)
+	d.seedDraw(at, conflictStream)
+	u, chance := d.draws.Float64(), d.conflicts.Chance(p.phase, merges)
+	if d.cfg.onDraw != nil {
+		d.cfg.onDraw(conflictDraw{at: at, u: u, chance: chance, conflicted: u < chance})
+	}
+	return u < chance
 }
 
 // bootConflicts draws, at a boot's read of the pull requests (bootRead), the conflict of each
@@ -908,8 +997,11 @@ func (d *driver) drawStretch(p *piece, start, end time.Time) bool {
 // at its end, M counted over the whole of it to the end its piece is sized to, so a boot moves a
 // conflict's moment and never its chance. A stretch that draws none goes on and is not drawn at
 // its end again (piece.stretchDrawn); one that draws a conflict ends at the boot with it
-// (bootConflict).
+// (bootConflict). Under the branch's Conflicts recorded no stretch draws, at a boot or at its end.
 func (d *driver) bootConflicts() error {
+	if d.cfg.Branch.recordedConflicts() {
+		return nil
+	}
 	now := d.clock.Instant()
 	for _, key := range slices.Sorted(maps.Keys(d.script.pieces)) {
 		for _, p := range d.script.pieces[key] {
@@ -1176,13 +1268,15 @@ func loopSide(loop *conflictLoop, left phase.Phase) int {
 	return leftEarlier
 }
 
-// drawnLoop is a recorded conflict loop of the window drawn with the run's seeded source for a
-// conflict drawn in left, among the loops whose work the draw takes ends as the record shows it
+// drawnLoop is a recorded conflict loop of the window drawn for the conflict p's stretch drew in
+// p's phase, among the loops whose work the draw takes ends as the record shows it
 // (conflictLoop.endsIn): drawn among the loops whose conflict left the same phase, the record's
 // work of a conflict there; where the window records none from it, among those that left a later
 // phase; and where it records none of those either, among those that left an earlier one. Nil
-// where it records none at all.
-func (d *driver) drawnLoop(left phase.Phase) *conflictLoop {
+// where it records none at all. The draw is seeded at the place of the stretch's draw (seedDraw, on
+// a stream of its own), so a rule draws the loop of a stretch's conflict as any other rule does.
+func (d *driver) drawnLoop(p *piece) *conflictLoop {
+	left := p.phase
 	var sides [loopSides][]int
 	for i := range d.loops {
 		if d.loops[i].endsIn(left) {
@@ -1192,6 +1286,7 @@ func (d *driver) drawnLoop(left phase.Phase) *conflictLoop {
 	}
 	for _, candidates := range sides {
 		if len(candidates) > 0 {
+			d.seedDraw(d.lastDraw[p.issue], loopStream)
 			return &d.loops[candidates[d.draws.IntN(len(candidates))]]
 		}
 	}
@@ -1213,7 +1308,7 @@ func (d *driver) mergeForwardRound(p *piece, kept bool) *piece {
 		own, _ := loopAfter(d.script.pieces[p.issue], p)
 		return implementingRound(own)
 	}
-	if loop := d.drawnLoop(p.phase); loop != nil {
+	if loop := d.drawnLoop(p); loop != nil {
 		return loop.round
 	}
 	return nil
@@ -1381,7 +1476,7 @@ func (d *driver) drawLoop(p *piece) {
 	if recordedConflict {
 		own, back = loopAfter(pieces, p)
 	}
-	loop := d.drawnLoop(p.phase)
+	loop := d.drawnLoop(p)
 	if loop == nil {
 		return
 	}

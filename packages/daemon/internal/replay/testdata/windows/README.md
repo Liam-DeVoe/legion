@@ -168,15 +168,16 @@ The two may differ by the reconstruction error the tool reports; these windows h
 - A stretch is one visit of an issue to the phases from testing to merging:
   from its move into testing to the move that ends the visit (its merge, a conflict, or another move back).
   M is the number of first-parent commits of the base branch (`merges/`) strictly after the stretch's start and strictly before its end;
-  a stretch is a conflict where a recorded `conflict` move ended it.
+  a stretch is a conflict where a recorded `conflict` move ended it, where a merger's move back out of merging ended it and the daemon's post of that move's reason names a conflict, or where a merger was asked to merge the base forward inside it.
   A held merge ends its stretch at the merge's own line, not at the later move to `done`.
 
 - The chance of a conflict is `1 / (1 + exp(−(b0 + b1 × log2(1 + M))))`, b0 and b1 fitted by maximum likelihood on the window's own recorded stretches, those that start at or after `from` and end before `to` (a stretch that began in the reach is left out); `Merges = zero` sets b1 to 0.
   A window that records no conflict fits a chance of 0 for every stretch, and no conflict is drawn in it.
 
 - In a replay each stretch draws once, at the moment its recorded end falls by its segments, with M counted over the replayed stretch:
-  a draw u from the run's seeded source makes a conflict where u < the chance.
-  A recorded `conflict` move is never injected: the draw makes it, or the next bullet keeps it.
+  a draw u, seeded by the run's seed, the issue, the phase and the recorded start of the segment that ends the stretch, and the number of the stretch's draws before it, makes a conflict where u < the chance, so two rules at one seed draw the same u for each stretch both run.
+  A recorded `conflict` move, or a merger's move back that counts as one, is never injected: the draw makes it, or the next bullet keeps it.
+  Under the diagnostic branch `main+conflicts=recorded` no stretch draws: each recorded conflict is made as recorded, and its issue runs its own loop.
 
 - A stretch whose recorded end is a `conflict` whose loop the record shows running to `to`, with no return to the phase the conflict left, does not draw:
   the record holds no work of the issue after the stretch but that loop, so a draw of no conflict, or of another loop, would leave the issue idle to the window's end (assumption 35).

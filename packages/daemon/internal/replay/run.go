@@ -31,7 +31,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // RunConfig is one replay of a window: the window, the rule and branch it runs under, and where
@@ -77,6 +76,9 @@ type RunConfig struct {
 	// inputs, where set, answers what every run of the window reads of it alike (windowInputs),
 	// read once for all of a window's runs (runWindow); Run reads its own where it is unset.
 	inputs func() (*windowInputs, error)
+	// onDraw, where set, is told of each draw of a stretch's conflict as the run makes it: a test's
+	// look at the draws two runs at one seed share (TestTwoRulesAtOneSeedShareEachStretchsDraw).
+	onDraw func(conflictDraw)
 }
 
 // windowInputs is what every run of one window reads of it alike, read once for all of them
@@ -280,8 +282,9 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	if cfg.Branch.AfterSendBack == lessSlotWait {
 		script.cutSlotWaits()
 	}
+	var drawn DrawnWork
 	if cfg.Branch.NeverStarted != MainBranch.NeverStarted {
-		script.drawNeverStarted(trace, cfg.Branch.NeverStarted, rand.New(rand.NewPCG(uint64(cfg.Seed), neverStartedStream)))
+		drawn = script.drawNeverStarted(trace, cfg.Branch.NeverStarted, rand.New(rand.NewPCG(uint64(cfg.Seed), neverStartedStream)))
 	}
 	var starts *firstStarts
 	if cfg.Branch.FirstStarts != firstStartsRank {
@@ -330,11 +333,12 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 		inFlight: map[string]bool{}, started: map[string]time.Time{}, childWait: map[string]time.Time{}, placed: map[int]time.Time{},
 		signOffs: map[string]bool{}, drops: map[string]string{}, used: map[int]bool{1: true, assumeRootRanksByNextStart: starts != nil},
 		snap:     newSnapshots(w.From, w.To, in.ranks),
-		counters: Divergence{Refused: []RefusedMove{}, Finished: map[int]int{}, TurnsLeftOut: map[int]int{}},
+		counters: Divergence{Refused: []RefusedMove{}, Finished: map[int]int{}, TurnsLeftOut: map[int]int{}, DrawnWork: drawn},
 	}
 	d.conflicts, d.merges, d.loops, d.stretchFrom = conflicts, in.merges, recordedLoops(script), map[string]time.Time{}
-	d.waiting, d.reopens = map[string]waitingConflict{}, map[string][]int{}
-	d.draws, d.numbers = rand.New(rand.NewPCG(uint64(cfg.Seed), conflictStream)), newPullRequestNumbers(trace)
+	d.waiting, d.reopens, d.stretchDraws, d.lastDraw = map[string]waitingConflict{}, map[string][]int{}, map[stretchDraw]int{}, map[string]stretchDraw{}
+	d.noWork, d.drawSource = map[string]bool{}, rand.NewPCG(0, 0)
+	d.draws, d.numbers = rand.New(d.drawSource), newPullRequestNumbers(trace)
 	runErr := d.run()
 	flushErr := written.Flush()
 	if err := errors.Join(runErr, flushErr); err != nil {
@@ -353,7 +357,7 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	if d.snap.firstStartHeld {
 		d.used[7] = true
 	}
-	result.Unplaced, result.Divergence, result.Assumptions = d.unplaced, d.counters, d.assumptionsUsed(len(Assumptions))
+	result.Unplaced, result.Assumptions = d.unplaced, d.assumptionsUsed(len(Assumptions))
 	result.Conflicts = d.conflicts
 	if cfg.TraceSegments {
 		result.Segments = d.segments
@@ -362,17 +366,39 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	// An issue that waits for a slot at the start began that wait where the record shows, its start
 	// state being the record's.
 	result.snapshot.beginWaitsAt(recordedWaitStarts(trace, in.ranks, w.From, result.snapshot.startWaiters()))
+	d.counters.NoWorkAdmissions, d.counters.NoWorkSlotHours = len(d.noWork), result.snapshot.heldHours(d.noWork)
+	result.Divergence = d.counters
 	result.Scorecard = d.scorecard(Measure(result.snapshot))
-	lined, err := d.lineTimeline()
+	lined, linedTrace, err := d.lineTimeline()
 	if err != nil {
 		return result, err
 	}
 	result.LineScorecard = d.scorecard(Measure(lined))
+	traceMeasures(&result.LineScorecard, linedTrace)
 	result.Gaps = Gaps(result.Scorecard, result.LineScorecard)
 	if err := d.writeOutputs(result, began); err != nil {
 		return result, err
 	}
 	return result, nil
+}
+
+// Counts is what the run counted of where it left the record's course, as `legion replay run`
+// prints it on one line beside the run's name: the moves refused, the conflicts kept and left to the
+// merger, the starts that opened no recorded work, the events fenced, the issues the start state
+// could not place, the issues admitted with no work and the slot-hours they hold, and, under a drawn
+// scenario, how many issues drew their work from each pool (DrawnWork).
+func (r RunResult) Counts() string {
+	c := r.Divergence
+	counts := fmt.Sprintf("%d moves refused, %d recorded conflicts kept for a loop open at the window's end, %d conflicts past the review left to the merger, "+
+		"%d reassertion starts, %d events fenced, %d starts with no segment left, %d segments passed over, %d unplaced issues, "+
+		"%d issues admitted with no work holding %s slot-hours",
+		len(c.Refused), c.KeptOpenLoops, c.ConflictsToMerger, c.Reassertions, c.Fenced, c.NoSegment, c.SkippedSegments, len(r.Unplaced),
+		c.NoWorkAdmissions, formatNumber(c.NoWorkSlotHours))
+	if drawn := c.DrawnWork; drawn != (DrawnWork{}) {
+		counts += fmt.Sprintf(", the drawn work of %d issues: %d from its own tree, %d of its priority and repository, %d from the window",
+			drawn.Tree+drawn.PriorityRepository+drawn.Window, drawn.Tree, drawn.PriorityRepository, drawn.Window)
+	}
+	return counts
 }
 
 // traceAssumptions names the assumptions the run rests on that the window's own record shows
@@ -404,7 +430,7 @@ func (d *driver) traceAssumptions() {
 			}
 		}
 		for _, visit := range iss.Visits {
-			if visit.Out != nil && visit.Out.Trigger == workflow.TriggerConflict && within(visit.Out.At) {
+			if visit.Out != nil && visit.Out.conflict() && within(visit.Out.At) {
 				d.used[18] = true
 			}
 		}
@@ -458,12 +484,13 @@ var laterLines = []string{passMovedSlotsLine, phaseHeldLine}
 // the record and the replay are read by one path. Every other kind the trace reads is read where the
 // replay wrote it: a window lacks such a kind only because nothing it holds wrote one (a window in
 // which no slot went back holds no `admission: slot released`), and the replay's line is of what the
-// replay did.
-func (d *driver) lineTimeline() (Timeline, error) {
+// replay did. It answers the trace beside the timeline, which the measures read from a trace alone
+// are read from (traceMeasures).
+func (d *driver) lineTimeline() (Timeline, Trace, error) {
 	w := d.window
 	before, err := d.inputs.before()
 	if err != nil {
-		return Timeline{}, err
+		return Timeline{}, Trace{}, err
 	}
 	lined := w
 	// Clipped, a run's own lines and events are appended to copies, never to the shared record's.
@@ -478,7 +505,7 @@ func (d *driver) lineTimeline() (Timeline, error) {
 	}
 	replayed, err := os.ReadFile(filepath.Join(d.cfg.Out, logFile))
 	if err != nil {
-		return Timeline{}, fmt.Errorf("replay: read the run's own log back: %w", err)
+		return Timeline{}, Trace{}, fmt.Errorf("replay: read the run's own log back: %w", err)
 	}
 	for i, line := range bytes.Split(replayed, []byte("\n")) {
 		if len(bytes.TrimSpace(line)) == 0 {
@@ -488,7 +515,7 @@ func (d *driver) lineTimeline() (Timeline, error) {
 			Msg string `json:"msg"`
 		}
 		if err := json.Unmarshal(line, &head); err != nil {
-			return Timeline{}, fmt.Errorf("replay: line %d of the run's own log is no JSON object: %w", i+1, err)
+			return Timeline{}, Trace{}, fmt.Errorf("replay: line %d of the run's own log is no JSON object: %w", i+1, err)
 		}
 		if TraceReads(head.Msg) && !listed[head.Msg] {
 			lined.Lines = append(lined.Lines, head.Msg)
@@ -502,9 +529,9 @@ func (d *driver) lineTimeline() (Timeline, error) {
 	rule := d.rule
 	t, err := buildTrace(lined, &rule)
 	if err != nil {
-		return Timeline{}, fmt.Errorf("replay: read the run's own log and events back as a record: %w", err)
+		return Timeline{}, Trace{}, fmt.Errorf("replay: read the run's own log and events back as a record: %w", err)
 	}
-	return lineTimeline(t, d.inputs.ranks, func(time.Time) record.SlotRule { return d.rule }), nil
+	return lineTimeline(t, d.inputs.ranks, func(time.Time) record.SlotRule { return d.rule }), t, nil
 }
 
 // runRecord is a run's run.json: what it ran — the rule, the branch, the seed, the slowdown, the

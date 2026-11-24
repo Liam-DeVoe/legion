@@ -347,6 +347,11 @@ The replay's copy of Dispatch also takes the claim of each `issue.claimed` and `
 Each work segment runs its recorded length times `f^((n − m)/42)`, where n is the number of issues in flight in the replay at the segment's start, and m the number in the record.
 Each stretch draws, with `--seed`, whether its head conflicts with its base, from a model that the run fits on the stretches that begin and end inside the window.
 A stretch that began in the reach is not in the fit, because the reach can be of a release that recorded a conflict as another move back.
+The fit counts a merger's conflict as a conflict: a merger's move back out of merging whose reason, as the daemon posts it on the issue, names a conflict, and a stretch in which the daemon asked the merger to merge the base forward.
+Such a move back is not entered as recorded, because the stretch that it ends draws its conflict as a stretch that a `conflict` move ends does.
+Each draw of a stretch takes its value from `--seed`, the issue, and the place of the stretch in the record: the phase and the recorded start of the work segment that ends it, and how many times the stretch drew before.
+The loop of a conflict that it draws takes its value from the same place.
+So a draw never depends on the draws before it, and two rules at one seed draw the same value for each stretch that both run, also where one rule ends a stretch earlier or runs a stretch that the other does not.
 A daemon's boot reads each pull request again, so the run also reads, for each phase, whether the window's conflicts in that phase came within 15 minutes after a boot more often than the time in that phase lies there.
 In such a phase, a stretch that spans a boot draws at the boot's read, at the chance that it would draw at its end, and a conflict that it draws enters there: the issue moves back, or a role merges the base forward and the work goes on after it, or the conflict waits for merging, as the rule's path has it.
 A stretch that draws no conflict at a boot goes on and does not draw again at its end.
@@ -396,6 +401,8 @@ Nothing that moves an issue's work reads what a holder took, but the merger's st
 
 `run` prints the window, the rule, the branch, the seed, f and the database.
 It prints each move that the daemon's code refused, with the reason, and counts what the replay could not enter as recorded, the recorded conflicts that it kept for a loop that runs to `--to`, and the conflicts past the review that it left to the merger.
+It counts the issues that the replay admitted with no work, recorded or drawn, and the slot-hours that they hold to `--to` (assumption 8), which `run.json` gives as `divergence.noWorkAdmissions` and `divergence.noWorkSlotHours`.
+Under `neverStarted=drawn` or `drawn-done` it counts how many issues drew their work from issues of their own tree, from issues of their priority and repository, and from the whole window, which `run.json` gives as `divergence.drawnWork`.
 It prints the scenario of the work of an issue that never started, the conflict model with the window that it was fitted on and its intervals, and the widest gap between the run's two scorecards.
 Last, it prints each assumption that the run rests on, with the number of outbox rows that it finished under each.
 
@@ -462,6 +469,7 @@ Up to `--parallel` runs run at once, each in a database of its own.
 Each run's files go under `--out` in `<window>/<rule>/<branch>@<f>/seed-<n>/`, and a run whose files are there already does not run again.
 `validate` deletes each run's log once it has read it, unless `--keep-logs`.
 With `--main-only` it runs the main branch at f = 1 alone, with its seeds, in place of every branch.
+Either way it also runs the diagnostic branch `main+conflicts=recorded` at f = 1, with the seed 1 alone, which keeps the record's conflicts and draws none ([The branches](#the-branches), assumption 44).
 
 It prints, for each branch and each measure, the recorded value, the replayed value, the gap, the allowance and the test.
 The replayed value is the mean of the seeds, with the values of the lowest and the highest seed.
@@ -480,7 +488,20 @@ The allowances are:
 
 A branch that misses an allowance gives no comparison.
 A window whose main branch misses one gives no comparison at all.
+
+Beside the tests, `validate` prints three diagnostics, which test nothing:
+
+- For each branch and seed, the number of issues that the replay gave a first slot in the window and the record did not, and the number that the record gave one and the replay did not.
+
+- For each branch, the trees whose design gate stood closed in the replay more than 30% longer or shorter than in the record (`gateClosedHours`).
+
+- The table of the diagnostic branch `main+conflicts=recorded`, in a section of its own.
+  It shows how the admission alone stands against the record, with the record's own conflicts in place of drawn ones.
+  It gives no comparison, and it is read beside the main branch, never in place of the main branch: no test of R5, no verdict of a window and no decision of a comparison reads it.
+
+A validation whose replays give no issue a first slot or a done, where the record gives some, is refused, with an error that names the window, because each issue's error would stand at `--to` less the record's time.
 `--from-runs <dir>` reads the validation from the runs that a `validate` or a `compare` wrote, and runs nothing.
+A window whose record names no rule, because its parts name none or more than one, keeps each issue's times in every part that it is validated under.
 `--json` prints the validation as JSON.
 
 ### `legion replay forecast`
@@ -520,7 +541,7 @@ The document gives:
 
 - the build commit of each run, the commit of the `legion` binary that made it, with the number of runs that each build commit made
 
-- each window's scorecard, read from its record
+- each window's scorecard, read from its record, with the issues done by anyone (`doneByAnyone`) beside Legion's `done`
 
 - for each rule with a grace, what the grace keeps on each window, read from the window's record: how many of the waits on another issue that gave a slot back the grace keeps the slot through, of how many such waits, and the slot-hours that it keeps ([`wait-grace` and its grace](#wait-grace-and-its-grace))
 
@@ -530,7 +551,7 @@ The document gives:
 
 - which window measures how a rule changes conflicts
 
-- the value of every measure for every rule, window and branch, with the lowest and the highest seed
+- the value of every measure for every rule, window and branch, with the lowest and the highest seed, and below each table the issues done by anyone, which only each run's line timeline gives
 
 - the name of the issues file, and what it gives
 
@@ -602,6 +623,10 @@ Each name below is the name that `scorecard` prints and that a scorecard's JSON 
 - `done`: the issues whose move to done falls in the window, each once.
   `doneAt[<KEY>]` gives the time of each.
 
+- `doneByAnyone`: the issues of the window's project that Dispatch shows reaching done in the window, by any actor, each once.
+  It holds Legion's own done and each close that a person or a session outside Legion made.
+  Only a trace gives it: the record's scorecard and a replay's `scorecard-line.json` give it, and `scorecard.json` does not (assumption 41).
+
 - `workLeft`: the issues in flight at `--to`.
   An issue that reached done and then reopened counts in both.
 
@@ -652,7 +677,7 @@ At a moment with no pair, the share is 0.
 | --- | --- |
 | `review_changes` | A review that asks for changes, from reviewing back to implementing. |
 | `send_back` | A send-back by the architect or the merger, a move back out of accepting, retro or merging that no drop from the merge queue came before. |
-| `conflict` | A head that conflicts with its base, moved back to implementing, or kept in its phase and merged forward. |
+| `conflict` | A head that conflicts with its base, moved back to implementing, or kept in its phase and merged forward, and a merger's move back out of merging where the daemon's post of its reason names a conflict. |
 | `red_checks_or_conflict` | Red checks or a conflict, which the release at 9542c6fb did not tell apart. |
 | `test_failed` | A failed test, from testing back to implementing. |
 | `queue_drop` | A move back out of merging after the issue's pull request left the merge queue. |
@@ -683,6 +708,10 @@ At a moment with no pair, the share is 0.
 - `unplaced`: the issues that the start state could not place.
 
 - `firstDayApart`: the same measures over the window's first 24 hours alone, for a window longer than a day (assumption 6).
+
+- `gateClosedHours[<KEY>]`: for each tree, by its root's key, the hours of the window in which its design gate stood closed, from the gate's first fact on.
+  A tree whose gate never stood closed has no entry.
+  Like `doneByAnyone`, only a trace gives it, the record's and a replay's own log, by one code, so `validate` can compare them.
 
 - `rule`, `branch`, `seed` and `slowdown`: what a replay ran.
   A record's scorecard carries none of them.
@@ -1007,13 +1036,17 @@ A result that rests on a knob runs under each value of that knob, so that you re
 | `answer` | `offset`, `wall` | When a person answers an ask or reviews a spec version, at the recorded offset from the question, or at the recorded time. | 5 |
 | `afterSendBack` | `recorded`, `less-slot-wait` | How long the first work after a send-back takes, its recorded length, or that length less its recorded wait for a slot. | 13 |
 | `firstStarts` | `recorded`, `rank` | The order of first starts, the order in which the record started the issues in the window, or the board's rank. | 36 |
-| `neverStarted` | `none`, `drawn`, `drawn-done` | The work of an issue that never started, none, or the work of an issue drawn from those that the record started, or from those that it finished. | 8 |
+| `neverStarted` | `none`, `drawn`, `drawn-done` | The work of an issue that never started, none, or the work of an issue drawn from those that the record started, or from those that it finished: from the issues of its own tree where the tree has any, else from those of its priority and repository, else from the whole window. | 8 |
 | `merges` | `fitted`, `zero` | The merges term of the conflict draw, as fitted on the window, or zero, with the base and the phase terms kept. | 3 |
+| `conflicts` | `drawn`, `recorded` | Where the conflicts come from, each stretch drawing its own, or the record's conflicts made as recorded with no stretch drawing, which only `validate` runs, as a diagnostic. | 44 |
 
-The slowdown factor f is the seventh knob, with the values 1, 1.2 and 1.6 (assumption 1).
-The main branch is `offset`, `offset`, `recorded`, `recorded`, `none` and `fitted`, at f = 1.
+Beside the first six knobs, the slowdown factor f is the seventh, with the values 1, 1.2 and 1.6 (assumption 1).
+The main branch is `offset`, `offset`, `recorded`, `recorded`, `none`, `fitted` and `drawn`, at f = 1.
 Each other branch changes one knob, and takes the name `main+<knob>=<value>`, for example `main+timing=wall`.
-The tool offers the main branch and the 7 branches that change one knob, each at f = 1, 1.2 and 1.6, which makes 24 branches for each rule and window.
+The tool offers the main branch and the 7 branches that change one of the first six knobs, each at f = 1, 1.2 and 1.6, which makes 24 branches for each rule and window.
+The knob `conflicts` is a diagnostic knob, which changes none of these 24 branches.
+`validate` runs its one other value, `main+conflicts=recorded`, at f = 1 beside them, and `compare` never runs it.
+Under it, each stretch that the record ends in a conflict conflicts through the daemon's own path, as a kept conflict does (assumption 35), and its issue runs its own recorded loop; each other stretch ends as recorded.
 A run's directory names its branch as `<branch>@<f>`, for example `main@1.2`.
 Under the rule that made the record, both values of `timing` and of `answer` give the record's times, because every anchor falls at its recorded time.
 
@@ -1063,6 +1096,7 @@ Each run names the assumptions that it used.
 Numbers 1 to 18 are the assumptions that the review of the first replay, below, judged.
 Numbers 19 to 22 map the release at 9542c6fb onto today's workflow, 23 is the conflict path of the rule `main`, 24 is a daemon's downtime, and 25 is its reading of outside blockers.
 Numbers 26 to 37 are the tool's own.
+Numbers 38 to 44 come from a later review of the tool's own replays of one deployment's recorded window, which read the replays, the daemon's code and the window's record.
 Each section below gives the assumption as the tool states it, and its verdict.
 It then gives the evidence in a recorded window, the direction in which the assumption moves each measure if it is wrong, and the reading of a window that would test it.
 
@@ -1083,7 +1117,7 @@ Under the rule that made the record, `validate` measures how far a replay stands
 A first replay, a prototype outside this repository, replayed one deployment's record under eight rules.
 A review of it by a model of another family named the faults that the tool fixes.
 For assumptions 1 to 18, sound, doubtful and wrong are that review's verdicts.
-For assumptions 19 to 37, a verdict is the tool's own.
+For assumptions 19 to 44, a verdict is the tool's own.
 Numbers from the prototype's record come from that deployment's daemon log over four days, in which every slot was in use for 99.95% of the time.
 That record is not in this repository.
 
@@ -1346,11 +1380,17 @@ A run's report names each issue that it could not place, with its reason.
 A scenario that gives such an issue work that finishes favours a rule that starts more issues.
 The scenario that gives it no work disfavours that rule.
 The tool names the scenario that each run used: `none`, `drawn` or `drawn-done`.
+Under `drawn` and `drawn-done`, an issue draws the work of an issue of its own kind and its own tree where the record started one in the window, or finished one for `drawn-done`; else of its kind, its priority and its repository; else of its kind in the whole window.
+Each run counts how many issues drew from each of these three, and how many it admitted with no work at all, with the slot-hours that they hold.
+Drawn work keeps none of the Dispatch events of the issue that it copies, so a drawn issue never waits on a person.
+So for a rule that admits more issues than the record did, `none` and `drawn` bracket the answer: `none` gives the admitted issues no work, and `drawn` gives them work that waits on nobody.
+Read a result of such a rule under both, never under one alone.
 
 **Evidence in a recorded window.** _The issues that never start._
 A window shows each issue handed to Legion, and whether the record ever gave it a slot.
 In the prototype's record, 394 issues waited to start at one moment, 194 children and 200 roots.
 A new root waited a median of 16.7 hours for its first slot.
+In one deployment's recorded window replayed under `none`, the extra slots of a higher cap went almost all to children that the record never started, and each held its slot with no turn to the window's end.
 
 **If it is wrong.**
 If the work that a scenario gives differs from the work that the issue would do, the replay moves the measures so for a rule that starts more issues than the record did.
@@ -2288,3 +2328,219 @@ A merge forward lasts as long whichever worker runs it, and the issue waits for 
 Collect a window recorded under a release with cybermonklabs/legion#4979, and read each conflict past the review in it.
 A conflict in accepting or retro writes the line `workflow: a confirmed conflict needs no merge yet`, and a merge forward in merging writes the line `workflow: merge forward asked`.
 Compare the time from each conflict to its merge with the same time in a window of release 22.14.1 replayed under `legion-v22.14.1`.
+
+### Assumption 38: Merging is no queue: a stretch in merging keeps its recorded length and its outcome, however many pull requests wait in the merge queue with it
+
+Doubtful.
+A replay keeps each stretch in merging as the record shows it, with its length, its drops from the merge queue and its send-backs.
+It does not read how many pull requests of the same repository wait in merging at the same time.
+So a rule or a cap that brings more work to merging at once is favoured.
+
+**Evidence in a recorded window.** _Merging against the depth of the queue._
+In one deployment's recorded window of four days, a pull request that entered merging behind more of its project's pull requests on the same repository was sent back more often, and a merged one took longer to merge.
+Close to half of all the visits to merging ended in a send-back.
+The share of the merge queue's runs that were cancelled was about 36% in that window, and about 63% on a later night, so the queue of one window is not the queue of another.
+
+**If it is wrong.**
+If more pull requests in merging make each one slower or less likely to merge, the replay moves the measures so for a rule that brings more work to merging at once.
+
+- Issues finished: Up, because the merges keep the recorded lengths and outcomes that a shorter queue gave.
+
+- Started work that waits for a slot: Down, because fewer send-backs from merging come back to wait for a slot.
+
+- Priority taken by holders: Unknown.
+  The queue changes when work comes back, not the rank of a holder.
+
+- Other delays: Down, because the loops of `queue_drop` and `send_back` keep their recorded count.
+
+- Slots: Unknown.
+  Merging holds no slot under most rules, and a rule that keeps a slot in merging holds it for the recorded time.
+
+**The reading that would test it.** _The depth of the queue at each entry into merging._
+For each visit to merging in a recorded window, count the pull requests of the same repository in merging when the visit began.
+Compare the time to the merge and the share of send-backs at a low depth and at a high depth, and do the same on a second window.
+
+### Assumption 39: A person answers at any hour of the day, and answers any number of questions at once
+
+Doubtful.
+A replay places each answer at its recorded time or at its recorded offset from its question (assumption 5).
+It does not read the hours at which the person answers, or how many questions wait for that person.
+So a rule that moves questions into hours with no answers, or that asks more of them at once, is favoured.
+
+**Evidence in a recorded window.** _The hours of the answers, and the questions that wait._
+In one deployment's recorded window, nearly every answer came from one person.
+No answer came in four hours of each day, and a question asked in the hours before them waited a median of 9 to 14 hours, where a question asked in the person's other hours waited less than an hour.
+A question also waited longer while more questions were open.
+
+**If it is wrong.**
+If a person answers only in some hours, one question at a time, the replay moves the measures so for a rule that moves questions into other hours or asks more of them at once.
+
+- Issues finished: Up, because the answers that the work waits for come sooner than the person could give them.
+
+- Started work that waits for a slot: Unknown.
+  An answer that comes sooner ends a wait sooner, and the issue can then wait for a slot.
+
+- Priority taken by holders: Unknown.
+  The hours of the answers change when a root moves on, not its rank.
+
+- Other delays: Down, because each wait on a person ends at its recorded offset, however late in the person's day the question comes.
+
+- Slots: Down for the slot-hours with no worker in a turn, because a root that keeps its slot while it waits on a person waits no longer than it did in the record.
+
+**The reading that would test it.** _A second window's answers._
+From one window, read the hours at which the person answers and how the wait grows with the questions that are open.
+Use them to predict when each question of a second window is answered, and compare the predicted times with the recorded ones.
+
+### Assumption 40: The slowdown factor f cannot be fitted on a window whose cap did not move, so f comes from outside the window
+
+Doubtful.
+A segment's length scales by `f^((n − m)/42)` (assumption 1).
+A window whose cap stayed the same has no change of load that the cap made, so it cannot show f.
+The tool runs each branch at f = 1, 1.2 and 1.6 and searches the f at which a rule's rank against `main` changes, and it fits no f.
+
+**Evidence in a recorded window.** _A window at one cap._
+In one deployment's recorded window of four days, the cap stayed at one value from before the window to its end.
+Inside the window, the mean length of a turn rose where more turns ran at once, but long turns make more turns run at once by themselves, so this shows no slowdown either way.
+The cap of that deployment changed several times in one day before the window, under one release.
+
+**If it is wrong.**
+If load slows work, a replay at f = 1 moves the measures so for a rule or a cap with more issues in flight than the record had.
+
+- Issues finished: Up, because the work keeps its recorded length at the higher load.
+
+- Started work that waits for a slot: Down, because holders give their slots back sooner than slower work would.
+
+- Priority taken by holders: Unknown.
+  The slowdown changes how long each holder works, not its rank.
+
+- Other delays: Down, because the loops keep their recorded lengths.
+
+- Slots: Down for the slot-hours in a turn, because each turn keeps its recorded length.
+
+**The reading that would test it.** _A span in which the cap moved under one release._
+Collect a window over a span in which the cap moved under one release.
+Compare the lengths of each phase's segments that started at the lower cap with those that started at the higher cap, at the same hours of the day.
+
+### Assumption 41: Work done outside Legion is the same under every rule: an issue the record shows closed outside Legion closes at its recorded time
+
+Doubtful, and the direction is unknown.
+A person or a session outside Legion that closes an issue in the record closes it at the same time in every replay.
+A person who does work that waits for a slot does less of it under a rule that starts that work sooner, and the replay gives no rule that credit or that cost.
+The scorecard gives `doneByAnyone` beside `done`, so a reader can weigh Legion's work against all of the project's.
+
+**Evidence in a recorded window.** _The issues closed outside Legion._
+In one deployment's recorded window, Legion closed about 200 issues, and about 40 issues were closed outside Legion.
+Nearly all of the 40 never held a slot, and some were of the highest priority.
+
+**If it is wrong.**
+If the work done outside Legion depends on how long Legion makes work wait, the replay moves the measures so for a rule that starts more issues.
+
+- Issues finished: Unknown.
+  A rule that starts more issues would take work that a person did outside, and Legion would finish it in place of the person.
+
+- Started work that waits for a slot: Unknown.
+  Work that a person no longer takes waits for a slot in the line.
+
+- Priority taken by holders: Unknown.
+  The issues closed outside leave the line at their recorded times.
+
+- Other delays: None, because an issue closed outside has no loop or wait in Legion.
+
+- Slots: Unknown.
+  A rule that starts the work in Legion holds slots for it.
+
+**The reading that would test it.** _Outside closes against the wait for a slot._
+Across the days of several windows, compare how many issues of the highest priorities were closed outside Legion with how long the line made new work wait for a slot.
+
+### Assumption 42: Under main, the merge forward of a drawn conflict reads no rules of the base branch, so the engine asks for it at once
+
+Wrong where the base branch's rules let a conflicting head wait.
+The daemon reads the rules of the base branch with each conflicting read, and it asks no merge forward while every required check is green and no rule asks the branch to be current.
+A replay gives the engine no such rules, so under `main` it asks a merge forward of each drawn conflict before merging at once.
+So `main` and the rules built on it are charged a merge forward that the daemon asks later or not at all, which disfavours them.
+
+**Evidence in a recorded window.** _The conflicts that need no merge yet._
+The daemon writes the line `workflow: a confirmed conflict needs no merge yet` where it asks no merge forward of a conflict.
+A window recorded under a release with the rules read holds those lines beside the lines `workflow: merge forward asked`.
+
+**If it is wrong.**
+If the base branch's rules let a conflicting head wait, the replay moves the measures so under `main` and the rules built on it.
+
+- Issues finished: Down, because each merge forward delays the issue's work.
+
+- Started work that waits for a slot: None, because a merge forward under `main` keeps the issue's phase and slot.
+
+- Priority taken by holders: None, because the holders are the same.
+
+- Other delays: Up, because each merge forward is a round of `conflict`.
+
+- Slots: Up for the slot-hours in a turn, because the implementer is in a turn for each merge forward.
+
+**The reading that would test it.** _The two lines side by side._
+In a window of a release that reads the base branch's rules, count the lines `workflow: a confirmed conflict needs no merge yet` in testing and reviewing against the lines `workflow: merge forward asked`.
+
+### Assumption 43: An answer at its recorded offset from its question can come at an hour at which the record shows no answers
+
+Doubtful, and the direction is unknown.
+Under `answer=offset`, an answer comes at its recorded offset from the replay's own question, wherever the question came (assumption 5).
+A question that a rule moves into the person's night is then answered at a time of the night at which the record shows no answers, and one moved out of it later than it would be.
+Run R0, the replay of the rule that made the record, also on `main+timing=wall` and `main+answer=wall`, where each answer and each end of a wait keeps its recorded time, and compare the two validations.
+
+**Evidence in a recorded window.** _An answer that came many hours early._
+In a replay of one deployment's recorded window under the rule that made it, a person's request for changes to a spec version came 19 hours before its recorded time, because the replay's version came earlier and the answer kept its offset.
+
+**If it is wrong.**
+If answers come at the person's own hours whatever the question's time, the replay moves the measures so.
+
+- Issues finished: Unknown.
+  An answer moved earlier lets work go on sooner, and one moved later holds it.
+
+- Started work that waits for a slot: Unknown.
+  The answers change when work comes back to wait for a slot.
+
+- Priority taken by holders: Unknown.
+  The answers change when a root moves on, not its rank.
+
+- Other delays: Unknown.
+  The waits on a person and the gate's waits change with the answers, both ways.
+
+- Slots: Unknown.
+  A root that waits on a person keeps its slot for as long as the wait lasts.
+
+**The reading that would test it.** _R0 on both timings, and the hours of the answers._
+`validate` gives `main`, `main+timing=wall` and `main+answer=wall` side by side under the rule that made the record.
+Compare their tables, above all the waits on links and on blockers and the first-slot error.
+Count the share of the replay's answers that fall in hours at which the record shows almost none.
+
+### Assumption 44: A validation of the recorded rule draws the record's conflicts again, so the first-slot test of R5 rests on the replay's own noise
+
+Doubtful.
+A replay of the rule that made the record draws each stretch's conflict from the fitted rate, and keeps only a recorded conflict whose loop runs to `--to` (assumption 35).
+So most of the record's conflicts are drawn again, on other stretches, and two seeds give an issue first slots that differ by about half as much as the replay differs from the record.
+The first-slot test can then pass or fail on the draws alone.
+`validate` runs the diagnostic branch `main+conflicts=recorded` beside R5's tests, which keeps the record's conflicts and draws none, and so reads the admission alone against the record.
+It never stands in place of the main branch, and no test of R5 and no decision reads it.
+
+**Evidence in a recorded window.** _Two seeds against the record._
+In a validation of one deployment's recorded window under its own rule, for the issues that every seed gave a first slot, the median difference between two seeds was about 45 minutes, and the median error against the record about 90 minutes.
+
+**If it is wrong.**
+If the redrawn conflicts move the first slots more than the rule does, the replay moves the measures so under the rule that made the record.
+
+- Issues finished: Unknown.
+  A redrawn conflict can fall on an issue that the record finished, or move from one that it did not.
+
+- Started work that waits for a slot: Unknown.
+  A redrawn conflict sends other work back to wait for a slot.
+
+- Priority taken by holders: Unknown.
+  The draws change which issues hold slots, not their ranks.
+
+- Other delays: Unknown.
+  The rounds of `conflict` fall on other stretches.
+
+- Slots: Unknown.
+  The loops of redrawn conflicts hold slots at other times.
+
+**The reading that would test it.** _The diagnostic branch beside the main branch._
+Compare the first-slot error of `main` with that of `main+conflicts=recorded` in one validation, and the spread of the first-slot error over the seeds of `main`.

@@ -25,10 +25,11 @@ func listsAssumption(number int) bool {
 
 // specAssumptions is the list a replay's assumptions start from: the eighteen of the tool's spec
 // (its Design, "The assumptions"), each with what it assumes and the direction it moves a result if
-// it is wrong, and the seven its plan adds, 19 to 25. Assumption 3 is as the plan's D7 restates it,
-// with a term for each phase a stretch can end in, and as plan t22 gives it its moment, a drawn
-// conflict entering at the first boot inside its stretch where the window's conflicts in its phase
-// cluster after boots.
+// it is wrong, the seven its plan adds, 19 to 25, and the seven its plan's addition D10 adds from a
+// review of the tool's replays of a recorded window, 38 to 44 (that review's findings 6 to 12).
+// Assumption 3 is as the plan's D7 restates it, with a term for each phase a stretch can end in, and
+// as plan t22 gives it its moment, a drawn conflict entering at the first boot inside its stretch
+// where the window's conflicts in its phase cluster after boots.
 var specAssumptions = []Assumption{
 	{Number: 1,
 		Text:      "A work segment takes its recorded time at any start and at any number in flight.",
@@ -105,14 +106,35 @@ var specAssumptions = []Assumption{
 	{Number: 25,
 		Text:      "An outside blocker's close is seen at the next tick or boot, as the daemon sees it.",
 		Direction: "A close the daemon saw sooner would end link waits sooner, so reading it at the tick lengthens link waits, which disfavours a rule that keeps its slot through a wait."},
+	{Number: 38,
+		Text:      "Merging is no queue: a stretch in merging keeps its recorded length and its outcome, however many pull requests wait in the merge queue with it.",
+		Direction: "Doubtful: in the record a pull request that entered merging behind more of them was sent back more often and merged later, so a rule or a cap that brings more work to merging at once is favoured. The tool keeps each stretch in merging as recorded."},
+	{Number: 39,
+		Text:      "A person answers at any hour of the day, and answers any number of questions at once.",
+		Direction: "Doubtful: in the record no answer came in some hours of each day, a question asked then waited many hours, and a question waited longer where many waited, so a rule that moves questions into those hours or asks more of them at once is favoured. The tool places each answer at its recorded time or offset (assumption 5)."},
+	{Number: 40,
+		Text:      "The slowdown factor f cannot be fitted on a window whose cap did not move, so f comes from outside the window.",
+		Direction: "Doubtful: if load slows work, a rule or a cap with more issues in flight is favoured at f = 1. The tool runs each branch at f = 1, 1.2 and 1.6 and searches the break-even f, and fits no f on a window whose cap stayed the same."},
+	{Number: 41,
+		Text:      "Work done outside Legion is the same under every rule: an issue the record shows closed outside Legion closes at its recorded time.",
+		Direction: "Doubtful, and the direction is unknown: a person who does work that waits for a slot does less of it under a rule that starts that work sooner, and the replay gives no rule that credit or that cost. The tool gives the issues done by anyone beside Legion's done."},
+	{Number: 42,
+		Text:      "Under main, the merge forward of a drawn conflict reads no rules of the base branch, so the engine asks for it at once.",
+		Direction: "Wrong where the base branch's rules let a conflicting head wait: main is charged a merge forward that its daemon asks later or not at all, which disfavours main and the rules built on it. The tool gives the engine no rules of the base branch."},
+	{Number: 43,
+		Text:      "An answer at its recorded offset from its question can come at an hour at which the record shows no answers.",
+		Direction: "Doubtful, and the direction is unknown: an answer moved into a person's night comes earlier than it would, and one moved out of it later. Run R0, the replay of the rule that made the record, also on main+timing=wall and main+answer=wall, where each answer and each end of a wait keeps its recorded time."},
+	{Number: 44,
+		Text:      "A validation of the recorded rule draws the record's conflicts again, so the first-slot test of R5 rests on the replay's own noise.",
+		Direction: "Doubtful: two seeds differ in an issue's first slot by about half as much as the replay differs from the record, so the first-slot test can pass or fail on the draws alone. The tool runs the diagnostic branch main+conflicts=recorded beside R5's tests, which keeps the record's conflicts and draws none, and never reads it in place of the main branch."},
 }
 
 // Every assumption a replay makes is the tool's to state (spec R3), starting from its spec's list:
-// the tool's list (Assumptions) holds each of the spec's eighteen and the plan's seven by its
-// number, with the text and the direction this test holds, and numbers none twice. It fails for a
-// number the tool's list lacks and for a text or a direction that differs. A number the tool adds
-// past these is the tool's own, which TestTheDocsPageGivesEveryAssumption still requires a section
-// for.
+// the tool's list (Assumptions) holds each of the spec's eighteen, the plan's seven and the seven of
+// its addition D10 by its number, with the text and the direction this test holds, and numbers none
+// twice. It fails for a number the tool's list lacks and for a text or a direction that differs. A
+// number the tool adds past these is the tool's own, which TestTheDocsPageGivesEveryAssumption still
+// requires a section for.
 func TestTheAssumptionsHoldTheSpecsList(t *testing.T) {
 	byNumber := make(map[int]Assumption, len(Assumptions))
 	for _, assumption := range Assumptions {

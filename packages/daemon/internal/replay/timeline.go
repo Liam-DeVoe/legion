@@ -419,7 +419,8 @@ func (r *lineReader) of(key string) *issueIndex {
 // not yet started, the daemon's line places it there (startingAt: a queued root handed to Legion in
 // todo, or a todo child of a tree that stands in the workflow under an open design gate, its root
 // waiting on no person), blocked while a blocker its links name is not done or its own open
-// children hold it. Its waits are those of the measures (issueWaits).
+// children hold it. Its waits are those of the measures (issueWaits), and each move back takes the
+// cause the trace read it with (Move.Cause), a merger's move back for a conflicting head a conflict.
 func lineTimeline(t Trace, ranks rankFunc, rule func(time.Time) record.SlotRule) Timeline {
 	tl := Timeline{From: t.From, To: t.To, Issues: map[string]*Course{}}
 	r := &lineReader{t: t, ranks: ranks, rule: rule, index: map[string]*issueIndex{}}
@@ -453,7 +454,7 @@ func lineTimeline(t Trace, ranks rankFunc, rule func(time.Time) record.SlotRule)
 			c = tl.course(key)
 		}
 		for _, move := range moves {
-			c.Moves = append(c.Moves, moveOf(move.At, move.From, move.To, move.Trigger, move.Drop))
+			c.Moves = append(c.Moves, CourseMove{At: move.At, From: move.From, To: move.To, Cause: move.Cause})
 		}
 		for _, round := range iss.MergeForwards {
 			c.Rounds = append(c.Rounds, CourseRound{Start: round.Start, End: round.End, Cause: CauseConflict})

@@ -11,10 +11,13 @@ import (
 
 // The streams of the run's seed: each draw of a replay reads a source of its own, seeded by the
 // run's seed on its own stream, so a draw of one kind never moves the draws of another: the
-// experiments' (newChain), the conflicts' and the never-started scenario's.
+// experiments' (newChain), the never-started scenario's, a stretch's conflict's and the loop of a
+// conflict it made. The last two are seeded afresh at each stretch's draw, by the stretch's place
+// as well (driver.seedDraw), so no draw of a conflict reads the draws before it.
 const (
 	experimentStream   = 0x7265706c6179     // "replay"
 	conflictStream     = 0x636f6e666c696374 // "conflict"
+	loopStream         = 0x6c6f6f70         // "loop"
 	neverStartedStream = 0x6e65766572       // "never"
 )
 
@@ -83,15 +86,28 @@ func treeRoot(iss *IssueTrace) bool {
 	return len(iss.Entries) == 0 || iss.Entries[0].Tree == "" || iss.Entries[0].Tree == iss.Key
 }
 
+// DrawnWork is how many issues a never-started scenario drawn or drawn-done gave the work of
+// another issue (script.drawNeverStarted), by the pool the issue drawn from was drawn in: the
+// issues of the same tree, those of the same priority and repository, or the whole window.
+type DrawnWork struct {
+	Tree               int `json:"tree"`
+	PriorityRepository int `json:"priorityRepository"`
+	Window             int `json:"window"`
+}
+
 // drawNeverStarted is the branch's never-started scenario drawn or drawn-done (assumption 8):
 // each issue of t's project handed to Legion that the record never started is given the work of an
 // issue drawn with source from the issues the record started in the window (drawn), or from those
-// it finished in it (drawn-done) — of the same kind, a root for a root and a child for a child,
-// where the window holds one — each piece of that work at its recorded offsets from the new
-// issue's own starts, unended where the drawn issue's was. Where the window holds no issue to draw
-// from, the issue keeps no work, as under none. Each issue draws once, in the order of their keys.
-func (s *script) drawNeverStarted(t Trace, scenario string, source *rand.Rand) {
-	var roots, children []string
+// it finished in it (drawn-done), of the same kind — a root for a root and a child for a child,
+// where the window holds one — and among those from the issues of its own tree, where its tree holds
+// any; else from those of its priority and its repository, where any is; else from all of them.
+// Each piece of that work stands at its recorded offsets from the new issue's own starts, unended
+// where the drawn issue's was. Where the window holds no issue to draw from, the issue keeps no
+// work, as under none. Each issue draws once, in the order of their keys. It answers how many drew
+// from each pool.
+func (s *script) drawNeverStarted(t Trace, scenario string, source *rand.Rand) DrawnWork {
+	var drawn DrawnWork
+	var roots, children, pool []string
 	for _, key := range slices.Sorted(maps.Keys(t.Issues)) {
 		iss := t.Issues[key]
 		if iss.Project != t.Project || len(s.pieces[key]) == 0 || !startedIn(t, iss) {
@@ -111,18 +127,47 @@ func (s *script) drawNeverStarted(t Trace, scenario string, source *rand.Rand) {
 		if iss.Project != t.Project || len(iss.Entries) == 0 || !neverStartedIn(t, key) {
 			continue
 		}
-		candidates := children
+		kind := children
 		if treeRoot(iss) {
-			candidates = roots
+			kind = roots
 		}
-		if len(candidates) == 0 {
-			candidates = slices.Concat(roots, children)
+		if len(kind) == 0 {
+			kind = slices.Concat(roots, children)
 		}
-		if len(candidates) == 0 {
+		if len(kind) == 0 {
 			continue
 		}
+		pool = pool[:0]
+		count := &drawn.Tree
+		for _, other := range kind {
+			if tree := iss.Entries[0].Tree; tree != "" && entryTree(t.Issues[other]) == tree {
+				pool = append(pool, other)
+			}
+		}
+		if len(pool) == 0 {
+			count = &drawn.PriorityRepository
+			for _, other := range kind {
+				if o := t.Issues[other]; o.Priority == iss.Priority && o.Repo == iss.Repo {
+					pool = append(pool, other)
+				}
+			}
+		}
+		candidates := pool
+		if len(candidates) == 0 {
+			candidates, count = kind, &drawn.Window
+		}
 		s.pieces[key] = clonePieces(s.pieces[candidates[source.IntN(len(candidates))]], key)
+		*count++
 	}
+	return drawn
+}
+
+// entryTree is the tree iss first entered the workflow in, "" where the trace holds no entry of it.
+func entryTree(iss *IssueTrace) string {
+	if len(iss.Entries) == 0 {
+		return ""
+	}
+	return iss.Entries[0].Tree
 }
 
 // clonePieces is pieces, another issue's recorded work, given to key (piece.drawn): each piece

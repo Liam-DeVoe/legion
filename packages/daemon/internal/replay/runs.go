@@ -105,10 +105,12 @@ type windowRecord struct {
 }
 
 // draws says whether a replay of the window on branch draws anything with its seed: a conflict,
-// where some recorded stretch of the window ended in one and the fitted chance is above zero, or
-// the work of an issue that never started, under a drawn scenario.
+// where some recorded stretch of the window ended in one, the fitted chance is above zero and the
+// branch draws conflicts (Branch.Conflicts drawn), or the work of an issue that never started, under
+// a drawn scenario.
 func (r windowRecord) draws(branch Branch) bool {
-	return r.Conflicted > 0 || branch.orMain().NeverStarted != MainBranch.NeverStarted
+	branch = branch.orMain()
+	return r.Conflicted > 0 && !branch.recordedConflicts() || branch.NeverStarted != MainBranch.NeverStarted
 }
 
 // seeds is the seeds a run of the window on branch takes: 1 to perDraw where it draws, and 1
@@ -164,28 +166,30 @@ func (r partRun) label() string {
 }
 
 // partRecord is a part's part.json: the window and the rule it ran, each branch it ran with its
-// seeds, the factors of the break-even search it ran the main branch at beyond its branches', and
-// what the part took — the wall time of its window, whose parts' runs share one pool (runWindow),
-// so every part of one window writes the same time; how many runs it ran at once; and the
-// process's peak memory — so a later Job can be sized from it (each run's own counts are in its
-// run.json).
+// seeds, the factors of the break-even search it ran the main branch at beyond its branches', the
+// diagnostic branches a validation ran beside them (DiagnosticBranches), and what the part took —
+// the wall time of its window, whose parts' runs share one pool (runWindow), so every part of one
+// window writes the same time; how many runs it ran at once; and the process's peak memory — so a
+// later Job can be sized from it (each run's own counts are in its run.json).
 type partRecord struct {
 	Window          string    `json:"window"`
 	Rule            string    `json:"rule"`
 	RuleCommit      string    `json:"ruleCommit"`
 	Branches        []partRun `json:"branches"`
 	BreakEven       []partRun `json:"breakEven"`
+	Diagnostics     []partRun `json:"diagnostics,omitempty"`
 	Parallel        int       `json:"parallel"`
 	WallSeconds     float64   `json:"wallSeconds"`
 	PeakMemoryBytes uint64    `json:"peakMemoryBytes"`
 }
 
-// partSpec is one part a process runs: one window under one rule, over branches and the main
-// branch at the factors breakEven names beyond them.
+// partSpec is one part a process runs: one window under one rule, over branches, the main branch
+// at the factors breakEven names beyond them, and the diagnostic branches a validation runs.
 type partSpec struct {
-	rule      record.SlotRule
-	branches  []BranchAt
-	breakEven []float64
+	rule        record.SlotRule
+	branches    []BranchAt
+	breakEven   []float64
+	diagnostics []BranchAt
 }
 
 // windowSpec is one window a process runs parts of: its directory, its name, its place among the
@@ -198,20 +202,23 @@ type windowSpec struct {
 }
 
 // RunDone is one run of a part as it ends: which run it was, whether its files were already there
-// so it was not run again (Kept), what its run.json counted, and how many runs of the process have
-// ended of how many it has planned so far (Ended, Of): a window's runs are planned when its turn
-// comes, since its seeds rest on its record.
+// so it was not run again (Kept), what its run.json counted — its facts, passes, wall time and peak
+// memory, and its admissions with no work with the slot-hours they hold (Divergence) — and how
+// many runs of the process have ended of how many it has planned so far (Ended, Of): a window's
+// runs are planned when its turn comes, since its seeds rest on its record.
 type RunDone struct {
-	Window          string
-	Rule            string
-	Branch          BranchAt
-	Seed            int64
-	Kept            bool
-	Facts           int
-	Passes          int
-	WallSeconds     float64
-	PeakMemoryBytes uint64
-	Ended, Of       int
+	Window           string
+	Rule             string
+	Branch           BranchAt
+	Seed             int64
+	Kept             bool
+	Facts            int
+	Passes           int
+	WallSeconds      float64
+	PeakMemoryBytes  uint64
+	NoWorkAdmissions int
+	NoWorkSlotHours  float64
+	Ended, Of        int
 }
 
 // runOptions is how a process runs its parts: the directory of runs, the server each run makes its
@@ -286,6 +293,9 @@ func runWindow(ctx context.Context, ws windowSpec, opts runOptions, ended, of *i
 		for _, f := range part.breakEven {
 			add(&plan.BreakEven, BranchAt{Branch: MainBranch, Slowdown: f})
 		}
+		for _, at := range part.diagnostics {
+			add(&plan.Diagnostics, at)
+		}
 		plans[i] = plan
 	}
 	*of += len(runs)
@@ -326,15 +336,15 @@ func runWindow(ctx context.Context, ws windowSpec, opts runOptions, ended, of *i
 // windowRecordFor is the record of ws's window w, as record.json under root holds it where a
 // record of the same window (its project and span) is there, at ws's place, and otherwise read from
 // the window's inputs (windowInputs.record), as it is where the record there was written before it
-// held the waits that gave a slot back (WaitsGaveBack nil) or the conflict model with its phases
-// (ConflictModel.Phases nil); either way it is written back with ws's place, where that changes the
-// file.
+// held the waits that gave a slot back (WaitsGaveBack nil), the conflict model with its phases
+// (ConflictModel.Phases nil) or the measures its trace alone gives (Scorecard.GateClosedHours nil,
+// traceMeasures); either way it is written back with ws's place, where that changes the file.
 func windowRecordFor(w Window, ws windowSpec, root string, inputs func() (*windowInputs, error)) (windowRecord, error) {
 	path := filepath.Join(root, ws.name, recordFile)
 	var rec windowRecord
 	held, err := os.ReadFile(path)
 	if err != nil || json.Unmarshal(held, &rec) != nil || rec.Name != ws.name || rec.Project != w.Project || !rec.From.Equal(w.From) ||
-		!rec.To.Equal(w.To) || rec.WaitsGaveBack == nil || rec.Conflicts.Phases == nil {
+		!rec.To.Equal(w.To) || rec.WaitsGaveBack == nil || rec.Conflicts.Phases == nil || rec.Scorecard.GateClosedHours == nil {
 		in, err := inputs()
 		if err != nil {
 			return windowRecord{}, err
@@ -382,6 +392,7 @@ func runOne(ctx context.Context, w Window, inputs func() (*windowInputs, error),
 		}
 	}
 	done.Facts, done.Passes, done.WallSeconds, done.PeakMemoryBytes = ran.Facts, ran.Passes, ran.WallSeconds, ran.PeakMemoryBytes
+	done.NoWorkAdmissions, done.NoWorkSlotHours = ran.Divergence.NoWorkAdmissions, ran.Divergence.NoWorkSlotHours
 	return done, nil
 }
 
@@ -529,14 +540,17 @@ func ReadRuns(dirs ...string) (Runs, error) {
 // keepsIssues says whether a report reads each issue's times from the line scorecards of every
 // branch of the part key: the part of a window under the rule its daemon ran, which its validation
 // reads, and the part of the window before the change under the rule of the window after it, which
-// the forecast reads. The main branch of every part keeps them too, for the issues file of a
-// comparison (readPart, writeIssues).
+// the forecast reads. A window whose record names no rule (its parts name none, or more than one)
+// keeps them for every part, since a validation of it names its rule itself and may read any part:
+// without them each issue would read as one no replay placed, its error the window's end less the
+// record's time. The main branch of every part keeps them too, for the issues file of a comparison
+// (readPart, writeIssues).
 func (r Runs) keepsIssues(key partKey) bool {
 	rec, ok := r.windows[key.window]
 	if !ok {
 		return false
 	}
-	if key.rule == rec.Rule {
+	if rec.Rule == "" || key.rule == rec.Rule {
 		return true
 	}
 	for _, other := range r.windows {
@@ -548,15 +562,16 @@ func (r Runs) keepsIssues(key partKey) bool {
 }
 
 // readPart reads the part key from the directory of runs dir: its part.json and each run its plan
-// names; keepIssues keeps each issue's times of the runs' line scorecards on every branch, and the
-// runs of the main branch (MainBranchAt) keep them whatever it says.
+// names, its diagnostic branches' among them; keepIssues keeps each issue's times of the runs' line
+// scorecards on every branch, and the runs of the main branch (MainBranchAt) keep them whatever it
+// says.
 func readPart(dir string, key partKey, keepIssues bool) (*partRead, error) {
 	partDir := filepath.Join(dir, key.window, key.rule)
 	part := &partRead{runs: map[string][]runRead{}}
 	if err := readJSON(filepath.Join(partDir, partFile), &part.plan); err != nil {
 		return nil, err
 	}
-	for _, run := range slices.Concat(part.plan.Branches, part.plan.BreakEven) {
+	for _, run := range slices.Concat(part.plan.Branches, part.plan.BreakEven, part.plan.Diagnostics) {
 		at, err := run.at()
 		if err != nil {
 			return nil, fmt.Errorf("replay: the part of %s under %s: %w", key.window, key.rule, err)
@@ -653,7 +668,10 @@ func (r Runs) part(window, rule string) (*partRead, error) {
 }
 
 // Validation is the validation of the window named window under rule (spec R5), read from the runs:
-// each branch of the part's plan against the window's record, both read from line timelines.
+// each branch of the part's plan, and each of its diagnostic branches apart, against the window's
+// record, both read from line timelines. A validation whose replays give no issue a first slot or a
+// done on any branch, where the record gives one some, is refused: its runs were read without their
+// issues' times, and every issue's error would stand at the window's end less the record's time.
 func (r Runs) Validation(window, rule string) (Validation, error) {
 	rec, err := r.window(window)
 	if err != nil {
@@ -664,12 +682,32 @@ func (r Runs) Validation(window, rule string) (Validation, error) {
 		return Validation{}, err
 	}
 	v := Validation{Window: window, Rule: rule, Record: rec.Scorecard}
-	for _, run := range part.plan.Branches {
-		at, err := run.at()
-		if err != nil {
-			return Validation{}, err
+	timed := false
+	validate := func(runs []partRun) ([]BranchValidation, error) {
+		var branches []BranchValidation
+		for _, run := range runs {
+			at, err := run.at()
+			if err != nil {
+				return nil, err
+			}
+			cards := lineCards(part.runs[at.Label()])
+			for _, card := range cards {
+				timed = timed || len(card.FirstSlot) > 0 || len(card.DoneAt) > 0
+			}
+			branches = append(branches, ValidateBranch(rec.Scorecard, at, cards))
 		}
-		v.Branches = append(v.Branches, ValidateBranch(rec.Scorecard, at, lineCards(part.runs[at.Label()])))
+		return branches, nil
+	}
+	if v.Branches, err = validate(part.plan.Branches); err != nil {
+		return Validation{}, err
+	}
+	if v.Diagnostics, err = validate(part.plan.Diagnostics); err != nil {
+		return Validation{}, err
+	}
+	if !timed && (len(rec.Scorecard.FirstSlot) > 0 || len(rec.Scorecard.DoneAt) > 0) {
+		return Validation{}, fmt.Errorf("replay: the validation of the window %s under %s holds no replay that gives an issue a first slot or a done, "+
+			"where the record gives %d first slots and %d done: its runs were read without their issues' times", window, rule,
+			len(rec.Scorecard.FirstSlot), len(rec.Scorecard.DoneAt))
 	}
 	return v, nil
 }

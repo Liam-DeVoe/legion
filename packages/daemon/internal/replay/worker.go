@@ -900,9 +900,11 @@ func (d *driver) neverStarted(key string) bool {
 // whose script holds no work the branch's scenario gave it (Branch.NeverStarted, assumption 8:
 // drawNeverStarted gives it the drawn work under drawn and drawn-done): under none, or where the
 // window holds no issue to draw from, the start opens a segment with no turn and no end, which
-// holds what the start took to the window's end.
+// holds what the start took to the window's end. The run counts the issue among its admissions with
+// no work (Divergence.NoWorkAdmissions).
 func (d *driver) neverStartedWork(key string, role claim.Role, served phase.Phase) error {
 	d.used[8] = true
+	d.noWork[key] = true
 	p := &piece{issue: key, index: len(d.script.pieces[key]), phase: served, role: role, opens: opensOnStart, ends: endOpen,
 		start: d.clock.Instant(), m: d.script.inFlightAt(d.clock.Instant())}
 	d.script.pieces[key] = append(d.script.pieces[key], p)

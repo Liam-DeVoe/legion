@@ -107,6 +107,8 @@ type builtIssue struct {
 	Labels    []string
 	BlockedBy []string
 	Created   time.Time
+	// Priority is the issue's Dispatch priority, nil for none.
+	Priority *int
 	// Claim is who holds the issue's Dispatch claim, since when; nil for nobody.
 	Claim *builtClaim
 
@@ -134,6 +136,7 @@ type filing struct {
 	Rank      string
 	Labels    []string
 	BlockedBy []string
+	Priority  *int
 }
 
 // eventActor is a Dispatch event's actor, and the origin Dispatch records a session with: nil for a
@@ -382,7 +385,7 @@ func (b *windowBuilder) issueEvent(at time.Time, key, kind string, actor eventAc
 		Number        int         `json:"number"`
 		Parent        *string     `json:"parent"`
 		Primary       string      `json:"primary_artifact_id"`
-		Priority      *string     `json:"priority"`
+		Priority      *int        `json:"priority"`
 		Project       string      `json:"project"`
 		Rank          string      `json:"rank"`
 		Repo          *string     `json:"repo"`
@@ -404,6 +407,7 @@ func (b *windowBuilder) issueEvent(at time.Time, key, kind string, actor eventAc
 		Labels:        append([]string{}, issue.Labels...),
 		LastSeq:       next,
 		Number:        issue.Number,
+		Priority:      issue.Priority,
 		Parent:        parent,
 		Primary:       b.artifact(key),
 		Project:       builtProject,
@@ -452,7 +456,7 @@ func (b *windowBuilder) filedBy(at time.Time, key string, f filing, actor eventA
 		generation = root.generation
 	}
 	b.issues[key] = &builtIssue{Key: key, Number: number, Title: f.Title, Status: f.Status, Parent: f.Parent, Rank: f.Rank,
-		Labels: slices.Clone(f.Labels), BlockedBy: slices.Clone(f.BlockedBy), Created: at, tree: tree, generation: generation}
+		Labels: slices.Clone(f.Labels), BlockedBy: slices.Clone(f.BlockedBy), Created: at, Priority: f.Priority, tree: tree, generation: generation}
 	b.issueEvent(at, key, "issue.created", actor)
 }
 
@@ -468,6 +472,15 @@ func (b *windowBuilder) edit(at time.Time, key string, change func(*builtIssue))
 func (b *windowBuilder) daemonWrites(at time.Time, key, status string) {
 	b.t.Helper()
 	b.changed(at, key, eventActor{Kind: "session", ID: dispatch.DaemonSession(key)}, func(issue *builtIssue) { issue.Status = status })
+}
+
+// daemonPosts is the recorded daemon's post of body on key at at (message.created by its own
+// session), as its outbox posts a status write's reason before the write (internal/daemon's
+// outbox.status).
+func (b *windowBuilder) daemonPosts(at time.Time, key, body string) {
+	b.t.Helper()
+	b.event(at, key, "message.created", eventActor{Kind: "session", ID: dispatch.DaemonSession(key)},
+		map[string]any{"id": fmt.Sprintf("00000000-0000-4000-9000-%012x", b.issue(key).seq+1), "body": body, "body_truncated": false})
 }
 
 // changed is the issue event of a change of key by actor.

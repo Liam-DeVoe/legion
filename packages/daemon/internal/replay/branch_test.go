@@ -2,7 +2,12 @@ package replay
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
+	"math/rand/v2"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -32,11 +37,13 @@ func knobValuesOf(b Branch) map[string]string {
 
 // The branches of design section 7 are the main branch and each change of one knob to one of its
 // other values, each at each slowdown factor, 24 in all: at f 1.0, 1.2 and 1.6, the main branch
-// (offset, offset, recorded, recorded, none, fitted), named main, and main+timing=wall,
-// main+answer=wall, main+afterSendBack=less-slot-wait, main+firstStarts=rank,
+// (offset, offset, recorded, recorded, none, fitted, and drawn conflicts), named main, and
+// main+timing=wall, main+answer=wall, main+afterSendBack=less-slot-wait, main+firstStarts=rank,
 // main+neverStarted=drawn, main+neverStarted=drawn-done and main+merges=zero, each differing from
-// the main branch in its one named knob and read back whole by BranchNamed. A name with a value its
-// knob does not take is refused.
+// the main branch in its one named knob and read back whole by BranchNamed. The diagnostic knob of
+// the conflicts' source changes none of them: its one other value is the one diagnostic branch,
+// main+conflicts=recorded at f 1 (DiagnosticBranches), which BranchNamed reads back too. A name with
+// a value its knob does not take is refused.
 func TestBranchesAreTheMainBranchAndEachOneKnobChange(t *testing.T) {
 	branches := Branches()
 	if len(branches) != 24 {
@@ -45,9 +52,15 @@ func TestBranchesAreTheMainBranchAndEachOneKnobChange(t *testing.T) {
 	wantNames := []string{"main", "main+afterSendBack=less-slot-wait", "main+answer=wall", "main+firstStarts=rank", "main+merges=zero",
 		"main+neverStarted=drawn", "main+neverStarted=drawn-done", "main+timing=wall"}
 	wantMain := map[string]string{"timing": "offset", "answer": "offset", "afterSendBack": "recorded", "firstStarts": "recorded",
-		"neverStarted": "none", "merges": "fitted"}
+		"neverStarted": "none", "merges": "fitted", "conflicts": "drawn"}
 	if got := knobValuesOf(MainBranch); !reflect.DeepEqual(got, wantMain) {
 		t.Errorf("the main branch is %v, want %v", got, wantMain)
+	}
+	diagnostics := DiagnosticBranches()
+	if len(diagnostics) != 1 || diagnostics[0].Label() != "main+conflicts=recorded@1" || !diagnostics[0].Branch.recordedConflicts() {
+		t.Errorf("the diagnostic branches are %v, want main+conflicts=recorded@1 alone", branchNames(diagnostics))
+	} else if parsed, err := BranchNamed(diagnostics[0].Branch.Name); err != nil || parsed != diagnostics[0].Branch {
+		t.Errorf("the diagnostic branch %+v reads back by its name as %+v (%v)", diagnostics[0].Branch, parsed, err)
 	}
 	for _, f := range []float64{1.0, 1.2, 1.6} {
 		var names []string
@@ -746,6 +759,161 @@ func TestTheNeverStartedKnobGivesAnUnstartedIssueItsScenario(t *testing.T) {
 				t.Errorf("ACME-3's planner started turns at %s, want at %s", describeTimes(got), describeTimes(c.planner))
 			}
 		})
+	}
+}
+
+// An issue the replay admits and gives no work, recorded or drawn, holds its slot with no worker to
+// the window's end (assumption 8), and each run counts such admissions with the slot-hours they
+// hold, in run.json and in the line `legion replay run` prints of what it counted. The test
+// replays neverStartedWindow under main, where ACME-3, which the record never started, takes a slot
+// at 11:30: on the main branch, whose scenario is none, it holds the slot with no work to 13:00, one
+// admission of 1.5 slot-hours; on main+neverStarted=drawn it runs drawn work, and nothing is
+// counted.
+func TestANoWorkAdmissionIsCountedWithTheSlotHoursItHolds(t *testing.T) {
+	window := neverStartedWindow(t)
+	for _, c := range []struct {
+		branch    string
+		admitted  int
+		slotHours float64
+	}{{"main", 1, 1.5}, {"main+neverStarted=drawn", 0, 0}} {
+		t.Run(c.branch, func(t *testing.T) {
+			branch, err := BranchNamed(c.branch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := t.TempDir()
+			result, err := Run(context.Background(), RunConfig{Window: window, Rule: mainRule(t), Branch: branch, Seed: 1, Slowdown: 1,
+				PGDSN: replayDSN(t), Out: out})
+			if err != nil {
+				t.Fatalf("replay the window on %s: %v", c.branch, err)
+			}
+			data, err := os.ReadFile(filepath.Join(out, runFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ran runRecord
+			if err := json.Unmarshal(data, &ran); err != nil {
+				t.Fatal(err)
+			}
+			for _, counted := range []struct {
+				where string
+				d     Divergence
+			}{{"the result", result.Divergence}, {"run.json", ran.Divergence}} {
+				if counted.d.NoWorkAdmissions != c.admitted || math.Abs(counted.d.NoWorkSlotHours-c.slotHours) > 1.0/3600 {
+					t.Errorf("%s counts %d admissions with no work holding %v slot-hours, want %d holding %v", counted.where,
+						counted.d.NoWorkAdmissions, counted.d.NoWorkSlotHours, c.admitted, c.slotHours)
+				}
+			}
+			if want := fmt.Sprintf("%d issues admitted with no work holding %s slot-hours", c.admitted, formatNumber(c.slotHours)); !strings.Contains(result.Counts(), want) {
+				t.Errorf("the run's line of what it counted, %q, does not say %q", result.Counts(), want)
+			}
+		})
+	}
+}
+
+// drawnTreeWindow is a window from 09:00 to 13:00 at a cap of 5 of three trees, each root promoted
+// at once and waiting for its children from 15 minutes in, its slot given back. ACME-1's children
+// are ACME-2, of priority 1, and ACME-3, of priority 2; ACME-4's are ACME-5, of priority 1, and
+// ACME-6, of priority 4; ACME-7's is ACME-8, of priority 3. A person releases every child to todo at
+// 09:20. ACME-2 starts at once and ACME-8 at 09:25, each working 15 minutes in each phase to its
+// merge, at 11:05 and 11:10. ACME-3, ACME-5 and ACME-6 wait on ACME-9, an issue nobody hands to
+// Legion, and never start.
+func drawnTreeWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.capped(5)
+	b.boot(clock(8, 30))
+	priority := func(p int) *int { return &p }
+	b.file(clock(8, 50), "ACME-9", filing{Title: "Order the shelf labels", Status: "todo", Rank: "z9"})
+	trees := []struct {
+		root, rank string
+		children   []string
+		priorities []int
+	}{{"ACME-1", "a1", []string{"ACME-2", "ACME-3"}, []int{1, 2}}, {"ACME-4", "a2", []string{"ACME-5", "ACME-6"}, []int{1, 4}},
+		{"ACME-7", "a3", []string{"ACME-8"}, []int{3}}}
+	for i, tree := range trees {
+		promotedRoot(b, clock(9, i), tree.root, tree.rank)
+	}
+	for i, tree := range trees {
+		for j, child := range tree.children {
+			var blocked []string
+			if child != "ACME-2" && child != "ACME-8" {
+				blocked = []string{"ACME-9"}
+			}
+			b.file(clock(9, 5+i), child, filing{Title: "Ship the " + child + " change", Parent: tree.root, Tree: tree.root, Status: "backlog",
+				Rank: fmt.Sprintf("b%d%d", i, j), BlockedBy: blocked, Priority: priority(tree.priorities[j])})
+		}
+	}
+	for i, tree := range trees {
+		b.rootWaitsForChildren(clock(9, 15+i), tree.root, len(tree.children))
+	}
+	for _, child := range []string{"ACME-2", "ACME-3", "ACME-5", "ACME-6", "ACME-8"} {
+		b.edit(clock(9, 20), child, setStatus("todo"))
+	}
+	b.childStarts(clock(9, 20), "ACME-2")
+	b.childStarts(clock(9, 25), "ACME-8")
+	var steps []builtStep
+	for i, child := range []string{"ACME-2", "ACME-8"} {
+		at := func(hour, minute int) time.Time { return clock(hour, minute).Add(time.Duration(5*i) * time.Minute) }
+		steps = append(steps, builtStep{at(9, 35), child, phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted},
+			builtStep{at(9, 50), child, phase.Implementing, phase.Testing, workflow.TriggerImplementationReady},
+			builtStep{at(10, 5), child, phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed},
+			builtStep{at(10, 20), child, phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved},
+			builtStep{at(10, 35), child, phase.Accepting, phase.Retro, workflow.TriggerSignOff},
+			builtStep{at(10, 50), child, phase.Retro, phase.Merging, workflow.TriggerRetroCompleted},
+			builtStep{at(11, 5), child, phase.Merging, phase.Done, workflow.TriggerPullRequestMerged})
+	}
+	slices.SortStableFunc(steps, func(x, y builtStep) int { return x.at.Compare(y.at) })
+	stepThrough(b, steps...)
+	return b.build()
+}
+
+// A drawn scenario draws an unstarted issue's work from the issues of its own tree first (the red
+// team's finding 0): among the issues of its kind the record started in the window (drawn), or
+// finished in it (drawn-done), those of its own tree where its tree has any, else those of its
+// priority and repository, else every one of them, as before. Each run names how many draws came
+// from each. The test reads drawnTreeWindow, whose started children ACME-2 and ACME-8 both finish:
+// under each drawn scenario ACME-3 draws ACME-2's work, its own tree's; ACME-5, whose tree started
+// no child, draws ACME-2's, the one child of its priority, 1; and ACME-6, of a priority no started
+// child has, draws from both. A replay on main+neverStarted=drawn counts one draw from each pool,
+// and names them in the line of what it counted.
+func TestADrawnIssueTakesTheWorkOfItsOwnTreeFirst(t *testing.T) {
+	window := drawnTreeWindow(t)
+	in, err := newWindowInputs(window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := DrawnWork{Tree: 1, PriorityRepository: 1, Window: 1}
+	for _, scenario := range []string{neverStartedDrawn, neverStartedDrawnDone} {
+		t.Run(scenario, func(t *testing.T) {
+			s, err := buildScript(in.trace, in.events, in.lines)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := s.drawNeverStarted(in.trace, scenario, rand.New(rand.NewPCG(1, neverStartedStream))); got != want {
+				t.Errorf("the draws came from the pools %+v, want %+v", got, want)
+			}
+			firstStart := func(key string) time.Time {
+				if len(s.pieces[key]) == 0 {
+					return time.Time{}
+				}
+				return s.pieces[key][0].start
+			}
+			for _, drew := range []string{"ACME-3", "ACME-5"} {
+				if got := firstStart(drew); !got.Equal(firstStart("ACME-2")) {
+					t.Errorf("%s's drawn work begins at %s, want ACME-2's from %s", drew, stamp(got), stamp(firstStart("ACME-2")))
+				}
+			}
+			if got := firstStart("ACME-6"); !got.Equal(firstStart("ACME-2")) && !got.Equal(firstStart("ACME-8")) {
+				t.Errorf("ACME-6's drawn work begins at %s, want ACME-2's or ACME-8's", stamp(got))
+			}
+		})
+	}
+	result, _ := knobRun(t, window, mainRule(t), "main+neverStarted=drawn")
+	if result.Divergence.DrawnWork != want {
+		t.Errorf("the run counts the draws %+v, want %+v", result.Divergence.DrawnWork, want)
+	}
+	if named := "1 from its own tree, 1 of its priority and repository, 1 from the window"; !strings.Contains(result.Counts(), named) {
+		t.Errorf("the run's line of what it counted, %q, does not say %q", result.Counts(), named)
 	}
 }
 

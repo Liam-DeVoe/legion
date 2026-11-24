@@ -123,8 +123,10 @@ type IssueTrace struct {
 	Key, Project string
 	// Title is the issue's title as its newest issue event shows it, and Repo the repository
 	// Dispatch resolves it to (resolved_repo, or repo where none is resolved) at the first issue
-	// event that named one: the repository the daemon records it on.
-	Title, Repo string
+	// event that named one: the repository the daemon records it on. Priority is its Dispatch
+	// priority as the newest issue event that carries the member writes it ("" for none), which a
+	// drawn scenario draws by (script.drawNeverStarted).
+	Title, Repo, Priority string
 	// Entries is each time the issue entered the workflow: its first entry and each reopen.
 	Entries []Entry
 	// Visits is the issue's phase visits in order, each run's from its entry at admitted to its
@@ -231,9 +233,12 @@ func (iss *IssueTrace) sessionAt(role claim.Role, at time.Time) string {
 // a rule whose conflicting head keeps it or, since cybermonklabs/legion#4979, past the review under
 // every rule, a round of conflict that moves no phase: from the engine's ask (MergeForwardAsked) to
 // the landing of the head it left (MergeForwardLanded), or to the issue's leave; End zero while it
-// stands at the window's end. An ask while one stands is of the same round.
+// stands at the window's end. An ask while one stands is of the same round. Phase is the phase the
+// issue stood in at the round's ask: merging for a merger's merge forward, which counts its stretch
+// as one that conflicted (recordedStretches).
 type MergeForwardRound struct {
 	Start, End time.Time
+	Phase      phase.Phase
 }
 
 // Entry is one entry of an issue into the workflow at admitted: the Dispatch event that made it a
@@ -691,6 +696,7 @@ func readTrace(w Window, ran *record.SlotRule) (Trace, []LogLine, []readEvent, e
 		named:       map[entryRef]bool{},
 		parked:      map[string]uint64{},
 		sessions:    map[string][]RecordedSession{},
+		posts:       map[string][]time.Time{},
 	}
 	for _, msg := range w.Lines {
 		b.held[msg] = true
@@ -795,6 +801,67 @@ type traceBuilder struct {
 	// shown is each issue's Dispatch states as its issue events show them (shownOf), indexed the
 	// first time a wait reads the issue, once every event is read (dispatchStateAt).
 	shown map[string]shownStates
+	// posts is, by issue, the moment of each post of the daemon's own naming a merger's move back
+	// out of merging for a conflicting head (mergerConflictPost), which finish reads the moves of
+	// (mergerConflicts).
+	posts map[string][]time.Time
+}
+
+// messageCreated is the type of the Dispatch event of a post on an issue, which the daemon's outbox
+// makes of a backward move's reason (workflow's moveReason) before it writes the move's status.
+const messageCreated = "message.created"
+
+// mergerMoveBack is the daemon's post of a merger's move back out of merging (workflow's
+// backwardMoveReason, in every release since 20.42.5): the phase it went to, and the merger's own
+// words.
+var mergerMoveBack = regexp.MustCompile(`(?s)Legion moved this issue from merging back to (\S+) at the merger's request: (.*)`)
+
+// conflictWord is a word that names a conflict in a merger's words.
+var conflictWord = regexp.MustCompile(`(?i)\bconflict`)
+
+// mergerConflictPost says whether raw, a message.created event, is the daemon's post of a merger's
+// move back out of merging (mergerMoveBack) whose words name a conflicting head (conflictWord).
+func mergerConflictPost(raw json.RawMessage) bool {
+	var event struct {
+		Payload struct {
+			Body string `json:"body"`
+		} `json:"payload"`
+	}
+	if json.Unmarshal(raw, &event) != nil {
+		return false
+	}
+	posted := mergerMoveBack.FindStringSubmatch(event.Payload.Body)
+	return posted != nil && conflictWord.MatchString(posted[2])
+}
+
+// mergerConflicts makes each merger's move back of iss out of merging that a post of the daemon's
+// names as one for a conflicting head (posts) a conflict (plan D7): the move back that comes last
+// at or before the post, where the record made it by backward and it has a send-back's cause, takes
+// the cause conflict and the source of a recorded conflict, left to the draw as every recorded
+// conflict move is (MoveSources), so the stretch it ends counts as a conflict in the fit
+// (recordedStretches) and its loop as a round of conflict in the measures. Both copies of the move,
+// the Out of the visit it ends and the In of the visit it begins, change alike.
+func (b *traceBuilder) mergerConflicts(iss *IssueTrace) {
+	for _, at := range b.posts[iss.Key] {
+		last := -1
+		for i := range iss.Visits {
+			if out := iss.Visits[i].Out; out != nil && !out.At.After(at) && out.From == phase.Merging && phase.MovesBack(out.From, out.To) {
+				last = i
+			}
+		}
+		if last < 0 {
+			continue
+		}
+		out := iss.Visits[last].Out
+		if out.Trigger != workflow.TriggerBackward || out.Cause != CauseSendBack {
+			continue
+		}
+		out.Cause, out.Source = CauseConflict, MoveSources[workflow.TriggerConflict]
+		if next := last + 1; next < len(iss.Visits) && iss.Visits[next].In != nil && iss.Visits[next].In.At.Equal(out.At) {
+			in := iss.Visits[next].In
+			in.Cause, in.Source = out.Cause, out.Source
+		}
+	}
 }
 
 // entryRef is one entry of an issue's trace: its issue and its index in the issue's Entries.
@@ -887,6 +954,9 @@ func (b *traceBuilder) onEvent(read readEvent) {
 		if iss.Repo == "" {
 			iss.Repo = repo
 		}
+		if priority, shown := payload.priority(); shown {
+			iss.Priority = priority
+		}
 		for linked, number := range payload.linkedPullRequests() {
 			if iss.LinkedPullRequests == nil {
 				iss.LinkedPullRequests = map[string]int{}
@@ -895,6 +965,8 @@ func (b *traceBuilder) onEvent(read readEvent) {
 		}
 		b.childFiled(iss, event)
 		b.maybeEnter(iss, event)
+	case event.Type == messageCreated && daemonWrote(event.Actor, event.Key) && mergerConflictPost(read.raw):
+		b.posts[event.Key] = append(b.posts[event.Key], event.At)
 	case event.Verdict != nil:
 		kind := GateApproved
 		if event.Type == "artifact.changes_requested" {
@@ -921,17 +993,31 @@ func (b *traceBuilder) sessionSeen(event DispatchEvent) {
 
 // issuePayload is what the trace reads of an issue event's payload that ParseDispatchEvent leaves
 // out, each member as the event writes it: its title, its repository and the one Dispatch resolved
-// for it, and its external links. The event is decoded once (readIssuePayload), and each reading
-// decodes the members it reads (subject, linkedPullRequests); unread is a payload that does not
-// read, from which neither reads anything.
+// for it, its priority and its external links. The event is decoded once (readIssuePayload), and
+// each reading decodes the members it reads (subject, priority, linkedPullRequests); unread is a
+// payload that does not read, from which none reads anything.
 type issuePayload struct {
 	Payload struct {
 		Title         json.RawMessage `json:"title"`
 		Repo          json.RawMessage `json:"repo"`
 		ResolvedRepo  json.RawMessage `json:"resolved_repo"`
+		Priority      json.RawMessage `json:"priority"`
 		ExternalLinks json.RawMessage `json:"external_links"`
 	} `json:"payload"`
 	unread bool
+}
+
+// priority is the event's priority as its payload writes it, "" for null, and whether the payload
+// carries the member at all.
+func (p issuePayload) priority() (string, bool) {
+	member := p.Payload.Priority
+	if p.unread || member == nil {
+		return "", false
+	}
+	if string(member) == "null" {
+		return "", true
+	}
+	return string(member), true
 }
 
 // readIssuePayload reads raw, an issue event, into its issuePayload.
@@ -1223,7 +1309,7 @@ func (b *traceBuilder) onLine(line LogLine) {
 	case MergeForwardAsked:
 		iss := b.issue(l.Issue)
 		if n := len(iss.MergeForwards); n == 0 || !iss.MergeForwards[n-1].End.IsZero() {
-			iss.MergeForwards = append(iss.MergeForwards, MergeForwardRound{Start: at})
+			iss.MergeForwards = append(iss.MergeForwards, MergeForwardRound{Start: at, Phase: l.Phase})
 		}
 	case MergeForwardLanded:
 		iss := b.issue(l.Issue)
@@ -1650,11 +1736,12 @@ func (b *traceBuilder) turnEnds(ref ClaimRef, at time.Time, by TurnEnd, ownLine 
 
 // finish builds what the reading left to build once every line and event is read: the generations
 // of the children that entered a live tree, the per-slot moves no record line took, each issue's
-// slot spans, the slots it infers held from before the reach, each issue's link, children and
-// person waits' ends and the sessions of its claims, the slots it infers held at the window's
-// start, its check of the slots against the record's count there, each issue's worker starts and
-// segments, and the ticks; and it ends what stands at the window's end. A session whose title
-// names an issue the trace holds nothing else of runs no claim a replay writes, and is left out.
+// slot spans, the slots it infers held from before the reach, each merger's move back that a post
+// names as one for a conflict (mergerConflicts), each issue's link, children and person waits' ends
+// and the sessions of its claims, the slots it infers held at the window's start, its check of the
+// slots against the record's count there, each issue's worker starts and segments, and the ticks;
+// and it ends what stands at the window's end. A session whose title names an issue the trace holds
+// nothing else of runs no claim a replay writes, and is left out.
 func (b *traceBuilder) finish() {
 	b.childGenerations()
 	b.t.Slots = append(b.t.Slots, b.buffered...)
@@ -1668,6 +1755,7 @@ func (b *traceBuilder) finish() {
 		if len(iss.Visits) > 0 && len(iss.Dispatch) == 0 {
 			b.unplaced(UnplacedEntry, key, iss.Visits[0].Enter, "%s runs in the workflow and the window holds no Dispatch event of it", key)
 		}
+		b.mergerConflicts(iss)
 		b.linkWaits(iss)
 		b.childrenWaitEnds(iss)
 		b.personWaitEnds(iss)

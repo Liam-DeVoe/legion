@@ -62,6 +62,15 @@ type Scorecard struct {
 	FirstSlot map[string]time.Time `json:"firstSlot"`
 	// DoneAt is when each issue that reached done in the window did, by issue key.
 	DoneAt map[string]time.Time `json:"doneAt"`
+	// DoneByAnyone is how many issues of the window's project Dispatch shows reaching done in
+	// [From, To), by any actor: Legion's own done (Done) and a close made outside Legion alike.
+	// GateClosedHours is, for each tree, by its root's key, the hours of [From, To) its design gate
+	// stood closed, from its first gate fact on. Both are read from a trace alone (traceMeasures),
+	// the record's (Score) and a replay's own log and events (RunResult.LineScorecard), by one code;
+	// a snapshot scorecard holds neither, nor does the first day apart. A record read before it held
+	// the gates has GateClosedHours nil, and one read since an empty map where no tree has a gate.
+	DoneByAnyone    int                `json:"doneByAnyone"`
+	GateClosedHours map[string]float64 `json:"gateClosedHours"`
 	// Assumptions is the assumptions of the spec this run's measures rest on, by number.
 	Assumptions []int `json:"assumptions"`
 	// Scenario is the never-started scenario the run took (Branch.NeverStarted).
@@ -103,10 +112,11 @@ func Score(w Window) (Scorecard, error) {
 }
 
 // scoreTrace is the scorecard of the record t is the trace of (Score), for a reader that builds the
-// trace once for more than the scorecard.
+// trace once for more than the scorecard, with what its trace alone gives (traceMeasures).
 func scoreTrace(t Trace) Scorecard {
 	card := Measure(lineTimeline(t, ranksOf(t), t.ruleAt))
 	card.Source, card.Unplaced, card.Assumptions = "record", unplacedAtStart(t), []int{}
+	traceMeasures(&card, t)
 	return card
 }
 

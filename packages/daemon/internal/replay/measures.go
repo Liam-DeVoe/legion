@@ -193,6 +193,86 @@ func (card *Scorecard) addRound(cause Cause, lasted time.Duration) {
 	card.Loops[string(cause)] = loop
 }
 
+// traceMeasures fills what a scorecard reads from a trace alone, beside the measures of R4 that
+// Measure reads from its timeline, by one code for the record's trace (scoreTrace) and a replay's
+// own (Run's line scorecard): the issues of t's project Dispatch shows reaching done in [From, To)
+// by any actor (Scorecard.DoneByAnyone), and each tree's hours of [From, To) its design gate stood
+// closed, read as the line timeline reads the gate (gateStepsOf), for each tree whose gate stood
+// closed at all (Scorecard.GateClosedHours).
+func traceMeasures(card *Scorecard, t Trace) {
+	card.GateClosedHours = map[string]float64{}
+	for _, key := range slices.Sorted(maps.Keys(t.Issues)) {
+		iss := t.Issues[key]
+		if iss.Project != t.Project {
+			continue
+		}
+		if doneIn(iss, t.From, t.To) {
+			card.DoneByAnyone++
+		}
+		if len(iss.Gates) == 0 {
+			continue
+		}
+		gate, hours := gateStepsOf(iss, t.GateLines), 0.0
+		for i, at := range gate.at {
+			if gate.open[i] {
+				continue
+			}
+			start, end := maxTime(at, t.From), t.To
+			if i+1 < len(gate.at) {
+				end = minTime(gate.at[i+1], t.To)
+			}
+			if end.After(start) {
+				hours += end.Sub(start).Hours()
+			}
+		}
+		if hours > 0 {
+			card.GateClosedHours[key] = hours
+		}
+	}
+}
+
+// doneIn says whether iss's Dispatch status turned done in [from, to), by any actor: an issue event
+// in the span that shows it done where the event before it did not.
+func doneIn(iss *IssueTrace, from, to time.Time) bool {
+	wasDone := false
+	for _, event := range iss.Dispatch {
+		if event.Issue == nil {
+			continue
+		}
+		done := event.Issue.Status == record.DoneStatus
+		if done && !wasDone && !event.At.Before(from) && event.At.Before(to) {
+			return true
+		}
+		wasDone = done
+	}
+	return false
+}
+
+// heldHours is the slot-hours the issues keys names hold in tl's span: the time each stands in a
+// state that holds a slot, summed in the order of their keys.
+func (tl Timeline) heldHours(keys map[string]bool) float64 {
+	hours := 0.0
+	for _, key := range slices.Sorted(maps.Keys(keys)) {
+		c := tl.Issues[key]
+		if c == nil {
+			continue
+		}
+		for i, stint := range c.States {
+			if !stint.Holds {
+				continue
+			}
+			start, end := maxTime(stint.At, tl.From), tl.To
+			if i+1 < len(c.States) {
+				end = minTime(c.States[i+1].At, tl.To)
+			}
+			if end.After(start) {
+				hours += end.Sub(start).Hours()
+			}
+		}
+	}
+	return hours
+}
+
 // stateBefore is the state the course stands in just before at, and false where it stands in
 // none yet.
 func (c *Course) stateBefore(at time.Time) (IssueState, bool) {

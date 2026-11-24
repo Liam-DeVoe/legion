@@ -34,6 +34,12 @@ type Branch struct {
 	// Merges is the merges term of the conflict draw: "fitted", the rate fitted to the window's
 	// base branches, or "zero" (assumption 3).
 	Merges string `json:"merges"`
+	// Conflicts is where the conflicts of the replay come from: "drawn", each stretch drawing its
+	// own at the fitted rate (assumption 3), or "recorded", the record's own conflicts made through
+	// the daemon's path where the record shows them and no other drawn (assumption 44). It is a
+	// diagnostic knob (knob.diagnostic): a validation runs its other value beside R5's tests, to read
+	// the admission alone at the record's conflicts, and no comparison runs it.
+	Conflicts string `json:"conflicts"`
 }
 
 // The values of the knobs other than the main branch's, as the driver reads them.
@@ -51,11 +57,13 @@ const (
 	neverStartedDrawnDone = "drawn-done"
 	// mergesZero is Merges' value that sets the merges term of the conflict draw to zero.
 	mergesZero = "zero"
+	// conflictsRecorded is Conflicts' value that keeps the record's conflicts and draws none.
+	conflictsRecorded = "recorded"
 )
 
 // MainBranch is the branch a replay runs unless it is asked for another: events and answers at
 // their recorded offsets, work after a send-back and first starts as recorded, no work for an
-// issue that never started, and the fitted merges term.
+// issue that never started, the fitted merges term and drawn conflicts.
 var MainBranch = Branch{
 	Name:          "main",
 	Timing:        "offset",
@@ -64,17 +72,21 @@ var MainBranch = Branch{
 	FirstStarts:   "recorded",
 	NeverStarted:  "none",
 	Merges:        "fitted",
+	Conflicts:     "drawn",
 }
 
 // knob is one knob of a branch: its JSON name, the field of a Branch it sets, and its values,
-// the main branch's first.
+// the main branch's first. A diagnostic knob is one only a validation runs, beside R5's tests
+// (DiagnosticBranches): no comparison runs it (Branches), and no test of R5 reads it.
 type knob struct {
-	name   string
-	field  func(*Branch) *string
-	values []string
+	name       string
+	field      func(*Branch) *string
+	values     []string
+	diagnostic bool
 }
 
-// knobs is every knob of a branch, in the order of design section 7, each with its values.
+// knobs is every knob of a branch, in the order of design section 7, each with its values, and
+// then the diagnostic knob of the conflicts' source.
 var knobs = []knob{
 	{name: "timing", field: func(b *Branch) *string { return &b.Timing }, values: []string{MainBranch.Timing, valueWall}},
 	{name: "answer", field: func(b *Branch) *string { return &b.Answer }, values: []string{MainBranch.Answer, valueWall}},
@@ -83,6 +95,8 @@ var knobs = []knob{
 	{name: "neverStarted", field: func(b *Branch) *string { return &b.NeverStarted },
 		values: []string{MainBranch.NeverStarted, neverStartedDrawn, neverStartedDrawnDone}},
 	{name: "merges", field: func(b *Branch) *string { return &b.Merges }, values: []string{MainBranch.Merges, mergesZero}},
+	{name: "conflicts", field: func(b *Branch) *string { return &b.Conflicts }, values: []string{MainBranch.Conflicts, conflictsRecorded},
+		diagnostic: true},
 }
 
 // Slowdowns is the slowdown factors f every branch is run at (design section 7; spec R3): 1.0,
@@ -97,14 +111,13 @@ type BranchAt struct {
 }
 
 // Branches is every branch of design section 7 at every slowdown factor, 24 in all: at each
-// factor of Slowdowns, the main branch and each change of one knob to one of its other values.
+// factor of Slowdowns, the main branch and each change of one knob to one of its other values. A
+// diagnostic knob changes none of them (DiagnosticBranches).
 func Branches() []BranchAt {
 	changed := []Branch{MainBranch}
 	for _, k := range knobs {
-		for _, value := range k.values[1:] {
-			branch := MainBranch
-			*k.field(&branch), branch.Name = value, MainBranch.Name+"+"+k.name+"="+value
-			changed = append(changed, branch)
+		if !k.diagnostic {
+			changed = append(changed, k.changes()...)
 		}
 	}
 	branches := make([]BranchAt, 0, len(Slowdowns)*len(changed))
@@ -114,6 +127,34 @@ func Branches() []BranchAt {
 		}
 	}
 	return branches
+}
+
+// DiagnosticBranches is every branch a validation runs beside R5's tests and no comparison runs:
+// the main branch with one diagnostic knob changed to one of its other values, at f 1. Its table
+// is read beside R5's and never in place of the main branch's.
+func DiagnosticBranches() []BranchAt {
+	var branches []BranchAt
+	for _, k := range knobs {
+		if !k.diagnostic {
+			continue
+		}
+		for _, branch := range k.changes() {
+			branches = append(branches, BranchAt{Branch: branch, Slowdown: 1})
+		}
+	}
+	return branches
+}
+
+// changes is the main branch with k changed to each of its other values, in their order, each
+// named main+<knob>=<value>.
+func (k knob) changes() []Branch {
+	changed := make([]Branch, 0, len(k.values)-1)
+	for _, value := range k.values[1:] {
+		branch := MainBranch
+		*k.field(&branch), branch.Name = value, MainBranch.Name+"+"+k.name+"="+value
+		changed = append(changed, branch)
+	}
+	return changed
 }
 
 // BranchNamed is the branch name names: "main", the main branch, or "main+<knob>=<value>", the
@@ -167,3 +208,7 @@ func (b Branch) timingWall() bool { return b.Timing == valueWall }
 // answerWall says whether b keeps a person's answers at their recorded times, not at their recorded
 // offsets from their questions (Answer wall).
 func (b Branch) answerWall() bool { return b.Answer == valueWall }
+
+// recordedConflicts says whether b keeps the record's conflicts and draws none (Conflicts
+// recorded).
+func (b Branch) recordedConflicts() bool { return b.Conflicts == conflictsRecorded }

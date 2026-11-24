@@ -269,12 +269,13 @@ func BreakEven(factors []float64, rule, main map[float64]Costs) BreakEvenResult 
 }
 
 // runPlan is what each part of a validation or a comparison runs: its branches, the factors of
-// the break-even search it runs the main branch at beyond them, and the seeds of a branch with a
-// draw.
+// the break-even search it runs the main branch at beyond them, the diagnostic branches a
+// validation runs beside them (DiagnosticBranches), and the seeds of a branch with a draw.
 type runPlan struct {
-	branches  []BranchAt
-	breakEven []float64
-	perDraw   int
+	branches    []BranchAt
+	breakEven   []float64
+	diagnostics []BranchAt
+	perDraw     int
 }
 
 // fullPlan is a comparison's plan: every branch of Branches, the main branch at each factor of
@@ -457,21 +458,24 @@ type ValidateConfig struct {
 // validatePlan is the branches and seeds cfg's validation runs: a test's own plan where it set one
 // (ValidateConfig.plan); with MainOnly, the main branch at f 1 alone (MainBranchAt) with the seeds
 // of a branch with a draw; and every branch the tool offers, each with its seeds (fullPlan),
-// otherwise.
+// otherwise. Either runs the diagnostic branches beside them (DiagnosticBranches), which no
+// comparison runs.
 func validatePlan(cfg ValidateConfig) runPlan {
 	if cfg.plan != nil {
 		return *cfg.plan
 	}
-	if cfg.MainOnly {
-		return runPlan{branches: []BranchAt{MainBranchAt}, perDraw: SeedsPerDraw}
+	plan := runPlan{branches: []BranchAt{MainBranchAt}, perDraw: SeedsPerDraw}
+	if !cfg.MainOnly {
+		plan = fullPlan()
 	}
-	return fullPlan()
+	plan.diagnostics = DiagnosticBranches()
+	return plan
 }
 
 // RunValidate runs cfg.Window under cfg.Rule on every branch with its seeds, or on the main branch
-// alone with its seeds under cfg.MainOnly (validatePlan), into cfg.Out, up to cfg.Parallel runs at
-// once, and answers its validation (spec R5), read back from the runs. A rule other than the one
-// the window's parts say its daemon ran is refused.
+// alone with its seeds under cfg.MainOnly (validatePlan), and on the diagnostic branches beside
+// either, into cfg.Out, up to cfg.Parallel runs at once, and answers its validation (spec R5), read
+// back from the runs. A rule other than the one the window's parts say its daemon ran is refused.
 func RunValidate(ctx context.Context, cfg ValidateConfig) (Validation, error) {
 	name, err := windowName(cfg.Window)
 	if err != nil {
@@ -486,7 +490,7 @@ func RunValidate(ctx context.Context, cfg ValidateConfig) (Validation, error) {
 		return Validation{}, fmt.Errorf("replay: the window %s ran the rule %s, and a validation replays the rule the daemon ran, not %s", name, ran, rule.Name)
 	}
 	plan := validatePlan(cfg)
-	spec := windowSpec{dir: cfg.Window, name: name, parts: []partSpec{{rule: rule, branches: plan.branches}}}
+	spec := windowSpec{dir: cfg.Window, name: name, parts: []partSpec{{rule: rule, branches: plan.branches, diagnostics: plan.diagnostics}}}
 	if err := runWindows(ctx, []windowSpec{spec}, runOptions{root: cfg.Out, pgDSN: cfg.PGDSN, parallel: cfg.Parallel, perDraw: plan.perDraw,
 		keepLogs: cfg.KeepLogs, progress: cfg.Progress, build: cfg.BuildCommit}); err != nil {
 		return Validation{}, err
@@ -1033,7 +1037,8 @@ func coded[S ~string](names []S) []string {
 	return out
 }
 
-// writeScorecards writes each window's scorecard, read from its record.
+// writeScorecards writes each window's scorecard, read from its record, with the issues done by
+// anyone beside Legion's done (Scorecard.DoneByAnyone).
 func (c comparison) writeScorecards(p *printer) {
 	p.line("## The scorecard of each window, read from its record")
 	for _, w := range c.windows {
@@ -1045,6 +1050,7 @@ func (c comparison) writeScorecards(p *printer) {
 		for _, m := range MeasuresOf(w.Scorecard) {
 			p.line("| %s | %s |", m.Name, formatNumber(m.Value))
 		}
+		p.line("| doneByAnyone | %d |", w.Scorecard.DoneByAnyone)
 		p.line("| issues with a first slot | %d |", len(w.Scorecard.FirstSlot))
 	}
 	p.line("")
@@ -1108,7 +1114,8 @@ func (c comparison) writeConflicts(p *printer) {
 }
 
 // writeMatrix writes the value of every measure for every rule, window and branch, read from the
-// snapshot timeline, a table for each window and branch with a column for each rule.
+// snapshot timeline, a table for each window and branch with a column for each rule, and below them
+// the issues done by anyone, which only a run's line timeline gives (Scorecard.DoneByAnyone).
 func (c comparison) writeMatrix(p *printer) {
 	p.line("## Every measure for every rule, window and branch (the snapshot timeline)")
 	for i, w := range c.windows {
@@ -1153,6 +1160,17 @@ func (c comparison) writeMatrix(p *printer) {
 				}
 				p.line("%s", row)
 			}
+			row := "| doneByAnyone (the line timeline) |"
+			for _, rule := range c.rules {
+				runs := c.runs.parts[partKey{window: w.Name, rule: rule}].runs[at.Label()]
+				column := make([]float64, len(runs))
+				for k, run := range runs {
+					column[k] = float64(run.line.DoneByAnyone)
+				}
+				mean, low, high := spread(column)
+				row += " " + spreadCell(mean, low, high, len(column)) + " |"
+			}
+			p.line("%s", row)
 		}
 	}
 	p.line("")

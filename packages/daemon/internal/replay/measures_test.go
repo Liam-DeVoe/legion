@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -213,7 +214,9 @@ func TestSlotHoursByTurn(t *testing.T) {
 // expect.json names main on the main branch is one whose replay under main keeps the record's
 // course, so its record's scorecard is the one its README works out by hand, but for what a replay
 // alone names: the source is the record, and a record runs under no rule, branch, seed or
-// slowdown, rests on none of a replay's assumptions and takes no never-started scenario.
+// slowdown, rests on none of a replay's assumptions and takes no never-started scenario. What a
+// scorecard reads from its trace alone (traceMeasures), which the replay's snapshot scorecard in
+// expect.json holds none of, is not compared here.
 func TestScorecardOfTheRecord(t *testing.T) {
 	scored := 0
 	for _, name := range fixtureWindowNames(t) {
@@ -230,6 +233,7 @@ func TestScorecardOfTheRecord(t *testing.T) {
 			}
 			want.Source, want.Rule, want.Branch, want.Seed, want.Slowdown = "record", "", "", 0, 0
 			want.Assumptions, want.Scenario = []int{}, ""
+			want.DoneByAnyone, want.GateClosedHours = got.DoneByAnyone, got.GateClosedHours
 			for _, diff := range scorecardDiffs(got, want) {
 				t.Errorf("the record of %s: %s", name, diff)
 			}
@@ -542,4 +546,100 @@ func validationGap(measure string, recorded float64) float64 {
 		gap = gapThirty
 	}
 	return gap.Allowed(recorded)
+}
+
+// gateHoursWindow is a window from 09:00 to 12:00 in a deployment that gates the spec. ACME-1, a
+// root promoted at 09:05, has its architect write version 1 of its spec at 09:17 and register it at
+// 09:20 unapproved, which closes its gate; a person approves the version at 10:20, the gate opens
+// and the root's planning begins; its architect writes version 2 at 11:00, which closes the gate
+// again to the window's end. The gate stands closed from 09:20 to 10:20 and from 11:00 to 12:00.
+func gateHoursWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(12, 0))
+	b.gated(record.DesignStepSpec)
+	b.boot(clock(9, 0))
+	b.file(clock(9, 5), "ACME-1", filing{Title: "Export the widget list", Status: "todo", Rank: "a0", Labels: handedToLegion})
+	b.rootPromoted(clock(9, 5), "ACME-1")
+	b.specWritten(clock(9, 17), "ACME-1")
+	b.turnEnds(clock(9, 20), "ACME-1", claim.RoleArchitect)
+	b.registered(clock(9, 20), "ACME-1", false)
+	b.approves(clock(10, 20), "ACME-1", "")
+	b.gateOpened(clock(10, 20), "ACME-1", intake.DispatchArtifactApproved, 1)
+	b.rootFirstPhase(clock(10, 20), "ACME-1")
+	b.specRevised(clock(11, 0), "ACME-1", 2)
+	b.gateClosed(clock(11, 0), "ACME-1", intake.DispatchArtifactVersion, 2)
+	return b.build()
+}
+
+// A scorecard gives each tree the hours its design gate stood closed in the window, from the gate's
+// first fact on, read by one code from the record's trace and from a replay's own log (the red
+// team's finding 5), so validate can name a tree whose gate the replay holds otherwise than the
+// record. The test reads gateHoursWindow, whose ACME-1 gate stands closed from 09:20 to 10:20 and
+// from 11:00 to 12:00: the record's scorecard gives it 2 hours, and so does the line scorecard of its
+// replay under main, the rule that recorded it. Neither gives another tree.
+func TestTheScorecardGivesEachTreesClosedGateHours(t *testing.T) {
+	window := gateHoursWindow(t)
+	card, err := Score(window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Run(context.Background(), RunConfig{Window: window, Rule: mainRule(t), Branch: MainBranch, Seed: 1, Slowdown: 1,
+		PGDSN: replayDSN(t), Out: t.TempDir()})
+	if err != nil {
+		t.Fatalf("replay the window: %v", err)
+	}
+	for _, c := range []struct {
+		name  string
+		hours map[string]float64
+	}{{"the record's scorecard", card.GateClosedHours}, {"the replay's line scorecard", result.LineScorecard.GateClosedHours}} {
+		if len(c.hours) != 1 || math.Abs(c.hours["ACME-1"]-2) > 1.0/3600 {
+			t.Errorf("%s gives the gates closed %v hours, want ACME-1's alone, 2", c.name, c.hours)
+		}
+	}
+}
+
+// doneByAnyoneWindow is a window from 09:00 to 12:00 under main. ACME-1, a root promoted at 09:00,
+// works 15 minutes in each phase to its merge at 11:00, the done Legion makes. ACME-2, which nobody
+// hands to Legion, is filed at 09:10 and closed done by a person at 10:30. ACME-3, filed at 08:10,
+// was closed by a person at 08:40, before the window.
+func doneByAnyoneWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(12, 0))
+	b.boot(clock(8, 0))
+	b.file(clock(8, 10), "ACME-3", filing{Title: "Paint the shelf numbers", Status: "todo", Rank: "z3"})
+	b.edit(clock(8, 40), "ACME-3", setStatus(record.DoneStatus))
+	b.file(clock(9, 0), "ACME-1", filing{Title: "Export the widget list", Status: "todo", Rank: "a1", Labels: handedToLegion})
+	b.file(clock(9, 10), "ACME-2", filing{Title: "Sweep the loading bay", Status: "todo", Rank: "z2"})
+	b.rootThroughReview(clock(9, 0), "ACME-1")
+	stepThrough(b, builtStep{clock(10, 15), "ACME-1", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved},
+		builtStep{clock(10, 30), "ACME-1", phase.Accepting, phase.Retro, workflow.TriggerSignOff})
+	b.edit(clock(10, 30), "ACME-2", setStatus(record.DoneStatus))
+	stepThrough(b, builtStep{clock(10, 45), "ACME-1", phase.Retro, phase.Merging, workflow.TriggerRetroCompleted},
+		builtStep{clock(11, 0), "ACME-1", phase.Merging, phase.Done, workflow.TriggerPullRequestMerged})
+	return b.build()
+}
+
+// A scorecard gives, beside the issues Legion moves to done (done), the issues of the window's
+// project Dispatch shows reaching done in the window by any actor (the red team's finding 9): work
+// done outside Legion is kept as recorded under every rule, and a reader weighs Legion's done
+// against it. The test reads doneByAnyoneWindow: Legion's done is ACME-1's, and done by anyone
+// ACME-1's and ACME-2's, ACME-3's coming before the window, in the record's scorecard and in the
+// line scorecard of its replay under main, the rule that recorded it.
+func TestTheScorecardCountsTheIssuesDoneByAnyone(t *testing.T) {
+	window := doneByAnyoneWindow(t)
+	card, err := Score(window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Run(context.Background(), RunConfig{Window: window, Rule: mainRule(t), Branch: MainBranch, Seed: 1, Slowdown: 1,
+		PGDSN: replayDSN(t), Out: t.TempDir()})
+	if err != nil {
+		t.Fatalf("replay the window: %v", err)
+	}
+	for _, c := range []struct {
+		name string
+		card Scorecard
+	}{{"the record's scorecard", card}, {"the replay's line scorecard", result.LineScorecard}} {
+		if c.card.Done != 1 || c.card.DoneByAnyone != 2 {
+			t.Errorf("%s gives %d done and %d done by anyone, want 1 and 2", c.name, c.card.Done, c.card.DoneByAnyone)
+		}
+	}
 }

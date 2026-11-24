@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"math/rand/v2"
 	"slices"
@@ -946,5 +947,324 @@ func TestAConflictPastTheReviewIsTheMergers(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// builtStep is one end of a work segment a built window writes in time order (segmentEnds): its
+// moment, its issue, the phases it moves between and its trigger; a move to done is also the issue's
+// leave of the workflow.
+type builtStep struct {
+	at       time.Time
+	key      string
+	from, to phase.Phase
+	trigger  workflow.TriggerKind
+}
+
+// stepThrough writes steps in their order, each the end of a work segment (segmentEnds) and, for a
+// move to done, the issue's leave.
+func stepThrough(b *windowBuilder, steps ...builtStep) {
+	b.t.Helper()
+	for _, step := range steps {
+		b.segmentEnds(step.at, step.key, step.from, step.to, step.trigger)
+		if step.to == phase.Done {
+			b.leaves(step.at, step.key, record.DoneStatus)
+		}
+	}
+}
+
+// sharedDrawsWindow is a window from 09:00 to to, recorded under legion-v20.42.5 at a cap of 2, its
+// inputs reaching back to the daemon's boot at 08:30, whose base branch took no commit, so each
+// stretch draws at one chance. ACME-1, a root promoted at 09:00, works 15 minutes in each phase to
+// its review and 30 in each phase after it: accepting at 10:15, retro at 10:45, merging at 11:15 and
+// its merge at 11:45. ACME-2, a root promoted at 09:05, works 15 minutes in each phase; a conflict
+// moves it back from reviewing at 10:20, its loop is 15 minutes in implementing and 15 in testing,
+// it is back in reviewing at 10:50, and it merges at 11:50. ACME-3, a root handed to Legion at 09:10,
+// waits for a slot to ACME-1's accepting at 10:15, the rule keeping no slot past the review; it
+// works 15 minutes in each phase, its tester fails it at 11:15 and passes it at 11:45, and it merges
+// at 12:45. The five recorded stretches inside the window, ACME-1's, ACME-2's two and ACME-3's two,
+// hold one conflict, so each stretch draws at a chance of 0.2.
+func sharedDrawsWindow(t *testing.T, to time.Time) Window {
+	b := newWindowBuilder(t, clock(9, 0), to)
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.capped(2)
+	b.boot(clock(8, 30))
+	b.file(clock(9, 0), "ACME-1", filing{Title: "Export the widget list", Status: "todo", Rank: "a1", Labels: handedToLegion})
+	b.file(clock(9, 5), "ACME-2", filing{Title: "Count the widgets per shelf", Status: "todo", Rank: "a2", Labels: handedToLegion})
+	b.file(clock(9, 10), "ACME-3", filing{Title: "Price the widgets by weight", Status: "todo", Rank: "a3", Labels: handedToLegion})
+	b.rootThroughReview(clock(9, 0), "ACME-1")
+	b.rootThroughReview(clock(9, 5), "ACME-2")
+	stepThrough(b, builtStep{clock(10, 15), "ACME-1", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved})
+	b.rootPromoted(clock(10, 15), "ACME-3")
+	stepThrough(b, builtStep{clock(10, 20), "ACME-2", phase.Reviewing, phase.Implementing, workflow.TriggerConflict})
+	b.rootDesigned(clock(10, 30), "ACME-3")
+	stepThrough(b,
+		builtStep{clock(10, 35), "ACME-2", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady},
+		builtStep{clock(10, 45), "ACME-1", phase.Accepting, phase.Retro, workflow.TriggerSignOff},
+		builtStep{clock(10, 45), "ACME-3", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted},
+		builtStep{clock(10, 50), "ACME-2", phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed},
+		builtStep{clock(11, 0), "ACME-3", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady},
+		builtStep{clock(11, 5), "ACME-2", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved},
+		builtStep{clock(11, 15), "ACME-1", phase.Retro, phase.Merging, workflow.TriggerRetroCompleted},
+		builtStep{clock(11, 15), "ACME-3", phase.Testing, phase.Implementing, workflow.TriggerTesterFailed},
+		builtStep{clock(11, 20), "ACME-2", phase.Accepting, phase.Retro, workflow.TriggerSignOff},
+		builtStep{clock(11, 30), "ACME-3", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady},
+		builtStep{clock(11, 35), "ACME-2", phase.Retro, phase.Merging, workflow.TriggerRetroCompleted},
+		builtStep{clock(11, 45), "ACME-1", phase.Merging, phase.Done, workflow.TriggerPullRequestMerged},
+		builtStep{clock(11, 45), "ACME-3", phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed},
+		builtStep{clock(11, 50), "ACME-2", phase.Merging, phase.Done, workflow.TriggerPullRequestMerged},
+		builtStep{clock(12, 0), "ACME-3", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved},
+		builtStep{clock(12, 15), "ACME-3", phase.Accepting, phase.Retro, workflow.TriggerSignOff},
+		builtStep{clock(12, 30), "ACME-3", phase.Retro, phase.Merging, workflow.TriggerRetroCompleted},
+		builtStep{clock(12, 45), "ACME-3", phase.Merging, phase.Done, workflow.TriggerPullRequestMerged})
+	return b.build()
+}
+
+// drawsUnder replays window under rule on the main branch at seed 1, and answers each draw of a
+// stretch's conflict it made, in its order.
+func drawsUnder(t *testing.T, window Window, rule string) []conflictDraw {
+	t.Helper()
+	var draws []conflictDraw
+	if _, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, rule), Branch: MainBranch, Seed: 1, Slowdown: 1,
+		PGDSN: replayDSN(t), Out: t.TempDir(), onDraw: func(draw conflictDraw) { draws = append(draws, draw) }}); err != nil {
+		t.Fatalf("replay the window under %s: %v", rule, err)
+	}
+	return draws
+}
+
+// drawPlace is the place of a stretch's draw as a test names it: the issue, the phase and the
+// recorded start of the piece that ends the stretch, and the draw's count among that stretch's.
+func drawPlace(at stretchDraw) string {
+	return fmt.Sprintf("%s's stretch ended by its %s piece from %s, draw %d", at.issue, at.phase, at.start.UTC().Format("15:04"), at.n+1)
+}
+
+// byPlace is draws by their place (drawPlace).
+func byPlace(draws []conflictDraw) map[string]conflictDraw {
+	placed := make(map[string]conflictDraw, len(draws))
+	for _, draw := range draws {
+		placed[drawPlace(draw.at)] = draw
+	}
+	return placed
+}
+
+// Two rules run at one seed share the draw of each stretch both run (common random numbers): a
+// stretch's draw is keyed by the run's seed, its issue and its place in the record, never by its
+// place in one stream read in the order the run reaches its stretches, so a rule that moves when a
+// stretch ends draws for it what any other rule draws. The test replays sharedDrawsWindow at seed 1
+// under main and under keep-past-review, whose slots past the review hold ACME-3 back to the first
+// merge, 90 minutes or so after main gives it ACME-1's slot at 10:15, so the two rules reach their
+// stretches in another order. With the window to 18:00 every stretch ends inside it under both
+// rules: both draw the same five stretches, in another order, each the same draw and each the same
+// conflict. With the window to 13:30, ACME-3's last stretch, which ends by 13:00 under main and
+// after 13:50 under keep-past-review, draws under main alone, and every other stretch draws alike
+// under both.
+func TestTwoRulesAtOneSeedShareEachStretchsDraw(t *testing.T) {
+	replayDSN(t)
+	places := func(draws []conflictDraw) []string {
+		out := make([]string, len(draws))
+		for i, draw := range draws {
+			out[i] = drawPlace(draw.at)
+		}
+		return out
+	}
+	t.Run("no stretch moves", func(t *testing.T) {
+		window := sharedDrawsWindow(t, clock(18, 0))
+		main, kept := drawsUnder(t, window, record.MainRule.Name), drawsUnder(t, window, "keep-past-review")
+		if len(main) != 5 || len(kept) != 5 {
+			t.Fatalf("main drew %v and keep-past-review %v, want the window's five stretches each", places(main), places(kept))
+		}
+		if slices.Equal(places(main), places(kept)) {
+			t.Errorf("both rules drew the stretches in one order, %v, so the window moves no draw in the run's order", places(main))
+		}
+		other := byPlace(kept)
+		for _, draw := range main {
+			place := drawPlace(draw.at)
+			k, both := other[place]
+			switch {
+			case !both:
+				t.Errorf("%s drew under main and not under keep-past-review, which drew %v", place, places(kept))
+			case k.u != draw.u || k.conflicted != draw.conflicted:
+				t.Errorf("%s drew %v (a conflict: %t) under main and %v (a conflict: %t) under keep-past-review", place, draw.u, draw.conflicted,
+					k.u, k.conflicted)
+			}
+		}
+	})
+	t.Run("one stretch moves", func(t *testing.T) {
+		window := sharedDrawsWindow(t, clock(13, 30))
+		main, kept := byPlace(drawsUnder(t, window, record.MainRule.Name)), byPlace(drawsUnder(t, window, "keep-past-review"))
+		moved := drawPlace(stretchDraw{issue: "ACME-3", start: clock(12, 30), phase: phase.Merging})
+		if _, drew := main[moved]; !drew {
+			t.Errorf("%s did not draw under main, which drew %v", moved, slices.Sorted(maps.Keys(main)))
+		}
+		for place := range kept {
+			if _, both := main[place]; !both {
+				t.Errorf("%s drew under keep-past-review and not under main", place)
+			}
+		}
+		for place, draw := range main {
+			k, both := kept[place]
+			switch {
+			case place == moved && both:
+				t.Errorf("%s drew under keep-past-review too, where it ends after the window's end", place)
+			case place != moved && !both:
+				t.Errorf("%s drew under main and not under keep-past-review", place)
+			case both && (k.u != draw.u || k.conflicted != draw.conflicted):
+				t.Errorf("%s drew %v (a conflict: %t) under main and %v (a conflict: %t) under keep-past-review", place, draw.u, draw.conflicted,
+					k.u, k.conflicted)
+			}
+		}
+	})
+}
+
+// mergerConflictWindow is a window from 09:00 to 13:00 recorded under legion-v20.42.5 at a cap of 3,
+// its inputs reaching back to the daemon's boot at 08:30. ACME-1, ACME-2 and ACME-3, roots
+// promoted at 09:00, 09:05 and 09:10, work 15 minutes in each phase to merging at 10:45, 10:50 and
+// 10:55. ACME-1's merger moves it back to implementing at 11:00, and the daemon posts the move's
+// reason, which names a conflicting head; its loop is 15 minutes in each phase back to merging at
+// 12:15, and it merges at 12:30. ACME-2's merger moves it back at 11:05 for red checks, which the
+// daemon's post names, and its loop runs as ACME-1's, five minutes later. ACME-3's merger is asked to
+// merge the base forward at 11:00 onto its conflicting head; the merge forward lands at 11:10, and
+// it merges at 11:25.
+func mergerConflictWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.capped(3)
+	b.boot(clock(8, 30))
+	for i, key := range []string{"ACME-1", "ACME-2", "ACME-3"} {
+		b.file(clock(9, 5*i), key, filing{Title: "Ship the " + key + " change", Status: "todo", Rank: fmt.Sprintf("a%d", i+1), Labels: handedToLegion})
+		b.rootThroughReview(clock(9, 5*i), key)
+	}
+	at := func(hour, minute, i int) time.Time { return clock(hour, minute).Add(time.Duration(5*i) * time.Minute) }
+	for i, key := range []string{"ACME-1", "ACME-2", "ACME-3"} {
+		stepThrough(b, builtStep{at(10, 15, i), key, phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved},
+			builtStep{at(10, 30, i), key, phase.Accepting, phase.Retro, workflow.TriggerSignOff},
+			builtStep{at(10, 45, i), key, phase.Retro, phase.Merging, workflow.TriggerRetroCompleted})
+	}
+	b.info(clock(11, 0), mergeForwardAskedLine, "issue", "ACME-3", "tree", "ACME-3", "phase", string(phase.Merging), "pullRequest", 3,
+		"head", "6d1c0a9e4b7f2358c0d1e2f3a4b5c6d7e8f90a1b", "base", "main", "why", "conflicting")
+	for i, key := range []string{"ACME-1", "ACME-2"} {
+		stepThrough(b, builtStep{at(11, 0, i), key, phase.Merging, phase.Implementing, workflow.TriggerBackward})
+	}
+	b.daemonPosts(clock(11, 0).Add(2*time.Second), "ACME-1",
+		"Legion moved this issue from merging back to implementing at the merger's request: The head conflicts with the base, so it cannot merge until the base is merged forward.")
+	b.daemonPosts(clock(11, 5).Add(2*time.Second), "ACME-2",
+		"Legion moved this issue from merging back to implementing at the merger's request: The required checks are red on the head.")
+	b.info(clock(11, 10), mergeForwardLandedLine, "issue", "ACME-3", "tree", "ACME-3", "pullRequest", 3)
+	stepThrough(b, builtStep{clock(11, 25), "ACME-3", phase.Merging, phase.Done, workflow.TriggerPullRequestMerged})
+	for i, key := range []string{"ACME-1", "ACME-2"} {
+		stepThrough(b, builtStep{at(11, 15, i), key, phase.Implementing, phase.Testing, workflow.TriggerImplementationReady},
+			builtStep{at(11, 30, i), key, phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed},
+			builtStep{at(11, 45, i), key, phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved},
+			builtStep{at(12, 0, i), key, phase.Accepting, phase.Retro, workflow.TriggerSignOff},
+			builtStep{at(12, 15, i), key, phase.Retro, phase.Merging, workflow.TriggerRetroCompleted},
+			builtStep{at(12, 30, i), key, phase.Merging, phase.Done, workflow.TriggerPullRequestMerged})
+	}
+	return b.build()
+}
+
+// A merger's conflict is a conflict (plan D7): where the record shows a merger's move back out of
+// merging whose reason, the daemon's post of it, names a conflicting head, or a merge forward the
+// engine asked of a merger in merging, the trace counts the stretch as one that conflicted, in the
+// stretches the rate is fitted on, and the move back as a round of conflict in the measures, left to
+// the draw as every recorded conflict move is. A merger's move back for another reason stays a
+// send-back. The test reads mergerConflictWindow: ACME-1's first stretch, which its merger's move
+// back for a conflicting head ends at 11:00, and ACME-3's, in which its merger was asked a merge
+// forward, conflicted; ACME-2's, which its merger ended for red checks, and each second stretch did
+// not, so the model is fitted on 5 stretches with 2 conflicts. ACME-1's move back is of the cause
+// conflict and left to the draw, and ACME-2's is a send-back entered by the daemon's handler of a
+// backward move. The record's scorecard counts two rounds of conflict, ACME-1's loop and ACME-3's
+// merge forward, and one of send_back, ACME-2's loop.
+func TestAMergersSendBackForAConflictingHeadCountsAsAConflict(t *testing.T) {
+	window := mergerConflictWindow(t)
+	trace, err := BuildTrace(window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	merges := newBaseMerges(window, trace)
+	conflicted := map[string][]bool{}
+	for _, s := range recordedStretches(trace, merges) {
+		conflicted[s.Issue] = append(conflicted[s.Issue], s.Conflict)
+	}
+	want := map[string][]bool{"ACME-1": {true, false}, "ACME-2": {false, false}, "ACME-3": {true}}
+	for _, key := range slices.Sorted(maps.Keys(want)) {
+		if !slices.Equal(conflicted[key], want[key]) {
+			t.Errorf("%s's recorded stretches conflicted %v, want %v", key, conflicted[key], want[key])
+		}
+	}
+	if model := windowConflicts(trace, merges); model.Stretches != 5 || model.Conflicts != 2 {
+		t.Errorf("the conflict model is fitted on %d stretches with %d conflicts, want 5 with 2", model.Stretches, model.Conflicts)
+	}
+	for _, c := range []struct {
+		key   string
+		cause Cause
+		way   MoveWay
+	}{{"ACME-1", CauseConflict, MoveDraw}, {"ACME-2", CauseSendBack, MoveFact}} {
+		var back *Move
+		for _, move := range trace.Issues[c.key].Moves() {
+			if move.From == phase.Merging && move.To == phase.Implementing {
+				back = &move
+				break
+			}
+		}
+		if back == nil || back.Cause != c.cause || back.Source.Way != c.way {
+			t.Errorf("%s's move back out of merging is %+v, want the cause %s and the way %s", c.key, back, c.cause, c.way)
+		}
+	}
+	card, err := Score(window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := card.Loops[string(CauseConflict)].Rounds; got != 2 {
+		t.Errorf("the record's scorecard counts %d rounds of conflict, want 2: ACME-1's loop and ACME-3's merge forward (%+v)", got, card.Loops)
+	}
+	if got := card.Loops[string(CauseSendBack)].Rounds; got != 1 {
+		t.Errorf("the record's scorecard counts %d rounds of send_back, want 1: ACME-2's loop (%+v)", got, card.Loops)
+	}
+}
+
+// Under the diagnostic branch main+conflicts=recorded a replay keeps the record's conflicts and
+// draws none (assumption 44): each stretch the record ends in a conflict conflicts, made through the
+// daemon's own path as a drawn one is, and runs its own loop as recorded, and each other stretch
+// ends as recorded. The test replays phaseLoopsWindow with no loop from testing under
+// legion-v20.42.5, the rule it ran, on that branch at seed 1. ACME-1's stretch, which draws a
+// conflict at 09:30 on the main branch under any seed, ends as recorded, by its tester's failure at
+// 09:30; ACME-2 moves as the record moves it, back from reviewing by conflict at 10:45 and back in
+// reviewing at 11:15. No stretch draws, and a window's record runs the branch at the seed 1 alone.
+func TestTheRecordedConflictsBranchKeepsTheRecordsConflicts(t *testing.T) {
+	window := phaseLoopsWindow(t, false)
+	recorded := DiagnosticBranches()[0].Branch
+	if !recorded.recordedConflicts() {
+		t.Fatalf("the diagnostic branch %s keeps no recorded conflicts", recorded.Name)
+	}
+	if seeds := (windowRecord{Stretches: 3, Conflicted: 1}).seeds(recorded, SeedsPerDraw); !slices.Equal(seeds, []int64{1}) {
+		t.Errorf("a window with a recorded conflict runs %s at the seeds %v, want the seed 1 alone", recorded.Name, seeds)
+	}
+	trace, err := BuildTrace(window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draws := 0
+	out := t.TempDir()
+	result, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, "legion-v20.42.5"), Branch: recorded, Seed: 1, Slowdown: 1,
+		PGDSN: replayDSN(t), Out: out, onDraw: func(conflictDraw) { draws++ }})
+	if err != nil {
+		t.Fatalf("replay the window on %s: %v", recorded.Name, err)
+	}
+	if draws != 0 {
+		t.Errorf("the run drew %d stretches, want none", draws)
+	}
+	log := replayLog(t, out)
+	moved := replayedMoves(log)
+	for _, key := range []string{"ACME-1", "ACME-2"} {
+		var want []fixtureMove
+		var at []time.Time
+		for _, move := range trace.Issues[key].Moves() {
+			if !move.At.Before(window.From) {
+				want, at = append(want, fixtureMove{From: move.From, To: move.To, Trigger: move.Trigger}), append(at, move.At)
+			}
+		}
+		checkMovesAt(t, 1, key, log, moved, want, at)
+	}
+	if refused := result.Divergence.Refused; len(refused) > 0 {
+		t.Errorf("the replay refused %+v", refused)
 	}
 }

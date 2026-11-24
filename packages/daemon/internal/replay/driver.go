@@ -232,18 +232,28 @@ type driver struct {
 	// conflicts is the conflict model the run draws by (with its merges term set to zero under
 	// the branch's Merges zero), merges the window's commits of each base branch it counts a
 	// stretch's M from, loops the recorded conflict loops a drawn conflict's work is drawn from,
-	// draws the run's seeded source of every conflict draw, stretchFrom the replay's start of the
-	// stretch each issue stands in, and waiting each issue's conflict past the review that waits for
-	// merging (waitingConflict). heads counts the heads the replay's own pull request records moved
-	// to, which names each, and numbers is the number of each of those records.
-	conflicts   ConflictModel
-	merges      baseMerges
-	loops       []conflictLoop
-	draws       *rand.Rand
-	stretchFrom map[string]time.Time
-	waiting     map[string]waitingConflict
-	heads       int
-	numbers     *pullRequestNumbers
+	// draws the run's source of every conflict draw, which reads drawSource, seeded afresh for each
+	// draw by the run's seed and the draw's place (seedDraw), stretchDraws how many draws each
+	// stretch has made, by its place with no count (stretchDraw), lastDraw the place of each
+	// issue's latest stretch draw, at which the loop of a conflict it made is drawn (drawnLoop),
+	// stretchFrom the replay's start of the stretch each issue stands in, and waiting each issue's
+	// conflict past the review that waits for merging (waitingConflict). heads counts the heads the
+	// replay's own pull request records moved to, which names each, and numbers is the number of
+	// each of those records.
+	conflicts    ConflictModel
+	merges       baseMerges
+	loops        []conflictLoop
+	draws        *rand.Rand
+	drawSource   *rand.PCG
+	stretchDraws map[stretchDraw]int
+	lastDraw     map[string]stretchDraw
+	stretchFrom  map[string]time.Time
+	waiting      map[string]waitingConflict
+	heads        int
+	numbers      *pullRequestNumbers
+	// noWork is each issue the replay admitted with no work, recorded or drawn (neverStartedWork),
+	// whose slot-hours the run counts (Divergence.NoWorkSlotHours).
+	noWork map[string]bool
 }
 
 // Divergence is what a replay counts of where it left the record's course, which a replay under
@@ -273,6 +283,16 @@ type Divergence struct {
 	Reassertions int `json:"reassertions"`
 	// NoSegment is how many starts found no recorded segment of their issue left to open.
 	NoSegment int `json:"noSegment"`
+	// NoWorkAdmissions is how many issues the replay admitted that hold their slot with no work,
+	// recorded or drawn (driver.neverStartedWork: an issue the record never started, under the
+	// branch's NeverStarted none or where the window holds no issue to draw its work from), and
+	// NoWorkSlotHours the slot-hours they hold in [From, To), read from the snapshot timeline.
+	NoWorkAdmissions int     `json:"noWorkAdmissions"`
+	NoWorkSlotHours  float64 `json:"noWorkSlotHours"`
+	// DrawnWork is how many issues the record never started took the work of another issue under
+	// the branch's NeverStarted drawn or drawn-done, by where the issue drawn from came from
+	// (script.drawNeverStarted).
+	DrawnWork DrawnWork `json:"drawnWork"`
 	// SkippedSegments is how many recorded segments the replay passed over, a later one of its
 	// issue opening first.
 	SkippedSegments int `json:"skippedSegments"`

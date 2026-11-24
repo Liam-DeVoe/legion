@@ -725,6 +725,9 @@ func writeMadeUpRuns(t *testing.T, dir string, windows []windowRecord, rules []r
 			for _, f := range plan.breakEven {
 				part.BreakEven = append(part.BreakEven, write(BranchAt{Branch: MainBranch, Slowdown: f}))
 			}
+			for _, at := range plan.diagnostics {
+				part.Diagnostics = append(part.Diagnostics, write(at))
+			}
 			if err := writeJSON(filepath.Join(dir, w.Name, rule.Name, partFile), part); err != nil {
 				t.Fatal(err)
 			}
@@ -971,4 +974,170 @@ func TestTheIssuesFileGivesEachIssuesTimesUnderEachRule(t *testing.T) {
 			t.Errorf("the median of 09:10 and none is %s, want none", got)
 		}
 	})
+}
+
+// Beside R5's tests a validation counts, for each branch and seed, the first starts only one side
+// made (the red team's finding 1): the issues the seed gave a first slot in the window that the
+// record gave none, and those the record gave one that the seed gave none; it prints both in a
+// table of their own, which tests nothing. The record gives ACME-1 and ACME-2 a first slot; seed 1
+// gives ACME-1, ACME-3 and ACME-4 one, and seed 2 ACME-2 alone: seed 1 made two starts the record
+// did not and missed one, and seed 2 made none and missed one.
+func TestTheValidationCountsTheFirstStartsOnlyOneSideMade(t *testing.T) {
+	recorded := sampleCard(compareHours)
+	recorded.Source = "record"
+	seed := func(n int64, keys ...string) Scorecard {
+		card := sampleCard(compareHours)
+		card.Seed, card.FirstSlot = n, map[string]time.Time{}
+		for _, key := range keys {
+			card.FirstSlot[key] = compareFrom.Add(time.Hour)
+		}
+		return card
+	}
+	branch := ValidateBranch(recorded, MainBranchAt, []Scorecard{seed(1, "ACME-1", "ACME-3", "ACME-4"), seed(2, "ACME-2")})
+	if want := []SeedStarts{{Seed: 1, ReplayOnly: 2, RecordOnly: 1}, {Seed: 2, RecordOnly: 1}}; !slices.Equal(branch.Starts, want) {
+		t.Errorf("the validation counts the starts %+v, want %+v", branch.Starts, want)
+	}
+	var out bytes.Buffer
+	v := Validation{Window: "acme-window", Rule: "main", Record: recorded, Branches: []BranchValidation{branch}}
+	if err := v.Write(&out, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []string{"| `main@1` | 1 | 2 | 1 |", "| `main@1` | 2 | 0 | 1 |"} {
+		if !strings.Contains(out.String(), row) {
+			t.Errorf("the validation prints no %q:\n%s", row, out.String())
+		}
+	}
+}
+
+// Beside R5's tests a validation names each tree whose hours of a closed design gate in the replay,
+// the mean over the seeds, stand more than 30% from the record's (the red team's finding 5), and
+// prints them, testing nothing. The record's gate of ACME-1 stands closed 2 hours and ACME-2's 1;
+// the seeds close ACME-1's for 2.5 and 3 hours (2.75, 37.5% more), ACME-2's for 1 and 1.2 (1.1, 10%
+// more), and one of them ACME-3's for half an hour, which the record never closes: ACME-1 and ACME-3
+// are named, and ACME-2 is not.
+func TestTheValidationNamesTheTreesWhoseGateHoursMoved(t *testing.T) {
+	recorded := sampleCard(compareHours)
+	recorded.Source, recorded.GateClosedHours = "record", map[string]float64{"ACME-1": 2, "ACME-2": 1}
+	seeds := []Scorecard{sampleCard(compareHours), sampleCard(compareHours)}
+	seeds[0].Seed, seeds[0].GateClosedHours = 1, map[string]float64{"ACME-1": 2.5, "ACME-2": 1, "ACME-3": 0.5}
+	seeds[1].Seed, seeds[1].GateClosedHours = 2, map[string]float64{"ACME-1": 3, "ACME-2": 1.2}
+	branch := ValidateBranch(recorded, MainBranchAt, seeds)
+	want := []TreeGate{{Tree: "ACME-1", Recorded: 2, Replayed: 2.75, Low: 2.5, High: 3}, {Tree: "ACME-3", Replayed: 0.25, High: 0.5}}
+	if !slices.Equal(branch.GateTrees, want) {
+		t.Errorf("the validation names the trees %+v, want %+v", branch.GateTrees, want)
+	}
+	var out bytes.Buffer
+	v := Validation{Window: "acme-window", Rule: "main", Record: recorded, Branches: []BranchValidation{branch}}
+	if err := v.Write(&out, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []string{"| ACME-1 | 2 | 2.75 (2.5, 3) |", "| ACME-3 | 0 | 0.25 (0, 0.5) |"} {
+		if !strings.Contains(out.String(), row) {
+			t.Errorf("the validation prints no %q:\n%s", row, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "| ACME-2 |") {
+		t.Errorf("the validation names ACME-2, whose replayed hours stand within 30%% of the record's:\n%s", out.String())
+	}
+}
+
+// The document gives, beside Legion's done, the issues Dispatch shows done by anyone (the red team's
+// finding 9): in each window's scorecard read from its record, and for each rule and branch read
+// from each run's line timeline, below the measures the snapshot timeline gives. The comparison is
+// made up: two windows under main, each record with 20 issues done by Legion and 25 by anyone, and
+// runs whose line scorecards count 23 done by anyone.
+func TestTheDocumentGivesDoneByAnyoneBesideLegionsDone(t *testing.T) {
+	windows := madeUpWindows(record.MainRule.Name, record.MainRule.Name)
+	for i := range windows {
+		windows[i].Scorecard.DoneByAnyone = 25
+	}
+	dir := t.TempDir()
+	writeMadeUpRuns(t, dir, windows, []record.SlotRule{replayedRule(t, record.MainRule.Name)}, runPlan{branches: []BranchAt{MainBranchAt}, perDraw: 1},
+		func(w windowRecord, r int, rule record.SlotRule, at BranchAt, seed int64) (Scorecard, Scorecard, runRecord) {
+			snapshot, line, ran := madeUpRun(w, r, rule, at, seed)
+			line.DoneByAnyone = 23
+			return snapshot, line, ran
+		})
+	runs, err := ReadRuns(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, _, err := runs.Comparison("comparison-issues.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []string{"| done | 20 |", "| doneByAnyone | 25 |", "| doneByAnyone (the line timeline) | 23 |"} {
+		if !strings.Contains(document, row) {
+			t.Errorf("the document gives no %q:\n%s", row, document)
+		}
+	}
+}
+
+// A validation runs its diagnostic branches beside R5's tests (DiagnosticBranches): the plan of
+// every validation holds them, with the main branch alone or with every branch, and a comparison's
+// plan holds none. The validation read from the runs holds a diagnostic branch apart from its
+// branches, so whether the window's main branch passes and which branches give a comparison never
+// read it, and it prints the diagnostic's table as one that tests nothing and never stands in place
+// of the main branch. The runs are made up: the main branch passes R5, and the diagnostic branch,
+// whose issues finished stand at twice the record's, fails it.
+func TestTheDiagnosticBranchStandsBesideTheValidation(t *testing.T) {
+	for _, run := range []struct {
+		name string
+		cfg  ValidateConfig
+	}{{"main only", ValidateConfig{MainOnly: true}}, {"every branch", ValidateConfig{}}} {
+		if got := validatePlan(run.cfg).diagnostics; !slices.Equal(got, DiagnosticBranches()) {
+			t.Errorf("%s: the validation runs the diagnostic branches %v, want %v", run.name, branchNames(got), branchNames(DiagnosticBranches()))
+		}
+	}
+	if got := fullPlan().diagnostics; len(got) != 0 {
+		t.Errorf("a comparison runs the diagnostic branches %v, want none", branchNames(got))
+	}
+	windows := madeUpWindows(record.MainRule.Name, record.MainRule.Name)[:1]
+	dir := t.TempDir()
+	writeMadeUpRuns(t, dir, windows, []record.SlotRule{replayedRule(t, record.MainRule.Name)},
+		runPlan{branches: []BranchAt{MainBranchAt}, diagnostics: DiagnosticBranches(), perDraw: 1},
+		func(w windowRecord, r int, rule record.SlotRule, at BranchAt, seed int64) (Scorecard, Scorecard, runRecord) {
+			snapshot, line, ran := madeUpRun(w, r, rule, at, seed)
+			if at.Branch.recordedConflicts() {
+				line.Done = 40
+			}
+			return snapshot, line, ran
+		})
+	runs, err := ReadRuns(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := runs.Validation(windows[0].Name, record.MainRule.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels := func(branches []BranchValidation) []string {
+		var out []string
+		for _, b := range branches {
+			out = append(out, b.Branch.Label())
+		}
+		return out
+	}
+	if got := labels(v.Branches); !slices.Equal(got, []string{MainBranchAt.Label()}) {
+		t.Errorf("the validation's branches are %v, want the main branch alone", got)
+	}
+	if got := labels(v.Diagnostics); !slices.Equal(got, []string{"main+conflicts=recorded@1"}) {
+		t.Fatalf("the validation's diagnostics are %v, want main+conflicts=recorded@1", got)
+	}
+	if v.Diagnostics[0].Pass() {
+		t.Errorf("the diagnostic branch passes R5's tests, want it to fail its issues finished")
+	}
+	if !v.MainPasses() || len(v.NoComparison()) != 0 {
+		t.Errorf("main passes %t and the branches that give no comparison are %v; the failing diagnostic branch moves neither", v.MainPasses(),
+			v.NoComparison())
+	}
+	var out bytes.Buffer
+	if err := v.Write(&out, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []string{"## `main+conflicts=recorded@1`: a diagnostic, never a test of R5", "never in place of the main branch"} {
+		if !strings.Contains(out.String(), line) {
+			t.Errorf("the validation prints no %q:\n%s", line, out.String())
+		}
+	}
 }

@@ -384,10 +384,11 @@ func (d *driver) generationAt(key string, at time.Time) uint64 {
 
 // enterMove enters the recorded move that ends p's visit, or the merge at which its segment ended
 // (piece.move). Where the move is a recorded conflict whose loop runs to the window's end, the
-// conflict is kept and not drawn (keepConflict, assumption 35). Otherwise, where the move ends a
-// stretch in which a head can conflict (spec R2, assumption 3), the stretch first draws whether its
-// head conflicts (drawConflict), and a drawn conflict the daemon acts on takes the move's place;
-// otherwise the move enters as recorded (enterRecorded).
+// conflict is kept and not drawn (keepConflict, assumption 35). Under the branch's Conflicts
+// recorded no stretch draws, and each recorded conflict is made as recorded (recordedConflict).
+// Otherwise, where the move ends a stretch in which a head can conflict (spec R2, assumption 3),
+// the stretch first draws whether its head conflicts (drawConflict), and a drawn conflict the daemon
+// acts on takes the move's place; otherwise the move enters as recorded (enterRecorded).
 func (d *driver) enterMove(p *piece) error {
 	if p.move() == nil {
 		return nil
@@ -395,11 +396,30 @@ func (d *driver) enterMove(p *piece) error {
 	if d.keepsOpenLoop(p) {
 		return d.keepConflict(p)
 	}
+	if d.cfg.Branch.recordedConflicts() {
+		return d.recordedConflict(p)
+	}
 	if d.drawsAtEnd(p) {
 		conflicted, err := d.drawConflict(p)
 		if err != nil || conflicted {
 			return err
 		}
+	}
+	return d.enterRecorded(p)
+}
+
+// recordedConflict enters the recorded move that ends p's visit under the branch's Conflicts
+// recorded (assumption 44): a recorded conflict that ends a stretch (MoveDraw) is made through the
+// daemon's own path for a conflicting head as a kept one is (conflictFor), and its issue runs its
+// own loop as recorded; one the daemon does not act on ends the stretch as recorded. Every other
+// move enters as recorded, and no stretch draws.
+func (d *driver) recordedConflict(p *piece) error {
+	if p.move().Source.Way != MoveDraw || !stretchPhase(p.phase) {
+		return d.enterRecorded(p)
+	}
+	conflicted, err := d.conflictFor(p, true, false)
+	if err != nil || conflicted {
+		return err
 	}
 	return d.enterRecorded(p)
 }

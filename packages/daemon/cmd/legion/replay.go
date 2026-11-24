@@ -259,9 +259,11 @@ The window's Dispatch events, its recorded phase moves, ticks and boots are appl
 recorded times or offsets, a worker stub runs the outbox rows the daemon's lanes would take after
 each fact, and each work segment runs its recorded length times f^((n − m)/42) at --slowdown f.
 Each stretch of an issue's work from testing to merging draws whether its head conflicts with its
-base, with --seed, from a model fitted on the window's own recorded stretches; the run prints the
-model with its intervals. --branch sets one knob the record does not give: timing, answer,
-afterSendBack, firstStarts, neverStarted or merges (main+<knob>=<value>).
+base, from a model fitted on the window's own recorded stretches, with a draw that --seed, the
+issue and the stretch's place in the record give, so two rules at one seed draw alike for each
+stretch both run; the run prints the model with its intervals. --branch sets one knob the record
+does not give: timing, answer, afterSendBack, firstStarts, neverStarted, merges, or conflicts, the
+diagnostic knob that keeps the record's conflicts (main+<knob>=<value>).
 Nothing outside is asked: no Dispatch, no GitHub, no NATS.
 
 --out receives log.jsonl (the daemon's lines on the simulated clock), scorecard.json (the
@@ -270,7 +272,10 @@ same measures read back from log.jsonl and the replay's Dispatch events, as a re
 run.json (what ran, the commit this binary was built from, or unknown, and the run's start on
 the wall clock, what it counted, the gap of each measure between the two scorecards and the
 conflict model) and, with --trace-segments, segments.jsonl. The output names the branch, each
-assumption the run rests on and the scenario it gave the work of an issue that never started.`
+assumption the run rests on and the scenario it gave the work of an issue that never started,
+and counts the issues admitted with no work with the slot-hours they hold and, under a drawn
+scenario, how many issues drew their work from their own tree, from their priority and
+repository, or from the whole window.`
 
 // newReplayRunCommand is `legion replay run` (replay.Run).
 func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
@@ -323,9 +328,7 @@ func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 		counted := result.Divergence
 		fmt.Fprintf(stdout, "legion replay run: replayed %s under the rule %s on the branch %s (seed %d, f %v) in the database %s (%s); wrote %s\n",
 			*windowDir, rule.Name, branch.Name, *seed, *slowdown, result.Database, kept, *out)
-		fmt.Fprintf(stdout, "legion replay run: %d moves refused, %d recorded conflicts kept for a loop open at the window's end, %d conflicts past the review left to the merger, %d reassertion starts, %d events fenced, %d starts with no segment left, %d segments passed over, %d unplaced issues\n",
-			len(counted.Refused), counted.KeptOpenLoops, counted.ConflictsToMerger, counted.Reassertions, counted.Fenced, counted.NoSegment, counted.SkippedSegments,
-			len(result.Unplaced))
+		fmt.Fprintf(stdout, "legion replay run: %s\n", result.Counts())
 		for _, refused := range counted.Refused {
 			fmt.Fprintf(stdout, "legion replay run: refused %s %s→%s by %s at %s: %s\n", refused.Issue, refused.From, refused.To, refused.Trigger,
 				refused.At.Format(time.RFC3339), refused.Reason)
@@ -423,7 +426,9 @@ in a database of its own on the server --pg-dsn names. Each run's run.json, scor
 scorecard-line.json are written under --out, in <window>/<rule>/<branch>@<f>/seed-<n>/, beside the
 window's record.json; a run whose files are there already is not run again, and each run's log is
 deleted once the run has read it back, unless --keep-logs. With --main-only the main branch at f 1
-runs alone, with its seeds, in place of every branch.
+runs alone, with its seeds, in place of every branch. Either way the diagnostic branch
+main+conflicts=recorded, which keeps the record's conflicts and draws none, runs at f 1 beside
+them: its table is shown and tests nothing, and it never stands in place of the main branch.
 
 It prints, for each branch and each measure, the recorded value, the replayed value (the mean of
 the seeds, with the lowest and the highest seed's), the gap, the allowance and the test; for each
@@ -432,6 +437,10 @@ the window's main branch (main at f 1) passes; and which branches give no compar
 and each replay are read from their line timelines, so like is compared with like. The gaps: 10%
 of the issues finished and of the slots given out on each day, 0.05 of the share of priority
 taken, 60 minutes at the median of each issue's first-slot error, and 30% of every other measure.
+Beside the tests, and testing nothing, it prints for each branch and seed how many issues the
+replay gave a first slot that the record did not, and how many the record gave one that the replay
+did not; and for each branch the trees whose design gate stood closed more than 30% longer or shorter
+than in the record. A validation whose replays give no issue a first slot or a done is refused.
 
 With --from-runs nothing runs: the validation is read from the directories of runs a validate or
 a compare wrote, --window naming the window by its directory's name (needed only where they hold
@@ -740,17 +749,19 @@ func newReplayCompareCommand(stdout, stderr io.Writer) *cobra.Command {
 }
 
 // replayProgress is what validate, forecast and compare tell of each run as it ends, on stderr: the
-// run, whether it was there already, and what its run.json counted, so a pilot can size a Job.
+// run, whether it was there already, and what its run.json counted, so a pilot can size a Job and
+// read how many issues each run admitted with no work, and the slot-hours they held.
 func replayProgress(stderr io.Writer, command string) func(replay.RunDone) {
 	return func(done replay.RunDone) {
 		if done.Kept {
-			fmt.Fprintf(stderr, "legion replay %s: %d of %d: %s under %s on %s, seed %d, was already run\n", command, done.Ended, done.Of,
-				done.Window, done.Rule, done.Branch.Label(), done.Seed)
+			fmt.Fprintf(stderr, "legion replay %s: %d of %d: %s under %s on %s, seed %d, was already run: %d issues admitted with no work holding %.1f slot-hours\n",
+				command, done.Ended, done.Of, done.Window, done.Rule, done.Branch.Label(), done.Seed, done.NoWorkAdmissions, done.NoWorkSlotHours)
 			return
 		}
-		fmt.Fprintf(stderr, "legion replay %s: %d of %d: ran %s under %s on %s, seed %d: %d facts, %d passes, %.1f s, peak memory %d MiB\n",
+		fmt.Fprintf(stderr, "legion replay %s: %d of %d: ran %s under %s on %s, seed %d: %d facts, %d passes, %.1f s, peak memory %d MiB, "+
+			"%d issues admitted with no work holding %.1f slot-hours\n",
 			command, done.Ended, done.Of, done.Window, done.Rule, done.Branch.Label(), done.Seed, done.Facts, done.Passes, done.WallSeconds,
-			done.PeakMemoryBytes>>20)
+			done.PeakMemoryBytes>>20, done.NoWorkAdmissions, done.NoWorkSlotHours)
 	}
 }
 

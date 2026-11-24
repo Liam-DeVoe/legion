@@ -132,7 +132,10 @@ type ErrorSummary struct {
 // BranchValidation is one branch's replay of the rule its window's daemon ran, against the record
 // (spec R5): every measure of R4 with R5's test of it, each issue's error in its first slot and in
 // its done with their median and 90th percentile, R5's test of the median first-slot error, and the
-// tests it fails, by name. A branch that fails one gives no comparison.
+// tests it fails, by name. A branch that fails one gives no comparison. Beside the tests it gives
+// two diagnostics, which no test reads: each seed's first starts against the record's (Starts), and
+// each tree whose hours of a closed design gate stand past gapGateHours from the record's
+// (GateTrees).
 type BranchValidation struct {
 	Branch        BranchAt       `json:"branch"`
 	Seeds         []int64        `json:"seeds"`
@@ -142,6 +145,28 @@ type BranchValidation struct {
 	Done          ErrorSummary   `json:"done"`
 	FirstSlotPass bool           `json:"firstSlotPass"`
 	Failed        []string       `json:"failed"`
+	Starts        []SeedStarts   `json:"starts"`
+	GateTrees     []TreeGate     `json:"gateTrees"`
+}
+
+// SeedStarts is one seed's first starts against the record's: how many issues the seed gave a
+// first slot in the window that the record gave none (ReplayOnly), and how many the record gave one
+// that the seed gave none (RecordOnly). A diagnostic, never a test of R5.
+type SeedStarts struct {
+	Seed       int64 `json:"seed"`
+	ReplayOnly int   `json:"replayOnly"`
+	RecordOnly int   `json:"recordOnly"`
+}
+
+// TreeGate is one tree's hours of a closed design gate in a validation (Scorecard.GateClosedHours):
+// the record's, and the mean over the seeds with the lowest and the highest seed's value, a tree
+// no scorecard holds standing at 0 there. A diagnostic, never a test of R5.
+type TreeGate struct {
+	Tree     string  `json:"tree"`
+	Recorded float64 `json:"recorded"`
+	Replayed float64 `json:"replayed"`
+	Low      float64 `json:"low"`
+	High     float64 `json:"high"`
 }
 
 // Pass says whether the branch passes every test of R5.
@@ -151,9 +176,12 @@ func (b BranchValidation) Pass() bool { return len(b.Failed) == 0 }
 // daemon ran are replays, one scorecard a seed, against recorded, the window's record (spec R5).
 // The record's scorecard and each replay's are read from line timelines (Score, and
 // RunResult.LineScorecard), so the gaps compare like with like (design 10.1). A measure one side
-// does not give stands at 0 there.
+// does not give stands at 0 there. Beside the tests it counts each seed's first starts against the
+// record's (startsOf) and names the trees whose gates the replay holds closed otherwise than the
+// record (gateTreesOf).
 func ValidateBranch(recorded Scorecard, at BranchAt, replays []Scorecard) BranchValidation {
-	v := BranchValidation{Branch: at, Seeds: make([]int64, 0, len(replays)), Failed: []string{}}
+	v := BranchValidation{Branch: at, Seeds: make([]int64, 0, len(replays)), Failed: []string{}, Starts: startsOf(recorded, replays),
+		GateTrees: gateTreesOf(recorded, replays)}
 	for _, card := range replays {
 		v.Seeds = append(v.Seeds, card.Seed)
 	}
@@ -195,6 +223,60 @@ func ValidateBranch(recorded Scorecard, at BranchAt, replays []Scorecard) Branch
 		v.Failed = append(v.Failed, FirstSlotTest)
 	}
 	return v
+}
+
+// startsOf is each of replays' first starts against recorded's (SeedStarts), in their order: the
+// issues each gives a first slot in the window that recorded gives none, and those recorded gives
+// one that it gives none.
+func startsOf(recorded Scorecard, replays []Scorecard) []SeedStarts {
+	starts := make([]SeedStarts, 0, len(replays))
+	for _, card := range replays {
+		s := SeedStarts{Seed: card.Seed}
+		for key := range card.FirstSlot {
+			if _, both := recorded.FirstSlot[key]; !both {
+				s.ReplayOnly++
+			}
+		}
+		for key := range recorded.FirstSlot {
+			if _, both := card.FirstSlot[key]; !both {
+				s.RecordOnly++
+			}
+		}
+		starts = append(starts, s)
+	}
+	return starts
+}
+
+// gapGateHours is how far a tree's replayed hours of a closed design gate may stand from the
+// record's before a validation names the tree (gateTreesOf): 30% of the record's, the gap of R5's
+// measures it names no other gap of. A diagnostic, never a test of R5.
+var gapGateHours = gapThirty
+
+// gateTreesOf is each tree, in the order of its root's key, whose hours of a closed design gate
+// (Scorecard.GateClosedHours) over replays, their mean, stand past gapGateHours from recorded's, a
+// tree one scorecard does not give standing at 0 there (TreeGate).
+func gateTreesOf(recorded Scorecard, replays []Scorecard) []TreeGate {
+	trees := map[string]bool{}
+	for tree := range recorded.GateClosedHours {
+		trees[tree] = true
+	}
+	for _, card := range replays {
+		for tree := range card.GateClosedHours {
+			trees[tree] = true
+		}
+	}
+	var named []TreeGate
+	values := make([]float64, len(replays))
+	for _, tree := range slices.Sorted(maps.Keys(trees)) {
+		for i, card := range replays {
+			values[i] = card.GateClosedHours[tree]
+		}
+		mean, low, high := spread(values)
+		if held := recorded.GateClosedHours[tree]; !gapGateHours.Within(held, mean) {
+			named = append(named, TreeGate{Tree: tree, Recorded: held, Replayed: mean, Low: low, High: high})
+		}
+	}
+	return named
 }
 
 // measureNames is the name of every measure any of cards gives (MeasuresOf), each once, in
@@ -324,12 +406,16 @@ var MainBranchAt = BranchAt{Branch: MainBranch, Slowdown: 1}
 
 // Validation is a window's validation (spec R5): the replay of the rule its daemon ran, on every
 // branch, against its record. A branch that fails a test gives no comparison of rules, and a
-// window whose main branch fails gives none at all.
+// window whose main branch fails gives none at all. Diagnostics is each diagnostic branch the
+// validation ran (DiagnosticBranches) against the same record: shown beside R5's tests, it gives
+// no comparison and never stands in place of the main branch, so no method of a Validation and no
+// decision reads it.
 type Validation struct {
-	Window   string             `json:"window"`
-	Rule     string             `json:"rule"`
-	Record   Scorecard          `json:"record"`
-	Branches []BranchValidation `json:"branches"`
+	Window      string             `json:"window"`
+	Rule        string             `json:"rule"`
+	Record      Scorecard          `json:"record"`
+	Branches    []BranchValidation `json:"branches"`
+	Diagnostics []BranchValidation `json:"diagnostics"`
 }
 
 // branch is the validation of the branch at, and false where the validation did not run it.
@@ -370,9 +456,11 @@ func (v Validation) NoComparison() []BranchAt {
 
 // Write prints v as Markdown, its headings at depth (2 for "##"): whether the window's main branch
 // passes and which branches give no comparison, a line for each branch with its verdict, the tests
-// it fails and its issues' errors, and then each branch's every measure — recorded, replayed with
-// its lowest and highest seed, the gap, R5's allowance and the test — and, for each branch
-// issuesOf names, each issue's error.
+// it fails and its issues' errors, each branch's and each diagnostic branch's first starts that
+// only one side made, seed by seed, and then each branch's every measure — recorded, replayed with
+// its lowest and highest seed, the gap, R5's allowance and the test — the trees whose design gate
+// it holds closed otherwise than the record and, for each branch issuesOf names, each issue's
+// error. Each diagnostic branch follows, in a section of its own that says it tests nothing.
 func (v Validation) Write(w io.Writer, depth int, issuesOf func(BranchAt) bool) error {
 	p := &printer{w: w}
 	heading := strings.Repeat("#", depth)
@@ -406,44 +494,83 @@ func (v Validation) Write(w io.Writer, depth int, issuesOf func(BranchAt) bool) 
 		p.line("| `%s` | %d | %s | %s | %s | %s | %s | %s |", b.Branch.Label(), len(b.Seeds), verdict, failed,
 			formatNumber(b.FirstSlot.Median), formatNumber(b.FirstSlot.P90), formatNumber(b.Done.Median), formatNumber(b.Done.P90))
 	}
+	p.line("")
+	p.line("Beside the tests, and testing nothing: the first starts that only one side made, for each branch and seed.")
+	p.line("A first start is an issue's first slot in the window.")
+	p.line("")
+	p.line("| branch | seed | first starts the record did not make | first starts the replay did not make |")
+	p.line("| --- | --- | --- | --- |")
+	for _, branches := range [][]BranchValidation{v.Branches, v.Diagnostics} {
+		for _, b := range branches {
+			for _, s := range b.Starts {
+				p.line("| `%s` | %d | %d | %d |", b.Branch.Label(), s.Seed, s.ReplayOnly, s.RecordOnly)
+			}
+		}
+	}
 	for _, b := range v.Branches {
 		p.line("")
 		p.line("%s# `%s`: each measure", heading, b.Branch.Label())
 		p.line("")
-		p.line("| measure | recorded | replayed (lowest, highest seed) | gap | allowed | test |")
-		p.line("| --- | --- | --- | --- | --- | --- |")
-		for _, m := range b.Measures {
-			allowed, test := "", "not tested"
-			if m.Tested {
-				allowed, test = formatNumber(m.Gap.Allowed(m.Recorded))+" ("+m.Gap.String()+")", passWord(m.Pass)
-			}
-			p.line("| %s | %s | %s | %s | %s | %s |", m.Measure, formatNumber(m.Recorded), spreadCell(m.Replayed, m.Low, m.High, len(b.Seeds)),
-				formatNumber(m.Replayed-m.Recorded), allowed, test)
-		}
-		first := passWord(b.FirstSlotPass)
-		p.line("| %s | 0 | %s | %s | %s | %s |", FirstSlotTest, formatNumber(b.FirstSlot.Median), formatNumber(b.FirstSlot.Median),
-			formatNumber(gapFirstSlot.Amount), first)
+		b.write(p, issuesOf)
+	}
+	for _, b := range v.Diagnostics {
 		p.line("")
-		p.line("Each issue's error, in minutes: the first slot over %d issues, median %s and 90th percentile %s; the done over %d issues, median %s and 90th percentile %s.",
-			b.FirstSlot.Issues, formatNumber(b.FirstSlot.Median), formatNumber(b.FirstSlot.P90), b.Done.Issues, formatNumber(b.Done.Median), formatNumber(b.Done.P90))
-		if issuesOf == nil || !issuesOf(b.Branch) {
-			continue
-		}
+		p.line("%s# `%s`: a diagnostic, never a test of R5", heading, b.Branch.Label())
 		p.line("")
-		p.line("| issue | first slot error (minutes) | done error (minutes) |")
-		p.line("| --- | --- | --- |")
-		for _, issue := range b.Issues {
-			first, done := "none", "none"
-			if issue.HasFirstSlot {
-				first = formatNumber(issue.FirstSlot)
-			}
-			if issue.HasDone {
-				done = formatNumber(issue.Done)
-			}
-			p.line("| %s | %s | %s |", issue.Issue, first, done)
-		}
+		p.line("Its tests are shown and judge nothing: it gives no comparison, and it is read beside the main branch, never in place of the main branch.")
+		p.line("")
+		b.write(p, issuesOf)
 	}
 	return p.err
+}
+
+// write prints b's every measure with R5's test of it, its issues' errors, the trees whose design
+// gate it holds closed otherwise than the record, and, where issuesOf names b, each issue's error.
+func (b BranchValidation) write(p *printer, issuesOf func(BranchAt) bool) {
+	p.line("| measure | recorded | replayed (lowest, highest seed) | gap | allowed | test |")
+	p.line("| --- | --- | --- | --- | --- | --- |")
+	for _, m := range b.Measures {
+		allowed, test := "", "not tested"
+		if m.Tested {
+			allowed, test = formatNumber(m.Gap.Allowed(m.Recorded))+" ("+m.Gap.String()+")", passWord(m.Pass)
+		}
+		p.line("| %s | %s | %s | %s | %s | %s |", m.Measure, formatNumber(m.Recorded), spreadCell(m.Replayed, m.Low, m.High, len(b.Seeds)),
+			formatNumber(m.Replayed-m.Recorded), allowed, test)
+	}
+	first := passWord(b.FirstSlotPass)
+	p.line("| %s | 0 | %s | %s | %s | %s |", FirstSlotTest, formatNumber(b.FirstSlot.Median), formatNumber(b.FirstSlot.Median),
+		formatNumber(gapFirstSlot.Amount), first)
+	p.line("")
+	p.line("Each issue's error, in minutes: the first slot over %d issues, median %s and 90th percentile %s; the done over %d issues, median %s and 90th percentile %s.",
+		b.FirstSlot.Issues, formatNumber(b.FirstSlot.Median), formatNumber(b.FirstSlot.P90), b.Done.Issues, formatNumber(b.Done.Median), formatNumber(b.Done.P90))
+	p.line("")
+	if len(b.GateTrees) == 0 {
+		p.line("No tree's design gate stood closed in the replay more than %s longer or shorter than in the record, a diagnostic that tests nothing.", gapGateHours)
+	} else {
+		p.line("The trees whose design gate stood closed in the replay more than %s longer or shorter than in the record, a diagnostic that tests nothing:", gapGateHours)
+		p.line("")
+		p.line("| tree | hours closed, recorded | hours closed, replayed (lowest, highest seed) |")
+		p.line("| --- | --- | --- |")
+		for _, tree := range b.GateTrees {
+			p.line("| %s | %s | %s |", tree.Tree, formatNumber(tree.Recorded), spreadCell(tree.Replayed, tree.Low, tree.High, len(b.Seeds)))
+		}
+	}
+	if issuesOf == nil || !issuesOf(b.Branch) {
+		return
+	}
+	p.line("")
+	p.line("| issue | first slot error (minutes) | done error (minutes) |")
+	p.line("| --- | --- | --- |")
+	for _, issue := range b.Issues {
+		first, done := "none", "none"
+		if issue.HasFirstSlot {
+			first = formatNumber(issue.FirstSlot)
+		}
+		if issue.HasDone {
+			done = formatNumber(issue.Done)
+		}
+		p.line("| %s | %s | %s |", issue.Issue, first, done)
+	}
 }
 
 // passWord is the word a report writes for a test that passed, "passes", or failed, "fails".
