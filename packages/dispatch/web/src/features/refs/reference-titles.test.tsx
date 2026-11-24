@@ -182,9 +182,7 @@ test("a reference to a deleted comment says it is deleted and never reads as an 
 
   try {
     const link = () => view.container.querySelector("a");
-    await waitFor(() => expect(link()?.textContent ?? "").toContain("Deleted by alice"), {
-      timeout: 2000,
-    });
+    await waitFor(() => expect(link()?.textContent ?? "").toContain("Deleted by alice"));
   } finally {
     view.unmount();
   }
@@ -208,9 +206,7 @@ test("a reference to a deleted message says it is deleted and never reads as an 
 
   try {
     const link = () => view.container.querySelector("a");
-    await waitFor(() => expect(link()?.textContent ?? "").toContain("Deleted by alice"), {
-      timeout: 2000,
-    });
+    await waitFor(() => expect(link()?.textContent ?? "").toContain("Deleted by alice"));
   } finally {
     view.unmount();
   }

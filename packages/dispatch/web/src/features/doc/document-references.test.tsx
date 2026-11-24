@@ -307,13 +307,11 @@ test("the live editor is told to draw a deleted comment as deleted and an edited
       editors[0]?.references?.onKeys([comment, message]);
     });
 
-    await waitFor(
-      () =>
-        expect(drawnTitles(editors[0]?.references)).toEqual({
-          [comment]: "Deleted by alice",
-          [message]: "Shipped it, as corrected. · edited",
-        }),
-      { timeout: 2000 }
+    await waitFor(() =>
+      expect(drawnTitles(editors[0]?.references)).toEqual({
+        [comment]: "Deleted by alice",
+        [message]: "Shipped it, as corrected. · edited",
+      })
     );
   } finally {
     view.unmount();
