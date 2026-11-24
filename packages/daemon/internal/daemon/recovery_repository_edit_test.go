@@ -104,13 +104,14 @@ func TestAnEditOfARecoveredIssuesRepositoryIsNotedAndNotApplied(t *testing.T) {
 // parent. Before, the pass let zeta/tools go with the child unrecorded, and no later pass listed
 // it. The check reads what the held pass left while the next pass waits on its own listing: run
 // free, the next pass recorded the child and let zeta/tools go between the check's two reads,
-// which read as the held pass letting zeta/tools go with the child unrecorded.
+// which read as the held pass letting zeta/tools go with the child unrecorded. Both listings stay
+// held until the row lets them go (heldUntilLetGo).
 func TestAChildARecoveryFoundNewerThanItsListingIsRecordedByTheNextPass(t *testing.T) {
 	t.Parallel()
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
 	refresher := &heldRefresher{gate: make(chan struct{})}
-	w, client, installs, _ := repositoryRigWith(t, installs, quickInstallReads, refresher.hold)
+	w, client, installs, _ := repositoryRigWith(t, installs, quickInstallReads, refresher.hold, heldUntilLetGo(t))
 	const root, parent, child = "LEGION-1809", "LEGION-1810", "LEGION-1811"
 	liveRoot(t, w, client, root)
 	deliver(t, w, client, issue(child, "zeta/tools", "todo", false, parent, 1))
@@ -170,7 +171,7 @@ func newHeldEditRecovery(t *testing.T, key string) heldEditRecovery {
 	t.Helper()
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools", "implement orbit/gadgets")
-	w, client, installs, _ := repositoryRigWith(t, installs, quickInstallReads)
+	w, client, installs, _ := repositoryRigWith(t, installs, quickInstallReads, heldUntilLetGo(t))
 	// No repository is unread before the event's preparation leaves zeta/tools so, which is what
 	// wakes the recovery, and deliver shows the issue before it prepares the event: the held listing
 	// is the first, and shows the issue at sequence 1.
@@ -182,6 +183,19 @@ func newHeldEditRecovery(t *testing.T, key string) heldEditRecovery {
 	}
 	testwait.Eventually(t, "the recovery's listing held", func() bool { return client.heldListingCount() == 1 })
 	return heldEditRecovery{w: w, client: client, installs: installs, release: release}
+}
+
+// heldUntilLetGo is a rig option for a row that holds a recovery pass's listing (holdListing): the
+// bound on each attempt of a call the daemon makes (appCallBounds.attempt), the listing among them,
+// is what is left of the test binary's deadline (testwait.Remaining) rather than the daemon's
+// 15 s, so a held listing answers only once the row lets it go, however slow the machine. Under
+// 15 s, a row held up that long had its listing end on its own: that pass failed, and a later
+// pass listed with nothing held while the row still read what it took for the held pass's doing.
+func heldUntilLetGo(t *testing.T) func(*workflowRuntime) {
+	t.Helper()
+	calls := productionAppCalls()
+	calls.attempt = testwait.Remaining(t)
+	return func(w *workflowRuntime) { w.appCalls = &calls }
 }
 
 // edit delivers a person's edit of key's own repository to repo, at seq: Dispatch sends an event
