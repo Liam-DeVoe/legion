@@ -69,13 +69,13 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 //
 // The walk builds each bundle once (appauth.Bundles), held by the App role the pane works as on
 // its issue (paneRole, runtime.SlotRole: its claim's role, or the role the architect acts as, the
-// step's while it does a step of its own or the retro of one, and the implementer while a merge
-// forward asked of it has not ended; appauth.AppRoleFor), the role itself where it is none of
-// Legion's, and the pane's repository, and each build opens with a live read of every page of
-// its App's installations under a fresh JWT (appauth.GitHubCredential), so the panes of one
-// issue whose roles are Legion's and run as one App cost the tick one
-// read rather than one apiece. The memo is the walk's and is dropped at its end, so every tick
-// reads GitHub for what its bundles hold (INFRA-2543 R2).
+// implementer while a merge forward asked of it has not ended, whatever step it does then, else the
+// step's while it does a step of its own or the retro of one; appauth.AppRoleFor), the role itself
+// where it is none of Legion's, and the pane's repository, and each build opens with a live read of
+// every page of its App's installations under a fresh JWT (appauth.GitHubCredential), so the panes
+// of one issue whose roles are Legion's and run as one App cost the tick one read rather than one
+// apiece. The memo is the walk's and is dropped at its end, so every tick reads GitHub for what its
+// bundles hold (INFRA-2543 R2).
 //
 // A pane's bundle is asked for on its claim's issue, whose plan can define the pane's role and
 // then decides its App (appauth.RoleApps.Of): the issue the launch recorded, or, for a pane this
@@ -204,12 +204,13 @@ func (r *Runtime) watching(entry trackedProcess) bool {
 }
 
 // paneRole is the role whose App entry's pane holds (runtime.SlotRole): the controller's for the
-// controller's pane; the role the runtime's ActsAs gives the claim, the step's while the
-// architect does a step of its own or the retro of one, and the implementer while a merge forward
-// asked of it has not ended; else the role the pane was launched as, which the claim held then and
-// the process keeps for its whole life, and for a pane this runtime adopted without seeing its
-// launch, the daemon's record of the claim's role (Options.ClaimRole). It answers false for a pane
-// whose role it cannot know: an adopted pane with no record to ask, or a token that names no claim.
+// controller's pane; the role the runtime's ActsAs gives the claim, the implementer while a merge
+// forward asked of the architect has not ended, whatever step it does then, else the step's while
+// it does a step of its own or the retro of one; else the role the pane was launched as, which the
+// claim held then and the process keeps for its whole life, and for a pane this runtime adopted
+// without seeing its launch, the daemon's record of the claim's role (Options.ClaimRole). It
+// answers false for a pane whose role it cannot know: an adopted pane with no record to ask, or a
+// token that names no claim.
 func (r *Runtime) paneRole(ctx context.Context, entry trackedProcess) (claim.Role, bool, error) {
 	token := entry.locator.Claim
 	if token.IsController() {
