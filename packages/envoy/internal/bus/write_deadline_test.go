@@ -14,6 +14,7 @@ import (
 // it. Without the option the write would hold the lock, and Close with it, for nats.go's default
 // minute.
 func TestAClientWithAWriteDeadlineClosesWithinItWhileAWriteIsFrozen(t *testing.T) {
+	testnats.RequireSocketQueues(t)
 	const deadline = 2 * time.Second
 	client, hold := heldHandshakeClient(t, WithName(t.Name()), WithWriteDeadline(deadline))
 	conn := client.Connection()

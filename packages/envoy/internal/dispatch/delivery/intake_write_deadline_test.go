@@ -32,6 +32,7 @@ import (
 // holds the lock for a minute, the connection is still connected 10 s after the freeze, and the
 // row fails at that check.
 func TestAWriteFrozenPastTheIntakesWriteDeadlineReconnectsAndLosesNoMessage(t *testing.T) {
+	testnats.RequireSocketQueues(t)
 	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
