@@ -456,12 +456,16 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		return nil
 	}
 	restated := ""
-	if open != "" && s.takeBootRound(open) {
+	if open != "" && s.bootRoundUnread(open) {
+		// The round's boot mark goes only once this reading's end or restatement is recorded
+		// (takeBootRound below): a launch reads the mark before the sweep's end
+		// (roundPodEndsAtLaunch), so at every moment it sees one or the other.
 		if !reasons.Breaks() {
 			// A round open at the boot, an older daemon's, over a pod whose drift only drains:
 			// the pod's roles keep working under that drift, so the round ends with no
 			// replacement (dispatch://INFRA-4754 R1).
 			s.endRoundOverDrainingDrift(issue, group, open, pod, reasons)
+			s.takeBootRound(open)
 			return nil
 		}
 		// A round open at the boot over drift that breaks goes on, and its recorded reasons are
@@ -469,6 +473,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		// marker (runtime.BreakingDrift) that tells the round's replacement the drift breaks the
 		// pod.
 		restated = s.restateRoundReasons(issue, group, open, reasons)
+		s.takeBootRound(open)
 	}
 	if open == "" && !reasons.Breaks() {
 		// A pod that has drifted from nothing, or only in kinds its roles keep working under,
@@ -2105,12 +2110,9 @@ func (s *supervision) roundPodEndsAtLaunch(ctx context.Context, token claim.Toke
 	if !recordsRound(group, round) {
 		return false, nil
 	}
-	if s.sweepEnded(issue, round) {
-		// The sweep has ended this round, and a member's machine takes that end only once its
-		// launch is over: a round the sweep ended replaces no pod, and a round ended at the boot
-		// over drift that drains has left its pod working (dispatch://INFRA-4754 R4).
-		return s.keepAtLaunch(issue, round, token, "the sweep has ended the round, and its end has not reached every member yet")
-	}
+	// The boot mark is read before the sweep's end: the sweep records a round's end before it drops
+	// the round's boot mark (endRoundOverDrainingDrift, then takeBootRound), so a launch at any
+	// moment of that end sees the mark or the end, and keeps the pod for either.
 	if s.bootRoundUnread(round) {
 		// A round found open at the boot whose pod's drift no sweep has read: the launch reads it
 		// first, since no start of a role replaces a pod whose drift only drains
@@ -2118,6 +2120,12 @@ func (s *supervision) roundPodEndsAtLaunch(ctx context.Context, token claim.Toke
 		if keep, why := s.bootReadingAtLaunch(ctx, issue, group, round, podUID); keep {
 			return s.keepAtLaunch(issue, round, token, why)
 		}
+	}
+	if s.sweepEnded(issue, round) {
+		// The sweep has ended this round, and a member's machine takes that end only once its
+		// launch is over: a round the sweep ended replaces no pod, and a round ended at the boot
+		// over drift that drains has left its pod working (dispatch://INFRA-4754 R4).
+		return s.keepAtLaunch(issue, round, token, "the sweep has ended the round, and its end has not reached every member yet")
 	}
 	var launching supervise.Claim
 	for _, c := range group {
@@ -2193,8 +2201,8 @@ func (s *supervision) bootReadingAtLaunch(ctx context.Context, issue string, gro
 	case !reasons.Breaks():
 		return true, "the round was open at the daemon's boot over drift its pod's roles keep working under; the first sweep that reads it ends it with no replacement"
 	}
-	s.takeBootRound(round)
 	s.restateRoundReasons(issue, group, round, reasons)
+	s.takeBootRound(round)
 	return false, ""
 }
 
@@ -2548,8 +2556,8 @@ func (s *supervision) podlessBootReading(ctx context.Context, issue string, grou
 	reasons, err := reader.IssuePodDrift(ctx, issue, pod, groupRoles(group))
 	switch {
 	case errors.Is(err, runtime.ErrPodGone):
-		s.takeBootRound(round)
 		s.endRoundOverAGonePod(ctx, issue, group, round, pod)
+		s.takeBootRound(round)
 		return "", true
 	case err != nil:
 		if ctx.Err() != nil {
@@ -2563,11 +2571,15 @@ func (s *supervision) podlessBootReading(ctx context.Context, issue string, grou
 		}
 		return "", true
 	}
-	s.takeBootRound(round)
+	// The boot mark goes once this reading's end or restatement is recorded, as in the by-claim
+	// reading, so a launch at any moment of it sees the mark or the end (roundPodEndsAtLaunch).
 	if reasons.Breaks() {
-		return s.restateRoundReasons(issue, group, round, reasons), false
+		terms := s.restateRoundReasons(issue, group, round, reasons)
+		s.takeBootRound(round)
+		return terms, false
 	}
 	s.endRoundOverDrainingDrift(issue, group, round, pod, reasons)
+	s.takeBootRound(round)
 	return "", true
 }
 

@@ -6,8 +6,10 @@ package daemon
 // R1, R3, R4). A round still open at a boot over drift that only drains ends with no replacement.
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -557,4 +559,81 @@ func TestALaunchBeforeTheFirstSweepWritesABreakingRoundsReasonsAgain(t *testing.
 	rig.awaitClaim(claim.RoleTester, "the round's reasons written again with the marker", func(c supervise.Claim) bool {
 		return c.UpdateRound == podUpdateRound && c.UpdateReasons == want
 	})
+}
+
+// pausingHandler is a log handler that holds the first record whose message is msg until release is
+// closed, after closing reached: a hook point inside the code that writes that line, for a test of
+// what runs at that moment. It holds no lock while it waits, so other lines are written meanwhile.
+type pausingHandler struct {
+	slog.Handler
+	msg              string
+	reached, release chan struct{}
+	once             *sync.Once
+}
+
+func (h *pausingHandler) Handle(ctx context.Context, r slog.Record) error {
+	if r.Message == h.msg {
+		h.once.Do(func() {
+			close(h.reached)
+			<-h.release
+		})
+	}
+	return h.Handler.Handle(ctx, r)
+}
+
+func (h *pausingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &pausingHandler{Handler: h.Handler.WithAttrs(attrs), msg: h.msg, reached: h.reached, release: h.release, once: h.once}
+}
+
+func (h *pausingHandler) WithGroup(name string) slog.Handler {
+	return &pausingHandler{Handler: h.Handler.WithGroup(name), msg: h.msg, reached: h.reached, release: h.release, once: h.once}
+}
+
+// A launch that runs while a sweep is ending a round found open at the boot, over drift that
+// drains, keeps the pod at every moment of that end: the sweep records the end before it drops the
+// round's boot mark, and the launch reads the boot mark before the end, so it sees one or the
+// other. The sweep is held inside the end, at the line it writes before it posts the end, while the
+// launch runs.
+func TestALaunchDuringTheBootRoundsEndKeepsThePod(t *testing.T) {
+	t.Parallel()
+	rig := newPodUpdateRig(t, answeredThenSuspended(claim.RoleImplementer))
+	image := driftOf(runtime.DriftImage)
+	rig.driftsBy(image)
+	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
+	rig.rt.ScriptIssuePodDrift(podUpdateIssue, image)
+	reached, release := make(chan struct{}), make(chan struct{})
+	releaseSweep := sync.OnceFunc(func() { close(release) })
+	defer releaseSweep()
+	rig.s.log = slog.New(&pausingHandler{Handler: rig.s.log.Handler(), msg: roundEndsOverDrainingDriftLine,
+		reached: reached, release: release, once: &sync.Once{}})
+
+	token := rig.tokens[claim.RoleImplementer]
+	holding, letLaunch := rig.holdNextResume(claim.RoleImplementer, podUpdatePod)
+	rig.sup.post(token, supervise.RequestResume{Claim: token})
+	select {
+	case <-holding:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the implementer's launch did not reach Resume")
+	}
+	swept := make(chan struct{})
+	go func() {
+		defer close(swept)
+		rig.tick()
+	}()
+	select {
+	case <-reached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the sweep did not reach the end of the boot round")
+	}
+
+	letLaunch()
+	c := rig.awaitClaim(claim.RoleImplementer, "its launch to record its process", func(c supervise.Claim) bool { return c.Locator != nil })
+	releaseSweep()
+	<-swept
+	if pod := podOf(c.Locator); pod != podUpdatePod {
+		t.Fatalf("the implementer was launched into pod %s while the sweep ended the round, want the round's pod %s kept", pod, podUpdatePod)
+	}
+	if replaced := rig.rt.CallsOf("ReplaceRoundPodAtLaunch"); len(replaced) != 0 {
+		t.Fatalf("a launch replaced the round's pod %+v while the sweep ended the round over drift that drains", replaced)
+	}
 }
