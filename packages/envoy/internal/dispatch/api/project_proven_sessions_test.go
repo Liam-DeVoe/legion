@@ -1,7 +1,9 @@
 // project_proven_sessions_test.go holds the behavior tests of a project's proven-sessions setting
 // (project_proven_sessions.go, R2 of INFRA-4764): a new project has it off, any credential that may
 // write the project turns it on, only a person turns it off, and the project.updated event a
-// gated-steps publication appends carries the setting as the row stores it.
+// gated-steps publication appends carries the setting as the row stores it. It also holds that the
+// project.updated event of a proven-sessions PUT and of a gated-steps publication carries the
+// project's default repository as the row holds it when the write commits.
 package api
 
 import (
@@ -60,12 +62,14 @@ func listedProvenSessions(t *testing.T, handler http.Handler, project string) bo
 	return false
 }
 
-// projectUpdate is a project.updated event: its writer, and the gated steps and the setting of the
-// project row its payload carries, provenSessions nil where the payload carries no proven_sessions.
+// projectUpdate is a project.updated event: its writer, and the gated steps, the setting and the
+// default repository of the project row its payload carries, provenSessions nil where the payload
+// carries no proven_sessions and defaultRepo nil where it carries no default_repo.
 type projectUpdate struct {
 	actor          model.Actor
 	gatedSteps     []string
 	provenSessions *bool
+	defaultRepo    *string
 }
 
 // latestProjectUpdate is the last project.updated event of project.
@@ -85,11 +89,12 @@ func latestProjectUpdate(t *testing.T, database *store.Store, project string) pr
 	var row struct {
 		GatedSteps     []string `json:"gated_steps"`
 		ProvenSessions *bool    `json:"proven_sessions"`
+		DefaultRepo    *string  `json:"default_repo"`
 	}
 	if err := json.Unmarshal(payload, &row); err != nil {
 		t.Fatalf("decode the payload %s of %s's project.updated event: %v", payload, project, err)
 	}
-	update.gatedSteps, update.provenSessions = row.GatedSteps, row.ProvenSessions
+	update.gatedSteps, update.provenSessions, update.defaultRepo = row.GatedSteps, row.ProvenSessions, row.DefaultRepo
 	return update
 }
 
@@ -232,10 +237,10 @@ func TestSpecWriteAGatedStepsEventCarriesTheStoredSetting(t *testing.T) {
 
 // TestAProjectUpdateCarriesTheDefaultRepositoryItsWriteLeft: the project.updated event of a
 // proven-sessions PUT and of a gated-steps publication carries the project's default_repo as the
-// row holds it when the write commits, read under the project's owner lock, and not as the
-// route's read of the project found it before that lock. Each write here reads the project, then
-// waits on its owner lock, which the test holds while it sets the default repository; once the
-// lock is released, the write's event names the repository set while it waited.
+// row holds it when the write commits: the write reads the row under the project's owner lock,
+// which every writer of the row takes first. Each write here waits on that lock, which the test
+// holds while it sets the default repository; once the lock is released, the write's event names
+// the repository set while it waited.
 func TestAProjectUpdateCarriesTheDefaultRepositoryItsWriteLeft(t *testing.T) {
 	for _, write := range []struct {
 		name string
@@ -266,7 +271,7 @@ func TestAProjectUpdateCarriesTheDefaultRepositoryItsWriteLeft(t *testing.T) {
 			if early, answeredEarly, _ := storetest.AwaitOwnerLockWaiter(t, database, write.name, answered); answeredEarly {
 				t.Fatalf("%s answered %d %s while this test held %s's owner lock", write.name, early.Code, early.Body.String(), project)
 			}
-			// The default repository changes while the write waits, after its read of the project.
+			// The default repository changes while the write waits on the project's owner lock.
 			if _, err := holder.Exec(ctx, `update projects set default_repo = 'acme/widgets' where key = $1`, project); err != nil {
 				t.Fatalf("set %s's default repository: %v", project, err)
 			}
@@ -282,22 +287,9 @@ func TestAProjectUpdateCarriesTheDefaultRepositoryItsWriteLeft(t *testing.T) {
 			if response.Code != http.StatusOK {
 				t.Fatalf("%s: status=%d body=%s", write.name, response.Code, response.Body.String())
 			}
-			var payload []byte
-			if err := database.Pool.QueryRow(ctx, `
-				select payload from events where project_key = $1 and type = 'project.updated'
-				order by id desc limit 1
-			`, project).Scan(&payload); err != nil {
-				t.Fatalf("read %s's last project.updated event: %v", project, err)
-			}
-			var row struct {
-				DefaultRepo *string `json:"default_repo"`
-			}
-			if err := json.Unmarshal(payload, &row); err != nil {
-				t.Fatalf("decode the payload %s: %v", payload, err)
-			}
-			if row.DefaultRepo == nil || *row.DefaultRepo != "acme/widgets" {
-				t.Errorf("%s's project.updated event carries default_repo %v, want acme/widgets, which the row held when it committed: %s",
-					write.name, row.DefaultRepo, payload)
+			if update := latestProjectUpdate(t, database, project); update.defaultRepo == nil || *update.defaultRepo != "acme/widgets" {
+				t.Errorf("%s's project.updated event carries default_repo %q, want acme/widgets, which the row held when it committed",
+					write.name, deref(update.defaultRepo))
 			}
 		})
 	}

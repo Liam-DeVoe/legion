@@ -107,10 +107,10 @@ type IssueDescendant struct {
 // IssueDescendantRows is every issue below the issue key on `child_of`, at any status, read
 // through q: its children, their children, and so on, bounded by IssueDepthCap like the ancestor
 // walk above, so the query terminates even if a raced reparent ever commits a cycle. Each row
-// holds the issue's parent, its status, its depth and its project. The rows are in the order of their depth,
-// and at one depth in the order of their numbers. The key itself is not in the answer. An issue
-// with no child, an issue no row has, and the empty key answer []. The read of a status change's
-// plan (api's readStatusChange) and the check of a move's subtree (api's
+// holds the issue's parent, its status, its depth and its project. The rows come nearest first,
+// and at one depth in the order of their projects and numbers. The key itself is not in the
+// answer. An issue with no child, an issue no row has, and the empty key answer []. The read of a
+// status change's plan (api's readStatusChange) and the check of a move's subtree (api's
 // refuseSpecWriterOfMovedSubtree, spec_writer.go) are this query.
 //
 // It binds no visibility predicate and takes no acting person, for the reason IssueAncestors

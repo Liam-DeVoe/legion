@@ -44,17 +44,19 @@ import (
 //
 // A create of an issue under a parent, and a move of an issue under a parent, are judged on the row
 // as the write leaves it: Legion runs it when its own labels or its new parent's chain carry the
-// label (legionManagedStatusOfRow), and its architects are those of the parent's chain. Every move
-// under a parent is also judged, wherever the new parent is, on the chain of each issue of the
-// moved subtree that Legion runs before the move, as it stands: the issue's own chain when Legion
-// runs it, and else the chain of each labelled issue under it (refuseSpecWriterOfMovedSubtree). So
-// a move of a subtree that holds such an issue passes only a person, or an architect at or above
-// each of those issues where it stands that is also at or above the new parent when Legion runs the
-// issue as the move leaves it: no architect takes another's issue by moving it, or an unlabelled
-// issue above it, under itself, not even after it took the label off its own tree or moved its own
-// issue out to the root. The Legion daemon, which writes no parent, passes none of these checks. A
-// create under no parent is not checked: the controller files a root with the label legion when a
-// person's answer asks Legion to run it.
+// label (legionManagedStatusOfRow), and its architects are those of the parent's chain. A parent of
+// another project is not on the row's chain, so a create or a move under it is judged as at a root
+// of the row's own project, which this check does not judge (judgeSpecWriter). Every move under a
+// parent is also judged, wherever the new parent is, on the chain of each issue of the moved
+// subtree that Legion runs before the move, as it stands: the issue's own chain when Legion runs
+// it, and else the chain of each labelled issue under it (refuseSpecWriterOfMovedSubtree). So a
+// move of a subtree that holds such an issue passes only a person, or an architect at or above each
+// of those issues where it stands that is also at or above the new parent when the new parent's
+// check holds the move: no architect takes another's issue by moving it, or an unlabelled issue
+// above it, under itself, not even after it took the label off its own tree or moved its own issue
+// out to the root. The Legion daemon, which writes no parent, passes none of these checks. A create
+// under no parent is not checked: the controller files a root with the label legion when a person's
+// answer asks Legion to run it.
 
 // specWriterArchitectRole is the role whose sessions write the spec and the Verification document
 // of an issue Legion runs: the first role of legionagents.Roles.
@@ -146,13 +148,14 @@ type specWrite struct {
 	// project is the project of the row a create or a move leaves: the new issue's, or the moved
 	// issue's own, which a move keeps. The walk up the row's chain climbs only to a parent of that
 	// project (issueChainSQL), so a create or a move under a parent of another project is judged as
-	// a root of its own project's tree.
+	// a root of its own project's tree, which the check does not judge (judgeSpecWriter). A create
+	// or a move that leaves project empty is an error, never a pass.
 	project string
 	// to is the new parent of a specWriteMoveAway, wherever it is, which the refusal names; the
 	// check reads that move on the issue's own chain, with under empty. toChecked is that the
-	// move is also checked on to's chain (specWriteMove), because Legion runs the moved issue as
-	// the move leaves it: the refusal then says that the writer must be an architect at or above to
-	// too.
+	// check of the move on to's chain (specWriteMove) held the move: Legion runs the moved issue as
+	// the move leaves it, its project is marked, and to is of its own project. The refusal then
+	// says that the writer must be an architect at or above to too.
 	to        string
 	toChecked bool
 	// moved is the issue a specWriteMoveAway moves when that is not issue: an issue Legion does not
@@ -181,11 +184,11 @@ func (write specWrite) documentName() string {
 
 // specWriterReadSQL is the check's one statement over the chain from the row start selects
 // (issueChainSQL, which carries each row's key): whether Legion runs that row (legionOnChainSQL);
-// the subject, the first issue of the chain, which is the issue itself or, for a row that start
-// gives no key, its parent; whether project_role_holder_marks holds the subject's project; that
-// project's proven_sessions and its key; the role the session $1 holds on the subject, empty for
-// none; and the session and the issue of each architect row of issue_role_holders on the chain,
-// nearest first.
+// whether the chain names a subject, the first issue of the chain, which is the issue itself or,
+// for a row that start gives no key, its parent when the parent is of the row's own project;
+// whether project_role_holder_marks holds the subject's project; that project's proven_sessions
+// and its key; the role the session $1 holds on the subject, empty for none; and the session and
+// the issue of each architect row of issue_role_holders on the chain, nearest first.
 func specWriterReadSQL(start string) string {
 	return `
 	with recursive ` + issueChainSQL(start, "key") + `,
@@ -200,6 +203,7 @@ func specWriterReadSQL(start string) string {
 		from chain c join issue_role_holders h on h.issue_key = c.key and h.role = '` + specWriterArchitectRole + `'
 	)
 	select ` + legionOnChainSQL + `,
+		exists (select 1 from subject),
 		exists (select 1 from project_role_holder_marks m join project p on p.key = m.project_key),
 		coalesce((select pr.proven_sessions from projects pr join project p on p.key = pr.key), false),
 		coalesce((select p.key from project p), ''),
@@ -215,15 +219,15 @@ var (
 	// specWriterOfRowSQL is the check's statement for a create or a move under the parent $2, over
 	// the row as the write leaves it, $3 its labels and $4 its project: the walk of
 	// legionManagedStatusOfRowSQL. The row's own key is not carried, so its architects are read from
-	// the parent's chain alone, and a parent of another project ends the chain at the row, which
-	// then names no subject and passes.
+	// the parent's chain alone. A parent of another project ends the chain at the row, so the chain
+	// names no subject (judgeSpecWriter).
 	specWriterOfRowSQL = specWriterReadSQL(`select null::text as key, $2::text as parent_key, $3::text[] as labels, $4::text as project_key, 0 as depth`)
 )
 
 // specWriterRead is what the check's one statement reads over the chain of a write.
 type specWriterRead struct {
-	legion, marked, provenSessions bool
-	project, role                  string
+	legion, subject, marked, provenSessions bool
+	project, role                           string
 	// architects are the architect sessions on the chain, nearest first, and architectIssues the
 	// issue of each, in the same order.
 	architects, architectIssues []string
@@ -239,18 +243,28 @@ type specWriterRefusal struct {
 	unproven bool
 }
 
+// specWriterRefusalLine is the message of the line the server logs for each write the check
+// refuses (specWriterRefusal.refuse).
+const specWriterRefusalLine = "dispatch: refused a document write by a session that is not an architect of the issue"
+
 // refuseSpecWriter is the check of who writes a Legion-run issue's spec or Verification document,
 // which every route that writes one calls (the file's comment above). It answers nil for a write it
 // passes, and for a write it refuses it logs one line and answers 403
-// DOCUMENT_WRITER_NOT_ARCHITECT. The line of a move refused on a labelled issue under the moved
-// issue names the moved issue too. q is the caller's transaction, after the owner's lock, or the
-// pool for a file upload's answer before its object is written (refuseUploadBeforeItsObject),
-// which the transaction's check still decides.
+// DOCUMENT_WRITER_NOT_ARCHITECT (specWriterRefusal.refuse). q is the caller's transaction, after
+// the owner's lock, or the pool for a file upload's answer before its object is written
+// (refuseUploadBeforeItsObject), which the transaction's check still decides.
 func refuseSpecWriter(ctx context.Context, q queryer, writer specWriter, write specWrite) error {
-	refusal, err := judgeSpecWriter(ctx, q, writer, write)
+	refusal, _, err := judgeSpecWriter(ctx, q, writer, write)
 	if err != nil || refusal == nil {
 		return err
 	}
+	return refusal.refuse()
+}
+
+// refuse logs the refusal's one line and answers 403 DOCUMENT_WRITER_NOT_ARCHITECT. The line of a
+// move refused on a labelled issue under the moved issue names the moved issue too.
+func (refusal *specWriterRefusal) refuse() error {
+	write := refusal.write
 	issue := write.issue
 	if issue == "" {
 		issue = write.under
@@ -260,15 +274,21 @@ func refuseSpecWriter(ctx context.Context, q queryer, writer specWriter, write s
 	if write.moved != "" {
 		logged = append(logged, "moved", write.moved)
 	}
-	slog.Info("dispatch: refused a document write by a session that is not an architect of the issue", logged...)
+	slog.Info(specWriterRefusalLine, logged...)
 	return errorf(http.StatusForbidden, "DOCUMENT_WRITER_NOT_ARCHITECT", "%s", refusal.message())
 }
 
 // judgeSpecWriter is the check's decision on write, with no log line: nil when it passes, and else
-// the refusal. It reads one statement through q, and none for a person.
-func judgeSpecWriter(ctx context.Context, q queryer, writer specWriter, write specWrite) (*specWriterRefusal, error) {
+// the refusal. The bool is that the check held write: Legion runs the chain, the project is marked,
+// and the chain names a subject. Every refusal is held. It reads one statement through q, and none
+// for a person, whom it passes unheld. A create or a move that names no project is an error, never
+// a pass.
+func judgeSpecWriter(ctx context.Context, q queryer, writer specWriter, write specWrite) (*specWriterRefusal, bool, error) {
 	if writer.person {
-		return nil, nil
+		return nil, false, nil
+	}
+	if write.under != "" && write.project == "" {
+		return nil, false, fmt.Errorf("read who may write the documents of a row under %s: the write names no project", write.under)
 	}
 	session := sessionOf(writer.actor)
 	statement, args := specWriterOfIssueSQL, []any{session, write.issue}
@@ -277,19 +297,26 @@ func judgeSpecWriter(ctx context.Context, q queryer, writer specWriter, write sp
 	}
 	var read specWriterRead
 	if err := q.QueryRow(ctx, statement, args...).Scan(
-		&read.legion, &read.marked, &read.provenSessions, &read.project, &read.role, &read.architects, &read.architectIssues,
+		&read.legion, &read.subject, &read.marked, &read.provenSessions, &read.project, &read.role, &read.architects, &read.architectIssues,
 	); err != nil {
-		return nil, fmt.Errorf("read who may write the documents of %s: %w", write.chainIssue(), err)
+		return nil, false, fmt.Errorf("read who may write the documents of %s: %w", write.chainIssue(), err)
+	}
+	if write.under != "" && !read.subject {
+		// A create or a move under a parent of another project: the row's chain ends at the row
+		// (issueChainSQL), so it names no subject. The row is a root of its own project's tree,
+		// and the check judges it as a create under no parent, which it does not check: the row's
+		// Legion tree has no parent in its own project.
+		return nil, false, nil
 	}
 	if !read.legion || !read.marked {
-		return nil, nil
+		return nil, false, nil
 	}
 	passes := session != "" && (slices.Contains(read.architects, session) ||
 		(write.act.daemonPasses() && session == legionDaemonSessionOf(write.issue)))
 	if passes && (!read.provenSessions || writer.actor.Proven) {
-		return nil, nil
+		return nil, true, nil
 	}
-	return &specWriterRefusal{write: write, session: writer.actor.ID, read: read, unproven: passes}, nil
+	return &specWriterRefusal{write: write, session: writer.actor.ID, read: read, unproven: passes}, true, nil
 }
 
 // reason is why the check refused, as its log line gives it.
@@ -444,54 +471,52 @@ func (s *server) refuseSpecWriterOfAsk(ctx context.Context, tx pgx.Tx, writer sp
 
 // refuseSpecWriterOfIssueWrite is the check of one write of an issue: a PATCH's (writeIssue) or a
 // step of a status change, judged on the step as its writer read it under the owner locks. A move
-// under a parent is checked on the new parent's chain, with the labels the write leaves. Every
-// move under a parent is also checked, wherever the new parent is, as it stands, on the chain of
-// each issue of the moved subtree that Legion runs before the move (refuseSpecWriterOfMovedSubtree):
-// so a move of a subtree that holds such an issue passes only an architect at or above each of
-// those issues that is also at or above the new parent when Legion runs the issue as the move
-// leaves it, and an architect that took the label off its own tree, or moved its own issue out to
-// the root, cannot then move another tree's issue under it. The daemon, which writes no parent,
-// passes none of these checks. They alone judge a move out of every tree Legion runs: when Legion
-// runs the issue before the move, the issue's own chain judges it, with no pass for the daemon. A
-// close and a reopen are checked on the issue's own chain, with the daemon's pass. A labels write
-// or a write of no parent after which Legion no longer runs the issue - Legion runs it before the
-// write (legionManagedStatus) and not as the write leaves it (legionManagedStatusOfRow) - is
-// checked on the issue's chain as it stands before the write, with the daemon's pass. A labels
-// write that keeps the label legion on the chain, and a labels_add, which cannot remove it, take
-// nothing out.
+// under a parent is checked on the new parent's chain, with the labels the write leaves, when the
+// new parent is of the issue's own project (judgeSpecWriter). Every move under a parent is also
+// checked, wherever the new parent is, as it stands, on the chain of each issue of the moved
+// subtree that Legion runs before the move (refuseSpecWriterOfMovedSubtree): so a move of a subtree
+// that holds such an issue passes only an architect at or above each of those issues that is also
+// at or above the new parent when the new parent's check holds the move, and an architect that
+// took the label off its own tree, or moved its own issue out to the root, cannot then move another
+// tree's issue under it. The daemon, which writes no parent, passes none of these checks. They
+// alone judge a move out of every tree Legion runs: when Legion runs the issue before the move, the
+// issue's own chain judges it, with no pass for the daemon. A close and a reopen are checked on the
+// issue's own chain, with the daemon's pass. A labels write or a write of no parent after which
+// Legion no longer runs the issue - Legion runs it before the write (legionManagedStatus) and not
+// as the write leaves it (legionManagedStatusOfRow) - is checked on the issue's chain as it stands
+// before the write, with the daemon's pass. A labels write that keeps the label legion on the
+// chain, and a labels_add, which cannot remove it, take nothing out.
 func refuseSpecWriterOfIssueWrite(ctx context.Context, tx pgx.Tx, writer specWriter, step issueWriteStep) error {
 	if writer.person {
 		return nil
 	}
-	// The labels the write leaves - those it writes, or, for a write of the parent alone, those the
-	// issue holds - and the issue's project, which no write changes, read under the owner lock its
-	// writer holds. Only a move and a write that may take the issue out of Legion read them.
+	// The labels the write leaves: those it writes, or, for a write of the parent alone, those the
+	// issue holds, read under the owner lock its writer holds. Only a move and a write that may take
+	// the issue out of Legion read them.
 	var labels []string
-	var project string
-	if step.changesParent() || step.labelsAfter != nil {
-		if err := tx.QueryRow(ctx, `select labels, project_key from issues where key = $1`, step.key).Scan(&labels, &project); err != nil {
+	switch {
+	case step.labelsAfter != nil:
+		labels = *step.labelsAfter
+	case step.changesParent():
+		if err := tx.QueryRow(ctx, `select labels from issues where key = $1`, step.key).Scan(&labels); err != nil {
 			return err
-		}
-		if step.labelsAfter != nil {
-			labels = *step.labelsAfter
 		}
 	}
 	moves := step.changesParent() && step.parentAfter != nil
 	if moves {
-		if err := refuseSpecWriter(ctx, tx, writer, specWrite{
-			act: specWriteMove, issue: step.key, under: *step.parentAfter, labels: labels, project: project,
-		}); err != nil {
-			return err
-		}
-		// Every move under a parent is checked on the chain of each issue of the moved subtree that
-		// Legion runs before the move too, wherever the new parent is; its refusal names the new
-		// parent's check only when that check holds the move: when Legion runs the issue as the move
-		// leaves it (runsAfter).
-		runsAfter, err := legionManagedStatusOfRow(ctx, tx, step.key, project, step.parentAfter, labels)
+		refusal, held, err := judgeSpecWriter(ctx, tx, writer, specWrite{
+			act: specWriteMove, issue: step.key, under: *step.parentAfter, labels: labels, project: step.project,
+		})
 		if err != nil {
 			return err
 		}
-		if err := refuseSpecWriterOfMovedSubtree(ctx, tx, writer, step.key, project, *step.parentAfter, runsAfter); err != nil {
+		if refusal != nil {
+			return refusal.refuse()
+		}
+		// Every move under a parent is checked on the chain of each issue of the moved subtree that
+		// Legion runs before the move too, wherever the new parent is. Its refusal names the new
+		// parent's check only when that check held the move (held).
+		if err := refuseSpecWriterOfMovedSubtree(ctx, tx, writer, step.key, step.project, *step.parentAfter, held); err != nil {
 			return err
 		}
 	}
@@ -510,7 +535,7 @@ func refuseSpecWriterOfIssueWrite(ctx context.Context, tx pgx.Tx, writer specWri
 		if step.reparent {
 			parent = step.parentAfter
 		}
-		after, err := legionManagedStatusOfRow(ctx, tx, step.key, project, parent, labels)
+		after, err := legionManagedStatusOfRow(ctx, tx, step.key, step.project, parent, labels)
 		if err != nil || after {
 			return err
 		}
@@ -531,16 +556,17 @@ const labelledIssuesSQL = `
 
 // refuseSpecWriterOfMovedSubtree is the check of writer's move of the issue key, of project,
 // under the parent to, wherever to is, on the chain of each issue of the moved subtree that Legion
-// runs before the move, as it stands; toChecked is that the move is also checked on to's chain,
-// which the refusal says. When Legion runs the issue before the move, its own chain decides: an
-// architect at or above it is at or above every issue under it. Otherwise the chain of each
-// labelled issue under it decides, nearest first, and the first refusal names that issue. The
-// moved subtree is the issues whose chain climbs to key: those reached from it through parents of
-// its own project alone, since a chain ends at the first ancestor of another project
-// (issueChainSQL), so the move changes no chain below an issue of another project. The
-// descendant walk (refs.IssueDescendantRows) reads the rows, and labelledIssuesSQL keeps, of the
-// issues of the moved subtree, those that carry the label, by the one match every answer to
-// "Legion runs" reads. A subtree that holds no issue Legion runs passes. A person passes before this runs, and the daemon passes none of these checks. As in
+// runs before the move, as it stands. toChecked is that the check of the move on to's chain held
+// the move (judgeSpecWriter), which the refusal then says. When Legion runs the issue before the
+// move, its own chain decides: an architect at or above it is at or above every issue under it.
+// Otherwise the chain of each labelled issue under it decides, nearest first, and the first
+// refusal names that issue. The moved subtree is the issues whose chain climbs to key: those
+// reached from it through parents of its own project alone, since a chain ends at the first
+// ancestor of another project (issueChainSQL), so the move changes no chain below an issue of
+// another project. The descendant walk (refs.IssueDescendantRows) reads the rows, and
+// labelledIssuesSQL keeps, of the issues of the moved subtree, those that carry the label, by the
+// one match every answer to "Legion runs" reads. A subtree that holds no issue Legion runs passes.
+// A person passes before this runs, and the daemon passes none of these checks. As in
 // legionManagedStatus, no lock holds the labels this reads of the issues around key: a concurrent
 // label write can change the answer before the move commits.
 func refuseSpecWriterOfMovedSubtree(ctx context.Context, tx pgx.Tx, writer specWriter, key, project, to string, toChecked bool) error {
@@ -595,6 +621,6 @@ func (s *server) spareSettlementOfARefusedClose(ctx context.Context, writer issu
 	if err != nil {
 		return false
 	}
-	refusal, err := judgeSpecWriter(ctx, pool, writer.specWriter(), specWrite{act: specWriteClose, issue: key})
+	refusal, _, err := judgeSpecWriter(ctx, pool, writer.specWriter(), specWrite{act: specWriteClose, issue: key})
 	return err == nil && refusal != nil
 }

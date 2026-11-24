@@ -467,6 +467,9 @@ type specWriterRigShape struct {
 	grandchild bool
 	// unclaimed adds V, a root of P with the label legion that no publication names.
 	unclaimed bool
+	// secondProject adds Q, a second project with no issue and no publication of its own, for a
+	// test that files its own issues there.
+	secondProject bool
 	// unmarked adds Q, a second project that no publication marked, holding W, a root with the
 	// label legion, and X, a root with no label.
 	unmarked bool
@@ -501,7 +504,8 @@ type specWriterRig struct {
 	project                                       string
 	r, c, d, u2, g, v                             specWriterIssue
 	rArchitect, rImplementer, cArchitect, cTester string
-	// q is the key of the unmarked project Q, and w and x are its issues (specWriterRigShape).
+	// q is the key of the second project Q (secondProject, unmarked), and w and x are its issues in
+	// the shape unmarked (specWriterRigShape).
 	q    string
 	w, x specWriterIssue
 	// asks are the ids of the block asks the rig wrote, by block id (specWriterBlockID).
@@ -576,9 +580,11 @@ func (s *specWriterServer) tree(t *testing.T, shape specWriterRigShape) *specWri
 	if shape.unclaimed {
 		rig.v = rig.file(t, "unclaimed", "", []string{"legion"})
 	}
-	if shape.unmarked {
+	if shape.secondProject || shape.unmarked {
 		rig.q = project + "Q"
 		createAdviceProject(t, s.handler, rig.q)
+	}
+	if shape.unmarked {
 		rig.w = rig.fileIn(t, rig.q, "unmarked", "", []string{"legion"})
 		rig.x = rig.fileIn(t, rig.q, "other", "", nil)
 	}
@@ -1638,14 +1644,18 @@ func TestSpecWriteChecksAMovedSubtreeWhereverItsNewParentIs(t *testing.T) {
 // TestSpecWriteChecksAMovedSubtreeWithinItsProject: an issue's chain ends at the first parent of
 // another project, as at a root (issueChainSQL), so the moved subtree a move is checked on is the
 // issues reached from the moved issue through parents of its own project. On a rig with R and its
-// child C in P, U2, a root of P with no label, and Y, an issue of the second project Q under U2 with
-// the label legion, whose own architect the daemon of Q publishes: R's architect's move of U2
-// under C is taken, since Y's chain is Y alone and the move changes no chain of Y, and R's
-// architect's edit of Y's spec after the move is refused, since Y's architects are still Y's own.
+// child C in P, U2, a root of P with no label, and the second project Q, U2 holds two issues of Q:
+// Y, with the label legion, whose own architect the daemon of Q publishes, and Z, with no label,
+// which holds N, an issue of P with the label legion. R's architect's move of U2 under C is taken:
+// Y's chain is Y alone, and N's chain is N alone, since N's parent Z is of another project, so the
+// move changes no chain of either. R's architect's edit of Y's spec after the move is refused,
+// since Y's architects are still Y's own.
 func TestSpecWriteChecksAMovedSubtreeWithinItsProject(t *testing.T) {
 	server := newSpecWriterServer(t, testServerOptions{})
-	rig := server.rig(t, specWriterRigShape{unlabelled: true, unmarked: true})
+	rig := server.rig(t, specWriterRigShape{unlabelled: true, secondProject: true})
 	y := rig.fileIn(t, rig.q, "labelled", rig.u2.key, []string{"legion"})
+	z := rig.fileIn(t, rig.q, "foreign", rig.u2.key, nil)
+	rig.file(t, "nested", z.key, []string{"legion"})
 	yArchitect := "ses-y-architect-" + strings.ToLower(rig.q)
 	rig.publish(t, y.key, []issueRoleHolder{{Role: "architect", Session: yArchitect}})
 	rig.quiet(t)
@@ -1660,6 +1670,73 @@ func TestSpecWriteChecksAMovedSubtreeWithinItsProject(t *testing.T) {
 	edit := rig.editAttempt(rig.rArchitect, y, "spec.md")
 	edit.refusal = specWriteRefusal{issues: []string{y.key}, document: "spec.md", writer: rig.rArchitect, architects: []string{yArchitect}}
 	rig.requireRefused(t, edit)
+}
+
+// TestSpecWriteJudgesARowUnderAParentOfAnotherProjectAsARoot: a parent of another project is not on
+// the chain of the row a create or a move leaves (issueChainSQL), so the check judges the row as a
+// root of its own project, which it does not judge, as it does not judge a create under no parent.
+// Both projects are marked: P by the rig's publication, and the second project Q by the publication
+// of M's own architect, M a root of Q with the label legion. C's tester's create of an issue of Q
+// with the label legion under C, which Legion runs, is taken, and so is its move under C of O, a
+// root of Q with no label and no issue under it. The server logs no refusal for either. The check
+// of the moved subtree still judges every move: C's tester's move of M under C is refused on M's
+// own chain, naming M, its spec, C's tester and M's architect, and M stays a root. That refusal
+// does not say that the writer must also be an architect of C or of an issue above it, since the
+// check of C's chain did not judge the move.
+func TestSpecWriteJudgesARowUnderAParentOfAnotherProjectAsARoot(t *testing.T) {
+	server := newSpecWriterServer(t, testServerOptions{})
+	rig := server.rig(t, specWriterRigShape{secondProject: true})
+	m := rig.fileIn(t, rig.q, "labelled", "", []string{"legion"})
+	o := rig.fileIn(t, rig.q, "plain", "", nil)
+	mArchitect := "ses-m-architect-" + strings.ToLower(rig.q)
+	rig.publish(t, m.key, []issueRoleHolder{{Role: "architect", Session: mArchitect}})
+	rig.quiet(t)
+	for _, project := range []string{rig.project, rig.q} {
+		if !rig.marked(t, project) {
+			t.Fatalf("rig: %s is not marked, want both projects marked", project)
+		}
+	}
+	logged := captureLog(t)
+	// refusals are the lines the server logged for the check's refusals since the capture began.
+	refusals := func() []string {
+		var lines []string
+		for line := range strings.Lines(logged.String()) {
+			if strings.Contains(line, specWriterRefusalLine) {
+				lines = append(lines, strings.TrimSpace(line))
+			}
+		}
+		return lines
+	}
+
+	rig.requireCreated(t, "C's tester's create of an issue of "+rig.q+" with the label legion under "+rig.c.key, rig.c.key,
+		rig.creatingIn(rig.cTester, rig.q, "A worker's issue of "+rig.q+" under "+rig.c.key, rig.c.key, []string{"legion"}))
+	what := fmt.Sprintf("C's tester's move of %s under %s", o.key, rig.c.key)
+	rig.requireTaken(t, what, http.StatusOK, func(t *testing.T) *httptest.ResponseRecorder {
+		return rig.send(t, rig.cTester, http.MethodPatch, "/api/v1/issues/"+o.key, map[string]any{"parent": rig.c.key})
+	})
+	if parent := rig.issueRow(t, o.key).parent; parent == nil || *parent != rig.c.key {
+		t.Errorf("%s left %s under %s, want it under %s", what, o.key, specWriterParentName(parent), rig.c.key)
+	}
+	if lines := refusals(); len(lines) > 0 {
+		t.Errorf("the server logged a refusal of the create or of the move under %s:\n%s", rig.c.key, strings.Join(lines, "\n"))
+	}
+
+	rig.requireRefused(t, specWriteAttempt{
+		what: fmt.Sprintf("C's tester's move of %s under %s", m.key, rig.c.key),
+		send: func(t *testing.T) *httptest.ResponseRecorder {
+			return rig.send(t, rig.cTester, http.MethodPatch, "/api/v1/issues/"+m.key, map[string]any{"parent": rig.c.key})
+		},
+		refusal: specWriteRefusal{
+			issues: []string{m.key}, document: "spec.md", writer: rig.cTester, architects: []string{mArchitect},
+			saysNot: []string{specWriterAlsoAbove(rig.c.key)},
+		},
+	})
+	if parent := rig.issueRow(t, m.key).parent; parent != nil {
+		t.Errorf("the refused move left %s under %s, want it still a root", m.key, *parent)
+	}
+	if len(refusals()) == 0 {
+		t.Errorf("the server logged no refusal of the refused move of %s, so the log this test reads holds no line of the check", m.key)
+	}
 }
 
 // TestSpecWriteDecidesAMovedSubtreesLabelInSQL: the check of a moved subtree reads in SQL which
@@ -2210,9 +2287,15 @@ func (rig *specWriterRig) sendAs(t *testing.T, writer, method, path string, body
 }
 
 // creating is writer's create (sendAs) of an issue of P titled title with a spec of its own, under
-// parent when it is not empty and with labels.
+// parent when it is not empty and with labels (creatingIn).
 func (rig *specWriterRig) creating(writer, title, parent string, labels []string) func(t *testing.T) *httptest.ResponseRecorder {
-	body := map[string]any{"project": rig.project, "title": title, "spec": "The spec of " + title + ".\n", "force": true}
+	return rig.creatingIn(writer, rig.project, title, parent, labels)
+}
+
+// creatingIn is writer's create (sendAs) of an issue of project titled title with a spec of its
+// own, under parent when it is not empty and with labels.
+func (rig *specWriterRig) creatingIn(writer, project, title, parent string, labels []string) func(t *testing.T) *httptest.ResponseRecorder {
+	body := map[string]any{"project": project, "title": title, "spec": "The spec of " + title + ".\n", "force": true}
 	if parent != "" {
 		body["parent"] = parent
 	}
