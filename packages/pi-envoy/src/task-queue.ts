@@ -13,9 +13,10 @@ import type { RegistrationInput, RegistrationStateDeps } from "./registration-st
 import type { SessionInbound } from "./session-inbound";
 
 /**
- * The Envoy extension's two serial queues (`createRegistrationState`'s `passes` and `roleMoves`),
- * each task's deadline, and the steps a queued task takes, which write the registration state of
- * `./registration-state`.
+ * The queue code of the Envoy extension's two serial queues (`createQueue`, `TaskQueue`): each
+ * queue's order, each task's deadline timer, which abandons the task when it fires, and the steps a
+ * queued task takes, which write the registration state of `./registration-state`. That module
+ * builds and holds the two queues (`createRegistrationState`'s `passes` and `roleMoves`).
  *
  * A queued task never re-checks a fence before a step, and keeps {@link TaskHandle.check} for the
  * two things that are not steps: a catch-all that would otherwise swallow the refusal, and an

@@ -16,8 +16,10 @@ import {
 } from "./task-queue";
 
 /**
- * The registration and role state the Envoy extension's two serial queues write
- * (`./task-queue`), the queues themselves, and this extension instance's client instance id.
+ * The registration and role state of the Envoy extension, and this extension instance's client
+ * instance id. This module builds and holds the two serial queues that write the state
+ * (`passes` and `roleMoves`), from the queue code of `./task-queue`, which holds each task's
+ * deadline timer.
  *
  * The state is private to this module: callers read it through the accessors below and write it
  * only through a named operation or a queued task's handle, so there is no shared variable a
