@@ -340,7 +340,7 @@ func TestAPlanWhosePartNeverStartsIsRefused(t *testing.T) {
 			blocks: []Block{f, partBlock("f1", "f", "owner", "architect"), needing("f1a", "f1", "h"), needing("h", "", "f")},
 			want: []Refusal{{Task: "f1a", Reason: "task f1a needs h, which is done only after f1a starts: " +
 				"h needs f, f is done only after its part f1 and f1 is done only after its part f1a."}}},
-		{name: "a task that needs a part of its own", blocks: []Block{needing("f", "", "f1"), f1},
+		{name: "a task that needs a part of its own", blocks: []Block{partBlock("f", "", "owner", "architect", "needs", needWord("f1")), f1},
 			want: []Refusal{{Task: "f", Reason: "task f needs f1, which is done only after f starts: f1, a part of f, starts only once f has started."}}},
 		{name: "a task outside a task that needs its part", blocks: []Block{f, f1, needing("h", "", "f1")},
 			want: []Refusal{{Task: "h", Reason: "task h needs f1, a part of task f: a task outside f needs the whole task f, and no part of it."}}},

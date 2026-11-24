@@ -110,9 +110,10 @@ func TestAStoppedPartStartsAgainOnlyWhereItsTaskStandsAtItsParts(t *testing.T) {
 }
 
 // A stopped task with a sub-owner starts again at its parts, where its sub-owner acts, the place
-// its start puts it (Walk.startPlace), and its parts that wait start with it: with a running, f
-// (owner=architect) stopped at its parts, its part f1 waiting and h needing f, the owner's version
-// that changes f starts f again at its parts, and f1 at its first step.
+// its start puts it (Walk.startPlace), and its parts that wait start once it waits for nothing: with
+// a running, f (owner=architect) stopped at its parts, its part f1 waiting and h needing f, the
+// owner's version that changes f starts f again at its parts, waiting for the join that makes its
+// own branch (startTaskCopy), with f1 waiting; the end of that join starts f1 at its first step.
 //
 // The fault it catches is a task with a sub-owner started again at a step it does not have (its
 // control: startAtFirstStep that moves the task to step 1, as before, which the move refuses, so
@@ -132,9 +133,14 @@ func TestAStoppedTaskWithASubOwnerStartsAgainAtItsParts(t *testing.T) {
 		laterVersion(t, root.Key, root.Generation, 2, block("a", ""), f, partBlock("f1", "f", "implementer"), block("h", "", "f"))))
 
 	tasks := tasksOf(t, pool, engine, root.Key)
+	assertWaits(t, tasks, "f", atParts, record.StepWaitJoin)
+	assertTask(t, tasks, "f1", record.TaskWaiting, record.TaskPlace{})
+	assertTask(t, tasks, "h", record.TaskWaiting, record.TaskPlace{})
+
+	joinEnds(t, pool, engine, root.Key, "f")
+	tasks = tasksOf(t, pool, engine, root.Key)
 	assertWaits(t, tasks, "f", atParts, record.StepWaitNone)
 	assertTask(t, tasks, "f1", record.TaskRunning, atStep(1))
-	assertTask(t, tasks, "h", record.TaskWaiting, record.TaskPlace{})
 }
 
 // A person's todo on a root whose task f (owner=architect) and its part e1 are both stopped starts
