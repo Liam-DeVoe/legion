@@ -48,7 +48,7 @@ func TestEndToEndCheckRunToChecks(t *testing.T) {
 		secret = "s"
 		sha    = "abcdef1234567890abcdef1234567890abcdef12"
 	)
-	handler := webhook.GitHubHandler(secret, "@legion", "", client, store, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
+	handler := webhook.GitHubHandler(secret, "@legion", "", "", client, store, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer loopCancel()
 	cistore.StartSummaryLoop(loopCtx, store, client, 100*time.Millisecond, 20*time.Millisecond, metrics.New().NewGauge("held", ""), logging.New("e2e"))
@@ -138,7 +138,7 @@ func TestEndToEndACheckRunWithNoPullRequestIsAttributedByItsSuiteHeadBranch(t *t
 		secret = "s"
 		sha    = "abcdef1234567890abcdef1234567890abcdef12"
 	)
-	handler := webhook.GitHubHandler(secret, "@legion", "", client, store, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
+	handler := webhook.GitHubHandler(secret, "@legion", "", "", client, store, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer loopCancel()
 	cistore.StartSummaryLoop(loopCtx, store, client, 100*time.Millisecond, 20*time.Millisecond, metrics.New().NewGauge("held", ""), logging.New("e2e"))
@@ -232,7 +232,7 @@ func TestEndToEndACodeHeadSettlesAfterASkippedHandoffHead(t *testing.T) {
 		code    = "c0de000000000000000000000000000000000000"
 		handoff = "4a4d0ff000000000000000000000000000000000"
 	)
-	handler := webhook.GitHubHandler(secret, "@legion", "", client, store, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
+	handler := webhook.GitHubHandler(secret, "@legion", "", "", client, store, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer loopCancel()
 	cistore.StartSummaryLoop(loopCtx, store, client, 100*time.Millisecond, 20*time.Millisecond, metrics.New().NewGauge("held", ""), logging.New("e2e"))

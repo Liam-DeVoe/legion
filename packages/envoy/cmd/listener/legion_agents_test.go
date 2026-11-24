@@ -32,6 +32,14 @@ type legionListener struct {
 	mux  http.Handler
 }
 
+// newLegionAgentRegistry serves store, a registry whose bucket is open: the registry a test's
+// listener holds, where the listener itself opens its own (openLegionAgentRegistry).
+func newLegionAgentRegistry(store *legionagents.Store) *legionAgentRegistry {
+	r := &legionAgentRegistry{}
+	r.state.Store(&legionAgentState{store: store})
+	return r
+}
+
 // newLegionListener is the listener the /v1/legion/agents routes are tested on, built on client,
 // whose connection it marks as a fixture's (bustest.Fixture) so its session registry creates its
 // bucket.
