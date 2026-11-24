@@ -78,26 +78,37 @@ func TestAMergedTaskStaysMergedWhenAVersionNeedsIt(t *testing.T) {
 	}
 }
 
-// A task that its issue's leave wrote left at its merge still has a merge: a person parked the issue
-// while the merge waited for the issues beneath it or stood in the merge queue, and the merge may
-// land, or have landed, before the issue is set done. So the tasks that have a merge hold it, beside
-// each task that will merge and each whose work merged, and a task left anywhere else is none of
-// them. Of a (left at its merge), b (left at its retro, its block saying merges), c (done at its
-// merge) and d (left at its first step, needing c), the tasks that have a merge are a and c.
+// A task that its issue's leave wrote left still has the merge it stood to have: a person parked the
+// issue, and the pull request of a task can merge after that, by a person's merge or a merge queue's,
+// or have merged before it, before a later leave sets the issue done. So the tasks that have a merge
+// read each left task as it stood before the leave, with its needs and its merges, beside each task
+// whose work merged; the tasks that will merge (Merging) still read no left task. Of a child of one
+// task a, parked at its review, the task with a merge is a. Of a (left at its merge), b (left at its
+// retro, its block saying merges), c (done at its merge) and d (left at its first step, needing c),
+// the tasks that have a merge are a, b, c and d, and the tasks that will merge are c alone, which no
+// task that is not left needs.
 //
 // The fault it catches is a parked issue's merge that no later leave at done checks in production
-// (its control: the tasks that have a merge without the left task at its merge, which gives [c]).
-func TestATaskLeftAtItsMergeStillHasAMerge(t *testing.T) {
+// (its control: the tasks that have a merge holding a left task only where it stands at its merge,
+// under which the child of one task parked at its review has none).
+func TestALeftTaskHasTheMergeItStoodToHave(t *testing.T) {
+	parked := StoredPlan{Tasks: []PlanTask{{Task: "a", State: TaskLeft, Place: TaskPlace{Kind: PlaceStep, Position: 2}}}}
+	if got, want := parked.TasksThatMerge(), []string{"a"}; !slices.Equal(got, want) {
+		t.Fatalf("TasksThatMerge of a task parked at its review = %q, want %q", got, want)
+	}
+	if got, ok := parked.OnlyTaskThatMerges(); got != "a" || !ok {
+		t.Fatalf("OnlyTaskThatMerges of a task parked at its review = %q, %v, want a", got, ok)
+	}
 	stored := StoredPlan{Tasks: []PlanTask{
 		{Task: "a", State: TaskLeft, Place: TaskPlace{Kind: PlaceMerge}},
 		{Task: "b", State: TaskLeft, Merges: true, Place: TaskPlace{Kind: PlaceRetro}},
 		{Task: "c", State: TaskDone, Place: TaskPlace{Kind: PlaceMerge}},
 		{Task: "d", State: TaskLeft, Needs: []string{"c"}, Place: TaskPlace{Kind: PlaceStep, Position: 1}},
 	}}
-	if got, want := stored.TasksThatMerge(), []string{"a", "c"}; !slices.Equal(got, want) {
-		t.Fatalf("TasksThatMerge = %q, want %q: a, left at its merge, and c, whose work merged", got, want)
+	if got, want := stored.TasksThatMerge(), []string{"a", "b", "c", "d"}; !slices.Equal(got, want) {
+		t.Fatalf("TasksThatMerge = %q, want %q: a, b and d as they stood, and c, whose work merged", got, want)
 	}
-	if got, ok := (&StoredPlan{Tasks: stored.Tasks[:1]}).OnlyTaskThatMerges(); got != "a" || !ok {
-		t.Fatalf("OnlyTaskThatMerges of a plan of a alone, left at its merge = %q, %v, want a", got, ok)
+	if got, want := stored.Merging(), []string{"c"}; !slices.Equal(got, want) {
+		t.Fatalf("Merging = %q, want %q: it reads no left task", got, want)
 	}
 }

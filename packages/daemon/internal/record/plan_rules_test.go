@@ -76,11 +76,12 @@ func TestATaskStandsAtItsPlaceOrHeldFromIt(t *testing.T) {
 	}
 }
 
-// A plan none of whose tasks has a merge (each task left the workflow before it was done) has no
-// pull request of its merge: the read of it answers none, and the read of the merges of several
-// issues answers the others' and none of its, rather than failing for every issue it was asked with
-// (the one rule, StoredPlan.TasksThatMerge).
-func TestAPlanWithNoTaskThatMergesHasNoMergePullRequest(t *testing.T) {
+// An issue whose merge has no pull request yet has no pull request of its merge: of a, running with
+// its pull request #41, and b, which needs a and so is the task that merges, waiting with no branch,
+// the read of the merge answers none, not a's, and the read of the merges of several issues
+// answers the others' and none of its, rather than failing for every issue it was asked with (the
+// one rule, StoredPlan.TasksThatMerge).
+func TestAnIssueWhoseMergeHasNoPullRequestHasNoMergePullRequest(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
@@ -93,8 +94,9 @@ func TestAPlanWithNoTaskThatMergesHasNoMergePullRequest(t *testing.T) {
 		v := PlanVersion{Issue: planIssue, Generation: issue.Generation, Version: 1, ArtifactID: planAuthor, Source: PlanSourceOwner,
 			GivenBy: planOwner, GivenAt: planGivenAt}
 		putPlan(t, tx, v, []PlanTask{
-			{Issue: planIssue, Generation: issue.Generation, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: TaskLeft},
-			{Issue: planIssue, Generation: issue.Generation, Task: "b", PlanVersion: 1, BlockText: "Build the gadget.", State: TaskLeft},
+			{Issue: planIssue, Generation: issue.Generation, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: TaskRunning},
+			{Issue: planIssue, Generation: issue.Generation, Task: "b", PlanVersion: 1, BlockText: "Build the gadget.", Needs: []string{"a"},
+				State: TaskWaiting},
 		}, nil)
 		if _, err := records.AssignTaskBranch(ctx, tx, planIssue, issue.Generation, "a"); err != nil {
 			t.Fatalf("give task a its branch: %v", err)
@@ -105,7 +107,7 @@ func TestAPlanWithNoTaskThatMergesHasNoMergePullRequest(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		got, err := records.MergePullRequest(ctx, tx, planIssue)
 		if err != nil || got != nil {
-			t.Fatalf("the merge pull request of %s, none of whose tasks has a merge = %+v, %v, want none", planIssue, got, err)
+			t.Fatalf("the merge pull request of %s, whose merge is b's, which has none = %+v, %v, want none", planIssue, got, err)
 		}
 		merges, err := records.PullRequestsOf(ctx, tx, []string{planIssue, noPlan.Key})
 		if err != nil || len(merges) != 1 || merges[noPlan.Key].Number != alone.Number {
