@@ -171,7 +171,7 @@ func TestRegisterPlanWritesEveryTasksStepsAsAList(t *testing.T) {
 	}
 }
 
-// register_plan's answer names each step of a task that runs or waits (contract 235), as a list in
+// register_plan's answer names each step of a task that runs or waits (contract 262), as a list in
 // the order the workflow read them (record.StoredPlan.Running): both steps of task a, the first
 // first. A task with none, b, carries no `running` key at all, rather than an empty or a null list.
 func TestRegisterPlanNamesEachStepThatRunsOrWaits(t *testing.T) {
