@@ -464,8 +464,9 @@ The clock of a unit test:
   limit with `rowLimit` from `e2e/__tests__/bounded-subprocess.ts`: the sum of the bounds of what it
   waits for, plus 30 s (`e2e/__tests__/row-limits.test.ts` holds it). A row that waits for nothing
   bounded, such as one that runs a child with `Bun.spawnSync`, runs under `test:harness`'s 60 s.
-  Three rows of `outside-agent-acceptance.test.ts`, from before that rule, state a shorter limit
-  with a reason on the line above (`row-limits.test.ts` holds those reasons).
+  From before that rule, three rows of `outside-agent-acceptance.test.ts` state a shorter limit
+  with a reason on the line above, and the two hooks of `psql-session.test.ts`, its `beforeAll`
+  and `afterAll`, state 60 s each with one (`row-limits.test.ts` holds those reasons).
 
 - A harness test in `e2e/__tests__` that waits on a real process or a real socket keeps a bounded
   real wait, because only real time moves that peer (`local-instance-support.test.ts`,
@@ -560,19 +561,20 @@ no role edits them:
   before its first, and the time the first took is gone from it.
 
 - A command sets one guard, its `--timeout`. A row or a hook sets no timeout of its own, neither a
-  third argument to `test` or `beforeAll` nor a `setDefaultTimeout`, because the shared wait reads
-  the command's guard and not a row's. The exceptions are a row of `packages/dispatch/e2e/__tests__`
-  that states its limit through `bounded-subprocess.ts`'s `rowLimit` or through
-  `outside-path-reach-fixtures.ts`'s `row` and `probingRow`, and a hook or a row whose work is one
-  measured download or one measured process run with no shared wait in it: such a hook or row
-  takes a guard of its own, at least twice its slowest reading on a machine that runs the suite
-  (CI's, or a dev box's), and the `"//"` note of its package's `package.json`, where the command's
-  guards are written, gives that number with the readings and their runs. A file whose rows need a
-  much larger guard than the rest runs in a second `bun test` command of the same script, with its
-  own `--timeout` and the same preload. Tests written before this rule still set guards of their
-  own: `git grep -n setDefaultTimeout -- '*.ts'` lists the files that set one for all their rows,
-  and a row's own is a third argument to `test` ("Where a Dispatch test belongs" names Dispatch's).
-  Each moves to its command's guard as it is carried to the shared wait.
+  third argument to `test`, a second to a hook such as `beforeAll`, nor a `setDefaultTimeout`,
+  because the shared wait reads the command's guard and not a row's. The exceptions are a row of
+  `packages/dispatch/e2e/__tests__` that states its limit through `bounded-subprocess.ts`'s
+  `rowLimit` or through `outside-path-reach-fixtures.ts`'s `row` and `probingRow`, and a hook or a
+  row whose work is one measured download or one measured process run with no shared wait in it:
+  such a hook or row takes a guard of its own, at least twice its slowest reading on a machine that
+  runs the suite (CI's, or a dev box's), and the `"//"` note of its package's `package.json`, where
+  the command's guards are written, gives that number with the readings and their runs. A file
+  whose rows need a much larger guard than the rest runs in a second `bun test` command of the same
+  script, with its own `--timeout` and the same preload. Tests written before this rule still set
+  guards of their own: `git grep -n setDefaultTimeout -- '*.ts'` lists the files that set one for
+  all their rows, a row's own is a third argument to `test`, and a hook's a second argument to it
+  ("Where a Dispatch test belongs" names Dispatch's). Each moves to its command's guard as it is
+  carried to the shared wait.
 
 ## A test that looks for a process it started
 
