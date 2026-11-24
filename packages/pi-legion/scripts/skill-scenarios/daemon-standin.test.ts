@@ -149,8 +149,9 @@ async function grant(standin: Standin, claim: LegionRegistration): Promise<strin
 /** A label checkout with the parts the stand-in reads: its plugin's `package.json`, which states
  *  its contract, and a stub of the entry at the path the rig calls it by. The stub takes exactly
  *  the entry's interface for `plan-check` (exit 2 for a usage error), keeps the request it was
- *  given as `request-seen.json` beside itself, then answers `planted-answer.json` when there is
- *  one, and otherwise fails as a run whose test did not pass: lines on stderr, the last of them
+ *  given as `request-seen.json` beside itself, then: with `planted-no-answer` beside it, prints
+ *  its PASS line and exits 0 with no answer file; with `planted-answer.json`, answers that; and
+ *  otherwise fails as a run whose test did not pass: lines on stderr, the last of them
  *  `planted-failure.txt`'s, and exit 1. */
 function plantLabel(dir: string, contract: number): { label: string; entryDir: string } {
   const label = path.join(dir, "label");
@@ -172,6 +173,10 @@ function plantLabel(dir: string, contract: number): { label: string; entryDir: s
       "fi",
       'here=$(cd "$(dirname "$0")" && pwd)',
       'cp "$2" "$here/request-seen.json"',
+      'if [ -f "$here/planted-no-answer" ]; then',
+      '  echo "--- PASS: TestRigPlanCheck"',
+      "  exit 0",
+      "fi",
       'if [ -f "$here/planted-answer.json" ]; then',
       '  cp "$here/planted-answer.json" "$3"',
       '  echo "--- PASS: TestRigPlanCheck"',
@@ -197,7 +202,9 @@ interface SeenRequest {
 
 /** A stub of the run's Dispatch that holds one plan document `artifactId` of `issue`, at latest
  *  version `latest`, with `version`'s markdown and blocks as Dispatch's version read answers them
- *  (`GET /api/v1/artifacts/{id}/versions/{n}?blocks=true`). It records each request. */
+ *  (`GET /api/v1/artifacts/{id}/versions/{n}?blocks=true`). With `documentStatus`, the document
+ *  read is refused with that status; with `versionAnswer`, the version read answers what it
+ *  returns at the time of the read. It records each request. */
 function stubDispatch(document: {
   readonly artifactId: string;
   readonly issue: string;
@@ -205,6 +212,8 @@ function stubDispatch(document: {
   readonly version: number;
   readonly markdown: string;
   readonly blocks: readonly Record<string, unknown>[];
+  readonly documentStatus?: number;
+  readonly versionAnswer?: () => Record<string, unknown>;
 }): { readonly server: Server<undefined>; readonly url: string; readonly seen: SeenRequest[] } {
   const seen: SeenRequest[] = [];
   const server = Bun.serve({
@@ -220,6 +229,12 @@ function stubDispatch(document: {
       });
       const artifact = `/api/v1/artifacts/${document.artifactId}`;
       if (request.method === "GET" && url.pathname === artifact && url.search === "") {
+        if (document.documentStatus !== undefined) {
+          return Response.json(
+            { code: "UNAVAILABLE", error: "planted refusal of the document read" },
+            { status: document.documentStatus }
+          );
+        }
         return Response.json({
           id: document.artifactId,
           issue_key: document.issue,
@@ -232,12 +247,14 @@ function stubDispatch(document: {
         url.pathname === `${artifact}/versions/${document.version}` &&
         url.search === "?blocks=true"
       ) {
-        return Response.json({
-          markdown: document.markdown,
-          number: document.version,
-          named: false,
-          blocks: document.blocks,
-        });
+        return Response.json(
+          document.versionAnswer?.() ?? {
+            markdown: document.markdown,
+            number: document.version,
+            named: false,
+            blocks: document.blocks,
+          }
+        );
       }
       return Response.json(
         { code: "NOT_FOUND", error: `no route for ${request.method} ${url.pathname}` },
@@ -407,6 +424,177 @@ test("register_plan answers 500 naming the entry's exit and its stderr's last li
   } finally {
     dispatch.server.stop(true);
   }
+});
+
+/** A stand-in with a planted label and a stub Dispatch of one document of LWEVAL-8 at latest
+ *  version 3, whose version 2 holds one plan task. `body` gets a call of register_plan for one
+ *  version of it, the stand-in, the requests Dispatch saw, the entry's directory and the
+ *  document's id. */
+async function withPlanCheck(
+  dispatchOptions: {
+    readonly documentStatus?: number;
+    readonly versionAnswer?: () => Record<string, unknown>;
+  },
+  body: (context: {
+    readonly registerPlan: (version: number) => Promise<Response>;
+    readonly standin: Standin;
+    readonly seen: readonly SeenRequest[];
+    readonly entryDir: string;
+    readonly artifactId: string;
+  }) => Promise<void>
+): Promise<void> {
+  const dir = freshDir();
+  const { label, entryDir } = plantLabel(dir, pkg.legion.daemonApiVersion);
+  const artifactId = randomUUID();
+  const markdown = ":::plan_task{#a}\nThe task.\n:::\n";
+  const dispatch = stubDispatch({
+    artifactId,
+    issue: "LWEVAL-8",
+    latest: 3,
+    version: 2,
+    markdown,
+    blocks: [{ id: "a", type: "plan_task", from: 0, to: markdown.length - 1, attributes: [] }],
+    ...dispatchOptions,
+  });
+  const tokenFile = path.join(dir, "dispatch-token");
+  writeFileSync(tokenFile, `${fixtureSecret("dsp")}\n`, { mode: 0o600 });
+  const flags = ["--label", label, "--dispatch", dispatch.url, tokenFile];
+  try {
+    await withStandin(
+      dir,
+      [PROJECT, "LWEVAL-7", "architect", "admitted", ...flags],
+      async (standin) => {
+        const claim = await register(standin);
+        const registerPlan = async (version: number): Promise<Response> =>
+          post(standin, "/legion/v1/plans/register", {
+            grantId: await grant(standin, claim),
+            issue: "LWEVAL-8",
+            artifactId,
+            version,
+          });
+        await body({ registerPlan, standin, seen: dispatch.seen, entryDir, artifactId });
+      }
+    );
+  } finally {
+    dispatch.server.stop(true);
+  }
+}
+
+/** The statuses of the stand-in's log lines of register_plan, in order. */
+function planStatuses(standin: Standin): number[] {
+  return logLines(standin)
+    .filter((line) => line.path === "/legion/v1/plans/register")
+    .map((line) => line.status);
+}
+
+/** An answer the stub entry gives when it runs, so a row sees a check that should not have run. */
+const RAN_ANYWAY = JSON.stringify({ status: 200, body: "{}" });
+
+// Catches: a stand-in that answers a failed read of the run's Dispatch with a status of its own
+// choosing, or that runs the label's check without the plan it could not read.
+test("register_plan answers 502 when the run's Dispatch fails its read, and runs no entry", async () => {
+  await withPlanCheck(
+    { documentStatus: 503 },
+    async ({ registerPlan, standin, entryDir, artifactId }) => {
+      writeFileSync(path.join(entryDir, "planted-answer.json"), RAN_ANYWAY);
+      const response = await registerPlan(2);
+      expect(response.status).toBe(502);
+      const refusal = LegionErrorResponse.parse(await response.json());
+      expect(refusal.code).toBe("DISPATCH_FAILED");
+      expect(refusal.error).toContain(`/api/v1/artifacts/${artifactId}`);
+      expect(refusal.error).toContain("503");
+      expect(existsSync(path.join(entryDir, "request-seen.json"))).toBe(false);
+      expect(planStatuses(standin)).toEqual([502]);
+    }
+  );
+});
+
+// Catches: a stand-in that cuts blocks out of a version it cannot read (no blocks, another
+// version than the one asked for, a range past the markdown, a range that holds no fenced block),
+// or runs the label's check on what it cut.
+test("register_plan answers 502 for a version whose blocks it cannot read, and runs no entry", async () => {
+  const markdown = ":::plan_task{#a}\nThe task.\n:::\n";
+  const block = { id: "a", type: "plan_task", from: 0, to: markdown.length - 1, attributes: [] };
+  const unreadable: readonly (readonly [string, Record<string, unknown>])[] = [
+    ["no blocks", { markdown, number: 2 }],
+    ["another version", { markdown, number: 3, blocks: [block] }],
+    ["a range past the markdown", { markdown, number: 2, blocks: [{ ...block, to: 99 }] }],
+    ["no fenced block", { markdown: "one line", number: 2, blocks: [{ ...block, to: 8 }] }],
+  ];
+  let answer: Record<string, unknown> = {};
+  await withPlanCheck(
+    { versionAnswer: () => answer },
+    async ({ registerPlan, standin, entryDir }) => {
+      writeFileSync(path.join(entryDir, "planted-answer.json"), RAN_ANYWAY);
+      for (const [why, planted] of unreadable) {
+        answer = planted;
+        const response = await registerPlan(2);
+        const refusal = LegionErrorResponse.parse(await response.json());
+        expect({ why, status: response.status, code: refusal.code }).toEqual({
+          why,
+          status: 502,
+          code: "PLAN_UNREADABLE",
+        });
+      }
+      expect(existsSync(path.join(entryDir, "request-seen.json"))).toBe(false);
+      expect(planStatuses(standin)).toEqual([502, 502, 502, 502]);
+    }
+  );
+});
+
+// Catches: a stand-in that asks Dispatch for the blocks of a version above the latest, or keeps
+// that version from the label's check, whose own route refuses it before it reads any block.
+test("register_plan gives the label's check a version above the latest with no blocks, and reads no version from Dispatch", async () => {
+  await withPlanCheck({}, async ({ registerPlan, seen, entryDir, artifactId }) => {
+    const planted = {
+      status: 409,
+      body: JSON.stringify({ code: "VERSION_NOT_IN_DISPATCH", error: `planted ${randomUUID()}` }),
+    };
+    writeFileSync(path.join(entryDir, "planted-answer.json"), JSON.stringify(planted));
+    const response = await registerPlan(4);
+    expect(response.status).toBe(409);
+    expect(await response.text()).toBe(planted.body);
+    expect(
+      PlanRequest.parse(JSON.parse(readFileSync(path.join(entryDir, "request-seen.json"), "utf8")))
+    ).toEqual({ artifactId, version: 4, latestVersion: 3, blocks: [] });
+    expect(seen.map((request) => request.path)).toEqual([`/api/v1/artifacts/${artifactId}`]);
+  });
+});
+
+// Catches: a stand-in that takes an entry's exit 0 for an answer when the entry left none.
+test("register_plan answers 500 when the entry exits 0 and leaves no answer", async () => {
+  await withPlanCheck({}, async ({ registerPlan, standin, entryDir }) => {
+    writeFileSync(path.join(entryDir, "planted-no-answer"), "");
+    const response = await registerPlan(2);
+    expect(response.status).toBe(500);
+    const refusal = LegionErrorResponse.parse(await response.json());
+    expect(refusal.code).toBe("PLAN_CHECK_FAILED");
+    expect(refusal.error).toContain("exited 0");
+    expect(existsSync(path.join(entryDir, "request-seen.json"))).toBe(true);
+    expect(planStatuses(standin)).toEqual([500]);
+  });
+});
+
+// Catches: a stand-in that hands the tool a status no response carries (one below 200, or a body
+// on a status that has none), which the server then fails in place of an answer.
+test("register_plan answers 500 for a label answer whose status no response carries", async () => {
+  await withPlanCheck({}, async ({ registerPlan, standin, entryDir }) => {
+    for (const status of [101, 204]) {
+      writeFileSync(
+        path.join(entryDir, "planted-answer.json"),
+        JSON.stringify({ status, body: "{}" })
+      );
+      const response = await registerPlan(2);
+      const refusal = LegionErrorResponse.parse(await response.json());
+      expect({ status, answered: response.status, code: refusal.code }).toEqual({
+        status,
+        answered: 500,
+        code: "PLAN_CHECK_FAILED",
+      });
+      expect(refusal.error).toContain(`status ${status}`);
+    }
+    expect(planStatuses(standin)).toEqual([500, 500]);
+  });
 });
 
 // Catches: a sign-off or a move back answered 404, logged without the body the scorer reads

@@ -11,6 +11,7 @@ import { loopbackHost } from "@legion/test-fixtures/loopback-host";
 import { readStandinBody } from "@legion/test-fixtures/standin-body";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type { Server, Subprocess } from "bun";
+import { z } from "zod";
 import { DispatchProxyLine, type PlansAnswerSource } from "./scored-runs-contracts";
 
 setDefaultTimeout(60_000);
@@ -106,6 +107,12 @@ interface Seen {
   readonly body: string;
 }
 
+/** What the stub upstream answers `/api/v1/compressed` with: a body gzipped by the server, as a
+ *  server sends one to a client that accepts it. */
+const COMPRESSED_BODY = Bun.gzipSync(
+  new TextEncoder().encode(JSON.stringify({ from: "upstream", compressed: true }))
+);
+
 /** A stub of the run's Dispatch that records each request whole and answers it by its path. */
 function stubUpstream(): {
   readonly server: Server<undefined>;
@@ -132,6 +139,11 @@ function stubUpstream(): {
           { issues: [{ key: `${RUN_PROJECT}-1` }], from: "upstream" },
           { headers: { "X-Upstream": "issues" } }
         );
+      }
+      if (url.pathname === "/api/v1/compressed") {
+        return new Response(COMPRESSED_BODY, {
+          headers: { "Content-Encoding": "gzip", "Content-Type": "application/json" },
+        });
       }
       if (request.method === "POST" && url.pathname.endsWith("/comments")) {
         return Response.json({ received: read.body }, { status: 201 });
@@ -334,35 +346,37 @@ test("every other request passes through and is logged", async () => {
   }
 });
 
+/** The exit, stdout and stderr of a proxy started with `recording`, which it must refuse before it
+ *  listens. Its upstream is never reached. */
+function startRefused(recording: Recording) {
+  const result = Bun.spawnSync(
+    [
+      process.execPath,
+      PROXY,
+      "0",
+      "http://127.0.0.1:9",
+      path.join(freshDir(), "dispatch-proxy.jsonl"),
+      "--plans",
+      recording.answerFile,
+      RUN_PROJECT,
+      recording.sourceFile,
+    ],
+    { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 50_000 }
+  );
+  return {
+    code: result.exitCode,
+    stdout: result.stdout.toString(),
+    stderr: result.stderr.toString(),
+  };
+}
+
 // Catches: a proxy that serves a recording its source does not vouch for, or one whose key map
 // takes the recording's project to another project than the run's.
 test("a recording whose sha256 is not its source's, or whose project the key map does not take to the run's, stops the proxy before it listens", () => {
-  const start = (recording: Recording) => {
-    const result = Bun.spawnSync(
-      [
-        process.execPath,
-        PROXY,
-        "0",
-        "http://127.0.0.1:9",
-        path.join(freshDir(), "dispatch-proxy.jsonl"),
-        "--plans",
-        recording.answerFile,
-        RUN_PROJECT,
-        recording.sourceFile,
-      ],
-      { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 50_000 }
-    );
-    return {
-      code: result.exitCode,
-      stdout: result.stdout.toString(),
-      stderr: result.stderr.toString(),
-    };
-  };
-
   const recorded = "f".repeat(64);
   const changed = plantRecording(freshDir(), recorded);
   const actual = createHash("sha256").update(readFileSync(changed.answerFile)).digest("hex");
-  const sums = start(changed);
+  const sums = startRefused(changed);
   expect(sums.code).toBe(2);
   expect(sums.stdout).not.toContain("listening on");
   expect(sums.stderr).toContain(recorded);
@@ -377,9 +391,85 @@ test("a recording whose sha256 is not its source's, or whose project the key map
       keyMap: { ...KEY_MAP, [CAPTURED]: "OTHER" },
     })
   );
-  const project = start(elsewhere);
+  const project = startRefused(elsewhere);
   expect(project.code).toBe(2);
   expect(project.stderr).toContain(CAPTURED);
   expect(project.stderr).toContain("OTHER");
   expect(project.stderr).toContain(RUN_PROJECT);
+});
+
+// Catches: a proxy that starts on a recording that is no JSON, whose plans read it would answer
+// with a body the CLI cannot read, or that refuses it for another reason than what it is.
+test("a recording that is not JSON stops the proxy before it listens, naming it", () => {
+  const recording = plantRecording(freshDir());
+  const raw = "plans answer begin\nnot a body\n";
+  writeFileSync(recording.answerFile, raw);
+  writeFileSync(
+    recording.sourceFile,
+    JSON.stringify({
+      commit: "0".repeat(40),
+      sha256: createHash("sha256").update(raw).digest("hex"),
+      keyMap: KEY_MAP,
+    })
+  );
+  const refused = startRefused(recording);
+  expect(refused.code).toBe(2);
+  expect(refused.stdout).not.toContain("listening on");
+  expect(refused.stderr).toContain(recording.answerFile);
+  expect(refused.stderr).toContain("is no JSON");
+});
+
+// Catches: a proxy that decompresses an answer and hands it on still labelled compressed, or
+// hands it on with another body than the server sent.
+test("a compressed answer passes through unchanged", async () => {
+  const dir = freshDir();
+  const upstream = stubUpstream();
+  try {
+    await withProxy(dir, upstream.url, plantRecording(dir), async (url, log) => {
+      const raw = await fetch(`${url}/api/v1/compressed`, {
+        headers: { "Accept-Encoding": "gzip" },
+        decompress: false,
+      });
+      expect(raw.status).toBe(200);
+      expect(raw.headers.get("Content-Encoding")).toBe("gzip");
+      expect(new Uint8Array(await raw.arrayBuffer())).toEqual(COMPRESSED_BODY);
+      // A client that decodes it reads the server's own body.
+      const decoded = await fetch(`${url}/api/v1/compressed`, {
+        headers: { "Accept-Encoding": "gzip" },
+      });
+      expect(await decoded.json()).toEqual({ from: "upstream", compressed: true });
+      expect(logged(log)).toEqual([
+        { method: "GET", path: "/api/v1/compressed", query: "", status: 200 },
+        { method: "GET", path: "/api/v1/compressed", query: "", status: 200 },
+      ]);
+    });
+  } finally {
+    upstream.server.stop(true);
+  }
+});
+
+/** The proxy's own refusal of a request it could not hand on. */
+const ProxyRefusal = z.object({ error: z.string() });
+
+// Catches: a proxy that dies, hangs or answers 200 when the run's Dispatch is down, or leaves the
+// failed request out of its log; the recording it serves needs no upstream.
+test("an upstream that is down is answered 502 and logged, and the plans read is still served", async () => {
+  const dir = freshDir();
+  const recording = plantRecording(dir);
+  // A port that was just closed: its server stops before the proxy starts.
+  const gone = Bun.serve({ hostname: loopbackHost(), port: 0, fetch: () => new Response("") });
+  const upstream = gone.url.origin;
+  gone.stop(true);
+  await withProxy(dir, upstream, recording, async (url, log) => {
+    const issues = await fetch(`${url}/api/v1/issues?project=${RUN_PROJECT}`);
+    expect(issues.status).toBe(502);
+    expect(ProxyRefusal.parse(await issues.json()).error).toContain(upstream);
+    const plans = await fetch(`${url}/api/v1/projects/${RUN_PROJECT}/plans`);
+    expect(plans.status).toBe(200);
+    expect(await plans.text()).toBe(recording.served);
+    expect(logged(log)).toEqual([
+      { method: "GET", path: "/api/v1/issues", query: `project=${RUN_PROJECT}`, status: 502 },
+      { method: "GET", path: `/api/v1/projects/${RUN_PROJECT}/plans`, query: "", status: 200 },
+    ]);
+  });
 });

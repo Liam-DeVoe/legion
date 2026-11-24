@@ -56,6 +56,25 @@ test("kubectl run is recorded as a start and refused, and kubectl get pods as no
   ]);
 });
 
+// Catches: a classifier that reads the word after an option it does not know only as that
+// option's value, or only as a word of the command: either reading alone can hide a start.
+test("kubectl --unlisted v run x is recorded as a start", () => {
+  const run = freshDir();
+  expect(call(run, "kubectl", "--unlisted", "v", "run", "x").code).toBe(1);
+  expect(podCalls(run).map(({ tool, argv, starts }) => ({ tool, argv, starts }))).toEqual([
+    { tool: "kubectl", argv: ["--unlisted", "v", "run", "x"], starts: true },
+  ]);
+  // The other reading, and an unknown option before the words of the other tools' starts.
+  expect(podCallStarts("kubectl", ["--unlisted", "run", "x"])).toBe(true);
+  expect(podCallStarts("docker", ["--unlisted", "v", "compose", "up"])).toBe(true);
+  expect(podCallStarts("gcloud", ["compute", "instances", "--unlisted", "v", "create", "vm"])).toBe(
+    true
+  );
+  // A read stays a read whichever way the unknown option is read.
+  expect(podCallStarts("kubectl", ["--unlisted", "v", "get", "pods"])).toBe(false);
+  expect(podCallStarts("gcloud", ["compute", "instances", "--unlisted", "v", "list"])).toBe(false);
+});
+
 // The part's list, each member once, most with a global option of its tool before the verb.
 const STARTS: readonly (readonly [PodTool, readonly string[]])[] = [
   ["kubectl", ["run", "p", "--image=busybox"]],
