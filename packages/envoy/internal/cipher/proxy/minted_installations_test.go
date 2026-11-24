@@ -96,7 +96,7 @@ func TestTheProxySwapsInTheStoredTokenOfAMintedInstallationsProfile(t *testing.T
 		Airlock:         policytest.Profiles(t, file).ProxyRules(),
 		AirlockProxyURL: "http://127.0.0.1:13381", AirlockCACertificate: "-----BEGIN CERTIFICATE-----\nminted-rig\n-----END CERTIFICATE-----\n",
 	}
-	m.Chain = requests.NewChainVerifier(st, profileAudience, time.Minute, m.Policy)
+	m.Chain = requests.NewChainVerifier(st, profileAudience, time.Minute, m.Airlock)
 	grants := &rolledGrants{}
 	grants.machine.Store(m)
 	r := newRig(t, Options{Rules: policytest.Profiles(t, file).ProxyRules(), Grants: grants})

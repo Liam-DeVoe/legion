@@ -48,9 +48,7 @@ the broker would not serve that file;
 on a file it would serve it prints every field of each profile the file adds and removes against
 the file `--against` names, and each field a profile both files hold changes: its source, tier,
 requesters and `maxGrant`, its GitHub accounts, repositories, permissions and value, its Google
-scopes, and its proxy block's hosts, headers, `allow` and `kind`. Who decides a request is no field
-of the file: it is the source key's `judge` and `guidance` tags, and a proxy block that sets either
-is refused.
+scopes, and its proxy block's hosts, headers, `allow`, `kind`, `judge` and guidance.
 So a pull request changing the deployment's `profiles.json` leaves a reviewer only the question of
 whether each of those is right for its profile.
 A profile whose proxy block is of kind `dpop`, a capability the broker mints and holds, is held to
@@ -151,8 +149,8 @@ expires at the token's own end, which the airlock's proxy reads to mint again fi
 it, as it does for every minted value; the release's `expires_at` is the grant's end. A rule that
 sets five minutes or less works, but every proxied call then mints again. The secret is human tier
 alone (the broker refuses one at agent tier as `type-human-tier`), and a person approves every
-release of it: the model judge decides none, whatever seconds its `judge` tag gives the judge, as
-for a secret tagged `admin`. It takes a `max-grant` of an hour or less, names its owner in
+release of it: the model judge decides none, whatever seconds a profile's `proxy` block gives the
+name, as for a secret tagged `admin`. It takes a `max-grant` of an hour or less, names its owner in
 `requesters` as a `google-service-account` secret does (one person, or one group, beside
 registered services), may carry `admin: true`, and carries no `scopes`.
 

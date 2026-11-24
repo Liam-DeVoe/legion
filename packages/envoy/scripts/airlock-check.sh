@@ -50,9 +50,7 @@
 # consumer files come from sjawhar/dotfiles), k6 and k7 need bun, wget, git, uv and the
 # clients scripts/airlock-clients.sh
 # installs (az, gcloud, pulumi and boto3), k9 needs git, and k15 needs lake from the Lean
-# toolchain this environment names and a Postgres server for the request state machine's
-# mutants: BROKER_TEST_DATABASE_URL, else DEV_BROKER_POSTGRES_URL; with neither, k15 reports
-# those mutants UNKNOWN and fails. DEV_BROKER_POSTGRES_URL is passed to dev-airlock.sh as it
+# toolchain this environment names. DEV_BROKER_POSTGRES_URL is passed to dev-airlock.sh as it
 # is, so a pod with no container runtime names its test server there.
 # k7 also requires four operator inputs, and refuses to start without them, naming each one
 # missing: AIRLOCK_GCLOUD_SECRET, AIRLOCK_GWS_READ_SECRET and AIRLOCK_GWS_ADMIN_SECRET, the
@@ -1196,11 +1194,9 @@ k6_clients() {
 # page sends a browser to the stack's issuer, which signs the approver in with no form to fill,
 # and the decision is posted back with an Origin header, which the page requires. curl's own
 # cookie jar cannot be used - both cookies are Secure and this broker is on http - so each
-# Set-Cookie is read out of the headers and sent back by hand. Every printed and every
-# profile_digest field of the form is posted back: the page token is a MAC over every record the
-# page printed, so an approval that names fewer is refused 403 PAGE_TOKEN_INVALID, and an approval
-# names the fingerprint of each profile the page printed, so one that names fewer is refused as
-# "Profile changed". Either way nothing is decided.
+# Set-Cookie is read out of the headers and sent back by hand. The decision carries every
+# profile_digest field the page printed, one per profile the request names: the broker refuses an
+# approval whose form lacks a profile's fingerprint as one whose profile changed since the page.
 approve_record() { # <record id>
 	local rec="$1" d="$WORK_DIR/approve"
 	mkdir -p "$d"
@@ -1215,27 +1211,18 @@ approve_record() { # <record id>
 	session="$(sed -n 's/^Set-Cookie: \(__Host-broker-session=[^;]*\).*/\1/p' "$d/callback" | tr -d '\r')"
 	[ -n "$session" ] || return 1
 	curl -sS -H "Cookie: $session" -o "$d/page.html" "$AGENT_SECRETS_URL/approve/$rec"
-	# values is every value of the hidden field the page names, in the page's order, read one
-	# field at a time: the form prints all of its fields on one line, and a field it prints more
-	# than once - one printed field per record, one profile_digest field per profile, each
-	# "<record> <name> <digest>" - comes back once each. field is its first value.
-	local value
-	values() { grep -o "name=\"$1\" value=\"[^\"]*\"" "$d/page.html" | sed 's/.*value="\([^"]*\)"/\1/'; }
-	field() { values "$1" | head -n 1; }
-	local printed=() digests=()
-	while IFS= read -r value; do
-		printed+=(--data-urlencode "printed=$value")
-	done < <(values printed)
-	while IFS= read -r value; do
-		digests+=(--data-urlencode "profile_digest=$value")
-	done < <(values profile_digest)
+	local digest
+	field() { sed -n "s/.*name=\"$1\" value=\"\([^\"]*\)\".*/\1/p" "$d/page.html" | head -n 1; }
+	local -a digests=()
+	while IFS= read -r digest; do
+		digests+=(--data-urlencode "profile_digest=$digest")
+	done < <(grep -o 'name="profile_digest" value="[^"]*"' "$d/page.html" | sed 's/.*value="\([^"]*\)"/\1/')
 	# The page's form token reaches curl on standard input (`--data-urlencode token@-`), in no
 	# command line.
 	printf '%s' "$(field token)" | curl -sS -o "$d/decided.html" -w '%{http_code}' -H "Cookie: $session" -H "Origin: $AGENT_SECRETS_URL" \
 		--data-urlencode "decision=approve" --data-urlencode "record=$(field record)" \
-		"${printed[@]+"${printed[@]}"}" --data-urlencode token@- \
-		"${digests[@]+"${digests[@]}"}" \
-		--data-urlencode "expires=$(field expires)" "$AGENT_SECRETS_URL/approve" >>"$d/decisions"
+		--data-urlencode "printed=$(field printed)" --data-urlencode token@- \
+		--data-urlencode "expires=$(field expires)" ${digests[@]+"${digests[@]}"} "$AGENT_SECRETS_URL/approve" >>"$d/decisions"
 	echo >>"$d/decisions"
 }
 
@@ -1829,7 +1816,7 @@ k8a_start_broker() { # <profiles file> <label>
 }
 
 check_k8a() {
-	expect "the judge-1800 copy (a proxy block that still sets a judge, which is the key's own tag) and the no-hosts copy exit non-zero naming the profile"
+	expect "the judge-1800 and the no-hosts copies exit non-zero naming the profile"
 	expect "the malformed copy names the parse position"
 	expect "a local broker refuses to start on each of the three failing copies"
 	expect "the new-host, new-header and removed-entry copies exit 0 and list what they add or remove"
@@ -1841,7 +1828,7 @@ check_k8a() {
 	mkdir -p "$d"
 	cp "$AIRLOCK_PROFILES_FILE" "$d/valid.json"
 	jq '.profiles[0].proxy.judge = 1800' "$d/valid.json" >"$d/judge-1800.json"
-	jq '.profiles[0].proxy.hosts = []' "$d/valid.json" >"$d/no-hosts.json"
+	jq '.profiles[0].proxy += {judge: 300} | .profiles[0].proxy.hosts = []' "$d/valid.json" >"$d/no-hosts.json"
 	jq '.profiles[0].proxy.hosts += ["extra.airlock.test"]' "$d/valid.json" >"$d/new-host.json"
 	jq '.profiles[0].proxy += {headers: ["authorization", "x-extra"]}' "$d/valid.json" >"$d/new-header.json"
 	jq '.profiles = .profiles[1:]' "$d/valid.json" >"$d/removed-entry.json"
@@ -1857,8 +1844,8 @@ check_k8a() {
 		observe "$label: exit ${K8A_STATUS[$label]}; $(printf '%s' "$out" | head -n 3 | tr '\n' ' / ')"
 	done
 
-	judge "$([ "${K8A_STATUS[judge-1800]}" -ne 0 ] && contains 'AIRLOCK_DEMO_TOKEN' "${K8A_OUT[judge-1800]}" && contains 'judge tag' "${K8A_OUT[judge-1800]}" && [ "${K8A_STATUS[no-hosts]}" -ne 0 ] && contains 'AIRLOCK_DEMO_TOKEN' "${K8A_OUT[no-hosts]}" && echo 0 || echo 1)" \
-		"the judge-1800 copy, refused naming the judge tag that took its place, and the no-hosts copy exit non-zero naming the profile" \
+	judge "$([ "${K8A_STATUS[judge-1800]}" -ne 0 ] && contains 'AIRLOCK_DEMO_TOKEN' "${K8A_OUT[judge-1800]}" && [ "${K8A_STATUS[no-hosts]}" -ne 0 ] && contains 'AIRLOCK_DEMO_TOKEN' "${K8A_OUT[no-hosts]}" && echo 0 || echo 1)" \
+		"the 1800 and no-hosts copies exit non-zero naming the profile" \
 		"judge-1800 exited ${K8A_STATUS[judge-1800]} saying '${K8A_OUT[judge-1800]}'; no-hosts exited ${K8A_STATUS[no-hosts]} saying '${K8A_OUT[no-hosts]}'"
 	judge "$([ "${K8A_STATUS[malformed]}" -ne 0 ] && contains 'byte' "${K8A_OUT[malformed]}" && echo 0 || echo 1)" \
 		"the malformed copy names the parse position" "it exited ${K8A_STATUS[malformed]} saying '${K8A_OUT[malformed]}'"
@@ -2209,29 +2196,25 @@ check_k15() {
 		"the seed corpus exited $seed_status and -fuzztime=600s exited $fuzz_status"
 
 	echo "airlock-check: running the mutants..." >&2
-	# The request state machine's mutants run their tests against a Postgres server; with none,
-	# airlock-mutants.sh runs them not at all and exits 3, which this check reads as UNKNOWN and
-	# never as caught.
-	local database="${BROKER_TEST_DATABASE_URL:-${DEV_BROKER_POSTGRES_URL:-}}"
-	(cd "$ENVOY_DIR" && AIRLOCK_MODEL="$model" BROKER_TEST_DATABASE_URL="$database" bash "$SCRIPT_DIR/airlock-mutants.sh") >"$WORK_DIR/mutants.log" 2>&1
+	(cd "$ENVOY_DIR" && AIRLOCK_MODEL="$model" bash "$SCRIPT_DIR/airlock-mutants.sh") >"$WORK_DIR/mutants.log" 2>&1
 	local mutants_status=$?
 	echo
 	echo "the mutants:"
-	grep -E '^(PASS|FAIL|UNKNOWN):' "$WORK_DIR/mutants.log" | sed 's/^/  /'
+	grep -E '^(PASS|FAIL):' "$WORK_DIR/mutants.log" | sed 's/^/  /'
 	# The check's words name six mutants, which is a floor and not a count: the tree holds every
 	# mutant of the decision anyone has written, and each must be caught. So this reads two
 	# things — that airlock-mutants.sh caught every mutant it found, and that the six the check
 	# names are among them.
 	local caught named missing=""
 	caught=$(grep -cE '^PASS:' "$WORK_DIR/mutants.log" || true)
-	for named in go-extra-header go-no-host-check go-hostless-entry go-carries-value lean-all-headers lean-carries-value; do
+	for named in go-extra-header go-no-host-check go-judge-over-900 go-carries-value lean-all-headers lean-carries-value; do
 		grep -qE "^PASS: $named " "$WORK_DIR/mutants.log" || missing="$missing $named"
 	done
-	control "scripts/airlock-mutants.sh exited $mutants_status: $caught mutant(s) caught, the check's six among them; $(grep -E '^UNKNOWN: [0-9]' "$WORK_DIR/mutants.log" || echo 'every mutant ran')"
-	control "$(grep -E '^(PASS|FAIL|UNKNOWN):' "$WORK_DIR/mutants.log" | tr '\n' ' ')"
+	control "scripts/airlock-mutants.sh exited $mutants_status: $caught mutant(s) caught, the check's six among them"
+	control "$(grep -E '^(PASS|FAIL):' "$WORK_DIR/mutants.log" | tr '\n' ' ')"
 	judge "$([ "$mutants_status" = 0 ] && [ -z "$missing" ] && echo 0 || echo 1)" \
-		"negative control: each of the six mutants is caught, and every other mutant of the tree ran and was caught" \
-		"airlock-mutants.sh exited $mutants_status$(case "$mutants_status" in 0) ;; 3) echo ' (UNKNOWN: a mutant did not run)' ;; *) echo ' (a mutant was not caught)' ;; esac) with $caught caught${missing:+; of the six missing:$missing}"
+		"negative control: each of the six mutants is caught" \
+		"airlock-mutants.sh exited $mutants_status with $caught caught and none of the six missing${missing:+; missing:$missing}"
 }
 
 ###############################################################################################

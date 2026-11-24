@@ -241,33 +241,8 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   `--max-grant` of an hour or less, so a person approves every release, only someone it names may
   ask, and the grant is short enough to review while it is live. A person approves every release
   of one even where a deployment runs a model judge: the judge refuses an administrator's
-  secret, so no `--judge` can move one of its requests off the person who approves it
+  secret, so no proxy block's `judge` seconds can move one of its requests off the person who approves it
   ([The model judge](/legion/broker/concepts/#the-model-judge)). Any value but `true` is refused.
-- **`--judge SECONDS`** is optional. It lets the model judge, where the deployment runs one,
-  decide a request for the secret in its owner's place, granting at most that many seconds, from
-  1 to 900 (`--judge 900` is 15 minutes); a request that names no `--ttl` gets that long. Any
-  other value is refused before anything is written, as the broker refuses it
-  (`judge-out-of-range`). Without it a person decides every request that needs a decision. A
-  profile is decided by its source's tag, so tag the stored secret. `retag --judge none` gives
-  the decision back to a person, and ends each live grant the judge made of the secret at its
-  next release; lowering the seconds below a live judged grant's lifetime ends that grant the
-  same way, and putting the tag back does not bring an ended grant back. Any change of the
-  seconds also ends the live grants of each profile of it that has a proxy block, since the
-  seconds are in the profile's fingerprint.
-- **`--guidance TEXT`** is optional: your instruction to the judge, saying when it should grant a
-  request for the secret, for example
-  `--guidance 'grant for the release job when the reason names its run'`. On Google Secret
-  Manager it holds up to 2000 characters of any kind. On AWS Secrets Manager it is a tag value, so
-  it holds at most 256 characters, of Unicode letters, digits, spaces and `_ . : / = + - @`
-  alone: no comma, apostrophe, quote or parenthesis. The same holds for every tag value this
-  command writes on AWS. A value past either limit is refused before
-  anything is written, naming the limit and, for a character, the first one that fails. The judge
-  shows it to
-  its model with each request, and anyone who can reach the broker can read it
-  (`GET /v1/settings`), so write nothing in it you would not show them. A profile is decided on its
-  source's guidance, so the judge shows one guidance for every profile made from that source; to
-  give them different rules, name each profile in it with its own. `retag --guidance none`
-  removes it; writing it ends no grant.
 - **`--project`** is optional. It names the one Dispatch project the secret belongs to, by its
   key as Dispatch writes it: `--project PRIV`. A secret of a **private** project goes only to a
   session or pod whose credential names that project; every other one is denied
@@ -608,9 +583,8 @@ max_grant: -
 default_grant: -
 created: 2026-10-06T20:31:08Z
 last_changed: 2026-10-06T20:31:08Z
-judge: -
-guidance: -
 decides: nobody, for a session its tags allow; otherwise a person, on the broker page
+guidance: -
 version: 8ae2ea20-8e93-4f1a-b3d1-2e5396ecef72 AWSCURRENT
 ```
 

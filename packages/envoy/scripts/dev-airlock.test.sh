@@ -20,7 +20,7 @@
 # dev-broker.sh built instead; that two broker processes are started, each with the
 # whole BROKER_AIRLOCK_* block and both on one database; that every broker is given the model
 # judge - the six BROKER_JUDGE_* settings and the metadata host its own credential is minted at;
-# that the judge's five human-tier secrets are in the profiles file and the store, tagged as they must be
+# that the judge's five human-tier secrets are in the profiles file and the store as they must be
 # for it to decide three of them, leave the fourth and refuse the administrator's fifth; that the
 # profiles file holds every github-app secret's profile, a github block on each and a host on
 # every proxy block, and the github-app secret's profile with no proxy block; that the banner
@@ -458,12 +458,12 @@ fi
 printf 'PASS: every broker is given the model judge (model %s at %s, Dispatch %s, its token file, and the metadata server its own credential is minted at)\n' \
   "$judge_model" "$model_url" "$dispatch_url"
 
-# The judged secrets: their judge tags give the judge seconds of four of them and nothing of the
-# fifth, no proxy block names a judge any more, and the fake store holds all five at human tier -
-# four the approver's and one owned by nobody - so each waits for a person unless the judge
-# decides it first. One of the approver's four is an administrator's secret, which the judge must
-# refuse although its judge tag gives it the same seconds: the stack writes that tag on purpose,
-# so a check can see the refusal come from the broker and not from a key that left the judge out.
+# The judged secrets: their proxy blocks give the judge seconds of four of them and nothing of
+# the fifth, and the fake store holds all five at human tier - four the approver's and one owned
+# by nobody - so each waits for a person unless the judge decides it first. One of the
+# approver's four is an administrator's secret, which the judge must refuse although its proxy
+# block gives it the same seconds: the stack writes that profile on purpose, so a check can see
+# the refusal come from the broker and not from a profile that left the judge out.
 judged_secret="$(exported AIRLOCK_JUDGED_SECRET)"
 unjudged_secret="$(exported AIRLOCK_UNJUDGED_SECRET)"
 shared_secret="$(exported AIRLOCK_SHARED_SECRET)"
@@ -471,29 +471,18 @@ admin_secret="$(exported AIRLOCK_ADMIN_SECRET)"
 second_judged_secret="$(exported AIRLOCK_SECOND_JUDGED_SECRET)"
 admin_max_grant="$(exported AIRLOCK_ADMIN_MAX_GRANT)"
 judge_seconds="$(exported AIRLOCK_JUDGE_SECONDS)"
-second_judge_seconds="$(exported AIRLOCK_SECOND_JUDGE_SECONDS)"
 fake_secrets="$(exported AIRLOCK_FAKE_SECRETS_FILE)"
 approver="$(exported AIRLOCK_APPROVER)"
-for want in "airlock-judged-token=$judge_seconds" "airlock-second-judged-token=$second_judge_seconds" \
-  "airlock-shared-token=$judge_seconds" "airlock-admin-token=$judge_seconds" "airlock-unjudged-token=null"; do
+for want in "$judged_secret=$judge_seconds" "$second_judged_secret=$judge_seconds" "$shared_secret=$judge_seconds" \
+  "$admin_secret=$judge_seconds" "$unjudged_secret=null"; do
   name="${want%=*}"
   seconds="${want#*=}"
-  got="$(jq -r --arg name "$name" '.secrets[] | select(.name | endswith($name)) | .tags.judge // "null"' "$fake_secrets")"
-  if [[ -z "$seconds" || "$got" != "$seconds" ]]; then
-    echo "FAIL: the store's judge tag of $name is ${got:-nothing}; want ${seconds:-a value the banner exported}" >&2
+  got="$(jq -r --arg name "$name" '.profiles[] | select(.name == $name) | .proxy.judge // "null"' "$profiles_file")"
+  if [[ -z "$name" || "$got" != "$seconds" ]]; then
+    echo "FAIL: the profiles file gives the judge ${got:-nothing} of ${name:-a name the banner did not export}; want $seconds" >&2
     exit 1
   fi
 done
-proxy_judges="$(jq -r '[.profiles[] | select(.proxy != null and (.proxy | has("judge") or has("guidance"))) | .name] | join(" ")' "$profiles_file" 2>/dev/null || echo unread)"
-if [[ -n "$proxy_judges" ]]; then
-  echo "FAIL: the profiles file still sets judge or guidance in the proxy block of [$proxy_judges], which the broker refuses at boot" >&2
-  exit 1
-fi
-guidances="$(jq -r '[.secrets[] | select(.tags.guidance != null) | .name | sub("^.*/"; "")] | join(" ")' "$fake_secrets")"
-if [[ "$guidances" != "airlock-judged-token airlock-second-judged-token" ]]; then
-  echo "FAIL: the store's guidance tags are on [$guidances]; want the two judge keys of the approver's alone" >&2
-  exit 1
-fi
 for want in "airlock-judged-token=$approver" "airlock-second-judged-token=$approver" "airlock-unjudged-token=$approver" \
   "airlock-shared-token=shared" "airlock-admin-token=$approver"; do
   name="${want%=*}"
@@ -516,8 +505,8 @@ if [[ "$admin_tags" != "true $approver $service $admin_max_grant" ]]; then
   echo "FAIL: the store holds the admin secret's tags as [$admin_tags]; want admin true, requesters naming $approver and the stack's service, and a max-grant of $admin_max_grant" >&2
   exit 1
 fi
-printf 'PASS: the judge has %s, %s and %s to decide (%s seconds each) and %s (%s seconds), each by its own judge tag, and %s to leave alone, all five human tier, one of them owned by nobody and one of them an administrator'"'"'s secret the judge must refuse (admin true, requesters %s %s, max-grant %s)\n' \
-  "$judged_secret" "$shared_secret" "$admin_secret" "$judge_seconds" "$second_judged_secret" "$second_judge_seconds" "$unjudged_secret" \
+printf 'PASS: the judge has %s, %s, %s and %s to decide (%s seconds each) and %s to leave alone, all five human tier, one of them owned by nobody and one of them an administrator'"'"'s secret the judge must refuse (admin true, requesters %s %s, max-grant %s)\n' \
+  "$judged_secret" "$second_judged_secret" "$shared_secret" "$admin_secret" "$judge_seconds" "$unjudged_secret" \
   "$approver" "$service" "$admin_max_grant"
 
 # What a check needs to drive the judge: the three stands' records, the answer route, the two

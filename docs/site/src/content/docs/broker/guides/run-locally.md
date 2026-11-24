@@ -724,21 +724,19 @@ this script started, drops its database and prints the workdir it kept.
 The stack of the first section runs no model judge. The airlock stack runs one, on both broker
 processes. Three more stand-ins of `cmd/dev-proxy-stands` serve it: a model endpoint, a
 Dispatch holding one open issue, one done one and one answered ask, and a Compute Engine metadata
-server, where the broker mints the identity token it presents to the model. Its fake store says
-who decides each human-tier secret, in each secret's own tags:
+server, where the broker mints the identity token it presents to the model. Its profiles file
+says who decides each human-tier secret, in each profile's proxy block:
 
-| Secret | Its tags | Who decides a request for it |
+| Secret | Its proxy block and tags | Who decides a request for it |
 | --- | --- | --- |
-| `AIRLOCK_JUDGED_TOKEN` | `judge: 900` with `guidance`, owned by `ada@example.com` | The judge, against that guidance, for up to 900 seconds. |
-| `AIRLOCK_SECOND_JUDGED_TOKEN` | `judge: 600` with `guidance` of its own, owned by `ada@example.com` | The judge, against that guidance, for up to 600 seconds; a request for it beside `AIRLOCK_JUDGED_TOKEN` is decided by the judge for both, each against its own guidance, for the shorter of the two. |
+| `AIRLOCK_JUDGED_TOKEN` | `judge: 900` with `guidance`, owned by `ada@example.com` | The judge, against that guidance. |
+| `AIRLOCK_SECOND_JUDGED_TOKEN` | `judge: 900` with `guidance` of its own, owned by `ada@example.com` | The judge, against that guidance; a request for it beside `AIRLOCK_JUDGED_TOKEN` is decided by the judge for both, each against its own guidance. |
 | `AIRLOCK_SHARED_TOKEN` | `judge: 900`, `owner=shared` | The judge, in the place of anyone who signs in. |
 | `AIRLOCK_ADMIN_TOKEN` | `judge: 900`, `admin: "true"` | `ada@example.com` on the broker page: the judge never decides an administrator's key. |
 | `AIRLOCK_UNJUDGED_TOKEN` | no `judge`, owned by `ada@example.com` | `ada@example.com` on the broker page. |
 
-Each of them is a profile with a proxy block that binds a host, so no value the judge grants
-leaves the airlock. To give the judge another key, or change what it may grant, tag the key:
-`agent-secrets secret retag <NAME> --judge 900 --guidance 'grant k14-grant'`, then ask with
-`--ttl 15m`.
+Every proxy block binds at least one host, so no profile releases its value under a judge: the
+broker refuses a profiles file with a proxy block that names none.
 
 `agent-secrets secret show "$AIRLOCK_JUDGED_SECRET"` prints the same: its `decides:` line names the
 judge, and its `guidance:` line the text the judge decides on, `$AIRLOCK_JUDGE_GUIDANCE`. Ask for it
@@ -752,10 +750,8 @@ agent-secrets request "$AIRLOCK_JUDGED_SECRET" --ttl 10m \
 While the judge decides, the request carries `judge_deciding` and no page, and it is on nobody's
 list. `agent-secrets status <request id>` then names the judge as the decider,
 `decided_by: judge:$AIRLOCK_JUDGE_MODEL`, and the broker that decided it logs one line,
-`broker judge: wrote a verdict`, with the verdict — what became of the request: `granted`,
-`refused` or `handed to the person` — each key's call (`calls=<key>:granted|denied|failed`), the
-model's reason and, where a check stopped the run, the check that failed. The same verdict is one
-`request.judged` row in the `audit` table
+`broker judge: wrote a verdict`, with the verdict, the model's reason and, where a check stopped
+the run, the check that failed. The same verdict is one `request.judged` row in the `audit` table
 ([Concepts](/legion/broker/concepts/#the-model-judge)). What the model was sent is at its
 recording route, `$AIRLOCK_MODEL_RECORDS`, and what Dispatch was asked at
 `$AIRLOCK_DISPATCH_RECORDS`: the issue the reason names and the ask it cites, read and never
@@ -809,7 +805,7 @@ token endpoint the `azure` kind exchanges at, which also plays the resource host
 spent at, and an AWS service that verifies Signature Version 4. Each is a `.test` name no
 resolver answers, which `BROKER_AIRLOCK_TEST_RESOLVE` and `BROKER_AIRLOCK_TEST_DIAL_ALLOW` point
 at one loopback address each, so the proxy reaches those five and refuses every other private
-address, as it does in production. The judge's own run — its six checks, its model call for each key and
+address, as it does in production. The judge's own run — its six checks, its one model call and
 what it writes — is real as well, and three more of that command's stands serve it, on loopback
 addresses the broker reaches directly rather than through the proxy: a model endpoint that
 answers whatever was last set for it, a Dispatch holding one open issue, one done one and one

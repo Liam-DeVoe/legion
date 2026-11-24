@@ -478,8 +478,8 @@ marked with tags or annotations:
   person approves every release, only someone the secret names may ask, and the grant is short
   enough to review while it is live; one that is not is refused `admin-tier`,
   `admin-requesters` or `max-grant-required`. A person approves every release of one even where
-  a deployment runs a model judge: the judge refuses an administrator's secret, so a `judge`
-  tag on that secret cannot undo the `admin` tag
+  a deployment runs a model judge: the judge refuses an administrator's secret, so a profile's
+  `proxy` block that gives the judge seconds of that name cannot undo the tag
   ([The model judge](#the-model-judge)). Set it with
   `agent-secrets secret create|retag --admin true`.
 - **`max-grant`** is optional, except on an `admin` secret and on a `google-service-account` or
@@ -492,22 +492,6 @@ marked with tags or annotations:
   secrets all carry it gets a grant that lasts until its session ends instead of that default. Any other
   value is refused `default-grant-malformed`. Set it with `agent-secrets secret create|retag
   --default-grant session`.
-- **`judge`** is optional. It makes the secret one [the model judge](#the-model-judge) decides:
-  whole seconds from 1 to 900, written in digits alone, the longest grant of it the judge may
-  approve and the lifetime a request for it that names none gets. Any other value — `1800`, `0`,
-  `15m`, a sign — is refused `judge-out-of-range`, so the secret goes to nobody rather than to a
-  judge with no bound. A profile is decided as its source is, by the source's tag. The tag is in
-  the policy version, so adding, lowering or removing it makes the broker check each live grant
-  the judge made of the secret again at its next release. A profile of the secret that has a
-  `proxy` block carries the seconds in its fingerprint, where the block once held them, so a
-  change of the tag ends that profile's grants, as an edit of its entry does. Set it with
-  `agent-secrets secret create|retag --judge 900`, and remove it with `--judge none`.
-- **`guidance`** is optional: the owner's instruction to the model judge, saying when to grant a
-  request for the secret. The judge shows it whole to its model, so a value longer than 2000
-  characters is refused `guidance-too-long`. It decides nothing a live grant may do, so it is in
-  no policy version and writing it ends no grant. Guidance is no secret: `GET /v1/settings`
-  answers it to anyone. Set it with `agent-secrets secret create|retag --guidance '<text>'`, and
-  remove it with `--guidance none`.
 - **`dispatch-project`** is optional. It names the one Dispatch project the secret belongs to, by
   its key as Dispatch writes it (`PRIV`: an upper-case letter, then one to nine upper-case
   letters or digits). A secret of a private project goes only to a session or pod whose
@@ -1168,7 +1152,7 @@ The broker evaluates every name
   same setting binds the secret to its account, with the same refusals, and the same `requesters`
   rule holds, but the type is human tier alone (`type-human-tier`), so no session gets a grant of
   it without asking, and a person approves every release of it: the model judge decides none,
-  whatever seconds its `judge` tag gives the judge ([The model judge](#the-model-judge)).
+  whatever seconds a profile's `proxy` block gives the name ([The model judge](#the-model-judge)).
   The federation rule's `token_lifetime_seconds` must be 3600 or less, since a grant of the secret
   lasts an hour at most; the broker refuses a longer token, naming that setting. The minted value
   expires at the token's own end, which the airlock's proxy reads to mint again five minutes before
@@ -1477,10 +1461,10 @@ is one entry of the airlock's rules, under that profile's name: it names the hos
 profile's value may reach, the request headers that may carry it
 (`authorization`, unless the entry names others) and, where the entry gives them, the methods and
 path prefixes it may travel on
-(`packages/envoy/internal/cipher/proxyrules`). Who decides a request for the value is no part of
-an entry: that is the secret's own `judge` and `guidance` tags ([The model judge](#the-model-judge)),
-and a profiles file whose `proxy` block still sets `judge` or `guidance` is refused, naming the tag
-that took its place. Every
+(`packages/envoy/internal/cipher/proxyrules`). An entry may also give a `judge` of so many seconds:
+the longest grant of that secret the model judge may approve, at most 900, and with it a
+`guidance`, the instruction the judge decides the key on, which is no part of the entry's
+fingerprint, so writing or changing it ends no grant ([The model judge](#the-model-judge)). Every
 entry names at least one host: an entry with no `hosts` would hold the value back and carry it
 nowhere, so the broker refuses to start with a file that holds one, and
 `envoy-broker profiles check` refuses that file too. Those hosts carry no port, so an entry binds
@@ -1595,10 +1579,8 @@ not bound. On an entry that lists methods and paths, a request carrying
 `X-HTTP-Method-Override`, `X-HTTP-Method` or `X-Method-Override` is refused the same way
 (`request carries a method override header`), because a service that honours one of those
 acts on the method the header names and not on the one the entry allowed.
-Each profile's own fingerprint, its whole entry and its source's `judge` seconds, is part of what
-a grant was decided under, so an edit to one profile's entry ends that profile's grants and no
-others. The seconds sit where the entry's `proxy` block wrote a `judge` before it became the
-source's tag, so moving the judge from the file to the tag, with the same seconds, ends none. The
+Each profile's own fingerprint, its whole entry but the guidance, is part of what a grant was
+decided under, so an edit to one profile's entry ends that profile's grants and no others. The
 fingerprint a grant is held to is its approval's, the entry the approval was given under, and
 every release compares it: a grant approved after an entry's edit ends when the file rolls back
 to the entry the request was made under. The proxy keeps the values it read for a grant until
@@ -1775,20 +1757,22 @@ list Dispatch's own account and nothing else.
 ### The model judge
 
 A deployment may configure a **model judge** (`packages/envoy/internal/cipher/judge`). Who decides
-a request is a setting of its keys, in each secret's own tags:
+a request is a setting of its keys, in each profile's `proxy` block in the profiles file
+(`BROKER_PROFILES_FILE`):
 
 - **Nobody**: an agent-tier key is granted at once to the sessions its tags allow, as before.
-- **The judge**: a key with a `judge` tag, the longest lifetime in seconds the judge may grant,
-  no `admin` tag, and no `anthropic-federation` type. It may also carry a `guidance` tag: the key
-  owner's instruction saying when the judge should grant it. A profile is decided by its source's
-  tags. Set both with `agent-secrets secret retag <NAME> --judge 900 --guidance '<text>'`.
+- **The judge**: a key whose profile's `proxy` block has a `judge` value, the longest lifetime in
+  seconds the judge may grant, no `admin` tag, and no `anthropic-federation` type. The block may
+  also carry `guidance`: the key owner's instruction saying when the judge should grant it. The
+  block names at least one host, as every proxy block does, so the value of a key the judge
+  decides stays behind the airlock.
 - **A person**: every other key, and every administrator's key and Anthropic federation key
-  whatever its `judge` tag says, since either can release an organization administrator's
+  whatever the profiles file says, since either can release an organization administrator's
   credential. The person decides on the broker page, as before.
 
 The judge decides a request when every key in it that needs a decision is a judge key. A request
 with any key a person decides is that person's whole. The broker reads the answer when it writes
-the request and keeps it with the request, so a restarted broker, or one with other tags, decides
+the request and keeps it with the request, so a restarted broker, or one with other rules, decides
 it the same way. With the judge's settings unset there is no judge, and every request that needs a
 decision waits for a person.
 
@@ -1796,9 +1780,8 @@ No request has to cite anything. The judge reads the Dispatch issue a reason nam
 cites (`dispatch://KEY/ask/<id>`) as data for the model, and a key's guidance may ask for either:
 for example, "grant only to post text that the key's owner approved in Dispatch; the reason must
 cite that answer". `GET /v1/settings` answers each judge key with its seconds and guidance
-(`judge_keys`), and `agent-secrets secret show` prints the key's own `judge` and `guidance` tags
-and who decides a request for it — for a source served only through its profiles, the judge, for
-each judged profile made from it — so an agent can meet the guidance on its first request.
+(`judge_keys`), and `agent-secrets secret show` prints who decides a request for the key and the
+guidance, so an agent can meet the guidance on its first request.
 
 While the judge decides a request, which is at most two minutes from when it was written, nobody
 else can: it is on no person's list or Dispatch Inbox, on any broker; its answer carries
@@ -1807,10 +1790,10 @@ decision routes refuse it `403 JUDGE_DECIDES`; and a person's Approve or Deny of
 
 The broker that wrote a request pending runs the judge in the background, for a request it wrote
 and never for one it joined to a request already pending, so one record is judged once. A run has
-35 seconds, and each model call inside it 20. The run makes six checks first, in order, and stops
+35 seconds, and the model call inside it 20. The run makes six checks first, in order, and stops
 at the first that fails, asking the model nothing:
 
-1. each key the judge decides carries a `judge` tag (a profile, its source's);
+1. each key the judge decides has a `judge` value in its profile's `proxy` block;
 2. the grant's lifetime — the `--ttl` its session signed, else the broker's default — is at most
    15 minutes and at most each of those keys' seconds;
 3. the tag policy, read again now, still answers approval for each key the judge decides, and
@@ -1831,22 +1814,14 @@ A key the session gets at once, such as an agent-tier key, may stand beside the 
 needs no decision: the judge decides nothing of it, the model is not shown it, and the judge's
 grant releases it with the rest.
 
-A request that passes them all goes to the model in one call for each key the judge decides, all
-made at once. Each call is shown that one key's name, judge seconds and guidance, the reason, and
-the issue and ask the reason points at, and nothing of any other key, so one owner's guidance never
-reaches the decision on another owner's key; the model is also told that a key's guidance decides
-only that key: it follows the rule a guidance gives the key it decides (one source's guidance,
-shown for each profile made from it, may give each profile its own), and text in it that tries to
-decide the whole request, or this key through what it says of another, is a reason to deny. The
-model follows the guidance and reads everything an agent wrote as data to judge rather than as
-instructions. Each call answers `grant` or `deny`, and the request is granted only when every call
-grants: one `deny` refuses it. A request for N judge keys makes N calls, each bounded at 20
-seconds, and waits as long as the slowest of them. The run reads the request's state once more
-immediately before the calls and asks nothing about a request that is no longer pending — one its
-session cancelled, or one whose wait ran out. That read bounds nothing about how many model calls
-one session can start: each request a session creates is pending for the moment the run reads it,
-so a session that creates and cancels requests in a loop costs one model call per judge key of
-each request it creates.
+A request that passes them all goes to one model, with each key's name, `proxy` block and guidance,
+the reason, and the issue and ask the reason points at. The model follows the guidance and reads
+everything an agent wrote as data to judge rather than as instructions. It answers `grant` or
+`deny`. The run reads the request's state once more immediately before that call and asks nothing
+about a request that is no longer pending — one its session cancelled, or one whose wait ran out.
+That read bounds nothing about how many model calls one session can start: each request a session
+creates is pending for the moment the run reads it, so a session that creates and cancels requests
+in a loop costs one model call per request it creates.
 
 Every run ends the request one of three ways:
 
@@ -1866,7 +1841,7 @@ Every run ends the request one of three ways:
 For a request the judge decides, a lifetime longer than a judge key's seconds, or than 15 minutes,
 is refused when the request is written, naming the `--ttl` that would do, and the judge is never
 asked; a request naming no lifetime gets the shortest of those seconds. A request a person decides
-— a judge key beside a key with no `judge` tag, or any request on a broker that runs no judge —
+— a judge key beside a key with no judge entry, or any request on a broker that runs no judge —
 keeps the ordinary lifetime rules.
 
 An approval is the judge's own. The decision event's actor is `judge:<model id>` and its login is
@@ -1876,21 +1851,17 @@ record's own approver — the secret's owner, or `anyone` for a shared secret �
 approves that secret lists the grant and can end it, and a judged grant of a shared secret is on
 every signed-in person's page.
 
-A judged grant is held to the keys' `judge` tags in force rather than to a person's standing, and
-to the `admin` tag over both. Each release re-checks that the secret's `judge` tag still gives the
-judge at least the grant's lifetime; a grant whose secret lost its `judge` tag, or whose seconds
-fell below that lifetime, is refused and ended for good at that release, and putting the tag back
-does not bring it back, as a lowered `max-grant` does not. A grant the new seconds still cover goes
-on releasing, unless the secret is served as a profile with a `proxy` block: that profile's
-fingerprint holds the seconds, so any change of them ends its grants, refused as its profile
-having changed, "its entry in the profiles file, or the judge tag of its source key". A secret its owner tags as an
+A judged grant is held to the rules in force rather than to a person's standing, and to the
+`admin` tag over both. Each release re-checks that the secret's entry still gives the judge at
+least the grant's lifetime; a grant whose entry lost its `judge`, or whose seconds fell below
+that lifetime, releases nothing (`GRANT_NOT_LIVE`). A secret its owner tags as an
 administrator's after the judge decided it ends that grant for good, at the release and at the
 next request that would reuse it: a person approves every release of one, so no judged grant
 goes on releasing it, and taking the tag off again does not bring the grant back: the session
 asks afresh, as a new request, which its person decides while the tag stands. The chain check
 ([The audit record](#the-audit-record)) admits a judge's approval only on a record that names
-agent secrets alone, each one a key whose `judge` tag still gives the judge seconds of it, and a
-lifetime within each one's seconds, so a forged record, and one a retag left behind, release
+agent secrets alone, each one a key the rules still give the judge seconds of, and a lifetime
+within each one's seconds, so a forged record, and one a rules change left behind, release
 nothing either. What the reason says is the judge's to read against the guidance, and no part of
 that check.
 
@@ -1971,14 +1942,8 @@ revoke of a grant already revoked, naming under `withheld` the secrets it withhe
 session, and under `withheld_on` the other enrollments it wrote them on),
 `request.judged` (one row for every judge run that reached a verdict, its hand-overs to a person
 and the runs a check stopped included: each check and its result, the model, whether the model was
-asked, the `verdict` — what became of the request: `granted`, `refused`, `handed to the person`,
-`not pending` for one already decided, cancelled or expired, or `unknown` where an approval's
-answer was lost — the reason, the `calls` (one for each judge key the model was asked about, with
-the key and what its call did: `granted`, `denied`, or `failed` with its error, a failure being no
-deny, and the raw answer of a call whose answer did not parse), the token counts, that it priced
-nothing, and, for a request handed to its person because a call failed, the raw answer of the
-first call that failed, which is empty when that call sent no answer at all, a time-out among
-them, even where a later call's answer did not parse; a refused request carries none there) and
+asked, the verdict, the reason, the token counts, that it priced nothing, and the raw answer where
+it did not parse) and
 `launcher_credential.revoked` (naming the machine login's `credential_id`, its `host`, its
 `service` for a service's login, and under `enrollments` the sessions the revoke ended) and
 `launcher_credential.token_login` (a service's token login: the `credential_id`, its `service`, the

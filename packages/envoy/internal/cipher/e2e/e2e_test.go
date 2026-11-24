@@ -182,7 +182,7 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 			}).Mint,
 		},
 	}
-	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Policy)
+	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	reqMachine.Chain.Groups = reader
 	// The caller of the routes Dispatch's server calls presents its own projected ServiceAccount
 	// token, verified against a local OIDC issuer standing in for the cluster's, as the broker

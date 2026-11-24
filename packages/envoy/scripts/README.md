@@ -235,10 +235,7 @@ these are the check's own steps. `k7` fetches `shims/gh`, the two scripts it run
 `gws/accounts.json`, whose read tier it reports, from `sjawhar/dotfiles` at main with
 `gh api`. `k15` needs no stack: it builds the Lean model with `lake`, prints its
 theorem statements and their axioms, runs the comparison fuzz test for ten minutes,
-and runs every mutant through `airlock-mutants.sh`, the six it names among them. The
-request state machine's mutants need a Postgres server: `BROKER_TEST_DATABASE_URL`,
-else `DEV_BROKER_POSTGRES_URL`; with neither, they do not run, the script exits 3, and
-k15 fails as UNKNOWN.
+and runs the six mutants through `airlock-mutants.sh`.
 
 Before starting `k7`, set these operator inputs. An absent or empty input is a usage
 error (exit 2), reported before setup starts, and so is a broker name that is not
@@ -262,11 +259,9 @@ fixture, GitHub admin and Google consumer boundary directly under fakes. It chec
 required inputs, fake broker rules, store names, the name and reason each nested
 `agent-secrets` call asks with, and consumer results without starting a stack, k8a's
 broker start on its own, k6's login steps (the login, the command's exit status and
-the removal of their directory, after a TERM too), k6's az wrapper with an az shim
+the removal of their directory, after a TERM too), and k6's az wrapper with an az shim
 first on PATH (a shim that looks az up on PATH again must reach the real az, not the
-wrapper), and `approve_record` against a `python3` stand-in of the broker's approval
-page: it must post back every `printed` and every `profile_digest` field of a page that
-prints two records, and the same helper without either is refused 403.
+wrapper).
 
 The programs the checks drive are files, not text a run writes out. The three Go
 clients are subcommands of `cmd/dev-proxy-stands`, the binary `dev-broker.sh`
@@ -724,41 +719,22 @@ from that wheel's own requirements.
 
 ## airlock-mutants.sh
 
-Proves that the airlock's differential fuzz test, the Lean proofs, the proxy's own tests and
-the policy's and the request state machine's tests catch a defect. Each file of
-`internal/cipher/proxyrules/testdata/mutants`, `internal/cipher/proxy/testdata/mutants`,
-`internal/cipher/policy/testdata/mutants` and `internal/cipher/requests/testdata/mutants` is one
-defect as a unified diff; for each, the script copies `packages/envoy` to a fresh directory under
-`$TMPDIR`, applies that one patch there, and requires the copy to fail — a `go-*.patch` under the
-comparison fuzz test over the committed seed corpus, a `lean-*.patch` under `lake build` or, when
-it still builds, that same comparison against the mutated model, and a `proxy-*.patch`,
-`policy-*.patch` or `requests-*.patch` under every test its own `# must fail: <Test>` lines name,
-in that package. A `requests-*.patch` needs the Postgres `BROKER_TEST_DATABASE_URL` names. Without
-one it is not run: it prints `UNKNOWN:`, the summary names it, and the run exits 3, so a check that
-reads the exit never takes a mutant nobody ran for a caught one. `--skip-database-mutants` leaves
-those mutants out on purpose: each prints `SKIPPED:`, the summary lists them, and they alone do not
-make the run exit 3. Each `proxy-*`, `policy-*` and `requests-*` mutant's named tests run first on
-an unpatched copy and must pass there: one that fails there (a database that refuses connections,
-a test broken on the head) is reported `UNKNOWN:` and not run, since its failure would read as a
-catch. A run in which no mutant ran exits 3. A mutant nothing catches fails the run.
+Proves that the airlock's differential fuzz test and the Lean proofs catch a defect
+in the decision code. Each file of `internal/cipher/proxyrules/testdata/mutants` is one
+defect as a unified diff; for each, the script copies `packages/envoy` to a fresh
+directory under `$TMPDIR`, applies that one patch there, and requires the copy to
+fail — a `go-*.patch` under the comparison fuzz test over the committed seed corpus,
+a `lean-*.patch` under `lake build` or, when it still builds, that same comparison
+against the mutated model. A mutant nothing catches fails the run.
 
 ```bash
-AIRLOCK_MODEL=<the built airlock-model> BROKER_TEST_DATABASE_URL=<a Postgres server> \
-  packages/envoy/scripts/airlock-mutants.sh [--skip-database-mutants] [<name>...]
+AIRLOCK_MODEL=<the built airlock-model> packages/envoy/scripts/airlock-mutants.sh [<name>...]
 ```
 
 With no name it runs every mutant; a name is a patch's file name with or without
-`.patch`. It prints one `PASS:`, `FAIL:`, `UNKNOWN:` or `SKIPPED:` line per mutant. It
-exits 1 when any was not caught, else 3 when any was not run or none ran, else 0, and 2 when the
-model mutants need `lake` and it is not installed. `airlock-check.sh k15` passes it
-`BROKER_TEST_DATABASE_URL`, else `DEV_BROKER_POSTGRES_URL`. No patch ever touches this
-repository.
-
-`bash packages/envoy/scripts/airlock-mutants-apply.test.sh` checks that every mutant patch of
-those four directories still applies to the tree (`git apply --check -p1`, which writes
-nothing), so a change to the code a patch mutates cannot leave the patch stale unseen. It needs
-no database, model or Lean, and envoy-go-checks runs it. It exits 0 when every patch applies, 1
-naming each one that does not, and 3 when it found no patch.
+`.patch`. It prints one `PASS:` or `FAIL:` line per mutant and exits non-zero when
+any was not caught, 2 when the model mutants need `lake` and it is not installed.
+No patch ever touches this repository.
 
 ## listener-deploy-probe.sh
 

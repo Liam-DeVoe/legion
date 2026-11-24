@@ -45,7 +45,7 @@ func TestAGroupsSecretOfAPrivateProject(t *testing.T) {
 		Audience: testAudience, Skew: time.Minute, Replay: replayer(st), Groups: directory,
 		ServicesByAccount: map[string]string{fixtureSubject: fixtureService},
 	}
-	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Policy)
+	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Airlock)
 	m.Chain.Groups = directory
 	m.Airlock = proxyrules.Rules{}
 	answerFrom(t, m, dispatchRows(publicTeam))

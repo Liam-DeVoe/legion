@@ -153,7 +153,7 @@ func (pr *profileRig) machine(t *testing.T, file string) *requests.Machine {
 		// the rig's own client, which is pointed at the rig's proxy and trusts its authority.
 		AirlockProxyURL: "http://127.0.0.1:13381", AirlockCACertificate: "-----BEGIN CERTIFICATE-----\nprofile-rig\n-----END CERTIFICATE-----\n",
 	}
-	m.Chain = requests.NewChainVerifier(pr.st, profileAudience, time.Minute, m.Policy)
+	m.Chain = requests.NewChainVerifier(pr.st, profileAudience, time.Minute, m.Airlock)
 	return m
 }
 

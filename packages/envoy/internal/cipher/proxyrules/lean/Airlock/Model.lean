@@ -33,6 +33,8 @@ structure SecretRule where
   /-- `""`, `"aws"`, `"azure"` or `"dpop"`. A plain `String`, not an `Option`, because the Go
   side sends the empty string for an entry with no kind. -/
   kind : String := ""
+  /-- Judge lifetime in seconds. -/
+  judge : Option Nat := none
   deriving Repr
 
 structure Rules where
@@ -224,6 +226,11 @@ def namesUnique : List String → Bool
   | [] => true
   | n :: ns => !ns.contains n && namesUnique ns
 
+/-- A judge asks for at most 900 seconds; an entry with no judge asks for nothing. -/
+def judgeOK : Option Nat → Bool
+  | none => true
+  | some l => decide (l ≤ 900)
+
 /-- The four kinds an entry may name. -/
 def kindOK (k : String) : Bool := k == "" || k == "aws" || k == "azure" || k == "dpop"
 
@@ -263,17 +270,15 @@ def hostShapeOK (h : String) : Bool :=
   !name.isEmpty && labels.all labelOK && !(labels.getLast?.getD []).all Char.isDigit
 
 /-- Rules-file validation. This is the same answer as Go's `Validate` returning `nil`:
-the names are distinct, a kind is `""`, `"aws"`, `"azure"` or `"dpop"`, every entry names a host,
-and every host is one the airlock can bind. An entry is a proxy block, and one that binds its
-value to no host would hold the value back and carry it nowhere, so it is refused here (theorem
-`T4`); `check` still refuses every request for one ("secret not behind airlock"), since a
-decision does not assume a validated file. Who decides a request for a secret is no part of an
-entry: that is the key's own judge tag, which the broker's policy load bounds, not the rules
-file. -/
+the names are distinct, a judge lifetime is at most 900 s, a kind is `""`, `"aws"`, `"azure"` or `"dpop"`,
+every entry names a host, and every host is one the airlock can bind. An entry is a proxy block,
+and one that binds its value to no host would hold the value back and carry it nowhere, so it is
+refused here (theorem `T4`); `check` still refuses every request for one
+("secret not behind airlock"), since a decision does not assume a validated file. -/
 def validate (rules : Rules) : Bool :=
   namesUnique (rules.secrets.map (·.name)) &&
   rules.secrets.all fun s =>
-    kindOK s.kind && !s.hosts.isEmpty && s.hosts.all hostShapeOK
+    judgeOK s.judge && kindOK s.kind && !s.hosts.isEmpty && s.hosts.all hostShapeOK
 
 /-! ## Decision and rewrite -/
 

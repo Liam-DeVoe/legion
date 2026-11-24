@@ -28,10 +28,8 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -129,18 +127,6 @@ const (
 	// loader refuses every other value (ReasonAdminMalformed), and `agent-secrets` holds --admin
 	// to it before it writes, so the two cannot drift on what the tag says.
 	AdminTrue = "true"
-	// TagJudge makes a key one the model judge decides: whole seconds from 1 to MaxJudgeSeconds
-	// (ParseJudge), the longest grant of it the judge makes, and the lifetime a request for it
-	// that names none gets. Any other value refuses the key (ReasonJudgeOutOfRange). A key with
-	// the tag and an admin tag is no judge key: a person approves every release of an
-	// administrator's credential (Secret.PersonApprovesEveryRelease). A key without it is never
-	// the judge's.
-	TagJudge = "judge"
-	// TagGuidance is the key owner's instruction to the model judge: when to grant a request for
-	// the key. The judge shows it to its model whole, so a value longer than MaxGuidanceRunes
-	// refuses the key (ReasonGuidanceTooLong). It decides nothing a live grant may do, so it is
-	// in no policy version.
-	TagGuidance = "guidance"
 	// TagProject names the one Dispatch project the secret belongs to, by its key as written
 	// (ParseProject): a secret of a private project goes only to a credential that names that
 	// project (Evaluate, ReasonProjectNotNamed), and one whose tag names a project Dispatch does
@@ -268,31 +254,6 @@ func ParseMaxGrant(raw string) (time.Duration, error) {
 		return 0, ErrMaxGrantMalformed
 	}
 	return maxGrant, nil
-}
-
-// MaxJudgeSeconds is the longest grant the model judge makes of any key, and the most a judge tag
-// may name (ParseJudge): 15 minutes, the class's bound.
-const MaxJudgeSeconds = 900
-
-// MaxGuidanceRunes is the longest guidance tag a key may carry (TagRules,
-// ReasonGuidanceTooLong). The judge shows the whole text to its model beside the request's reason
-// and what Dispatch holds of it, all within one bounded prompt, so a text past this would be cut
-// rather than read; the key is refused instead, and `agent-secrets secret` refuses the write.
-const MaxGuidanceRunes = 2000
-
-// ErrJudgeOutOfRange is a judge tag that is not a whole number of seconds from 1 to
-// MaxJudgeSeconds.
-var ErrJudgeOutOfRange = fmt.Errorf("judge is a whole number of seconds from 1 to %d", MaxJudgeSeconds)
-
-// ParseJudge reads a judge tag: decimal digits alone, no sign, unit or white space, naming whole
-// seconds from 1 to MaxJudgeSeconds, so 0 is free to mean that a key has no judge. Every other
-// value is ErrJudgeOutOfRange, which the loader answers as ReasonJudgeOutOfRange.
-func ParseJudge(raw string) (uint32, error) {
-	seconds, err := strconv.ParseUint(raw, 10, 32)
-	if err != nil || seconds < 1 || seconds > MaxJudgeSeconds {
-		return 0, ErrJudgeOutOfRange
-	}
-	return uint32(seconds), nil
 }
 
 // ErrProjectMalformed is a dispatch-project tag that is not one Dispatch project key.
@@ -470,16 +431,13 @@ type TagSet struct {
 	// MaxGrant is the secret's max-grant tag as ParseMaxGrant answered it, and 0 when it sets
 	// none.
 	MaxGrant time.Duration
-	// Guidance is the secret's guidance tag as written (TagGuidance), "" for a secret carrying
-	// none.
-	Guidance string
 }
 
 // TagRules is the one statement of what a secret's tags demand of each other, which the loader
 // applies to every secret it reads and `agent-secrets secret` create and retag apply before they
 // write (so it asks for no registered service list of its own). It takes a TagSet rather than a
-// positional list because the rules weigh nine values — the type, owner, tier, requesters,
-// scopes, admin, max-grant and guidance tags, and the deployment's binding of the secret to an
+// positional list because the rules weigh eight values — the type, owner, tier, requesters,
+// scopes, admin and max-grant tags, and the deployment's binding of the secret to an
 // account — which no caller could pass in order without mistaking one for another. It answers
 // "" for a secret the rules allow, and otherwise the load reason that refuses it:
 //
@@ -502,8 +460,6 @@ type TagSet struct {
 //     account whose list names a service. The one reason is all a load answers; which of those
 //     conditions refused it is RequesterRule's fault, which `agent-secrets` reads to name the
 //     flag that fixes the write.
-//   - ReasonGuidanceTooLong: the guidance tag is longer than MaxGuidanceRunes. The judge shows it
-//     whole to its model, and a cut instruction is not the one its owner wrote.
 //
 // The rules above are weighed in the order they are written, so a secret several of them refuse
 // is refused by the first.
@@ -525,9 +481,6 @@ func TagRules(t TagSet) string {
 	}
 	if RequesterRule(t) != RequesterFaultNone {
 		return ReasonRequestersNotOwner
-	}
-	if utf8.RuneCountInString(t.Guidance) > MaxGuidanceRunes {
-		return ReasonGuidanceTooLong
 	}
 	return ""
 }
@@ -671,22 +624,10 @@ type Secret struct {
 	// administrator's, which the rules hold to human tier, a requesters list and an hour's cap
 	// (TagRules).
 	Admin bool
-	// Judge is the secret's judge tag as ParseJudge answers it, whole seconds from 1 to
-	// MaxJudgeSeconds, and 0 for a secret carrying none, which the model judge never decides
-	// (Set.JudgeSeconds). A value, never a pointer, for the same reason as MaxGrant. It is in
-	// Version, so a judge tag added, changed or removed makes the broker check each live judged
-	// grant of the secret again at its next release (requests' judgeStillDecides).
-	Judge uint32
-	// Guidance is the secret's guidance tag (TagGuidance) as written, "" for a secret carrying
-	// none: the instruction the model judge follows when it decides a request for the secret. It
-	// is not in Version: it tells the judge how to decide requests to come and changes nothing a
-	// live grant may do, so writing it ends no grant.
-	Guidance string
-	// ProfileDigest is the fingerprint of the profile this secret is served as: its entry's, with
-	// its source's judge seconds where its proxy block once held them (Profiles.servedDigest), and
-	// "" for a stored secret served by its own name. A string, not a pointer, for the same reason as
-	// MaxGrant. It is in Version, so an edit of one profile's entry, or of its source's judge tag,
-	// moves the policy version and ends the grants of that name (requests.Machine's checkRelease).
+	// ProfileDigest is the fingerprint of the profile this secret is served as (Profiles.Digest),
+	// and "" for a stored secret served by its own name. A string, not a pointer, for the same
+	// reason as MaxGrant. It is in Version, so an edit of one profile's entry moves the policy
+	// version and ends the grants of that name (requests.Machine's checkRelease).
 	ProfileDigest string
 	// Profile is the profiles file's entry this secret is served as, and nil for a stored secret
 	// served by its own name. It points into the one Profiles the boot read, which never changes,
@@ -713,11 +654,11 @@ func (secret Secret) Type() string {
 }
 
 // PersonApprovesEveryRelease reports whether a person approves every release of the secret, so
-// the model judge decides none of its requests whatever its judge tag says: a secret tagged admin
-// (TagAdmin), and an anthropic-federation secret (TypeAnthropicFederation, read from its Source
-// with ParseTypeSource), whose token can be an organization administrator's whether or not the
-// tag says so. Each of the judge's gates reads it (requests' judgeKey, judgeStillDecides,
-// currentPolicyAdmits and JudgePolicy).
+// the model judge decides none of its requests whatever seconds the airlock rules give the name: a
+// secret tagged admin (TagAdmin), and an anthropic-federation secret (TypeAnthropicFederation,
+// read from its Source with ParseTypeSource), whose token can be an organization administrator's
+// whether or not the tag says so. Each of the judge's gates reads it (requests' judgeKey,
+// judgeStillDecides, currentPolicyAdmits and JudgePolicy).
 func (secret Secret) PersonApprovesEveryRelease() bool {
 	return secret.Admin || secret.Type() == TypeAnthropicFederation
 }
@@ -758,7 +699,7 @@ func (secret Secret) approver() string {
 // Set is the policy as one load read it, or as a single name's reread left it (NewSet builds both).
 type Set struct {
 	// Version is the SHA-256 of every served secret's name, owner, tier, source, max-grant,
-	// github-owners, requesters, scopes, admin, project, project-channels and judge, and of the
+	// github-owners, requesters, scopes, admin, project and project-channels, and of the
 	// fingerprint of each profile it serves: equal versions are equal policies. A request records
 	// the version it was decided under, so a live grant is re-evaluated only once the policy
 	// changed. The project-channels tag is in it because the airlock proxy holds a grant's
@@ -861,15 +802,14 @@ func setOf(secrets map[string]Secret, refused map[string]Refusal, pending map[st
 
 // NewSet builds the one Set shape both Load and the single-name merges produce, keeping secrets
 // (keyed by Name) as its Secrets. A secret with no max-grant, no github-owners, no requesters, no
-// scopes, no admin, no project, no project-channels and no judge tag writes the pre-type digest
-// bytes, "<Name>\t<Owner>\t<Tier>\t<Source>\n" (a type secret's type is in its Source); one with
-// any of them adds the first two, as a fifth field (time.Duration's form, 0s for none) and a sixth
+// scopes, no admin, no project and no project-channels tag writes the pre-type digest bytes,
+// "<Name>\t<Owner>\t<Tier>\t<Source>\n" (a type secret's type is in its Source); one with any of
+// them adds the first two, as a fifth field (time.Duration's form, 0s for none) and a sixth
 // (empty for none), and then ends its line with "\trequesters=<list>", "\tscopes=<list>",
-// "\tadmin=true", "\tproject=<KEY>", "\tproject-channels=slack" and "\tjudge=<seconds>", in that
-// order, for each of those six it carries. The project, project-channels and judge tags are
-// written only by a secret that carries one, so the secrets of a deployment that tags none write
-// the bytes they wrote before the tag existed and no deployed version shifts. The guidance tag is
-// in no line (Secret.Guidance). A
+// "\tadmin=true", "\tproject=<KEY>" and "\tproject-channels=slack", in that order, for each of
+// those five it carries. The project and project-channels tags are written only by a secret
+// that carries one, so the secrets of a deployment that tags none write the bytes they wrote
+// before the tag existed and no deployed version shifts. A
 // secret served as a profile adds one line more, "<Name>\tprofile=<digest>\n", rather than a
 // field of the line above it, so every line a stored secret served by its own name writes is
 // byte-identical to the one it wrote before profiles existed, and its Version does not shift.
@@ -910,17 +850,13 @@ func NewSet(secrets map[string]Secret) *Set {
 		if s.secret.ProjectChannels != "" {
 			projectTags += "\tproject-channels=" + s.secret.ProjectChannels
 		}
-		judge := ""
-		if s.secret.Judge != 0 {
-			judge = fmt.Sprintf("\tjudge=%d", s.secret.Judge)
-		}
 		switch {
-		case s.secret.MaxGrant == 0 && s.secret.GitHubOwners == "" && !s.secret.SessionDefault && s.secret.Requesters == "" && s.secret.Scopes == "" && !s.secret.Admin && projectTags == "" && judge == "":
+		case s.secret.MaxGrant == 0 && s.secret.GitHubOwners == "" && !s.secret.SessionDefault && s.secret.Requesters == "" && s.secret.Scopes == "" && !s.secret.Admin && projectTags == "":
 			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source)
 		case s.secret.SessionDefault:
-			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s\tdefault-grant=session%s%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, projectTags, judge)
+			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s\tdefault-grant=session%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, projectTags)
 		default:
-			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s%s%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, projectTags, judge)
+			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, projectTags)
 		}
 		if s.secret.ProfileDigest != "" {
 			fmt.Fprintf(digest, "%s\tprofile=%s\n", s.secret.Name, s.secret.ProfileDigest)
@@ -934,17 +870,4 @@ func NewSet(secrets map[string]Secret) *Set {
 // re-checks a grant of such a name on every use rather than only once Version moves.
 func (s *Set) ServiceOwned(name string) bool {
 	return s.Secrets[name].ownership == ownerService
-}
-
-// JudgeSeconds is the longest grant the model judge may make of name, and whether its key lets the
-// judge decide it at all: the judge tag of the secret s serves as name (Secret.Judge), a profile's
-// being its source's, and (0, false) for a name s does not serve or whose secret carries no judge
-// tag. It reads the tag alone: whether a person approves every release of the secret all the same
-// (Secret.PersonApprovesEveryRelease) is each caller's to weigh, since a judged grant of a secret
-// tagged an administrator's later is ended by the release (requests' judgeStillDecides) and not
-// refused as a broken chain. Every reader of the bound goes through it, and what it answers is at
-// most MaxJudgeSeconds, since the loader refuses a judge tag above that (ReasonJudgeOutOfRange).
-func (s *Set) JudgeSeconds(name string) (uint32, bool) {
-	seconds := s.Secrets[name].Judge
-	return seconds, seconds != 0
 }

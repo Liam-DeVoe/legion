@@ -368,34 +368,24 @@ func TestAWithholdDecidesBySource(t *testing.T) {
 }
 
 // TestAnEditedProfileEndsItsGrants: a change of one permission of a profile's entry moves the
-// policy version and the profile's digest, which a release compares its grant against; a guidance
-// tag written on its source, which tells the judge how to decide requests to come, moves neither.
+// policy version and the profile's digest, which a release compares its grant against; an edit of
+// its guidance alone, which tells the judge how to decide requests to come, moves neither.
 func TestAnEditedProfileEndsItsGrants(t *testing.T) {
-	served := func(stored []secrets.LocalSecret, profile string) (version, digest string) {
+	stored := everySource()
+	served := func(profile string) (version, digest string) {
 		t.Helper()
 		cur, _ := profiled(t, stored, profile)
 		set := cur.Get()
 		return set.Version, servedProfile(t, set, "GITHUB_READ").ProfileDigest
 	}
-	version, digest := served(everySource(), readProfile)
-	editedVersion, editedDigest := served(everySource(), strings.Replace(readProfile, `"contents": "read"`, `"contents": "write"`, 1))
+	version, digest := served(readProfile)
+	editedVersion, editedDigest := served(strings.Replace(readProfile, `"contents": "read"`, `"contents": "write"`, 1))
 	if editedVersion == version || editedDigest == digest {
 		t.Errorf("an edited permission left the version %t and the digest %t where they were; want both moved", editedVersion == version, editedDigest == digest)
 	}
-	guided := everySource()
-	tagged := 0
-	for _, s := range guided {
-		if s.Name == policytest.ID("LEGION_IMPLEMENT_APP") {
-			s.Tags[policy.TagGuidance] = "Reads of acme's repositories."
-			tagged++
-		}
-	}
-	if tagged != 1 {
-		t.Fatalf("tagged %d secrets named LEGION_IMPLEMENT_APP, want the one source GITHUB_READ is made from", tagged)
-	}
-	guidedVersion, guidedDigest := served(guided, readProfile)
+	guidedVersion, guidedDigest := served(strings.Replace(readProfile, `"hosts": ["api.github.com"]`, `"hosts": ["api.github.com"], "guidance": "Reads of acme's repositories."`, 1))
 	if guidedVersion != version || guidedDigest != digest {
-		t.Errorf("a guidance tag on the source moved the version (%t) or the digest (%t); want neither moved", guidedVersion != version, guidedDigest != digest)
+		t.Errorf("a guidance edit moved the version (%t) or the digest (%t); want neither moved", guidedVersion != version, guidedDigest != digest)
 	}
 }
 

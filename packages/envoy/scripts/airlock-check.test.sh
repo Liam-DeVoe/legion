@@ -5,10 +5,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/airlock-k7-inputs.XXXXXX")"
-approve_stand=""
-# One EXIT trap for the whole test: it stops the approval page's stand-in, where one was started,
-# by its PID and waits for it, then removes the work directory.
-trap '[[ -z "$approve_stand" ]] || { kill "$approve_stand" 2>/dev/null; wait "$approve_stand" 2>/dev/null || true; }; rm -rf "$work"' EXIT
+trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/bin"
 cat >"$work/bin/mktemp" <<'EOF'
 #!/usr/bin/env bash
@@ -383,83 +380,6 @@ passed=false
 [[ "$status" -eq 0 && "$(awk '{print $2, $3}' "$az_dir/calls" 2>/dev/null)" == $'cloud register\ncloud set\ngroup list' ]] && passed=true
 check "$passed"
 
-# --- approve_record, read out of airlock-check.sh and run on its own against a stand-in of the
-# broker's approval page. The stand-in signs the approver in as the stack's issuer does (a
-# redirect, a sign-in cookie, a session cookie), prints a form for two records with two printed
-# fields and two profile_digest fields on one line, as the broker's record.html prints them, and
-# holds the POST to the broker's own rules for them: every printed record must come back, or the
-# page token's MAC is refused 403 (approval.pageMAC), and every fingerprint must come back, or the
-# answer is 403 "Profile changed" (approval.profilesMoved); nothing is decided either way, else
-# 303. The controls run the same helper with its profile_digest fields taken out, and with its
-# printed fields taken out, each of which the stand-in must answer 403.
-approve_dir="$work/approve"
-mkdir -p "$approve_dir"
-cat >"$approve_dir/stand.py" <<'PY'
-import http.server, sys, urllib.parse
-REC = "ab" * 32
-PRINTED = [REC, "cd" * 32]
-DIGESTS = [REC + " AIRLOCK_AZURE_LOGIN " + "1f" * 32, PRINTED[1] + " AIRLOCK_OTHER " + "2e" * 32]
-class H(http.server.BaseHTTPRequestHandler):
-    def log_message(self, *a): pass
-    def send(self, code, headers=(), body=b""):
-        self.send_response(code)
-        for k, v in headers: self.send_header(k, v)
-        self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
-    def do_GET(self):
-        base = "http://127.0.0.1:%d" % self.server.server_port
-        cookie = self.headers.get("Cookie", "")
-        if self.path == "/approve/" + REC and "__Host-broker-session=s" not in cookie:
-            return self.send(302, [("Location", base + "/authorize"), ("Set-Cookie", "__Host-broker-signin=i; Secure")])
-        if self.path == "/authorize":
-            return self.send(302, [("Location", base + "/callback")])
-        if self.path == "/callback" and "__Host-broker-signin=i" in cookie:
-            return self.send(302, [("Location", base + "/approve/" + REC), ("Set-Cookie", "__Host-broker-session=s; Secure")])
-        if self.path == "/approve/" + REC:
-            fields = "".join('<input type="hidden" name="printed" value="%s">' % p for p in PRINTED)
-            fields += "".join('<input type="hidden" name="profile_digest" value="%s">' % d for d in DIGESTS)
-            fields += '<input type="hidden" name="token" value="tok"><input type="hidden" name="expires" value="9">'
-            fields += '<input type="hidden" name="record" value="%s">' % REC
-            return self.send(200, [("Content-Type", "text/html")], ("<form>" + fields + "</form>").encode())
-        self.send(404)
-    def do_POST(self):
-        form = urllib.parse.parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode(), keep_blank_values=True)
-        signed_in = ("__Host-broker-session=s" in self.headers.get("Cookie", "") and self.headers.get("Origin")
-                     and form.get("decision") == ["approve"] and form.get("record") == [REC] and form.get("token") == ["tok"])
-        if not signed_in or sorted(form.get("printed", [])) != sorted(PRINTED):
-            return self.send(403, body=b"Page token invalid")
-        if sorted(form.get("profile_digest", [])) != sorted(DIGESTS):
-            return self.send(403, body=b"Profile changed")
-        self.send(303)
-s = http.server.HTTPServer(("127.0.0.1", 0), H)
-print(s.server_port, flush=True)
-s.serve_forever()
-PY
-python3 "$approve_dir/stand.py" >"$approve_dir/port" &
-approve_stand=$!
-for _ in $(seq 1 50); do [[ -s "$approve_dir/port" ]] && break; sleep 0.1; done
-definition="$(sed -n '/^approve_record() {/,/^}/p' "$script_dir/airlock-check.sh")"
-[[ -n "$definition" ]] || { printf 'FAIL: airlock-check.sh defines no approve_record()\n'; exit 1; }
-approve_once() { # <the helper's definition> <work dir>
-  eval "$1"
-  WORK_DIR="$2" AGENT_SECRETS_URL="http://127.0.0.1:$(cat "$approve_dir/port")" approve_record "$(printf 'ab%.0s' $(seq 1 32))"
-  cat "$2/approve/decisions"
-}
-status=0
-output="$(approve_once "$definition" "$approve_dir/with" 2>&1)" || status=$?
-label="approve_record posts back each printed record and each profile_digest the page printed, and the approval is decided (303)"
-check test "$output" = 303
-# shellcheck disable=SC2016 # the pattern is the helper's own text, with its "$value" unexpanded
-without="${definition//'digests+=(--data-urlencode "profile_digest=$value")'/:}"
-[[ "$without" != "$definition" ]] || { printf 'FAIL: the control could not take profile_digest out of approve_record\n'; exit 1; }
-output="$(approve_once "$without" "$approve_dir/without" 2>&1)" || status=$?
-label="control: the same helper without its profile_digest fields is refused 403 Profile changed"
-check test "$output" = 403
-# shellcheck disable=SC2016 # the pattern is the helper's own text, with its "$value" unexpanded
-unprinted="${definition//'printed+=(--data-urlencode "printed=$value")'/:}"
-[[ "$unprinted" != "$definition" ]] || { printf 'FAIL: the control could not take printed out of approve_record\n'; exit 1; }
-output="$(approve_once "$unprinted" "$approve_dir/unprinted" 2>&1)" || status=$?
-label="control: the same helper without its printed fields is refused 403, its page token's records unnamed"
-check test "$output" = 403
 # --- k6's login steps, read out of airlock-check.sh and run by sh as each k6 run runs them under
 # its grant, with a fake az first on PATH that records its login and the state it was handed. Their
 # TMPDIR is a directory of the test's own, so what they leave there shows: nothing, after a login,

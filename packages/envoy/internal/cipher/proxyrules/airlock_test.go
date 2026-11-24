@@ -19,6 +19,7 @@ var validRules = Rules{Secrets: []SecretRule{
 		Headers: []string{"authorization", "x-github-token"},
 		Allow:   []Allow{{Method: "GET", PathPrefix: "/repos/"}},
 		Kind:    "azure",
+		Judge:   new(uint32(900)),
 	},
 	{Name: "plain", Hosts: []string{"example.com"}},
 	{Name: "sealed", Hosts: []string{"sealed.example.com"}, Headers: []string{}, Allow: []Allow{}},
@@ -43,6 +44,13 @@ func TestValidate(t *testing.T) {
 			want: []string{`secrets[1]`, `"github"`, "repeated"},
 		},
 		{
+			name: "judge above 900 seconds",
+			rules: Rules{Secrets: []SecretRule{
+				{Name: "github", Hosts: []string{"a.example.com"}, Judge: new(uint32(901))},
+			}},
+			want: []string{`secrets[0]`, `"github"`, "901", "900"},
+		},
+		{
 			name: "unknown kind",
 			rules: Rules{Secrets: []SecretRule{
 				{Name: "github", Hosts: []string{"a.example.com"}, Kind: "gcp"},
@@ -52,9 +60,9 @@ func TestValidate(t *testing.T) {
 		{
 			name: "the first failure of an entry wins",
 			rules: Rules{Secrets: []SecretRule{
-				{Name: "github", Kind: "gcp"},
+				{Name: "github", Kind: "gcp", Judge: new(uint32(901))},
 			}},
-			want: []string{`secrets[0]`, `"gcp"`},
+			want: []string{`secrets[0]`, "901"},
 		},
 		{
 			name: "a host written as a URL",
@@ -126,7 +134,7 @@ func TestValidate(t *testing.T) {
 			name: "an entry with no host",
 			rules: Rules{Secrets: []SecretRule{
 				{Name: "slack", Hosts: []string{"slack.com"}},
-				{Name: "release"},
+				{Name: "release", Judge: new(uint32(600)), Guidance: "grant for releases"},
 			}},
 			want: []string{`secrets[1]`, `"release"`, "the entry names no host"},
 		},
@@ -156,6 +164,7 @@ func TestValidate(t *testing.T) {
 		name  string
 		rules Rules
 	}{
+		{"judge at the limit", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"h"}, Judge: new(uint32(900))}}}},
 		{"kind aws", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"h"}, Kind: "aws"}}}},
 		{"kind azure", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"h"}, Kind: "azure"}}}},
 		{"no secret at all", Rules{}},
@@ -796,4 +805,43 @@ func TestRewrite(t *testing.T) {
 			t.Errorf("Rewrite of a refused request = %+v, want nil", out)
 		}
 	})
+}
+
+// TestGuidance: the judge's guidance is the entry's own text, "" for an entry that gives none and
+// for a name the file does not hold.
+func TestGuidance(t *testing.T) {
+	rules := Rules{Secrets: []SecretRule{
+		{Name: "guided", Hosts: []string{"api.example.com"}, Judge: new(uint32(300)), Guidance: "grant for releases"},
+		{Name: "unguided", Hosts: []string{"api.example.com"}, Judge: new(uint32(300))},
+	}}
+	for name, want := range map[string]string{"guided": "grant for releases", "unguided": "", "absent": ""} {
+		if got := rules.Guidance(name); got != want {
+			t.Errorf("Guidance(%q) = %q; want %q", name, got, want)
+		}
+	}
+}
+
+// TestJudgeSeconds pins the one reader of the judge's bound: an entry that names a judge answers
+// its seconds, an entry that names none answers no bound rather than zero seconds of one, and so
+// does a name the file does not hold at all.
+func TestJudgeSeconds(t *testing.T) {
+	judge := uint32(300)
+	rules := Rules{Secrets: []SecretRule{
+		{Name: "judged", Hosts: []string{"api.example.com"}, Judge: &judge},
+		{Name: "unjudged", Hosts: []string{"api.example.com"}},
+	}}
+	for _, c := range []struct {
+		name    string
+		seconds uint32
+		ok      bool
+	}{
+		{"judged", 300, true},
+		{"unjudged", 0, false},
+		{"absent", 0, false},
+	} {
+		seconds, ok := rules.JudgeSeconds(c.name)
+		if seconds != c.seconds || ok != c.ok {
+			t.Errorf("JudgeSeconds(%q) = %d, %v; want %d, %v", c.name, seconds, ok, c.seconds, c.ok)
+		}
+	}
 }

@@ -519,7 +519,7 @@ func main() {
 	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
 	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
 	// person who decides it today rather than approving it while the pod is going away.
-	wireJudge(ctx, cfg, reqMachine, dispatch)
+	wireJudge(ctx, cfg, proxyRules, reqMachine, dispatch)
 	credentialLifetime := time.Duration(cfg.LauncherCredentialSeconds) * time.Second
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
@@ -1385,7 +1385,7 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		SignInOff: cfg.SignInOff,
 		Groups:    groupReader,
 	}
-	m.Chain = requests.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second, m.Policy)
+	m.Chain = requests.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second, m.Airlock)
 	m.Chain.Groups = groupReader
 	if dispatch != nil {
 		m.Assignees = dispatch
@@ -1535,7 +1535,7 @@ const judgeDispatchTimeout = 10 * time.Second
 // the right way round for a judge where it is not for the policy reload — a half-finished reload
 // costs a pod stale tags for its drain, while a half-finished run would approve a credential as
 // the pod goes away.
-func wireJudge(ctx context.Context, cfg config.Config, m *requests.Machine, dispatch *judge.Dispatch) {
+func wireJudge(ctx context.Context, cfg config.Config, rules proxyrules.Rules, m *requests.Machine, dispatch *judge.Dispatch) {
 	if cfg.JudgeModelURL == "" {
 		// config.Load refuses a judge beside BROKER_SIGNIN=off, so an off broker always lands here,
 		// and its line says what such a broker does with a request a person would decide.
@@ -1549,7 +1549,7 @@ func wireJudge(ctx context.Context, cfg config.Config, m *requests.Machine, disp
 	account := ciphertoken.NewGoogleAccount(cfg.JudgeModelAudience)
 	account.ServiceAccount = cfg.JudgeModelAccount
 	runner := judge.New(ctx, judge.Options{
-		Policy:     m.Policy,
+		Rules:      rules,
 		Dispatch:   *dispatch,
 		Model:      judge.NewModel(cfg.JudgeModelURL, cfg.JudgeModel, cfg.JudgeModelProtocol, account),
 		Requests:   m,

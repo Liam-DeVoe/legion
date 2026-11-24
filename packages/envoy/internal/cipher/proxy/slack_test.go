@@ -479,7 +479,7 @@ func newSlackBroker(t *testing.T, rows map[string]projectaccesstest.Row, project
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
 		Audience: slackAudience, Skew: time.Minute, Replay: replayOnce(st),
-		Chain:   requests.NewChainVerifier(st, slackAudience, time.Minute, current),
+		Chain:   requests.NewChainVerifier(st, slackAudience, time.Minute, rules),
 		Airlock: rules,
 		// Two strings the release carries through unread: the command here is the rig's client,
 		// which reaches the proxy and trusts its authority on its own.

@@ -41,10 +41,9 @@
 // The model stand answers one call at a time and what it answers is set while it runs, since
 // one check drives several cases against one stack: POST <records URL>/answers/model, whose
 // body is {"verdict": "grant"|"deny", "reason": "…"} for a structured reply, {"text": "…"}
-// for a reply that is no such object, {"obey_guidance": true} for a model that obeys every
-// guidance in its prompt (proxyrulestest.ObeyedVerdict), and {"delay": "30s"} for an answer
-// held back past the caller's own time bound, beside any of them. The report names that address
-// (model_answer_url), and until a check calls it the model grants.
+// for a reply that is no such object, and {"delay": "30s"} for an answer held back past the
+// caller's own time bound, beside either. The report names that address (model_answer_url), and
+// until a check calls it the model grants.
 //
 // The GitHub stand answers what each token request's body asked for - the repositories it names
 // and the permissions it names - and serves GET /repos/{owner}/{repo} to a token it minted whose
@@ -206,7 +205,7 @@ const (
 const (
 	standInAnsweredAsk = "4f3c2a10-5b6d-4e7f-8a9b-0c1d2e3f4a5b"
 	standInAskQuestion = "Let the judge spend the judged token on this issue's own runs?"
-	standInAskAnswer   = "Yes, for the runs this issue names, up to the seconds the key's judge tag gives the judge."
+	standInAskAnswer   = "Yes, for the runs this issue names, up to the seconds the rules give the judge."
 )
 
 // defaultAskAnsweredBy is who answered that ask when no flag names a login. A local stack passes
@@ -222,8 +221,8 @@ granted in the place of the person who decides it today.
 
 ## Requirements
 
-- The judge decides a request for a key whose judge tag gives it seconds of it, with the key's
-  guidance tag, and a person decides every other.
+- The judge decides a request for a key the airlock rules give it seconds for, with the key's
+  guidance, and a person decides every other.
 - The judge grants or denies, and a denial is final; a request it cannot decide goes to its
   person once.
 - Every verdict is recorded against the request, with what the model was asked and answered.
@@ -638,7 +637,7 @@ func recordsHandler(services map[string]*proxyrulestest.Service, model *proxyrul
 	}
 	mux.HandleFunc("POST "+modelAnswerPath, answerRoute(modelAnswerOf, model.Answers,
 		func(answer proxyrulestest.ModelAnswer) map[string]string {
-			return map[string]string{"text": answer.Text, "delay": answer.Delay.String(), "obey_guidance": strconv.FormatBool(answer.ObeyGuidance)}
+			return map[string]string{"text": answer.Text, "delay": answer.Delay.String()}
 		}))
 	mux.HandleFunc("POST "+githubAnswerPath, answerRoute(githubAnswerOf, github.Answers,
 		func(answer proxyrulestest.GitHubAnswer) map[string]string {
@@ -737,10 +736,6 @@ type modelAnswerRequest struct {
 	// caller's own time bound: "30s" against a caller bounded at 20 seconds is an answer it
 	// never sees, so the text beside it is never read.
 	Delay string `json:"delay"`
-	// ObeyGuidance answers each call as a model that obeys every guidance in its prompt would
-	// (proxyrulestest.ObeyedVerdict), in place of a fixed verdict or text: the stand-in a check
-	// of the judge's per-key isolation runs against.
-	ObeyGuidance bool `json:"obey_guidance"`
 }
 
 // modelAnswerOf is one such request as the answer it sets, and what is wrong with a request
@@ -748,14 +743,10 @@ type modelAnswerRequest struct {
 func modelAnswerOf(body modelAnswerRequest) (proxyrulestest.ModelAnswer, error) {
 	var answer proxyrulestest.ModelAnswer
 	switch {
-	case body.ObeyGuidance && (body.Verdict != "" || body.Text != ""):
-		return answer, errors.New("the answer both obeys guidance and names a verdict or a text, and it is one or the other")
 	case body.Verdict != "" && body.Text != "":
 		return answer, errors.New("the answer names both a verdict and a text, and it is one or the other")
-	case body.Verdict == "" && body.Text == "" && body.Delay == "" && !body.ObeyGuidance:
-		return answer, errors.New("the answer names no verdict, no text, no delay and no obey_guidance")
-	case body.ObeyGuidance:
-		answer.ObeyGuidance = true
+	case body.Verdict == "" && body.Text == "" && body.Delay == "":
+		return answer, errors.New("the answer names no verdict, no text and no delay")
 	case body.Verdict != "":
 		reason := body.Reason
 		if reason == "" {

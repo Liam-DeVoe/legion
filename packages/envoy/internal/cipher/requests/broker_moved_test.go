@@ -26,7 +26,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
 
@@ -127,18 +126,14 @@ func requireJudgedAlone(t *testing.T, watched *judged, id string) {
 	}
 }
 
-// watchJudgeOf makes each of names a key the model judge decides on m — a judge tag of 900
-// seconds, as its owner's retag writes it, beside a proxy entry binding a host — and watches the
-// judge. Create hands the judge only a request whose every key needing a decision is such a key
-// (judgeDecides); every other pending request is a person's from the start, so a test that reads
-// whether the new request was judged names its keys here. A request m wrote before the call,
-// while m ran no judge, is a person's.
-func watchJudgeOf(t *testing.T, m *Machine, names ...string) *judged {
-	t.Helper()
-	local := m.Secrets.(secrets.AWS).Client.(*secrets.Local)
+// watchJudgeOf makes each of names a key the model judge decides on m, as an airlock rules entry
+// with judge seconds does, and watches the judge. Create hands the judge only a request whose
+// every key needing a decision is such a key (judgeDecides); every other pending request is a
+// person's from the start, so a test that reads whether the new request was judged names its keys
+// here. A request m wrote before the call, while m ran no judge, is a person's.
+func watchJudgeOf(m *Machine, names ...string) *judged {
 	for _, name := range names {
-		m.Airlock.Secrets = append(m.Airlock.Secrets, proxyrules.SecretRule{Name: name, Hosts: []string{"api.example"}})
-		policytest.JudgeTags(t, local, m.Policy, name, 900, "")
+		m.Airlock.Secrets = append(m.Airlock.Secrets, proxyrules.SecretRule{Name: name, Hosts: []string{"api.example"}, Judge: new(uint32(900))})
 	}
 	return watchJudge(m)
 }
@@ -163,7 +158,7 @@ func TestAskingAgainWithTheSameNamesEndsARequestSignedForAnotherBroker(t *testin
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	stale := askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
-	watched := watchJudgeOf(t, m, "DEEL_API_KEY")
+	watched := watchJudgeOf(m, "DEEL_API_KEY")
 
 	again, err := m.Create(ctx, enr, signRequest(t, m, key, "asked again on this broker", "DEEL_API_KEY"), "")
 	if err != nil || again.ID == stale.ID || again.Coalesced || again.State != "pending" || again.RecordID == nil {
@@ -200,7 +195,7 @@ func TestAskingAgainWithOverlappingNamesEndsARequestSignedForAnotherBroker(t *te
 			m, enr, key, _ := newFixture(t)
 			retagStripeKey(t, m)
 			stale := askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
-			watched := watchJudgeOf(t, m, "DEEL_API_KEY", stripeKey)
+			watched := watchJudgeOf(m, "DEEL_API_KEY", stripeKey)
 
 			again, err := m.Create(context.Background(), enr, c.ask(t, m, key), "")
 			if err != nil || again.ID == stale.ID || again.Coalesced || again.State != "pending" || again.RecordID == nil {
@@ -223,7 +218,7 @@ func TestAskingAgainLeavesARequestSignedForThisBrokerAsItIs(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	retagStripeKey(t, m)
-	watched := watchJudgeOf(t, m, "DEEL_API_KEY", stripeKey)
+	watched := watchJudgeOf(m, "DEEL_API_KEY", stripeKey)
 	own, err := m.Create(ctx, enr, signRequest(t, m, key, "asked of this broker", "DEEL_API_KEY"), "")
 	if err != nil || own.State != "pending" || own.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want a pending request with a record", own, err)
@@ -255,7 +250,7 @@ func TestAskingAgainEndsEveryStaleRequestItOverlaps(t *testing.T) {
 	earlier, earlierKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
 	second := askOfAnotherBroker(t, m, earlier, earlierKey, stripeKey)
 	moveSession(t, m, earlier, enr)
-	watched := watchJudgeOf(t, m, "DEEL_API_KEY", stripeKey)
+	watched := watchJudgeOf(m, "DEEL_API_KEY", stripeKey)
 
 	again, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked again for both", "DEEL_API_KEY", stripeKey), "")
 	if err != nil || again.Coalesced || again.State != "pending" || again.ID == first.ID || again.ID == second.ID {
@@ -297,7 +292,7 @@ func TestAStaleRequestBeforeOneThatVerifies(t *testing.T) {
 				t.Fatalf("Create(DEEL_API_KEY) on the earlier box = %+v, %v; want a pending request with a record", verifies, err)
 			}
 			moveSession(t, m, earlier, enr)
-			watched := watchJudgeOf(t, m, "DEEL_API_KEY")
+			watched := watchJudgeOf(m, "DEEL_API_KEY")
 
 			got, err := m.Create(ctx, enr, c.ask(t, m, key), "")
 			if c.coalesces {
@@ -324,7 +319,7 @@ func TestAStaleRequestDecidedOnTheOtherBrokerMeanwhile(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	stale := askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
-	watched := watchJudgeOf(t, m, "DEEL_API_KEY")
+	watched := watchJudgeOf(m, "DEEL_API_KEY")
 
 	decision, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -414,7 +409,7 @@ func TestAStaleRequestAfterOneThatVerifies(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			m, enr, key, _ := newFixture(t)
 			verifies, stale := staleAfterOneThatVerifies(t, m, enr, key)
-			watched := watchJudgeOf(t, m, "DEEL_API_KEY")
+			watched := watchJudgeOf(m, "DEEL_API_KEY")
 
 			got, err := m.Create(context.Background(), enr, c.ask(t, m, key), "")
 			if c.coalesces {
@@ -460,7 +455,7 @@ func TestAStaleRequestEndsWhenTheAskIsDecidedAtOnce(t *testing.T) {
 			m, enr, key, _ := newFixture(t)
 			stale := askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
 			c.prepare(t, m)
-			watched := watchJudgeOf(t, m, "DEEL_API_KEY")
+			watched := watchJudgeOf(m, "DEEL_API_KEY")
 
 			got, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked again on this broker", c.names...), "")
 			if err != nil || got.ID == stale.ID || got.Coalesced || got.State != c.state {
@@ -505,7 +500,7 @@ func liveGrantBesideAStaleRequest(t *testing.T, m *Machine, enr string, key *ecd
 func TestAStaleRequestEndsWhenALiveGrantAnswersTheAsk(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	granted, grantID, stale := liveGrantBesideAStaleRequest(t, m, enr, key, approver)
-	watched := watchJudgeOf(t, m, "DEEL_API_KEY")
+	watched := watchJudgeOf(m, "DEEL_API_KEY")
 
 	got, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked again on this broker", "DEEL_API_KEY"), "")
 	if err != nil || got.ID != granted.ID || got.GrantID == nil || *got.GrantID != grantID {

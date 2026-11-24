@@ -135,9 +135,9 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 	if setup.profiles != "" {
 		reqMachine.Airlock = loader.Profiles.ProxyRules()
 	}
-	// As cmd/cipherd builds it: the verifier holds a judge's approvals to the judge tags of the
-	// live policy the machine holds (requests.NewChainVerifier).
-	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Policy)
+	// After the airlock rules, as cmd/cipherd orders them: the verifier holds the judge's rules
+	// (requests.NewChainVerifier) from the rules it is given.
+	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	reqMachine.Chain.Groups = setup.groups
 	provider := ciphertest.NewOAuthProvider(t, st, issuer)
 	mach := &machine.Service{
