@@ -24,12 +24,13 @@
  *  `./users` reaches no further than `./api` and the harness ports, so both are safe.
  *
  *  ONE SEED FOR THE WHOLE FILE. No row resets the database and no row seeds it: the corpus every
- *  baseline was taken against is the one the host wrote once. What that costs is that a row's
- *  write would be seen by every row after it, so each row signs in and navigates afresh, and the
- *  seed writes first each read mark a page of the shot set writes as it draws - the broadcast
- *  page's read of its replies and the Spec tab's read of the spec (`e2e/review-seed.ts`) - so a
- *  page's own write changes nothing any row compares. The review runs its rows in normal and in
- *  reverse order (`e2e/visual-order.ts`) so that a row reading another row's write fails by name.
+ *  baseline was taken against is the one the host wrote once. What that asks of a row is that its
+ *  page write nothing, since a write would be seen by every row after it, so each row signs in and
+ *  navigates afresh, and the seed writes first each read mark a page of the shot set writes as it
+ *  draws - the broadcast page's read of its replies and the Spec tab's read of the spec
+ *  (`e2e/review-seed.ts`) - so a page's own write changes nothing any row compares. Every other
+ *  write a row's page tries, to the API or on a document socket, is stopped before it reaches the
+ *  corpus and fails that row by name (`guardSharedCorpus`, `e2e/visual-guard.ts`).
  *
  *  WHAT WOULD DRIFT BETWEEN TWO RUNS OF ONE PAGE, and what is done about each:
  *
@@ -50,30 +51,6 @@
  *    switches the scheme are mid-ease. Two things cover it: the assertion waits until two
  *    consecutive screenshots are identical before it compares, and a finite transition is
  *    fast-forwarded to completion by the default above.
- *  - The first shot after the load. The light shot of the `issue-activity` row failed in the
- *    reverse order alone, by 22 pixels against the bound of 20, in CI runs 45217963089,
- *    45240350309 and 45279483024. It passed in both orders in run 45276346586. That run's tree
- *    differs from the tree of run 45279483024 only in `.github/ci-filters.yaml`, so the page
- *    did not change between them. The failed renders of runs 45240350309 and 45279483024 are
- *    the same bytes. They differ from the baseline in 54 pixels, each by one 8-bit step: the
- *    anti-aliasing of the four corners of the issue card, and the glyph `i` of "Which" in the
- *    activity row. Nothing a reader can see moved. In the trace, the assertion took two
- *    identical screenshots before it compared, so the page was not still changing. The dark
- *    shot of that row matched its baseline in every one of those runs. The dark shot always
- *    came after `emulateMedia` switched the scheme of a settled page. The light shot was the
- *    first shot after the load, because the context is in light from the start and the switch
- *    to light changed nothing. Host Chromium on an issue pod, a noisier renderer than CI's,
- *    gave the same picture. With light shot first, the shots that varied between a normal and
- *    a reverse run were light ones (6 and 7 of 42, in two pairs of runs). With dark shot
- *    first, they were dark ones (8 of 42 dark, 1 light). So the shot that varies is the first
- *    shot after the load, in either scheme. A browser of its own for each row did not remove
- *    it: run 45279483024 had one. What is done: after the navigation, each row switches the
- *    page to dark and waits for it to settle. Only then does the `SCHEMES` loop shoot light and
- *    then dark, so each shot comes after a switch of scheme, as the dark shot always did. The
- *    cost is one more settle wait per row. What this does not show: it is the best reading of
- *    CI's evidence, not a proof of what the renderer does inside. If a light baseline moves
- *    under it, take that baseline again from CI's render, as the header of
- *    `e2e/visual-run.sh` says.
  *  - The caret and the focus ring. No row clicks, types or focuses anything: it signs in,
  *    navigates and waits. A page that focuses an element of its own on load draws the same ring
  *    in the baseline and in the comparison, and the text caret is hidden by `caret: "hide"`,
@@ -102,13 +79,20 @@ import {
   type ReviewedRoute,
   type ReviewSeed,
   railInboxLink,
+  type SeededReadMarks,
   shotRoutes,
   topBarInboxBadge,
   type VisualSeed,
   waitForRouteSettled,
 } from "./review-routes";
 import { withAlice } from "./users";
-import { inVisualOrder, visualOrder } from "./visual-order";
+import {
+  CORPUS_WRITE_MESSAGE,
+  guardSharedCorpus,
+  UNLISTED_READ_MESSAGE,
+  unlistedShotReads,
+  unlistedShotViews,
+} from "./visual-guard";
 import { workspaceSessions } from "./workspace";
 
 /** Both schemes in one row, as `e2e/accessibility.e2e.ts` reads them: a sign-in and a navigation
@@ -142,10 +126,13 @@ test.beforeAll(async () => {
  *  show up only as the late rows of a run differing from their baselines. `e2e/visual-seed.ts`
  *  always writes the field, so a file that lacks it did not come from it. */
 function readVisualSeed(path: string): VisualSeed {
-  const seed = JSON.parse(readFileSync(path, "utf8")) as ReviewSeed & {
+  // The file as e2e/visual-seed.ts writes it, read without trusting the two fields every row
+  // needs, which the checks below hold.
+  const seed = JSON.parse(readFileSync(path, "utf8")) as Omit<ReviewSeed, "readMarks"> & {
+    readonly readMarks?: SeededReadMarks;
     readonly seededAt?: string;
   };
-  const { seededAt } = seed;
+  const { readMarks, seededAt } = seed;
   if (seededAt === undefined) {
     throw new Error(
       `${path}, which DISPATCH_E2E_VISUAL_SEED names, carries no \`seededAt\`, so this row ` +
@@ -153,7 +140,14 @@ function readVisualSeed(path: string): VisualSeed {
         "pace. `e2e/visual-seed.ts` writes that field on every seed."
     );
   }
-  return { ...seed, seededAt };
+  if (readMarks === undefined) {
+    throw new Error(
+      `${path}, which DISPATCH_E2E_VISUAL_SEED names, carries no \`readMarks\`, so this row's ` +
+        "guard would let its page write no read mark again and fail it on the seed's own. " +
+        "`e2e/visual-seed.ts` writes that field on every seed."
+    );
+  }
+  return { ...seed, readMarks, seededAt };
 }
 
 /** One row's work, which the desktop and the phone rows share: the project they run in is the
@@ -166,6 +160,8 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
   }
   const seed = readVisualSeed(seedPath);
   await withAlice(browser, async (page) => {
+    // Before the first navigation, so every write the page tries is stopped and named.
+    const writes = await guardSharedCorpus(page, seed.readMarks);
     // The page's clock, pinned a minute after the corpus was written. Every relative label
     // these pages draw - "just now", "2 minutes ago", "0m", "Updated just now" - is that
     // label's own time against `Date.now()`, so without this a row read "just now" in a run
@@ -181,10 +177,6 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
     // is the gap between the two: a literal would drift against a corpus written now.
     await page.clock.install({ time: new Date(Date.parse(seed.seededAt) + 60_000) });
     await page.goto(route.path(seed));
-    // A switch to dark and a settle before the first shot, so the light shot also comes after
-    // a switch of scheme ("The first shot after the load" in the header says why).
-    await page.emulateMedia({ colorScheme: "dark" });
-    await waitForRouteSettled(page, route);
     for (const colorScheme of SCHEMES) {
       await page.emulateMedia({ colorScheme });
       // Before the shot, so no baseline is taken of a loading skeleton, a 404 or a page
@@ -326,14 +318,18 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
         maxDiffPixels: 20,
       });
     }
+    // The server answers the page's reads and live views itself, so a write it made while
+    // answering one is outside what the guard stops; the Go test that holds those writes sends
+    // the routes and view kinds its list names, and any other fails the row here, by name.
+    expect(
+      [...unlistedShotReads(writes.reads), ...unlistedShotViews(writes.views)],
+      UNLISTED_READ_MESSAGE
+    ).toEqual([]);
+    expect(writes.stopped, CORPUS_WRITE_MESSAGE).toEqual([]);
   });
 }
 
-// The rows of each project in the order `DISPATCH_E2E_VISUAL_ORDER` asks for (e2e/visual-order.ts
-// says why the review runs in two orders); the config puts the projects in that order too.
-const order = visualOrder();
-
-for (const route of inVisualOrder(shotRoutes, order)) {
+for (const route of shotRoutes) {
   // SLOW(>=2s): a sign-in, a navigation, and a screenshot comparison in each of two schemes.
   test(`${route.name} matches its baseline in light and dark`, async ({ browser }) => {
     await shoot(browser, route);
@@ -345,7 +341,7 @@ for (const route of inVisualOrder(shotRoutes, order)) {
 // The ` @phone` tag is what puts a row in the `visual-phone` project and keeps it out of
 // `visual` (e2e/playwright.config.ts), so the two shots of one page land in two baseline
 // directories under the same file name.
-for (const route of inVisualOrder(phoneShotRoutes, order)) {
+for (const route of phoneShotRoutes) {
   // SLOW(>=2s): a sign-in, a navigation, and a screenshot comparison in each of two schemes.
   test(`${route.name} matches its phone baseline in light and dark @phone`, async ({ browser }) => {
     await shoot(browser, route);
