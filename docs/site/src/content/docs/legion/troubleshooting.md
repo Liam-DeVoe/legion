@@ -1553,7 +1553,10 @@ These arrive as messages on the Dispatch issue:
   phases row of each reviewer step of the task that agent works, and the first round of a reviewer
   step starts from the commit of that agent's own reviewer row of the task, at any of its steps, or
   `none` where there is none. So in `implementer reviewer:r tester reviewer:r`, after step 4
-  requests changes at X, step 2's next round names X. While the row holds no commit, each task of
+  requests changes at X, step 2's next round names X. A row is the agent's only while it names that
+  agent: where a later version of the plan gave every reviewer step the agent worked on the task to
+  another agent, the agent's next reviewer step names `none` and reads the whole change, though a
+  review of its own read a commit before. While the row holds no commit, each task of
   that step's round, a wake or a resume included, names
   `Commit another agent's review read: <sha>.` before its last two sentences where another agent's
   reviewer step before it read one: the commit of the nearest such
