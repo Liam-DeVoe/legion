@@ -2793,6 +2793,116 @@ test("text typed that hides a row leaves that row counted in the Filter panel", 
   }
 });
 
+/** Each row of one filter field's own listbox (`label`, as `DIMENSION_LABELS` names it), by the
+ *  name it is read out as: its `aria-label` where it has one, else its text, as a row with no
+ *  count beside it is named by its label alone. Escape closes the list again, so the next read
+ *  opens its own. */
+async function fieldOptionNames(user: UserEvent, label: string): Promise<string[]> {
+  await openFilterFields(user);
+  await user.click(screen.getByRole("button", { name: `Filter by ${label.toLowerCase()}` }));
+  const listbox = await screen.findByRole("listbox", { name: `${label} options` });
+  const names = within(listbox)
+    .getAllByRole("option")
+    .map((option) => option.getAttribute("aria-label") ?? option.textContent ?? "");
+  await user.keyboard("{Escape}");
+  return names;
+}
+
+/** Whether an option's name carries a count of rows (`, 2 rows`). */
+const COUNTED = /, \d+ rows?$/;
+
+// INFRA-3135, round 25's B2, by the architect's ruling of 2026-11-24 08:07Z: a count beside a
+// value is drawn only once the data it counts has answered. The Type list counted the thread kinds
+// over the rows read so far, so while the reader's thread read was out or refused it offered
+// "Reply, 0 rows" with two reply threads waiting. An ask kind's count is the asks' own read's,
+// which answered before the bar was drawn, so it stands throughout. Every other field counts asks
+// and threads together, so none of its values carries a count until the thread read has answered.
+// On this branch the asks and the Inbox's own threads come from one read, `GET /api/v1/me/inbox`,
+// whose `inbox` state the Inbox waits for before it draws its bar at all; the thread read that can
+// be out while the bar stands is that read's `dismissed` state, which the Dismissed view lists its
+// threads from. So the case holds and refuses that state there, with the two asks answered in the
+// `inbox` state. The Dismissed view lists no ask, so the questions' count it keeps is 0.
+test("the Type list draws no count for the thread kinds while the thread read is out or refused, nor does any other field, and the read's counts once it answers", async () => {
+  const user = userEvent.setup();
+  const asks = [
+    issueAsk({ id: "ask-1", question: "First question?" }),
+    issueAsk({ id: "ask-2", question: "Second question?" }),
+  ];
+  const threads = dismissedThreads(2);
+  const reads = answerDismissedPages(() => []);
+  const listUsers = mockPeople();
+  /** Whether the page has asked the one read for its `dismissed` state. */
+  const dismissedRead = () =>
+    mocks.getMeInbox.mock.calls.some(([query]) => query?.state === "dismissed");
+  try {
+    for (const how of ["held", "refused"] as const) {
+      mocks.getMeInbox.mockClear();
+      // Held: the read is never answered. Refused: Dispatch answers it 500.
+      mocks.getMeInbox.mockImplementation(async (query = {}) => {
+        if (query.state !== "dismissed") return oneReadAnswer(asks);
+        if (how === "refused") {
+          throw new ApiError(500, { code: "TEST_REFUSED", error: "test refusal" });
+        }
+        return new Promise<never>(() => {});
+      });
+      const { queryClient, unmount } = renderInbox("/?show=dismissed");
+      try {
+        // The read is out, or Dispatch has refused it.
+        await waitFor(() => expect(dismissedRead()).toBe(true));
+        await waitFor(() =>
+          expect(queryClient.getQueryState(meInboxDismissedQuery().queryKey)?.status).toBe(
+            how === "held" ? "pending" : "error"
+          )
+        );
+        await screen.findByRole("button", { name: /^Filter( · \d+)?$/ });
+        expect(rowIds()).toEqual([]);
+        expect(await fieldOptionNames(user, "Type"), `thread read ${how}`).toEqual([
+          "Question, 0 rows",
+          "Decision, 0 rows",
+          "Approval, 0 rows",
+          "Threads",
+          "Agent message",
+        ]);
+        for (const label of ["Priority", "Assignee"]) {
+          const names = await fieldOptionNames(user, label);
+          expect(names.length, `thread read ${how}: ${label}'s values`).toBeGreaterThan(0);
+          expect(
+            names.filter((name) => COUNTED.test(name)),
+            `thread read ${how}: ${label} counts asks and threads`
+          ).toEqual([]);
+        }
+      } finally {
+        unmount();
+      }
+    }
+    // The control: the same view with its thread read answered counts both threads.
+    mocks.getMeInbox.mockImplementation(async (query = {}) =>
+      oneReadAnswer(query.state === "dismissed" ? threads : asks)
+    );
+    const { unmount } = renderInbox("/?show=dismissed");
+    try {
+      await waitFor(() => expect(rowIds()).toHaveLength(2));
+      expect(await fieldOptionNames(user, "Type")).toEqual([
+        "Question, 0 rows",
+        "Decision, 0 rows",
+        "Approval, 0 rows",
+        "Threads, 2 rows",
+        "Agent message, 0 rows",
+      ]);
+      for (const label of ["Priority", "Assignee"]) {
+        const names = await fieldOptionNames(user, label);
+        expect(names.length, `${label}'s values`).toBeGreaterThan(0);
+        expect(names.filter((name) => !COUNTED.test(name))).toEqual([]);
+      }
+    } finally {
+      unmount();
+    }
+  } finally {
+    listUsers.mockRestore();
+    reads();
+  }
+});
+
 test("a failed people read says so and leaves the assignee filter working from the address", async () => {
   const user = userEvent.setup();
   const rows = filterRows();
@@ -9386,9 +9496,11 @@ function renderDismissed(where: "drawer" | "page", address = "/?show=dismissed")
 // read: a count beside a value is drawn only once the read the listed rows come from has
 // answered, never as a 0 that stands for "not read yet". The Dismissed view lists its threads from
 // the one read's `dismissed` state, which the bar does not wait for: while that read is out, and
-// once it is refused, the Type list offers each kind with no count; once it answers, it counts
-// the threads it lists.
-test("the Dismissed view's Type list draws no count while its read is out or refused, and counts its threads once it answers", async () => {
+// once it is refused, the Type list offers each thread kind with no count; once it answers, it
+// counts the threads it lists. The Dismissed view lists no ask, whatever that read says, and the
+// asks' own read answered before the bar was drawn, so each ask kind keeps its count of 0
+// throughout.
+test("the Dismissed view's Type list draws no count for the thread kinds while its read is out or refused, the ask kinds keeping their count of none, and counts its threads once it answers", async () => {
   const user = userEvent.setup();
   const reads = answerDismissedPages(() => []);
   /** The options of the Type list that carry a count, by name, in each state of the read. */
@@ -9424,16 +9536,12 @@ test("the Dismissed view's Type list draws no count while its read is out or ref
   } finally {
     reads();
   }
+  /** The ask kinds, which the Dismissed view never lists, counted in every state of the read. */
+  const asks = ["Question, 0 rows", "Decision, 0 rows", "Approval, 0 rows"];
   expect(counted).toEqual({
-    answered: [
-      "Question, 0 rows",
-      "Decision, 0 rows",
-      "Approval, 0 rows",
-      "Threads, 2 rows",
-      "Agent message, 0 rows",
-    ],
-    out: [],
-    refused: [],
+    answered: [...asks, "Threads, 2 rows", "Agent message, 0 rows"],
+    out: asks,
+    refused: asks,
   });
 });
 

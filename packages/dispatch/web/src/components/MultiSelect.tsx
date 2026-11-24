@@ -138,8 +138,9 @@ interface SharedProps {
    *  comma ("api, 3"), never run together. */
   readonly optionDetail?: (value: string) => string | undefined;
   /** What the row's accessible name says in place of `optionDetail`'s text, such as "3 PRs" for
-   *  a bare count. Defaults to that text. */
-  readonly optionDetailLabel?: (value: string) => string;
+   *  a bare count, or `undefined` for that text itself, which is what it says by default. A row
+   *  both answer `undefined` for draws no detail and is named by its label alone. */
+  readonly optionDetailLabel?: (value: string) => string | undefined;
   readonly searchLabel: string;
   /** How much room the trigger takes (`controlPadding`): the page's size, which the page passes.
    *  The default trigger outside `NoTooltips` takes the comfortable size where none is passed. A
@@ -417,6 +418,29 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     if (pressed && focusLost()) inputRef.current?.focus();
   });
 
+  // The text box stuck to the list's top, and the Clear foot stuck to its bottom while it is
+  // drawn: the rows scroll under both.
+  const headRef = useRef<HTMLDivElement>(null);
+  const footRef = useRef<HTMLDivElement>(null);
+  // ArrowDown and ArrowUp scroll the list the least that shows the option they mark active whole,
+  // between the text box and the Clear foot, so an option already whole scrolls nothing. Only the
+  // list's own box scrolls: this sets its `scrollTop` rather than call `scrollIntoView`, which
+  // scrolls the window too.
+  const markActive = (value: string) => {
+    setActiveValue(value);
+    const head = headRef.current;
+    const box = head?.parentElement ?? null;
+    const option = document.getElementById(optionId(value));
+    if (head === null || box === null || option === null) return;
+    const shownTop = head.getBoundingClientRect().bottom;
+    const shownBottom =
+      footRef.current?.getBoundingClientRect().top ??
+      box.getBoundingClientRect().top + box.clientTop + box.clientHeight;
+    const { bottom, top } = option.getBoundingClientRect();
+    if (top < shownTop) box.scrollTop -= shownTop - top;
+    else if (bottom > shownBottom) box.scrollTop += bottom - shownBottom;
+  };
+
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     // A key that ends or moves an IME composition is the input method's: Enter commits the
     // composed text into the box and picks nothing, and Tab leaves the list open.
@@ -424,13 +448,13 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     if (event.key === "ArrowDown" && rows.length > 0) {
       event.preventDefault();
       const index = activeRow === undefined ? -1 : rows.indexOf(activeRow);
-      setActiveValue(rows[(index + 1) % rows.length]);
+      markActive(rows[(index + 1) % rows.length]);
       return;
     }
     if (event.key === "ArrowUp" && rows.length > 0) {
       event.preventDefault();
       const index = activeRow === undefined ? 0 : rows.indexOf(activeRow);
-      setActiveValue(rows[(index - 1 + rows.length) % rows.length]);
+      markActive(rows[(index - 1 + rows.length) % rows.length]);
       return;
     }
     if (event.key === "Enter" && activeRow !== undefined) {
@@ -550,7 +574,10 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
           id={panelId}
           onDismiss={(how) => onOpenChange(false, how)}
         >
-          <div className={`sticky top-0 border-b p-2 ${tooltips ? card : ON_PAGE.panel}`}>
+          <div
+            className={`sticky top-0 border-b p-2 ${tooltips ? card : ON_PAGE.panel}`}
+            ref={headRef}
+          >
             <input
               aria-activedescendant={activeRow === undefined ? undefined : optionId(activeRow)}
               aria-autocomplete="list"
@@ -659,7 +686,10 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
             </p>
           )}
           {props.mode === "single" || selected.length === 0 ? null : (
-            <div className={`sticky bottom-0 border-t p-2 ${tooltips ? card : ON_PAGE.panel}`}>
+            <div
+              className={`sticky bottom-0 border-t p-2 ${tooltips ? card : ON_PAGE.panel}`}
+              ref={footRef}
+            >
               <button
                 className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${tooltips ? `${surfaceMutedBg} ${textSecondaryOnSurface}` : ON_PAGE.clear}`}
                 disabled={disabled}

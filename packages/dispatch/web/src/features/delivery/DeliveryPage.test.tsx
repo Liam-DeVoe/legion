@@ -1497,6 +1497,65 @@ test("after a first read that failed the row still draws the link's chips", asyn
   expect(rowControls()).toEqual(["Filter · 1", "Remove Author: octocat filter"]);
 });
 
+/** Each option of the panel's `facet`, by the name it is read out as: its `aria-label` where it
+ *  has one, else its text, as a row with no count beside it is named by its label alone (a picked
+ *  value's tick is in that text too). Escape closes the list again, so the next read opens its
+ *  own. */
+async function facetOptionNames(user: UserEvent, facet: string): Promise<string[]> {
+  await user.click(await panelFacet(user, facet));
+  const names = within(screen.getByRole("listbox", { name: `${facet} options` }))
+    .getAllByRole("option")
+    .map((option) => option.getAttribute("aria-label") ?? option.textContent ?? "");
+  await user.keyboard("{Escape}");
+  return names;
+}
+
+// INFRA-3135, round 25 (the tester's), by the architect's ruling of 2026-11-24 08:07Z: a count
+// beside a value is drawn only once the data it counts has answered. Before the timeline's first
+// answer the Timeline's panel offered every verdict of Rework and Deployed at "0 PRs", and a value
+// the address picks at 0 too, though nothing had counted them.
+test("on the Timeline the Filter panel draws no count beside a value before the first answer, and the answer's counts once it is in", async () => {
+  const user = userEvent.setup();
+  const restoreCanvas = stubCanvasContext();
+  try {
+    renderPage(`${TIMELINE_URL}&author=octocat`);
+    const socket = await openSocket();
+    const { sub } = await subscription(socket, "timeline");
+    expect(await screen.findByText("Loading delivery timeline…")).toBeDefined();
+    expect(await facetOptionNames(user, "Rework")).toEqual(["value", "rework"]);
+    expect(await facetOptionNames(user, "Deployed")).toEqual([
+      "deployed",
+      "waiting",
+      "not tracked",
+    ]);
+    expect(await facetOptionNames(user, "Author")).toEqual(["\u2713octocat"]);
+
+    serve(socket, snapshotFrame(sub, everyFacet));
+    await screen.findByRole("img", { name: /^Delivery timeline/ });
+    expect(await facetOptionNames(user, "Rework")).toEqual(["value, 1 PR", "rework, 0 PRs"]);
+    expect(await facetOptionNames(user, "Deployed")).toEqual([
+      "deployed, 0 PRs",
+      "waiting, 1 PR",
+      "not tracked, 0 PRs",
+    ]);
+    expect(await facetOptionNames(user, "Author")).toEqual(["octocat, 1 PR"]);
+  } finally {
+    cleanup();
+    restoreCanvas();
+  }
+});
+
+test("after a first read that failed the Filter panel offers every verdict with no count beside it", async () => {
+  const user = userEvent.setup();
+  renderPage(TIMELINE_URL);
+  const socket = await openSocket();
+  const { sub } = await subscription(socket, "timeline");
+  serve(socket, errorFrame(sub, "INTERNAL", "the timeline is down"));
+  expect(await screen.findByText("Couldn't load the delivery timeline.")).toBeDefined();
+  expect(await facetOptionNames(user, "Rework")).toEqual(["value", "rework"]);
+  expect(await facetOptionNames(user, "Deployed")).toEqual(["deployed", "waiting", "not tracked"]);
+});
+
 // `?rework=` and `?deployed=` each name a closed set: a value outside it is dropped, as an unknown
 // `?sort=` id is. `constructor` is a key every object inherits, and none of the labels' own.
 test("a rework or deployed value the page has no label for reaches neither the subscription nor a chip, and a known one beside it does", async () => {

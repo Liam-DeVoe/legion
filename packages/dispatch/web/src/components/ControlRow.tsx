@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 
+import { PANEL_ATTRIBUTE } from "../features/shell/keymap";
 import { focusOnDocument } from "../features/shell/roving";
 import { observeStrip } from "../hooks/observe-strip";
 import { borderDefault, borderTransparent, card } from "../theme/classes";
@@ -192,6 +193,23 @@ function deleteChip(event: KeyboardEvent<HTMLElement>): void {
   target.click();
 }
 
+/** A chip that takes the focus in a panel's list of chips - the panel of `+N more`, or the chips
+ *  at the top of the trigger's panel - stands whole in the panel's box: the panel scrolls the
+ *  least that shows it, so a chip already whole scrolls nothing. Chromium and WebKit scroll the
+ *  focused chip into view themselves; Firefox leaves one that is partly in sight cut at the
+ *  panel's edge. The box is the panel's own (`AnchoredPanel`), whatever stands between it and the
+ *  list, and only it scrolls: this sets its `scrollTop` rather than call `scrollIntoView`, which
+ *  scrolls the window too. */
+function showFocusedChip(event: FocusEvent<HTMLElement>): void {
+  const panel = event.currentTarget.closest<HTMLElement>(`[${PANEL_ATTRIBUTE}]`);
+  if (panel === null) return;
+  const shownTop = panel.getBoundingClientRect().top + panel.clientTop;
+  const shownBottom = shownTop + panel.clientHeight;
+  const { bottom, top } = event.target.getBoundingClientRect();
+  if (top < shownTop) panel.scrollTop -= shownTop - top;
+  else if (bottom > shownBottom) panel.scrollTop += bottom - shownBottom;
+}
+
 /** The element of a chip the focus goes to: the chip itself, or the first link or button in the
  *  box its chip is drawn in. */
 function focusableOf(chip: Element): HTMLElement | null {
@@ -213,7 +231,9 @@ function triggerOf(root: Element): HTMLElement | null {
  * before the panel's, a child's effect before its parent's, so it lands first. The list goes with
  * its last chip, and the panel's hand-off then lands on the control now at its place, the panel's
  * first field. A chip's press arms the hand-off at the list's root (`armOnPress`), as every
- * component that hands its focus off arms it at its own, so its going is the reader's.
+ * component that hands its focus off arms it at its own, so its going is the reader's. A chip that
+ * takes the focus stands whole in the panel's box, as one in the panel of `+N more` does
+ * (`showFocusedChip`).
  */
 function PanelChips({
   chips,
@@ -228,11 +248,14 @@ function PanelChips({
     () => null
   );
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the focus handler only notes which chip of the list took the focus, for the hand-off when a commit takes that chip away (`useFocusPlace`), and the capture handlers only arm that hand-off at a press inside the list (`armOnPress`), so the list needs no role of its own.
+    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the focus handler only notes which chip of the list took the focus, for the hand-off when a commit takes that chip away (`useFocusPlace`), and scrolls the panel to that chip (`showFocusedChip`), and the capture handlers only arm that hand-off at a press inside the list (`armOnPress`), so the list needs no role of its own.
     <div
       className="flex w-full flex-col items-start gap-2"
       {...ARM_ON_PRESS}
-      onFocus={noteFocus}
+      onFocus={(event) => {
+        noteFocus(event);
+        showFocusedChip(event);
+      }}
       ref={list}
     >
       {filterChips(chips, size)}
@@ -378,7 +401,9 @@ export interface ControlRowProps<TData = unknown> {
  * remove action. Each chip is drawn once, in the line or in that panel, so no id is drawn twice
  * there. The panel's focus follows every panel's rules: it opens with the focus on its first
  * chip, and Escape, or Tab or Shift+Tab past its last or first chip, close it and hand the focus
- * back to `+N more`.
+ * back to `+N more`. A chip that takes the focus in it stands whole in the panel's box, which
+ * scrolls the least that shows it, in every engine (`showFocusedChip`), as a chip at the top of
+ * the trigger's panel does.
  *
  * A chip or **Clear filters** that is taken off hands the keyboard focus on rather than drop it
  * onto the page, where a keyboard reader would start again from the page's first link for each
@@ -612,7 +637,7 @@ export function ControlRow<TData = unknown>({
         >
           {/* The panel's chips, without a box of their own (`contents`), so the panel lays them
               out one under another. */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only act on a chip of the panel, which is a button or a link of its own: they note which chip a click takes off, and press the focused chip on Delete, so the list needs no role of its own. */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only act on a chip of the panel, which is a button or a link of its own: they note which chip a click takes off, press the focused chip on Delete, and scroll the panel to the chip that takes the focus, so the list needs no role of its own. */}
           <div
             className="contents"
             onClickCapture={(event) => {
@@ -624,6 +649,7 @@ export function ControlRow<TData = unknown>({
                 panelPlace: held.index,
               };
             }}
+            onFocus={showFocusedChip}
             onKeyDown={deleteChip}
             ref={panelRef}
           >

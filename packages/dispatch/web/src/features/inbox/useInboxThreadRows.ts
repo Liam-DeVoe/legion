@@ -11,9 +11,13 @@ import { useMotionHold } from "./motion-hold";
 /** The thread side of the Inbox: the rows it lists, the mark a write over that list carries, and
  *  the page behind **Show more** where the list is paged. */
 export interface InboxThreadRows {
-  /** Whether the rows come from an answer of the read they are listed from, so a count taken over
-   *  them counts what that read holds. Always where the list is narrowed to asks, which lists no
-   *  thread. A read that answered once keeps its answer through a later refresh that fails. */
+  /** Whether `rows` are an answer of the read they are listed from, so a count taken over them
+   *  counts what that read holds: false while that read is out, was refused with no answer before
+   *  it, or is not asked (until the sign-in read says the reader is a person). The Inbox waits for
+   *  the one read's `inbox` state before it draws its bar, but not for its `dismissed` state,
+   *  which the Dismissed view lists. Always where the list is narrowed to asks, which lists no
+   *  thread whatever the read says. A read that answered once keeps its answer through a later
+   *  refresh that fails. */
   readonly answered: boolean;
   /** The read mark of the list read these rows came from, which **Mark all read** and a
    *  **Select all** dismiss both carry. */
@@ -62,7 +66,8 @@ export function useInboxThreadRows({
   const answer = inbox.data;
   // One array per set of pages or per answer, and the same array until they change: the motion
   // hold adopts what it is given by identity (`motion-hold.ts`), so a fresh `flatMap` on every
-  // render would have it adopt - and so re-render - for ever.
+  // render would have it adopt - and so re-render - for ever. Each is undefined only while its
+  // read has no answer: an answer that holds no thread gives an empty array.
   const paged = useMemo(() => pages?.flatMap((page) => meInboxThreads(page)), [pages]);
   const unpaged = useMemo(
     () => (answer === undefined ? undefined : meInboxThreads(answer)),

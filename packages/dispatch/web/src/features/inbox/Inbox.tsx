@@ -1,4 +1,4 @@
-import { awaitsDecision, INBOX_DISMISSED_PAGE } from "@legion/contracts";
+import { awaitsDecision, INBOX_DISMISSED_PAGE, INBOX_THREAD_KINDS } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { useVirtualizer, useWindowVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
 import {
@@ -2538,12 +2538,6 @@ function InboxBody({
         (other) => other === field || inFieldFilter(row, other, filters[other], viewer)
       ) &&
       (field === "assignee" || inAssigneeFilter(row, selection, viewer));
-    // A count is drawn only once the read the listed rows come from has answered, never as a 0
-    // that stands for "not read yet": the Dismissed view's threads come from the one read's
-    // `dismissed` state, which the bar does not wait for, so while that read is out or refused
-    // each value is offered with no count. The reader's own list waits for its read before the
-    // bar is drawn at all.
-    const counted = threads.answered;
     // A login equal to either reserved word would be a row that means the filter rather than
     // the person, so neither is offered among the people.
     const reservedLogins: readonly string[] = [UNASSIGNED_FILTER_VALUE, EVERYONE_FILTER_VALUE];
@@ -2576,6 +2570,18 @@ function InboxBody({
             (row) => matchesOtherFields(row, field),
             viewer
           );
+          // A count is drawn only once every read whose rows it counts has answered, never as a
+          // count of the rows read so far. An ask kind of Type counts the asks this list holds,
+          // whose reads the Inbox waits for before it draws this bar at all (`useInboxAsks`), and
+          // the Dismissed view holds no ask, so that count stands in either view. A thread kind
+          // counts the threads of the view that is showing: the Dismissed view's come from the one
+          // read's `dismissed` state, which the bar does not wait for. Every other field counts
+          // asks and threads together. So while the threads' read is out or refused
+          // (`threads.answered`), the ask kinds keep their count and every other value is offered
+          // with no count, never a 0 or an asks-only count.
+          const counted = (value: string) =>
+            threads.answered ||
+            (field === "type" && !(INBOX_THREAD_KINDS as readonly string[]).includes(value));
           return (
             <MultiSelect
               {...filterPanel(field)}
@@ -2583,8 +2589,10 @@ function InboxBody({
               key={field}
               label={DIMENSION_LABELS[field]}
               onChange={(next) => chooseField(field, next)}
-              optionDetail={counted ? (value) => `${counts.get(value) ?? 0}` : undefined}
-              optionDetailLabel={counted ? (value) => `${counts.get(value) ?? 0} rows` : undefined}
+              optionDetail={(value) => (counted(value) ? `${counts.get(value) ?? 0}` : undefined)}
+              optionDetailLabel={(value) =>
+                counted(value) ? `${counts.get(value) ?? 0} rows` : undefined
+              }
               optionLabel={(value) => dimensionValueLabel(field, value)}
               options={fieldOptions(field, candidates, viewer, chosen)}
               searchLabel={`Search ${DIMENSION_LABELS[field].toLowerCase()}`}
@@ -2597,7 +2605,9 @@ function InboxBody({
             reader's own words, and the popover picks any number of people, with Unassigned
             first. Unassigned lists what the server resolved no person for, and every project
             naming a default assignee leaves nothing: it reads 0 and lists nothing, which is
-            what the filter saying so is for. */}
+            what the filter saying so is for. A person's count counts asks and threads, so it is
+            drawn only once the threads' read has answered, as every field's above is; until
+            then the reader's own row keeps its "you" alone. */}
         <MultiSelect
           emptyMessage={people.isPending ? "Loading people…" : "No matching person."}
           error={people.isError ? "Could not load the people list." : null}
@@ -2608,19 +2618,16 @@ function InboxBody({
             filterPanel("assignee").onOpenChange(open);
           }}
           open={filterPanel("assignee").open}
-          optionDetail={(value) =>
-            counted
-              ? `${value === viewer ? "you · " : ""}${assigneeCounts.get(value) ?? 0}`
-              : value === viewer
-                ? "you"
-                : undefined
-          }
-          optionDetailLabel={
-            counted
-              ? (value) =>
-                  `${value === viewer ? "you, " : ""}${assigneeCounts.get(value) ?? 0} rows`
-              : undefined
-          }
+          optionDetail={(value) => {
+            const you = value === viewer;
+            if (!threads.answered) return you ? "you" : undefined;
+            return `${you ? "you · " : ""}${assigneeCounts.get(value) ?? 0}`;
+          }}
+          optionDetailLabel={(value) => {
+            const you = value === viewer;
+            if (!threads.answered) return you ? "you" : undefined;
+            return `${you ? "you, " : ""}${assigneeCounts.get(value) ?? 0} rows`;
+          }}
           optionLabel={(value) => (value === UNASSIGNED_FILTER_VALUE ? "Unassigned" : value)}
           options={assigneeOptions}
           searchLabel="Search people"

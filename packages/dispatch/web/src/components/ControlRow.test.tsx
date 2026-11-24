@@ -1,4 +1,4 @@
-import { expect, mock, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
 import { type ColumnDef, getCoreRowModel, useReactTable } from "@tanstack/react-table";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -1406,6 +1406,119 @@ test("Escape in the panel, and Tab past its last chip, close it and hand the foc
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(more).toHaveFocus();
   } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+/**
+ * Lays an open panel whose buttons are its chips alone - the panel of `+N more`, or the trigger's
+ * panel over fields that draw no button - out as a browser would, which happy-dom does not: its
+ * box is 200 px tall at 100 px down the window inside a 1 px border, so it shows 198 px of what it
+ * holds, and its chips stand one under another from 8 px into it (its padding), 44 px tall and
+ * 8 px apart, moved up by its `scrollTop`, which stops at both ends of the scroll, as a browser's
+ * does.
+ */
+function layOutPanel(panel: HTMLElement): void {
+  const chips = within(panel).getAllByRole("button");
+  const shown = 198;
+  const end = 8 + chips.length * 52 - 8 + 8 - shown;
+  let scrolled = 0;
+  Object.defineProperties(panel, {
+    clientHeight: { configurable: true, get: () => shown },
+    clientTop: { configurable: true, get: () => 1 },
+    scrollTop: {
+      configurable: true,
+      get: () => scrolled,
+      set: (value: number) => {
+        scrolled = Math.min(Math.max(value, 0), Math.max(end, 0));
+      },
+    },
+  });
+  panel.getBoundingClientRect = () => new DOMRect(0, 100, 256, 200);
+  for (const [index, chip] of chips.entries()) {
+    chip.getBoundingClientRect = () => new DOMRect(9, 109 + 52 * index - scrolled, 100, 44);
+  }
+}
+
+/** Walks the chips of the open `panel` by Tab, four forward and then four back, and answers the
+ *  words of the chip each key puts the focus on, with how far the panel has scrolled then. */
+async function walkChips(user: UserEvent, panel: HTMLElement): Promise<[string, number][]> {
+  const walked: [string, number][] = [];
+  for (const shift of [false, false, false, false, true, true, true, true]) {
+    await user.tab({ shift });
+    const focused = document.activeElement;
+    walked.push([focused === null ? "nothing" : wordsOf(focused), panel.scrollTop]);
+  }
+  return walked;
+}
+
+// Here no engine scrolls the panel itself, as Firefox scrolls no chip already partly in sight.
+test("a chip the focus reaches in the panel of +N more stands whole in the panel's box, which scrolls the least that shows it, and nothing else scrolls", async () => {
+  const user = userEvent.setup();
+  const names = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta"];
+  const restore = layOutLine({ width: 300 }, Object.fromEntries(names.map((name) => [name, 100])));
+  const view = render(<ChipsBar names={names} />);
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await user.click(screen.getByRole("button", { name: "5 more filters" }));
+    const panel = screen.getByRole("dialog", { name: "5 more filters" });
+    layOutPanel(panel);
+    expect(chip("Gamma")).toHaveFocus();
+    // The chip each key puts the focus on, and how far the panel has scrolled then: the panel
+    // shows 0-198 px of what it holds, and the fourth chip, Zeta, stands at 164-208.
+    expect(await walkChips(user, panel)).toEqual([
+      ["Delta", 0],
+      ["Epsilon", 0],
+      ["Zeta", 10],
+      ["Eta", 62],
+      // Already whole, so nothing scrolls.
+      ["Zeta", 62],
+      ["Epsilon", 62],
+      // Back up, each chip stands at the box's top edge, so the first leaves the panel's 8 px of
+      // padding above it out of sight.
+      ["Delta", 60],
+      ["Gamma", 8],
+    ]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+    view.unmount();
+    restore();
+  }
+});
+
+// The same in the trigger's panel, which lists every chip at its top above the page's fields, and
+// below 640 px of the bar's width is where a keyboard reader takes one off. That list stands in
+// the panel's own content box (`contents`), not in the panel's box itself, so the box scrolled is
+// the panel's, whatever stands between.
+test("a chip the focus reaches at the top of the trigger's panel stands whole in the panel's box, which scrolls the least that shows it, and nothing else scrolls", async () => {
+  const user = userEvent.setup();
+  const restore = layOutBar({ width: 390 });
+  const view = render(<Bar narrowings={["Alpha", "Beta", "Gamma", "Delta", "Epsilon"]} />);
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await user.click(within(row()).getByRole("button", { name: "Filter · 5" }));
+    const panel = screen.getByRole("dialog", { name: "Filter" });
+    layOutPanel(panel);
+    expect(chip("Alpha")).toHaveFocus();
+    // The panel shows 0-198 px of what it holds, and the fourth chip, Delta, stands at 164-208.
+    expect(await walkChips(user, panel)).toEqual([
+      ["Beta", 0],
+      ["Gamma", 0],
+      ["Delta", 10],
+      ["Epsilon", 62],
+      // Already whole, so nothing scrolls.
+      ["Delta", 62],
+      ["Gamma", 62],
+      // Back up, each chip stands at the box's top edge, so the first leaves the panel's 8 px of
+      // padding above it out of sight.
+      ["Beta", 60],
+      ["Alpha", 8],
+    ]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
     view.unmount();
     restore();
   }

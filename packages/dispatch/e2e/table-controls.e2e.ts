@@ -9923,12 +9923,15 @@ test("the Delivery page's Filter panel draws no count beside a verdict before th
 // which this row reads too, so it can tell a count from a placeholder.
 // On this branch the Inbox has no thread read of its own: the one read, `GET /api/v1/me/inbox`,
 // answers the reader's own asks and their threads together (`useInboxAsks`, `useInboxThreadRows`),
-// its `inbox` state for the Inbox and its `dismissed` state for the Dismissed view, while the
-// bar stands on the `inbox` state alone. So the row holds and refuses each state of the one read
-// in the view it lists, and no kind may carry a count while that read is out or refused; with it
-// answered the Inbox reads "Question, 2 rows" and "Threads, 2 rows" (this branch's name for the
-// reply threads' kind), and the Dismissed view "Threads, 2 rows".
-test("the Inbox's Type list draws no count for any kind while the one read its rows come from is out or refused, in the Inbox and in its Dismissed view @firefox @webkit", async ({
+// its `inbox` state for the Inbox and its `dismissed` state for the Dismissed view's threads, while
+// the bar stands on the `inbox` state alone. So the row holds and refuses each state of the one
+// read in the view it lists. In the Inbox that state holds the asks too, so no kind may carry a
+// count while it is out or refused. The Dismissed view lists no ask, and the asks' read, the
+// `inbox` state, answered before its bar was drawn, so there each ask kind keeps its count, 0,
+// as INFRA-3135's rule keeps the questions' count, and only the thread kinds carry none. With the
+// read answered the Inbox reads "Question, 2 rows" and "Threads, 2 rows" (this branch's name for
+// the reply threads' kind), and the Dismissed view "Threads, 2 rows".
+test("the Inbox's Type list draws no count for a kind while the one read its rows come from is out or refused, in the Inbox and in its Dismissed view, whose ask kinds keep their count @firefox @webkit", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -9951,8 +9954,9 @@ test("the Inbox's Type list draws no count for any kind while the one read its r
   const main = page.getByTestId("main-content");
   const rows = main.locator("[data-inbox-row]");
   const trigger = control(controlRow(main), CONTROL.panelTrigger);
-  /** Each option of the Type list, by its accessible name, read once the list holds all five;
-   *  none where the bar draws no Filter, which then offers no count either. */
+  /** Each option of the Type list, by its accessible name, read once the list holds all five:
+   *  its `aria-label` where it has one, else its text, as a row with no count beside it is named
+   *  by its label alone. None where the bar draws no Filter, which then offers no count either. */
   const typeOptions = async (): Promise<string[]> => {
     // Every caller waited for the list's loading line, its error line, the bar or the rows, and the
     // Inbox decides whether its bar stands in the commit that draws them, so this read is settled.
@@ -9963,7 +9967,9 @@ test("the Inbox's Type list draws no count for any kind while the one read its r
     const options = page.getByRole("listbox", { name: "Type options" }).getByRole("option");
     await expect(options).toHaveCount(5);
     const names = await options.evaluateAll((elements) =>
-      elements.map((element) => element.getAttribute("aria-label") ?? "")
+      elements.map(
+        (element) => element.getAttribute("aria-label") ?? element.textContent?.trim() ?? ""
+      )
     );
     await page.keyboard.press("Escape");
     await closeControlPanel(main);
@@ -9973,6 +9979,17 @@ test("the Inbox's Type list draws no count for any kind while the one read its r
     { address: "/", name: "the Inbox", state: "inbox" },
     { address: "/?show=dismissed", name: "the Dismissed view", state: "dismissed" },
   ] as const;
+  /** The Type list of the Dismissed view while its threads' read is out or refused, quoted as a
+   *  failure names it: each ask kind with its count, none, and each thread kind with no count. */
+  const dismissedUnanswered = [
+    "Question, 0 rows",
+    "Decision, 0 rows",
+    "Approval, 0 rows",
+    "Threads",
+    "Agent message",
+  ]
+    .map((name) => `"${name}"`)
+    .join(", ");
   const wrong: string[] = [];
   try {
     for (const view of views) {
@@ -10003,11 +10020,18 @@ test("the Inbox's Type list draws no count for any kind while the one read its r
         }
         await expect(rows, `${where}: the list draws rows`).toHaveCount(0);
         const names = await typeOptions();
-        wrong.push(
-          ...names
-            .filter((name) => /, \d+ rows?$/u.test(name))
-            .map((name) => `${where}: the Type list offers "${name}"`)
-        );
+        if (view.state === "dismissed") {
+          const offered = names.map((name) => `"${name}"`).join(", ");
+          if (offered !== dismissedUnanswered) {
+            wrong.push(`${where}: the Type list offers ${offered}, not ${dismissedUnanswered}`);
+          }
+        } else {
+          wrong.push(
+            ...names
+              .filter((name) => /, \d+ rows?$/u.test(name))
+              .map((name) => `${where}: the Type list offers "${name}"`)
+          );
+        }
         await page.unrouteAll({ behavior: "ignoreErrors" });
       }
     }
