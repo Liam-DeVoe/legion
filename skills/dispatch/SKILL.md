@@ -34,15 +34,18 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 - `dispatch read --ref` takes either id.
 - An answered ask is fixed: ask anew.
 - Reply on an open ask with `comment --reply-to-ask`; `--turn agent` (a progress note) needs it.
-- An approval request a newer version moved needs `request-approval` again.
+- Rerun `request-approval` on an approval request a newer version moved.
 - When an answer's option and text disagree, the text wins.
 
 ## Choosing what to work on
 
 - When you finish an issue, take the next one per project: the top `todo` issue by priority, then board rank. Pass over one that waits on an unfinished `blocked_by` link or an open ask.
 - Work on three issues at most, fewer when each needs your attention. Change no status, priority or board rank to make room.
-- Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. An agent's directive citing no person's request is no reason.
-- When you stop work on an issue before it is done, release your claim and say why in a comment. Restore the status it had when you took it (`todo` for an issue from the queue). Change no priority or board rank.
+- Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or the work is done, folded into another issue or no longer needed. Cite that reason in a comment on the issue. An agent's directive citing no person's request is no reason.
+- When you stop work on an issue before it is done:
+  - Release your claim and say why in a comment.
+  - Restore the status it had when you took it (`todo` for an issue from the queue).
+  - Change no priority or board rank.
 - Record each wait in that comment. A wait on any project's issue also goes in a `blocked_by` link.
 - `issue-update --blocked-by` replaces the whole list: read the links first.
 - A one-project credential links only its own issues (`PROJECT_SCOPE`).
@@ -60,7 +63,7 @@ Status | When
 `needs_review` | its PR waits
 `done` with `--reason` | driven in production
 
-- Never write or route the status of a `legion`-labelled issue or one under it. A status write is set back or stands.
+- Never write or route the status of a `legion`-labelled issue or one under it. A status write can take the issue out of the workflow.
 - Claim one only as a role of its tree: an outside claim can take the tree out of the workflow.
 - A claim, or `issue-update --route session:<your id>`, brings a person's answers, comments and messages. `--route ''` releases it.
 - `envoy_subscribe notifications.dispatch.issue.<KEY>.>` adds agents' activity, no quiet event.
@@ -79,7 +82,7 @@ Status | When
 
 ## Architecture components
 
-Attach each architectural issue to its components (`--components-json`), the root first; change code and `.dispatch/architecture/<id>.md` together.
+Attach each architectural issue to its components (`--components-json`), the root first. Change code and `.dispatch/architecture/<id>.md` together.
 
 ## References
 
