@@ -22,7 +22,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -1081,7 +1080,7 @@ func returnToOf(issue record.Issue, w Walk, fact intake.HandoffComplete, reporte
 // agent's among them (record.AnotherAgentsReview). w is the walk of the issue's run, as handoff
 // read it.
 func (e *Engine) recordStepReview(ctx context.Context, tx pgx.Tx, w Walk, row record.PhaseRow, fact intake.HandoffComplete) error {
-	if !reviewround.IsHead(fact.Commit) || row.EntryTask == "" || fact.Entry != row.Entry {
+	if fact.Commit == "" || row.EntryTask == "" || fact.Entry != row.Entry {
 		return nil
 	}
 	step, ok := w.planStepAt(w.Place)
