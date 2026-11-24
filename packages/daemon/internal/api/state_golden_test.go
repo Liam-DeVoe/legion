@@ -838,6 +838,12 @@ func populatedState(t *testing.T) State {
 					Index:      6,
 					AdmittedAt: time.Date(2026, 9, 22, 8, 39, 47, 0, time.UTC),
 				},
+				// Its checker failed at step and nothing will wake that claim, so its one rendered
+				// answer is the stopped claim, as LEGION-210's is (`why`, api.WhyClaimStopped).
+				Why: &WhyView{
+					State:  WhyClaimStopped,
+					Reason: "Its phase is held and the checker's claim is stranded at failed, so nothing will wake it.",
+				},
 			},
 			"LEGION-214": {
 				Key:           "LEGION-214",
@@ -1051,13 +1057,14 @@ func populatedState(t *testing.T) State {
 		// the contract before this one parses; who suspended a claim is read on the operator claim
 		// routes. LEGION-210's entry is one workflow.Stranded writes for the record this state
 		// describes: its implementer failed while implementing, its issue is held from that phase,
-		// and nothing retries the claim until its architect retries the phase. The other two stand
-		// here for their states and are not entries the rule would write: LEGION-211's released
-		// implementer, whose wake never brought its pod back, is on a root whose own tree has not
-		// been opened, which runs nothing (record.TreeRuns), and LEGION-212's retired tester is on
-		// a root that waits on a person, whose answer resumes its architect; workflow.Stranded
-		// passes over every claim of both. The `why` of LEGION-211 and LEGION-212 is the
-		// projection's reading of this list.
+		// and nothing retries the claim until its architect retries the phase. LEGION-241's entry
+		// is one of the same kind: its checker failed at step and its issue is held from that step.
+		// The other two stand here for their states and are not entries the rule would write:
+		// LEGION-211's released implementer, whose wake never brought its pod back, is on a root
+		// whose own tree has not been opened, which runs nothing (record.TreeRuns), and
+		// LEGION-212's retired tester is on a root that waits on a person, whose answer resumes its
+		// architect; workflow.Stranded passes over every claim of both. The `why` of each of the
+		// four issues is the projection's reading of this list.
 		StrandedClaims: []StrandedClaim{
 			{Issue: "LEGION-210", Role: claim.RoleImplementer, State: "failed", Token: "legion-legion-legion-210-implementer"},
 			{Issue: "LEGION-211", Role: claim.RoleImplementer, State: "suspended", Token: "legion-legion-legion-211-implementer"},
@@ -1320,8 +1327,11 @@ func TestStateGolden(t *testing.T) {
 // deployment gates spec an issue carries `designGate` exactly when that entry names a document,
 // and the two name the same artifact and versions (internal/projection). Every root carries one
 // `gatedSteps` entry for each step its tree is gated on (record.TreeSteps over the steps the
-// deployment gates, `settings.gates.design`), and an issue that is no root carries none. A golden
-// that breaks any of these rules shows every reader of state.json a state the daemon never serves.
+// deployment gates, `settings.gates.design`), and an issue that is no root carries none. Every
+// issue the record holds in the workflow that `strandedClaims` names reads `why` claim_stopped,
+// with the sentence naming its phase and that claim, and no other issue reads it (projection's
+// whyStates reads that very list first). A golden that breaks any of these rules shows every
+// reader of state.json a state the daemon never serves.
 func TestTheStateGoldensAdmissionNamesEveryIssueItHolds(t *testing.T) {
 	state := populatedState(t)
 	admission := state.Admission
@@ -1457,6 +1467,39 @@ func TestTheStateGoldensAdmissionNamesEveryIssueItHolds(t *testing.T) {
 		}
 		if !slices.Equal(steps, want) {
 			t.Errorf("%s, of the tree of %q, carries the gated steps %v, and its tree's gate gives it %v", key, issue.Tree, steps, want)
+		}
+	}
+	// The stopped claims: the daemon hands the projection the claims it judges nothing will wake
+	// and serves the same list as `strandedClaims` (internal/daemon's state read), and whyStates
+	// reads it before anything else, so every issue the record holds in the workflow that one of
+	// them names reads claim_stopped, with the sentence of claimStoppedReason, the worker's claim
+	// named over the tree architect's where one issue has both. An issue the workflow does not
+	// record is in no record whyStates reads, and no other issue reads that state.
+	stopped := map[string]StrandedClaim{}
+	for _, stranded := range state.StrandedClaims {
+		if named, known := stopped[stranded.Issue]; known && named.Role != claim.RoleArchitect {
+			continue
+		}
+		stopped[stranded.Issue] = stranded
+	}
+	inWorkflow := func(issue Issue) bool {
+		return issue.Phase != Unrecorded && record.InWorkflow(record.Issue{Phase: issue.Phase, Status: issue.Status})
+	}
+	for _, key := range slices.Sorted(maps.Keys(state.Issues)) {
+		issue := state.Issues[key]
+		stranded, named := stopped[key]
+		if !named || !inWorkflow(issue) {
+			if issue.Why != nil && issue.Why.State == WhyClaimStopped {
+				t.Errorf("%s reads %s (%q), and no stranded claim of an issue in the workflow names it", key, WhyClaimStopped, issue.Why.Reason)
+			}
+			continue
+		}
+		want := fmt.Sprintf("Its phase is %s and the %s's claim is stranded at %s, so nothing will wake it.", issue.Phase, stranded.Role, stranded.State)
+		if stranded.Role == claim.RoleArchitect {
+			want = fmt.Sprintf("Its phase is %s and its tree's architect claim is stranded at %s, so nothing will wake it.", issue.Phase, stranded.State)
+		}
+		if issue.Why == nil || *issue.Why != (WhyView{State: WhyClaimStopped, Reason: want}) {
+			t.Errorf("%s's %s claim is stranded at %s, and its `why` is %+v, want %s: %q", key, stranded.Role, stranded.State, issue.Why, WhyClaimStopped, want)
 		}
 	}
 }

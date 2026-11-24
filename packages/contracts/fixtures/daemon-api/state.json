@@ -865,6 +865,10 @@
         "index": 6,
         "admittedAt": "2026-09-22T08:39:47Z"
       },
+      "why": {
+        "state": "claim_stopped",
+        "reason": "Its phase is held and the checker's claim is stranded at failed, so nothing will wake it."
+      },
       "treeMovedAt": "2026-09-22T09:04:39Z",
       "quietHours": 0.2225
     }
