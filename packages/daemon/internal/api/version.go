@@ -3514,12 +3514,12 @@ package api
 // lowest number above main's 220 that no other open pull request declares. Read main's own number
 // and every open pull request again at the next merge rather than from this line.)
 //
-// 243: the roles a deployment defines run steps of an issue's task. An issue whose running step is
+// 245: the roles a deployment defines run steps of an issue's task. An issue whose running step is
 // of such a role stands at a new phase, `step`, of `GET /legion/v1/state`'s `phase`, `heldFrom` and
 // a claim view's `pendingTask.phase`, and names that role in a new key, `issues.<key>.stepRole`; a
 // stranded claim and a waiting wake may name such a role. An issue names, in a new key
 // `issues.<key>.startWaitsForPod`, the roles whose start waits because its pod was built before the
-// deployment defined them, absent where none waits. A caller whose contract is below 243 is served
+// deployment defined them, absent where none waits. A caller whose contract is below 245 is served
 // an issue at step as at work, at `implementing`, its hold from step as one from `implementing`, a
 // pending task at step as one at `implementing`, no `stepRole`, no `startWaitsForPod` (a plugin
 // before memoryContract reads an issue as a strict object and would refuse the whole state over
@@ -3532,17 +3532,18 @@ package api
 // /legion/v1/phase/backward` takes such a role's grant, and one optional field, `returnTo`, the
 // place of the step the move returns to (below 1 `400 INVALID_RETURN_TO`; a place the workflow may
 // not name, or a `to` that is not the phase that step runs as, `409 BACKWARD_REFUSED`). `readBody`
-// refuses an unknown field, so a plugin sending `returnTo` to a daemon below 243 would have the
+// refuses an unknown field, so a plugin sending `returnTo` to a daemon below 245 would have the
 // move refused; the bump is why the two never meet (`deploymentRolesContract`). `fresh_session`
 // and `compact` name the roles `architect, planner, implementer, tester, reviewer, merger, or a role
 // of this deployment`. From this entry the last number of answers.go's SupportedContracts is
 // `api.deploymentRolesContract`, after `api.intakeGiveUpsContract`.
-// (This entry takes 243, the lowest number above main's 220 that no open pull request declared: a
-// reading of `const DaemonAPIVersion` at the head of each of the 514 open pull requests, made
-// between 2026-11-24T04:28:26Z and 04:29:52Z, read all 514 and found every number from 219 to
-// 242 declared by at least one of them, 221 by seven, this change's own pull request among them,
-// and nothing at 243 or above. The entry first took 221, the lowest free number at a reading of
-// 2026-11-21; by the forward merge of main on 2026-11-24 other open pull requests declared it and
-// every number up to 242 too, so this entry moved to 243. Read main's own number and every open
-// pull request again at the next merge rather than from this line.)
-const DaemonAPIVersion = 243
+// (This entry takes 245, the lowest number above main's 228 and above every number an open pull
+// request declared, and outside 246 to 250, which another change holds: a reading of `const
+// DaemonAPIVersion` at the head of each of the 490 open pull requests, made between
+// 2026-11-24T10:20:02Z and 10:21:46Z, read all 490 and found 244 the highest declared, 243 among
+// them, and nothing above 244. The entry first took 221, the lowest free number at a reading of
+// 2026-11-21, then 243 at the forward merge of main on 2026-11-24 that brought main's 220; by the
+// forward merge that brought main's 228 another open pull request declared 243, so this entry
+// moved to 245. Read main's own number and every open pull request again at the next merge rather
+// than from this line.)
+const DaemonAPIVersion = 245
