@@ -41,6 +41,7 @@ import { textSourceOf } from "../refs/text-references";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
+  decisionName,
   isUnsureBlock,
   ownTree,
   ownWords,
@@ -87,43 +88,62 @@ interface DecisionBlock {
   /** Whether the block is the doubt the decision's node holds rather than a block of its text
    *  (`entryBlocks`): no document text holds it, so a Change never quotes it. */
   readonly fromNode?: true;
+  /** Whether the block is the paragraph that names the decision (`decisionName`): the card draws
+   *  it as its heading and not in its body, and a Change still quotes it, as the issue page's
+   *  Change does (`anchorQuote`). */
+  readonly name?: true;
 }
 
 /** The blocks of a decision whose answer carried no reading of its text: a pod of the build
  *  before this one serves none during a rolling deploy, and the markdown split the browser has
- *  always made is what draws the decision then, as every other view falls back to parsing. */
-function markdownBlocks(text: string): DecisionBlock[] {
+ *  always made is what draws the decision then, as every other view falls back to parsing. The
+ *  first block names the decision where `named` is set, and is marked so unless it is a heading,
+ *  which the split drops. */
+function markdownBlocks(text: string, named: boolean): DecisionBlock[] {
   return text
     .split(/\n\s*\n/)
     .map((block) => block.trim())
-    .filter((block) => block !== "" && !block.startsWith("#"))
-    .map((markdown) => ({
-      // The block's own markdown is its text here, the Change quote included: with no reading
-      // there is nothing to flatten, and parsing the markdown in the browser to build a quote
-      // is the reading a stored text's tree exists to spare every view. It is what the
-      // references are read from as well, because it is what the browser parsed to draw this
-      // block: a reference some other block of the decision cites is no reference of this one.
-      text: markdown,
-      references: markdown,
-      tree: undefined,
-      unsure: markdown.startsWith(UNSURE_PREFIX),
-    }));
+    .filter((block) => block !== "")
+    .flatMap((markdown, index) =>
+      markdown.startsWith("#")
+        ? []
+        : [
+            {
+              ...(named && index === 0 ? { name: true as const } : {}),
+              // The block's own markdown is its text here, the Change quote included: with no
+              // reading there is nothing to flatten, and parsing the markdown in the browser to
+              // build a quote is the reading a stored text's tree exists to spare every view. It
+              // is what the references are read from as well, because it is what the browser
+              // parsed to draw this block: a reference some other block of the decision cites is
+              // no reference of this one.
+              text: markdown,
+              references: markdown,
+              tree: undefined,
+              unsure: markdown.startsWith(UNSURE_PREFIX),
+            },
+          ]
+    );
 }
 
-/** The blocks of a decision below its heading, each marked unsure or not, taken from the tree Go
- *  read its text into: the top-level blocks of that tree are the paragraphs the markdown would
- *  have been split into, already divided, so the browser splits nothing and parses nothing. A
- *  heading is the decision's own, drawn by the card above its text, or one written inside it,
- *  which the markdown split dropped too. */
-function readDecisionBlocks(decision: DrawnDecision): readonly DecisionBlock[] {
+/** The blocks of a decision's text, each marked unsure or not, taken from the tree Go read its
+ *  text into: the top-level blocks of that tree are the paragraphs the markdown would have been
+ *  split into, already divided, so the browser splits nothing and parses nothing. A heading is
+ *  the decision's own, drawn by the card above its text, or one written inside it, which the
+ *  markdown split dropped too. Where `named` is set, the first block that holds words names the
+ *  decision (`decisionName`): a converted section's heading is such a paragraph, and it is marked
+ *  so the card draws it once, as its heading. */
+function readDecisionBlocks(decision: DrawnDecision, named: boolean): readonly DecisionBlock[] {
   const tree = decision.text_tree;
   const content = tree?.content;
   if (tree === undefined || !Array.isArray(content)) {
-    return markdownBlocks(decision.text);
+    return markdownBlocks(decision.text, named);
   }
-  return (content as DisplayTree[])
+  const nodes = content as DisplayTree[];
+  const name = named ? nodes.find((node) => wordsOf(node).trim() !== "") : undefined;
+  return nodes
     .filter((node) => node.type !== "heading")
     .map((node) => ({
+      ...(node === name ? { name: true as const } : {}),
       // What this block draws is the block alone, so its text is the words that block holds and
       // never the whole field's markdown: the field is passed beside it as the text the
       // references are read from (`MarkdownBody`'s `referenceText`), since a link's target and
@@ -135,23 +155,13 @@ function readDecisionBlocks(decision: DrawnDecision): readonly DecisionBlock[] {
     }));
 }
 
-/** A decision's name: the words of the first heading its content holds, else none. */
-function headingOf(tree: DisplayTree | undefined, text: string): string {
-  const content = tree?.content;
-  if (tree !== undefined && Array.isArray(content)) {
-    const heading = (content as DisplayTree[]).find((node) => node.type === "heading");
-    return heading === undefined ? "" : wordsOf(heading);
-  }
-  const line = text.split("\n").find((written) => written.startsWith("#"));
-  return line === undefined ? "" : line.replace(/^#+\s*/, "").trim();
-}
-
 /** An entry as the cards below draw a decision: an ask by its question, with the person's answer
  *  as its text and the server's reading of that answer as its tree (`answer_tree`), or the
  *  labels they chose where they wrote no words of their own; an agent's decision by its own
- *  content, with the asks its `from_ask` settles. Its block is the one the read names for it
- *  (`decisionBlockId`), and an ask on the issue itself, which stands in no block, is named by its
- *  node. */
+ *  content, named by its first block that holds words, as the server and every other view name
+ *  it (`decisionName`), with the asks its `from_ask` settles. Its block is the one the read names
+ *  for it (`decisionBlockId`), and an ask on the issue itself, which stands in no block, is named
+ *  by its node. */
 function entryDecision(entry: DecisionEntry): DrawnDecision {
   const ask = entry.node.kind === "ask";
   const tree = ask ? entry.answer_tree : ownTree(entry.text_tree);
@@ -159,7 +169,7 @@ function entryDecision(entry: DecisionEntry): DrawnDecision {
   return {
     asks: ask ? [entry.node.id] : (entry.from_ask ?? []),
     block_id: decisionBlockId(entry) ?? entry.node.id,
-    heading: entry.question ?? headingOf(tree, text),
+    heading: entry.question ?? decisionName(tree, text),
     kept: entry.kept,
     kind: entry.kind,
     links: entry.shaped ?? [],
@@ -172,15 +182,16 @@ function entryDecision(entry: DecisionEntry): DrawnDecision {
   };
 }
 
-/** The blocks of an entry's text below its heading, from the tree the server read that text into
- *  (`readDecisionBlocks`). An ask answered by the options chosen alone is the one entry whose
+/** The blocks of an entry's text, from the tree the server read that text into
+ *  (`readDecisionBlocks`), the block that names it marked where its name is its own words rather
+ *  than an ask's question. An ask answered by the options chosen alone is the one entry whose
  *  text no stored text holds - the labels chosen, joined - so no reading of the server's covers
  *  it, and it is drawn as the plain words it is, as the Answers page draws a chosen label,
  *  rather than parsed. The doubt a decision's node holds (`unsureWords`) is drawn last, as the
  *  `Unsure:` paragraph it was moved from drew, unless the text still holds that paragraph. */
 function entryBlocks(entry: DecisionEntry, decision: DrawnDecision): readonly DecisionBlock[] {
   if (entry.node.kind !== "ask" || entry.answer !== null) {
-    const blocks = readDecisionBlocks(decision);
+    const blocks = readDecisionBlocks(decision, entry.question === null);
     const doubt = unsureWords(entry);
     if (doubt === undefined || blocks.some((block) => block.unsure)) return blocks;
     return [
@@ -373,8 +384,8 @@ function DecisionCard({
   spec,
 }: {
   actions?: ReactNode;
-  /** The blocks of this decision's text below its heading, read by the caller that also quotes
-   *  the first of them (`readDecisionBlocks`). */
+  /** The blocks of this decision's text, the one that names it marked, read by the caller that
+   *  also quotes the first of them (`readDecisionBlocks`). */
   blocks: readonly DecisionBlock[];
   decision: DrawnDecision;
   /** The document the decision is written in, the one its node stands in, which its `#id`s name
@@ -398,7 +409,8 @@ function DecisionCard({
         )}
       </h3>
       {blocks.map((block, index) =>
-        block.plain ? (
+        // The block that names the decision is drawn as its heading, above.
+        block.name ? null : block.plain ? (
           // The labels an answer chose, drawn as a body's paragraph draws its words.
           // biome-ignore lint/suspicious/noArrayIndexKey: the tree's blocks have no id of their own
           <div className={`${markdownClassName} max-w-none`} key={index}>
@@ -461,9 +473,10 @@ function WaitingDecision({
 }): ReactNode {
   const queryClient = useQueryClient();
   const [changing, setChanging] = useState(false);
-  // A change anchors on the decision's first block below its heading, by the words that block
-  // holds: an anchor quote names the document's own text, which is what the server matches it
-  // against (`pmdoc.FindQuote`). The doubt the node holds is no text of the document.
+  // A change anchors on the decision's first block that is no heading, the one that names it
+  // included, by the words that block holds, as the issue page's Change anchors (`anchorQuote`):
+  // an anchor quote names the document's own text, which is what the server matches it against
+  // (`pmdoc.FindQuote`). The doubt the node holds is no text of the document.
   const quote = blocks.find((block) => block.fromNode === undefined)?.text;
   const keep = useKeyedWrite({
     inline: true,

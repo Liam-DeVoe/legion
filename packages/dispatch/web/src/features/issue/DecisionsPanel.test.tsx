@@ -807,6 +807,43 @@ test("a converted decision draws the doubt its node holds as its Unsure: paragra
   }
 });
 
+// The conversion of a decisions document writes a section's heading as the first paragraph of the
+// decision it becomes, and the server names a decision by that paragraph. The tab names the
+// decision by it, as it named the section by its heading, and draws it once: the body below the
+// name starts with the section's own words. A Change still quotes the decision's first block that
+// is no heading, as the issue page's Change does (`anchorQuote`).
+test("a converted decision is named by its first paragraph, which its body does not repeat", async () => {
+  const user = userEvent.setup();
+  const reason = "a reader who wants a file export would change this.";
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    waitingView({
+      text: `:::decision{#only uncertainty="high" uncertainty_reason="${reason}"}\nFiles stay out of the corpus\n\nWe write no file beside the database.\n:::\n`,
+      uncertainty: "high",
+      uncertainty_reason: reason,
+    })
+  );
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    expect(within(waiting).getByRole("heading", { level: 3 }).textContent).toBe(
+      "Files stay out of the corpus"
+    );
+    await waitFor(() =>
+      expect(within(waiting).getByText("We write no file beside the database.")).toBeDefined()
+    );
+    expect(within(waiting).getAllByText("Files stay out of the corpus")).toHaveLength(1);
+    await user.click(within(waiting).getByRole("button", { name: "Change" }));
+    const composer = within(waiting).getByRole("form", {
+      name: "Change Files stay out of the corpus",
+    });
+    expect(within(composer).getByTestId("decision-quote").textContent).toBe(
+      "Files stay out of the corpus"
+    );
+  } finally {
+    read.mockRestore();
+  }
+});
+
 // Each block of an answer that carried no reading cites what its own markdown holds and nothing
 // the decision's other blocks hold. The browser parsed that block's markdown to draw it, so a
 // `#q2` another block cites is no reference of this one: read from the whole decision, the
