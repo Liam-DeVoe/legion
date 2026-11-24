@@ -447,7 +447,7 @@ func TestAnOperatorsRetryOfAClaimWaitingFromQueuedLaunchesAtOnce(t *testing.T) {
 // asks its retries of as many agents at once as it decides to, so each keeps the turn the pacing
 // gave it. Its retry drops no wake, so the decision finds the claim where the park wrote it,
 // launching for the whole wait (waitOnMachine), and the retry is refused naming that state, as a
-// retry of a claim whose launch is under way is. The agent launches once, at its turn.
+// retry of an agent whose claim's launch is under way is. The agent launches once, at its turn.
 //
 // The negative control is exemptWake letting every RequestAskedRetry through, whoever asks it: the
 // controller's retry then drops the wake, the claim is put back in the state the gate found,
