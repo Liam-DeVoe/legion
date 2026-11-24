@@ -19,6 +19,11 @@ body: |-
   no longer named, and the news is not told once the gate is gone. The resume task says the
   approval that answered the wait still stands where only a newer version has closed the gate
   since, and where it does not stand, it names the later approval or the changes request that
-  ended it. The kept approval now records the document approved (store migration 20261122212816
-  adds `readmitted_approvals.artifact`); a rollback takes the steps docs/kubernetes.md gives under
+  ended it. The answer to a root's wait records the document the review or the newer version
+  that answered it was of (store migration 20261112215432 adds
+  `issues.awaiting_answered_artifact`), and the resume names, and asks about, that document, which
+  need not be the step it speaks of next: a wait on a question, or a deployment that gates more
+  than one step. An answer an earlier release wrote is asked as before. The kept approval now
+  records the document approved (store migration 20261122212816 adds
+  `readmitted_approvals.artifact`); a rollback takes the steps docs/kubernetes.md gives under
   contract 225.

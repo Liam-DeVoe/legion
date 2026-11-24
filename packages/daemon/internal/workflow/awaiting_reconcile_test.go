@@ -34,6 +34,17 @@ func specGates(gate record.DesignGate) map[record.DesignStep]record.DesignGate {
 	return map[record.DesignStep]record.DesignGate{record.DesignStepSpec: gate}
 }
 
+// stepGates is gate as the one row an issue holds, under step, and no row for a nil gate: the rows
+// a resume reads (resumeTask) of a root whose one registered step is the step in question.
+func stepGates(step record.DesignStep, gate *record.DesignGate) map[record.DesignStep]record.DesignGate {
+	if gate == nil {
+		return nil
+	}
+	held := *gate
+	held.Step = step
+	return map[record.DesignStep]record.DesignGate{step: held}
+}
+
 // decideAwait is the whole rule for whether a root waits on a person, checked in one order and
 // from the record alone. Each row below is one reason it does not, and the last is the wait.
 func TestDecideAwaitsTable(t *testing.T) {
@@ -313,7 +324,7 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			task := resumeTask("LEGION-208", tc.waiting, tc.step, tc.gate, asks, true)
+			task := resumeTask("LEGION-208", tc.waiting, tc.step, stepGates(tc.step, tc.gate), asks, true)
 			for _, want := range tc.want {
 				if !strings.Contains(task, want) {
 					t.Fatalf("resume task %q, want it to name %q", task, want)
@@ -338,7 +349,7 @@ func TestTheResumeTaskNamesNoReviewAnApprovalFollowed(t *testing.T) {
 		AnsweredDetail: changesDetail(13, "split it"), AnsweredVersion: 13, Since: record.EventMark{Seq: 20}}
 	approved := 19
 	open := &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 19, ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 40}}
-	task := resumeTask("LEGION-208", waiting, record.DesignStepSpec, open, nil, true)
+	task := resumeTask("LEGION-208", waiting, record.DesignStepSpec, specGates(*open), nil, true)
 	for _, want := range []string{"approved at version 19 after it", "asks for no revision now", "Your primary document is approved at version 19", DesignApprovedWake} {
 		if !strings.Contains(task, want) {
 			t.Fatalf("resume task %q, want it to name %q", task, want)
@@ -350,7 +361,7 @@ func TestTheResumeTaskNamesNoReviewAnApprovalFollowed(t *testing.T) {
 		}
 	}
 	told := classify.RecordChangesTold(record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 13}, 13, "split it", record.EventMark{Seq: 22})
-	control := resumeTask("LEGION-208", waiting, record.DesignStepSpec, &told, nil, true)
+	control := resumeTask("LEGION-208", waiting, record.DesignStepSpec, specGates(told), nil, true)
 	for _, want := range []string{"requested changes to your primary document on LEGION-208 at version 13", "revise the primary document as they ask",
 		"not approved at version 13"} {
 		if !strings.Contains(control, want) {
@@ -372,7 +383,7 @@ func TestAnApprovalOnALaterRequestOfOneVersionAnswersTheEarlierRequest(t *testin
 		ClosedBy: record.ClosedByPerson, ClosedSeq: 22, PersonAnswerSeq: 22}
 	gate := record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 13, ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 23}}
 	waiting := record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByAsk, AnsweredDetail: "ask-q", Since: record.EventMark{Seq: 8}}
-	task := resumeTask("LEGION-208", waiting, record.DesignStepSpec, &gate, []record.RootAsk{stale, second}, true)
+	task := resumeTask("LEGION-208", waiting, record.DesignStepSpec, specGates(gate), []record.RootAsk{stale, second}, true)
 	for _, not := range []string{"ask-first", "not approved", "Waiting on you", "Still with the person", "register_gate"} {
 		if strings.Contains(task, not) {
 			t.Fatalf("resume task %q, want no %q", task, not)
@@ -385,7 +396,7 @@ func TestAnApprovalOnALaterRequestOfOneVersionAnswersTheEarlierRequest(t *testin
 	if _, request := withHuman([]record.RootAsk{stale, second}, &moved); request {
 		t.Fatalf("the request the approval answered is still with the person at version 14")
 	}
-	task = resumeTask("LEGION-208", waiting, record.DesignStepSpec, &moved, []record.RootAsk{stale, second}, true)
+	task = resumeTask("LEGION-208", waiting, record.DesignStepSpec, specGates(moved), []record.RootAsk{stale, second}, true)
 	if strings.Contains(task, "ask-first") || strings.Contains(task, "Still with the person") {
 		t.Fatalf("resume task %q at version 14, want no word of the request the approval answered", task)
 	}
@@ -406,7 +417,7 @@ func TestTheResumeTaskUnderNoDesignGateAdvisesNoApproval(t *testing.T) {
 	answered := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
 	waiting := record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByAsk, AnsweredDetail: "ask-q"}
 	gate := &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2}
-	task := resumeTask("LEGION-208", waiting, record.DesignStepSpec, gate, nil, false)
+	task := resumeTask("LEGION-208", waiting, record.DesignStepSpec, specGates(*gate), nil, false)
 	if strings.Contains(task, "register_gate") {
 		t.Fatalf("resume task %q, want no approval advice with the design gate off", task)
 	}
@@ -449,7 +460,7 @@ func TestTheResumeTaskOfAGateWait(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			task := resumeTask("LEGION-208", tc.waiting, record.DesignStepSpec, gate, tc.asks, true)
+			task := resumeTask("LEGION-208", tc.waiting, record.DesignStepSpec, specGates(*gate), tc.asks, true)
 			for _, want := range tc.want {
 				if !strings.Contains(task, want) {
 					t.Fatalf("resume task %q, want it to name %q", task, want)

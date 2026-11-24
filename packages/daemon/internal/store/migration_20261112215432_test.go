@@ -13,8 +13,10 @@ const deliveryResumeVersion = 20261112215432
 // reviewed (issues.awaiting_answered_version), read once from the detail every earlier release
 // wrote for it, with the answer's moment beside it (awaiting_answered_version_at), so the resume
 // asks of a number and the wait reads as it did. A wait answered any other way, and one still
-// unanswered, takes no version. The negative control is the same rows read before the migration,
-// which hold no such column.
+// unanswered, takes no version. It adds the column the document the answering act was of is
+// recorded in (awaiting_answered_artifact), and gives no wait one: an answer before it records
+// none. The negative control is the same rows read before the migration, which hold no such
+// column.
 func TestAWaitAChangesRequestAnsweredTakesItsVersionIn20261112215432(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -37,11 +39,12 @@ func TestAWaitAChangesRequestAnsweredTakesItsVersionIn20261112215432(t *testing.
 	}
 	var columns int
 	if err := store.Pool().QueryRow(ctx, `select count(*) from information_schema.columns
-		where table_name = 'issues' and column_name in ('awaiting_answered_version', 'awaiting_answered_version_at')`).Scan(&columns); err != nil {
-		t.Fatalf("read the version columns before the migration: %v", err)
+		where table_name = 'issues' and column_name in ('awaiting_answered_version', 'awaiting_answered_version_at',
+			'awaiting_answered_artifact')`).Scan(&columns); err != nil {
+		t.Fatalf("read the answer's columns before the migration: %v", err)
 	}
 	if columns != 0 {
-		t.Fatalf("issues holds %d version column(s) before the migration, want none", columns)
+		t.Fatalf("issues holds %d of the answer's columns before the migration, want none", columns)
 	}
 
 	if _, err := store.Migrate(ctx); err != nil {
@@ -57,10 +60,14 @@ func TestAWaitAChangesRequestAnsweredTakesItsVersionIn20261112215432(t *testing.
 		{"LEGION-3", nil},
 	} {
 		var version *int
+		var document *string
 		var beside bool
-		if err := store.Pool().QueryRow(ctx, `select awaiting_answered_version,
-			coalesce(awaiting_answered_version_at = awaiting_answered_at, false) from issues where key = $1`, want.key).Scan(&version, &beside); err != nil {
+		if err := store.Pool().QueryRow(ctx, `select awaiting_answered_version, awaiting_answered_artifact,
+			coalesce(awaiting_answered_version_at = awaiting_answered_at, false) from issues where key = $1`, want.key).Scan(&version, &document, &beside); err != nil {
 			t.Fatalf("read the version of %s: %v", want.key, err)
+		}
+		if document != nil {
+			t.Errorf("%s holds the answered document %q after the migration, want none: no answer before it recorded one", want.key, *document)
 		}
 		switch {
 		case want.version == nil && version != nil:

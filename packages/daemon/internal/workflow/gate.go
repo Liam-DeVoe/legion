@@ -406,8 +406,9 @@ func (e *Engine) answerAwaitedGate(ctx context.Context, tx pgx.Tx, key string, f
 			"version", fact.Version, "review_seq", fact.Mark.Seq, "since_seq", waiting.Since.Seq)
 		return false, nil
 	}
-	// The review that answers records the version it is of (answerWait): the one a changes request
-	// reviewed or an approval approved. A newer version is no review, and records none.
+	// The act that answers records the document it is of (answerWait), the event's, and a review
+	// the version it is of: the one a changes request reviewed or an approval approved. A newer
+	// version is no review, and records no version.
 	reviewed := 0
 	switch {
 	case fact.Kind == intake.DispatchArtifactChangesRequested:
@@ -417,7 +418,7 @@ func (e *Engine) answerAwaitedGate(ctx context.Context, tx pgx.Tx, key string, f
 	}
 	e.logOnCommit(ctx, "workflow: a person's review or a newer spec version answered a root's wait", "issue", issue.Key,
 		"version", fact.Version, "event", fact.Kind, "ask", waiting.Ask, "waited_version", waiting.GateVersion)
-	return true, e.answerWait(ctx, tx, *issue, by, detail, reviewed)
+	return true, e.answerWait(ctx, tx, *issue, by, detail, fact.ArtifactID, reviewed)
 }
 
 // answerRegisteredGate answers a root waiting on a person with what the registration's read of
@@ -493,7 +494,8 @@ func (e *Engine) answerRegisteredGate(ctx context.Context, tx pgx.Tx, fact intak
 		detail = fmt.Sprintf("version %d", version)
 	}
 	e.logOnCommit(ctx, "workflow: a registration answered a root's wait", "issue", issue.Key, "version", version, "event", by, "ask", waiting.Ask)
-	return true, e.answerWait(ctx, tx, *issue, by, detail, reviewed)
+	// Every act a registration answers with is of the document it registered.
+	return true, e.answerWait(ctx, tx, *issue, by, detail, fact.ArtifactID, reviewed)
 }
 
 // changesDetail is how a changes request is named to the architect it resumes: its version and the

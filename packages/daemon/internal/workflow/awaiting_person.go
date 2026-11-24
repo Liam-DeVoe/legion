@@ -97,7 +97,7 @@ func (e *Engine) personAnswered(ctx context.Context, tx pgx.Tx, root record.Issu
 		return nil
 	}
 	e.logOnCommit(ctx, answer, "issue", root.Key, "ask", ask)
-	return e.answerWait(ctx, tx, root, by, ask, 0)
+	return e.answerWait(ctx, tx, root, by, ask, "", 0)
 }
 
 // itemLeft applies an act that is nobody's answer and takes an item of root's wait away from the
@@ -141,7 +141,7 @@ func (e *Engine) itemLeft(ctx context.Context, tx pgx.Tx, root record.Issue, bef
 	if root.Awaiting.GateVersion != 0 {
 		root.Awaiting = &record.Awaiting{Ask: before.Ask, Since: root.Awaiting.Since}
 	}
-	return e.answerWait(ctx, tx, root, by, detail, 0)
+	return e.answerWait(ctx, tx, root, by, detail, "", 0)
 }
 
 // catchUpApplied records that the boot catch-up applied root's Dispatch event log through
@@ -163,13 +163,17 @@ func (e *Engine) catchUpApplied(ctx context.Context, tx pgx.Tx, fact intake.Catc
 // waiting line (record.Waiting) — among the issues whose work came back, oldest first — and
 // names the act in the task its architect resumes with (resumeTask). The detail is the act's
 // own: the ask a person acted on, the version and reason of the review that answered, or who
-// took the question away, so a later act of the same kind does not rename it. reviewed is the
-// version a person's review that answered was of — the version a changes request reviewed or an
-// approval approved — and 0 for any other act: it is recorded beside the detail
-// (record.Awaiting.AnsweredVersion), so the resume asks whether that review is still the person's
-// word (SupersedingApproval) of a number and not of the detail's words.
-func (e *Engine) answerWait(ctx context.Context, tx pgx.Tx, root record.Issue, by record.Answer, detail string, reviewed int) error {
+// took the question away, so a later act of the same kind does not rename it. document is the
+// Dispatch artifact id of the document the act was of — a person's review, or a newer version —
+// and "" for any other act, and reviewed is the version a person's review that answered was of
+// — the version a changes request reviewed or an approval approved — and 0 for any other act.
+// Both are recorded beside the detail (record.Awaiting.AnsweredArtifact and AnsweredVersion), so
+// the resume names that document and asks whether that review is still the person's word
+// (SupersedingApproval) of the gate of that document's step and of a number, and not of the step
+// it speaks of or the detail's words.
+func (e *Engine) answerWait(ctx context.Context, tx pgx.Tx, root record.Issue, by record.Answer, detail, document string, reviewed int) error {
 	at := e.now()
-	root.Awaiting.AnsweredAt, root.Awaiting.AnsweredBy, root.Awaiting.AnsweredDetail, root.Awaiting.AnsweredVersion = &at, by, detail, reviewed
+	root.Awaiting.AnsweredAt, root.Awaiting.AnsweredBy, root.Awaiting.AnsweredDetail = &at, by, detail
+	root.Awaiting.AnsweredArtifact, root.Awaiting.AnsweredVersion = document, reviewed
 	return e.WriteIssue(ctx, tx, root)
 }
