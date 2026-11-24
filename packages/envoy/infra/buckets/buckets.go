@@ -130,19 +130,24 @@ func operatorEnvironment(name string) (string, bool) {
 // deliveries among them.
 const InboxPrefix = "_INBOX_envoy_buckets"
 
-// Grant is the NATS grant the command's user needs, and nothing more: the subjects it publishes to
-// - the account's JetStream info, then, for each bucket a listener copies, its stream's info,
-// create, update (raising its copies) and delete, and the notification stream's info, which
-// --first-deployment reads - and the one it subscribes to, its own reply inboxes (InboxPrefix).
-// The same user runs the restore after `check` (`nats stream restore` with
-// --inbox-prefix=_INBOX_envoy_buckets), so the grant also holds each copied bucket's restore
-// request and the subject its chunks go to (nats-server 2.15.1, jetstream_api.go:91-94 and
-// 170-172). The deployment's buckets user is granted exactly this until the auth service's
-// auth callout replaces the static user at the cutover.
+// Grant is the NATS grant the command's user needs, and nothing more. It publishes to the
+// notification stream's info, which every connection reads and --first-deployment reads again, and
+// for each bucket a listener copies, its stream's info, which create and --first-deployment read,
+// and its create; create reads the account's JetStream info before each create, as nats.go's own
+// create does. It subscribes to its own reply inboxes alone (InboxPrefix). No command sends a
+// stream update (create raises and changes no bucket) or a stream delete (recreate refuses before
+// it connects), so the grant holds neither. The same user runs the restore after check (`nats
+// stream restore` with --inbox-prefix=_INBOX_envoy_buckets), which no command of this package
+// sends, so the grant also holds each copied bucket's restore request and the subject its chunks
+// go to (nats-server 2.15.1, jetstream_api.go:91-94 and 170-172).
+// TestAUserGrantedExactlyTheCommandsGrantRunsEveryStep runs every step and that restore under it,
+// and fails on a subject it holds that none of them sends. The deployment's buckets user is
+// granted exactly this until the auth service's auth callout replaces the static user at the
+// cutover.
 func Grant() (publish, subscribe []string) {
 	publish = []string{"$JS.API.INFO", "$JS.API.STREAM.INFO." + bus.Stream}
 	for _, bucket := range bus.CopiedBuckets() {
-		for _, verb := range []string{"INFO", "CREATE", "UPDATE", "DELETE", "RESTORE"} {
+		for _, verb := range []string{"INFO", "CREATE", "RESTORE"} {
 			publish = append(publish, "$JS.API.STREAM."+verb+".KV_"+bucket)
 		}
 		publish = append(publish, "$JS.SNAPSHOT.RESTORE.KV_"+bucket+".*")
