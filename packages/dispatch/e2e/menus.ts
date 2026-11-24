@@ -68,6 +68,8 @@ export async function expectHighlight(list: Locator, name: string, message: stri
  *  snooze) or on the value it holds (a priority, a status). */
 export async function expectOpenOn(trigger: Locator, name: string, message: string): Promise<void> {
   const list = listOf(trigger);
+  // The pointer kind is the project's fixed device (`iphone` is coarse, the desktop projects are
+  // fine), so one read gives the answer for the whole row and nothing on the page can change it.
   const coarse = await trigger
     .page()
     .evaluate(() => window.matchMedia("(pointer: coarse)").matches);
