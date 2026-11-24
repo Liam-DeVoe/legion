@@ -119,6 +119,17 @@ func myAgentUnreadReplyTest(reply, mark string) string {
 // conversation. row names the relation it reads the message from, since the Dismissed view reads
 // that message by its primary key (myAgentRootIsOneOff) and the Inbox's own states read it off
 // messages_direct_roots.
+//
+// The acceptance test reads accepted_at alone, the predicate of migration 0054's partial unique
+// index message_deliveries_one_acceptance, so it is one probe of that index a root, answered from
+// the index. It means accepted_as = 'user_turn': that migration's checks set accepted_at and
+// accepted_as together (message_deliveries_accepted_check) and admit no accepted_as but user_turn
+// (message_deliveries_accepted_as_check), so an attempt carries an acceptance exactly when a session
+// took it as a user turn, and a second kind of acceptance added to that check is to be named here.
+// Naming accepted_as, alone or beside accepted_at, leaves the probe a filter to read off the heap,
+// and the plan, which takes the roots to be one, costs that above a scan of the whole table a root:
+// c-p99's heavy read scanned message_deliveries once for each of 2,000 roots, 34 ms of the read
+// (INFRA-4948).
 func myAgentRootFilter(row string) string {
 	return row + `.issue_key is null and ` + row + `.in_reply_to is null
 		  and ` + row + `.target like 'session:%'
@@ -126,7 +137,7 @@ func myAgentRootFilter(row string) string {
 		  and ($3::text is null or ` + row + `.target = 'session:' || $3::text)
 		  and not exists (
 			select 1 from message_deliveries delivered
-			where delivered.message_id = ` + row + `.id and delivered.accepted_as = 'user_turn'
+			where delivered.message_id = ` + row + `.id and delivered.accepted_at is not null
 		  )`
 }
 
