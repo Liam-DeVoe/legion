@@ -1834,11 +1834,11 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   An Envoy message, a reply in a comment thread and a person's reply on the agent's ask may ask nothing, and then nothing is posted.
 
 - **A reply in a comment thread.**
-  A reply under a Dispatch comment, outside an ask's thread, that mentions nobody is a question for one agent alone, the one whose comment it follows:
+  A person's reply under a Dispatch comment, outside an ask's thread, that mentions nobody is a question for one agent alone, the one whose comment it follows:
   the author of the newest comment before the reply when an agent wrote it, else the author of the thread's root when an agent wrote that, else nobody.
   The loop's own answer is posted in the agent's session, so a reply under it follows the agent's comment.
   Dispatch sends a person's reply to every agent that wrote in the thread, the copy of each stopped one reaches its daemon, and each daemon reads the thread (`GET /api/v1/comments/<root>`) and finds the same answerer, so that agent answers and every other skips the reply.
-  An agent never answers its own reply; a reply that mentions anyone is answered only as a mention, by each agent it mentions; and a reply in the thread of a document that no issue holds is not answered.
+  An agent's reply in such a thread, the agent's own among them, is no question to the loop; a reply that mentions anyone is answered only as a mention, by each agent it mentions; and a reply in the thread of a document that no issue holds is not answered.
   The answer is a reply in that thread, to the reply it answers (`POST /api/v1/issues/<key>/comments` with `reply_to`), and the loop reads the thread first, as it reads an ask's, so an answer it already posted is not posted again.
   A failed read of the thread leaves the hand-off to be delivered again.
 

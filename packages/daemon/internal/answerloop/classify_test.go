@@ -125,8 +125,12 @@ func TestEveryHandoffIsClassifiedBeforeAnyModelCall(t *testing.T) {
 			bare("comment.created", person, new("LEGION-9"), threadReply("c-26", "r-people", "Agreed?")))},
 		{name: "a reply in a thread only people wrote in", because: "no agent wrote", handoff: dispatchHandoff("ses_tester",
 			bare("comment.created", person, new("LEGION-9"), threadReply("c-27", "r-nobody", "Agreed?")))},
-		{name: "the agent's own reply on its comment thread", because: "the agent's own reply", handoff: dispatchHandoff("ses_tester",
+		{name: "the agent's own reply on its comment thread", because: "no person wrote", handoff: dispatchHandoff("ses_tester",
 			bare("comment.created", self, new("LEGION-9"), threadReply("c-17", "r-own", "Still plum.")))},
+		// Another agent's reply is no question either, though it follows the agent's root; the same
+		// reply by a person is ("a reply on the agent's comment thread").
+		{name: "another agent's reply on the agent's comment thread", because: "no person wrote", handoff: dispatchHandoff("ses_tester",
+			bare("comment.created", reviewer, new("LEGION-9"), threadReply("c-5", "r-own", "ok")))},
 		{name: "a reply on the agent's thread that mentions someone else", because: "mentions someone", handoff: dispatchHandoff("ses_tester",
 			bare("comment.created", person, new("LEGION-9"), func() map[string]any {
 				p := threadReply("c-16", "r-own", "@reviewer why?")

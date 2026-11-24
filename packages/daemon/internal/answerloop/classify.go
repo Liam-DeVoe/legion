@@ -237,9 +237,10 @@ func classifyDispatch(ctx context.Context, h intake.Handoff, conv store.AgentCon
 // commentSkip is why the agent h is for does not answer event, a comment on no ask's thread, or ""
 // when it answers it. A comment that mentions the agent is answered through its mention's
 // delivery; a root comment that does not is not answered. A reply in the comment thread of
-// event.Payload.ReplyTo that delivers no mention is answered by one agent alone: the agent never
-// answers its own reply, nor one that mentions anyone, which is answered only as a mention by
-// each agent it mentions, nor one in a document's thread, which has no issue to answer on. Else
+// event.Payload.ReplyTo that delivers no mention is answered by one agent alone, and only when a
+// person wrote it: an agent's reply there, the agent's own among them, is no question to the loop,
+// nor is a reply that mentions anyone, which is answered only as a mention by each agent it
+// mentions, nor one in a document's thread, which has no issue to answer on. Else
 // the thread is read, and its answerer is the author of the newest comment before the reply when
 // an agent wrote it, else the author of the thread's root when an agent wrote that, else nobody:
 // the loop's own answer, posted in the agent's session, is the agent's comment. Dispatch sends a
@@ -254,8 +255,8 @@ func commentSkip(ctx context.Context, h intake.Handoff, event intake.DispatchEve
 		return "", nil
 	case p.ReplyTo == nil:
 		return "a root comment that does not mention the agent", nil
-	case event.Actor.Kind == "session" && event.Actor.ID == h.TargetSession:
-		return "the agent's own reply in a comment thread", nil
+	case !event.Actor.Person():
+		return "a reply in a comment thread that no person wrote", nil
 	case len(p.Mentions) > 0:
 		return "a reply in a comment thread that mentions someone, answered only as a mention by each agent it mentions", nil
 	case eventIssue(event) == "":
