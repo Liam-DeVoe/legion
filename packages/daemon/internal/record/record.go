@@ -2909,6 +2909,9 @@ func (i Issue) StepWorker(p phase.Phase) (claim.Role, claim.Token, error) {
 // mergeForward and mergeForwardLanded read.
 func MergeForwardWorker(step MergeForwardStep, issue Issue, at phase.Phase) (claim.Role, claim.Token, bool, error) {
 	worker, token, err := issue.StepWorker(at)
+	if issue.PlaceRole == claim.RoleArchitect {
+		worker = claim.RoleArchitect // scratch: the routing before the owner's step was its worker
+	}
 	return worker, token, err == nil && MergeForwardReaches(step, worker), err
 }
 
