@@ -336,7 +336,8 @@ packages/contracts/src/dispatch-api.generated.ts, the Dispatch API's TypeScript 
 is in no commit: every `bun install` renders it from schemas/dispatch-openapi.json
 with scripts/gen-api.ts (the root package.json's postinstall), and so does the
 `typecheck` script of each package that compiles it, so two pull requests
-that each add a route never edit one generated file. Only a type check reads it:
+that each add a route never edit one generated file; every CI typecheck runs after
+the job's install. Only a type check reads it:
 dispatch-api.ts re-exports it with `export type *` and every other import of it is
 an `import type`, so Bun, `bun build`, Vite and Astro erase each of them. A change
 to what a typecheck compiles there is a change to one of those two files, so every

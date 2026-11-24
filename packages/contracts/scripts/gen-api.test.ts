@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { resolve } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, relative, resolve } from "node:path";
 import ts from "typescript";
 
 const output = resolve(import.meta.dir, "../src/dispatch-api.generated.ts");
@@ -120,6 +122,22 @@ async function render(): Promise<string> {
   return Bun.file(output).text();
 }
 
+/** The module's path if the commit checked out at `root` holds it, read from git, or from jj
+ * where `root` is a jj workspace git does not answer for. Empty when no commit holds it. */
+function committedModule(root: string): string {
+  const path = relative(repoRoot, output);
+  for (const cmd of [
+    ["git", "ls-files", "--", path],
+    ["jj", "file", "list", "-r", "@", "--", path],
+  ]) {
+    const done = Bun.spawnSync({ cmd, cwd: root, stdout: "pipe", stderr: "pipe" });
+    if (done.exitCode === 0) return done.stdout.toString();
+  }
+  throw new Error(
+    `neither git nor jj could list the files of ${root}, so whether it holds the module is unknown`
+  );
+}
+
 describe("gen-api", () => {
   // The module is rendered from the document on every install and committed nowhere, so the link
   // this holds is the generator's own: what it writes declares every route and every schema of
@@ -168,4 +186,32 @@ describe("gen-api", () => {
       "the module exports no alias for Issue and does not name it as the split's",
     ]);
   }, 120_000);
+});
+
+describe("the generated module", () => {
+  // It is in no commit: every install renders it. A branch made before that, merged with main
+  // without packages/contracts/scripts/adopt-api-layout.sh, can carry it back, and this is what
+  // stops that merge.
+  test("is in no commit of this checkout", () => {
+    expect(committedModule(repoRoot)).toBe("");
+  });
+
+  // The control: a scratch repository whose commit holds the module is read as holding it.
+  test("a commit that holds it is read as holding it", () => {
+    const root = mkdtempSync(join(tmpdir(), "gen-api-committed-"));
+    try {
+      const path = relative(repoRoot, output);
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), "// committed\n");
+      for (const cmd of [
+        ["git", "init", "-q", "."],
+        ["git", "add", "-A"],
+      ]) {
+        expect(Bun.spawnSync({ cmd, cwd: root }).exitCode).toBe(0);
+      }
+      expect(committedModule(root)).toBe(`${path}\n`);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
 });

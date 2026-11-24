@@ -38,11 +38,14 @@ Change the source and regenerate; never edit these by hand.
   `packages/envoy`, `go run ./cmd/dispatch openapi --check` compares it with a fresh render and
   prints the command that rewrites it.
 - `src/dispatch-api.generated.ts` is rendered from that document by `scripts/gen-api.ts` and is in
-  no commit: every `bun install` renders it, and so does the `typecheck` script of every package
-  that compiles it, so two branches that each add a route never edit one generated file and a type
-  check reads the document the tree holds. Only type checks read the module: `src/dispatch-api.ts`
-  re-exports it with `export type *`, so a type check in a tree that never ran `bun install` fails
-  naming it.
+  no commit, so two branches that each add a route never edit one generated file. Every
+  `bun install` renders it, and so does the `typecheck` script of every package that compiles it,
+  so `bun run typecheck` reads the document the tree holds. A `tsc` run directly, or an editor,
+  reads the last render: run `bun run gen:api` after a pull or a branch switch that changes the
+  document. Only type checks read the module: `src/dispatch-api.ts` re-exports it with
+  `export type *`, so a type check in a tree that never ran `bun install` fails naming it.
+- `scripts/adopt-api-layout.sh` takes the module out of a merge of main into a branch made while it
+  was committed, with git or jj.
 
 ## GitHub Topic Hierarchy
 

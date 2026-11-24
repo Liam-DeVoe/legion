@@ -7,10 +7,11 @@ import openapiTS, { astToString } from "openapi-typescript";
 // (schemas/dispatch-openapi.json, which `go run ./cmd/dispatch openapi --check` holds to the table).
 // The module is not committed (.gitignore). The root package.json runs this script as its
 // postinstall, so every `bun install` renders it from the document in the tree, and the
-// `typecheck` script of every package whose program compiles it runs this script first, so a type
-// check reads the document the tree holds now, not the one of the last install. `bun run gen:api`
-// in packages/contracts renders it again by itself. So two branches that each add a route never
-// edit one generated file.
+// `typecheck` script of every package whose program compiles it runs this script first, so
+// `bun run typecheck` reads the document the tree holds now. A `tsc` run by other means, or an
+// editor, reads the render of the last install or `bun run gen:api` (in packages/contracts), so
+// run one of those after a pull or a branch switch that changes the document. So two branches
+// that each add a route never edit one generated file.
 //
 // Only type checks read the module: dispatch-api.ts re-exports it with `export type *` and every
 // other import of it is an `import type`, so Bun erases each of them, and no bundle and no `bun`

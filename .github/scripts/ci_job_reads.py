@@ -3258,7 +3258,7 @@ GATES = [
         (f"{ENVOY}/listenerwire/envelope_generated.go", "packages/contracts/scripts/gen-go.test.ts:53 reads it for the envelope, :81 reads every file of generated (:20-26, this one :8), and gen-go.ts's outputs list holds it (the envelope's Go mirror, generated from schemas/envelope.schema.json)"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema_generated.go", "packages/contracts/scripts/gen-go.test.ts:81 reads every file of generated (:20-26, this one :13-16) and gen-go.ts's outputs list (the block schema's shape, generated from schemas/block-schema.schema.json)"),
         (TEST_FIXTURES_SRC, "packages/contracts/src/*.test.ts import @legion/test-fixtures"),
-    ) + bun_job("contracts")),
+    ) + install_jj("contracts") + bun_job("contracts")),
 
     gate("test_fixtures", "test-fixtures", reads=reads(
         ("packages/test-fixtures/**", f"{at('test-fixtures', 'Typecheck the shared test fixtures')} and test in "
