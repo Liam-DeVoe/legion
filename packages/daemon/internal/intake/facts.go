@@ -1151,7 +1151,9 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // takes no plan from its owner) and TREE_LINGERING, and it leaves each of those refusals unspent
 // (Result.Unspent). The route names one registration by the issue, the generation, the document
 // and the version, so a version refused while its task ran is the same fact when the owner gives
-// it again after stop_task, and must apply then.
+// it again after stop_task, and must apply then. Whether a give is one already applied is the
+// record's to say, not its id's (ApplyFact): a give is a duplicate where the store holds its
+// version, and applies where a first step passed that version over since.
 type PlanGiven struct {
 	Issue      string
 	Generation uint64
@@ -1696,7 +1698,8 @@ type Handler interface {
 }
 
 // Result carries a refusal that is durable: handlers finish and the transaction commits. Duplicate
-// reports that the event id was already processed, so no handler ran and nothing changed.
+// reports that the fact was already applied, so no handler ran and nothing changed: an event id
+// already processed, and for a PlanGiven a version the record holds (ApplyFact), whatever its id.
 //
 // Unspent is a handler leaving the event unmarked, so the same id applies again when it is next
 // sent (ApplyFact). A handler sets it only for a refusal whose cause can clear while the fact's
@@ -2075,6 +2078,19 @@ func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, f
 		// past it either way.
 		if err := recordStreamPosition(ctx, tx); err != nil {
 			return err
+		}
+		// A plan's give is a duplicate where the record holds its version, and only there: a give
+		// of a version that a first step passed over since (workflow's passOverEarlierOwners and
+		// passOverOwners) has the id of the give that was passed over, and applies; a give of a
+		// version the record holds under an id never marked (a version carried to the generation the
+		// give names) is the version already taken. The id is marked either way, as a release before
+		// reads it.
+		if given, ok := fact.(PlanGiven); ok {
+			held, err := record.NewStore().PlanVersionHeld(ctx, tx, given.Issue, given.Generation, given.Plan.ArtifactID, given.Plan.Version)
+			if err != nil {
+				return err
+			}
+			fresh = !held
 		}
 		if !fresh {
 			result = Result{Duplicate: true}

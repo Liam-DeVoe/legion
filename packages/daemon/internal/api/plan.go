@@ -106,9 +106,10 @@ func (s *server) writeRefusal(w http.ResponseWriter, r *http.Request, refusal *i
 // (plan.Validate); each of those answers records nothing. A plan both take is recorded as
 // intake.PlanGiven, whose rules of a later version are the workflow's.
 //
-// The fact's id is the issue, the generation the plan is given at, the document and the version:
-// a retry of a registration taken is that fact, answered the same, and the same version given at
-// a later generation of the issue is a new one.
+// The fact's id is the issue, the generation the plan is given at, the document and the version.
+// Whether the registration is one already taken is the record's to say (intake.ApplyFact): a
+// version the store holds is answered as taken, the same as its first registration, and one that
+// the issue's first step passed over since applies when it is given again, whoever gives it.
 func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	var req PlanRegisterRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,

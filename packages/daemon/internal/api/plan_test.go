@@ -4,21 +4,27 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // planDoc is the plan document of the tree root LEGION-208 these tests give Legion, and childDoc
@@ -96,7 +102,9 @@ var implementerReviewer = []plan.Step{{Role: "implementer"}, {Role: "reviewer"}}
 // (plan.Supported) and a role nobody defines with plan.Validate's: both checks run, so a plan
 // with a cause of each kind is answered both, and none of them records anything. A plan both
 // checks take is recorded as the one fact the workflow reads (intake.PlanGiven) and answered with
-// its tasks; the same version given again is that fact, answered the same.
+// its tasks. Whether a registration given again is the one taken is the record's to say
+// (intake.ApplyFact), and this handler stores no version: each registration reaches it, answered
+// the same, under the one id the route names it by.
 func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 	h, facts, statuses := planHarness(t)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
@@ -139,10 +147,11 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 	}
 	want := []intake.Fact{
 		givenPlan("LEGION-208", 1, architect.token, planDoc, 4, implementerReviewer...),
+		givenPlan("LEGION-208", 1, architect.token, planDoc, 4, implementerReviewer...),
 		givenPlan("LEGION-208", 1, architect.token, planDoc, 5),
 	}
 	if got := facts.recorded(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("facts = %#v, want %#v: one for each version taken, the second registration of version 4 being the first's", got, want)
+		t.Fatalf("facts = %#v, want %#v: one for each registration taken, the store holding no version of version 4 when it is given again", got, want)
 	}
 	assertProcessedEvent(t, h, "plan:LEGION-208:1:"+planDoc+":4")
 }
@@ -361,6 +370,239 @@ func TestAnArchitectWhoseIssueLeftTheTreeOwnsNoIssueOfIt(t *testing.T) {
 	if got := facts.recorded(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("facts = %#v, want %#v: the sub-architect's plan while it owned the issue, then the root's, and no fact of the refused calls", got, want)
 	}
+}
+
+// serveTheEngine serves h with the workflow's engine as its one handler, so each fact a route
+// applies is the workflow's to judge and write, as the daemon's are, and statuses as its Dispatch.
+// It answers the engine, for a case that starts a step as the daemon's own transitions do.
+func serveTheEngine(h *harness, statuses *statusRecorder) *workflow.Engine {
+	records := record.NewStore()
+	engine := workflow.New(records, workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h.handler = NewServer("127.0.0.1", 8437, Options{Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject,
+		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
+		Handlers: []intake.Handler{engine}, Dispatch: statuses}).Handler
+	return engine
+}
+
+// registeredAnswer is register_plan's answer to version 1 of childDoc, task a with the steps
+// implementer and reviewer, as the route answers a registration it takes or holds as taken.
+const registeredAnswer = `{"plan":{"version":1,"tasks":[{"id":"a","steps":["implementer","reviewer"]}]}}`
+
+// registered is register_plan's answer to version of the document doc of issue, given with
+// grant: the test fails unless the answer is 200.
+func registered(t *testing.T, h *harness, grant, issue, doc string, version int) string {
+	t.Helper()
+	taken := registerPlan(h, grant, issue, doc, version)
+	if taken.Code != http.StatusOK {
+		t.Fatalf("register version %d of %s = %d %s, want 200", version, issue, taken.Code, taken.Body)
+	}
+	return strings.TrimSpace(taken.Body.String())
+}
+
+// firstStepOf starts the first step of key as admission's line does (workflow's
+// StartFirstPhase), under the fact lock, in a transaction of its own with the commit scope a
+// fact's application gives the engine (Engine.OpenFact, Engine.SettleFact).
+func firstStepOf(t *testing.T, h *harness, engine *workflow.Engine, key string) {
+	t.Helper()
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
+			return err
+		}
+		issue, err := record.NewStore().Issue(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		if issue == nil {
+			return errors.New("the issue is not recorded")
+		}
+		ctx = engine.OpenFact(ctx)
+		if err := engine.StartFirstPhase(ctx, tx, *issue, nil); err != nil {
+			return err
+		}
+		return engine.SettleFact(ctx, tx)
+	}); err != nil {
+		t.Fatalf("start the first step of %s: %v", key, err)
+	}
+}
+
+// planRows is what a registration can store for an issue at a generation: each version of its plan
+// the store holds, `<version> <document> <giver>` in version order, each of its tasks in task id
+// order, and the number of outbox rows of every issue.
+type planRows struct {
+	versions, tasks []string
+	outbox          int
+}
+
+func planRowsOf(t *testing.T, h *harness, key string, generation uint64) planRows {
+	t.Helper()
+	ctx, pool := context.Background(), h.store.Pool()
+	var rows planRows
+	for _, read := range []struct {
+		into  *[]string
+		query string
+	}{
+		{&rows.versions, `select version::text || ' ' || artifact_id || ' ' || given_by from issue_plans where issue = $1 and generation = $2 order by version`},
+		{&rows.tasks, `select task from plan_tasks where issue = $1 and generation = $2 order by task`},
+	} {
+		found, err := pool.Query(ctx, read.query, key, int64(generation))
+		if err != nil {
+			t.Fatalf("read the plan rows of %s: %v", key, err)
+		}
+		if *read.into, err = pgx.CollectRows(found, pgx.RowTo[string]); err != nil {
+			t.Fatalf("read the plan rows of %s: %v", key, err)
+		}
+	}
+	if err := pool.QueryRow(ctx, `select count(*) from outbox`).Scan(&rows.outbox); err != nil {
+		t.Fatalf("count the outbox rows: %v", err)
+	}
+	return rows
+}
+
+// passedOverChild is the plan harness served by the engine, with LEGION-209 and LEGION-211
+// members of the tree LEGION-208 at generation 1, for the case of a plan given for LEGION-209 by
+// the architect of LEGION-211, a sub-architect, which the first step of LEGION-209 passes over:
+// LEGION-211 stands in a tree of its own by then, so its architect owns LEGION-209 no more, and the
+// step deletes that plan's rows (workflow's passOverEarlierOwners) and runs the default steps at
+// generation 1, the generation that plan was given at. The plan's document, childDoc, holds task a
+// at version 1.
+func passedOverChild(t *testing.T) (h *harness, root, sub liveClaim) {
+	t.Helper()
+	h, _, statuses := planHarness(t)
+	engine := serveTheEngine(h, statuses)
+	seedMember(t, h, "LEGION-209", "LEGION-208")
+	seedMember(t, h, "LEGION-211", "LEGION-208")
+	root = newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	sub = newLiveClaimIn(t, h, "LEGION-208", "LEGION-211", claim.RoleArchitect)
+	statuses.givePlan(childDoc, 1, taskBlock("a", "implementer reviewer"))
+
+	if got := registered(t, h, sub.grant(t), "LEGION-209", childDoc, 1); got != registeredAnswer {
+		t.Fatalf("premise: the sub-architect's version 1 answers %s, want %s", got, registeredAnswer)
+	}
+	seedIssueAt(t, h, "LEGION-211", phase.Admitted)
+	firstStepOf(t, h, engine, "LEGION-209")
+	if got := planRowsOf(t, h, "LEGION-209", 1); !slices.Equal(got.versions, []string{"0  "}) || !slices.Equal(got.tasks, []string{plan.DefaultTask}) {
+		t.Fatalf("premise: after its first step LEGION-209 holds versions %q and tasks %q at generation 1, want the default steps alone: the sub-architect's plan passed over",
+			got.versions, got.tasks)
+	}
+	return h, root, sub
+}
+
+// takenBy fails unless the plan in force of LEGION-209 at generation 1 is version 1 of childDoc,
+// given by giver, with its task a, and the default steps it replaced gone.
+func takenBy(t *testing.T, h *harness, giver liveClaim) {
+	t.Helper()
+	got := planRowsOf(t, h, "LEGION-209", 1)
+	if want := []string{"0  ", "1 " + childDoc + " " + string(giver.token)}; !slices.Equal(got.versions, want) || !slices.Equal(got.tasks, []string{"a"}) {
+		t.Fatalf("LEGION-209 holds versions %q and tasks %q at generation 1, want versions %q and tasks [a]: version 1 stored as %s gave it",
+			got.versions, got.tasks, want, giver.token)
+	}
+}
+
+// A give of a version of a plan that a first step passed over is no duplicate of the give that was
+// passed over: the record no longer holds that version, so the give is judged and stored as any
+// version is, though its id, which names the issue, the generation, the document and the version,
+// is the id of the give passed over. Here the root's architect, the issue's owner once the
+// sub-architect owns it no more, stops the default steps the first step ran and gives version 1
+// of the same document at the same generation.
+//
+// The fault it catches is a give answered as a duplicate for its id alone, which stores nothing
+// (its control: intake.ApplyFact answering a plan's seen id as a duplicate where the record does
+// not hold the version, under which the default steps stay).
+func TestAPlanVersionPassedOverIsTakenWhenANewOwnerGivesIt(t *testing.T) {
+	h, root, _ := passedOverChild(t)
+	if stopped := stopTask(h, root.grant(t), "LEGION-209", plan.DefaultTask); stopped.Code != http.StatusOK {
+		t.Fatalf("stop the default steps = %d %s, want 200", stopped.Code, stopped.Body)
+	}
+
+	if got := registered(t, h, root.grant(t), "LEGION-209", childDoc, 1); got != registeredAnswer {
+		t.Errorf("the new owner's version 1 answers %s, want %s", got, registeredAnswer)
+	}
+	takenBy(t, h, root)
+}
+
+// The same owner's give of a version of a plan that a first step passed over is no duplicate
+// either: the sub-architect's issue stands in the tree again, so the sub-architect owns the issue
+// again, and its give of the version it gave before, at the same generation, is stored. An id
+// that named the giver would still be the id of the give passed over here.
+//
+// The fault it catches is a give answered as a duplicate for an id that names the giver (its
+// control: the route's id naming the giver's claim, with intake.ApplyFact answering a seen id as
+// a duplicate, under which this give stores nothing, while the new owner's give of
+// TestAPlanVersionPassedOverIsTakenWhenANewOwnerGivesIt is stored).
+func TestAPlanVersionPassedOverIsTakenWhenItsOwnerGivesItAgain(t *testing.T) {
+	h, _, sub := passedOverChild(t)
+	seedMember(t, h, "LEGION-211", "LEGION-208")
+	if stopped := stopTask(h, sub.grant(t), "LEGION-209", plan.DefaultTask); stopped.Code != http.StatusOK {
+		t.Fatalf("stop the default steps = %d %s, want 200", stopped.Code, stopped.Body)
+	}
+
+	if got := registered(t, h, sub.grant(t), "LEGION-209", childDoc, 1); got != registeredAnswer {
+		t.Errorf("the owner's version 1 given again answers %s, want %s", got, registeredAnswer)
+	}
+	takenBy(t, h, sub)
+}
+
+// A give of a version the store holds is the version already taken, whoever gives it and whatever
+// generation's give the store recorded it by: it stores nothing and is answered as its first
+// registration was, 200 with the plan. The sub-architect's version 1 given again by itself and by
+// the root's architect, and given again once version 2 is in force, are such gives; so is version 1
+// of a child given at generation 0, before the daemon recorded it, and given again at its own
+// generation once its first step carried the version there, whose id the store never marked.
+//
+// The fault it catches is a give of a version the store holds judged again as a later version
+// (its control: intake.ApplyFact running the plan's apply for every give, under which each give
+// again is refused 409 PLAN_VERSION_OLD).
+func TestAGiveOfAVersionTheStoreHoldsStoresNothing(t *testing.T) {
+	given := func(t *testing.T, h *harness, grant string, why string) {
+		t.Helper()
+		before := planRowsOf(t, h, "LEGION-209", 1)
+		if got := registered(t, h, grant, "LEGION-209", childDoc, 1); got != registeredAnswer {
+			t.Errorf("version 1 given again answers %s, want %s: %s", got, registeredAnswer, why)
+		}
+		if after := planRowsOf(t, h, "LEGION-209", 1); !reflect.DeepEqual(after, before) {
+			t.Errorf("version 1 given again changed the store:\n before %+v\n after  %+v\nwant nothing stored: %s", before, after, why)
+		}
+	}
+
+	t.Run("a version taken at the issue's generation, given again by its owner and by another", func(t *testing.T) {
+		h, _, statuses := planHarness(t)
+		serveTheEngine(h, statuses)
+		seedMember(t, h, "LEGION-209", "LEGION-208")
+		seedMember(t, h, "LEGION-211", "LEGION-208")
+		root := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+		sub := newLiveClaimIn(t, h, "LEGION-208", "LEGION-211", claim.RoleArchitect)
+		statuses.givePlan(childDoc, 1, taskBlock("a", "implementer reviewer"))
+		statuses.givePlan(childDoc, 2, taskBlock("a", "implementer reviewer"))
+		if got := registered(t, h, sub.grant(t), "LEGION-209", childDoc, 1); got != registeredAnswer {
+			t.Fatalf("premise: version 1 answers %s, want %s", got, registeredAnswer)
+		}
+		given(t, h, sub.grant(t), "the sub-architect gives the version it gave")
+		given(t, h, root.grant(t), "the root's architect gives the version the sub-architect gave")
+		registered(t, h, root.grant(t), "LEGION-209", childDoc, 2)
+		given(t, h, sub.grant(t), "version 1 is held below version 2, which is in force")
+	})
+
+	t.Run("a version given at generation 0 and carried to the issue's generation by its first step", func(t *testing.T) {
+		h, _, statuses := planHarness(t)
+		engine := serveTheEngine(h, statuses)
+		root := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+		parent := "LEGION-208"
+		statuses.issues = map[string]dispatch.Issue{
+			"LEGION-208": {Key: "LEGION-208", Status: "todo", LastSeq: 7},
+			"LEGION-209": {Key: "LEGION-209", Status: "backlog", Parent: &parent},
+		}
+		statuses.givePlan(childDoc, 1, taskBlock("a", "implementer reviewer"))
+		if got := registered(t, h, root.grant(t), "LEGION-209", childDoc, 1); got != registeredAnswer {
+			t.Fatalf("premise: version 1 given before the daemon recorded LEGION-209 answers %s, want %s", got, registeredAnswer)
+		}
+		seedMember(t, h, "LEGION-209", "LEGION-208")
+		firstStepOf(t, h, engine, "LEGION-209")
+		if got := planRowsOf(t, h, "LEGION-209", 1); !slices.Equal(got.versions, []string{"1 " + childDoc + " " + string(root.token)}) {
+			t.Fatalf("premise: after its first step LEGION-209 holds versions %q at generation 1, want version 1 carried from generation 0", got.versions)
+		}
+		given(t, h, root.grant(t), "the first step carried version 1 to generation 1, where the give names it")
+	})
 }
 
 func stopTask(h *harness, grant, issue, task string) *httptest.ResponseRecorder {

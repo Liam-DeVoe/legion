@@ -235,6 +235,20 @@ func (s *Postgres) PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks 
 
 const planVersionColumns = `issue, generation, version, source, artifact_id, given_by, given_at`
 
+// PlanVersionHeld says whether the store holds that version of the plan of issue at generation, of
+// the document artifactID: a version the workflow took, which no first step passed over since
+// (workflow's passOverEarlierOwners and passOverOwners delete the rows they pass over), at the
+// generation it was given at or carried to (CarryPlan). intake.ApplyFact reads it to answer a give
+// of a version the store holds as a duplicate, whatever the give's id.
+func (s *Postgres) PlanVersionHeld(ctx context.Context, tx pgx.Tx, issue string, generation uint64, artifactID string, version int) (bool, error) {
+	var held bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from issue_plans where issue = $1 and generation = $2 and version = $3 and artifact_id = $4)`,
+		issue, int64(generation), version, artifactID).Scan(&held); err != nil {
+		return false, fmt.Errorf("read whether the store holds version %d of the plan of %s at generation %d: %w", version, issue, generation, err)
+	}
+	return held, nil
+}
+
 // Plan is the plan of issue at generation, or nil where that generation has no plan rows.
 func (s *Postgres) Plan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*StoredPlan, error) {
 	describe := fmt.Sprintf("read the plan of %s at generation %d", issue, generation)

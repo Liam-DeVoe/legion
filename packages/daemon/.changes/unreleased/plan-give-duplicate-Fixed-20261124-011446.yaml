@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  `register_plan` treats a registration as one already taken only where the daemon's store holds
+  that version of the plan, read in the registration's own transaction, and no longer by the
+  registration's id alone. A version that an issue's first step passed over, given again at the same
+  generation, is now judged and stored as any version is; before, it was answered 200 and nothing
+  was stored. A version that the first step carried from generation 0 to the issue's generation,
+  given again there, is now answered 200 as the version in force; before, it was refused
+  `409 PLAN_VERSION_OLD`. No answer changes shape.
+
+  An earlier release reads a registration this release took as one already taken, and writes
+  nothing for it; a rollback needs no statement.
+time: 2026-11-24T01:14:46Z
+custom:
+    Issue: plan-give-duplicate
