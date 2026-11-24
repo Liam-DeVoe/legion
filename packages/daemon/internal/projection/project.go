@@ -119,6 +119,20 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	if err != nil {
 		return api.State{}, err
 	}
+	// The task of each issue that has plan rows at its generation, in one statement for the whole
+	// state (record.Store.PlanTasksOf), joined to the issue records of project as the answers
+	// above are. Such an issue counts its returns on its task (record.ReturnCounts), so its
+	// implementer's view shows the task's counts; an issue with no plan rows shows its
+	// implementer's phases row, where the counts lived before plans. A plan this release takes
+	// holds one task (plan.Supported).
+	planTasks, err := in.Store.PlanTasksOf(ctx, in.Tx, in.Project)
+	if err != nil {
+		return api.State{}, err
+	}
+	taskCounts := make(map[string]record.ReturnCounts, len(planTasks))
+	for _, task := range planTasks {
+		taskCounts[task.Issue] = task.Counts
+	}
 	place := declaredPlaces(in.Experiments)
 	slots, err := in.Store.Slots(ctx, in.Tx)
 	if err != nil {
@@ -232,6 +246,16 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		// The phase, the tree, the slot, the claims, and what the root waits on from a person,
 		// which is present only while it is in awaiting_person.
 		entry.putListed(&view, claimViews)
+		// The implementer's counts of the moves back are its phases row's (putClaims), or its
+		// issue's task's where the issue has plan rows (record.ReturnCounts). They ride with the
+		// claim as the row's do, so they replace the row's only where a row showed the worker.
+		if planned, ok := taskCounts[issue.Key]; ok {
+			if shown, live := entry.workers[claim.RoleImplementer]; live && shown.row != nil {
+				worker := view.Workers[claim.RoleImplementer]
+				worker.Pass, worker.Rounds, worker.BackwardMoves = planned.Pass, planned.Rounds, planned.BackwardMoves
+				view.Workers[claim.RoleImplementer] = worker
+			}
+		}
 		// Every experiment answer the issue runs under, a done issue's included: it is what its
 		// roles ran with, and nothing redraws it. The three memory fields are the answer of the
 		// experiment named `memory` spelled out for the readers that knew it before any
@@ -445,13 +469,13 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// It reads the held list above for the sentence of most issues it answers, and it is not
 	// that list: the list says where every issue the daemon holds in the workflow stands and why
 	// nothing of it runs, and this answers why an issue is not working now. The two part at an
-	// issue whose work runs past its review, which the list names and this answers for not at
+	// issue whose work runs in accepting, retro or merging, which the list names and this answers for not at
 	// all; where they part and why is written once, with the arm that parts them
-	// (atWorkPastReview).
+	// (atWorkInSlotlessPhase).
 	//
-	// The running roots are the term that says an issue past its review is at work: it holds no
+	// The running roots are the term that says an issue in accepting, retro or merging is at work: it holds no
 	// slot since dispatch://INFRA-2560, so no list of the three places it and the answer turns
-	// on whether its tree runs at all (whyStates, atWorkPastReview). They are read from the
+	// on whether its tree runs at all (whyStates, atWorkInSlotlessPhase). They are read from the
 	// records and the facts this pass already holds, so the reading costs no query, and they
 	// are read from the same facts as the live trees of the block (record.LiveRoots) — live is
 	// wider than running, and a parked root's tree is neither.
@@ -459,11 +483,12 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// Every issue of a live tree carries that tree's quiet time (contract 111): `treeMovedAt`,
 	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long
 	// it has been still at the instant the rest of this state is measured at. The pair is the
-	// tree's, so every issue of one tree carries the same two values — a child past its own
-	// review, which holds no slot, and a done child recorded under the tree among them, since
-	// what has stopped is the tree and not the issue a reader happens to hold. A tree that is no
-	// longer live is measured for nobody: its root is in no `admission.trees` entry, there is
-	// nothing of the deployment's left to wait on, and each of its issues carries neither key.
+	// tree's, so every issue of one tree carries the same two values — a child in accepting,
+	// retro or merging, which holds no slot, and a done child recorded under the tree among
+	// them, since what has stopped is the tree and not the issue a reader happens to hold. A
+	// tree that is no longer live is measured for nobody: its root is in no `admission.trees`
+	// entry, there is nothing of the deployment's left to wait on, and each of its issues carries
+	// neither key.
 	//
 	// The measure is read once for the whole state (quietTrees), from the records and the claims
 	// this pass already holds, and a live root is always one of its trees whatever its own
@@ -728,7 +753,7 @@ func assignmentViews(assignments map[string][]record.Assignment, key, tree strin
 	}
 	views := make([]api.AssignmentView, len(rows))
 	for i, row := range rows {
-		views[i] = api.AssignmentView{Experiment: row.Experiment, Variant: row.Variant, Mode: row.Mode, DrawnAt: row.DrawnAt}
+		views[i] = api.AssignmentView{Experiment: row.Experiment, Variant: row.Variant, Mode: row.Mode, DrawnAt: row.DrawnAt, Plan: row.Plan}
 	}
 	slices.SortStableFunc(views, func(a, b api.AssignmentView) int {
 		return cmp.Or(cmp.Compare(place(a.Experiment), place(b.Experiment)), cmp.Compare(a.Experiment, b.Experiment))

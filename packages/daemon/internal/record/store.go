@@ -1,7 +1,6 @@
 package record
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"crypto/rand"
@@ -675,7 +674,7 @@ func scanIssue(row scanner) (*Issue, error) {
 }
 
 // phaseColumns is the columns of a phases row as scanPhase reads them, in its order.
-const phaseColumns = `issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head`
+const phaseColumns = `issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head, step_task, step_place`
 
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
 	rows, err := tx.Query(ctx, `select `+phaseColumns+` from phases
@@ -795,8 +794,8 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 		raisedAt = phase.EntryRaisedAt
 	}
 	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff,
-		decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+		decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head, step_task, step_place)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
 		on conflict (issue, role) do update set claim = excluded.claim,
 		handoff_commit = excluded.handoff_commit, pass = excluded.pass,
 		handoff_record = excluded.handoff_record, handoff_version = excluded.handoff_version,
@@ -806,10 +805,10 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 		completed_at = excluded.completed_at,
 		entry = excluded.entry, entry_task = excluded.entry_task, entry_verbatim = excluded.entry_verbatim,
 		entry_raised_at = excluded.entry_raised_at, entry_moved_back = excluded.entry_moved_back,
-		reviewed_head = excluded.reviewed_head`,
+		reviewed_head = excluded.reviewed_head, step_task = excluded.step_task, step_place = excluded.step_place`,
 		phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.Pass, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.ConflictRounds,
 		backwardMoves, phase.CapTold, phase.Verdict, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt,
-		phase.Entry, phase.EntryTask, phase.EntryVerbatim, raisedAt, phase.EntryMovedBack, phase.ReviewedHead,
+		phase.Entry, phase.EntryTask, phase.EntryVerbatim, raisedAt, phase.EntryMovedBack, phase.ReviewedHead, phase.StepTask, phase.StepPlace,
 	)
 	if err != nil {
 		return fmt.Errorf("put %s phase on %s: %w", phase.Role, phase.Issue, err)
@@ -824,7 +823,7 @@ func scanPhase(row scanner) (PhaseRow, error) {
 	var raisedAt *time.Time
 	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.Pass, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds, &phase.ConflictRounds,
 		&backwardMoves, &phase.CapTold, &phase.Verdict, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt,
-		&phase.Entry, &phase.EntryTask, &phase.EntryVerbatim, &raisedAt, &phase.EntryMovedBack, &phase.ReviewedHead); err != nil {
+		&phase.Entry, &phase.EntryTask, &phase.EntryVerbatim, &raisedAt, &phase.EntryMovedBack, &phase.ReviewedHead, &phase.StepTask, &phase.StepPlace); err != nil {
 		return PhaseRow{}, err
 	}
 	if raisedAt != nil {
@@ -874,29 +873,6 @@ func decodeDecision(column []byte) (*ReviewDecision, error) {
 		return nil, fmt.Errorf("decode the review decision: %w", err)
 	}
 	return decision, nil
-}
-
-// decodeBackwardMoves is a phases row's backward_moves column as the row holds it.
-//
-// A row that counted no backward move reads as a nil map and never as an empty one: the
-// column holds the empty object for it, and a scanned row of a phase nothing went back from
-// is then equal to the PhaseRow a caller builds for it. The empty object is what nearly every
-// row holds, and this decode runs on every phase row of every state read, so those bytes answer
-// the nil map without a decode of their own, as the decision column answers nil without
-// one. Any other bytes, a null among them, still go through json.Unmarshal and still answer
-// its error.
-func decodeBackwardMoves(column []byte) (map[string]int, error) {
-	if bytes.Equal(column, []byte("{}")) {
-		return nil, nil
-	}
-	moves := map[string]int{}
-	if err := json.Unmarshal(column, &moves); err != nil {
-		return nil, fmt.Errorf("decode the backward move counts: %w", err)
-	}
-	if len(moves) == 0 {
-		return nil, nil
-	}
-	return moves, nil
 }
 
 const pullRequestColumns = `issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
@@ -1702,16 +1678,18 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		// number is never reset is also what keeps a review of the old entry from moving the
 		// reviewer's commit after the promotion: its footer names a number the row has left
 		// (PhaseRow.ReviewedHead), and until the promotion the row holds no entry's task. The mark
-		// that the task is sent as written goes with the task it was about. The time the entry was
-		// raised stays with the number it belongs to, and so does the move that raised it
-		// (entry_moved_back), which that same promotion writes again. The counts go with the
-		// rounds: the new generation counts its moves back from nothing, and the cap mark goes
-		// with them, so the architect is told again at the new generation's own first crossing of
-		// the cap. The commit the daemon recorded for the reviewer's own review goes with the
-		// decision: the new generation's first review reads the whole change.
+		// that the task is sent as written goes with the task it was about, and so does the step
+		// the row ran (step_task, step_place), a step of the last generation's plan, whose task ids
+		// the new generation's plan need not share. The time the entry was raised stays with the
+		// number it belongs to, and so does the move that raised it (entry_moved_back), which that
+		// same promotion writes again. The counts go with the rounds: the new generation counts its
+		// moves back from nothing, and the cap mark goes with them, so the architect is told again
+		// at the new generation's own first crossing of the cap. The commit the daemon recorded for
+		// the reviewer's own review goes with the decision: the new generation's first review reads
+		// the whole change.
 		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
 			"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, reviewed_head = '', " +
-			"entry_task = '', entry_verbatim = false where " + where,
+			"entry_task = '', entry_verbatim = false, step_task = '', step_place = 0 where " + where,
 		// What each holder took of the approved design goes with the gate it was taken from: the
 		// next generation registers its gate again, and its work starts from what that gate
 		// approves, which its first working phase takes as its baseline (workflow's Engine.enter),
@@ -2182,7 +2160,7 @@ func (s *Postgres) RestartCaughtUp(ctx context.Context, tx pgx.Tx, issue string)
 	return nil
 }
 
-const assignmentColumns = `issue_key, experiment, unit, variant, mode, drawn_at, carried`
+const assignmentColumns = `issue_key, experiment, unit, variant, mode, drawn_at, carried, plan`
 
 // scanAssignment reads an assignment row with the issue it is keyed by, since the readers of many
 // issues' rows group by that key and the reader of one issue's rows already knows it.
@@ -2191,7 +2169,7 @@ func scanAssignment(row scanner) (string, Assignment, error) {
 	var assignment Assignment
 	var drawnAt *time.Time
 	if err := row.Scan(&issue, &assignment.Experiment, &assignment.Unit, &assignment.Variant,
-		&assignment.Mode, &drawnAt, &assignment.Carried); err != nil {
+		&assignment.Mode, &drawnAt, &assignment.Carried, &assignment.Plan); err != nil {
 		return "", Assignment{}, err
 	}
 	if drawnAt != nil {
@@ -2203,8 +2181,9 @@ func scanAssignment(row scanner) (string, Assignment, error) {
 
 // PutAssignments records what issue's unit runs each of rows' experiments under, once: the insert
 // does nothing where a row for that issue and experiment stands, so an experiment the unit has
-// been running under keeps the arm, the mode and the instant it was drawn with, whatever the
-// project's file says by now. Nothing here ever updates a row. It reports how many rows it wrote.
+// been running under keeps the arm, the mode, the instant and the plan it was drawn with, whatever
+// the project's file says by now. Nothing here ever updates a row. It reports how many rows it
+// wrote.
 //
 // The write is guarded by the issue's own record, which it selects from: a key the daemon holds no
 // record for — an operator's spawn, whose tree's root the daemon never recorded — writes no row
@@ -2220,19 +2199,21 @@ func (s *Postgres) PutAssignments(ctx context.Context, tx pgx.Tx, issue string, 
 	modes := make([]string, len(rows))
 	drawnAt := make([]*time.Time, len(rows))
 	carried := make([]bool, len(rows))
+	plans := make([]string, len(rows))
 	for i, row := range rows {
 		experiments[i], units[i] = row.Experiment, row.Unit
 		variants[i], modes[i] = row.Variant, row.Mode
 		drawnAt[i], carried[i] = row.DrawnAt, row.Carried
+		plans[i] = row.Plan
 	}
-	tag, err := tx.Exec(ctx, `insert into experiment_assignments (issue_key, experiment, unit, variant, mode, drawn_at, carried)
-		select target.key, drawn.experiment, drawn.unit, drawn.variant, drawn.mode, drawn.drawn_at, drawn.carried
+	tag, err := tx.Exec(ctx, `insert into experiment_assignments (issue_key, experiment, unit, variant, mode, drawn_at, carried, plan)
+		select target.key, drawn.experiment, drawn.unit, drawn.variant, drawn.mode, drawn.drawn_at, drawn.carried, drawn.plan
 		from issues target
-		cross join unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::timestamptz[], $7::boolean[])
-			as drawn(experiment, unit, variant, mode, drawn_at, carried)
+		cross join unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::timestamptz[], $7::boolean[], $8::text[])
+			as drawn(experiment, unit, variant, mode, drawn_at, carried, plan)
 		where target.key = $1
 		on conflict (issue_key, experiment) do nothing`,
-		issue, experiments, units, variants, modes, drawnAt, carried)
+		issue, experiments, units, variants, modes, drawnAt, carried, plans)
 	if err != nil {
 		return 0, fmt.Errorf("record %d experiment assignments of %s: %w", len(rows), issue, err)
 	}
@@ -2873,7 +2854,7 @@ func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int
 // names a phase and carries that phase's task, which workflow.StartOrOwe alone writes and
 // refuses to write without either. $1 is the issue. It is the shape of the row an issue holds
 // one of per wait, so it is what EnqueueStart takes out; the slot mark alone cannot do that work,
-// since a start of a phase past its review carries none (PhaseKeepsSlot).
+// since a start of accepting, retro or merging carries none (PhaseKeepsSlot).
 //
 // The issue's other supervise starts name no phase or carry no task — a root's architect's
 // (admit's promotion), a child's own architect's plain start (workflow's gateOpened and
@@ -2899,7 +2880,7 @@ const pendingPhaseStart = `issue = $1 and kind = 'supervise'
 // at its own generation and at one entry, which is the pair the held phase's retry writes
 // (workflow's restart sends the entry its row already names, marked ResendEntry) while the
 // first start is still queued. While every start of a phase worker was marked for the slot, the
-// mark could stand for the row's shape; a start of a phase past its review carries none, so the
+// mark could stand for the row's shape; a start of accepting, retro or merging carries none, so the
 // shape is read from the row itself, and a retro's or a merger's retry is written over the
 // queued row as an implementer's is.
 //

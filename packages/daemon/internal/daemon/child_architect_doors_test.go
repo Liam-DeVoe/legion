@@ -381,7 +381,7 @@ func TestAChildsStartTellsTheArchitectAboveItOnce(t *testing.T) {
 			}
 			rig.wantChildsArchitectToldItsIssues([]string{doorChild})
 
-			want := workflow.ChildStartedNotice(doorChild, doorRoot, nil)
+			want := workflow.ChildStartedNotice(doorChild, doorRoot, phase.Planning, nil)
 			if told := rig.noticesTo(tc.above); len(told) != 1 || !reflect.DeepEqual(told[0], want) {
 				t.Fatalf("the architect of %s was published %+v, want the one notice %+v of %s's start", tc.above, told, want, doorChild)
 			}
