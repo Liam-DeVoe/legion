@@ -30,7 +30,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 : "${DISPATCH_SESSION_TITLES_SCALE_URL:?names the Postgres server the runs create their databases on}"
-: "${DISPATCH_SESSION_TITLES_SCALE_NEWEST_EVENT_ID:?is production'\''s newest event id, read through GET /api/v1/events/log}"
+: "${DISPATCH_SESSION_TITLES_SCALE_NEWEST_EVENT_ID:?is the newest event id of production, read through GET /api/v1/events/log}"
 export DISPATCH_SESSION_TITLES_SCALE_URL DISPATCH_SESSION_TITLES_SCALE_NEWEST_EVENT_ID
 sessions="${DISPATCH_SESSION_TITLES_SCALE_SESSIONS:-110000 11000}"
 export DISPATCH_SESSION_TITLES_SCALE_SESSIONS="$sessions"
