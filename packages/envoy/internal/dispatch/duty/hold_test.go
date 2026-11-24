@@ -63,7 +63,9 @@ func waitLost(t *testing.T, hold *duty.Hold) {
 func TestHoldRefusesASecondHolderWhileTheFirstHoldsItLive(t *testing.T) {
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
-	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
+	// The TTL is an hour, so the first hold is live on the database's clock at the second's try
+	// however long the machine holds the renewals back: how a hold renews is not this row's subject.
+	opts := duty.HoldOptions{TTL: time.Hour, Renew: 500 * time.Millisecond, Margin: time.Second}
 	first := uuid.New()
 	mustTakeHold(t, database.Pool, first, opts)
 
@@ -255,7 +257,8 @@ func (l *lapsingHold) takenBy(t *testing.T, taken *duty.Hold) time.Duration {
 // the take was sent and so Margin before the expiry that take wrote on the database's clock. The
 // hold runs on a fake clock here, so the deadline arrives only where the test moves it, and no
 // renewal can confirm anything meanwhile: the row the loss is read against still names this
-// holder and is still live.
+// holder and is still live, since its TTL is an hour and the row lapses only that long after the
+// take on the database's clock, however long the machine takes before the read.
 func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
@@ -265,7 +268,7 @@ func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 	// fake reads one moment through the take, so the take's loss deadline and the timer it arms are
 	// each one exact moment.
 	fake := clocktest.New(time.Now())
-	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second, Clock: fake}
+	opts := duty.HoldOptions{TTL: time.Hour, Renew: 500 * time.Millisecond, Margin: time.Second, Clock: fake}
 	ctx := context.Background()
 	holder := uuid.New()
 	sent := fake.Now()
@@ -582,10 +585,14 @@ func TestHoldTokenReadsBack(t *testing.T) {
 // lengthen it, so a slow runner cannot fail the test, while a reading wrong by more than the time
 // those two statements took still falls outside the bracket: the now() plus or minus one second
 // mutants of this issue's plan (INFRA-985, task T7) are caught.
+//
+// The hold's renewals run on a fake clock nothing moves, so no renewal moves the expiry between
+// Expiry's statement and the direct read: the two read one expires_at, and only the database's
+// clock moves between them.
 func TestHoldExpiryMatchesTheDatabaseClock(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
+	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second, Clock: clocktest.New(time.Now())}
 
 	if _, held, err := duty.Expiry(ctx, database.Pool, holdName); err != nil || held {
 		t.Fatalf("Expiry with no row: held %v, error %v; want not held", held, err)
@@ -651,7 +658,9 @@ func TestHoldTokenReadsTheRowsTokenAndWhetherItIsLive(t *testing.T) {
 		t.Fatalf("HoldToken with no row = %q, held %v, error %v; want \"\", not held", token, held, err)
 	}
 
-	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second, Token: "deliver.live"}
+	// The TTL is an hour, so the live hold reads held on the database's clock however long the
+	// machine holds the renewals back: how a hold renews is not this row's subject.
+	opts := duty.HoldOptions{TTL: time.Hour, Renew: 500 * time.Millisecond, Margin: time.Second, Token: "deliver.live"}
 	mustTakeHold(t, database.Pool, uuid.New(), opts)
 	if token, held, err := duty.HoldToken(ctx, database.Pool, holdName); err != nil || !held || token != "deliver.live" {
 		t.Fatalf("HoldToken of a live hold = %q, held %v, error %v; want %q, held", token, held, err, "deliver.live")

@@ -7,17 +7,18 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -82,21 +83,46 @@ func mustRegisterOn(t *testing.T, database *store.Store, c clock.Clock, commit, 
 	return registration
 }
 
+// execer is what ageHeartbeat writes through: the store's pool, or a transaction the test holds.
+type execer interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
 // ageHeartbeat sets the row's heartbeat to age before the database's now(), the clock the
-// registry measures by; a negative age puts it that far ahead.
-func ageHeartbeat(t *testing.T, database *store.Store, id string, age time.Duration) {
+// registry measures by; a negative age puts it that far ahead. Through a transaction, now() is
+// that transaction's start, so rows aged and read in one transaction are judged at one moment.
+func ageHeartbeat(t *testing.T, db execer, id string, age time.Duration) {
 	t.Helper()
-	tag, err := database.Pool.Exec(context.Background(),
+	tag, err := db.Exec(context.Background(),
 		`update server_processes set heartbeat_at = now() - make_interval(secs => $2) where instance = $1`, id, age.Seconds())
 	if err != nil || tag.RowsAffected() != 1 {
 		t.Fatalf("age process %s's heartbeat by %v: %v (%d rows)", id, age, err, tag.RowsAffected())
 	}
 }
 
+// heldLiveFor is how far ahead of the database's now() a test puts the heartbeat of a row whose
+// liveness a verdict needs but is not what that verdict is about: an hour, longer than any run, so
+// the row counts as live at every read of the registry however long the machine takes, until the
+// test ages it again or a heartbeat stamps it with now().
+const heldLiveFor = time.Hour
+
+// holdLive puts id's heartbeat heldLiveFor ahead of the database's now() (ageHeartbeat).
+func holdLive(t *testing.T, database *store.Store, id string) {
+	t.Helper()
+	ageHeartbeat(t, database.Pool, id, -heldLiveFor)
+}
+
 // liveIDs is the instance id of every live process.
 func liveIDs(t *testing.T, database *store.Store) []string {
 	t.Helper()
-	live, err := Live(context.Background(), database.Pool)
+	return liveIDsIn(t, database.Pool)
+}
+
+// liveIDsIn is liveIDs read through db: the pool, or a transaction whose start is the now() Live
+// measures every row by.
+func liveIDsIn(t *testing.T, db Querier) []string {
+	t.Helper()
+	live, err := Live(context.Background(), db)
 	if err != nil {
 		t.Fatalf("read the live processes: %v", err)
 	}
@@ -105,6 +131,40 @@ func liveIDs(t *testing.T, database *store.Store) []string {
 		ids = append(ids, p.ID)
 	}
 	return ids
+}
+
+// heartbeatOf is id's heartbeat_at as its row holds it, and whether the registry holds the row.
+func heartbeatOf(t *testing.T, database *store.Store, id string) (time.Time, bool) {
+	t.Helper()
+	var at time.Time
+	err := database.Pool.QueryRow(context.Background(),
+		`select heartbeat_at from server_processes where instance = $1`, id).Scan(&at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, false
+	}
+	if err != nil {
+		t.Fatalf("read process %s's heartbeat: %v", id, err)
+	}
+	return at, true
+}
+
+// waitForStamp waits until id's row holds a heartbeat stamped at or after since, a moment of the
+// database's clock the test read before it brought a heartbeat. The beat stamps the row with its
+// own transaction's now(), which began after since, so a heartbeat at or past since is that beat's,
+// and it dated the row live as it wrote it, however much time has passed by this read. The
+// reading names a row that is gone, or a heartbeat that predates since.
+func waitForStamp(t *testing.T, database *store.Store, id string, since time.Time, what string) {
+	t.Helper()
+	testwait.Until(t, what, func() (string, bool) {
+		at, exists := heartbeatOf(t, database, id)
+		switch {
+		case !exists:
+			return "no row for " + id, false
+		case at.Before(since):
+			return fmt.Sprintf("a heartbeat of %s, before %s", at.Format(time.RFC3339Nano), since.Format(time.RFC3339Nano)), false
+		}
+		return "a heartbeat of " + at.Format(time.RFC3339Nano), true
+	})
 }
 
 // rowExists reports whether the registry holds a row for id, live or not.
@@ -122,9 +182,19 @@ func rowExists(t *testing.T, database *store.Store, id string) bool {
 // key fingerprints, current first.
 func TestRegisterRecordsTheProcessAsLive(t *testing.T) {
 	database := storetest.Open(t)
+	ctx := context.Background()
+	// Live is read in a transaction begun before the registration, and judges every row by that
+	// transaction's now(), a moment before Register wrote this one: the row reads live however long
+	// the machine takes before the read, while a heartbeat Register dated LiveWindow or more before
+	// that moment would not.
+	before, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction Live is read in: %v", err)
+	}
+	defer func() { _ = before.Rollback(context.Background()) }()
 	registration := mustRegister(t, database, "c1", "K1 K0")
 
-	live, err := Live(context.Background(), database.Pool)
+	live, err := Live(ctx, before)
 	if err != nil {
 		t.Fatalf("read the live processes: %v", err)
 	}
@@ -180,12 +250,18 @@ func TestTheFleetColumnsRoundTripThroughRegisterAndLive(t *testing.T) {
 			t.Errorf("%s = %+v, want schema version 3, creatable 2, the Azure identity and a file store", what, got)
 		}
 	}
+	// Live's reading of the columns is this row's subject, and whether the row is live is not, so
+	// the row is held live for each read (holdLive): the registered row, and the row the heartbeat
+	// writes back once the beat's stamp is in (waitForStamp).
+	holdLive(t, database, registration.ID)
 	want("the registered row", liveProcess(t, database, registration.ID))
 
 	underRegistryLock(t, database, func(tx pgx.Tx) { prunedRow(t, tx, registration.ID) })
 	fake.AwaitArmed(t, "the heartbeat", 1)
+	since := testdb.Now(t, database.Pool)
 	fake.Advance(HeartbeatInterval)
-	waitForLive(t, database, registration.ID, "a process whose row was pruned")
+	waitForStamp(t, database, registration.ID, since, "the heartbeat to write a pruned row back")
+	holdLive(t, database, registration.ID)
 	want("the row written again after a prune", liveProcess(t, database, registration.ID))
 }
 
@@ -206,12 +282,15 @@ func TestARefreshWritesTheSchemaNumbersTheProcessServesNow(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 	t.Cleanup(func() { _ = registration.Deregister(context.Background()) })
+	// The numbers are read through Live, as every process's socket admission reads them, and the
+	// row is held live for each read (holdLive): whether it is live is not this row's subject.
 	numbers := func(what string, version, creatable int) {
 		t.Helper()
 		if got := liveProcess(t, database, registration.ID); got.SchemaVersion != version || got.SchemaCreatable != creatable {
 			t.Errorf("%s holds schema version %d and creatable %d, want %d and %d", what, got.SchemaVersion, got.SchemaCreatable, version, creatable)
 		}
 	}
+	holdLive(t, database, registration.ID)
 
 	if err := registration.RefreshSchema(ctx, func() (int, int) { return 4, 3 }); err != nil {
 		t.Fatalf("refresh the schema numbers: %v", err)
@@ -220,8 +299,10 @@ func TestARefreshWritesTheSchemaNumbersTheProcessServesNow(t *testing.T) {
 
 	underRegistryLock(t, database, func(tx pgx.Tx) { prunedRow(t, tx, registration.ID) })
 	fake.AwaitArmed(t, "the heartbeat", 1)
+	since := testdb.Now(t, database.Pool)
 	fake.Advance(HeartbeatInterval)
-	waitForLive(t, database, registration.ID, "a process whose row was pruned after a refresh")
+	waitForStamp(t, database, registration.ID, since, "the heartbeat to write back a row pruned after a refresh")
+	holdLive(t, database, registration.ID)
 	numbers("the row written again after a prune", 4, 3)
 
 	// A refresh to the numbers it last wrote writes nothing, so a row changed behind the
@@ -249,6 +330,9 @@ func TestARowAtTheDefaultsPredatesTheFleetColumns(t *testing.T) {
 		returning instance::text`, fingerprints(t, "K0")).Scan(&id); err != nil {
 		t.Fatalf("insert a row as a build that predates the fleet columns writes it: %v", err)
 	}
+	// Live is what reads the row; whether it is live is not this row's subject, so it is held live
+	// for the read (holdLive), which writes nothing but its heartbeat.
+	holdLive(t, database, id)
 	got := liveProcess(t, database, id)
 	if !got.PredatesFleetColumns() || got.SchemaVersion != 0 || got.SchemaCreatable != 0 || got.EmbedderIdentity != "" || got.FileStore {
 		t.Errorf("a row at the defaults = %+v, want one that predates the fleet columns: 0, 0, no identity, no file store", got)
@@ -264,10 +348,18 @@ func TestLiveCountsAHeartbeatWithinFifteenSecondsOfTheDatabaseClock(t *testing.T
 	database := storetest.Open(t)
 	fresh := mustRegisterOn(t, database, held, "c1", "K0")
 	stale := mustRegisterOn(t, database, held, "c1", "K0")
-	ageHeartbeat(t, database, fresh.ID, 14*time.Second)
-	ageHeartbeat(t, database, stale.ID, 16*time.Second)
+	// Both rows are aged, and Live reads them, in one transaction, whose now() is the one moment
+	// the three statements measure by: the 14 s row is 14 s old at the read however long the
+	// machine takes between the statements.
+	tx, err := database.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin the transaction the rows are aged and read in: %v", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	ageHeartbeat(t, tx, fresh.ID, 14*time.Second)
+	ageHeartbeat(t, tx, stale.ID, 16*time.Second)
 
-	if got := liveIDs(t, database); !slices.Equal(got, []string{fresh.ID}) {
+	if got := liveIDsIn(t, tx); !slices.Equal(got, []string{fresh.ID}) {
 		t.Errorf("live = %v, want only the process whose heartbeat is 14 s old (%s), not the 16 s one (%s)", got, fresh.ID, stale.ID)
 	}
 }
@@ -278,7 +370,7 @@ func TestTheHeartbeatKeepsARegisteredProcessLive(t *testing.T) {
 	database := storetest.Open(t)
 	fake := clocktest.New(time.Now())
 	registration := mustRegisterOn(t, database, fake, "c1", "K0")
-	ageHeartbeat(t, database, registration.ID, time.Hour)
+	ageHeartbeat(t, database.Pool, registration.ID, time.Hour)
 
 	// The heartbeat is armed one interval out on the registration's clock; moving the clock
 	// there is the beat, and nothing else makes one.
@@ -286,10 +378,12 @@ func TestTheHeartbeatKeepsARegisteredProcessLive(t *testing.T) {
 	if len(armed) != 1 {
 		t.Fatalf("the registration armed %v, want its heartbeat alone", armed)
 	}
+	// The beat's stamp is told by a moment of the database's clock read before the beat: a
+	// heartbeat at or past it is the beat's, which dated the row live as it wrote it, however long
+	// the machine takes before the read (waitForStamp).
+	since := testdb.Now(t, database.Pool)
 	fake.Set(armed[0])
-	testwait.Eventually(t, "a row aged past the live window to be live again after one heartbeat", func() bool {
-		return slices.Contains(liveIDs(t, database), registration.ID)
-	})
+	waitForStamp(t, database, registration.ID, since, "one heartbeat to stamp a row aged past the live window live again")
 }
 
 // Deregister deletes the row and stops the heartbeat, so the process is neither live nor written
@@ -316,6 +410,13 @@ func TestDeregisterDeletesTheRow(t *testing.T) {
 
 // The prune loop deletes the rows whose heartbeat the database dates more than ten minutes ago,
 // and keeps every newer one, live or not.
+//
+// The ages are measured from the pass's own now(), not from a moment before it, so no verdict
+// leans on time not passing between the two. The aged rows are first put past PruneAge and
+// locked by a transaction of the test's, so the pass's delete, which finds both by the snapshot it
+// reads, waits on that lock; the test then dates each against the delete's now() (its
+// transaction's start, pg_stat_activity's xact_start) and commits, and Postgres judges each row
+// the delete waited on again, by what the test wrote, before it deletes it.
 func TestPruneRemovesRowsOlderThanTenMinutesAndKeepsNewerOnes(t *testing.T) {
 	database := storetest.Open(t)
 	leases := storetest.Leases(t, database.Pool)
@@ -326,8 +427,17 @@ func TestPruneRemovesRowsOlderThanTenMinutesAndKeepsNewerOnes(t *testing.T) {
 	old := mustRegisterOn(t, database, held, "c1", "K0")
 	recent := mustRegisterOn(t, database, held, "c1", "K0")
 	live := mustRegisterOn(t, database, held, "c1", "K0")
-	ageHeartbeat(t, database, old.ID, 10*time.Minute+time.Second)
-	ageHeartbeat(t, database, recent.ID, 9*time.Minute)
+	holder, err := database.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin the transaction holding the aged rows: %v", err)
+	}
+	defer func() { _ = holder.Rollback(context.Background()) }()
+	for _, id := range []string{old.ID, recent.ID} {
+		ageHeartbeat(t, database.Pool, id, PruneAge+time.Minute)
+		if _, err := holder.Exec(context.Background(), `select 1 from server_processes where instance = $1 for update`, id); err != nil {
+			t.Fatalf("lock process %s's row: %v", id, err)
+		}
+	}
 
 	pruning := clocktest.New(time.Now())
 	ctx, cancel := context.WithCancel(context.Background())
@@ -342,6 +452,25 @@ func TestPruneRemovesRowsOlderThanTenMinutesAndKeepsNewerOnes(t *testing.T) {
 	}()
 	tick := pruning.AwaitArmed(t, "the prune loop's first tick", 1)
 	pruning.Set(tick[0])
+	storetest.WaitForLockWaiters(t, holder, 1)
+	var pass time.Time
+	if err := holder.QueryRow(context.Background(), `
+		select a.xact_start from pg_locks l join pg_stat_activity a on a.pid = l.pid
+		where not l.granted and pg_backend_pid() = any(pg_blocking_pids(l.pid))`).Scan(&pass); err != nil {
+		t.Fatalf("read when the prune's delete, queued on the aged rows, began: %v", err)
+	}
+	for _, row := range []struct {
+		id  string
+		age time.Duration
+	}{{old.ID, PruneAge + time.Second}, {recent.ID, PruneAge - time.Minute}} {
+		if _, err := holder.Exec(context.Background(), `update server_processes set heartbeat_at = $2 where instance = $1`,
+			row.id, pass.Add(-row.age)); err != nil {
+			t.Fatalf("date process %s's heartbeat %v before the prune's now(): %v", row.id, row.age, err)
+		}
+	}
+	if err := holder.Commit(context.Background()); err != nil {
+		t.Fatalf("let the prune's delete go: %v", err)
+	}
 	testwait.Eventually(t, "the prune to delete the row whose heartbeat is ten minutes and a second old", func() bool {
 		return !rowExists(t, database, old.ID)
 	})
@@ -356,7 +485,7 @@ func TestPruneRemovesRowsOlderThanTenMinutesAndKeepsNewerOnes(t *testing.T) {
 // A live process refuses a newcomer whose key set does not share its own both ways, each way on
 // its own, and the refusal records nothing and says what to do. Key sets that overlap with the
 // current keys swapped, which is the middle of a rotation, are accepted, and so is a key set no
-// live process shares when the only other row is a process gone. A peer that refuses heartbeats
+// live process shares when the only other row is a process gone. A peer that refuses stays live
 // throughout, so its refusal stands through Register's wait for it to lapse.
 func TestRegisterRefusesAKeySetALivePeerDoesNotShare(t *testing.T) {
 	for _, c := range []struct {
@@ -377,11 +506,19 @@ func TestRegisterRefusesAKeySetALivePeerDoesNotShare(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			database := storetest.Open(t)
+			// The peer heartbeats on a clock of its own, which nothing moves, so no beat of its
+			// stamps the row the test ages or holds live; the newcomer waits on the other.
+			held := clocktest.New(time.Now())
 			fake := clocktest.New(time.Now())
-			peer := mustRegisterOn(t, database, fake, "c1", c.peer)
-			if c.stale {
+			peer := mustRegisterOn(t, database, held, "c1", c.peer)
+			switch {
+			case c.stale:
 				// A gone process does not heartbeat back into Live: its clock never moves here.
-				ageHeartbeat(t, database, peer.ID, LiveWindow+time.Second)
+				ageHeartbeat(t, database.Pool, peer.ID, LiveWindow+time.Second)
+			case c.refused:
+				// A refusing peer is live at every try of the newcomer's, however long the
+				// machine takes before them (holdLive).
+				holdLive(t, database, peer.ID)
 			}
 			answered := make(chan registerAnswer, 1)
 			go func() {
@@ -389,11 +526,10 @@ func TestRegisterRefusesAKeySetALivePeerDoesNotShare(t *testing.T) {
 				answered <- registerAnswer{registration: registration, err: err}
 			}()
 			if c.refused {
-				// The wait for the peer's row to lapse runs on this clock -- the peer's
-				// heartbeat is armed on it too -- and the row is live on the database's clock
-				// throughout, so the wait ends in the refusal where the test moves it past
-				// LiveWindow and one HeartbeatInterval.
-				fake.AwaitArmed(t, "the peer's heartbeat and Register's retry gap", 2)
+				// The wait for the peer's row to lapse runs on this clock, and the row is live
+				// on the database's clock throughout, so the wait ends in the refusal where the
+				// test moves it past LiveWindow and one HeartbeatInterval.
+				fake.AwaitArmed(t, "Register's retry gap", 1)
 				fake.Advance(LiveWindow + HeartbeatInterval)
 			}
 			got := testwait.Receive(t, "the registration's answer beside the peer", answered)
@@ -427,62 +563,107 @@ func TestRegisterRefusesAKeySetALivePeerDoesNotShare(t *testing.T) {
 }
 
 // Two processes with keys of their own booting at once are serialised: the second reads the
-// first's row and is refused, so exactly one of them registers; the first's heartbeat keeps it
-// live through the second's wait. Both are held at their first read of the registry by a lock
+// first's row and is refused, so exactly one of them registers, and the refusal stands through the
+// second's wait for that row to lapse. Both are held at their first read of the registry by a lock
 // this test takes on the table, and released together, which is the moment two reads without the
 // registry's own lock would both find the registry empty.
+//
+// Booting at once is the two transactions beginning within LiveWindow of each other: each
+// registration judges the rows it reads by its own transaction's now(), its start (admit, Live),
+// and the first one's row is dated with that one's. So the row reads both starts from the
+// database while the two are held (registerTwoAtOnce), and an attempt whose transactions the
+// machine began LiveWindow or more apart, in which the second may lawfully count the first as
+// gone, is made again on a database of its own.
 func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
-	fake := clocktest.New(time.Now())
+	for attempt := 1; ; attempt++ {
+		pair := registerTwoAtOnce(t)
+		if pair.begunApart >= LiveWindow {
+			t.Logf("attempt %d: the two registrations' transactions began %s apart, LiveWindow (%s) or more, so the second may lawfully have counted the first as gone; trying again on a new database",
+				attempt, pair.begunApart, LiveWindow)
+			continue
+		}
+		if !errors.Is(pair.second.err, ErrKeySetMismatch) {
+			t.Fatalf("the second registration with keys of their own answered %v once its wait was over, want ErrKeySetMismatch: exactly one of the two is refused", pair.second.err)
+		}
+		if got := liveIDs(t, pair.database); !slices.Equal(got, []string{pair.first.registration.ID}) {
+			t.Errorf("live = %v, want the one registration accepted, %s", got, pair.first.registration.ID)
+		}
+		return
+	}
+}
+
+// twoAtOnce is one attempt of TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised: its
+// database, how far apart the two registrations' transactions began, and what each answered, the
+// first to answer first.
+type twoAtOnce struct {
+	database      *store.Store
+	begunApart    time.Duration
+	first, second registerAnswer
+}
+
+// registerTwoAtOnce runs two registrations with keys of their own, K0 and K1, at once on a
+// database of its own, held at their first read of the registry until both have queued there.
+// Each waits and heartbeats on a clock of its own. The first to answer must be the one admitted,
+// since the other answers only once the test has moved its clock: the admitted one's row is put
+// an hour ahead (holdLive) and its clock never moved, so it is live through the other's whole
+// wait however long the machine takes, and the test then moves the other's clock past
+// LiveWindow and one HeartbeatInterval, which ends that wait.
+func registerTwoAtOnce(t *testing.T) twoAtOnce {
+	t.Helper()
 	database := storetest.Open(t)
 	gate, err := database.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("open the transaction holding the registry: %v", err)
 	}
-	t.Cleanup(func() { _ = gate.Rollback(context.Background()) })
+	defer func() { _ = gate.Rollback(context.Background()) }()
 	if _, err := gate.Exec(context.Background(), `lock table server_processes in access exclusive mode`); err != nil {
 		t.Fatalf("hold the registry: %v", err)
 	}
 
-	var wg sync.WaitGroup
-	results := make([]error, 2)
+	clocks := []*clocktest.Fake{clocktest.New(time.Now()), clocktest.New(time.Now())}
+	type answer struct {
+		index int
+		registerAnswer
+	}
+	answers := make(chan answer, 2)
 	for i, setting := range []string{"K0", "K1"} {
-		wg.Add(1)
 		go func() {
-			defer wg.Done()
-			_, results[i] = registerOn(t, database, fake, "c1", setting)
+			registration, err := registerOn(t, database, clocks[i], "c1", setting)
+			answers <- answer{index: i, registerAnswer: registerAnswer{registration: registration, err: err}}
 		}()
 	}
 	storetest.WaitForLockWaiters(t, gate, 2)
+	// Both transactions have begun by now: one holds the registry's lock and waits on the table,
+	// the other waits on that lock. pg_stat_activity is read once, through the gate's connection.
+	var queued int
+	var apart float64
+	if err := gate.QueryRow(context.Background(), `
+		select count(*), coalesce(extract(epoch from max(xact_start) - min(xact_start)), 0)
+		from pg_stat_activity
+		where datname = current_database() and wait_event_type = 'Lock'`).Scan(&queued, &apart); err != nil {
+		t.Fatalf("read when the two registrations' transactions began: %v", err)
+	}
+	if queued != 2 {
+		t.Fatalf("%d backends wait on a lock while the registry is held, want the two registrations", queued)
+	}
 	if err := gate.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the registry: %v", err)
 	}
-	// One of the two is admitted and heartbeats on this clock; the other waits for its row to
-	// lapse, which it never does, so moving past LiveWindow and one HeartbeatInterval is what
-	// ends that wait in the refusal.
-	ended := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(ended)
-	}()
-	fake.AwaitArmed(t, "the admitted registration's heartbeat and the refused one's retry gap", 2)
-	fake.Advance(LiveWindow + HeartbeatInterval)
-	testwait.Receive(t, "both registrations to answer", ended)
 
-	refused := 0
-	for _, err := range results {
-		switch {
-		case err == nil:
-		case errors.Is(err, ErrKeySetMismatch):
-			refused++
-		default:
-			t.Fatalf("a registration failed with %v, want acceptance or ErrKeySetMismatch", err)
-		}
+	first := testwait.Receive(t, "the first of the two registrations to answer", answers)
+	if first.err != nil {
+		t.Fatalf("the first registration to answer answered %v, want acceptance: the other answers only once the test moves its clock", first.err)
 	}
-	if refused != 1 {
-		t.Errorf("%d of two registrations with keys of their own were refused, want exactly one: %v", refused, results)
-	}
-	if got := liveIDs(t, database); len(got) != 1 {
-		t.Errorf("live = %v, want the one registration accepted", got)
+	holdLive(t, database, first.registration.ID)
+	waiting := clocks[1-first.index]
+	waiting.AwaitArmed(t, "the other registration's retry gap", 1)
+	waiting.Advance(LiveWindow + HeartbeatInterval)
+	second := testwait.Receive(t, "the other registration's answer once its wait was over", answers)
+	return twoAtOnce{
+		database:   database,
+		begunApart: time.Duration(apart * float64(time.Second)),
+		first:      first.registerAnswer,
+		second:     second.registerAnswer,
 	}
 }
 
@@ -494,11 +675,11 @@ func TestARefusalBesideARowThatStopsHeartbeatingIsAdmittedOnceTheRowLapses(t *te
 	database := storetest.Open(t)
 	fake := clocktest.New(time.Now())
 	var dead string
+	// The dead row is written an hour ahead of the database's clock (livePeer), so it counts as
+	// live until the test ages it below, however much time passes before then; and the newcomer's
+	// row, once admitted, is held live the same way for the read that ends the row (holdLive), so
+	// no verdict of this row depends on LiveWindow not passing.
 	underRegistryLock(t, database, func(tx pgx.Tx) { dead = livePeer(t, tx, "K9") })
-	// The dead row's heartbeat is put an hour ahead of the database's clock, so it counts as live
-	// until the test ages it below (ageHeartbeat), however much time passes before then, and no
-	// verdict of this row depends on LiveWindow not passing.
-	ageHeartbeat(t, database, dead, -time.Hour)
 
 	// The newcomer is refused while the dead row still counts as live, and waits: its retry gap
 	// is armed on this clock. The row then lapses on the database's clock, which this test
@@ -520,13 +701,14 @@ func TestARefusalBesideARowThatStopsHeartbeatingIsAdmittedOnceTheRowLapses(t *te
 	if !slices.Equal(live, []string{dead}) {
 		t.Fatalf("live = %v once a timer was armed on the newcomer's clock, want the dead row %s alone: the newcomer was admitted beside it at once rather than refused and left waiting for it to lapse", live, dead)
 	}
-	ageHeartbeat(t, database, dead, LiveWindow+time.Second)
+	ageHeartbeat(t, database.Pool, dead, LiveWindow+time.Second)
 	fake.Advance(HeartbeatInterval)
 	got := testwait.Receive(t, "the newcomer's answer once the dead row lapsed", answered)
 	registration, err := got.registration, got.err
 	if err != nil {
 		t.Fatalf("a process beside a row that stopped heartbeating was refused: %v", err)
 	}
+	holdLive(t, database, registration.ID)
 	if got := liveIDs(t, database); !slices.Equal(got, []string{registration.ID}) {
 		t.Errorf("live = %v, want the admitted process %s alone, the dead row %s lapsed", got, registration.ID, dead)
 	}
@@ -539,14 +721,18 @@ func TestARefusalBesideARowThatStopsHeartbeatingIsAdmittedOnceTheRowLapses(t *te
 // worth is read off that clock rather than off the machine's: it answers its refusal once that
 // clock has passed LiveWindow and one HeartbeatInterval, and nothing sooner. A clock whose Now
 // drifted with the wall clock would re-arm the retry gap just past the moment Set moves to, and
-// the gap would never fire. The peer heartbeats on a second clock the test beats by hand, and its
-// row is live on the database's clock throughout.
+// the gap would never fire. The peer heartbeats once on a second clock the test beats by hand,
+// and its row is then put an hour ahead of the database's clock (holdLive), so it is live
+// throughout however long the machine takes over the wait.
 func TestARefusalBesideAPeerThatKeepsHeartbeatingStandsAfterTheWait(t *testing.T) {
 	database := storetest.Open(t)
 	beating := clocktest.New(time.Now())
 	peer := mustRegisterOn(t, database, beating, "c1", "K9")
 	beating.AwaitArmed(t, "the peer's heartbeat", 1)
+	since := testdb.Now(t, database.Pool)
 	beating.Advance(HeartbeatInterval)
+	waitForStamp(t, database, peer.ID, since, "the peer's heartbeat to stamp its row")
+	holdLive(t, database, peer.ID)
 
 	waiting := clocktest.New(time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC))
 	began := waiting.Now()
@@ -582,6 +768,9 @@ func TestRegistersWaitEndsWithItsContext(t *testing.T) {
 	database := storetest.Open(t)
 	fake := clocktest.New(time.Now())
 	peer := mustRegisterOn(t, database, fake, "c1", "K9")
+	// The peer must be live at the newcomer's first try, which it refuses, and at the read below,
+	// however long the machine takes before them (holdLive); nothing moves its clock.
+	holdLive(t, database, peer.ID)
 
 	ctx, stop := context.WithCancel(context.Background())
 	answered := make(chan error, 1)
@@ -625,12 +814,7 @@ func underRegistryLock(t *testing.T, database *store.Store, change func(tx pgx.T
 // database for that long leaves it.
 func lapse(t *testing.T, tx pgx.Tx, id string) {
 	t.Helper()
-	tag, err := tx.Exec(context.Background(),
-		`update server_processes set heartbeat_at = now() - make_interval(secs => $2) where instance = $1`,
-		id, (LiveWindow + time.Second).Seconds())
-	if err != nil || tag.RowsAffected() != 1 {
-		t.Fatalf("lapse process %s's heartbeat: %v (%d rows)", id, err, tag.RowsAffected())
-	}
+	ageHeartbeat(t, tx, id, LiveWindow+time.Second)
 }
 
 // prunedRow deletes the row, as the prune loop does once its heartbeat is PruneAge old.
@@ -644,25 +828,19 @@ func prunedRow(t *testing.T, tx pgx.Tx, id string) {
 
 // livePeer writes the row of a live process holding setting straight into the registry, past
 // Register's check, as a process registered while ours had dropped out of Live leaves it: with
-// this build's owner lock protocol, as Register writes it.
+// this build's owner lock protocol, as Register writes it. Its heartbeat is heldLiveFor ahead of
+// the database's now(), so it counts as live at every read however long the machine takes, until
+// the test ages it.
 func livePeer(t *testing.T, tx pgx.Tx, setting string) string {
 	t.Helper()
 	var id string
 	if err := tx.QueryRow(context.Background(), `
-		insert into server_processes (instance, commit, dashboard_build, signing_keys, owner_lock_protocol)
-		values (gen_random_uuid(), 'c9', 'build-c9', $1, $2)
-		returning instance::text`, fingerprints(t, setting), store.OwnerLockProtocol).Scan(&id); err != nil {
+		insert into server_processes (instance, commit, dashboard_build, signing_keys, owner_lock_protocol, heartbeat_at)
+		values (gen_random_uuid(), 'c9', 'build-c9', $1, $2, now() + make_interval(secs => $3))
+		returning instance::text`, fingerprints(t, setting), store.OwnerLockProtocol, heldLiveFor.Seconds()).Scan(&id); err != nil {
 		t.Fatalf("add a live peer holding %q: %v", setting, err)
 	}
 	return id
-}
-
-// waitForLive waits for id to be live again, which a heartbeat makes it.
-func waitForLive(t *testing.T, database *store.Store, id, what string) {
-	t.Helper()
-	testwait.Eventually(t, what+" to be live again", func() bool {
-		return slices.Contains(liveIDs(t, database), id)
-	})
 }
 
 // requireNotLost fails when the registration's heartbeat has reported a refusal.
@@ -720,6 +898,7 @@ func TestALapsedHeartbeatChecksTheKeysAgainBeforeTheProcessCountsAsLive(t *testi
 			// The next beat is the one that checks the keys again: it comes where the test
 			// moves the clock and nowhere else.
 			fake.AwaitArmed(t, "the heartbeat", 1)
+			since := testdb.Now(t, database.Pool)
 			fake.Advance(HeartbeatInterval)
 			if c.refused {
 				requireRefusal(t, database, registration, peer, "a lapsed process beside a peer holding "+c.peer)
@@ -728,16 +907,13 @@ func TestALapsedHeartbeatChecksTheKeysAgainBeforeTheProcessCountsAsLive(t *testi
 				}
 				return
 			}
-			waitForLive(t, database, registration.ID, "a lapsed process beside a peer holding "+c.peer)
+			waitForStamp(t, database, registration.ID, since, "a lapsed process beside a peer holding "+c.peer+" to rejoin")
 			requireNotLost(t, registration, "a lapsed process beside a peer holding "+c.peer)
-			live, err := Live(context.Background(), database.Pool)
-			if err != nil {
-				t.Fatalf("read the live processes: %v", err)
-			}
-			for _, p := range live {
-				if p.ID == registration.ID && (p.Commit != "c1" || !slices.Equal(p.SigningKeys, fingerprints(t, "K1 K0"))) {
-					t.Errorf("the rejoined row = %+v, want commit c1 and the fingerprints of K1 then K0", p)
-				}
+			// The rejoined row is read through Live, held live for the read (holdLive), so a
+			// row that is not there fails the read rather than passing over it.
+			holdLive(t, database, registration.ID)
+			if p := liveProcess(t, database, registration.ID); p.Commit != "c1" || !slices.Equal(p.SigningKeys, fingerprints(t, "K1 K0")) {
+				t.Errorf("the rejoined row = %+v, want commit c1 and the fingerprints of K1 then K0", p)
 			}
 		})
 	}
@@ -756,18 +932,16 @@ func TestAPrunedRowIsWrittenAgainUnlessALivePeerDoesNotShareTheKeys(t *testing.T
 			livePeer(t, tx, "K0 K1")
 		})
 		fake.AwaitArmed(t, "the heartbeat", 1)
+		since := testdb.Now(t, database.Pool)
 		fake.Advance(HeartbeatInterval)
-		waitForLive(t, database, registration.ID, "a process whose row was pruned")
+		waitForStamp(t, database, registration.ID, since, "the heartbeat to write a pruned row back")
 		requireNotLost(t, registration, "a process whose row was pruned")
-		live, err := Live(context.Background(), database.Pool)
-		if err != nil {
-			t.Fatalf("read the live processes: %v", err)
-		}
-		for _, p := range live {
-			if p.ID == registration.ID && (p.Commit != "c1" || p.DashboardBuild != "build-c1" ||
-				!slices.Equal(p.SigningKeys, fingerprints(t, "K1 K0"))) {
-				t.Errorf("the row written again = %+v, want commit c1, dashboard build-c1 and the fingerprints of K1 then K0", p)
-			}
+		// The row written again is read through Live, held live for the read (holdLive), so a
+		// row that is not there fails the read rather than passing over it.
+		holdLive(t, database, registration.ID)
+		if p := liveProcess(t, database, registration.ID); p.Commit != "c1" || p.DashboardBuild != "build-c1" ||
+			!slices.Equal(p.SigningKeys, fingerprints(t, "K1 K0")) {
+			t.Errorf("the row written again = %+v, want commit c1, dashboard build-c1 and the fingerprints of K1 then K0", p)
 		}
 	})
 	t.Run("a live peer does not share the keys", func(t *testing.T) {
@@ -791,28 +965,34 @@ func TestAPrunedRowIsWrittenAgainUnlessALivePeerDoesNotShareTheKeys(t *testing.T
 // A live row's heartbeat stamps it and checks nothing: the keys were checked when the process
 // registered, and every process registered since checked its own against them. A peer that
 // disagrees, written past Register's check, refuses nothing while this process's row stays live.
+//
+// The row is held live before each beat (holdLive): a beat checks nothing only while the row it
+// stamps is live, and a row the machine let lapse between two beats would be checked again
+// (renew), which is another row's subject. Each beat's stamp is then told from the held heartbeat
+// by its value: at or after a moment of the database's clock read before the beat, and before
+// the held heartbeat, which is an hour ahead.
 func TestALiveRowsHeartbeatChecksNoPeer(t *testing.T) {
 	database := storetest.Open(t)
 	fake := clocktest.New(time.Now())
 	registration := mustRegisterOn(t, database, fake, "c1", "K1 K0")
 	underRegistryLock(t, database, func(tx pgx.Tx) { livePeer(t, tx, "K9") })
 
-	heartbeat := func() time.Time {
-		var at time.Time
-		if err := database.Pool.QueryRow(context.Background(),
-			`select heartbeat_at from server_processes where instance = $1`, registration.ID).Scan(&at); err != nil {
-			t.Fatalf("read process %s's heartbeat: %v", registration.ID, err)
-		}
-		return at
-	}
 	// Three heartbeats stamped after the peer was written, each one the test's own move of the
 	// registration's clock.
 	for beat := 1; beat <= 3; beat++ {
-		last := heartbeat()
+		holdLive(t, database, registration.ID)
+		held, _ := heartbeatOf(t, database, registration.ID)
 		fake.AwaitArmed(t, "the heartbeat", 1)
+		since := testdb.Now(t, database.Pool)
 		fake.Advance(HeartbeatInterval)
-		testwait.Eventually(t, fmt.Sprintf("heartbeat %d to stamp the row", beat), func() bool {
-			return heartbeat().After(last)
+		testwait.Until(t, fmt.Sprintf("heartbeat %d to stamp the row", beat), func() (string, bool) {
+			at, exists := heartbeatOf(t, database, registration.ID)
+			if !exists {
+				return "no row for " + registration.ID, false
+			}
+			reading := fmt.Sprintf("a heartbeat of %s, held at %s, the beat brought after %s",
+				at.Format(time.RFC3339Nano), held.Format(time.RFC3339Nano), since.Format(time.RFC3339Nano))
+			return reading, !at.Before(since) && at.Before(held)
 		})
 	}
 	requireNotLost(t, registration, "a live process beside a disagreeing peer")
@@ -841,7 +1021,7 @@ func TestARefreshAndALapsedHeartbeatAtOnceBothFinish(t *testing.T) {
 	testwait.Receive(t, "the registration's heartbeat goroutine to stop", registration.stopped)
 	// A row still live is stamped and nothing else is read: the heartbeat reads the instance
 	// only where its row dropped out of Live and it has to rejoin (renew).
-	ageHeartbeat(t, database, registration.ID, LiveWindow+time.Second)
+	ageHeartbeat(t, database.Pool, registration.ID, LiveWindow+time.Second)
 
 	// Each call runs within the shared wait's bound (testwait.Context), so the pair that waits on
 	// each other ends rather than hanging the test, and each wait below names the run that did not
@@ -879,6 +1059,9 @@ func TestARefreshAndALapsedHeartbeatAtOnceBothFinish(t *testing.T) {
 			t.Fatalf("%s run beside the other: %v", run.name, err)
 		}
 	}
+	// The numbers are read through Live, the row held live for the read (holdLive): whether the
+	// rejoined row is still live is not this row's subject.
+	holdLive(t, database, registration.ID)
 	if got := liveProcess(t, database, registration.ID); got.SchemaVersion != 7 || got.SchemaCreatable != 7 {
 		t.Errorf("the row after both ran holds schema version %d and creatable %d, want 7 and 7", got.SchemaVersion, got.SchemaCreatable)
 	}
@@ -932,8 +1115,9 @@ func TestARegistrationOfThisBuildMarksNoEarlierBuild(t *testing.T) {
 
 	underRegistryLock(t, database, func(tx pgx.Tx) { prunedRow(t, tx, registration.ID) })
 	fake.AwaitArmed(t, "the heartbeat", 1)
+	since := testdb.Now(t, database.Pool)
 	fake.Advance(HeartbeatInterval)
-	waitForLive(t, database, registration.ID, "a process whose row was pruned")
+	waitForStamp(t, database, registration.ID, since, "the heartbeat to write a pruned row back")
 	requireNotLost(t, registration, "a process whose row was pruned")
 	noEarlierBuild("the row written again after a prune")
 }

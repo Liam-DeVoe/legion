@@ -43,6 +43,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
@@ -219,6 +220,13 @@ func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.
 	}
 }
 
+// atListenerMargin is what of the listener client's window (dispatchenvoy.CallWindow) a row whose
+// send the listener holds across SIGTERM leaves outside its quiet span: the send's way to the
+// listener and the signal before the span, and the release and the listener's answer after it.
+// The child process's client gives each send that one window on the real clock, which no setting
+// moves, and a send that misses it is not settled sent; so the span is the window less this.
+const atListenerMargin = 4 * time.Second
+
 // A deploy can stop Dispatch while a person's send to one session is with the listener. The send's
 // request is in flight, so HTTP shutdown waits for it, and its delivery runs on past any cut-off:
 // the listener answers after the signal, the attempt settles sent, and only then does Dispatch
@@ -276,9 +284,11 @@ func TestSIGTERMWithAKeyedSendAtTheListenerSettlesItSentBeforeExit(t *testing.T)
 	testwait.Receive(t, "the send to reach the listener", held)
 
 	signalled := process.Terminate(t)
-	testwait.Quiet(t, "Dispatch's exit with the send still at the listener", process.exitedWithOutput(), time.Second,
+	testwait.Quiet(t, "Dispatch's exit with the send still at the listener", process.exitedWithOutput(), dispatchenvoy.CallWindow-atListenerMargin,
 		"a process that has not exited records nothing that says so, it is a child process so synctest does not "+
-			"reach it, and the later action this row takes - releasing the listener's answer - is what lets it exit")
+			"reach it, and the later action this row takes - releasing the listener's answer - is what lets it exit; "+
+			"the absence means something only before the listener client's CallWindow ends the send, so the span is "+
+			"that window less what the row needs around it (atListenerMargin)")
 	releaseOnce()
 	t.Logf("the listener answered the send %v after SIGTERM", time.Since(signalled))
 	process.WaitExit(t, "the listener's answer")
@@ -400,9 +410,11 @@ func TestSIGTERMWithABroadcastAtTheListenerSettlesEveryRecipientBeforeExit(t *te
 	testwait.Receive(t, "the broadcast to reach the listener", held)
 
 	signalled := process.Terminate(t)
-	testwait.Quiet(t, "Dispatch's exit with a recipient still at the listener", process.exitedWithOutput(), time.Second,
+	testwait.Quiet(t, "Dispatch's exit with a recipient still at the listener", process.exitedWithOutput(), dispatchenvoy.CallWindow-atListenerMargin,
 		"a process that has not exited records nothing that says so, it is a child process so synctest does not "+
-			"reach it, and the later action this row takes - releasing the listener's answer - is what lets it exit")
+			"reach it, and the later action this row takes - releasing the listener's answer - is what lets it exit; "+
+			"the absence means something only before the listener client's CallWindow ends the held recipient's send, "+
+			"so the span is that window less what the row needs around it (atListenerMargin)")
 	releaseOnce()
 	t.Logf("the listener answered the held recipient %v after SIGTERM", time.Since(signalled))
 	process.WaitExit(t, "the listener's answer")

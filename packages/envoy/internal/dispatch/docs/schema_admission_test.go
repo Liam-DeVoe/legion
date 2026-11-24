@@ -32,8 +32,9 @@ import (
 
 // fleetProcess writes the server_processes row of another server process straight into the
 // registry: one that reads schema version, creates up to creatable and registers owner lock
-// protocol ownerLockProtocol, whose last heartbeat is age before the database's now(). A version
-// of 0 is the row of a build that predates the fleet columns.
+// protocol ownerLockProtocol, whose last heartbeat is age before the database's now(); a negative
+// age puts it that far ahead, which a live process's row takes (liveHeartbeat). A version of 0 is
+// the row of a build that predates the fleet columns.
 //
 // The owner lock protocol is the row's build's, as it registers it: store.OwnerLockProtocol for
 // this build and every build after it (processes.admit), and 0, the column's default, for a build
@@ -51,6 +52,12 @@ func fleetProcess(t *testing.T, service *Service, version, creatable, ownerLockP
 		t.Fatalf("add a server process reading schema version %d: %v", version, err)
 	}
 }
+
+// liveHeartbeat is the age fleetProcess gives a live process's heartbeat: an hour ahead of the
+// database's now(), so the process counts as live (processes.Live) at every read the row makes,
+// however long the machine takes before it, and no verdict leans on processes.LiveWindow not
+// passing.
+const liveHeartbeat = -time.Hour
 
 // The row of the build after this one goes in while a transaction of this build holds an owner
 // lock, and with it the owner lock gate, as a settlement of the document a test seeded does while
@@ -81,7 +88,7 @@ func TestTheNextBuildsFleetProcessWaitsForNoOwnerLock(t *testing.T) {
 		t.Fatal("the owner lock's transaction holds no owner lock gate, so this cannot tell a row that waits for it from one that does not")
 	}
 	version := pmdoc.SchemaVersion()
-	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, 0)
+	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, liveHeartbeat)
 }
 
 // page is the query a page presents on its document socket: schema_version, and schema_creatable
@@ -301,10 +308,10 @@ func TestSchemaAdmissionFollowsTheLiveFleet(t *testing.T) {
 	// The build after this one registers this build's owner lock protocol; the first version's
 	// build, and one that predates the fleet columns, came before that protocol and register none
 	// (fleetProcess).
-	nextBuild := process{version: newer, creatable: current, ownerLockProtocol: store.OwnerLockProtocol}
+	nextBuild := process{version: newer, creatable: current, ownerLockProtocol: store.OwnerLockProtocol, age: liveHeartbeat}
 	lapsedNextBuild := process{version: newer, creatable: current, ownerLockProtocol: store.OwnerLockProtocol, age: time.Hour}
-	firstVersion := process{version: 1, creatable: 1}
-	predatesFleetColumns := process{}
+	firstVersion := process{version: 1, creatable: 1, age: liveHeartbeat}
+	predatesFleetColumns := process{age: liveHeartbeat}
 	for _, c := range []struct {
 		name     string
 		future   bool
@@ -402,7 +409,7 @@ func TestAdmissionRecheckClosesASocketTheFleetNoLongerAdmits(t *testing.T) {
 		t.Fatal("a current page was authenticated read-only")
 	}
 
-	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, 0)
+	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, liveHeartbeat)
 	if err := service.recheckSchemaAdmissions(context.Background()); err != nil {
 		t.Fatalf("re-check the sockets' admission: %v", err)
 	}
@@ -424,7 +431,7 @@ func TestAdmissionRecheckClosesASocketTheFleetNoLongerAdmits(t *testing.T) {
 func TestAdmissionRecheckClosesANewerPageOnceNoLiveProcessCreatesWhatItCreates(t *testing.T) {
 	service, artifactID, server := newAdmissionServer(t, false)
 	version, creatable := pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()
-	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, 0)
+	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, liveHeartbeat)
 	newerPage := page(version+1, version)
 	newer := mustDialPage(t, server.URL, artifactID, newerPage)
 	if !tokenWritable(t, newer, artifactID, newerPage.Get("schema_version")) {
@@ -586,7 +593,7 @@ func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 
 	// A process of the build after this one, which creates up to version, what this page cannot
 	// represent, joins, and the re-check revokes it.
-	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, 0)
+	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, liveHeartbeat)
 	if err := service.recheckSchemaAdmissions(context.Background()); err != nil {
 		t.Fatalf("re-check the sockets' admission: %v", err)
 	}
@@ -712,7 +719,7 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	waitForTheDocumentOnTheWire(t, serverConn)
 	// A process of the build after this one joins: it creates up to version, which the slow page
 	// cannot represent, and reads one version above it.
-	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, 0)
+	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, liveHeartbeat)
 	fleet, err := readSchemaFleet(context.Background(), service.store.Pool)
 	if err != nil {
 		t.Fatalf("read the live fleet: %v", err)

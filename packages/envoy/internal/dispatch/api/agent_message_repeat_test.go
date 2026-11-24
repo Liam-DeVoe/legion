@@ -14,7 +14,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -69,8 +71,8 @@ func messageAttempts(t *testing.T, database *store.Store, messageID string) []mo
 
 // commitKeyedMessage writes what alice's keyed send to s1 commits before its delivery starts - the
 // message, and its key holding the message as its recovery point - and nothing else, as a process
-// that died between the commit and the attempt leaves them: the key in flight, leased leasedAgo,
-// or finished with status when status is set.
+// that died between the commit and the attempt leaves them: the key in flight, leased leasedAgo (a
+// negative leasedAgo leases it that far ahead), or finished with status when status is set.
 func commitKeyedMessage(t *testing.T, database *store.Store, key, body, delivery string, leasedAgo time.Duration, status *int) string {
 	t.Helper()
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -95,9 +97,9 @@ func commitKeyedMessage(t *testing.T, database *store.Store, key, body, delivery
 	return id
 }
 
-// strandAttempt opens messageID's first attempt as a sender that claimed it claimedAgo and never
-// came back leaves it: pending, naming sessionID (empty for one stranded before anything was
-// resolved).
+// strandAttempt opens messageID's first attempt as a sender that claimed it claimedAgo (a negative
+// claimedAgo claims it that far ahead) and never came back leaves it: pending, naming sessionID
+// (empty for one stranded before anything was resolved).
 func strandAttempt(t *testing.T, database *store.Store, messageID, delivery, sessionID string, claimedAgo time.Duration) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -182,6 +184,10 @@ func TestARepeatedKeyAnswersTheMessageItMadeAndDeliversOnce(t *testing.T) {
 // flight, and Shutdown waits for each of them. A send the listener is still answering at that
 // signal therefore finishes inside the drain: its attempt settles sent, and the page's retry under
 // its key is answered with that message and hands the session nothing more.
+//
+// The server runs on a held clock (clocktest.Held), which the listener client's window runs on
+// (envoy.CallWindow), so the window does not end the held send however long the machine takes
+// before the listener answers it.
 func TestASendInFlightAtShutdownStillSettles(t *testing.T) {
 	t.Parallel()
 	held := make(chan struct{})
@@ -204,7 +210,7 @@ func TestASendInFlightAtShutdownStillSettles(t *testing.T) {
 	})
 	lifetime, shutDown := context.WithCancel(t.Context())
 	defer shutDown()
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, lifetime: lifetime})
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, lifetime: lifetime, clock: clocktest.Held()})
 	const body = "Ship it once the checks are green."
 	send := func() *httptest.ResponseRecorder {
 		return postAgentMessageKeyed(t, handler, "s1", map[string]any{"body": body, "delivery": "steer"}, "alice", "press-1")
@@ -217,10 +223,12 @@ func TestASendInFlightAtShutdownStillSettles(t *testing.T) {
 	// listener request at once; given that long, the listener then answers the send the drain
 	// waits for.
 	shutDown()
-	testwait.Quiet(t, "the listener's request cut off by the deploy's signal", cut, 500*time.Millisecond,
+	testwait.Quiet(t, "the listener's request cut off by the deploy's signal", cut, envoy.CallWindow,
 		"no state records that Dispatch gave the send up, the send is real HTTP to a listener (no synctest), "+
 			"and no later action of the test is ordered after a cancellation that reaches the listener on "+
-			"the HTTP client's own goroutine")
+			"the HTTP client's own goroutine; the absence means something only before the listener client's "+
+			"CallWindow ends the send, which in a deployment ends it before any later cut, so the span is that "+
+			"window, and the held clock leaves it none of its own to end the send by here")
 	close(release)
 	created := testwait.Receive(t, "the send in flight at shutdown to answer", answered)
 
@@ -390,7 +398,10 @@ func TestARetryOfAMessageCommittedWithoutAnAnswerDeliversIt(t *testing.T) {
 	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
-	id := commitKeyedMessage(t, database, "undelivered", "Still there?", "aside", 0, nil)
+	// The key's lease is put an hour ahead of the database's clock, so the first retry finds it in
+	// flight (contracts.IdempotencyLease) however long the machine takes before it, until the row
+	// lapses it below.
+	id := commitKeyedMessage(t, database, "undelivered", "Still there?", "aside", -time.Hour, nil)
 	retry := func() *httptest.ResponseRecorder {
 		t.Helper()
 		return postAgentMessageKeyed(t, handler, "s1", map[string]any{"body": "Still there?", "delivery": "aside"}, "alice", "undelivered")
@@ -445,7 +456,10 @@ func TestARetryOfAStrandedSendResumesItsAttempt(t *testing.T) {
 			listener, sends := newBroadcastListener(t, agentSessions)
 			handler, database := newTargetedMessageHandler(t, listener.URL)
 			id := commitKeyedMessage(t, database, "stranded", "Status?", "steer", 0, &created)
-			strandAttempt(t, database, id, "steer", pinned, 0)
+			// The claim is put an hour ahead of the database's clock, so the first retry finds it
+			// live (model.DeliveryClaimLapse) however long the machine takes before it, until the
+			// row lapses it below.
+			strandAttempt(t, database, id, "steer", pinned, -time.Hour)
 			retry := func() model.Message {
 				t.Helper()
 				response := postAgentMessageKeyed(t, handler, "s1", map[string]any{"body": "Status?", "delivery": "steer"}, "alice", "stranded")

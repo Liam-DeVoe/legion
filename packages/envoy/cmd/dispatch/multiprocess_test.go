@@ -58,6 +58,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/crafted"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
@@ -8408,8 +8409,15 @@ func TestADeliveryAKilledProcessLeftPendingIsSentByTheOther(t *testing.T) {
 
 // cancelGrace is how long cancelOnceHeld gives Dispatch to act on a cancelled request before the
 // listener answers the send that request made, when Dispatch does not abandon that send itself:
-// well inside the listener client's five-second window, so the answer is still awaited.
-const cancelGrace = 2 * time.Second
+// the listener client's window (dispatchenvoy.CallWindow) less cancelGraceMargin, so the answer is
+// still awaited. The child process's client gives the send that one window on the real clock,
+// which no setting moves, and a send that misses it is not settled sent.
+const cancelGrace = dispatchenvoy.CallWindow - cancelGraceMargin
+
+// cancelGraceMargin is what of the send's window cancelOnceHeld leaves outside cancelGrace: the
+// send's way to the listener and the request's cancellation and return before the grace, and the
+// release and the listener's answer after it.
+const cancelGraceMargin = 3 * time.Second
 
 // cancelOnceHeld sends body to path on p with a request the test cancels as soon as the listener
 // holds the send it made, which is after its commit, and waits for the client to return. The send
@@ -8439,7 +8447,9 @@ func cancelOnceHeld(t *testing.T, p *dispatchProcess, listener *fakeListener, pa
 	testwait.Quiet(t, "the held send's caller", held.gone, cancelGrace,
 		"the row is about a send the listener keeps unanswered while its caller goes: the hold records nothing "+
 			"a test can read, the request is this process's own but its cancellation travels a real socket so "+
-			"synctest does not reach it, and releasing the hold is the later action the row takes next")
+			"synctest does not reach it, and releasing the hold is the later action the row takes next; the absence "+
+			"means something only before the listener client's CallWindow ends the send, so the span is that window "+
+			"less what the row needs around it (cancelGraceMargin)")
 	sends.Release()
 	return held.subject
 }
@@ -9224,12 +9234,13 @@ func TestTwoProcessesSyncingOneProjectNeverWriteTheOlderCommit(t *testing.T) {
 // ───── route status from one stored listener answer ────────────────────────
 
 // rosterEnv is what both processes of a route-status row are started with: the fake listener as
-// ENVOY_URL, and a listener answer that serves issue reads for a minute
-// (DISPATCH_TEST_ROUTE_ROSTER_TTL, under the test hooks every process here runs with), so the row
-// reads both processes inside one answer's life however slow the machine, with no timing window.
+// ENVOY_URL, and a listener answer that serves issue reads for an hour
+// (DISPATCH_TEST_ROUTE_ROSTER_TTL, under the test hooks every process here runs with), longer than
+// any run, so the row reads both processes inside one answer's life however slow the machine,
+// with no timing window.
 func rosterEnv(listener *fakeListener) map[string]string {
 	env := listener.processEnv()
-	env["DISPATCH_TEST_ROUTE_ROSTER_TTL"] = time.Minute.String()
+	env["DISPATCH_TEST_ROUTE_ROSTER_TTL"] = time.Hour.String()
 	return env
 }
 

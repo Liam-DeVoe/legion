@@ -57,9 +57,10 @@ func endedCIPass(t *testing.T, database *store.Store, instance string, startedAg
 }
 
 // seedServerProcess writes the registry row processes.Register writes, with a heartbeat of the
-// given age, and answers the instance id. It names this build's owner lock protocol, as Register
-// does: a row at the column's default, 0, is an earlier build's arrival, whose insert waits for
-// the owner lock gate (fleetProcess in internal/dispatch/docs says why).
+// given age, and answers the instance id; a negative age puts the heartbeat that far ahead. It
+// names this build's owner lock protocol, as Register does: a row at the column's default, 0, is
+// an earlier build's arrival, whose insert waits for the owner lock gate (fleetProcess in
+// internal/dispatch/docs says why).
 func seedServerProcess(t *testing.T, database *store.Store, heartbeatAge time.Duration) string {
 	t.Helper()
 	var instance string
@@ -183,7 +184,10 @@ func holdCIReconcileLease(t *testing.T, database *store.Store) {
 func TestCIReconcilePassesShowsARunningPass(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
-	instance := seedServerProcess(t, database, 0)
+	// The process's heartbeat is an hour ahead of the database's clock, so it reads live
+	// (processes.LiveWindow) however long the machine takes before the read, which is not what
+	// this row is about.
+	instance := seedServerProcess(t, database, -time.Hour)
 	running := openCIPass(t, database, instance, time.Minute)
 	holdCIReconcileLease(t, database)
 

@@ -21,11 +21,12 @@ import (
 // a pass that finished and the pass's own line does not.
 
 // registerProcess writes the row processes.Register writes for a live server process, with a
-// heartbeat of the given age, and answers the instance id. Written here rather than by calling
-// Register because these tests need a heartbeat older than the live window, which a registration
-// that keeps beating cannot have. It names this build's owner lock protocol, as Register does: a
-// row at the column's default, 0, is an earlier build's arrival, whose insert waits for the owner
-// lock gate (fleetProcess in internal/dispatch/docs says why).
+// heartbeat of the given age, and answers the instance id; a negative age puts the heartbeat that
+// far ahead. Written here rather than by calling Register because these tests need a heartbeat
+// older than the live window, or ahead of it, which a registration that keeps beating cannot
+// have. It names this build's owner lock protocol, as Register does: a row at the column's
+// default, 0, is an earlier build's arrival, whose insert waits for the owner lock gate
+// (fleetProcess in internal/dispatch/docs says why).
 func registerProcess(t *testing.T, pool *store.Pool, heartbeatAge time.Duration) string {
 	t.Helper()
 	var instance string
@@ -186,7 +187,10 @@ func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(heads(45)...)
-	instance := registerProcess(t, h.pool, 0)
+	// The process's heartbeat is an hour ahead of the database's clock, so the pass reads as
+	// running (its process live, processes.LiveWindow) however long the machine takes before the
+	// read, which is not what this row is about.
+	instance := registerProcess(t, h.pool, -time.Hour)
 	h.reconciler.Instance = func() string { return instance }
 	// GitHub never answers the second page, so the pass stays open, its row read as running,
 	// until the test moves the clock to its bound.
@@ -452,7 +456,10 @@ func TestAKilledPassReadsAsEndedWithoutCompletingWhileAnotherProcessHoldsTheLeas
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
-	killed := registerProcess(t, h.pool, 0)
+	// The killed process's heartbeat is an hour ahead of the database's clock, so its row is
+	// still live at the read however long the machine takes, and liveness cannot decide the open
+	// row in the newest rule's place.
+	killed := registerProcess(t, h.pool, -time.Hour)
 	open := seedPass(t, h.pool, killed, time.Minute)
 
 	// The other process of the deployment, with a reconciler and a registry row of its own.
