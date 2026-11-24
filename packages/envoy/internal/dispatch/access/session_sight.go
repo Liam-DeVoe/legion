@@ -72,10 +72,10 @@ type RowsQuerier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// sessionSightQuery answers, of every session of $1 and every project of $2, the pairs whose
-// session sees the project (SessionSeesProjectClause). A key no project row holds pairs with no
-// session.
-var sessionSightQuery = `
+// SessionSightSQL is SessionsSeeProjects' one statement: of every session of $1 and every project
+// of $2, the pairs whose session sees the project (SessionSeesProjectClause). A key no project row
+// holds pairs with no session. A census of the statements a reader sends names it by this text.
+var SessionSightSQL = `
 	select p.key, s.id
 	from projects p
 	cross join unnest($1::text[]) as s(id)
@@ -89,7 +89,7 @@ func SessionsSeeProjects(ctx context.Context, q RowsQuerier, sessions, projects 
 	if len(sessions) == 0 || len(projects) == 0 {
 		return sight, nil
 	}
-	rows, err := q.Query(ctx, sessionSightQuery, sessions, projects)
+	rows, err := q.Query(ctx, SessionSightSQL, sessions, projects)
 	if err != nil {
 		return nil, fmt.Errorf("read which sessions see which projects: %w", err)
 	}

@@ -82,11 +82,12 @@ func (s *server) createMessage(w http.ResponseWriter, r *http.Request) {
 	issueKey := r.PathValue("key")
 	// A role target whose holder may not be shown the issue's project is refused before the
 	// message is written; a session target is judged in its transaction (createStoredMessage).
-	if err := s.refuseMessageTargetOutsideProject(r.Context(), reader, issueKey, input.Target, delivery); err != nil {
+	resolved, err := s.refuseMessageTargetOutsideProject(r.Context(), reader, issueKey, input.Target, delivery)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	message, advice, err := s.createStoredMessage(r.Context(), &issueKey, input, delivery, false, actor, reader)
+	message, advice, err := s.createStoredMessage(r.Context(), &issueKey, input, delivery, false, actor, reader, resolved)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -143,7 +144,7 @@ func (s *server) createAgentMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	message, _, err := s.createStoredMessage(r.Context(), nil, messageInput, delivery, input.ConnectedOnly, actor, reader)
+	message, _, err := s.createStoredMessage(r.Context(), nil, messageInput, delivery, input.ConnectedOnly, actor, reader, nil)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -331,6 +332,9 @@ func planMessageNode(
 // (createAgentMessageInput.ConnectedOnly). actor is the writer the message records, and reader is
 // that writer as a read binds it (readerAs), which a caller resolves before this opens its
 // transaction: the issue the message is on, and the reply block it names, are read as it.
+// resolved is the target's resolution a caller made before the transaction
+// (refuseMessageTargetOutsideProject), which the first attempt's send takes as its own, and nil
+// where the caller made none.
 func (s *server) createStoredMessage(
 	ctx context.Context,
 	issueKey *string,
@@ -338,6 +342,7 @@ func (s *server) createStoredMessage(
 	delivery string,
 	connectedOnly bool,
 	actor, reader model.Actor,
+	resolved *ResolvedMention,
 ) (model.Message, *writeAdvice, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -590,7 +595,7 @@ func (s *server) createStoredMessage(
 		// owning attempt 1 - a repeat of a keyed send that found this message committed
 		// (sendHeldMessageOn) among them - means the message's delivery is under way there: the
 		// message is stored, so it is answered with the attempts as that sender has left them.
-		attempt, err := s.deliverMessageResuming(sending, message, delivery, actor, &thread, 1)
+		attempt, err := s.deliverMessageWith(sending, message, delivery, actor, &thread, 1, resolved)
 		switch {
 		case errors.Is(err, errAttemptNotPending):
 			deliveries, err := s.loadMessageDeliveries(sending, s.deps.Store.Pool, reader, []string{message.ID})

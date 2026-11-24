@@ -196,23 +196,30 @@ func (s *server) refuseMentionSessionsOutsideProject(ctx context.Context, writer
 // keeps such a message for the role's next holder, whose send is judged as every send is
 // (sendResolvedDelivery). A session target is judged in the message's transaction, where a reply
 // that names no target inherits its thread's (createStoredMessage).
+//
+// It answers the resolution it made, nil where it made none, which the message's first send takes
+// as its own rather than asking the listener a second time (deliverMessageWith): a role-targeted
+// message makes one role lookup for its first attempt, as it did before this check.
 func (s *server) refuseMessageTargetOutsideProject(
 	ctx context.Context, reader model.Actor, key string, target *string, delivery string,
-) error {
+) (*ResolvedMention, error) {
 	if target == nil {
-		return nil
+		return nil, nil
 	}
 	route, err := model.ParseRoute(*target)
 	if err != nil || route.Kind != "role" {
-		return nil
+		return nil, nil
 	}
 	project, err := issueProjectSeenBy(ctx, s.deps.Store.Pool, reader, key)
 	if err != nil || project == "" {
-		return err
+		return nil, err
 	}
 	resolved := s.resolveMentionTarget(ctx, *target, delivery, 0)
 	if resolved.SessionID == nil {
-		return nil
+		return &resolved, nil
 	}
-	return s.refuseVisibleSessionOutsideProject(ctx, reader, *resolved.SessionID, project, "be sent this message")
+	if err := s.refuseVisibleSessionOutsideProject(ctx, reader, *resolved.SessionID, project, "be sent this message"); err != nil {
+		return nil, err
+	}
+	return &resolved, nil
 }

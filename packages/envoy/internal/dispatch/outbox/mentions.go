@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -1476,6 +1478,9 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance 
 		}
 		return full, false
 	}
+	// What the pass reads of the sight of the sessions its rows are bound for, once for the
+	// pass (fallbackSight).
+	sight := newFallbackSight(ctx, deps, copies, events)
 	type sentCopy struct {
 		held   fallbackCopy
 		out    fallbackSend
@@ -1497,7 +1502,7 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance 
 			fail(held)
 			continue
 		}
-		decision, out, err := decideFallbackCopy(ctx, deps, held, event)
+		decision, out, err := decideFallbackCopy(ctx, deps, held, event, sight)
 		if decision != fallbackWaitsForAnEarlierEvent || err != nil {
 			deps.held.forget(held)
 		}
@@ -1677,12 +1682,13 @@ func (s fallbackSend) send(ctx context.Context, deps Deps, sender bus.Sender, ha
 //
 // The session the copy would reach - the row's own session, or the holder a forward of a role
 // destination names - is judged once more, as the batch judged it when it held the row
-// (destinations.withheld, withholdUnseenHolders): one that may not be shown the event's project
-// now, its person taken off the project since or the row held before this rule was, settles the
-// row with nothing published, logged at Info. A copy kept for a role nobody holds reaches no
-// session here; the handover behind its keep judges the holder it reaches (handOverKeptCopy).
+// (destinations.withheld, withholdUnseenHolders), by what the pass read of it (fallbackSight):
+// one that may not be shown the event's project now, its person taken off the project since or
+// the row held before this rule was, settles the row with nothing published, logged at Info. A
+// copy kept for a role nobody holds reaches no session here; the handover behind its keep judges
+// the holder it reaches (handOverKeptCopy).
 func decideFallbackCopy(
-	ctx context.Context, deps Deps, held fallbackCopy, event fallbackEvent,
+	ctx context.Context, deps Deps, held fallbackCopy, event fallbackEvent, sight *fallbackSight,
 ) (fallbackDecision, fallbackSend, error) {
 	deliveries, err := mentionDeliveriesOf(ctx, deps.Store.Pool, held.commentID)
 	if err != nil {
@@ -1762,7 +1768,7 @@ func decideFallbackCopy(
 	// reports what it waits on (heldCopies).
 	key := fallbackCopyKey(held.destination, forward)
 	if session, ofASession := strings.CutPrefix(key, contracts.AgentTopicPrefix); ofASession && event.event.Project != "" {
-		sees, err := access.SessionSeesProject(ctx, deps.Store.Pool, session, event.event.Project)
+		sees, err := sight.sees(session, event.event.Project)
 		if err != nil {
 			return 0, fallbackSend{}, err
 		}
@@ -1778,6 +1784,69 @@ func decideFallbackCopy(
 		return fallbackWaitsForAnEarlierEvent, fallbackSend{heldBy: by}, nil
 	}
 	return fallbackPublishes, fallbackSend{item: item, forward: forward}, nil
+}
+
+// fallbackSight is what one fallback pass read of whether the sessions its copies reach may be
+// shown their events' projects (access.SessionsSeeProjects): one statement, before the pass
+// decides any row, over every session whose own topic a claimed row is bound for and every
+// project those rows' events name, as a batch reads its sessions' sight in one statement
+// (loadSessionSight). A session the pass names only as it decides a row - a role destination's
+// holder - is read then, alone, and kept for the pass's later rows. A read that failed answers its
+// error to every row that asks after it, which counts an attempt on the row and backs it off
+// (failedFallbackCopy), as any decision that fails does.
+type fallbackSight struct {
+	ctx  context.Context
+	deps Deps
+	read map[[2]string]bool
+	err  error
+}
+
+// newFallbackSight is the pass's fallbackSight, its rows' own sessions read.
+func newFallbackSight(ctx context.Context, deps Deps, copies []fallbackCopy, events map[int64]fallbackEvent) *fallbackSight {
+	sight := &fallbackSight{ctx: ctx, deps: deps, read: map[[2]string]bool{}}
+	sessions, projects := map[string]struct{}{}, map[string]struct{}{}
+	for _, held := range copies {
+		event, found := events[held.eventID]
+		session, ofASession := strings.CutPrefix(held.destination, contracts.AgentTopicPrefix)
+		if !found || !ofASession || event.event.Project == "" {
+			continue
+		}
+		sessions[session] = struct{}{}
+		projects[event.event.Project] = struct{}{}
+	}
+	sight.load(slices.Sorted(maps.Keys(sessions)), slices.Sorted(maps.Keys(projects)))
+	return sight
+}
+
+// load reads the sight of every session of sessions for every project of projects in one
+// statement, and keeps every pair it read.
+func (s *fallbackSight) load(sessions, projects []string) {
+	if len(sessions) == 0 || len(projects) == 0 || s.err != nil {
+		return
+	}
+	seen, err := access.SessionsSeeProjects(s.ctx, s.deps.Store.Pool, sessions, projects)
+	if err != nil {
+		s.err = err
+		return
+	}
+	for _, session := range sessions {
+		for _, project := range projects {
+			s.read[[2]string{session, project}] = seen[project][session]
+		}
+	}
+}
+
+// sees answers whether session may be shown project's events, reading the pair alone where the
+// pass has not read it yet.
+func (s *fallbackSight) sees(session, project string) (bool, error) {
+	if sees, read := s.read[[2]string{session, project}]; read {
+		return sees, nil
+	}
+	s.load([]string{session}, []string{project})
+	if s.err != nil {
+		return false, s.err
+	}
+	return s.read[[2]string{session, project}], nil
 }
 
 // fallbackCopyKey is the key of the session a row's copy reaches, as destination.key names it for

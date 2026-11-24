@@ -898,11 +898,32 @@ func (s *server) deliverMessageResuming(
 	replyThread *messageReplyThread,
 	resumeAttempt int,
 ) (model.MessageDelivery, error) {
+	return s.deliverMessageWith(ctx, message, delivery, actor, replyThread, resumeAttempt, nil)
+}
+
+// deliverMessageWith is deliverMessageResuming with resolved, a resolution of the message's target
+// its caller made before the message was written (refuseMessageTargetOutsideProject), which the
+// first resolution here takes as its own while the route it would resolve is that same target,
+// so the message's creation asks the listener once. A redo, after the locked rows disagreed with
+// it, resolves afresh; nil resolves as deliverMessageResuming does.
+func (s *server) deliverMessageWith(
+	ctx context.Context,
+	message model.Message,
+	delivery string,
+	actor model.Actor,
+	replyThread *messageReplyThread,
+	resumeAttempt int,
+	resolved *ResolvedMention,
+) (model.MessageDelivery, error) {
 	pending, err := resolveThenLock(ctx,
 		func(ctx context.Context) (ResolvedMention, error) {
 			route, err := s.messageDeliveryRoute(ctx, message, resumeAttempt)
 			if err != nil {
 				return ResolvedMention{}, err
+			}
+			if first := resolved; first != nil && first.Target == route {
+				resolved = nil
+				return *first, nil
 			}
 			return s.resolveMentionTarget(ctx, route, delivery, 0), nil
 		},
