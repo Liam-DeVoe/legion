@@ -1984,12 +1984,14 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 		}
 		return fmt.Errorf("%w: %s's notice row %d waits behind its row %d", errNoticeWaits, architect, row.ID, earlier)
 	}
-	// The end of a step or a retro the owner did queues the write of the owner's slot back to its
-	// own App (workflow's ownerSlotCredential), and a notice queued after it waits until that write
-	// ran.
+	// The end of each act the owner did as another role queues the write of the owner's slot back
+	// to its own App: a step, its retro of its own implementation step, and a merge forward asked of
+	// it (workflow's ownerSlotCredential and mergeForwardWriteBack). The end of the owner's retro done
+	// as itself queues none on its walk, since its slot held the owner's own App throughout. A notice
+	// queued after such a write waits until that write ran.
 	// Under tmux the write changes the pane's gh files at once. Under Kubernetes it changes the
 	// slot's Secret, and the kubelet's sync of that Secret into the pod is not waited for here. So
-	// a notice of another kind can reach the owner while its gh files still hold the step's App.
+	// a notice of another kind can reach the owner while its gh files still hold the act's App.
 	// The next owner-step waits for the slot's gh files to hold its App, the owner's own App among
 	// them (ownerSlotHolds).
 	if pending, err := r.slotWritePending(ctx, architect, row.ID); err != nil {
@@ -1998,7 +2000,9 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 		return fmt.Errorf("%w: %s's notice row %d waits for the write of its slot back to its own App", errNoticeWaits, architect, row.ID)
 	}
 	// An owner's step or retro is told once the owner's slot holds the App of the role it is done
-	// as, so the owner's gh acts as that App for the whole of it (ownerSlotHolds). The owner's claim is read
+	// as, so the owner's gh acts as that App when it is told, and keeps it until the act ends, unless
+	// a merge forward asked of the owner holds the slot on the implement App meanwhile
+	// (ownerSlotHolds, record.OwnerActsAs). The owner's claim is read
 	// before the publish, and the publish answers the session the listener forwarded it to; which
 	// of the two the step's run records is ownerStepTold's.
 	var told supervise.Claim
@@ -2066,8 +2070,10 @@ const ownerStepStaleLine = "outbox owner-step finished undelivered: its step no 
 
 // ownerSlotHolds is the hold of a notice owner-step, told to owner, the issue's own architect: it
 // answers true once the notice's run still runs and owner's slot holds the gh credential of the
-// App of the role the notice's step or retro is done as, so the owner's gh never acts as another
-// App in it. A step is done as its own role, the notice's Role. The retro, whose Role is "", is done
+// App of the role the notice's step or retro is done as, so the owner's gh acts as that App when
+// the notice reaches it. A merge forward asked of the owner later in the step or the retro gives the
+// slot the implement App until that ask ends (record.OwnerActsAs). A step is done as its own role,
+// the notice's Role. The retro, whose Role is "", is done
 // as the role of the task's last step of the type implementation, the owner's own where it has none
 // (retroActsAs): so the owner's retro of its own implementation step acts as the App that opened
 // the pull request, the one App GitHub lets resolve its review threads.

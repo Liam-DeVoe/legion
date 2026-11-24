@@ -2412,9 +2412,9 @@ type Store interface {
 	// run holds back nothing (Postgres.OwnerStepPending).
 	OwnerStepPending(ctx context.Context, tx pgx.Tx, issue string, step NoticeStep) (bool, error)
 	// SlotWritePending says whether the outbox still holds a supervise slot_credential row of the
-	// claim token queued before the row before (workflow's ownerSlotCredential): the write of an
-	// owner's slot back to its own App, which a later notice to that claim waits for (the daemon's
-	// deliverNotice).
+	// claim token queued before the row before (workflow's ownerSlotCredential and
+	// mergeForwardWriteBack): the write of an owner's slot back to its own App, which a later notice
+	// to that claim waits for (the daemon's deliverNotice).
 	SlotWritePending(ctx context.Context, tx pgx.Tx, token claim.Token, before int64) (bool, error)
 	// MergeForwardAskPending says whether the outbox still holds a merge-forward ask of issue's
 	// head head to the claim token, so an ask told again is never queued behind the one it repeats
@@ -2891,9 +2891,10 @@ func OwnerActsAs(issue Issue, steps []PlanStep, mergeForward bool) (claim.Role, 
 // (PullRequest.MergeForward). Each other state is an end of it: the landing, the clear of the ask
 // on a move into implementing or a leave, the close or the merge of the pull request, a hold, a
 // stopped task, the issue's leave and its tree's linger. The workflow queues the write-back of the
-// owner's slot at each end it writes (its mergeForwardWriteBack), asks the owner again where a
-// release of a hold opens the ask again (its issueReopensOwnersMergeForward), and the daemon's ActsAs
-// reads this for every write of the owner's slot.
+// owner's slot at each end it writes (its mergeForwardWriteBack), which is every end but the tree's
+// linger: a linger suspends every role and writes no slot. It asks the owner again where a release
+// of a hold opens the ask again (its issueReopensOwnersMergeForward), and the daemon's ActsAs reads
+// this for every write of the owner's slot.
 func OwnersMergeForward(issue Issue, lingers bool, pr *PullRequest, rows []PhaseRow) bool {
 	if issue.Hold != nil || lingers || !InWorkflow(issue) || pr == nil || pr.State != PullRequestOpen ||
 		pr.MergeForward == nil || pr.MergeForward.Landed != "" {

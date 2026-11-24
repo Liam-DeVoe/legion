@@ -12,8 +12,10 @@ import (
 // A merge forward is an act as the implementer, so while the record holds one asked of the owner
 // that has not ended (record.OwnersMergeForward) the owner's slot holds the implement App
 // (record.OwnerActsAs, which the daemon's ActsAs reads at each write of the slot). Each end of it
-// gives the owner's slot its own App back at once, as the end of each step the owner does as
-// another role does (ownerSlotCredential), so no path leaves the slot on the implement App. The
+// queues the write of the owner's slot back to its own App, as the end of each step the owner does
+// as another role does (ownerSlotCredential). That write is made where the record then answers the
+// owner's own App, and an act of another App that runs by then keeps its App (internal/daemon's
+// slotCredential), so no path leaves the slot on the implement App once no act holds it there. The
 // ends are the writes of two records, and each of the two writers checks it, once, for every
 // caller:
 //   - the pull request's (putPullRequest): the landing (mergeForwardLanded), the clear of the ask

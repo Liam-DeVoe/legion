@@ -255,7 +255,9 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 // given its own App back at a step's end: where the run it ends is a step of a stored plan whose
 // start named an architect (the owner, or the architect above that ran the step for it,
 // ownerAgent), it queues a supervise slot_credential of the owner's claim in the same transaction,
-// which writes the owner's slot back to its own App when it runs (ownerSlotCredential). The end of
+// which writes the owner's slot back to its own App when it runs, and writes nothing where another
+// act of the owner's of another App runs by then (ownerSlotCredential; internal/daemon's
+// slotCredential). The end of
 // the owner's retro queues it only where the retro was done as another role than the owner's own
 // (record.RetroActsAs over the walk's steps), the one retro whose slot was switched: the retro of
 // the owner's own implementation step. The owner's retro of a task with no step of the type
@@ -285,12 +287,14 @@ func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, w 
 // an architect, the supervise slot_credential that writes the slot of the owner of issue's task
 // (record.OwnerClaim) back to the App of the owner's own role (internal/daemon's slotCredential).
 // While the owner does a step, or the retro of its own implementation step, its slot holds the App
-// of the role it is done as (record.OwnerActsAs), so the end of that step or retro gives it its own
-// App back at once rather than at the next refresh of the slot, and the next notice to the owner
-// waits for that write (internal/daemon's deliverNotice). The slot written in the step is always
-// the owner's, whichever architect the start named: the owner-step goes to the owner, and only the
-// owner's claim acts as another role. Any other agent's slot never held another App, and an issue
-// whose key makes no claim token has no owner's slot.
+// of the role it is done as, unless a merge forward asked of the owner holds it on the implement
+// App (record.OwnerActsAs). So the end of that step or retro queues the write-back rather than
+// leave the slot to its next refresh. The write is made only where the record then answers the
+// owner's own App, so a step, a retro or a merge forward of another App that runs by then keeps its
+// App, and the next notice to the owner waits for that write (internal/daemon's deliverNotice). The
+// slot written is always the owner's, whichever architect the start named: the owner-step goes to
+// the owner, and only the owner's claim acts as another role. Any other agent's slot never held
+// another App, and an issue whose key makes no claim token has no owner's slot.
 func (e *Engine) ownerSlotCredential(ctx context.Context, tx pgx.Tx, issue record.Issue, agent claim.Token) error {
 	if _, of, ok := agent.Cut(); !ok || of != claim.Agent(claim.RoleArchitect) {
 		return nil
