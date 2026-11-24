@@ -275,7 +275,7 @@ assumption the run rests on and the scenario it gave the work of an issue that n
 // newReplayRunCommand is `legion replay run` (replay.Run).
 func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "run --window <dir> --rule <name> --pg-dsn <dsn> --out <dir> [--branch <name>] [--seed <n>] [--slowdown <f>] [--keep-db] [--trace-segments]",
+		Use:   "run --window <dir> --rule <name> --pg-dsn <dsn> --out <dir> [--branch <name>] [--seed <n>] [--slowdown <f>] [--cap <n>] [--keep-db] [--trace-segments]",
 		Short: "replay a recorded window under a slot rule, in a database of its own, and write what it ran and counted",
 		Long:  replayRunLong,
 		Args:  noArguments,
@@ -290,6 +290,7 @@ func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 	out := flags.String("out", "", "the directory the run's output is written to (required)")
 	keepDB := flags.Bool("keep-db", false, "keep the replay's database after the run")
 	traceSegments := flags.Bool("trace-segments", false, "write each work segment's n, m and length to segments.jsonl")
+	capOverride := flags.Int("cap", 0, "the admission cap the replay serves under for the whole window, in place of the record's (0 keeps the record's)")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
 		if missing := missingFlag(cmd, "window", "rule", "pg-dsn", "out"); missing != "" {
 			return refuse(cmd, "--%s is required", missing)
@@ -305,13 +306,16 @@ func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 		if *slowdown <= 0 {
 			return refuse(cmd, "--slowdown %v: the factor must be above zero", *slowdown)
 		}
+		if *capOverride < 0 {
+			return refuse(cmd, "--cap %d: the cap must be zero, which keeps the record's, or above it", *capOverride)
+		}
 		window, err := replay.ReadWindow(*windowDir)
 		if err != nil {
 			fmt.Fprintf(stderr, "legion replay run: %v\n", err)
 			return 1
 		}
 		result, err := replay.Run(ctx, replay.RunConfig{Window: window, Rule: rule, Branch: branch, Seed: *seed, Slowdown: *slowdown,
-			PGDSN: *dsn, Out: *out, KeepDB: *keepDB, TraceSegments: *traceSegments, BuildCommit: binaryCommit()})
+			PGDSN: *dsn, Out: *out, KeepDB: *keepDB, TraceSegments: *traceSegments, BuildCommit: binaryCommit(), Cap: *capOverride})
 		if err != nil {
 			fmt.Fprintf(stderr, "legion replay run: %v\n", err)
 			return 1
@@ -321,8 +325,12 @@ func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 			kept = "kept"
 		}
 		counted := result.Divergence
-		fmt.Fprintf(stdout, "legion replay run: replayed %s under the rule %s on the branch %s (seed %d, f %v) in the database %s (%s); wrote %s\n",
-			*windowDir, rule.Name, branch.Name, *seed, *slowdown, result.Database, kept, *out)
+		capWord := "the record's cap"
+		if *capOverride > 0 {
+			capWord = fmt.Sprintf("the cap %d", *capOverride)
+		}
+		fmt.Fprintf(stdout, "legion replay run: replayed %s under the rule %s on the branch %s (seed %d, f %v, %s) in the database %s (%s); wrote %s\n",
+			*windowDir, rule.Name, branch.Name, *seed, *slowdown, capWord, result.Database, kept, *out)
 		fmt.Fprintf(stdout, "legion replay run: %d moves refused, %d recorded conflicts kept for a loop open at the window's end, %d conflicts past the review left to the merger, %d reassertion starts, %d events fenced, %d starts with no segment left, %d segments passed over, %d unplaced issues\n",
 			len(counted.Refused), counted.KeptOpenLoops, counted.ConflictsToMerger, counted.Reassertions, counted.Fenced, counted.NoSegment, counted.SkippedSegments,
 			len(result.Unplaced))
@@ -422,7 +430,8 @@ started) and the seed 1 alone for one that draws nothing. Up to --parallel runs 
 in a database of its own on the server --pg-dsn names. Each run's run.json, scorecard.json and
 scorecard-line.json are written under --out, in <window>/<rule>/<branch>@<f>/seed-<n>/, beside the
 window's record.json; a run whose files are there already is not run again, and each run's log is
-deleted once the run has read it back, unless --keep-logs.
+deleted once the run has read it back, unless --keep-logs. With --main-only the main branch at f 1
+runs alone, with its seeds, in place of every branch.
 
 It prints, for each branch and each measure, the recorded value, the replayed value (the mean of
 the seeds, with the lowest and the highest seed's), the gap, the allowance and the test; for each
@@ -439,7 +448,7 @@ more than one) and --rule defaulting to the rule its daemon ran.`
 // newReplayValidateCommand is `legion replay validate` (replay.RunValidate, replay.Runs.Validation).
 func newReplayValidateCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "validate --window <dir> --rule <name> --pg-dsn <dsn> --out <dir> [--parallel <n>] [--keep-logs] | --from-runs <dir>... [--window <name>] [--rule <name>]",
+		Use:   "validate --window <dir> --rule <name> --pg-dsn <dsn> --out <dir> [--parallel <n>] [--keep-logs] [--main-only] | --from-runs <dir>... [--window <name>] [--rule <name>]",
 		Short: "replay a window under the rule its daemon ran on every branch, and test each branch against the record",
 		Long:  replayValidateLong,
 		Args:  noArguments,
@@ -451,12 +460,13 @@ func newReplayValidateCommand(stdout, stderr io.Writer) *cobra.Command {
 	out := flags.String("out", "", "the directory of runs every run is written under")
 	parallel := flags.Int("parallel", 1, "how many runs run at once")
 	keepLogs := flags.Bool("keep-logs", false, "keep each run's log.jsonl")
+	mainOnly := flags.Bool("main-only", false, "run the main branch at f 1 alone, with its seeds, in place of every branch")
 	fromRuns := flags.StringArray("from-runs", nil, "a directory of runs to read the validation from, running nothing; repeat for more")
 	asJSON := flags.Bool("json", false, "print the validation as JSON")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
 		var validation replay.Validation
 		if len(*fromRuns) > 0 {
-			if set := changedFlag(cmd, "pg-dsn", "out", "parallel", "keep-logs"); set != "" {
+			if set := changedFlag(cmd, "pg-dsn", "out", "parallel", "keep-logs", "main-only"); set != "" {
 				return refuse(cmd, "--from-runs reads runs and makes none, so --%s does not apply", set)
 			}
 			read, err := replay.ReadRuns(*fromRuns...)
@@ -496,7 +506,7 @@ func newReplayValidateCommand(stdout, stderr io.Writer) *cobra.Command {
 			}
 			var err error
 			validation, err = replay.RunValidate(ctx, replay.ValidateConfig{Window: *windowDir, Rule: rule, PGDSN: *dsn, Parallel: *parallel,
-				Out: *out, KeepLogs: *keepLogs, Progress: replayProgress(stderr, "validate"), BuildCommit: binaryCommit()})
+				Out: *out, KeepLogs: *keepLogs, MainOnly: *mainOnly, Progress: replayProgress(stderr, "validate"), BuildCommit: binaryCommit()})
 			if err != nil {
 				fmt.Fprintf(stderr, "legion replay validate: %v\n", err)
 				return 1

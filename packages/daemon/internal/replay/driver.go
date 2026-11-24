@@ -323,7 +323,8 @@ func (d *driver) now() time.Time { return d.clock.Now() }
 
 // newChain builds the daemon's handler chain afresh, as each of the daemon's boots does: a new
 // engine and admission pass under the run's rule, on the simulated clock, with the window's
-// settings and the cap the daemon served under at at, the replay's tables of what a rule the
+// settings and the cap the daemon served under at at (the run's own cap where it names one,
+// RunConfig.Cap), the replay's tables of what a rule the
 // daemon does not run records (ruleTables), and the replay's own handler before the chain.
 func (d *driver) newChain(at time.Time) {
 	w := d.window
@@ -337,7 +338,11 @@ func (d *driver) newChain(at time.Time) {
 	d.engine = workflow.New(d.records, workflow.Config{Project: w.Project, Steps: w.GateSteps, ReviewRoundCap: w.ReviewRoundCap,
 		Linger: time.Duration(w.Linger), Clock: d.clock.Now, Repositories: replayRepositories{branches: d.trace.Branches},
 		Experiments: w.Experiments, ExperimentSource: draw, SlotRule: d.rule}, d.log)
-	d.admission = admit.New(d.records, d.engine, capAt(w, at), w.Project, d.log)
+	limit := capAt(w, at)
+	if d.cfg.Cap > 0 {
+		limit = d.cfg.Cap
+	}
+	d.admission = admit.New(d.records, d.engine, limit, w.Project, d.log)
 	d.admission.UseRuleTables(ruleTables{})
 	d.admission.UseClock(d.clock.Now)
 	d.admission.UseExperiments(w.Experiments)

@@ -61,6 +61,11 @@ type RunConfig struct {
 	// BuildCommit is the commit of the legion binary that runs the replay, which run.json names
 	// (runRecord.BuildCommit); unknownBuild where it is empty.
 	BuildCommit string
+	// Cap, where above zero, is the admission cap the replay's daemon serves under from the
+	// window's start to its end, in place of the cap the record shows (Window.Caps, capAt): the
+	// question what the same window would have done with more or fewer slots. Zero keeps the
+	// record's cap, which validate and every run of a comparison of rules read.
+	Cap int
 
 	// afterFact, where set, runs after each fact the replay applies, with the replay's pool and
 	// its copy of Dispatch, between facts: a test's look at the replay's state as each pass leaves
@@ -522,6 +527,7 @@ type runRecord struct {
 	Branch          Branch        `json:"branch"`
 	Seed            int64         `json:"seed"`
 	Slowdown        float64       `json:"slowdown"`
+	Cap             int           `json:"cap,omitempty"`
 	Scenario        string        `json:"scenario"`
 	Assumptions     []int         `json:"assumptions"`
 	Database        string        `json:"database"`
@@ -549,7 +555,7 @@ func (d *driver) writeOutputs(result RunResult, began time.Time) error {
 		mean = float64(d.passTime.Microseconds()) / 1000 / float64(d.facts)
 	}
 	ran := runRecord{Rule: d.rule.Name, RuleCommit: d.rule.Commit, BuildCommit: cmp.Or(d.cfg.BuildCommit, unknownBuild), Branch: d.cfg.Branch,
-		Seed: d.cfg.Seed, Slowdown: d.cfg.Slowdown, Scenario: result.Scorecard.Scenario, Assumptions: result.Assumptions, Database: result.Database,
+		Seed: d.cfg.Seed, Slowdown: d.cfg.Slowdown, Cap: d.cfg.Cap, Scenario: result.Scorecard.Scenario, Assumptions: result.Assumptions, Database: result.Database,
 		KeptDatabase: d.cfg.KeepDB, Facts: d.facts, Passes: d.facts + d.boots, MeanPassMillis: mean, StartedAt: began.UTC(),
 		WallSeconds: time.Since(began).Seconds(), PeakMemoryBytes: peakMemory(), Unplaced: len(result.Unplaced), Segments: len(d.segments),
 		Divergence: result.Divergence, Gaps: result.Gaps, Conflicts: result.Conflicts}

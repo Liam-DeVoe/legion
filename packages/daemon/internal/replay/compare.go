@@ -443,6 +443,10 @@ type ValidateConfig struct {
 	KeepLogs    bool
 	Progress    func(RunDone)
 	BuildCommit string
+	// MainOnly runs the main branch at f 1 alone (MainBranchAt), with its seeds, in place of every
+	// branch: the check that the replay of the recorded rule meets R5's gaps on the branch R5
+	// judges a window by, at a fifth of the runs of the whole grid's first factor.
+	MainOnly bool
 
 	// plan, where set, replaces the validation's branches and seeds: a test's smaller one.
 	plan *runPlan
@@ -465,6 +469,9 @@ func RunValidate(ctx context.Context, cfg ValidateConfig) (Validation, error) {
 		return Validation{}, fmt.Errorf("replay: the window %s ran the rule %s, and a validation replays the rule the daemon ran, not %s", name, ran, rule.Name)
 	}
 	plan := fullPlan()
+	if cfg.MainOnly {
+		plan = runPlan{branches: []BranchAt{MainBranchAt}, perDraw: SeedsPerDraw}
+	}
 	if cfg.plan != nil {
 		plan = *cfg.plan
 	}

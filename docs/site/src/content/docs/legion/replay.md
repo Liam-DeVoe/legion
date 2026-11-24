@@ -367,10 +367,11 @@ Nothing that moves an issue's work reads what a holder took, but the merger's st
 | `--branch <name>` | The branch, `main` or `main+<knob>=<value>` ([The branches](#the-branches)). |
 | `--seed <n>` | The seed of every draw (1 by default). |
 | `--slowdown <f>` | The factor f for each 42 issues in flight above the record's number (1 by default). |
+| `--cap <n>` | The admission cap the replay serves under from the window's start to its end, in place of the record's (0, the default, keeps the record's). `run.json` names it. |
 | `--keep-db` | Keep the run's database after the run. |
 | `--trace-segments` | Write each work segment's issue, phase, start, n, m, recorded length and replayed length to `segments.jsonl`. |
 
-`run` prints the window, the rule, the branch, the seed, f and the database.
+`run` prints the window, the rule, the branch, the seed, f, the cap and the database.
 It prints each move that the daemon's code refused, with the reason, and counts what the replay could not enter as recorded, the recorded conflicts that it kept for a loop that runs to `--to`, and the conflicts past the review that it left to the merger.
 It prints the scenario of the work of an issue that never started, the conflict model with the window that it was fitted on and its intervals, and the widest gap between the run's two scorecards.
 Last, it prints each assumption that the run rests on, with the number of outbox rows that it finished under each.
@@ -437,6 +438,7 @@ A branch that draws nothing runs the seed 1 alone.
 Up to `--parallel` runs run at once, each in a database of its own.
 Each run's files go under `--out` in `<window>/<rule>/<branch>@<f>/seed-<n>/`, and a run whose files are there already does not run again.
 `validate` deletes each run's log once it has read it, unless `--keep-logs`.
+With `--main-only` it runs the main branch at f = 1 alone, with the seeds 1 to 5, in place of every branch.
 
 It prints, for each branch and each measure, the recorded value, the replayed value, the gap, the allowance and the test.
 The replayed value is the mean of the seeds, with the values of the lowest and the highest seed.
