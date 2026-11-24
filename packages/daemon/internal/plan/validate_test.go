@@ -149,7 +149,7 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 	// Both checks run, so a plan with causes of each kind gets the reasons of both, as one refusal.
 	twoTasks := oneTask("a", "implementer prober")
 	twoTasks.Tasks = append(twoTasks.Tasks, Task{ID: "b", Steps: implementer})
-	got := Refusals(twoTasks, Deployment{Roles: BuiltinRoles()})
+	got := append(Supported(twoTasks), Validate(twoTasks, Deployment{Roles: BuiltinRoles()})...)
 	want := []Refusal{
 		{Task: "", Reason: "the plan has 2 tasks (a, b), and this release runs one task for each issue." + yet},
 		{Task: "", Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself." + yet},
@@ -238,7 +238,7 @@ func counting(count int) []shown { return []shown{{count: count}} }
 
 // One refusal of a plan names the first MostReasons causes of each kind in the order the checks
 // find them, and right after the last of them one more reason, of the whole plan, counts the rest
-// of that kind, so its size does not grow with the plan and no kind pushes another out. Each check
+// of that kind, so the number of its reasons does not grow with the plan and no kind pushes another out. Each check
 // that finds a cause for each item of the plan is held to it: a `needs` word that names no task, a
 // role nobody defines, a step's key, and a step that reads a pull request with no implementer
 // before it. A kind with MostReasons causes or fewer is named whole. Each kind has its own bound,
@@ -279,16 +279,17 @@ func TestARefusalNamesTheFirstReasonsOfEachKindAndCountsTheRest(t *testing.T) {
 			ringNeeds = append(ringNeeds, shown{task: id, item: next})
 		}
 	}
-	// selves is 21 tasks s01 to s21, each needing itself: 21 sets of one task. Of its first 20
-	// tasks, the reason of the need (`task s01 needs s01.`) and the reason of the set (`task s01
-	// needs itself: s01 needs s01.`) each name `s01 needs s01`, so selfNamed stands for both.
+	// selves is 21 tasks s01 to s21, each needing itself: 21 sets of one task. Of its first 20 tasks,
+	// the reason of the need holds `task s01 needs s01.` and the reason of the set `needs itself:
+	// s01 needs s01`, which the other does not hold, so a swap of the two groups fails.
 	var selves []Block
-	var selfNamed []shown
+	var selfNeeds, selfSets []shown
 	for i := 1; i <= 21; i++ {
 		id := fmt.Sprintf("s%02d", i)
 		selves = append(selves, taskNeeding(id, id))
 		if i <= MostReasons {
-			selfNamed = append(selfNamed, shown{task: id, item: id + " needs " + id})
+			selfNeeds = append(selfNeeds, shown{task: id, item: "task " + id + " needs " + id + "."})
+			selfSets = append(selfSets, shown{task: id, item: "needs itself: " + id + " needs " + id})
 		}
 	}
 	// mixed is task a with 25 words that name no task and two roles nobody defines, then task b
@@ -327,13 +328,13 @@ func TestARefusalNamesTheFirstReasonsOfEachKindAndCountsTheRest(t *testing.T) {
 		{name: "a cycle is named after more than MostReasons reasons of another kind", plan: planOf(t, 1, ring...),
 			want: slices.Concat(naming("", "(t01, t02, "), ringNeeds, counting(2), naming("t01", "t22 needs t01"))},
 		{name: "21 sets of tasks that need each other: 20 named, 1 counted", plan: planOf(t, 1, selves...),
-			want: slices.Concat(naming("", "(s01, s02, "), selfNamed, counting(1), selfNamed, counting(1))},
+			want: slices.Concat(naming("", "(s01, s02, "), selfNeeds, counting(1), selfSets, counting(1))},
 		{name: "the reasons named keep the checks' order, the dropped ones left out", plan: mixed,
 			want: slices.Concat(naming("", "(a, b)", "(a, b)"), naming("a", numbered("x", MostReasons)...), counting(8),
 				naming("a", "r00001", "r00002"), naming("b", "r00003"))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := Refusals(tc.plan, d)
+			got := append(Supported(tc.plan), Validate(tc.plan, d)...)
 			if len(got) != len(tc.want) {
 				t.Fatalf("the refusal holds %d reasons, want %d: %.3000v", len(got), len(tc.want), got)
 			}

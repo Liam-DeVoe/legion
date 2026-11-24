@@ -2,14 +2,19 @@ package plan
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
-// The two checks a plan passes before Legion takes it. Both run on every plan, and each gives one
-// reason for each cause it finds, so a plan with two causes gets two reasons, and the owner reads
-// every cause at once rather than one for each try. Each reason names its task where it has one.
-// One refusal names at most MostReasons causes of each kind and counts the rest (reasons).
+// The two checks a plan passes before Legion takes it. Both run on every plan, and each gives a
+// reason for each cause it finds, up to the bound of its kind, so a plan with two causes gets two
+// reasons, and the owner reads every cause at once rather than one for each try. Each reason names
+// its task where it has one. One refusal names at most MostReasons causes of each kind and counts
+// the rest (reasons), and each reason quotes the plan within a bound of bytes: a task id of at
+// most MostTaskIDBytes (FromBlocks refuses a longer one), a word of at most MostQuotedBytes
+// (quoted), and a list of at most MostReasons ids (listed, chainOf).
 
 // MostReasons is the most reasons of one kind of cause that one refusal of a plan names; one more
 // reason counts the rest of that kind (reasons). The owner fixes what the refusal names and gives
@@ -19,6 +24,42 @@ import (
 // its items, such as a reference to the blocks of another document in each need or a key on each
 // step.
 const MostReasons = 20
+
+// MostTaskIDBytes is the longest task id a plan gives. Dispatch records a step only of a task whose
+// id matches its task form, `^[a-z0-9][a-z0-9-]{0,63}$` (taskForm in
+// packages/envoy/internal/dispatch/workflowstore/write.go), so no step of a task with any other id
+// can ever be recorded, and FromBlocks refuses such an id (taskIDForm).
+const MostTaskIDBytes = 64
+
+// taskIDForm is Dispatch's task form, which a step record's write holds its task to.
+var taskIDForm = regexp.MustCompile(fmt.Sprintf(`^[a-z0-9][a-z0-9-]{0,%d}$`, MostTaskIDBytes-1))
+
+// MostQuotedBytes is the most bytes of one word of the plan that a reason quotes: a need, a role, a
+// key, a step, or a block id outside the task form. Twice the longest task id holds a reference
+// to a task of another document (`dispatch://KEY/artifact/<slug>#b-<id>@v2`).
+const MostQuotedBytes = 128
+
+// quoted is word as a reason quotes it: whole within MostQuotedBytes, else its first bytes up to
+// that bound, cut at the start of a character, and a mark that it was cut, with its length.
+func quoted(word string) string {
+	if len(word) <= MostQuotedBytes {
+		return word
+	}
+	cut := MostQuotedBytes
+	for cut > 0 && !utf8.RuneStart(word[cut]) {
+		cut--
+	}
+	return fmt.Sprintf("%s… (cut from %d bytes)", word[:cut], len(word))
+}
+
+// listed is ids as a reason lists them: the first MostReasons, joined by ", ", and past them a
+// count of the rest.
+func listed(ids []string) string {
+	if len(ids) <= MostReasons {
+		return strings.Join(ids, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(ids[:MostReasons], ", "), len(ids)-MostReasons)
+}
 
 // noTask is the reason a plan with no task block gets. No later release takes such a plan, so it
 // is Validate's and does not say "yet".
@@ -127,16 +168,6 @@ func (r *reasons) refusals() []Refusal {
 	return refusals
 }
 
-// Refusals is every reason Legion does not take p, as one refusal names them (reasons): Supported's,
-// what this release does not carry out yet, then Validate's, what no release can. Both checks run,
-// so a plan with a cause of each check gets both.
-func Refusals(p Plan, d Deployment) []Refusal {
-	var found reasons
-	supported(p, &found)
-	validate(p, d, &found)
-	return found.refusals()
-}
-
 // Validate is what Legion cannot carry out in any release: a plan with no task; for each task,
 // each `needs` word that names no task of the plan, in the block's order (Task.Unresolved, which
 // FromBlocks fills), and each step that names a role neither d nor the plan's own role blocks
@@ -144,18 +175,12 @@ func Refusals(p Plan, d Deployment) []Refusal {
 // of tasks that need each other (cycles), named by its first task in id order with the chain from
 // that task. It refuses no plan for a step the plan lacks. The other refusals of a plan no release
 // carries out need an attribute or a block that Supported refuses in this release, so the release
-// that lifts that refusal adds them here. It is one refusal's reasons (reasons).
+// that lifts that refusal adds them here. Its reasons are bounded as reasons bounds each kind.
 func Validate(p Plan, d Deployment) []Refusal {
 	var found reasons
-	validate(p, d, &found)
-	return found.refusals()
-}
-
-// validate adds Validate's causes to found.
-func validate(p Plan, d Deployment, found *reasons) {
 	if len(p.Tasks) == 0 {
 		found.add(noTaskBlock, "", func() string { return noTask })
-		return
+		return found.refusals()
 	}
 	defined := make(map[string]bool, len(p.RoleBlocks))
 	for _, role := range p.RoleBlocks {
@@ -164,7 +189,7 @@ func validate(p Plan, d Deployment, found *reasons) {
 	for _, task := range p.Tasks {
 		for _, word := range task.Unresolved {
 			found.add(unresolvedNeed, task.ID, func() string {
-				return fmt.Sprintf("task %s needs %s, which names no task of this plan.", task.ID, word)
+				return fmt.Sprintf("task %s needs %s, which names no task of this plan.", task.ID, quoted(word))
 			})
 		}
 		refused := map[string]bool{}
@@ -174,20 +199,32 @@ func validate(p Plan, d Deployment, found *reasons) {
 			}
 			refused[step.Role] = true
 			found.add(undefinedRole, task.ID, func() string {
-				return fmt.Sprintf("step %d of task %s names the role %s, which neither the deployment nor the plan defines.", i+1, task.ID, step.Role)
+				return fmt.Sprintf("step %d of task %s names the role %s, which neither the deployment nor the plan defines.", i+1, task.ID, quoted(step.Role))
 			})
 		}
 	}
 	sets, _ := cycles(p.Tasks)
 	for _, cycle := range sets {
 		found.add(needsItself, cycle[0], func() string {
-			chain := make([]string, len(cycle))
-			for i, id := range cycle {
-				chain[i] = id + " needs " + cycle[(i+1)%len(cycle)]
-			}
-			return fmt.Sprintf("task %s needs itself: %s.", cycle[0], strings.Join(chain, ", "))
+			return fmt.Sprintf("task %s needs itself: %s.", cycle[0], chainOf(cycle))
 		})
 	}
+	return found.refusals()
+}
+
+// chainOf is a cycle's chain as its reason names it, each task needing the next and the last the
+// first: every need of a cycle of at most MostReasons tasks, and of a longer one its first
+// MostReasons - 1 needs, a count of the needs between, and the need that closes it.
+func chainOf(cycle []string) string {
+	link := func(i int) string { return cycle[i] + " needs " + cycle[(i+1)%len(cycle)] }
+	chain := make([]string, 0, MostReasons+1)
+	for i := range min(len(cycle), MostReasons) - 1 {
+		chain = append(chain, link(i))
+	}
+	if len(cycle) > MostReasons {
+		chain = append(chain, fmt.Sprintf("%d more needs", len(cycle)-MostReasons))
+	}
+	return strings.Join(append(chain, link(len(cycle)-1)), ", ")
 }
 
 // cycles is one cycle of needs for each set of tasks that need each other: each strongly
@@ -358,42 +395,37 @@ func cycleFrom(needs [][]int, component, parent []int, task int) (path []int, fo
 // steps stand in any other order: the planner at any place, and the tester, the reviewer and the
 // acceptance in any order after the implementer. A task that names no steps runs the project's
 // default steps, which the configuration loader holds to these same checks, so none of its step
-// causes apply. It is one refusal's reasons (reasons).
+// causes apply. Its reasons are bounded as reasons bounds each kind.
 func Supported(p Plan) []Refusal {
 	var found reasons
-	supported(p, &found)
-	return found.refusals()
-}
-
-// supported adds Supported's causes to found.
-func supported(p Plan, found *reasons) {
 	if len(p.Tasks) > 1 {
 		found.yet(manyTasks, "", func() string {
 			ids := make([]string, len(p.Tasks))
 			for i, task := range p.Tasks {
 				ids[i] = task.ID
 			}
-			return fmt.Sprintf("the plan has %d tasks (%s), and this release runs one task for each issue.", len(p.Tasks), strings.Join(ids, ", "))
+			return fmt.Sprintf("the plan has %d tasks (%s), and this release runs one task for each issue.", len(p.Tasks), listed(ids))
 		})
 	}
 	if sinks := Sinks(p.Tasks); len(sinks) > 1 {
 		found.yet(manySinks, "", func() string {
-			return fmt.Sprintf("the plan has %d tasks that no task needs (%s), and the work of each would merge by itself.", len(sinks), strings.Join(sinks, ", "))
+			return fmt.Sprintf("the plan has %d tasks that no task needs (%s), and the work of each would merge by itself.", len(sinks), listed(sinks))
 		})
 	}
 	for _, role := range p.RoleBlocks {
-		found.yet(roleBlock, "", func() string { return "the plan defines the role " + role + "." })
+		found.yet(roleBlock, "", func() string { return "the plan defines the role " + quoted(role) + "." })
 	}
 	for _, task := range p.Tasks {
-		taskReasons(task, found)
+		taskReasons(task, &found)
 	}
+	return found.refusals()
 }
 
 // taskReasons adds Supported's causes in one task to found: its attributes first, then its steps
 // (stepReasons).
 func taskReasons(t Task, found *reasons) {
 	if len(t.Needs) > 0 {
-		found.yet(taskNeeds, t.ID, func() string { return fmt.Sprintf("task %s needs %s.", t.ID, strings.Join(t.Needs, ", ")) })
+		found.yet(taskNeeds, t.ID, func() string { return fmt.Sprintf("task %s needs %s.", t.ID, listed(t.Needs)) })
 	}
 	if t.Owner != "" {
 		found.yet(taskOwner, t.ID, func() string { return fmt.Sprintf("task %s names owner.", t.ID) })
@@ -434,7 +466,7 @@ func stepReasons(t Task, found *reasons) {
 				return fmt.Sprintf("step %d of task %s names acceptance with no key, which asks for a fresh agent of the role acceptance.", at, t.ID)
 			})
 		case step.Key != "" && (step.Role != "acceptance" || step.Key != "owner"):
-			found.yet(stepKey, t.ID, func() string { return fmt.Sprintf("step %d of task %s names the key %s.", at, t.ID, step.Key) })
+			found.yet(stepKey, t.ID, func() string { return fmt.Sprintf("step %d of task %s names the key %s.", at, t.ID, quoted(step.Key)) })
 		}
 		if _, seen := firstAt[step.Role]; !seen {
 			firstAt[step.Role] = at
@@ -447,7 +479,7 @@ func stepReasons(t Task, found *reasons) {
 	for _, role := range roles {
 		if second, ok := secondAt[role]; ok {
 			found.yet(roleTwice, t.ID, func() string {
-				return fmt.Sprintf("task %s names the role %s at steps %d and %d.", t.ID, role, firstAt[role], second)
+				return fmt.Sprintf("task %s names the role %s at steps %d and %d.", t.ID, quoted(role), firstAt[role], second)
 			})
 		}
 	}
@@ -460,8 +492,9 @@ func stepReasons(t Task, found *reasons) {
 		}
 		if readsPullRequest[step.Role] {
 			found.yet(readsBeforeImplementer, t.ID, func() string {
+				word := quoted(step.String())
 				return fmt.Sprintf("step %d of task %s names %s, and no step before it names the role implementer, whose pull request %s reads.",
-					i+1, t.ID, step, step)
+					i+1, t.ID, word, word)
 			})
 		}
 	}

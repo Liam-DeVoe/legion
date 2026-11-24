@@ -29,8 +29,9 @@ type Block struct {
 // other block is skipped. Each task's needs are the ids of the tasks they name (resolveNeeds), so
 // no plan holds a need as a word. A document with no task block is read as a plan with no task,
 // which Validate refuses. It answers an error only for a block it cannot read at all: a task or a
-// role with no id, one id on two such blocks, and a task whose `steps` is outside the grammar
-// (ParseSteps); the error names the block.
+// role with no id, one id on two such blocks, a task whose id is outside Dispatch's task form
+// (taskIDForm), whose steps Dispatch could never record, and a task whose `steps` is outside the
+// grammar (ParseSteps); the error names the block, its id or word quoted (quoted).
 func FromBlocks(artifactID string, version int, blocks []Block) (Plan, error) {
 	p := Plan{ArtifactID: artifactID, Version: version}
 	typeOf := map[string]string{}
@@ -42,12 +43,16 @@ func FromBlocks(artifactID string, version int, blocks []Block) (Plan, error) {
 			return Plan{}, fmt.Errorf("a %s block has no id, so no step of the plan can be named", block.Type)
 		}
 		if earlier, ok := typeOf[block.ID]; ok {
-			return Plan{}, fmt.Errorf("the id %s names a %s block and a %s block, so it names no one block", block.ID, earlier, block.Type)
+			return Plan{}, fmt.Errorf("the id %s names a %s block and a %s block, so it names no one block", quoted(block.ID), earlier, block.Type)
 		}
 		typeOf[block.ID] = block.Type
 		if block.Type == RoleBlockType {
 			p.RoleBlocks = append(p.RoleBlocks, block.ID)
 			continue
+		}
+		if !taskIDForm.MatchString(block.ID) {
+			return Plan{}, fmt.Errorf("the task %s has an id of %d bytes outside the form of a task id, lowercase letters, digits and hyphens, starting with a letter or a digit, at most %d bytes, so Dispatch could record none of its steps",
+				quoted(block.ID), len(block.ID), MostTaskIDBytes)
 		}
 		task, err := taskOf(block)
 		if err != nil {

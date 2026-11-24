@@ -254,22 +254,34 @@ func TestRegisterPlanRefusesACycleOfNeedsNamingIt(t *testing.T) {
 	}
 }
 
-// A refused plan's answer names the first plan.MostReasons reasons of each kind of cause and
-// counts the rest of the kind in one more, so its size does not grow with the plan's items. Three
-// versions below are one `plan_task` block whose one attribute holds 1 MiB of words, the most a
-// Dispatch document holds as its server writes it, each word a cause of its own: 262,144 `needs`
-// words that name no task, 209,712 roles nobody defines, and 116,508 steps `tester:k`, each with a
-// key and with no implementer before it. Each answer is within perKind bytes for each kind it
-// holds, and counts the rest of each kind past the bound, in its sentence too. The fourth is a
-// ring of 40,000 tasks, whose two reasons that list ids, the plan's tasks and the cycle through
-// them, are as long as the ids they name: its answer is within ringBound, so a change that copies
-// such a list into each reason fails it. The fault is an answer with a reason for each cause; the
-// control is plan's reasons with its bound taken out, under which the three versions are answered
-// in 34, 44 and 66 MB and the ring in 9.6 MB. It holds the counts and the size, and no sentence.
+// A refused plan's answer has a bound in bytes, whatever the plan holds. It names the first
+// plan.MostReasons reasons of each kind of cause and counts the rest of the kind in one more; a
+// task id is at most plan.MostTaskIDBytes, since a longer one is refused by one reason of its own;
+// each other word of the plan a reason quotes is cut to plan.MostQuotedBytes and marked; and a
+// reason lists at most plan.MostReasons task ids. Three versions below are one `plan_task` block
+// whose one attribute holds 1 MiB of words, the most a Dispatch document holds as its server
+// writes it, each word a cause of its own: 262,144 `needs` words that name no task, 209,712 roles
+// nobody defines, and 116,508 steps `tester:k`, each with a key and with no implementer before
+// it. Each answer is within perKind bytes for each kind it holds, and counts the rest of each kind
+// past the bound, in its sentence too. Three more quote or list long values, each within
+// perLongKind for each kind, a bound computed from those constants: a ring of 40,000 tasks, whose
+// reasons list the plan's tasks and the cycle through them; a task whose id is 900 KB; and a task
+// whose one need is a word of 1 MiB, each of the last two quoted with its mark. The faults are an
+// answer with a reason for each cause and one that quotes or lists a value whole; the controls
+// take out plan's bound of the reasons, under which the three versions are answered in 34, 44 and
+// 66 MB and the ring in 9.6 MB, and quoted's cut with listed's and chainOf's, under which the
+// ring, the long id and the long need are answered whole. It holds the counts and the size, and no
+// sentence.
 func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
 	// perKind is plan.MostReasons reasons of one kind and its count, each written twice (in
 	// `error` and in `reasons`) at under 200 bytes with its JSON.
 	const perKind = (plan.MostReasons + 1) * 2 * 200
+	// longReason is the longest reason: its sentence, under 300 bytes, and a list of
+	// plan.MostReasons pairs of task ids, `<id> needs <id>, ` (a cycle's chain), which is longer
+	// than a word cut to plan.MostQuotedBytes with its mark. perLongKind is plan.MostReasons such
+	// reasons and a count, each written twice with its task id and its JSON.
+	const longReason = 300 + plan.MostReasons*(2*plan.MostTaskIDBytes+len(" needs , "))
+	const perLongKind = (plan.MostReasons + 1) * (2*longReason + plan.MostTaskIDBytes + 50)
 	const mib = 1 << 20
 	// digits is i written in n digits of the base len(alphabet), the first digit the largest.
 	digits := func(i int, alphabet string, n int) string {
@@ -299,26 +311,31 @@ func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
 	for i := range ring {
 		ring[i] = needing(taskBlock(fmt.Sprintf("t%05d", i), "implementer reviewer"), fmt.Sprintf("t%05d", (i+1)%ringSize))
 	}
-	// ringBound is the plan's tasks, 8 bytes an id with its comma, and the cycle through them, 21
-	// bytes a task (`t00000 needs t00001, `), each written twice, and its three kinds of reasons.
-	const ringBound = 2*ringSize*(len("t00000, ")+len("t00000 needs t00001, ")) + 3*perKind
+	longID := strings.Repeat("a", 900<<10)
+	longNeed := strings.Repeat("x", mib)
 	for _, tc := range []struct {
 		name    string
 		blocks  []dispatch.DocumentBlock
 		bound   int
-		reasons int   // the reasons the answer holds
-		counts  []int // what the reasons that count the rest of a kind count
+		reasons int    // the reasons the answer holds
+		counts  []int  // what the reasons that count the rest of a kind count
+		cut     string // the mark of a value quoted in part, which the sentence holds
 	}{
 		{"262,144 needs words that name no task", []dispatch.DocumentBlock{needing(taskBlock("a", "implementer reviewer"), strings.Join(words, " "))},
-			perKind, plan.MostReasons + 1, []int{len(words) - plan.MostReasons}},
+			perKind, plan.MostReasons + 1, []int{len(words) - plan.MostReasons}, ""},
 		{"209,712 roles nobody defines", []dispatch.DocumentBlock{taskBlock("a", strings.Join(roles, " "))},
-			perKind, plan.MostReasons + 1, []int{len(roles) - 1 - plan.MostReasons}},
+			perKind, plan.MostReasons + 1, []int{len(roles) - 1 - plan.MostReasons}, ""},
 		// Four kinds: a key at each step, the role tester at two steps, no implementer, and no
 		// implementer before each step.
 		{"116,508 steps tester:k", []dispatch.DocumentBlock{taskBlock("a", keyed)},
-			4 * perKind, 2*(plan.MostReasons+1) + 2, []int{steps - plan.MostReasons, steps - plan.MostReasons}},
+			4 * perKind, 2*(plan.MostReasons+1) + 2, []int{steps - plan.MostReasons, steps - plan.MostReasons}, ""},
 		// Three kinds: the plan's tasks, the need of each task, and the one cycle.
-		{"a ring of 40,000 tasks", ring, ringBound, 1 + plan.MostReasons + 1 + 1, []int{ringSize - plan.MostReasons}},
+		{"a ring of 40,000 tasks", ring, 3 * perLongKind, 1 + plan.MostReasons + 1 + 1, []int{ringSize - plan.MostReasons}, ""},
+		// The id alone is refused; with steps that each name it, a whole id gave tens of MB.
+		{"a task whose id is 900 KB", []dispatch.DocumentBlock{taskBlock(longID, "tester:k tester:k")},
+			perLongKind, 1, nil, fmt.Sprintf("… (cut from %d bytes)", len(longID))},
+		{"a task whose one need is a word of 1 MiB", []dispatch.DocumentBlock{needing(taskBlock("a", "implementer reviewer"), longNeed)},
+			perLongKind, 1, nil, fmt.Sprintf("… (cut from %d bytes)", len(longNeed))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, facts, statuses := planHarness(t)
@@ -336,6 +353,9 @@ func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
 			if refusal.Code != "PLAN_REFUSED" || len(refusal.Reasons) != tc.reasons {
 				t.Fatalf("refusal %s of %d reasons, want PLAN_REFUSED of %d", refusal.Code, len(refusal.Reasons), tc.reasons)
 			}
+			if !strings.Contains(refusal.Error, tc.cut) {
+				t.Errorf("the sentence holds no mark %q of a value quoted in part: %.3000s", tc.cut, refusal.Error)
+			}
 			for _, left := range tc.counts {
 				count := fmt.Sprintf(" %d ", left)
 				if !strings.Contains(refusal.Error, count) || !slices.ContainsFunc(refusal.Reasons, func(reason PlanReason) bool {
@@ -348,6 +368,42 @@ func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
 				t.Fatalf("a refused registration recorded %#v, want nothing", got)
 			}
 		})
+	}
+}
+
+// register_plan joins its two checks as every caller of them does (the configuration loader's
+// check of the default steps, config/stage3.go): Supported's reasons, then Validate's, each check
+// bounding its own kinds. A plan with causes of both checks, past the bound in each, is answered
+// with exactly append(plan.Supported(p), plan.Validate(p, d)...) of the plan FromBlocks reads from
+// the same blocks, so a route that joins them any other way, through one collector of its own or
+// in another order, fails here. The control is the route with the two checks in the other order.
+func TestRegisterPlanJoinsItsChecksAsEveryCallerDoes(t *testing.T) {
+	steps := strings.TrimSuffix(strings.Repeat("tester:k ", 25), " ")
+	needs := make([]string, 25)
+	for i := range needs {
+		needs[i] = fmt.Sprintf("x%02d", i)
+	}
+	h, facts, statuses := planHarness(t)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	statuses.givePlan(planDoc, 1, needing(taskBlock("a", steps), strings.Join(needs, " ")))
+	answer := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1)
+	var refusal PlanRefusal
+	decodeInto(t, answer, &refusal)
+
+	read, err := plan.FromBlocks(planDoc, 1, []plan.Block{{ID: "a", Type: plan.TaskBlockType,
+		Attributes: map[string]string{"steps": steps, "needs": strings.Join(needs, " ")}}})
+	if err != nil {
+		t.Fatalf("FromBlocks: %v", err)
+	}
+	var want []PlanReason
+	for _, reason := range append(plan.Supported(read), plan.Validate(read, plan.Deployment{Roles: plan.BuiltinRoles()})...) {
+		want = append(want, PlanReason{Task: reason.Task, Reason: reason.Reason})
+	}
+	if answer.Code != http.StatusConflict || !reflect.DeepEqual(refusal.Reasons, want) {
+		t.Fatalf("register_plan answered %d with the reasons\n%+v\nwant 409 with Supported's, then Validate's\n%+v", answer.Code, refusal.Reasons, want)
+	}
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("a refused registration recorded %#v, want nothing", got)
 	}
 }
 
