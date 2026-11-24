@@ -3147,8 +3147,8 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 		if errors.Is(err, runtime.ErrWorkspaceCopyStore) {
 			// The daemon's own store did not take or drop the issue's saved workspace copies for
 			// the pod's restore, which says nothing about the claim: the start sent the pod's
-			// launcher nothing, so nothing is charged, and the same launch is tried again at the
-			// probe interval, as an unanswered hold is. It is not the session store's wait
+			// launcher no launcher_start, so nothing is charged, and the same launch is tried again
+			// at the probe interval, as an unanswered hold is. It is not the session store's wait
 			// (startWaitsForStore): no session is in question, and the issue is told nothing.
 			err = errors.Join(err, m.stopPrevious(starting))
 			m.log.Warn("supervise: the daemon's store did not answer the take or the drop of the issue's saved workspace copies for the pod's restore; trying the launch again at the probe interval, charging nothing",

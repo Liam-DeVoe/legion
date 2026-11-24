@@ -159,8 +159,9 @@ func damagedRecord(t *testing.T, dir string) {
 // in-use record beside it (bundleRestore.read). On a workspace that holds none, no role has
 // started there, and the record counts as a restore cut off, not as none: counted as none, the
 // roles would start on a workspace no restore may have put the work back into. So the launcher
-// takes the copy the daemon sends again and restores it, and a start with no copy sent again runs
-// no role and says why.
+// takes the copy the daemon sends again and runs its restore, which ends at once here, since the
+// workspace records no creation (wantSettled), and a start with no copy sent again runs no role
+// and says why.
 //
 // The control (the pull request records the run): read counting every unreadable record as one on
 // a workspace in use, which refuses the slice.
@@ -185,8 +186,9 @@ func TestAnUnreadableRestoreRecordOnAWorkspaceNoRoleStartedOnCountsAsARestoreCut
 // volume it can be an earlier pod's, whose roles worked the disk after it, and a copy restored
 // there would move their work back, while a role started there could run on a restore left half
 // done. So the launcher refuses every slice and every role start, and says so and what clears it.
-// The record removed by hand clears it at the next start, which runs its role on the workspace as
-// it is.
+// The record removed by hand clears it: a slice after the removal reads the records again (fence),
+// which clears the block, and is refused only as one to a workspace in use, as every slice is once
+// a role may have worked there; and the next start runs its role on the workspace as it is.
 //
 // The control (the pull request records the run): read counting every unreadable record as a
 // restore cut off, as before, which takes the slice.
@@ -201,7 +203,8 @@ func TestAnUnreadableRestoreRecordOnAWorkspaceInUseRefusesEverySliceAndEveryStar
 		t.Fatal(err)
 	}
 	unsafe := []string{"could not be read", dir, "the workspace is in use", "neither a restore nor a role start is safe", ".jj/legion-restore", "the roles do not start"}
-	got := newBundleRestore(refusingStarter(t), dir).receive(frames[0])
+	blocked := newBundleRestore(refusingStarter(t), dir)
+	got := blocked.receive(frames[0])
 	for _, want := range unsafe {
 		if got.OK || !strings.Contains(got.Error, want) {
 			t.Fatalf("a slice over an unreadable record on a workspace in use answered %#v; want it refused, saying %q", got, want)
@@ -215,6 +218,12 @@ func TestAnUnreadableRestoreRecordOnAWorkspaceInUseRefusesEverySliceAndEveryStar
 
 	if err := os.Remove(filepath.Join(dir, ".jj", "legion-restore")); err != nil {
 		t.Fatal(err)
+	}
+	if got := blocked.receive(frames[0]); got.OK || got.Error != workspaceInUseRefusal {
+		t.Fatalf("a slice after the record was removed by hand answered %#v; want the block cleared and the slice refused as one to a workspace in use, %q", got, workspaceInUseRefusal)
+	}
+	if blocked.blocked != nil {
+		t.Fatalf("after the record was removed by hand the restore is still blocked: %v", blocked.blocked)
 	}
 	marker := filepath.Join(t.TempDir(), "marker")
 	command := g.childStart(2, marker, nil)
@@ -230,8 +239,9 @@ func TestAnUnreadableRestoreRecordOnAWorkspaceInUseRefusesEverySliceAndEveryStar
 // sync failed — leaves the restore's record begun on the disk, which is the order that keeps a
 // killed container's disk reading as a restore cut off: the begun record before the in-use one.
 // That mark is this process's own, written for the restore it began, so the next start does not
-// read it as a role's use of the workspace: it restores the copy it holds and settles the record
-// before any role starts, rather than start a role over a begun record and let the copy go.
+// read it as a role's use of the workspace: it runs the restore of the copy it holds, which ends at
+// once here, since the workspace records no creation (wantSettled), and settles the record before
+// any role starts, rather than start a role over a begun record and let the copy go.
 //
 // The controls (the pull request records the runs): inUse reading the mark while a restore of
 // this process is begun, which starts the role with nothing restored; and apply writing the
@@ -269,8 +279,9 @@ func TestAStartWhoseInUseMarkFailsAfterItWroteTheMarkRestoresAtTheNextStart(t *t
 
 // A start that cannot write the record of the restore it begins runs no role: a later launcher
 // over the workspace could not tell a restore cut off from a role's work. The copy stays held and
-// nothing is marked in use, so the next start, once the record can be written, restores it and
-// settles the record.
+// nothing is marked in use, so the next start, once the record can be written, runs its restore,
+// which ends at once here, since the workspace records no creation (wantSettled), and settles the
+// record.
 func TestAStartWhoseBegunRecordCannotBeWrittenRunsNoRoleAndTheNextStartRestores(t *testing.T) {
 	dir := newWorkspace(t)
 	env := []string{"LEGION_WORKSPACE=" + dir}

@@ -174,8 +174,9 @@ const keptVolumeDropFailedLine = "launcher bundle: the drop of the saved workspa
 // (restoreWorkspace), a store error or an outcome still unknown at the hop's bound. No role of the
 // pod starts: the start fails with the take's error, wrapped in runtime.ErrWorkspaceCopyStore, and
 // the supervisor tries the launch again at the probe interval, charging nothing. Where the outcome
-// is unknown the take may have recorded an attempt to this pod, which leaves the copy owed to the
-// pod until a role of it registers.
+// is unknown the take may have committed: an attempt to this pod leaves the copy owed to the pod
+// until a role of it registers, and a refusal or a supersession spends a copy at once, which loses
+// no work (store.Store.TakeWorkspaceCopyForRestore).
 const takeFailedLine = "launcher bundle: the issue's saved workspace copies could not be taken for this pod's restore, so no role of the pod starts until a launch takes them"
 
 // restoreWorkspace carries the newer of the two copies of this pod's issue workspace to the pod's
@@ -356,7 +357,7 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 				"copy", kind, "slice", frame.Index, "answer", answer.FrameType())
 		}
 		if !result.OK {
-			d.log.Warn("launcher bundle: the launcher refused a slice of the saved workspace copy, so this send restores nothing and the pod starts on its workspace as it is: what was pushed, or in a restarted roles container what its first restore put back",
+			d.log.Warn("launcher bundle: the launcher refused a slice of the saved workspace copy, so this send restores nothing; the launcher's own answer, in error, says why, and its starts follow that answer",
 				"issue", issue, "launcher", token, "copy", kind, "slice", frame.Index, "slices", frame.Count, "error", result.Error)
 			return nil
 		}

@@ -14,12 +14,14 @@ body: |-
   the copy, the starts of its other roles neither take nor send it again.
   The launcher records its restore on the workspace's own disk, so a `roles` container that
   restarts after a restore still reports it to the daemon and refuses the copy sent again, and one
-  that restarts over a restore cut off in the middle, or over a record it cannot read, restores the
-  copy sent again and starts no role until it does; with no copy sent again it refuses each start
-  and says why, and each refusal is a charged launch failure. No role starts while a copy is owed
-  to its pod and not in the launcher's hands: a take of the copies that the daemon's store does not
-  answer is tried again at the probe interval with nothing charged, and a copy that does not reach
-  the launcher whole fails the launch, charged, and the next launch sends it again.
+  that restarts over a restore cut off in the middle, or over a record it cannot read on a disk no
+  role has started on, restores the copy sent again and starts no role until it does; with no copy
+  sent again it refuses each start and says why, and each refusal is a charged launch failure.
+  Over a record it cannot read on a disk marked in use, or whose mark does not read either, it
+  refuses the copy and every start and says why. No role starts while a copy is owed to its pod
+  and not in the launcher's hands: a take of the copies that the daemon's store does not answer is
+  tried again at the probe interval with nothing charged, and a copy that does not reach the
+  launcher whole fails the launch, charged, and the next launch sends it again.
   A stop held for a turn's end, such as a project pause's, an operator's suspend or a linger,
   waits for that turn's copy, at most the copy's 4-minute budget and never past the stop's own
   deadline, and a copy that fails or times out lets the stop go. A stop that reaches a role while

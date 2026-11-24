@@ -183,9 +183,13 @@ var ErrSessionStore = errors.New("the session store could not be asked")
 // store is the daemon's, the one that holds the copies, not Oh My Pi's session store
 // (ErrSessionStore). It says nothing about the claim, so the caller charges nothing and starts
 // again at the probe interval until the store answers (supervise's launchTries). Nothing was
-// started: no Start was sent, and the copy stays in the store, owed to the pod while no role of
-// it has registered. A copy that was taken and then did not reach the pod's launcher is not this:
-// that start is the claim's failure.
+// started: no Start was sent. A take or a drop that did not commit left every copy as it was,
+// owed to the pod while no role of it has registered. One whose outcome stayed unknown may have
+// committed: a drop may have deleted the copies the pod's kept volume holds, and a take may have
+// recorded a refusal or a supersession, which spends a copy at once. No work is lost either way:
+// the kept volume holds what a drop deleted, and a copy a take spent stays in the store. A copy
+// that was taken and then did not reach the pod's launcher is not this: that start is the claim's
+// failure.
 var ErrWorkspaceCopyStore = errors.New("the daemon's store of saved workspace copies did not answer the take or the drop of the pod's restore")
 
 // ErrSessionLookupUnavailable is a Resume by id (spec.ResumeSession, without spec.ResumeByAgent)

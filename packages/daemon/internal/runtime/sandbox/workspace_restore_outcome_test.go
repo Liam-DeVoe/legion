@@ -384,3 +384,37 @@ func TestAStartWhoseTakeOfTheCopiesFailsRunsNoRoleUntilATakeSendsTheCopy(t *test
 		})
 	}
 }
+
+// A drop of the copies a pod's kept volume holds that fails holds the role's start as a take that
+// fails does: the start fails with the drop's error, which is the daemon's own store's
+// (runtime.ErrWorkspaceCopyStore, which the supervisor retries charging nothing), and the take,
+// which the store would answer, does not run. So the launcher is sent no launcher_start, and no
+// role starts while the drop has not answered which copies the volume holds; and since no Start
+// was sent, it sends no launcher_stop either (stopIssuedChild). The drop is wired as the daemon
+// hands it to the runtime (withKeptVolumeDrop), on a store that does not answer.
+//
+// The control (the pull request records the run): restoreWorkspace answering the failed drop with
+// hold, not storeHeld, fails the errors.Is.
+func TestAStartWhoseDropOfTheKeptVolumesCopiesFailsRunsNoRole(t *testing.T) {
+	st := bundleStore(t)
+	faulted, _ := faultedBundleStore(t, st)
+	faulted.Close()
+	g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)), withOptions(func(o *Options) {
+		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeCopies(st), st.KeepRestoredWorkspaceCopy
+		o.HeldWorkspaceCopies = func(ctx context.Context, issue, podUID string, keptSince time.Time) (runtime.WorkspaceRestore, error) {
+			return faulted.DropHeldWorkspaceCopies(ctx, testProject, issue, podUID, keptSince)
+		}
+	}))
+	spec := workerSpec(t)
+	g.launcher(spec.Claim)
+	_, err := g.r.Spawn(g.ctx, spec)
+	if err == nil || !strings.Contains(err.Error(), "the drop of the saved workspace copies") || !errors.Is(err, runtime.ErrWorkspaceCopyStore) {
+		t.Fatalf("the start whose drop failed answered %v; want it failed with the drop's error, runtime.ErrWorkspaceCopyStore", err)
+	}
+	sent := g.sent(spec.Claim)
+	for _, held := range []string{shimwire.TypeLauncherStart, shimwire.TypeLauncherStop} {
+		if countOf(sent, held) != 0 {
+			t.Fatalf("the start whose drop failed sent the launcher %v; want no %s", frameTypes(sent), held)
+		}
+	}
+}

@@ -171,7 +171,7 @@ func (r *bundleRestore) read() {
 		if inUseErr != nil {
 			inUse = fmt.Sprintf("its in-use record could not be read either (%v)", inUseErr)
 		}
-		r.blocked = fmt.Errorf("the record of a restore into the workspace %s could not be read (%v), and %s, so neither a restore nor a role start is safe there: the roles do not start and no copy is taken until the record reads, which removing .jj/legion-restore from the workspace by hand does, or the pod is replaced, which on a kept volume takes a reset of that volume",
+		r.blocked = fmt.Errorf("the record of a restore into the workspace %s could not be read (%v), and %s, so neither a restore nor a role start is safe there: the roles do not start and no copy is taken until the record reads, which removing a damaged .jj/legion-restore from the workspace by hand does, and so does putting the workspace's .jj directory back where .jj is a file or a link, or until the pod is replaced, which on a kept volume takes a reset of that volume",
 			r.workspace, err, inUse)
 	case ok && record.Ended:
 		r.confirm = &record.LauncherRestored
