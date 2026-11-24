@@ -1,5 +1,7 @@
 package intake_test
 
+//ci:builds packages/envoy ./cmd/listener ./cmd/dispatch ./internal/testnats/cmd/fixturebuckets seedRedeliveredIssue testbuild.EnvoyBinary, and testbuild.ProvisionFixtureBuckets (internal/testbuild/testbuild.go:169), which run go build ./cmd/listener, ./cmd/dispatch and ./internal/testnats/cmd/fixturebuckets in packages/envoy (internal/testbuild/testbuild.go:112)
+
 import (
 	"bytes"
 	"context"

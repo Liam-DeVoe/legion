@@ -1,5 +1,7 @@
 package daemon
 
+//ci:builds packages/envoy ./cmd/listener ./internal/testnats/cmd/fixturebuckets startIdleRigListenerOn testbuild.EnvoyBinary and testbuild.ProvisionFixtureBuckets (internal/testbuild/testbuild.go:169), which run go build ./cmd/listener and ./internal/testnats/cmd/fixturebuckets in packages/envoy (internal/testbuild/testbuild.go:112)
+
 import (
 	"bytes"
 	"context"

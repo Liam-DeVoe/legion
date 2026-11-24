@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/envoy/deploy/compose/single-node.compose.yml TestTheSingleNodeComposeFileMakesItsListenersBucketsBeforeItStarts reads it through ../../deploy/compose (singleNodeComposeRead)
+
 import (
 	"maps"
 	"os"
