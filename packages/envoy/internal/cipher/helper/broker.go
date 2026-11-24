@@ -529,40 +529,43 @@ func (b *Broker) Login(ctx context.Context, hostname string) (string, error) {
 // less the round trip, so lived is the broker's lifetime and lived less left the round trip. The
 // line names the interval the broker named, with the one used where the bounds set it, and what
 // ends the code: the hour this machine polls a code at most, where hourEnds
-// (cipherclient.BoundDeviceAuth); a lifetime that had passed when the answer came, a negative one
-// or one past about 292 years, which x/oauth2 wraps into the past; the round trip, where the
-// broker's lifetime alone outlives the interval; or else that lifetime. It names what must change
-// at the broker, worded from that cause (unpollableRemedy), not asking again, which would meet the
-// same answer, but for the round trip, which a faster answer cures.
+// (cipherclient.BoundDeviceAuth) or where the interval used is the hour and the broker's lifetime
+// longer; a lifetime that had passed when the answer came, a negative one or one x/oauth2 wraps
+// into the past, as it does one of about 292 to 584 years; the round trip, where the broker's
+// lifetime alone outlives an interval under the hour; or else that lifetime, and that the round
+// trip outlasted it where it did. It names what must change at the broker, worded from that cause
+// (unpollableRemedy), not asking again, which would meet the same answer, but for the round trip,
+// which a faster answer cures.
 func unpollableCode(lived, left time.Duration, named, used int64, hourEnds bool) error {
 	var poll string
 	switch {
 	case named == 0:
 		// x/oauth2 reads an interval of 0 as none.
 		poll = fmt.Sprintf("no poll interval or one of 0 s, so one of %d s", used)
-	case named < used:
+	case named != used:
 		poll = fmt.Sprintf("a poll interval of %d s, so one of %d s", named, used)
 	default:
 		poll = fmt.Sprintf("a poll interval of %d s", named)
 	}
 	const lapses = "the code would lapse before its first poll"
 	const verdict = "no machine login works at that broker until"
-	// The broker's lifetime, whole seconds: lived runs past them by the time from Login's reading
-	// of the request's start to x/oauth2's, which the truncation drops, and falls short of them by
-	// the microseconds between x/oauth2's two readings of the answer, which the millisecond covers.
-	lifetime := (lived + time.Millisecond).Truncate(time.Second)
+	// The broker's whole seconds: lived is off them only by the moments between Login's and
+	// x/oauth2's clock readings, far under half a second.
+	lifetime := lived.Round(time.Second)
 	interval := time.Duration(used) * time.Second
 	switch {
-	case hourEnds:
+	case hourEnds || (interval >= time.Hour && lifetime > time.Hour):
 		return fmt.Errorf("the broker answered %s, and this machine polls a device code for an hour at most: %s; %s its poll interval is shorter than an hour", poll, lapses, verdict)
 	case lifetime <= 0:
-		return fmt.Errorf("the broker answered a device code that had lapsed by the time its answer arrived (a negative lifetime, or one past about 292 years, which this machine's OAuth library wraps into the past), with %s; %s %s, and less than about 292 years", poll, verdict, unpollableRemedy(named, used, lifetime))
-	case interval < lifetime:
+		return fmt.Errorf("the broker answered a device code that had lapsed by the time its answer arrived (a negative lifetime, or one this machine's OAuth library wraps into the past, as it does one of about 292 to 584 years), with %s; %s %s, and less than about 292 years", poll, verdict, unpollableRemedy(named, used, lifetime))
+	case interval < lifetime && interval < time.Hour:
 		rest := "none of it, so the code had lapsed"
 		if left > 0 {
 			rest = fmt.Sprintf("%.3f s of it: %s", left.Seconds(), lapses)
 		}
 		return fmt.Errorf("the broker answered a device code that lives %d s, with %s, but its answer took %.3f s to arrive, which left %s; a machine login works at that broker where its answer arrives in less than %d s, or once its codes outlive its poll interval by more than its answers take to arrive", lifetime/time.Second, poll, (lived - left).Seconds(), rest, (lifetime-interval)/time.Second)
+	case left <= 0:
+		return fmt.Errorf("the broker answered a device code that lives %d s, with %s, but its answer took %.3f s to arrive, so the code had lapsed; %s %s, and none while its answers take longer than its codes live", lifetime/time.Second, poll, (lived - left).Seconds(), verdict, unpollableRemedy(named, used, lifetime))
 	default:
 		return fmt.Errorf("the broker answered a device code that lives %d s, with %s: %s; %s %s", lifetime/time.Second, poll, lapses, verdict, unpollableRemedy(named, used, lifetime))
 	}
@@ -571,18 +574,20 @@ func unpollableCode(lived, left time.Duration, named, used int64, hourEnds bool)
 // unpollableRemedy is what must change at the broker before a code it answers can be polled, for a
 // broker that named the interval named (0 for none, as x/oauth2 reads it), polled at used, and a
 // code that lives lifetime (0 or less where it had lapsed), past no hour (unpollableCode names the
-// hour where it ends the code). This machine polls at the interval named, 1 s at least
-// (cipherclient.BoundDeviceAuth), so where that is 1 s, or the code lives 1 s or less, no interval
-// the broker names helps, and only a longer lifetime does.
+// hour where it ends the code). This machine polls at the interval named, leastInterval at least
+// (cipherclient.BoundDeviceAuth), so where that is the least, or the code lives that or less, no
+// interval the broker names helps, and only a longer lifetime does.
 func unpollableRemedy(named, used int64, lifetime time.Duration) string {
+	// cipherclient.BoundDeviceAuth's least interval, in seconds.
+	const leastInterval = 1
 	switch {
-	case named == 0 && lifetime > time.Second:
+	case named == 0 && lifetime > leastInterval*time.Second:
 		return fmt.Sprintf("it names a poll interval shorter than its codes' lifetime, or its codes live longer than %d s", used)
 	case named == 0:
-		return fmt.Sprintf("its codes live longer than %d s, or than both 1 s and a poll interval it names", used)
-	case named < used:
+		return fmt.Sprintf("its codes live longer than %d s, or than both %d s and a poll interval it names", used, leastInterval)
+	case used == leastInterval:
 		return fmt.Sprintf("its codes live longer than %d s, the least poll interval this machine keeps", used)
-	case lifetime > time.Second:
+	case lifetime > leastInterval*time.Second:
 		return "its poll interval is shorter than its codes' lifetime"
 	case time.Duration(used)*time.Second >= time.Hour:
 		return "its poll interval is shorter than an hour and its codes live longer than it"
