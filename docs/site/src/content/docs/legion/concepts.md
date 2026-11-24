@@ -206,10 +206,9 @@ repository requires, stays in `reviewing`), since the reviewer reads the code co
 GitHub before it approves
 ([review signalling](#review-signalling)); a review step that no review on GitHub decides, on an
 issue with no pull request or the architect's own, ends by its reported verdict. What a red check
-does is reach the architect that owns
-the issue, the worker of the issue's current phase and the implementer, as one message naming each
-check and its conclusion; and hold the merge, where GitHub applies the base branch's own required
-checks.
+does is reach the architect that owns the issue, the worker of the issue's current phase and the
+agent of the task's implementation step, as one message naming each check and its conclusion; and
+hold the merge, where GitHub applies the base branch's own required checks.
 
 ### The plan of an issue
 
@@ -499,7 +498,8 @@ Legion uses GitHub's own review mechanisms rather than labels:
 - **CI** on the pull request's head is information, not a verdict. When GitHub's checks settle, the
   daemon names every check GitHub reported, with the conclusion GitHub gave it, and judges none of
   them: it sends one message each to the architect that owns the issue, the worker of the issue's
-  current phase and the implementer whose code the checks ran on, and moves the issue nowhere. The
+  current phase and the agent of the task's implementation step, whose code the checks ran on,
+  and moves the issue nowhere. The
   message names the head's commit statuses too, each with its state: Dispatch reads them from
   GitHub for each open head where its GitHub App holds Commit statuses, since GitHub's status event
   names no pull request. A red is for those roles to decide on — re-run a check that failed on
