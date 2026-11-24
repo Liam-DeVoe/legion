@@ -68,13 +68,6 @@ func recordsChild(pidFile, seconds string) string {
 	return "sleep " + seconds + " & echo $! >" + shellprefix.Literal(pidFile+".new") + "; mv " + shellprefix.Literal(pidFile+".new") + " " + shellprefix.Literal(pidFile)
 }
 
-// holdsAt is a stand-in's line of shell that writes the empty file mark, then sleeps a day in the
-// stand-in's own process, so whatever stops the stand-in stops the sleep; a row waits for mark
-// before it ends the run. It ends with no separator. mark is one literal shell word.
-func holdsAt(mark string) string {
-	return ": >" + shellprefix.Literal(mark) + "; exec sleep 86400"
-}
-
 // signalWhileHeld starts command, the `legion` command name names, as the leader of a process
 // group of its own, the way a shell's job control starts a command, waits for the stand-in that
 // holds its work (holdsStandIn, under pidFile and seconds) to be running, and sends sig to that
