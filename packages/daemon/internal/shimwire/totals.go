@@ -19,7 +19,7 @@ const (
 
 // MaxTotalsModels is the most models one launch's totals name: four times the models one step
 // record names. A launch that more models answered reports that its totals overflowed.
-const MaxTotalsModels = 4 * steprecord.AnswersMax // 64
+const MaxTotalsModels = 4 * steprecord.AnswersMax
 
 // ModelCount is one model and the calls it answered. A model's name is the frame's provider, a
 // slash and its model, or the model alone where the provider is empty.
@@ -34,7 +34,7 @@ type Totals struct {
 	SetModel    string       `json:"setModel,omitempty"` // "" not known
 	Counts      []ModelCount `json:"counts"`             // sorted by Model, never null
 	OutsideForm uint64       `json:"outsideForm"`        // calls whose model name is outside the form
-	Overflowed  bool         `json:"overflowed"`         // a 65th distinct model answered
+	Overflowed  bool         `json:"overflowed"`         // more than MaxTotalsModels distinct models answered
 }
 
 // ModelTotals asks the shim for its launch's totals.
