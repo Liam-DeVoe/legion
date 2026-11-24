@@ -2,7 +2,7 @@ import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { readContract } from "./name-map.ts";
-import { newestEventId } from "./state.ts";
+import { newestEventId, PROJECT_KEY } from "./state.ts";
 
 /**
  * The seed of check k6 on a local Dispatch (`bun run dispatch:local`): every item k6 lists, the
@@ -60,15 +60,15 @@ async function cookieOf(login: string): Promise<string> {
 async function call(method: string, path: string, body: object | undefined, as: Caller) {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   let payload = body;
-  if (as === "agent") {
-    headers.Authorization = `Bearer ${agentToken}`;
-    payload = body === undefined ? undefined : { ...body, actor: session };
-  } else if (as === "alice") {
+  if (as === "alice") {
     aliceCookie ??= await cookieOf("alice");
     headers.Cookie = aliceCookie;
     headers.Origin = new URL(base).origin;
   } else {
-    headers.Authorization = `Bearer ${as.bearer}`;
+    // Dispatch refuses a bearer's write that names no session (`ACTOR_KIND`), the shared token's
+    // and a personal agent token's alike.
+    headers.Authorization = `Bearer ${as === "agent" ? agentToken : as.bearer}`;
+    payload = body === undefined ? undefined : { ...body, actor: session };
   }
   const response = await fetch(`${base}${path}`, {
     method,
@@ -95,34 +95,23 @@ async function issue(title: string, spec: string, parent?: string) {
 }
 
 async function upload(owner: string, name: string, content: string, as: Caller = "agent") {
-  const path = /^[A-Z][A-Z0-9]*$/.test(owner)
+  const path = PROJECT_KEY.test(owner)
     ? `/api/v1/projects/${owner}/artifacts`
     : `/api/v1/issues/${owner}/artifacts`;
   const uploaded = await call("POST", path, { name, content }, as);
   return String(uploaded.artifact.id);
 }
 
-async function insert(id: string, markdown: string, as: Caller = "agent") {
-  await call(
-    "POST",
-    `/api/v1/artifacts/${id}/edits`,
-    {
-      ops: [{ op: "insert", markdown, after: "end" }],
-    },
-    as
-  );
+/** One edit of a document, with one op, as `as`. */
+async function edit(id: string, op: object, as: Caller) {
+  await call("POST", `/api/v1/artifacts/${id}/edits`, { ops: [op] }, as);
 }
 
-async function replace(id: string, find: string, replacement: string, as: Caller) {
-  await call(
-    "POST",
-    `/api/v1/artifacts/${id}/edits`,
-    {
-      ops: [{ op: "replace", find, with: replacement }],
-    },
-    as
-  );
-}
+const insert = (id: string, markdown: string, as: Caller = "agent") =>
+  edit(id, { op: "insert", markdown, after: "end" }, as);
+
+const replace = (id: string, find: string, replacement: string, as: Caller) =>
+  edit(id, { op: "replace", find, with: replacement }, as);
 
 const approve = (id: string) =>
   call("POST", `/api/v1/artifacts/${id}/reviews`, { state: "approved" }, "alice");

@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { liveDispatch, Whoami } from "../word-rewrite/dispatch-api.ts";
 import { runTool } from "../word-rewrite/main.ts";
 import { OWNER_WINDOW_MS } from "../word-rewrite/pace.ts";
+import { emptyState, serializeState } from "../word-rewrite/state.ts";
+import { verdictKey } from "../word-rewrite/verdicts.ts";
 import { writerRefusal } from "../word-rewrite/write.ts";
 import {
   deps,
@@ -10,19 +12,16 @@ import {
   FakeModel,
   fixture,
   input,
-  options,
+  keptState,
   promptParagraph,
   rewriteByRules,
   rewritingModel,
+  SUMMARY,
+  TOOL_SESSION,
+  writeOptions,
 } from "./word-rewrite-fake.ts";
 
-const SUMMARY = "INFRA-2017: the word for a move out of the workflow is replaced by what happened";
-const STATE = { project: "SEED", slug: "rewrite-state-md" } as const;
 const SPEC = input("spec");
-
-function writeOptions(overrides = {}) {
-  return options({ mode: "write", summary: SUMMARY, stateDocument: STATE, ...overrides });
-}
 
 function seeded(title = "Waits on the release") {
   const dispatch = new FakeDispatch();
@@ -192,7 +191,15 @@ describe("who may write", () => {
   });
 
   test("the shared token may write: whoami-shared.json", () => {
-    expect(writerRefusal(Whoami.parse(fixture("whoami-shared.json")))).toBeNull();
+    expect(writerRefusal(Whoami.parse(fixture("whoami-shared.json")), TOOL_SESSION.id)).toBeNull();
+  });
+
+  test("a run that names no session to act as is refused, since the state could not keep its id", async () => {
+    const { dispatch } = seeded();
+    const run = deps(dispatch, { model: rewritingModel(), session: undefined });
+    expect(await runTool(writeOptions(), run)).toBe(2);
+    expect(run.lines).toEqual(["refused: DISPATCH_SESSION_ID names no session to write as"]);
+    expect(dispatch.writeCalls).toEqual([]);
   });
 
   test("a token with a project set writes only that project, and lists the others", async () => {
@@ -232,6 +239,116 @@ describe("who may write", () => {
   });
 });
 
+describe("the verdicts a rewrite leaves in its paragraph (spec versions 39 and 40)", () => {
+  /** A project document of one paragraph: a quote of the person, then the word for a status. */
+  function quoteAndStatus() {
+    const dispatch = new FakeDispatch();
+    const document = dispatch.document({ project: "SEED" }, "notes.md", input("quote-and-status"));
+    const paragraph = input("quote-and-status").trimEnd();
+    return { dispatch, document, paragraph, quoteAt: paragraph.indexOf('"') + 1 };
+  }
+
+  test("a rewrite that leaves a marked occurrence saves its verdict under the new paragraph's hash, and no later run asks again", async () => {
+    const { dispatch, document, paragraph, quoteAt } = quoteAndStatus();
+    const model = new FakeModel((user) =>
+      JSON.stringify({
+        rewrite: rewriteByRules(promptParagraph(user)),
+        left: { [String(quoteAt)]: "quote" },
+      })
+    );
+    const clock = new FakeClock();
+    expect(await runTool(writeOptions(), deps(dispatch, { model, clock }))).toBe(0);
+    const rewritten = rewriteByRules(paragraph);
+    expect(document.markdown).toBe(`${rewritten}\n`);
+    expect((await keptState(dispatch)).verdicts.get(verdictKey(document.id, rewritten, 0))).toBe(
+      "q"
+    );
+
+    clock.time += OWNER_WINDOW_MS;
+    const next = deps(dispatch, { model, clock });
+    expect(await runTool(writeOptions({ whole: true }), next)).toBe(0);
+    expect(next.lines).toContain("model-calls first=0 second=0 again=0 judged-again=0");
+    expect(next.lines).toContain("verdict quote 1");
+  });
+
+  test("an occurrence's earlier verdict is kept under the new paragraph's hash when the run rewrites another occurrence there", async () => {
+    const { dispatch, document, paragraph } = quoteAndStatus();
+    const kept = dispatch.document({ project: "SEED" }, "rewrite-state.md", "");
+    kept.markdown = serializeState({
+      ...emptyState(),
+      verdicts: new Map([[verdictKey(document.id, paragraph, 0), "q" as const]]),
+    });
+    const model = rewritingModel();
+    const clock = new FakeClock();
+    expect(await runTool(writeOptions(), deps(dispatch, { model, clock }))).toBe(0);
+    // Only the status use was asked about; the quote kept its verdict through the rewrite.
+    expect(model.prompts).toHaveLength(1);
+    const rewritten = rewriteByRules(paragraph);
+    expect(document.markdown).toBe(`${rewritten}\n`);
+    expect((await keptState(dispatch)).verdicts.get(verdictKey(document.id, rewritten, 0))).toBe(
+      "q"
+    );
+  });
+});
+
+describe("a refusal with no edit behind it (spec version 39)", () => {
+  test("a 413 or a 5xx is tried once more in the same run, and the write that lands then stands", async () => {
+    for (const [status, code] of [
+      [413, "CAP_EXCEEDED"],
+      [503, "UNAVAILABLE"],
+    ] as const) {
+      const { dispatch, spec } = seeded();
+      const writes = dispatch.writes();
+      let tries = 0;
+      const run = deps(dispatch, {
+        model: rewritingModel(),
+        writes: {
+          ...writes,
+          edit: (...args) => {
+            tries += 1;
+            return tries === 1
+              ? Promise.resolve({ ok: false, status, code })
+              : writes.edit(...args);
+          },
+        },
+      });
+      expect(await runTool(writeOptions(), run)).toBe(0);
+      expect(tries).toBe(2);
+      expect(results(run.lines)).toEqual(["written"]);
+      expect(spec.version).toBe(2);
+    }
+  });
+
+  test("one still refused is reported with its code and kept for the next run, which writes it", async () => {
+    const { dispatch, spec } = seeded();
+    const writes = dispatch.writes();
+    let tries = 0;
+    const refusing = {
+      ...writes,
+      edit: async () => {
+        tries += 1;
+        return { ok: false, status: 503, code: "UNAVAILABLE" } as const;
+      },
+    };
+    const model = rewritingModel();
+    const clock = new FakeClock();
+    const first = deps(dispatch, { model, clock, writes: refusing });
+    expect(await runTool(writeOptions(), first)).toBe(0);
+    expect(tries).toBe(2);
+    expect(results(first.lines)).toEqual(["refused:UNAVAILABLE"]);
+    expect((await keptState(dispatch)).held).toEqual([
+      expect.objectContaining({ id: spec.id, retry: true }),
+    ]);
+
+    clock.time += OWNER_WINDOW_MS;
+    const next = deps(dispatch, { model, clock });
+    expect(await runTool(writeOptions(), next)).toBe(0);
+    expect(results(next.lines)).toEqual(["written"]);
+    expect(next.lines).toContain("model-calls first=0 second=0 again=1 judged-again=1");
+    expect((await keptState(dispatch)).held).toEqual([]);
+  });
+});
+
 describe("Dispatch's answers to the writes, from the captured bodies", () => {
   /** The live writes over a fetch that answers one fixture with one status. */
   function liveWrites(status: number, body: unknown) {
@@ -246,7 +363,8 @@ describe("Dispatch's answers to the writes, from the captured bodies", () => {
     const credential = { scheme: "Bearer", headers: () => ({}), secret: () => "" } as const;
     return liveDispatch(
       { url: "http://dispatch.test", credential },
-      Object.assign(answer, { preconnect: fetch.preconnect })
+      Object.assign(answer, { preconnect: fetch.preconnect }),
+      TOOL_SESSION.id
     ).writes;
   }
 

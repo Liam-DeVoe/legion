@@ -45,7 +45,7 @@ export function verdictName(code: string): VerdictName | undefined {
 }
 
 /** The sha256 of a text, in hex. */
-export function sha256Hex(text: string): string {
+function sha256Hex(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
 

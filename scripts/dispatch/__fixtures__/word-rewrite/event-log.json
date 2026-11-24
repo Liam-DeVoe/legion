@@ -1,98 +1,110 @@
 [
   {
-    "id": 901,
+    "id": 94,
+    "issue_key": "SEED-10",
+    "artifact_id": null,
+    "project": "SEED",
+    "seq": 3,
+    "type": "artifact.created",
+    "actor": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
+    "notify": false,
+    "created_at": "2026-11-24T04:47:16.880004Z",
+    "payload": {
+      "artifact": {
+        "id": "b6657977-6698-4781-8779-da5d28f49ef7",
+        "kind": "doc",
+        "name": "log-b.md",
+        "slug": "log-b-md",
+        "primary": false,
+        "project": "SEED",
+        "ref_key": "SEED-10/log-b-md",
+        "versions": [
+          {
+            "size": 27,
+            "named": false,
+            "number": 1,
+            "authors": [{ "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" }],
+            "summary": null,
+            "created_at": "2026-11-24T04:47:16.880004Z"
+          }
+        ],
+        "issue_key": "SEED-10",
+        "created_at": "2026-11-24T04:47:16.880004Z",
+        "created_by": { "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" },
+        "session_id": null
+      }
+    }
+  },
+  {
+    "id": 95,
     "issue_key": "SEED-10",
     "artifact_id": null,
     "project": "SEED",
     "seq": 4,
-    "type": "artifact.created",
-    "actor": {
-      "kind": "session",
-      "id": "5b0f3c2e-8d41-4a7e-9c16-2f7a9e0d4b31"
-    },
+    "type": "artifact.version",
+    "actor": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
     "notify": false,
-    "created_at": "2026-11-24T10:50:00Z",
+    "created_at": "2026-11-24T04:47:16.928056Z",
     "payload": {
-      "artifact_id": "0b9a0101-6c1d-4e2f-8a3b-5c7d9e1f2a101",
-      "name": "log-b.md",
-      "version": 1
+      "name": "log-a.md",
+      "version": {
+        "size": 16,
+        "named": false,
+        "number": 2,
+        "authors": [{ "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" }],
+        "summary": null,
+        "created_at": "2026-11-24T04:47:16.928056Z"
+      },
+      "artifact_id": "8543a4cf-4201-4820-bb24-398b89bfdd40"
     }
   },
   {
-    "id": 902,
+    "id": 96,
     "issue_key": "SEED-10",
     "artifact_id": null,
     "project": "SEED",
     "seq": 5,
-    "type": "artifact.version",
-    "actor": {
-      "kind": "session",
-      "id": "5b0f3c2e-8d41-4a7e-9c16-2f7a9e0d4b31"
-    },
-    "notify": false,
-    "created_at": "2026-11-24T10:50:00Z",
-    "payload": {
-      "artifact_id": "0b9a0100-6c1d-4e2f-8a3b-5c7d9e1f2a100",
-      "name": "log-a.md",
-      "version": 2
-    }
-  },
-  {
-    "id": 903,
-    "issue_key": "SEED-10",
-    "artifact_id": null,
-    "project": "SEED",
-    "seq": 6,
     "type": "issue.updated",
-    "actor": {
-      "kind": "session",
-      "id": "5b0f3c2e-8d41-4a7e-9c16-2f7a9e0d4b31"
-    },
+    "actor": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
     "notify": false,
-    "created_at": "2026-11-24T10:50:00Z",
+    "created_at": "2026-11-24T04:47:16.967036Z",
     "payload": {
       "key": "SEED-10",
-      "title": "Log steps, renamed",
-      "status": "todo",
-      "priority": null,
-      "rank": "a0",
-      "labels": [],
-      "parent": null,
-      "blocked_by": [],
-      "advances": [],
-      "advances_revision": 0,
-      "assignee": null,
+      "rank": "d",
+      "repo": null,
       "claim": null,
+      "route": null,
+      "title": "Log steps, renamed",
+      "labels": [],
+      "number": 10,
+      "parent": null,
+      "status": "triage",
+      "changed": ["title"],
+      "project": "SEED",
+      "advances": [],
+      "assignee": "alice",
+      "last_seq": 5,
+      "priority": null,
+      "ancestors": [],
+      "closed_at": null,
+      "blocked_by": [],
       "components": {
-        "mode": "inherit",
         "ids": [],
-        "unknown": [],
+        "mode": "inherit",
         "reason": null,
+        "unknown": [],
         "inherited_from": null
       },
-      "route": null,
-      "repo": null,
+      "created_at": "2026-11-24T04:47:16.746382Z",
+      "created_by": { "id": "938ef652-34c2-4787-82ed-99480a3947a4", "kind": "session" },
+      "updated_at": "2026-11-24T04:47:16.97864Z",
       "resolved_repo": null,
-      "route_status": null,
-      "route_holder": null,
-      "route_status_reason": null,
-      "created_by": {
-        "kind": "session",
-        "id": "5b0f3c2e-8d41-4a7e-9c16-2f7a9e0d4b31"
-      },
-      "created_at": "2026-11-24T10:00:00Z",
-      "updated_at": "2026-11-24T10:30:00Z",
-      "closed_at": null,
-      "last_seq": 6,
-      "primary_artifact_id": "0b9a0100-6c1d-4e2f-8a3b-5c7d9e1f2a100",
-      "open_asks": 0,
-      "progress": {
-        "tasks": null,
-        "children": null
-      },
-      "project": "SEED",
-      "number": 10,
-      "changed": ["title"]
+      "external_links": [],
+      "plan_artifact_id": "",
+      "advances_revision": 0,
+      "primary_artifact_id": "13f1ca0e-a14a-4f2e-b508-2a7e6a38b08f",
+      "decisions_artifact_id": "",
+      "verification_artifact_id": ""
     }
   }
 ]

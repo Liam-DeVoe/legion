@@ -6,27 +6,32 @@ import { setTimeout as sleep } from "node:timers/promises";
  * header, a body or a host: check k8 reads it to show that report mode only reads. Every request
  * of the tool goes through `loggingFetch`, Dispatch's and each daemon's alike, which also keeps
  * the census rate of at most five requests a second (`scripts/dispatch/README.md`, display read
- * census).
+ * census). The run keeps only the count of its requests; each line goes to the `--request-log`
+ * file, or to a test's own recorder.
  */
 
 export interface RequestLog {
   record(method: string, path: string, status: number | "error"): void;
-  /** Every line recorded so far, in order. */
-  lines(): readonly string[];
+  /** How many requests were recorded so far. */
+  count(): number;
 }
 
-/** A log kept in memory, and appended to `file` line by line when one is named, so a run that
- *  stops early still leaves every request it made. */
-export function requestLog(file?: string): RequestLog {
-  const kept: string[] = [];
+/** A count of the requests, each line given to `sink` where one is named, as it is recorded. */
+export function requestLog(sink?: (line: string) => void): RequestLog {
+  let count = 0;
   return {
     record(method, path, status) {
-      const line = `${method} ${path} ${status}`;
-      kept.push(line);
-      if (file !== undefined) appendFileSync(file, `${line}\n`);
+      count += 1;
+      sink?.(`${method} ${path} ${status}`);
     },
-    lines: () => kept,
+    count: () => count,
   };
+}
+
+/** A sink that appends each line to `file` as it comes, so a run that stops early still leaves
+ *  every request it made. */
+export function appendTo(file: string): (line: string) => void {
+  return (line) => appendFileSync(file, `${line}\n`);
 }
 
 /** The clock a rate waits on, which a test replaces with one that does not wait. */
@@ -38,7 +43,7 @@ export interface Clock {
 export const SYSTEM_CLOCK: Clock = { now: () => Date.now(), sleep: (ms) => sleep(ms) };
 
 /** The fewest milliseconds between the starts of two requests: five a second. */
-export const REQUEST_GAP_MS = 200;
+const REQUEST_GAP_MS = 200;
 
 /** Spaces the starts of requests at least `gapMs` apart, whoever asks. */
 export class RequestRate {
@@ -59,7 +64,7 @@ export class RequestRate {
 }
 
 /** The path and query of a request, without its scheme, host or credentials. */
-export function pathOf(input: Parameters<typeof fetch>[0]): string {
+function pathOf(input: Parameters<typeof fetch>[0]): string {
   const url = new URL(input instanceof Request ? input.url : String(input));
   return `${url.pathname}${url.search}`;
 }

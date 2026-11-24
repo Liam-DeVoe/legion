@@ -1,6 +1,5 @@
 import { existsSync } from "node:fs";
-import { z } from "zod";
-import { type ApprovalSkipReason, isApprovalSkip } from "./approval-skips.ts";
+import type { ApprovalSkipReason } from "./approval-skips.ts";
 import { eventMoved, eventStatus } from "./authorship.ts";
 import {
   Artifact,
@@ -8,7 +7,6 @@ import {
   type DispatchWrites,
   type Event,
   IssueDetails,
-  ownerName,
   type ReplaceOp,
   type Whoami,
   type WriteOutcome,
@@ -22,31 +20,46 @@ import {
   type Occurrence,
   type Paragraph,
 } from "./inventory.ts";
-import { applyingEntries, judge, type Question, type Span } from "./judge.ts";
+import {
+  applyingEntries,
+  checkAnswer,
+  type Judged,
+  judge,
+  type Question,
+  readAnswer,
+  type Span,
+} from "./judge.ts";
 import type { MapEntry, Reach } from "./name-map.ts";
-import type { Pace } from "./pace.ts";
-import { itemPlace } from "./places.ts";
+import type { Pace, PaceLog } from "./pace.ts";
+import { approvalPlace } from "./places.ts";
 import type { Clock } from "./request-log.ts";
 import type { HeldWrite, RunState } from "./state.ts";
-import { VERDICT_CODES } from "./verdicts.ts";
+import { VERDICT_CODES, type VerdictCode, verdictKey } from "./verdicts.ts";
 
 /**
- * Write mode's part of a run: who may write, and each item's write. A document gets one
+ * Each item's write, for write mode and for the settle command (spec version 43), which is write
+ * mode with the tester's answers in place of the model's. A document gets one
  * `POST /api/v1/artifacts/{id}/edits` with every `replace` of that document, the token read as its
  * precondition and the run's summary; a title one `PATCH /api/v1/issues/{key}` with
- * `expected_sequence`. A refusal is listed and left for the next run, never forced.
+ * `expected_sequence`. Just before each write the item is read again, and an item that a place a
+ * program tells now holds whole is not written. A refusal that no other writer's edit caused
+ * (413, a 5xx) is tried once more at once; a refusal is then listed and left for the next run,
+ * never forced.
  */
 
-/** Whether `whoami` may write: an agent credential that acts for no person. A person's
- *  credential, and a personal agent token (`owner` set), record each write as the person, which
- *  notifies the issue's route, claimant and authors. */
-export function writerRefusal(whoami: Whoami): string | null {
+/** Why a run may not write, or null where it may: it needs an agent credential that acts for no
+ *  person, and a session to act as. A person's credential, and a personal agent token (`owner`
+ *  set), record each write as the person, which notifies the issue's route, claimant and authors;
+ *  a run with no session (`DISPATCH_SESSION_ID`) could not keep its own id in the state, so a
+ *  report could not set its edits aside. */
+export function writerRefusal(whoami: Whoami, session: string | undefined): string | null {
   if (whoami.kind === "user") return "whoami kind=user";
   if (whoami.owner !== null) return "whoami kind=agent owner=set";
+  if (session === undefined) return "DISPATCH_SESSION_ID names no session to write as";
   return null;
 }
 
-/** What one item's turn in write mode came to, as listed. */
+/** What one item's turn came to, as listed. */
 export type WriteResult =
   | "nothing-to-judge"
   | "judged-left"
@@ -60,24 +73,39 @@ export type WriteResult =
   | "approval-request"
   | `refused:${string}`;
 
+/** Who answers the paragraphs of an item: the model, in write mode, or the tester, in the settle
+ *  command, whose answers have the model's shape and are keyed by the verdict key of an
+ *  occurrence the paragraph holds; `why` hears why an answer failed the check. */
+export type Answerer =
+  | { readonly kind: "model"; readonly model: Model; readonly concurrency: number }
+  | {
+      readonly kind: "tester";
+      readonly answers: ReadonlyMap<string, unknown>;
+      readonly why: (line: string) => void;
+    };
+
 /** Everything a write needs beside the item. */
 export interface WriteContext {
   readonly reads: DispatchReads;
   readonly writes: DispatchWrites;
-  readonly model: Model;
+  readonly answerer: Answerer;
   readonly pace: Pace;
+  /** What the tool's sessions wrote, from Dispatch's events, for the pace. */
+  readonly paceLog: PaceLog;
+  /** Runs just before each write: it saves the running session's id in the state the first
+   *  time, so a write whose later save fails is still the tool's own edit. */
+  readonly beforeWrite: () => Promise<void>;
   readonly clock: Clock;
   readonly state: RunState;
   readonly entries: readonly MapEntry[];
   reachOf(project: string): Reach;
   readonly summary: string;
-  readonly concurrency: number;
   /** How many more writes this run may make; Infinity without `--max-writes`. */
   remaining: number;
   /** A file whose presence each write waits for (`--pause-before-write`). */
   readonly pauseFile: string | undefined;
-  /** Each issue's events, read once a run. */
-  readonly events: Map<string, Promise<Event[]>>;
+  /** Each issue's last five status moves, by issue key, read once a run. */
+  readonly statusLines: Map<string, Promise<string[]>>;
   /** The keys of the occurrences of the refused writes the state held back, which this run tries
    *  again: judging one of them is judging it again. */
   readonly retried: ReadonlySet<string>;
@@ -97,14 +125,7 @@ export interface JudgeCalls {
 /** The write a held item stands for in the state. An item held before it was judged carries no
  *  keys; `retry` marks a write Dispatch refused, whose occurrences the next run judges again. */
 export function heldWrite(item: Item, keys: readonly string[], retry = false): HeldWrite {
-  return {
-    kind: item.kind === "title" ? "t" : item.kind === "issue-document" ? "i" : "p",
-    project: item.project,
-    issue: item.issue?.key ?? null,
-    id: item.id,
-    keys,
-    retry,
-  };
+  return { project: item.project, issue: item.issue?.key ?? null, id: item.id, keys, retry };
 }
 
 const PREFIX_BREAK = /\s/;
@@ -152,6 +173,7 @@ export function replaceOp(markdown: string, paragraph: Paragraph, after: string)
   return { op: "replace", find, with: replacement, occurrence };
 }
 
+/** An issue's last five status moves, oldest first, each `<time> <status>`. */
 function statusLines(events: readonly Event[]): string[] {
   return events
     .filter((event) => eventMoved(event, "status"))
@@ -165,31 +187,27 @@ async function pause(context: WriteContext): Promise<void> {
   while (!existsSync(context.pauseFile)) await context.clock.sleep(1_000);
 }
 
-/** The document's approval as Dispatch holds it just before the write: a person who approved it,
- *  or opened an approval request on it, since it was read leaves it after all. */
-async function approvalNow(context: WriteContext, examined: Examined): Promise<WriteResult | null> {
-  const item = examined.item;
-  const artifact = item.artifact;
-  if (artifact === null) return null;
-  const listed = z
-    .array(Artifact)
-    .parse(
-      item.issue === null
-        ? await context.reads.projectDocuments(item.project)
-        : await context.reads.issueArtifacts(item.issue.key)
-    )
-    .find((candidate) => candidate.id === artifact.id);
-  if (listed === undefined) return "refused:ARTIFACT_NOT_FOUND";
-  const reason = itemPlace({
-    outOfScope: false,
-    thisTree: false,
-    closed: false,
-    primary: listed.primary === true,
-    approval: listed.approval,
+/** A document's place as Dispatch holds it just before the write: its issue closed, a person's
+ *  approval (`GET /api/v1/artifacts/{id}`), or an open approval request, since the read leaves it
+ *  after all; a document that is gone is refused. Null for a document that may be written. */
+async function documentPlaceNow(
+  reads: Pick<DispatchReads, "artifact" | "issue">,
+  examined: Examined,
+  artifactId: string
+): Promise<WriteResult | null> {
+  const issue = examined.item.issue;
+  if (issue !== null) {
+    const details = IssueDetails.parse(await reads.issue(issue.key));
+    if (details.closed_at !== null || details.status === "done") return "issue-closed";
+  }
+  const answer = await reads.artifact(artifactId);
+  if (answer === null) return "refused:ARTIFACT_NOT_FOUND";
+  const now = Artifact.parse(answer);
+  return approvalPlace({
+    primary: now.primary === true,
+    approval: now.approval,
     blocks: examined.blocks,
   });
-  if (reason === "approval-request" || (reason !== null && isApprovalSkip(reason))) return reason;
-  return null;
 }
 
 /**
@@ -200,10 +218,10 @@ async function approvalNow(context: WriteContext, examined: Examined): Promise<W
  * takes no title. The write's `expected_sequence` still refuses any event after this read.
  */
 async function titleSequence(
-  context: WriteContext,
+  reads: Pick<DispatchReads, "issue">,
   examined: Examined
 ): Promise<number | WriteResult> {
-  const details = IssueDetails.parse(await context.reads.issue(examined.item.id));
+  const details = IssueDetails.parse(await reads.issue(examined.item.id));
   if (details.closed_at !== null || details.status === "done") return "issue-closed";
   if (details.title !== examined.text) return "issue-changed";
   return details.last_seq;
@@ -219,47 +237,90 @@ function resultOf(outcome: WriteOutcome, title: boolean): WriteResult {
   return `refused:${outcome.code}`;
 }
 
+/** Whether a refusal has no edit behind it, so the same write may be tried again at once: a body
+ *  past Dispatch's cap (413 `CAP_EXCEEDED`) or a fault of the server (a 5xx). */
+function triedAgain(outcome: WriteOutcome): boolean {
+  return !outcome.ok && (outcome.status === 413 || outcome.status >= 500);
+}
+
+/** A paragraph's occurrences to judge, and their keys. */
+interface Group {
+  readonly paragraph: Paragraph;
+  readonly judged: Occurrence[];
+  readonly keys: string[];
+}
+
+/** The tester's answer to one paragraph, held to the check a model's answer meets. */
+function testerJudgement(
+  answers: ReadonlyMap<string, unknown>,
+  group: Group,
+  question: Question
+): Judged {
+  const key = group.keys.find((candidate) => answers.has(candidate));
+  const answer = key === undefined ? undefined : answers.get(key);
+  return { judgement: checkAnswer(question, readAnswer(JSON.stringify(answer))), asks: 1 };
+}
+
 /**
- * One item's turn in write mode. The occurrences no place leaves and no earlier verdict decided
- * are judged only once the pace admits the write, so an item the pace holds back is held unjudged
- * and its occurrences are judged once, by the run that writes them.
+ * One item's turn. The occurrences no place leaves and no earlier verdict decided are judged only
+ * once the pace admits the write, so an item the pace holds back is held unjudged and its
+ * occurrences are judged once, by the run that writes them. The settle command's answerer judges
+ * the occurrences a code keeps as judge-refused in the paragraphs it answers, and nothing else;
+ * an answer of it that fails the check leaves the item as it is.
  */
 export async function writeItem(context: WriteContext, examined: Examined): Promise<WriteResult> {
   const item = examined.item;
+  const issueKey = item.issue?.key;
+  const answerer = context.answerer;
+  const state = context.state;
+  /** An issue's status moves, from its events, which also show the pace the tool's older writes. */
+  const history = (events: readonly Event[]) => {
+    context.paceLog.saw(events);
+    return statusLines(events);
+  };
+  // A title's events were read when it was examined: its issue's history comes from them.
+  if (item.kind === "title" && examined.events.length > 0 && !context.statusLines.has(item.id)) {
+    context.statusLines.set(item.id, Promise.resolve(history(examined.events)));
+  }
   // The occurrences to judge, grouped by paragraph: no place leaves them, no verdict decided them.
-  const byParagraph = new Map<number, { paragraph: Paragraph; judged: Occurrence[] }>();
-  const keys: string[] = [];
+  const byParagraph = new Map<number, Group>();
   for (const occurrence of examined.occurrences) {
     const { paragraph, key } = occurrence;
     if (occurrence.reason !== null || key === null || paragraph === null) continue;
-    if (context.state.verdicts.has(key)) continue;
-    keys.push(key);
-    const group = byParagraph.get(paragraph.start) ?? { paragraph, judged: [] };
+    const code = state.verdicts.get(key);
+    const again = answerer.kind === "tester" && code === VERDICT_CODES["judge-refused"];
+    if (code !== undefined && !again) continue;
+    const group = byParagraph.get(paragraph.start) ?? { paragraph, judged: [], keys: [] };
     group.judged.push(occurrence);
+    group.keys.push(key);
     byParagraph.set(paragraph.start, group);
   }
+  const groups = [...byParagraph.values()].filter(
+    (group) => answerer.kind === "model" || group.keys.some((key) => answerer.answers.has(key))
+  );
+  const keys = groups.flatMap((group) => group.keys);
   if (keys.length === 0) return "nothing-to-judge";
   const hold = (): WriteResult => {
-    context.state.held.push(heldWrite(item, keys));
+    state.held.push(heldWrite(item, keys));
     return "held";
   };
   if (context.remaining <= 0) return hold();
-  const paced = { owner: ownerName(item.owner), project: item.project };
+
+  let moves: readonly string[] = [];
+  if (issueKey !== undefined) {
+    let read = context.statusLines.get(issueKey);
+    if (read === undefined) {
+      read = issueEvents(context.reads, issueKey).then(history);
+      context.statusLines.set(issueKey, read);
+    }
+    moves = await read;
+  }
+  await context.paceLog.refresh();
+  const paced = { owner: issueKey ?? item.id, project: item.project };
   if (!context.pace.admits(paced)) return hold();
 
-  const issueKey = item.issue?.key;
-  let events: readonly Event[] = examined.events;
-  if (issueKey !== undefined && events.length === 0) {
-    let read = context.events.get(issueKey);
-    if (read === undefined) {
-      read = issueEvents(context.reads, issueKey);
-      context.events.set(issueKey, read);
-    }
-    events = await read;
-  }
   const entries = applyingEntries(context.entries, context.reachOf(item.project));
-  const groups = [...byParagraph.values()];
-  const answers = await inPool(groups, context.concurrency, async (group) => {
+  const questionOf = (group: Group): Question => {
     const relative = (occurrence: Occurrence): Span => ({
       start: occurrence.start - group.paragraph.start,
       end: occurrence.end - group.paragraph.start,
@@ -268,44 +329,75 @@ export async function writeItem(context: WriteContext, examined: Examined): Prom
       (occurrence) =>
         occurrence.paragraph?.start === group.paragraph.start && !group.judged.includes(occurrence)
     );
-    const question: Question = {
+    return {
       paragraph: group.paragraph.text,
       judged: group.judged.map(relative),
       kept: kept.map(relative),
       kind: item.kind.replace("-", " "),
       status: item.issue?.status ?? null,
-      statusEvents: statusLines(events),
+      statusEvents: moves,
       entries,
     };
-    const judged = group.judged.flatMap((occurrence) =>
-      occurrence.key === null ? [] : [occurrence.key]
-    );
-    const again = judged.filter((key) => context.retried.has(key)).length;
-    const answer = await judge(question, context.model);
-    if (again > 0) {
-      context.calls.again += 1;
-      context.calls.againOccurrences += again;
-    } else {
-      context.calls.first += 1;
+  };
+  let answers: { group: Group; judgement: Judged["judgement"] }[];
+  if (answerer.kind === "tester") {
+    answers = groups.map((group) => ({
+      group,
+      judgement: testerJudgement(answerer.answers, group, questionOf(group)).judgement,
+    }));
+    // The tester's answers of one item stand or fall together: one that fails the check leaves
+    // the item as it is, and says why.
+    let failed = false;
+    for (const { group, judgement } of answers) {
+      if (judgement.kind !== "judge-refused") continue;
+      failed = true;
+      answerer.why(`answer for key ${group.keys.join(",")}: ${judgement.reason}`);
     }
-    if (answer.asks === 2) context.calls.second += 1;
-    return { group, judged, judgement: answer.judgement };
-  });
+    if (failed) return "judge-refused";
+  } else {
+    const model = answerer.model;
+    answers = await inPool(groups, answerer.concurrency, async (group) => {
+      const again = group.keys.filter((key) => context.retried.has(key)).length;
+      const answer = await judge(questionOf(group), model);
+      if (again > 0) {
+        context.calls.again += 1;
+        context.calls.againOccurrences += again;
+      } else {
+        context.calls.first += 1;
+      }
+      if (answer.asks === 2) context.calls.second += 1;
+      return { group, judgement: answer.judgement };
+    });
+  }
 
-  const rewrites: { paragraph: Paragraph; after: string }[] = [];
+  /** The state's judge-refused entries of these keys go: an answer replaced their code. */
+  const settled = (settledKeys: readonly string[]) => {
+    state.refused = state.refused.filter(
+      (entry) => entry.id !== item.id || !settledKeys.includes(entry.key)
+    );
+  };
+  // Each rewrite, with the verdict of each occurrence it leaves in its paragraph, in their order:
+  // the answer's place for a marked one it names as left, the earlier verdict of one the run did
+  // not ask about, and none for one a place a program tells keeps.
+  const rewrites: {
+    group: Group;
+    after: string;
+    left: (VerdictCode | undefined)[];
+  }[] = [];
   let unanswered = false;
   let refused = false;
-  for (const { group, judged, judgement } of answers) {
+  for (const { group, judgement } of answers) {
     if (judgement.kind === "allowed") {
-      for (const key of judged) context.state.verdicts.set(key, VERDICT_CODES[judgement.allowed]);
+      for (const key of group.keys) state.verdicts.set(key, VERDICT_CODES[judgement.allowed]);
+      settled(group.keys);
     }
-    // Two failed answers are kept as `judge-refused`: an occurrence for a person to change by
-    // hand, which every report lists until its text changes and no later run asks about again.
+    // Two failed answers of the model are kept as `judge-refused`: an occurrence for the tester's
+    // settle command, which no later run asks the model about.
     if (judgement.kind === "judge-refused") {
       refused = true;
-      for (const key of judged) {
-        context.state.verdicts.set(key, VERDICT_CODES["judge-refused"]);
-        context.state.refused.push({
+      for (const key of group.keys) {
+        state.verdicts.set(key, VERDICT_CODES["judge-refused"]);
+        state.refused.push({
           project: item.project,
           issue: item.issue?.key ?? null,
           id: item.id,
@@ -314,7 +406,23 @@ export async function writeItem(context: WriteContext, examined: Examined): Prom
       }
     }
     if (judgement.kind === "rewrite") {
-      rewrites.push({ paragraph: group.paragraph, after: judgement.paragraph });
+      const start = group.paragraph.start;
+      const leftAt = new Map(
+        (judgement.left ?? []).map((one) => [start + one.start, one.allowed] as const)
+      );
+      const left = examined.occurrences
+        .filter(
+          (occurrence) =>
+            occurrence.paragraph?.start === start &&
+            (!group.judged.includes(occurrence) || leftAt.has(occurrence.start))
+        )
+        .map((occurrence) => {
+          const answered = leftAt.get(occurrence.start);
+          if (answered !== undefined) return VERDICT_CODES[answered];
+          const code = occurrence.key === null ? undefined : state.verdicts.get(occurrence.key);
+          return code === VERDICT_CODES["judge-refused"] ? undefined : code;
+        });
+      rewrites.push({ group, after: judgement.paragraph, left });
     }
     if (judgement.kind === "no-answer") unanswered = true;
   }
@@ -322,10 +430,9 @@ export async function writeItem(context: WriteContext, examined: Examined): Prom
   // state's held-back writes: the next run reads the item again and asks or tries again. The
   // rewrites this run judged are written now, since a later run would judge them again.
   const keep = (retry: boolean) => {
-    const held = context.state.held;
-    const at = held.findIndex((write) => write.id === item.id);
-    if (at === -1) held.push(heldWrite(item, keys, retry));
-    else if (retry) held[at] = heldWrite(item, keys, true);
+    const at = state.held.findIndex((write) => write.id === item.id);
+    if (at === -1) state.held.push(heldWrite(item, keys, retry));
+    else if (retry) state.held[at] = heldWrite(item, keys, true);
   };
   if (unanswered) keep(false);
   if (rewrites.length === 0) {
@@ -333,32 +440,48 @@ export async function writeItem(context: WriteContext, examined: Examined): Prom
     return refused ? "judge-refused" : "judged-left";
   }
 
+  // The item read again just before the write.
   let sequence = 0;
-  if (item.kind === "title") {
-    const fresh = await titleSequence(context, examined);
+  const artifact = item.artifact;
+  if (artifact === null) {
+    const fresh = await titleSequence(context.reads, examined);
     if (typeof fresh !== "number") {
       keep(true);
       return fresh;
     }
     sequence = fresh;
   } else {
-    const approval = await approvalNow(context, examined);
-    if (approval !== null) return approval;
+    const place = await documentPlaceNow(context.reads, examined, artifact.id);
+    if (place !== null) return place;
   }
   await pause(context);
   await context.pace.gap();
+  await context.beforeWrite();
   context.remaining -= 1;
-  let outcome: WriteOutcome;
-  if (item.kind === "title") {
-    const title = rewrites[0]?.after ?? examined.text;
-    outcome = await context.writes.retitle(item.id, title, sequence);
-  } else {
+  const write = (): Promise<WriteOutcome> => {
+    if (artifact === null) {
+      return context.writes.retitle(item.id, rewrites[0]?.after ?? examined.text, sequence);
+    }
     const ops = rewrites
-      .sort((a, b) => a.paragraph.start - b.paragraph.start)
-      .map((rewrite) => replaceOp(examined.text, rewrite.paragraph, rewrite.after));
-    outcome = await context.writes.edit(item.id, ops, examined.token ?? "", context.summary);
+      .sort((a, b) => a.group.paragraph.start - b.group.paragraph.start)
+      .map((rewrite) => replaceOp(examined.text, rewrite.group.paragraph, rewrite.after));
+    return context.writes.edit(item.id, ops, examined.token ?? "", context.summary);
+  };
+  let outcome = await write();
+  if (triedAgain(outcome)) outcome = await write();
+  if (outcome.ok) {
+    context.pace.wrote(paced);
+    // Each rewritten paragraph keeps, under its new hash, the verdict of each occurrence it left
+    // there (spec versions 39 and 40), and the codes of the paragraph it replaced go.
+    for (const rewrite of rewrites) {
+      rewrite.left.forEach((code, index) => {
+        if (code !== undefined) state.verdicts.set(verdictKey(item.id, rewrite.after, index), code);
+      });
+      for (const key of rewrite.group.keys) state.verdicts.delete(key);
+      settled(rewrite.group.keys);
+    }
+  } else {
+    keep(true);
   }
-  if (outcome.ok) context.pace.wrote(paced);
-  else keep(true);
-  return resultOf(outcome, item.kind === "title");
+  return resultOf(outcome, artifact === null);
 }

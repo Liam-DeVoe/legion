@@ -1,4 +1,1 @@
-{
-  "code": "ISSUE_CHANGED",
-  "error": "the issue changed since expected_sequence 4; it stands at 5"
-}
+{ "code": "ISSUE_CHANGED", "error": "issue changed since the hand-over read" }

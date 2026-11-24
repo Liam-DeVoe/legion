@@ -13,6 +13,7 @@ import {
 import type { Model } from "../word-rewrite/gateway.ts";
 import type { Deps, Options } from "../word-rewrite/main.ts";
 import type { Clock } from "../word-rewrite/request-log.ts";
+import { type RunState, readStateDocument } from "../word-rewrite/state.ts";
 
 /**
  * An in-memory Dispatch behind `DispatchReads` and `DispatchWrites`, a fake model, and a clock that
@@ -48,7 +49,11 @@ export function rewriteByRules(text: string): string {
   return INPUTS.rewrites.reduce((kept, [from, to]) => kept.split(from).join(to), text);
 }
 
+/** The session that seeds the fake's items, as another agent writes them. */
 const SESSION = { kind: "session", id: "5b0f3c2e-8d41-4a7e-9c16-2f7a9e0d4b31" };
+/** The session the tool runs as (`DISPATCH_SESSION_ID`): the fake's writes act as it. */
+export const TOOL_SESSION = { kind: "session", id: "7c2e9d14-3a5b-4f60-8e17-6d4c2b1a9f08" };
+const PERSON = { kind: "user", id: "alice", proven: true };
 const sha = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
 const bytes = (text: string) => Buffer.byteLength(text, "utf8");
 
@@ -164,8 +169,12 @@ export class FakeDispatch {
   };
   /** Projects whose issue list fails, as a read that ends a run. */
   readonly failing = new Set<string>();
+  /** Reads that fail, by the line `calls` records for them (`text <id>`, `issue <key>`). */
+  readonly failingCalls = new Set<string>();
   /** Runs just before a write is applied, as another writer in between. */
   beforeWrite: ((kind: "edit" | "retitle", id: string) => void) | undefined;
+  /** The time each new event is stamped with; a fixed morning time where no test names one. */
+  now: (() => number) | undefined;
   #nextId = 1;
   #nextEvent = 1;
 
@@ -174,18 +183,21 @@ export class FakeDispatch {
     return this;
   }
 
+  /** Appends an event in the shape of `GET /api/v1/events/log`, as the actor `actor`. */
   #event(
     type: string,
     issue: string | null,
     artifact: string | null,
     project: string,
-    payload: unknown
+    payload: unknown,
+    actor: unknown = SESSION
   ) {
     const seq = issue === null ? 0 : (this.issues.get(issue)?.lastSeq ?? 0) + 1;
     const owner = issue === null ? undefined : this.issues.get(issue);
     if (owner !== undefined) owner.lastSeq = seq;
     // An event has one owner (`events_one_owner`): an issue document's event is its issue's, with
-    // no top-level artifact id, and names the document in its payload alone.
+    // no top-level artifact id, and names the document in its payload alone, as each type's own
+    // shape does (`artifact.created` the document itself, `artifact.version` its `artifact_id`).
     this.log.push({
       id: this.#nextEvent++,
       issue_key: issue,
@@ -193,9 +205,10 @@ export class FakeDispatch {
       project,
       seq,
       type,
-      actor: SESSION,
-      created_at: "2026-11-24T10:00:00Z",
-      payload: artifact === null ? payload : { artifact_id: artifact, ...Object(payload) },
+      actor,
+      created_at:
+        this.now === undefined ? "2026-11-24T10:00:00Z" : new Date(this.now()).toISOString(),
+      payload,
     });
   }
 
@@ -218,6 +231,7 @@ export class FakeDispatch {
       title,
       status: issue.status,
       changed: ["title", "status"],
+      primary_artifact_id: null,
     });
     return issue;
   }
@@ -244,29 +258,57 @@ export class FakeDispatch {
       ...options,
     };
     this.documents.set(document.id, document);
-    this.#event("artifact.created", issue, document.id, project, { name, version: 1 });
+    this.#event("artifact.created", issue, document.id, project, {
+      artifact: { id: document.id, name, versions: [{ number: 1 }] },
+    });
     return document;
   }
 
-  /** Changes a document as another session does, moving its version and token. */
-  editAsOther(id: string, find: string, replacement: string): void {
+  /** Changes a document as another session does, moving its version and token; `actor` is that
+   *  writer, a person's actor for a person's version, and `summary` names the version. */
+  editAsOther(
+    id: string,
+    find: string,
+    replacement: string,
+    actor: unknown = { kind: "session", id: "another" },
+    summary: string | null = null
+  ): void {
     const document = this.documents.get(id);
     if (document === undefined) throw new Error(`no document ${id}`);
     document.markdown = document.markdown.replace(find, replacement);
     document.version += 1;
-    document.authors.push([{ kind: "session", id: "another" }]);
-    this.#event("artifact.version", document.issue, id, document.project, {
-      version: document.version,
-    });
+    document.authors.push([actor]);
+    this.#event(
+      "artifact.version",
+      document.issue,
+      id,
+      document.project,
+      { artifact_id: id, name: document.name, version: { number: document.version, summary } },
+      actor
+    );
   }
 
+  /** Closes an issue, which Dispatch writes as `issue.closed`. */
   close(key: string): void {
     const issue = this.issues.get(key);
     if (issue === undefined) throw new Error(`no issue ${key}`);
     issue.status = "done";
-    this.#event("issue.updated", key, null, issue.project, {
+    this.#event("issue.closed", key, null, issue.project, {
       status: "done",
       changed: ["status", "closed_at"],
+    });
+  }
+
+  /** Moves an issue's status as a session does; a move out of `done` reopens it, which Dispatch
+   *  lists as a change of `closed_at` too. */
+  moveStatus(key: string, status: string): void {
+    const issue = this.issues.get(key);
+    if (issue === undefined) throw new Error(`no issue ${key}`);
+    const reopened = issue.status === "done" && status !== "done";
+    issue.status = status;
+    this.#event("issue.updated", key, null, issue.project, {
+      status,
+      changed: reopened ? ["status", "closed_at"] : ["status"],
     });
   }
 
@@ -275,6 +317,44 @@ export class FakeDispatch {
     const issue = this.issues.get(key);
     if (issue === undefined) throw new Error(`no issue ${key}`);
     this.#event("comment.created", key, null, issue.project, { body: "a comment" });
+  }
+
+  /** A person's answer to an approval request on a document that approves nothing (a decline),
+   *  which closes the request: `ask.answered`, whose payload is the ask, naming its documents. */
+  answerApproval(id: string): void {
+    const document = this.documents.get(id);
+    if (document === undefined) throw new Error(`no document ${id}`);
+    document.approval = { state: "draft", latest_version: document.version };
+    this.#event(
+      "ask.answered",
+      document.issue,
+      id,
+      document.project,
+      {
+        kind: "approval",
+        state: "answered",
+        approval: {
+          artifact_id: id,
+          documents: [{ artifact_id: id, name: document.name, version: document.version }],
+        },
+      },
+      PERSON
+    );
+  }
+
+  /** A person's Request changes on a document, which takes its approval away. */
+  requestChanges(id: string): void {
+    const document = this.documents.get(id);
+    if (document === undefined) throw new Error(`no document ${id}`);
+    document.approval = { state: "changes_requested", latest_version: document.version };
+    this.#event(
+      "artifact.changes_requested",
+      document.issue,
+      id,
+      document.project,
+      { artifact_id: id, name: document.name, version: document.version, kind: "person" },
+      PERSON
+    );
   }
 
   #artifact(document: FakeDocument) {
@@ -316,7 +396,11 @@ export class FakeDispatch {
   }
 
   reads(): DispatchReads {
-    const record = (call: string) => this.calls.push(call);
+    /** Records the call, and fails it where the test named it as failing. */
+    const record = (call: string) => {
+      this.calls.push(call);
+      if (this.failingCalls.has(call)) throw new ReadError(`GET (fake) ${call}`, "transport");
+    };
     /** The answer `answer` gives, once the call is recorded. */
     const recorded =
       (call: string, answer: () => unknown): (() => Promise<unknown>) =>
@@ -346,6 +430,11 @@ export class FakeDispatch {
         return [...this.issues.values()]
           .filter((issue) => issue.parent === parent)
           .map((issue) => this.#row(issue));
+      },
+      artifact: async (id) => {
+        record(`artifact ${id}`);
+        const document = this.documents.get(id);
+        return document === undefined ? null : this.#artifact(document);
       },
       issue: async (key) => {
         record(`issue ${key}`);
@@ -432,11 +521,15 @@ export class FakeDispatch {
         }
         document.markdown = markdown;
         document.version += 1;
-        document.authors.push([SESSION]);
-        this.#event("artifact.version", document.issue, id, document.project, {
-          version: document.version,
-          summary,
-        });
+        document.authors.push([TOOL_SESSION]);
+        this.#event(
+          "artifact.version",
+          document.issue,
+          id,
+          document.project,
+          { artifact_id: id, name: document.name, version: { number: document.version, summary } },
+          TOOL_SESSION
+        );
         return { ok: true, answer: fixture("edit-ok.json") };
       },
       retitle: async (key: string, title: string, expectedSequence: number) => {
@@ -447,7 +540,14 @@ export class FakeDispatch {
         if (issue.status === "done") return refuse(409, "ISSUE_CLOSED");
         if (issue.lastSeq !== expectedSequence) return refuse(409, "ISSUE_CHANGED");
         issue.title = title;
-        this.#event("issue.updated", key, null, issue.project, { title, changed: ["title"] });
+        this.#event(
+          "issue.updated",
+          key,
+          null,
+          issue.project,
+          { title, changed: ["title"] },
+          TOOL_SESSION
+        );
         return { ok: true, answer: fixture("title-ok.json") };
       },
       uploadState: async (project: string, name: string, content: string, token: string | null) => {
@@ -464,8 +564,15 @@ export class FakeDispatch {
         if (token !== sha(existing.markdown)) return refuse(409, "PRECONDITION_FAILED");
         existing.markdown = content;
         existing.version += 1;
-        existing.authors.push([SESSION]);
-        this.#event("artifact.version", null, existing.id, project, { version: existing.version });
+        existing.authors.push([TOOL_SESSION]);
+        this.#event(
+          "artifact.version",
+          null,
+          existing.id,
+          project,
+          { artifact_id: existing.id, name, version: { number: existing.version } },
+          TOOL_SESSION
+        );
         return { ok: true, answer: {} };
       },
     };
@@ -543,7 +650,29 @@ export function options(overrides: Partial<Options> = {}): Options {
   };
 }
 
-/** The dependencies of a run over a fake Dispatch, with every printed line kept. */
+/** The state document every write run of the tests keeps its state in. */
+export const STATE_DOCUMENT = { project: "SEED", slug: "rewrite-state-md" } as const;
+
+/** The summary of every version a write run of the tests makes. */
+export const SUMMARY = "INFRA-2017: the word is replaced by what happened";
+
+/** The options of a write run, with the flags a test does not name at their defaults. */
+export function writeOptions(overrides: Partial<Options> = {}): Options {
+  return options({
+    mode: "write",
+    summary: SUMMARY,
+    stateDocument: STATE_DOCUMENT,
+    ...overrides,
+  });
+}
+
+/** The state the fake's state document holds now. */
+export async function keptState(dispatch: FakeDispatch): Promise<RunState> {
+  return (await readStateDocument(dispatch.reads(), STATE_DOCUMENT)).state;
+}
+
+/** The dependencies of a run over a fake Dispatch, with every printed line kept. The run acts as
+ *  the tool's session, as the fake's writes do. */
 export function deps(
   dispatch: FakeDispatch,
   overrides: Partial<Deps> = {}
@@ -560,6 +689,7 @@ export function deps(
     extraEntries: [],
     out: (line) => lines.push(line),
     requests: () => dispatch.calls.length,
+    session: TOOL_SESSION.id,
     lines,
     ...overrides,
   };

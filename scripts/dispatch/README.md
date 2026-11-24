@@ -553,12 +553,18 @@ run. This repository is public, and such a line carries private hosts and names.
 ## Word rewrite
 
 `word-rewrite/main.ts` is the Dispatch rewrite of INFRA-2017. INFRA-2017 removes one word from
-this repository and from the text agents wrote in Dispatch, and gives each use the words of its
-own meaning. The tool reads every project's open issues and project documents, finds each
-occurrence of the word, and leaves an occurrence where the spec's last requirement (R6) allows
-it. In write mode it asks a model about every other occurrence and writes each rewrite through
-Dispatch's own edit routes, which keep the old text in the document's versions and the issue's
-events.
+this repository and from the text that agents wrote in Dispatch, and gives each use the words of
+its own meaning. The tool finds the word in the titles and documents of open issues and in
+project documents. It leaves each occurrence that the spec's last requirement (R6) allows, and
+rewrites the others through Dispatch's own edit routes, which keep the old text in the
+document's versions and the issue's events.
+
+### The modes
+
+The tool has three modes. Report mode reads and lists; it calls no model and writes nothing to
+Dispatch. Write mode asks a model about each occurrence that no place leaves and writes each
+rewrite. The settle command is write mode with the tester's answers in place of the model's, for
+the occurrences whose two answers from the model failed.
 
 ```bash
 bun scripts/dispatch/word-rewrite/main.ts report --tree INFRA-2017 --merge-commit <sha> \
@@ -567,253 +573,298 @@ bun scripts/dispatch/word-rewrite/main.ts report --tree INFRA-2017 --merge-commi
 
 bun scripts/dispatch/word-rewrite/main.ts write --tree INFRA-2017 --merge-commit <sha> \
   --state-document dispatch://INFRA/artifact/rewrite-state-md --extra-map "$TMPDIR/map.jsonl" \
+  --summary 'INFRA-2017: <what the edit replaced>' --stop-after 90m
+
+bun scripts/dispatch/word-rewrite/main.ts settle --merge-commit <sha> \
+  --state-document dispatch://INFRA/artifact/rewrite-state-md --answers "$TMPDIR/answers.json" \
   --summary 'INFRA-2017: <what the edit replaced>'
 ```
 
-`--help` prints every flag. A flag the tool does not know, or a flag of write mode given to report
-mode, stops the run with `usage: <the reason>` and exit 2. Dispatch is resolved as for the census
-above (`sessionDispatchSettings`, `DISPATCH_URL` and `DISPATCH_TOKEN_FILE` or `DISPATCH_TOKEN`
-first). Each write acts as the session `DISPATCH_SESSION_ID` names.
+`--help` prints every mode and flag. A flag the tool does not know, or a flag of another mode,
+stops the run with `usage: <the reason>` and exit 2. Dispatch is resolved as for the census above
+(`sessionDispatchSettings`, `DISPATCH_URL` and `DISPATCH_TOKEN_FILE` or `DISPATCH_TOKEN` first).
 
-- `--tree <KEY>` names the root whose issues name the word as the subject of the change. The
-  root and every issue under it are left (`this-tree`).
-- `--merge-commit <sha>` names the merge that Dispatch's API names wait for. Before the merge it
-  is the head, which no Dispatch build holds.
-- `--project <KEY>` repeats. With none, every project is read.
-- `--include-closed` reads the closed issues too, and lists their occurrences under
-  `closed-issue`. Without it a run reads open issues alone.
-- `--daemon-state <KEY>=<url>` repeats: the state address of a project's daemon where Dispatch
-  names none. `--no-daemon <KEY>` repeats: a project that has no Legion daemon.
-- `--stop-at <RFC 3339 time>`, `--stop-after <duration>` (hours, minutes and seconds, such as
-  `90m` or `1h30m`, counted from the run's start): see "The stop time" below.
-- `--whole` reads every project again from the start, with the state's verdicts, rather than
-  only the items events name, the held-back writes and the `waiting` items whose gate is reached.
-  Its cursor and finished projects stay as they were. Write mode saves its state as on any run;
-  report mode writes no state, so it takes no `--state`.
-- Write mode only: `--summary` (required), `--model` (default `anthropic/claude-opus-5-5`),
-  `--concurrency` (model calls at once, default 4), `--max-writes <n>`, and
-  `--pause-before-write <file>`, which waits before each write until the file exists.
+Report and write mode take these flags:
+
+- `--tree <KEY>`: the root whose issues name the word as the subject of the change. The root
+  and every issue under it are left (`this-tree`).
+- `--merge-commit <sha>`: the merge that Dispatch's API names wait for. Before the merge it is
+  the head, which no Dispatch build holds.
+- `--project <KEY>` repeats. With none, the tool reads every project.
+- `--include-closed`: read the closed issues too, and list their occurrences under
+  `closed-issue`.
+- `--state-document dispatch://<P>/artifact/<slug>`: the state kept between runs (see "The
+  state"). Write mode needs it.
+- `--state <file>`: a local copy of the state, written at the end of each run.
+- `--extra-map <file>`, `--daemon-state <KEY>=<url>` (repeats) and `--no-daemon <KEY>`
+  (repeats): see "The map".
+- `--request-log <file>`: one line `METHOD path status` for each HTTP request, Dispatch's and
+  each daemon's, never a host, a header or a body.
+- `--stop-at <RFC 3339 time>` and `--stop-after <duration>`: see "The stop time".
+- `--whole`: read every project again from the start, with the state's verdicts, rather than
+  only the items that events name, the held-back writes and the items whose gate is reached.
+  Report mode then writes no state, so it takes no `--state`.
+- Write mode only: `--summary <text>` (required), `--model <id>` (default
+  `anthropic/claude-opus-5-5`), `--concurrency <n>` (model calls at once, default 4),
+  `--max-writes <n>`, and `--pause-before-write <file>`, which waits before each write until the
+  file exists.
+
+The settle command takes `--state-document`, `--answers <file>`, `--summary` and
+`--merge-commit`, all four required, and `--daemon-state`, `--no-daemon`, `--extra-map` and
+`--request-log` as above.
+
+### Who may write
+
+Write mode and the settle command run only with an agent credential that acts for no person
+(`whoami` answers `kind: "agent"` with `owner: null`), and with a session to act as
+(`DISPATCH_SESSION_ID`). A person's credential, and a personal agent token, record each write as
+the person, which notifies the issue's route, claimant and authors. Each write acts as the
+session that `DISPATCH_SESSION_ID` names, and the state keeps that session's id (see "Changed
+since"). Without these, the run prints `refused: <why>` and exits 2.
 
 ### What it reads
 
-Every request is a GET in report mode, and every request of either mode waits its turn at five
-requests a second. The tool reads `GET /api/v1/whoami`, `GET /healthz`, `GET /api/v1/projects`,
-each project's unpaged `GET /api/v1/issues?project=<K>&open=true`, each issue's
-`GET /api/v1/issues/<KEY>/artifacts` and each project's
-`GET /api/v1/projects/<K>/artifacts?unlinked=true`. It reads each document's
-`GET /api/v1/artifacts/<id>/text?blocks=true`, whose block ranges are UTF-8 byte offsets. It
-reads `GET /api/v1/issues?parent=<KEY>` down from `--tree`, and the events of an issue whose
-title holds the word. For a document that has a version not made by sessions alone, it reads
-that version and the one before it (`GET /api/v1/artifacts/<id>/versions/<n>?blocks=true`).
-
-For each project it reads `GET /api/v1/projects/<K>/legion/daemon`, then
-`GET <state_url>/legion/v1/state` with no credential, bounded at 60 seconds and 32 MiB as
-Dispatch's own sampler is. It prints `daemon <K> source=dispatch|run|none contract=<n>`, or
-`contract=no-contract-key|no-answer|unknown|no-daemon`. It prints the running Dispatch build as
-`dispatch commit=<sha|null> holds-merge=yes|no`: the build holds the merge when
-`git merge-base --is-ancestor <merge> <commit>` succeeds in the tool's own checkout, which fetches
-`main` first when it does not know the commit.
+In report mode every request is a GET. Every request of each mode waits its turn at five requests
+a second. The tool reads `whoami`, `/healthz`, the projects, each project's open issues
+(`GET /api/v1/issues?project=<K>&open=true`), each issue's documents, each project's own
+documents, and each document's text with its blocks, whose ranges are UTF-8 byte offsets. It
+reads the issues under `--tree`, and the events of an issue whose title holds the word. For a
+document that has a version not made by sessions alone, it reads that version and the version
+before it.
 
 ### The places a program can tell
 
-`word-rewrite/places.ts` lists the reasons, in the order they are checked. The first reason that
+`word-rewrite/places.ts` lists the reasons in the order they are checked. The first reason that
 holds is the one counted:
 
-- `credential-scope`: the credential's `project` (`whoami`) is another project.
-- `this-tree`: the issue is `--tree` or under it.
+- `credential-scope`: the credential's `project` is another project.
+- `this-tree`: the issue is `--tree` or an issue under it.
 - `closed-issue`: the issue is done.
 - `approval-request`: an open approval request names the document.
-- The approval reasons of `word-rewrite/approval-skips.ts` (`APPROVAL_SKIP_REASONS`), each for a
-  whole document a person approved. The file's opening comment says which documents each reason
-  leaves: at least `approved-by-person`, the issue's spec that a person approved at its latest
-  version.
-- `name-or-slug`: in the document's name or slug, or in the slug of a
-  `dispatch://…/artifact/<slug>` link.
-- `ask-block`, `check-block`: inside an ask block, or inside a `check` block.
-- `block-attribute`: in the opening line of a typed block, its id or an attribute.
-- `person`: a person's version made the block or changed its text. A version that adds a
-  paragraph holding the block's text or the occurrence's sentence touched that block; a past
-  version lists only its typed blocks, so a typed block's token counts too.
-- `unknown-author`: a version that touched the block has no authors, a system author, or a person
-  beside a session.
+- `approved-by-person` and `approved-earlier-open-ask` (`word-rewrite/approval-skips.ts`): a
+  person approved the document at its latest version, or at an earlier version and the document
+  holds an ask block not yet answered.
+- `name-or-slug`: in the document's name or slug, or in the slug of a `dispatch://…/artifact/`
+  link.
+- `ask-block`: inside an ask block.
+- `check-block`: inside a `check` block of the issue's Verification document, since a changed
+  check voids the results recorded against it.
+- `block-attribute`: in the opening line of any other typed block, its id or an attribute,
+  since a changed id moves the block.
+- `person`: a person's version made the block or changed its text.
+- `unknown-author`: a version that made or changed the block has no author, a system author, or
+  a person beside a session, so no program can tell that no person wrote it. A session is an
+  agent whatever its owner, so an agent's write through a person's personal agent token is a
+  session's text, which the tool changes.
 - `code-name-not-yet`: a name of the map whose gate the project has not reached.
 
-The approval reasons live in `word-rewrite/approval-skips.ts` and its own test alone, so that a
-change to which approvals the tool keeps changes those two files. A `design_gates` entry alone
-leaves nothing.
+A document that a design gate names, with no approval, is changed like any other.
 
 ### The map
 
-`word-rewrite/name-map.ts` holds every old name this change renames that Dispatch text can hold:
-files (by base name, which also covers each path that ends in it), wire and stored names, Go
-identifiers, tests, the controller's skill files, the devbox proof and its lib files, the solution
-page and the variables, each with its new name and its gate. Each name the release carries is
-gated on the daemon API contract that `packages/contracts/fixtures/daemon-api/version.json`
-records, read at each run: it is rewritten only in a project whose daemon reads at or above that
-contract, or that the run names with `--no-daemon`. The child operation that the daemon removed at
-contract 205 is gated on 205. Dispatch's API names are gated on the merge: they are rewritten only
-once the running Dispatch build holds `--merge-commit`. A Go test's name that holds the word and
-that no row of the map names is kept, since no program can tell its new name.
+`word-rewrite/name-map.ts` holds every old name that this change renames and that Dispatch text
+can hold, each with its new name and its gate. A name that the release of a project's daemon
+carries (a file, a stored name, a Go identifier or test, a skill file) is rewritten only in a
+project whose daemon reads at or above the contract that
+`packages/contracts/fixtures/daemon-api/version.json` records, read at each run, or that the run
+names with `--no-daemon`. The child operation that the daemon removed at contract 205 waits for
+205. A name of Dispatch's API waits until the running Dispatch build holds `--merge-commit`. A
+Go test's name that holds the word and that no row names is kept, since no program can tell its
+new name.
 
-`--extra-map <file>` adds rows at run time, one JSON object per line, blank lines skipped, as
-the names of the other repositories are not in this public repository:
+For each project, the tool finds the daemon through `GET /api/v1/projects/<K>/legion/daemon`, or
+through `--daemon-state <K>=<url>` where Dispatch names none, and reads `contract.daemon` from
+`GET <url>/legion/v1/state` with no credential, within 60 seconds and 32 MiB. It prints
+`daemon <K> source=<dispatch|run|none> contract=<n|no-contract-key|no-answer|unknown|no-daemon>`.
+A daemon that does not answer, or a state with no contract, keeps every name. It prints the
+Dispatch build as `dispatch commit=<sha|null> holds-merge=<yes|no>`: the build holds the merge
+when `git merge-base --is-ancestor` says so in the tool's own checkout.
+
+`--extra-map <file>` adds rows at run time, one JSON object per line, as the names of the other
+repositories are not in this public repository:
 
 ```json
 {"old": "OLD-NAME", "new": "NEW-NAME", "codeName": true, "from": "merged"}
 {"old": "Old heading", "new": "New heading", "codeName": false, "from": {"contract": 230}}
 ```
 
-`from` is `"merged"` (the row applies now), `{"contract": n}` or `{"dispatchHolds": "merge"}`. A
-line that is not such an object stops the run with `--extra-map line <n>: <reason>` and exit 2.
+`from` is `"merged"`, `{"contract": n}` or `{"dispatchHolds": "merge"}`. A line that is not such
+an object stops the run with `--extra-map line <n>: <reason>` and exit 2.
 
 ### The judge and the writes
 
-Write mode refuses to start unless `whoami` answers `kind: "agent"` with `owner: null`, the shared
-token: a person's credential, and a personal agent token, record each write as the person, which
-notifies the issue's route, claimant and authors. It prints `refused: whoami …` and exits 2.
+For each paragraph that holds occurrences that no place leaves and no verdict decided, write
+mode makes one call to the deployment's model gateway (`word-rewrite/gateway.ts`). The prompt
+gives the paragraph, the issue's status and its last five status moves, and the map's rows that
+apply in that project. The answer is `{"rewrite": "<the paragraph>"}`, that with
+`"left": {"<offset>": "<place>"}` for each marked occurrence it keeps, or
+`{"allowed": "<place>"}`. A place is `quote`, `word-as-word`, `other-team-technical`,
+`third-party-name` or `record`.
 
-For each paragraph that holds occurrences no place leaves and no earlier verdict decided, the
-tool makes one call to the deployment's model gateway (`word-rewrite/gateway.ts`, in the shape of
-`scripts/approval-eval/models.ts`: `POST $ANTHROPIC_BASE_URL/v1/messages`, the key read from
-`/var/run/model-gateway-key/key` at each call, retries with jitter and `retry-after`, every key
-scrubbed from every fault text). The prompt (`word-rewrite/judge.ts`) gives the paragraph, the
-issue's status and its last five status moves, and the map's rows that apply in that project. The
-answer is `{"rewrite": "<the paragraph>"}` or `{"allowed": "quote" | "word-as-word" |
-"other-team-technical" | "third-party-name" | "record"}`.
+An answer that is not that shape, or a rewrite that changes text outside the sentences of the
+occurrences, drops an occurrence that it had to keep, or still holds the word, fails the check.
+The tool asks once more and says what failed. When the second answer fails too, the tool keeps
+the occurrence as judge-refused (the code `j`), and no later run asks the model about it again.
 
-An answer that is not that shape, or a rewrite that changes text outside the sentences that hold
-the occurrences, changes an occurrence it had to keep, or still holds the word, is no verdict:
-nothing is kept under its key. The tool asks the model once more in the same run, naming what
-was wrong (the shape, or the text outside the sentences that had to stay as it was). When the
-second answer fails too, the occurrence is `judge-refused`: an occurrence for a person to change
-by hand, never an allowed place. The state keeps it (its item id and verdict key, with the code
-`j`), no later run asks about it again, and every later report lists it from the state, read or
-not, until its text changes; then its entry goes and the new text is judged.
+A document gets one edit with every `replace` of the document, the token read as its
+precondition and `--summary`. A title gets one issue update with `expected_sequence`. Just before
+each write, the tool reads the item again, and writes nothing to an item that a place a program
+can tell now holds whole: a closed issue, or a document that a person approved or that an open
+approval request names. Dispatch's refusal is never forced: the write goes into the state's
+held-back writes, and the next run reads the item again and tries again. A refusal with no edit
+behind it (413 `CAP_EXCEEDED`, a 5xx) is tried once more at once.
 
-A document gets one `POST /api/v1/artifacts/<id>/edits` with every `replace` of the document, the
-token read as its precondition and `--summary`. A title gets one `PATCH /api/v1/issues/<KEY>` with
-`expected_sequence`. Just before a document's write the tool reads its approval again, and leaves
-a document a person approved, or opened an approval request on, in the meantime. Just before a
-title's write it reads the issue again: a closed issue is `issue-closed`, a title that changed is
-`issue-changed`, and otherwise the write expects the issue's last event as read then, so an event
-that left the title as it was (a comment, a status move) does not cost the judged rewrite. Each
-item prints `write kind=<kind> project=<K> issue=<KEY|-> document=<slug|-> result=<result>`,
-where the result is `written`, `judged-left`, `judge-refused`, `held`, `precondition-failed`,
-`issue-changed`, `issue-closed`, an approval reason, `approval-request`, or `refused:<code>`.
-Write mode judges an item only when the pace lets it write that item, so an occurrence is judged
-once: a verdict it leaves is kept in the state, and a rewrite is written in the same turn.
+When a write changes a paragraph, the tool saves under the new paragraph's hash the verdict of
+each occurrence it left there, so its own edit leaves no occurrence unjudged.
 
-A write Dispatch refuses, with any code, and an item whose title changed or whose issue closed
-before its write, is never forced: it goes into the state's held-back writes, and the next run
-reads the item again and tries again. That run judges again the occurrences of the refused
-rewrite whose paragraph is still there, since the state keeps no text of a rewrite; the run
-counts those occurrences apart from its first asks. A paragraph the gateway gave no answer for is
-held back the same way, unjudged.
+Each item prints `write kind=<kind> project=<K> issue=<KEY|-> document=<slug|-> result=<result>`.
+
+### The settle command
+
+The settle command takes the tester's answers in place of the model's, and does what write mode
+does with them: the same check, the same pace, the same read of the item just before its write,
+the same verdicts saved, and every answer of one item in one write. It asks no model, reads only
+its answers' items, and moves neither cursor of the state.
+
+The answers file is one JSON object. Each answer has the model's shape and stands under the key of
+a judge-refused occurrence of its paragraph, as a report lists it
+(`judge-refused item=<id> key=<key> at=<offset>`). The offset is the occurrence's place in its
+paragraph, which a rewrite's `left` names:
+
+```json
+{
+  "<key>": {"rewrite": "<the new paragraph>", "left": {"<offset>": "quote"}},
+  "<another key>": {"allowed": "quote"}
+}
+```
+
+When an answer fails the check, the pace holds the write back, or Dispatch refuses it, the settle
+command writes and saves nothing for that item. It prints why, and, for the pace,
+`held: item=<id>: the pace lets it be written at <time>`. A settled item prints
+`settled item=<id> result=<written|judged-left>`. An occurrence that a place a program can tell
+holds needs no settling. The command exits 0 when it settled every answered item, and 1 when it
+refused or held one.
 
 ### The pace
 
 A named version and a title edit each give one card to each session subscribed to the owner's
-topic, and a card starts a turn on an idle session. The tool cannot see who those sessions are:
-Dispatch serves an owner's subscribers only to a credential that holds the `person` scope, and
-write mode runs with the shared token, which holds none. So the pace bounds the writes:
+topic, and a card starts a turn on an idle session. The tool cannot read who those sessions are,
+so the pace bounds its writes:
 
-- at most one write every 10 seconds overall, which the run waits out;
-- at most one write per owner (an issue, for its title and its documents, or a project document)
-  in any 15 minutes;
-- at most one write per project in any minute.
+- at most one write every 10 seconds, which the run waits out;
+- at most one write for each owner (an issue, for its title and its documents, or a project
+  document) in any 15 minutes;
+- at most one write for each project in any minute.
 
-A write that the owner's or the project's bound holds back waits, unjudged, for a later run, in
-the state's held-back writes. Report mode prints `owner <owner> subscribers=unknown` for each
-owner whose items wait for the judge, and `pace writes=<n> run-time-s=<s>`: when the last of those
-writes, one per waiting item, can start under the three bounds.
+The pace counts the writes of every run and settle, whichever process made them. The state holds
+no time, so before each write the tool reads Dispatch's events: the title edits and named versions
+of the sessions that its state lists. The event log answers only `after` and `limit`, so the tool
+steps back from the newest event until it finds one older than 15 minutes, and reads forward from
+there. It also reads each issue's own events. The tool's state saves are unnamed versions, which
+the pace does not count.
+
+A write that the owner's or the project's bound holds back waits for a later run, in the state's
+held-back writes. Report mode prints `owner <owner> subscribers=unknown` for each owner whose
+items wait for the model, then `pace writes=<n> run-time-s=<s>` for those items, and
+`settle-pace writes=<n> run-time-s=<s>` for the settle command's writes, one for each item that
+holds a judge-refused occurrence the report lists.
 
 ### The state
 
-`--state-document dispatch://<P>/artifact/<slug>` names an unlinked project document that holds
-one fenced `json` block:
+`--state-document` names a project document that holds one fenced `json` block. It holds:
 
-- the newest id of Dispatch's event log at the start of the first whole read (`cursor`);
-- whether that read has finished, and the projects it has finished;
-- the judge's verdicts on the occurrences it left: a one-letter code under the first 16 bytes,
-  in hex, of a sha256 of the item id, the paragraph's sha256 and the occurrence's index (`j`
-  for an occurrence both of whose answers failed). The document's version is no part of the key,
-  so the tool's own write of one paragraph leaves the verdicts of the others standing;
-- the held-back writes, by item id and keys, each marked when it was a write Dispatch refused;
-- `waiting`: each item that holds a name the tool kept as `code-name-not-yet`, with its gate: a
-  daemon contract (`c<n>`) or Dispatch's build holding the merge (`m`);
-- `refused`: each occurrence kept as `judge-refused`, by its item id and verdict key.
+- the cursor of the event log: the newest event id at the start of the first whole read, which
+  each later run moves to the newest event it read before its first read of an item;
+- the cursor of the last write-mode run (`write_cursor`);
+- whether the first whole read has finished, and the projects it has finished;
+- the verdicts on the occurrences that the model or the settle command left, each a one-letter
+  code under a hash of the item id, the paragraph and the occurrence's place in it (`j` for an
+  occurrence whose two answers failed);
+- the held-back writes, by item id and keys, each marked when Dispatch refused it;
+- `waiting`: each item that holds a name the tool kept, with its gate, a daemon contract (`c<n>`)
+  or the merge (`m`);
+- `refused`: each occurrence kept as judge-refused, by item id and key;
+- `sessions`: the ids of the sessions that ran write mode or the settle command.
 
-It holds only hashes, numbers (counts and the cursor), true or false, item, issue and event ids,
-project keys and one-word codes: no text of any item. Every mode reads it at its start, and an
-absent document is an empty state. A state past 900 KiB, counting every part, is refused with
-`state-too-large`, naming the count of each part.
+It holds only hashes, numbers, true or false, ids, project keys and one-letter codes, and no text
+of any item. A state past 900 KiB is refused with `state-too-large`, which names the count of each
+part.
 
-Write mode saves the state, over the token it read, at most once a minute while it holds a
-verdict, a held-back write or another change it has not saved, and once more when the run stops,
-at its end, at its stop time, or at a read that fails. A run with nothing new to keep saves
-nothing. Each save is an upload with no summary, so Dispatch keeps it as an unnamed version, which
-wakes no session. Check k9's sample of 30 changed items leaves out the versions of the state
-document. Report mode writes only `--state <file>`, a local copy.
+Each mode reads the state at its start. Write mode saves it over the token it read, at most once a
+minute while it holds something it has not saved, and once more when the run stops. Before its
+first write, a run saves the state with its session's id, so a write whose later save fails is
+still the tool's own edit. Each save is an upload with no summary, so Dispatch keeps it as an
+unnamed version, which wakes no session. Report mode writes only its `--state` copy.
 
-Until the first whole read has finished, a run reads the projects it has not finished. After it,
-a run reads again each item that an event of the log after `cursor` belongs to, whatever the
-event's type, and moves `cursor` to the last id it read. Dispatch gives an issue document's
-events to its issue, with no `artifact_id` of their own, so an event of an issue names its title
-and every document of it; an event of a project document names that document. A run takes first
-the held-back writes, and each `waiting` item whose gate its project's daemon or Dispatch's build
-has now reached, though no event names it; report mode reads the held-back writes and leaves them
-in its state. The newest id is found by doubling `after` with `limit=1` until a page is empty,
-then halving the gap: about 41 reads over a million ids.
+Until the first whole read has finished, a run reads the projects that it has not finished. After
+that, a run reads the held-back writes, each item whose gate its project's daemon or Dispatch's
+build has now reached, and each item that an event after the cursor names. An event of an issue
+names its title and every document of it; an event of a project document names that document. A
+run moves the cursor only to the newest event it read before its first read of an item, so an
+edit made while it runs is read by the next run. A read that fails ends the run with
+`unavailable: <route> <category>` and exit 2; the cursor stays, and the held-back writes that the
+run did not reach stay in the state.
+
+### Changed since
+
+A report lists apart, as changed since, each occurrence not judged (a judge-refused one among
+them) in an item that an event after the last write-mode run's cursor changed or took out of a
+place R6 allows: a version of the document, its first included; the issue's creation; a title
+change; a reopen (an `issue.updated` whose `changed` names `closed_at`); the `ask.answered` or
+`ask.resolved` that closed an approval request naming the document; or the document's
+`artifact.changes_requested`. A comment, a claim and a plain status move count for nothing. A
+version or a title edit whose actor is a session that the state lists counts for nothing, so the
+tool's own edits and the tester's settles are set aside by who made them, not by their summary.
+Each line names the event, its author and, for a version, the version's link:
+`changed-since <where> event=<id> author=<kind>:<id> version=dispatch://…@v<n>`.
 
 ### The stop time
 
-`--stop-at <time>` and `--stop-after <duration>` give a run a stop time; with both, the earlier
-one counts. At its stop time the run starts no new read, judgement or write: an item whose
-judgement has begun finishes its write. It saves its state, prints the lines below with the last
-one `result stopped at its stop time <time>`, and exits 0. A project it was reading when it stopped
-is read whole again by the next run; an item it read from events or held-back writes and did not
-handle goes into the held-back writes. A run with no stop time runs to its end.
+`--stop-at` and `--stop-after` give a run a time to stop; with both, the earlier counts. At that
+time the run starts no new read, judgement or write. It saves its state, prints its last lines
+with `result stopped at its stop time <time>`, and exits 0. A project it was reading is read whole
+again by the next run; an item that it read from events or held-back writes and did not handle
+goes into the held-back writes.
 
 ### What it prints
 
-One line per occurrence:
-`occurrence kind=<title|issue-document|project-document> project=<K> issue=<KEY|-> document=<slug|-> byte=<n|name> <reason=<r>|verdict=<v>|judge-refused|not-judged>`,
-with ` name=<old name>` where a map name covers it, and, for an occurrence the state keeps as
-`judge-refused` whose item the run did not read,
-`occurrence project=<K> issue=<KEY|-> item=<id> key=<key> judge-refused from=state`. Then the
-counts: `count <kind> <K> occurrences=<n> not-judged=<n>`, `reason <r> <n>` for every reason,
-`verdict <v> <n>`, `judge-refused <n>`, `not-judged <n>` and `items-read <n>`. Then one line for
-each check block of an open issue that names an old name of the map (the built-in rows and those
-of `--extra-map`),
-`check-name issue=<KEY> document=<slug> block=<id> old=<name>`, and their count,
-`check-names <n>`. Last come the pace (report mode), the state
-(`state verdicts=<n> held=<n> waiting=<n> not-judged=<n> bytes=<n> projected-bytes=<n> bound=921600`,
-where `held` is the state's count of held-back writes and `projected-bytes` adds 48 bytes for
-each occurrence not judged yet), then
-`model-calls first=<n> second=<n> again=<n> judged-again=<n>`: the first asks of this run, the
-second asks after a refused first answer, the first asks for the occurrences of a retried refused
-write, and the count of those occurrences. Then `requests <n>`,
-`seconds <n>` and `result done`, or the stop line. A run exits 0. A read that fails prints
-`unavailable: <route pattern> <category>` and exits 2; a state that cannot be written prints why
-and exits 1.
+One line for each occurrence:
+`occurrence kind=<kind> project=<K> issue=<KEY|-> document=<slug|-> byte=<n|name> <place>`, where
+the place is `reason=<reason>`, `verdict=<place>`, `judge-refused item=<id> key=<key> at=<offset>`
+or `not-judged`, with ` name=<old name>` where a map name covers the occurrence. A judge-refused
+occurrence is listed under a place a program can tell while one holds it; the run reads its item
+where it did not read it otherwise. Then the counts: `count <kind> <K> occurrences=<n>
+not-judged=<n>`, `reason <reason> <n>` for every reason, `verdict <place> <n>`,
+`judge-refused <n>`, `not-judged <n>` (judge-refused occurrences among them) and
+`items-read <n>`. Then each check block of an open issue that names an old name of the map,
+`check-name issue=<KEY> document=<slug> block=<id> old=<name>`, and `check-names <n>`. Report
+mode then prints the changed-since section with `changed-since <n>`, and the pace lines.
 
-`--request-log <file>` appends one line per HTTP request, Dispatch's and each daemon's:
-`METHOD path status`, never a host, a header or a body.
+Last come `state verdicts=<n> held=<n> waiting=<n> not-judged=<n> bytes=<n> projected-bytes=<n>
+bound=921600`, then `model-calls first=<n> second=<n> again=<n> judged-again=<n>` (first asks,
+second asks after a failed first answer, first asks for a refused write tried again, and the
+occurrences of those), `requests <n>`, `seconds <n>`, and `result done` or the stop line. A state
+that cannot be written prints why and exits 1.
 
-### The local proof and the fixtures
+### The fixtures and the local proof
 
 `word-rewrite/local-seed.ts --url <base> [--out <file>]` seeds a local Dispatch
-(`bun run dispatch:local`) with every item check k6 lists, in the projects `SEED`, `BELOW`,
-`ABOVE`, `NOKEY`, `NONE`, `NOADDR` and `GIVEN`. It starts four stub daemons, below, at and above
-the recorded contract and one whose state has no `contract` key, and registers them in Dispatch.
-It prints one JSON object of every key, id and address, with the flags the runs take, and serves
-the stubs until it is stopped. Its texts hold the word: they are the tool's test input.
+(`bun run dispatch:local`) with the items that check k6 names, in the projects `SEED`, `BELOW`,
+`ABOVE`, `NOKEY`, `NONE`, `NOADDR` and `GIVEN`. It starts stub daemons below, at and above the
+recorded contract and one whose state has no contract, registers them, prints one JSON object of
+every key, id and address, and serves the stubs until it is stopped. Its texts hold the word:
+they are the tool's test input.
 
-`__fixtures__/word-rewrite/capture.sh` captures each fixture the tests read from that Dispatch,
-with the request that answers it: `BASE=<base> bash capture.sh <the seed's --out file>`.
-`__fixtures__/word-rewrite/HAND-WRITTEN.md` lists each fixture that was written by hand until the
-capture runs; the capture takes each line out as it replaces the file, and deletes the list once
-it is empty.
+`__fixtures__/word-rewrite/capture.sh` captures from that Dispatch each fixture the tests read,
+with the request that answers it: `BASE=<base> bash capture.sh <the seed's --out file>`, with
+`LEGION_DAEMON_URL` naming a real daemon and `DISPATCH_URL` the production Dispatch, each read
+with one GET and no credential. Run it once on a freshly seeded Dispatch, since its writes change
+what a second run would read. `inputs.json` holds the test texts that hold the word, so that no
+test file but those of the pattern, the map and the judge holds it. `state-document.json` holds a
+state of an earlier shape; its test checks that Dispatch serves it as it was uploaded and that
+the tool refuses it rather than read it as empty.
+
+Check k9's sample of changed items leaves out the versions of the state document.
 
 The tests are `__tests__/word-rewrite-*.test.ts`, on fakes of Dispatch's reads and writes and of
 the model (`__tests__/word-rewrite-fake.ts`). No test calls a model.

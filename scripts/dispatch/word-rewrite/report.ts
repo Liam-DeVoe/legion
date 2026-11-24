@@ -1,37 +1,49 @@
+import { authorName, type Changes, versionLink } from "./changes.ts";
 import { ownerName } from "./dispatch-api.ts";
 import type { Examined, Item } from "./inventory.ts";
+import type { PacedWrite } from "./pace.ts";
 import { REASONS } from "./places.ts";
 import type { RefusedOccurrence } from "./state.ts";
 import { VERDICT_CODES, type VerdictCode, verdictName } from "./verdicts.ts";
 
 /**
- * What a run prints: one line per occurrence, with the place that leaves it, the judge's verdict
- * a state holds for it, or `not-judged`; the counts by kind of item and project and by reason;
- * the check blocks of open issues that name an old name of the map; and, from the run, the
- * daemons, Dispatch's build, the pace and the size the state would reach. No line holds a text of
- * an item: keys, ids, slugs, offsets and fixed words alone.
+ * What a run prints: one line per occurrence, with the place that leaves it, the verdict a state
+ * holds for it, `judge-refused` with its item and key, or `not-judged`; the counts by kind of item
+ * and project and by reason; the check blocks of open issues that name an old name of the map; in
+ * report mode, the occurrences not judged that an event after the last write-mode run's cursor
+ * changed (`changes.ts`); and, from the run, the daemons, Dispatch's build, the pace and the size
+ * the state would reach. No line holds a text of an item: keys, ids, slugs, offsets and fixed
+ * words alone.
+ *
+ * A place a program can tell comes first: a judge-refused occurrence in such a place is listed
+ * under it while the place holds, and as judge-refused again once it ends. A judge-refused
+ * occurrence counts as not judged (spec version 41).
  */
-
-/** What the run knows of an item that holds occurrences no place or verdict leaves. */
-export interface Waiting {
-  readonly item: Item;
-  readonly occurrences: number;
-}
 
 /** The counts and lines of one run, added to item by item. */
 export class Tally {
   readonly lines: string[] = [];
   readonly checkLines: string[] = [];
+  /** The occurrences not judged that an event after the last write-mode run's cursor changed. */
+  readonly changedLines: string[] = [];
   readonly byKind = new Map<string, { occurrences: number; notJudged: number }>();
   readonly byReason = new Map<string, number>();
   readonly byVerdict = new Map<string, number>();
-  readonly waiting: Waiting[] = [];
+  /** The items that hold occurrences that wait for the judge: no place, verdict or code. */
+  readonly waiting: Item[] = [];
+  /** The writes the settle command makes for the judge-refused occurrences listed: one per item,
+   *  by the item's owner and project, as the pace counts them. */
+  readonly settles = new Map<string, PacedWrite>();
+  /** The occurrences no place or verdict leaves, the judge-refused ones among them. */
   notJudged = 0;
-  /** Occurrences whose two answers failed: for a person to change by hand. */
+  /** Occurrences whose two answers failed: for the tester's settle command. */
   judgeRefused = 0;
   items = 0;
   /** The items this run examined. */
   readonly examined = new Set<string>();
+
+  /** `changes`: the events after the last write-mode run's cursor, where the run lists them. */
+  constructor(private readonly changes?: Changes) {}
 
   /** Adds one examined item; `verdicts` are the state's. */
   add(examined: Examined, verdicts: ReadonlyMap<string, VerdictCode>): void {
@@ -46,9 +58,10 @@ export class Tally {
       );
     }
     if (examined.occurrences.length === 0) return;
+    const change = this.changes?.of(item);
     const kindKey = `${item.kind} ${item.project}`;
     const counts = this.byKind.get(kindKey) ?? { occurrences: 0, notJudged: 0 };
-    let waiting = 0;
+    let waits = false;
     for (const occurrence of examined.occurrences) {
       counts.occurrences += 1;
       let place: string;
@@ -57,8 +70,14 @@ export class Tally {
         place = `reason=${occurrence.reason}`;
         this.byReason.set(occurrence.reason, (this.byReason.get(occurrence.reason) ?? 0) + 1);
       } else if (code === VERDICT_CODES["judge-refused"]) {
-        place = "judge-refused";
+        // What the settle command's answer names it by: its key, and its offset in its paragraph
+        // for a rewrite's `left`.
+        const at = occurrence.start - (occurrence.paragraph?.start ?? 0);
+        place = `judge-refused item=${item.id} key=${occurrence.key} at=${at}`;
         this.judgeRefused += 1;
+        this.settles.set(item.id, { owner: ownerName(item.owner), project: item.project });
+        counts.notJudged += 1;
+        this.notJudged += 1;
       } else if (code !== undefined) {
         const name = verdictName(code) ?? code;
         place = `verdict=${name}`;
@@ -67,24 +86,37 @@ export class Tally {
         place = "not-judged";
         counts.notJudged += 1;
         this.notJudged += 1;
-        waiting += 1;
+        waits = true;
       }
       const at = occurrence.inName ? "name" : String(occurrence.byteStart);
       const name = occurrence.name === null ? "" : ` name=${occurrence.name.old}`;
-      this.lines.push(
-        `occurrence kind=${item.kind} project=${item.project} issue=${issue} document=${document} byte=${at} ${place}${name}`
-      );
+      const where = `kind=${item.kind} project=${item.project} issue=${issue} document=${document} byte=${at}`;
+      this.lines.push(`occurrence ${where} ${place}${name}`);
+      const unjudged =
+        occurrence.reason === null &&
+        (code === undefined || code === VERDICT_CODES["judge-refused"]);
+      if (change !== undefined && unjudged) {
+        const link = versionLink(item, change);
+        this.changedLines.push(
+          `changed-since ${where} event=${change.event} author=${authorName(change.author)}${link === null ? "" : ` version=${link}`}`
+        );
+      }
     }
     this.byKind.set(kindKey, counts);
-    if (waiting > 0) this.waiting.push({ item, occurrences: waiting });
+    if (waits) this.waiting.push(item);
   }
 
   /** Lists, from the state, each occurrence kept as `judge-refused` whose item this run did not
-   *  read: the state names its item and its key, and the run has not seen its text change. */
+   *  read (a stop time came first, or the item is gone): the state names its item and its key. */
   addKeptRefused(refused: readonly RefusedOccurrence[]): void {
     for (const occurrence of refused) {
       if (this.examined.has(occurrence.id)) continue;
       this.judgeRefused += 1;
+      this.notJudged += 1;
+      this.settles.set(occurrence.id, {
+        owner: occurrence.issue ?? `${occurrence.project}/${occurrence.id}`,
+        project: occurrence.project,
+      });
       this.lines.push(
         `occurrence project=${occurrence.project} issue=${occurrence.issue ?? "-"} item=${occurrence.id} key=${occurrence.key} judge-refused from=state`
       );
@@ -114,10 +146,16 @@ export class Tally {
     return [...this.checkLines, `check-names ${this.checkLines.length}`];
   }
 
+  /** The report's section of occurrences changed since the last write-mode run, counted: no
+   *  failure, since the next write-mode run judges them. */
+  changedSection(): string[] {
+    return [...this.changedLines, `changed-since ${this.changedLines.length}`];
+  }
+
   /** The owners of the items that wait for the judge, each once. */
   owners(): Item["owner"][] {
     const seen = new Map<string, Item["owner"]>();
-    for (const { item } of this.waiting) seen.set(ownerName(item.owner), item.owner);
+    for (const item of this.waiting) seen.set(ownerName(item.owner), item.owner);
     return [...seen.values()];
   }
 }

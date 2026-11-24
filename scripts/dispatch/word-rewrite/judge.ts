@@ -1,6 +1,6 @@
 import type { Model } from "./gateway.ts";
 import { applies, type MapEntry, type Reach } from "./name-map.ts";
-import { countWord, holdsWord, matches } from "./pattern.ts";
+import { countWord, matches } from "./pattern.ts";
 import { ALLOWED_NAMES, type AllowedName } from "./verdicts.ts";
 
 /**
@@ -44,8 +44,8 @@ export function sentenceAt(text: string, at: number): Span {
 /**
  * Why `after` is not `before` with only the sentences that hold the judged occurrences rewritten,
  * or null when it is. The answer must hold no trace of the word but the occurrences the
- * paragraph keeps for a program-told reason (`kept`, each a span of `before`, which must stay as
- * they are).
+ * paragraph keeps (`kept`, each a span of `before`, which must stay as they are): those a
+ * program-told place keeps, and those the answer itself names as left.
  *
  * The sentences of `before` that hold a judged occurrence are the rewritable parts; every other
  * part must stand in `after` unchanged and in its order: the text before the first rewritable
@@ -109,19 +109,44 @@ export function confined(
   return confinedProblem(before, after, judged, kept) === null;
 }
 
-/** The judge's answer to one paragraph. A refused answer says why, for the second ask. */
+/** A marked occurrence a rewrite leaves as it was, by its offset in the paragraph, and why. */
+export interface Left {
+  readonly start: number;
+  readonly allowed: AllowedName;
+}
+
+/** The judge's answer to one paragraph. A refused answer says why, for the second ask. A
+ *  rewrite may leave some of the marked occurrences as they were (`left`, spec version 39): the
+ *  write keeps their verdicts under the new paragraph. */
 export type Judgement =
-  | { readonly kind: "rewrite"; readonly paragraph: string }
+  | {
+      readonly kind: "rewrite";
+      readonly paragraph: string;
+      readonly left?: readonly Left[];
+    }
   | { readonly kind: "allowed"; readonly allowed: AllowedName }
   | { readonly kind: "judge-refused"; readonly reason: string }
   /** No answer came (the gateway's fault): nothing is decided, and the item waits. */
   | { readonly kind: "no-answer" };
 
 const NOT_THE_SHAPE =
-  'the answer was not one JSON object, either {"rewrite": "<the paragraph>"} or {"allowed": "<one of the five reasons>"}';
+  'the answer was not one JSON object, either {"rewrite": "<the paragraph>"}, {"rewrite": "<the paragraph>", "left": {"<offset>": "<one of the five reasons>"}} or {"allowed": "<one of the five reasons>"}';
 
-/** Reads the model's text as the JSON the prompt asks for: exactly `{"rewrite": "<paragraph>"}`
- *  or `{"allowed": "<reason>"}`. Anything else is refused. */
+/** The occurrences a rewrite names as left, or undefined when `value` is not that object: each
+ *  key an offset, each value an allowed reason. */
+function leftOf(value: unknown): Left[] | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const left: Left[] = [];
+  for (const [offset, reason] of Object.entries(value)) {
+    const allowed = ALLOWED_NAMES.find((name) => name === reason);
+    if (!/^(0|[1-9][0-9]*)$/.test(offset) || allowed === undefined) return undefined;
+    left.push({ start: Number(offset), allowed });
+  }
+  return left.sort((a, b) => a.start - b.start);
+}
+
+/** Reads the model's text as the JSON the prompt asks for: exactly `{"rewrite": "<paragraph>"}`,
+ *  that with `"left"`, or `{"allowed": "<reason>"}`. Anything else is refused. */
 export function readAnswer(text: string): Judgement {
   const refused = { kind: "judge-refused", reason: NOT_THE_SHAPE } as const;
   const open = text.indexOf("{");
@@ -134,11 +159,17 @@ export function readAnswer(text: string): Judgement {
     return refused;
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) return refused;
-  if (Object.keys(value).length !== 1) return refused;
-  if ("rewrite" in value && typeof value.rewrite === "string") {
-    return { kind: "rewrite", paragraph: value.rewrite };
+  const keys = Object.keys(value).sort().join(",");
+  if ((keys === "rewrite" || keys === "left,rewrite") && "rewrite" in value) {
+    if (typeof value.rewrite !== "string") return refused;
+    if (!("left" in value)) return { kind: "rewrite", paragraph: value.rewrite };
+    const left = leftOf(value.left);
+    if (left === undefined) return refused;
+    return left.length === 0
+      ? { kind: "rewrite", paragraph: value.rewrite }
+      : { kind: "rewrite", paragraph: value.rewrite, left };
   }
-  if ("allowed" in value) {
+  if (keys === "allowed" && "allowed" in value) {
     const allowed = ALLOWED_NAMES.find((name) => name === value.allowed);
     if (allowed !== undefined) return { kind: "allowed", allowed };
   }
@@ -175,7 +206,7 @@ removed, because it hides what happened. Each use gets the words of its own mean
 - A renamed code name gets its new name exactly, from the list of names you are given. A name
   that is not on the list stays as it is.
 
-Some uses must stay. Answer with the reason instead of a rewrite when the marked occurrence is:
+Some uses must stay. An occurrence that must stay has one of these reasons:
 - "quote": inside a quote of a person's words;
 - "word-as-word": the word named as a word, in quotation marks, such as a record of the rule
   against it;
@@ -185,12 +216,16 @@ Some uses must stay. Answer with the reason instead of a rewrite when the marked
   field of another program);
 - "record": a record kept as the fixed input or expected output of a test or a measurement.
 
-Rewrite only the sentences that hold the marked occurrences. Change nothing else: keep every
-other sentence, every space, every link and every markdown mark exactly. Keep each occurrence
-listed under "keep" exactly as it is. If any marked occurrence must stay, answer with its reason.
+Rewrite only the sentences that hold the marked occurrences that must not stay. Change nothing
+else: keep every other sentence, every space, every link and every markdown mark exactly. Keep
+each occurrence listed under "keep" exactly as it is. Keep each marked occurrence that must stay
+exactly as it is too, and name it under "left" by the offset it is marked at, with its reason.
+If every marked occurrence must stay, answer with the reason alone.
 
-Answer with one JSON object and nothing else, either {"rewrite": "<the whole paragraph, rewritten>"}
-or {"allowed": "quote" | "word-as-word" | "other-team-technical" | "third-party-name" | "record"}.`;
+Answer with one JSON object and nothing else: {"rewrite": "<the whole paragraph, rewritten>"};
+{"rewrite": "<the whole paragraph, rewritten>", "left": {"<offset>": "<reason>"}}, where some
+marked occurrences stay; or {"allowed": "quote" | "word-as-word" | "other-team-technical" |
+"third-party-name" | "record"}, where every one stays.`;
 
 /** The prompt of one question; `refusal` is why the first answer was refused, for a second ask. */
 export function buildPrompt(
@@ -234,19 +269,41 @@ export function applyingEntries(entries: readonly MapEntry[], reach: Reach): Map
   return entries.filter((entry) => applies(entry, reach));
 }
 
-/** One ask of the model, its answer held to the shape and to `confinedProblem`. */
+/** An answer held to its question, whether the model or the tester (the settle command) gave
+ *  it: the occurrences a rewrite names as left must be marked ones, and stay as they were with
+ *  the sentences they alone stand in; at least one marked occurrence must be rewritten; and the
+ *  rewrite must pass `confinedProblem`. A refused answer says why. */
+export function checkAnswer(question: Question, answer: Judgement): Judgement {
+  if (answer.kind !== "rewrite") return answer;
+  const left = answer.left ?? [];
+  const marked = new Set(question.judged.map((span) => span.start));
+  const stray = left.find((one) => !marked.has(one.start));
+  if (stray !== undefined) {
+    return {
+      kind: "judge-refused",
+      reason: `"left" names the offset ${stray.start}, where no marked occurrence stands`,
+    };
+  }
+  const leftStarts = new Set(left.map((one) => one.start));
+  const rewritten = question.judged.filter((span) => !leftStarts.has(span.start));
+  if (rewritten.length === 0) {
+    return {
+      kind: "judge-refused",
+      reason: "every marked occurrence stays, so the answer is the reason alone",
+    };
+  }
+  const problem = confinedProblem(question.paragraph, answer.paragraph, rewritten, [
+    ...question.kept,
+    ...question.judged.filter((span) => leftStarts.has(span.start)),
+  ]);
+  return problem === null ? answer : { kind: "judge-refused", reason: problem };
+}
+
+/** One ask of the model, its answer held to the shape and to `checkAnswer`. */
 async function askOnce(question: Question, model: Model, refusal?: string): Promise<Judgement> {
   const text = await model.ask(buildPrompt(question, refusal));
   if (text === null) return { kind: "no-answer" };
-  const answer = readAnswer(text);
-  if (answer.kind !== "rewrite") return answer;
-  const problem = confinedProblem(
-    question.paragraph,
-    answer.paragraph,
-    question.judged,
-    question.kept
-  );
-  return problem === null ? answer : { kind: "judge-refused", reason: problem };
+  return checkAnswer(question, readAnswer(text));
 }
 
 /** The judgement of one paragraph and how many asks it took: a refused first answer is asked
@@ -257,16 +314,12 @@ export interface Judged {
 }
 
 /** One question put to the model, and once more when its first answer is refused. A second
- *  refusal is the judgement; it is no verdict, and a later run asks again. */
+ *  refusal is the judgement, which the writer keeps as `judge-refused` (the code `j` and a
+ *  `refused` entry of the state): no later run asks about it again while its text stands. */
 export async function judge(question: Question, model: Model): Promise<Judged> {
   const first = await askOnce(question, model);
   if (first.kind !== "judge-refused") return { judgement: first, asks: 1 };
   return { judgement: await askOnce(question, model, first.reason), asks: 2 };
-}
-
-/** Whether a text holds an occurrence at all, which a rewrite of a title must not. */
-export function stillHoldsWord(text: string): boolean {
-  return holdsWord(text);
 }
 
 /** The spans of every occurrence of a text. */

@@ -18,11 +18,14 @@ import {
   nameAt,
   type Reach,
   renamedNamesIn,
+  type TestName,
   testNameAt,
+  testNamesWithWord,
 } from "./name-map.ts";
 import { indexOfByte, matches } from "./pattern.ts";
 import {
   type Author,
+  artifactSlugSpans,
   enclosingBlocks,
   type ItemFacts,
   inArtifactSlug,
@@ -39,9 +42,7 @@ import { verdictKey } from "./verdicts.ts";
  * when a program can tell one.
  */
 
-export type ItemKind = "title" | "issue-document" | "project-document";
-
-export const ITEM_KINDS: readonly ItemKind[] = ["title", "issue-document", "project-document"];
+type ItemKind = "title" | "issue-document" | "project-document";
 
 export interface IssueFacts {
   readonly key: string;
@@ -49,7 +50,6 @@ export interface IssueFacts {
   readonly title: string;
   readonly status: string;
   readonly closed: boolean;
-  readonly lastSeq: number;
   readonly createdBy: Actor | null;
 }
 
@@ -89,7 +89,7 @@ export interface Occurrence {
 }
 
 /** A check block that names an old name of the map (the report's own section). */
-export interface CheckName {
+interface CheckName {
   readonly block: string;
   readonly old: string;
 }
@@ -100,8 +100,6 @@ export interface Examined {
   readonly text: string;
   /** The document's token as read; null for a title. */
   readonly token: string | null;
-  /** The document's version as read; 0 for a title. */
-  readonly version: number;
   /** The document's blocks as read; none for a title. */
   readonly blocks: readonly Block[];
   readonly occurrences: readonly Occurrence[];
@@ -166,7 +164,6 @@ function issueFacts(row: IssueRow, project: string): IssueFacts {
     title: row.title,
     status: row.status,
     closed: row.closed_at !== null || row.status === "done",
-    lastSeq: row.last_seq,
     createdBy: row.created_by ?? null,
   };
 }
@@ -213,8 +210,7 @@ export async function projectItems(
   const rows = z.array(IssueRow).parse(await reads.issues(project, includeClosed));
   const issues = rows.map((row) => issueFacts(row, project));
   const perIssue = await inPool(issues, READ_CONCURRENCY, (issue) => rowItems(reads, issue));
-  const documents = z.array(Artifact).parse(await reads.projectDocuments(project));
-  return [...perIssue.flat(), ...documentItems(documents, null)];
+  return [...perIssue.flat(), ...(await projectDocumentItems(reads, project))];
 }
 
 /** One issue's items read afresh: `GET /api/v1/issues/{key}` gives its row and its documents. */
@@ -224,17 +220,40 @@ export async function issueItems(reads: DispatchReads, key: string): Promise<Ite
   return [titleItem(issue), ...documentItems(details.artifacts ?? [], issue)];
 }
 
-/** One project document read afresh, or none when it is gone. */
-export async function projectDocumentItem(
-  reads: DispatchReads,
-  project: string,
-  id: string
-): Promise<Item[]> {
-  const documents = z.array(Artifact).parse(await reads.projectDocuments(project));
-  return documentItems(
-    documents.filter((document) => document.id === id),
-    null
+/** A project's own documents, read afresh. */
+async function projectDocumentItems(reads: DispatchReads, project: string): Promise<Item[]> {
+  return documentItems(z.array(Artifact).parse(await reads.projectDocuments(project)), null);
+}
+
+/** Items a run reads again by name: every item of an issue (`id` null), one item of an issue (its
+ *  title, by the issue key, or a document), or one project document (`issue` null). */
+export interface Wanted {
+  readonly project: string;
+  readonly issue: string | null;
+  readonly id: string | null;
+}
+
+/** The items `wanted` names, read afresh: each issue and each project's list of documents read
+ *  once, `READ_CONCURRENCY` at a time, and the items answered once each, in the order named. An
+ *  item that is gone is left out. */
+export async function readItems(reads: DispatchReads, wanted: readonly Wanted[]): Promise<Item[]> {
+  const ownerOf = (one: Wanted) => one.issue ?? `project ${one.project}`;
+  const owners = new Map<string, Wanted>();
+  for (const one of wanted) if (!owners.has(ownerOf(one))) owners.set(ownerOf(one), one);
+  const read = await inPool([...owners.values()], READ_CONCURRENCY, (one) =>
+    one.issue === null ? projectDocumentItems(reads, one.project) : issueItems(reads, one.issue)
   );
+  const itemsOf = new Map([...owners.keys()].map((owner, index) => [owner, read[index] ?? []]));
+  const items: Item[] = [];
+  const seen = new Set<string>();
+  for (const one of wanted) {
+    for (const item of itemsOf.get(ownerOf(one)) ?? []) {
+      if (seen.has(item.id) || (one.id !== null && item.id !== one.id)) continue;
+      seen.add(item.id);
+      items.push(item);
+    }
+  }
+  return items;
 }
 
 /** Every event of an issue, oldest first, read a page of 200 at a time. */
@@ -259,6 +278,17 @@ function itemFacts(context: Context, item: Item, blocks: readonly Block[]): Item
     approval: item.artifact?.approval,
     blocks,
   };
+}
+
+/** Whether a document is its issue's Verification document: its `role`, or, for an issue's row a
+ *  rolling deploy left with no role, its slug, as Dispatch's own `documentRolePredicate` reads
+ *  it. A project document plays no role. */
+export function isVerificationDocument(artifact: Artifact): boolean {
+  if (artifact.issue_key === null) return false;
+  if (artifact.role !== undefined && artifact.role !== null && artifact.role !== "") {
+    return artifact.role === "verification";
+  }
+  return artifact.slug === "verification-md";
 }
 
 /** The occurrences of a name: a document's name, or its slug where the name holds none. */
@@ -298,16 +328,17 @@ export function checkNames(
 
 /** The map name that covers an occurrence, and whether the item's project has not reached it. A
  *  Go test's name the map has no row for stands in as a name with no new name, which no project
- *  has reached. */
+ *  has reached. `tests` are the text's Go test names that hold the word. */
 function nameGate(
   context: Context,
   project: string,
   text: string,
+  tests: readonly TestName[],
   start: number,
   end: number
 ): { readonly name: MapEntry | null; readonly notYet: boolean } {
   const mapped = nameAt(text, start, end, context.entries);
-  const test = mapped === null ? testNameAt(text, start, end) : null;
+  const test = mapped === null ? testNameAt(tests, start, end) : null;
   const name: MapEntry | null =
     mapped ?? (test === null ? null : { old: test, new: "", codeName: true, from: "merged" });
   const notYet = name !== null && (name.new === "" || !applies(name, context.reachOf(project)));
@@ -316,7 +347,7 @@ function nameGate(
 
 async function examineTitle(context: Context, item: Item, issue: IssueFacts): Promise<Examined> {
   const found = matches(issue.title);
-  const empty = { item, text: issue.title, token: null, version: 0, blocks: [], checkNames: [] };
+  const empty = { item, text: issue.title, token: null, blocks: [], checkNames: [] };
   if (found.length === 0) return { ...empty, occurrences: [], events: [] };
   const held = itemPlace(itemFacts(context, item, []));
   const events = held === null ? await issueEvents(context.reads, issue.key) : [];
@@ -327,8 +358,16 @@ async function examineTitle(context: Context, item: Item, issue: IssueFacts): Pr
     text: issue.title,
     blockId: null,
   };
+  const tests = testNamesWithWord(issue.title);
   const occurrences = found.map((match, index): Occurrence => {
-    const { name, notYet } = nameGate(context, item.project, issue.title, match.start, match.end);
+    const { name, notYet } = nameGate(
+      context,
+      item.project,
+      issue.title,
+      tests,
+      match.start,
+      match.end
+    );
     return {
       start: match.start,
       end: match.end,
@@ -342,6 +381,7 @@ async function examineTitle(context: Context, item: Item, issue: IssueFacts): Pr
           inName: false,
           enclosing: [],
           inOpeningLine: false,
+          verification: false,
           author,
           nameNotYet: notYet,
         }),
@@ -352,11 +392,22 @@ async function examineTitle(context: Context, item: Item, issue: IssueFacts): Pr
   return { ...empty, occurrences, events };
 }
 
-/** The paragraph of an occurrence: its innermost block, or its line when no block holds it. */
-function paragraphOf(text: string, bytes: Buffer, enclosing: readonly Block[], start: number) {
+/** The paragraph of an occurrence: its innermost block, or its line when no block holds it.
+ *  `starts` keeps the index of each block's first byte, found once per block. */
+function paragraphOf(
+  text: string,
+  bytes: Buffer,
+  enclosing: readonly Block[],
+  start: number,
+  starts: Map<number, number>
+) {
   const innermost = enclosing[0];
   if (innermost !== undefined) {
-    const from = indexOfByte(text, innermost.from);
+    let from = starts.get(innermost.from);
+    if (from === undefined) {
+      from = indexOfByte(text, innermost.from);
+      starts.set(innermost.from, from);
+    }
     const paragraphText = bytes.subarray(innermost.from, innermost.to).toString("utf8");
     return {
       start: from,
@@ -378,28 +429,32 @@ async function examineDocument(
 ): Promise<Examined> {
   const read = Text.parse(await context.reads.text(artifact.id));
   const blocks = read.blocks ?? [];
-  const latest = Math.max(0, ...(artifact.versions ?? []).map((version) => version.number));
-  const version = read.version ?? latest;
   const text = read.markdown;
   const bytes = Buffer.from(text, "utf8");
   const held = itemPlace(itemFacts(context, item, blocks));
   const found = matches(text);
   const named =
     item.issue !== null && !item.issue.closed ? checkNames(bytes, blocks, context.entries) : [];
-  const base = { item, text, token: read.token, version, blocks, checkNames: named, events: [] };
+  const base = { item, text, token: read.token, blocks, checkNames: named, events: [] };
+  // What every occurrence is looked up in, found once per text.
+  const slugs = artifactSlugSpans(text);
+  const tests = testNamesWithWord(text);
+  const starts = new Map<number, number>();
   const authorship = new Authorship(artifact.id, artifact.versions, context.reads);
+  const verification = isVerificationDocument(artifact);
   const perParagraph = new Map<number, number>();
   const occurrences: Occurrence[] = [];
   for (const match of found) {
     const enclosing = enclosingBlocks(blocks, match.byteStart, match.byteEnd);
-    const paragraph = paragraphOf(text, bytes, enclosing, match.start);
+    const paragraph = paragraphOf(text, bytes, enclosing, match.start, starts);
     const indexInParagraph = perParagraph.get(paragraph.start) ?? 0;
     perParagraph.set(paragraph.start, indexInParagraph + 1);
-    const { name, notYet } = nameGate(context, item.project, text, match.start, match.end);
+    const { name, notYet } = nameGate(context, item.project, text, tests, match.start, match.end);
     const facts = {
-      inName: inArtifactSlug(text, match.start, match.end),
+      inName: inArtifactSlug(slugs, match.start, match.end),
       enclosing,
       inOpeningLine: inOpeningLine(bytes, enclosing, match.byteStart),
+      verification,
       author: "session" as Author,
       nameNotYet: notYet,
     };

@@ -1,10 +1,6 @@
 {
   "project": "SEED",
-  "state_url": "http://127.0.0.1:41001",
-  "created_by": {
-    "kind": "user",
-    "id": "alice@example.com",
-    "proven": true
-  },
-  "updated_at": "2026-11-24T10:00:00Z"
+  "state_url": "http://127.0.0.1:59712",
+  "created_by": { "kind": "user", "id": "alice", "proven": true },
+  "updated_at": "2026-11-24T04:47:15.591799Z"
 }

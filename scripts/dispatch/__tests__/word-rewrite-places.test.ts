@@ -30,9 +30,11 @@ function artifactNamed(file: string, name: string): Listed {
 }
 
 /** Reads that answer from the captured fixtures: SEED's issues, the main issue's documents,
- *  `mixed.md`'s text and its versions, the main issue's events, and nothing for anything else. */
+ *  `mixed.md`'s and `verification.md`'s texts and `mixed.md`'s versions, the main issue's
+ *  events, and nothing for anything else. */
 function fixtureReads(texts: Record<string, unknown> = {}): DispatchReads {
   const mixed = artifactNamed("issue-artifacts.json", "mixed.md").id;
+  const verification = artifactNamed("issue-artifacts.json", "verification.md").id;
   const empty = async () => [];
   return {
     healthz: async () => fixture("dispatch-healthz.json"),
@@ -48,8 +50,10 @@ function fixtureReads(texts: Record<string, unknown> = {}): DispatchReads {
       return [];
     },
     projectDocuments: empty,
+    artifact: async () => null,
     text: async (id) => {
       if (id === mixed) return fixture("text-blocks.json");
+      if (id === verification) return fixture("text-blocks-verification.json");
       const text = texts[id];
       if (text === undefined) return { markdown: "Nothing here.\n", token: "sha256:0", version: 1 };
       return text;
@@ -87,10 +91,14 @@ async function mainItems(): Promise<Item[]> {
   );
 }
 
-async function mixedDocument(overrides: Partial<Context> = {}): Promise<Examined> {
-  const item = (await mainItems()).find((candidate) => candidate.artifact?.name === "mixed.md");
-  if (item === undefined) throw new Error("no mixed.md");
+async function mainDocument(name: string, overrides: Partial<Context> = {}): Promise<Examined> {
+  const item = (await mainItems()).find((candidate) => candidate.artifact?.name === name);
+  if (item === undefined) throw new Error(`no ${name}`);
   return examine(context(fixtureReads(), overrides), item);
+}
+
+function mixedDocument(overrides: Partial<Context> = {}): Promise<Examined> {
+  return mainDocument("mixed.md", overrides);
 }
 
 /** The reason of the occurrence that stands in the text after `marker`. */
@@ -150,7 +158,9 @@ const ROWS: Record<PlaceReason, () => Promise<string | null>> = {
     return examined.occurrences.find((occurrence) => occurrence.inName)?.reason ?? null;
   },
   "ask-block": async () => reasonAfter(await mixedDocument(), "Should the"),
-  "check-block": async () => reasonAfter(await mixedDocument(), ":::check"),
+  // verification.md is the issue's Verification document (`role: "verification"`).
+  "check-block": async () =>
+    reasonAfter(await mainDocument("verification.md"), "The parked tree resumes"),
   "block-attribute": async () => {
     const [examined] = await fakeDocument((dispatch) => {
       const issue = dispatch.issue("SEED", "A requirement");
@@ -177,7 +187,6 @@ const ROWS: Record<PlaceReason, () => Promise<string | null>> = {
         title: "t",
         status: "todo",
         closed: false,
-        lastSeq: 1,
         createdBy: null,
       },
       artifact: {
@@ -225,9 +234,16 @@ describe("the places a program can tell", () => {
 
 describe("the occurrences the tool judges", () => {
   test("an agent's block in an open issue's document", async () => {
-    // mixed.md's first paragraph: version 2 (a system settlement) moved only the ask block, and
-    // version 3 (a person) added only the person's own paragraph.
+    // mixed.md's first paragraph: version 2 (a person) added only the person's own paragraph.
     expect(reasonAfter(await mixedDocument(), "Café")).toBeNull();
+  });
+
+  test("a check block of a document that is not the Verification document is judged as its text is", async () => {
+    // Dispatch takes a check block in any document and gives it `when`, but records results
+    // against the Verification document's checks alone. The opening line stays as it is.
+    const mixed = await mixedDocument();
+    expect(reasonAfter(mixed, ":::check")).toBe("block-attribute");
+    expect(reasonAfter(mixed, "The parked tree resumes")).toBeNull();
   });
 
   test("an agent's title of an open issue", async () => {
@@ -257,6 +273,19 @@ describe("the occurrences the tool judges", () => {
     const item = (await issueItems(reads, "SEED-7")).find((candidate) => candidate.id === gated);
     if (item === undefined) throw new Error("issue-details.json names no gated document");
     expect((await examine(context(reads), item)).occurrences[0]?.reason).toBeNull();
+  });
+
+  test("an agent's typed block, neither ask nor check, with the word in an attribute of its opening line is left under block-attribute", async () => {
+    const [examined] = await fakeDocument((dispatch) => {
+      const issue = dispatch.issue("SEED", "A requirement");
+      dispatch.document({ issue: issue.key }, "spec.md", input("requirement-attribute"));
+    });
+    expect(examined?.blocks.find((block) => block.type === "requirement")?.attributes).toEqual([
+      expect.objectContaining({ name: "title" }),
+    ]);
+    expect(examined?.occurrences.map((occurrence) => occurrence.reason)).toEqual([
+      "block-attribute",
+    ]);
   });
 
   test("the slug of a document link leaves its occurrence, the prose beside it is judged", async () => {

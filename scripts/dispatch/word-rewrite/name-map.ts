@@ -60,11 +60,13 @@ const DISPATCH_API_NAMES: readonly (readonly [string, string])[] = [
 ];
 
 /**
- * Every other old name this change renames that Dispatch text can hold, with its new name: the
- * pull request's list of renamed files, wire and stored names, identifiers and tests, and the
- * skill files, scripts and variables it renames. Each is a name the release carries, so each
- * applies from the new contract. A file is listed by its base name, which also covers every path
- * that ends in it.
+ * Every other old name this change renames that Dispatch text can hold, with its new name: each
+ * name the pull request's diff renames (files, Go tests and functions, types, constants and
+ * variables, TypeScript declarations and test titles), and each task's wire and stored names,
+ * keys, variables, anchors, devbox checkpoints and log lines. Each is a name the release carries,
+ * so each applies from the new contract. A file is listed by its base name, which also covers
+ * every path that ends in it. A third value `false` marks words that are no code name: a line of
+ * a notice or of a heading, and the controller's marks.
  */
 const RELEASE_NAMES: readonly (readonly [string, string, boolean?])[] = [
   // The kept decisions: files.
@@ -135,7 +137,10 @@ const RELEASE_NAMES: readonly (readonly [string, string, boolean?])[] = [
   ["releaseParkedClaims", "releaseOutOfWorkflowClaims"],
   ["parkedWakes", "delayedWakes"],
   ["parkedWakeBound", "delayedWakeBound"],
-  ["parkedWait", "delayedWait"],
+  [
+    "parkedWait",
+    "delayedWait (packages/daemon/internal/daemon/wake.go) or retryWait (packages/envoy/internal/dispatch/api/comment_mention_retry_test.go)",
+  ],
   ["parkedLaunch", "delayedLaunch"],
   [
     "ancestry-held-past-a-parked-root-on-its-chain",
@@ -226,6 +231,406 @@ const RELEASE_NAMES: readonly (readonly [string, string, boolean?])[] = [
   ["PARKED_DECISION_EVIDENCE_DIR", "KEPT_DECISION_EVIDENCE_DIR"],
   ["PARKED_DECISION_UNTIL", "KEPT_DECISION_UNTIL"],
   ["DOCS_RESIDENCY_PARK_COMMIT_TRIAL", "DOCS_RESIDENCY_WEDGED_COMMIT_TRIAL"],
+  // Every other name the pull request's diff renames: files (by base name), Go tests,
+  // functions, types, constants and variables, and TypeScript declarations and test titles, by
+  // the directory that defines them. A name two places rename apart names both.
+  // docs/research/temporal-evaluation-2026-11/prototype/internal/exp15
+  ["waitParked", "waitUntilWaiting"],
+  // packages/daemon/internal/admit
+  ["keepParkedDecision", "keepDecision"],
+  ["parkedDecisionNotices", "keptDecisionNotices"],
+  ["parkedRoot", "rootInBacklog"],
+  ["parkedTree", "backlogTree"],
+  ["parkFinishingTree", "backlogFinishingTree"],
+  // packages/daemon/internal/api
+  ["refuseParkedRelaunch", "refuseDelayedRelaunch"],
+  [
+    "TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight",
+    "TestARecoveryStepThatMeetsADelayRaisedAfterItsViewNamesTheLaunchInFlight",
+  ],
+  ["parkedRelaunchCause", "delayedRelaunchCause"],
+  ["parkedRelaunchCauses", "delayedRelaunchCauses"],
+  ["parkedRelaunchRefusal", "delayedRelaunchRefusal"],
+  ["suspensionHeldOverTheParkedRelaunch", "suspensionHeldOverTheDelayedRelaunch"],
+  ["workingUnderAParkedRefresh", "workingUnderADelayedRefresh"],
+  ["workingUnderAParkedRelaunch", "workingUnderADelayedRelaunch"],
+  // packages/daemon/internal/daemon
+  ["parkedIn", "backlogIn"],
+  ["bootParked", "bootOutOfWorkflow"],
+  ["testBootQueuesTheParkedClaims", "testBootQueuesTheOutOfWorkflowClaims"],
+  ["ancestryHeldPastAParkedRootOnItsChain", "ancestryHeldPastABacklogRootOnItsChain"],
+  ["parkTheRootBeforeTheChildsRowsRun", "moveTheRootToBacklogBeforeTheChildsRowsRun"],
+  ["keptAfterTheParkedWake", "keptAfterTheDelayedWake"],
+  ["parkFound", "delayFound"],
+  ["parkTheWake", "delayTheWake"],
+  ["parkedOverItsProcess", "delayedOverItsProcess"],
+  ["parkedTurn", "delayedTurn"],
+  ["parkedWake", "delayedWake"],
+  ["keptParkClosed", "keptLeaveClosed"],
+  ["parkedOrWaiting", "outOfWorkflowOrWaiting"],
+  ["parkedIssue", "outOfWorkflowIssue"],
+  ["parkRelaunch", "delayRelaunch"],
+  ["parkedBehindALoad", "waitingBehindALoad"],
+  ["parkPauseHeldLaunch", "delayPauseHeldLaunch"],
+  ["parkedLaunchKeepsThePod", "delayedLaunchKeepsThePod"],
+  ["runParkedLaunch", "runDelayedLaunch"],
+  ["wantLaunchParked", "wantLaunchDelayed"],
+  [
+    "TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles",
+    "TestTheStallBackstopTellsADelayedRelaunchAsWhatTheDelaySettles",
+  ],
+  // packages/daemon/internal/record
+  ["parkedDecisions", "keptDecisionsOf"],
+  // packages/daemon/internal/supervise
+  [
+    "TestAParkedAgentWithNothingPendingIsRelaunchedHoweverOftenItDies",
+    "TestAnIdleAgentWithNothingPendingIsRelaunchedHoweverOftenItDies",
+  ],
+  [
+    "TestACompactionUnderAParkedRepointGivesTheClaimBackAndLeavesTheTaskToThatTurn",
+    "TestACompactionUnderADelayedRepointGivesTheClaimBackAndLeavesTheTaskToThatTurn",
+  ],
+  [
+    "TestAParkedRelaunchRefusedAtItsTurnRecordsThatItsProcessIsGone",
+    "TestADelayedRelaunchRefusedAtItsTurnRecordsThatItsProcessIsGone",
+  ],
+  [
+    "TestASuspendIsHeldForACompactionOrAParkedLaunchOverADeadProcess",
+    "TestASuspendIsHeldForACompactionOrADelayedLaunchOverADeadProcess",
+  ],
+  [
+    "TestReadProcessAsksNothingOfAClaimWithNoProcessOrADeadProcessAParkedLaunchReplaces",
+    "TestReadProcessAsksNothingOfAClaimWithNoProcessOrADeadProcessADelayedLaunchReplaces",
+  ],
+  ["TestARelaunchRecordsAtAParkedWakesTurn", "TestARelaunchRecordsAtADelayedWakesTurn"],
+  [
+    "TestARelaunchRecordsNoTurnAtAParkedWakesTurnAfterACompactionLostItsProcess",
+    "TestARelaunchRecordsNoTurnAtADelayedWakesTurnAfterACompactionLostItsProcess",
+  ],
+  [
+    "TestAnOperatorsDeliveryOverTheRefreshsParkedRelaunchRunsItNow",
+    "TestAnOperatorsDeliveryOverTheRefreshsDelayedRelaunchRunsItNow",
+  ],
+  ["refreshParked", "refreshDelayed"],
+  ["refreshParkedAt", "refreshDelayedAt"],
+  ["refreshParkedIdle", "refreshDelayedIdle"],
+  ["endPodPark", "endPodStartWait"],
+  ["aRelaunchThatWaitsStopsAtThePark", "aRelaunchThatWaitsStopsAtTheGate"],
+  ["aResumeParkedOverARefusedStop", "aResumeWaitingOverARefusedStop"],
+  ["parkedPromptly", "waitingForPodPromptly"],
+  ["EndRelaunchParked", "EndRelaunchDelayed"],
+  [
+    "TestTheBackstopTellsTheOwnerOfAReplacementThePacingParkedOnce",
+    "TestTheBackstopTellsTheOwnerOfAReplacementThePacingDelayedOnce",
+  ],
+  ["parkWake", "delayWake"],
+  ["reparkWake", "delayWakeAgain"],
+  ["runParkedLaunchNow", "runDelayedLaunchNow"],
+  [
+    "TestADeliveryTheTableIgnoresRunsNoParkedLaunch",
+    "TestADeliveryTheTableIgnoresRunsNoDelayedLaunch",
+  ],
+  [
+    "TestAProcesslessWakeParksTheClaimLaunchingAndWritesIt",
+    "TestADelayedProcesslessWakeWritesTheClaimLaunching",
+  ],
+  [
+    "TestAnOperatorsDeliveryOverAHeldSuspensionLeavesTheLaunchParked",
+    "TestAnOperatorsDeliveryOverAHeldSuspensionLeavesTheLaunchDelayed",
+  ],
+  [
+    "TestAnOperatorsDeliveryOverAParkedLaunchArmsTheNextProcessesTimers",
+    "TestAnOperatorsDeliveryOverADelayedLaunchArmsTheNextProcessesTimers",
+  ],
+  [
+    "TestAnOperatorsDeliveryOverAParkedLaunchRunsThatLaunchNow",
+    "TestAnOperatorsDeliveryOverADelayedLaunchRunsThatLaunchNow",
+  ],
+  [
+    "TestAnOperatorsDeliveryOverAParkedRelaunchNeverReachesTheDeadProcess",
+    "TestAnOperatorsDeliveryOverADelayedRelaunchNeverReachesTheDeadProcess",
+  ],
+  [
+    "TestAnOperatorsDeliveryReplacingTheLaddersTaskRunsTheParkedLaunchNow",
+    "TestAnOperatorsDeliveryReplacingTheLaddersTaskRunsTheDelayedLaunchNow",
+  ],
+  [
+    "TestAnOperatorsDeliveryTheClaimRefusesRunsNoParkedRelaunch",
+    "TestAnOperatorsDeliveryTheClaimRefusesRunsNoDelayedRelaunch",
+  ],
+  [
+    "TestAnOperatorsRetryRefusedByTheParkedClaimLeavesItsWakeItsTurn",
+    "TestAnOperatorsRetryRefusedByTheDelayedClaimLeavesItsWakeItsTurn",
+  ],
+  [
+    "TestAnOperatorsResumeRefusedByTheParkedClaimLeavesItsWakeItsTurn",
+    "TestAnOperatorsResumeRefusedByTheDelayedClaimLeavesItsWakeItsTurn",
+  ],
+  // packages/daemon/internal/workflow
+  ["parkedRootView", "labelledRootView"],
+  ["handsOverParkedAtTheMerge", "handsOverInBacklogAtTheMerge"],
+  // packages/dispatch/e2e
+  [
+    "a read mark moving under a reader parked in a Conversation gap keeps the lower card fixed",
+    "a read mark moving under a reader scrolled to a Conversation gap keeps the lower card fixed",
+  ],
+  ["PARKED_RULE", "BACKLOG_RULE"],
+  ["PARKED_TABLE", "BACKLOG_TABLE"],
+  ["parkedTable", "backlogTable"],
+  // packages/dispatch/web/src/__tests__
+  [
+    "a backwards system-clock step does not park the whole-cache throttle",
+    "a backwards system-clock step does not stall the whole-cache throttle",
+  ],
+  // packages/dispatch/web/src/features/conversation
+  ["parkedNotice", "putAwayNotice"],
+  // packages/dispatch/web/src/features/doc
+  [
+    "a restore that parks on a scratch document is dropped, reported, and leaves the live document alone",
+    "a restore that leaves structs pending on a scratch document is dropped, reported, and leaves the live document alone",
+  ],
+  ["addsParking", "addsPending"],
+  // packages/dispatch/web/src/features/priorities
+  [
+    "a row counts the work in flight, waiting, parked and closed in the last 7 days",
+    "a row counts the work in flight, waiting, in backlog or icebox and closed in the last 7 days",
+  ],
+  [
+    "each fault table asks the issue listing for its statuses, and the parked one for the move",
+    "each fault table asks the issue listing for its statuses, and the backlog-or-icebox one for the move",
+  ],
+  ["PARKED_LAYOUT", "BACKLOG_LAYOUT"],
+  ["PARKED_STATUSES", "BACKLOG_STATUSES"],
+  // packages/envoy/cmd/dispatch-seed
+  ["priorityParkedStatuses", "priorityBacklogStatuses"],
+  // packages/envoy/cmd/dispatch
+  ["awaitLiveWriteParked", "awaitLiveWritePaused"],
+  // packages/envoy/internal/cipher/helper
+  ["parkLocked", "keepDormantLocked"],
+  [
+    "TestANamedRecordWithNoEnrollmentIsStillParked",
+    "TestANamedRecordWithNoEnrollmentIsStillKeptDormant",
+  ],
+  ["parkedRecord", "writeDormantRecord"],
+  // packages/envoy/internal/dispatch/api
+  ["nextPark", "nextRetry"],
+  ["parkLockSite", "retryLockSite"],
+  [
+    "TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPark",
+    "TestAWaitingSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsRetrySchedule",
+  ],
+  [
+    "TestARefreshDuringAParkedSendsTryLeavesTheSenderHoldingTheRowsClaim",
+    "TestARefreshDuringAWaitingSendsTryLeavesTheSenderHoldingTheRowsClaim",
+  ],
+  ["newParkGate", "newRetryGate"],
+  ["parkGate", "retryGate"],
+  [
+    "TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds",
+    "TestALaneWaitingForItsRetryHoldsNoGoroutineAndKeepsTheLanesBounds",
+  ],
+  [
+    "TestManyParkedLanesTryAtMostOncePerRetryMax",
+    "TestManyLanesWaitingForTheirRetryTryAtMostOncePerRetryMax",
+  ],
+  ["awaitPark", "awaitRetry"],
+  ["comment_mention_park_test.go", "comment_mention_retry_test.go"],
+  ["countParks", "countRetries"],
+  ["newParkRig", "newRetryRig"],
+  ["parkLiveness", "retryLiveness"],
+  ["parkRig", "retryRig"],
+  ["parkedFirstWait", "retryFirstWait"],
+  ["parkedReadEvery", "retryReadEvery"],
+  ["parkedTries", "pacedTries"],
+  [
+    "unpark",
+    "retryLane (packages/envoy/internal/dispatch/api/comment_mention_sender.go) or takeUpAwaiting (packages/envoy/internal/dispatch/outbox/batch.go)",
+  ],
+  [
+    "TestAParkedLanesTimerStartsOnceNoGoroutineServesIt",
+    "TestALanesRetryTimerStartsOnceNoGoroutineServesIt",
+  ],
+  ["TestAReparkedHeldLaneHasOneGoroutine", "TestAHeldLaneScheduledForRetryAgainHasOneGoroutine"],
+  [
+    "TestASendParkedForAFailedClaimReadIsNoHeldCopy",
+    "TestASendRetriedForAFailedClaimReadIsNoHeldCopy",
+  ],
+  [
+    "TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes",
+    "TestASendRetriedForAFailedClaimReadLogsNoHeldWarnAsItGoes",
+  ],
+  ["liveWriteParkedWait", "liveWritePausedWait"],
+  [
+    "TestTheListingReadsTheMoveOnlyWhenAskedAndOnlyForParkedRows",
+    "TestTheListingReadsTheMoveOnlyWhenAskedAndOnlyForBacklogRows",
+  ],
+  [
+    "parkedRow",
+    "backlogRow (packages/envoy/internal/dispatch/api/priorities_read_test.go) or pendingRow (packages/envoy/internal/dispatch/docs/storedorder.go)",
+  ],
+  ["parkedMoveLateral", "backlogMoveLateral"],
+  ["parkedQuery", "backlogQuery"],
+  ["parkedSummaryQuery", "backlogSummaryQuery"],
+  ["priorityParkedQuery", "priorityBacklogQuery"],
+  // packages/envoy/internal/dispatch/docs
+  [
+    "TestTheRoomsRenderedReplicaHoldsWhatACommitParked",
+    "TestTheRoomsRenderedReplicaHoldsWhatACommitLeftPending",
+  ],
+  [
+    "TestALoadAndACompactionKeepWhatTheDocumentParked",
+    "TestALoadAndACompactionKeepWhatTheDocumentHoldsPending",
+  ],
+  ["parkedHistory", "pendingHistory"],
+  ["requireParkedArrive", "requirePendingArrive"],
+  [
+    "TestAPeerUpdateThatChangesTheRoomAndParksKeepsBothAcrossARestart",
+    "TestAPeerUpdateThatChangesTheRoomAndLeavesSomePendingKeepsBothAcrossARestart",
+  ],
+  [
+    "TestARoomsParkedOnlyCommitIsStoredAndReplaysFromItsLog",
+    "TestARoomsPendingOnlyCommitIsStoredAndReplaysFromItsLog",
+  ],
+  ["parkedOnlyCommitSurvivesReload", "pendingOnlyCommitSurvivesReload"],
+  ["awaitCloseParked", "awaitClosePaused"],
+  ["awaitRefusedAppendCloseParked", "awaitRefusedAppendClosePaused"],
+  ["awaitSocketParked", "awaitSocketPaused"],
+  ["closeIssueBehindAParkedClose", "closeIssueBehindAPausedClose"],
+  ["parkCloseAfterRoomClosed", "pauseCloseAfterRoomClosed"],
+  ["parkCloseBetweenItsSnapshotReads", "pauseCloseBetweenItsSnapshotReads"],
+  ["parkRefusedAppendClose", "pauseRefusedAppendClose"],
+  ["parkSocketAfterItsIssueRead", "pauseSocketAfterItsIssueRead"],
+  ["AppendParkedUpdate", "AppendPendingBytes"],
+  [
+    "TestAPeerApplyErrorStillStoresWhatTheRoomParked",
+    "TestAPeerApplyErrorStillStoresWhatTheRoomLeftPending",
+  ],
+  ["parkedErrorStore", "pendingBytesRecorder"],
+  ["peer_parked_error_test.go", "peer_pending_error_test.go"],
+  [
+    "TestTheStoredRowsOfARoomFoldToItsDocumentWhenAPeerUpdateParks",
+    "TestTheStoredRowsOfARoomFoldToItsDocumentWhenAPeerUpdateIsLeftPending",
+  ],
+  ["parked_peer_update_test.go", "pending_peer_update_test.go"],
+  [
+    "TestRenderReuseAReplicaRebuiltFromTheLogHoldsWhatTheRoomParked",
+    "TestRenderReuseAReplicaRebuiltFromTheLogHoldsWhatTheRoomHeldPending",
+  ],
+  [
+    "TestTheRenderShadowReadsClassesForAParkedOnlyCommit",
+    "TestTheRenderShadowReadsClassesForAPendingOnlyCommit",
+  ],
+  ["parkedCommitEnv", "wedgedCommitEnv"],
+  ["parkedCommitTrial", "wedgedCommitTrial"],
+  ["parkedBytes", "pendingCommit"],
+  ["addedParkedClocks", "addedPendingClocks"],
+  ["compareParkedPrefix", "comparePendingPrefix"],
+  ["judgeParkedRows", "judgePendingRows"],
+  [
+    "TestBuildForkPreservesOverlappingParkedUpdates",
+    "TestBuildForkPreservesOverlappingPendingUpdates",
+  ],
+  [
+    "TestStoredOrderReplayWithOverlappingParkedUpdates",
+    "TestStoredOrderReplayWithOverlappingPendingUpdates",
+  ],
+  ["TestStoredOrderComparesParkedContent", "TestStoredOrderComparesPendingContent"],
+  [
+    "TestStoredOrderReusesThePrefixBeforeParkedRows",
+    "TestStoredOrderReusesThePrefixBeforePendingRows",
+  ],
+  ["AwaitLiveWriteParked", "AwaitLiveWritePaused"],
+  ["parkLiveWrite", "pauseLiveWrite"],
+  ["storeParked", "storePendingBytes"],
+  // packages/envoy/internal/dispatch/legion/metrics
+  ["TestNoQueueOrParkedHourEntersTheWorkTime", "TestNoQueueOrBacklogHourEntersTheWorkTime"],
+  ["TestTimeInIceboxIsParkedAndOutOfTheWorkTime", "TestTimeInIceboxIsOutOfTheWorkTime"],
+  ["parkedSpans", "backlogSpans"],
+  ["parkedStatuses", "backlogStatuses"],
+  // packages/envoy/internal/dispatch/model
+  ["IssueStatusesParked", "IssueStatusesBacklogOrIcebox"],
+  // packages/envoy/internal/store
+  [
+    "TestTheRoleClaimReaperAnswersAtItsContextsEndWhileItsDeleteOfAKeyItCannotReadIsParked",
+    "TestTheRoleClaimReaperAnswersAtItsContextsEndWhileItsDeleteOfAKeyItCannotReadIsBlocked",
+  ],
+  // packages/envoy/internal/testnats
+  ["AwaitParked", "AwaitStopped"],
+  // scripts/approval-eval/__tests__
+  [
+    "hands the rule a parked root it holds, read either way",
+    "hands the rule a root in backlog that it holds, read either way",
+  ],
+  // scripts/e2e/lib
+  ["notParked", "backInWorkflow"],
+  // Each task's wire and stored names, keys, variables, anchors, devbox checkpoints and lines of
+  // text that the names above do not hold.
+  ["parked_decisions_issue_not_null", "kept_decisions_issue_not_null"],
+  ["parked_decisions_ref_not_null", "kept_decisions_ref_not_null"],
+  ["parked_decisions_decision_not_null", "kept_decisions_decision_not_null"],
+  ["parked_decisions_actor_not_null", "kept_decisions_actor_not_null"],
+  ["parked_decisions_at_not_null", "kept_decisions_at_not_null"],
+  [
+    "TestTheRemovedChildRouteAnswersWithTheStatusWrite",
+    "TestAChildRouteThisDaemonDoesNotServeAnswersWithTheStatusToWrite",
+  ],
+  ["Its tree is parked:", "Its tree's root", false],
+  ["relaunch parked", "relaunch delayed"],
+  ["what the park settled", "what the delay settled", false],
+  ["the launch the park queued", "the launch the delay queued", false],
+  ["a relaunch the wake pacing parked", "a relaunch the wake pacing delayed", false],
+  ["podPark", "podStartWait"],
+  ["wake.park", "wake.podStartWait"],
+  ["parked_items", "pending_items"],
+  ["parked_delete_ranges", "pending_delete_ranges"],
+  ["ParkedItems", "PendingItems"],
+  ["ParkedDeleteRanges", "PendingDeleteRanges"],
+  ["mentionSender.park", "mentionSender.scheduleRetry"],
+  ["afterObservationParked", "afterObservationJoined"],
+  ["Registry.Park", "Registry.KeepDormant"],
+  ["parked-decision-devboxsh", "kept-decision-devboxsh"],
+  ["trees-parked", "trees-in-backlog"],
+  ["question-stays-parked", "question-stays-in-backlog"],
+  ["foreign-park-stays", "foreign-backlog-stays"],
+  ["parkedLegionRoots", "legionRoots"],
+  ["ParkedHours", "BacklogOrIceboxHours"],
+  ["parked_hours", "backlog_or_icebox_hours"],
+  ["dispatch.project-table.priorities-parked", "dispatch.project-table.priorities-backlog"],
+  ["parkedByPriority", "backlogByPriority"],
+  ["Priority work parked", "Priority work in backlog or icebox", false],
+  // The daemon's log lines of the kept decisions, which the devbox proof's jq reads.
+  ["outbox parked decision sent to the controller", "outbox kept decision sent to the controller"],
+  [
+    "outbox parked decision handled before under this key",
+    "outbox kept decision handled before under this key",
+  ],
+  [
+    "outbox parked decision kept for its root's start, which waits for its slot",
+    "outbox kept decision left for its root's start, which waits for its slot",
+  ],
+  [
+    "outbox parked decision not relayed: it names no person",
+    "outbox kept decision not relayed: it names no person",
+  ],
+  [
+    "outbox parked decision not relayed: its root is not parked",
+    "outbox kept decision not relayed: its root is back in the workflow",
+  ],
+  [
+    "outbox parked decision not relayed: its tree hears it",
+    "outbox kept decision not relayed: its tree hears it",
+  ],
+  [
+    "outbox parked decision not relayed: its root has no record",
+    "outbox kept decision not relayed: its root has no record",
+  ],
+  // The controller's marks in Dispatch (plan L5): lines it writes, no code name.
+  ["Parked by Legion while it waits on:", "Moved to backlog by Legion while it waits on:", false],
+  ["Parked decision read:", "Kept decision read:", false],
+  ["Asked whether to park:", "Asked whether to move to backlog:", false],
+  ["Park it", "Move it to backlog", false],
+  ["Parked dispatch:", "Moved to backlog dispatch:", false],
+  ["Not parked dispatch:", "Not moved dispatch:", false],
 ];
 
 /** The map this repository holds, with `contract` the daemon API contract of this checkout. */
@@ -349,10 +754,21 @@ export function applies(entry: MapEntry, reach: Reach): boolean {
 
 const NAME_CHARACTER = /[A-Za-z0-9_]/;
 
+/** Whether `name` stands at `at` in `text` as a whole name: the characters on either side of it
+ *  are not letters, digits or `_`. */
+function wholeNameAt(text: string, name: string, at: number): boolean {
+  return (
+    text.startsWith(name, at) &&
+    !NAME_CHARACTER.test(text.charAt(at - 1)) &&
+    !NAME_CHARACTER.test(text.charAt(at + name.length))
+  );
+}
+
 /**
  * The entry whose old name covers the text from `start` to `end`, the longest when more than one
- * does, or null. An old name counts only where it is a whole name: the characters on either side
- * of it are not letters, digits or `_`, so `park_child` inside `park_children` names nothing.
+ * does, or null. An old name counts only where it is a whole name, so `park_child` inside
+ * `park_children` names nothing. Each entry is looked for only where it can cover the text: from
+ * `end` less its length up to `start`.
  */
 export function nameAt(
   text: string,
@@ -363,16 +779,11 @@ export function nameAt(
   let best: MapEntry | null = null;
   for (const entry of entries) {
     if (best !== null && entry.old.length <= best.old.length) continue;
-    const earliest = Math.max(0, end - entry.old.length);
-    for (let at = text.indexOf(entry.old, earliest); at !== -1 && at <= start; ) {
-      const after = at + entry.old.length;
-      const bounded =
-        !NAME_CHARACTER.test(text.charAt(at - 1)) && !NAME_CHARACTER.test(text.charAt(after));
-      if (after >= end && bounded) {
+    for (let at = Math.max(0, end - entry.old.length); at <= start; at += 1) {
+      if (wholeNameAt(text, entry.old, at)) {
         best = entry;
         break;
       }
-      at = text.indexOf(entry.old, at + 1);
     }
   }
   return best;
@@ -381,18 +792,27 @@ export function nameAt(
 /** A Go test's name: `Test` and a name that goes on with a capital, a digit or `_`. */
 const TEST_NAME = /\bTest[A-Z0-9_][A-Za-z0-9_]*/g;
 
+/** A Go test's name in a text, and where it stands. */
+export interface TestName {
+  readonly name: string;
+  readonly start: number;
+  readonly end: number;
+}
+
+/** Every Go test's name in `text` that holds the word, read once per text. */
+export function testNamesWithWord(text: string): TestName[] {
+  return [...text.matchAll(TEST_NAME)]
+    .filter((match) => holdsWord(match[0]))
+    .map((match) => ({ name: match[0], start: match.index, end: match.index + match[0].length }));
+}
+
 /**
- * The Go test's name that covers the text from `start` to `end`, or null. The map lists the tests
- * this change renames; a test's name that holds the word and that no row names has no new name a
- * program can tell, so the tool keeps it (`code-name-not-yet`).
+ * The Go test's name among `names` that covers the text from `start` to `end`, or null. The map
+ * lists the tests this change renames; a test's name that holds the word and that no row names
+ * has no new name a program can tell, so the tool keeps it (`code-name-not-yet`).
  */
-export function testNameAt(text: string, start: number, end: number): string | null {
-  for (const match of text.matchAll(TEST_NAME)) {
-    if (match.index <= start && end <= match.index + match[0].length && holdsWord(match[0])) {
-      return match[0];
-    }
-  }
-  return null;
+export function testNameAt(names: readonly TestName[], start: number, end: number): string | null {
+  return names.find((test) => test.start <= start && end <= test.end)?.name ?? null;
 }
 
 /** Every old name of the map that `text` holds as a whole name, each once, sorted. */
@@ -400,8 +820,7 @@ export function renamedNamesIn(text: string, entries: readonly MapEntry[]): stri
   const named = new Set<string>();
   for (const entry of entries) {
     for (let at = text.indexOf(entry.old); at !== -1; at = text.indexOf(entry.old, at + 1)) {
-      const after = at + entry.old.length;
-      if (!NAME_CHARACTER.test(text.charAt(at - 1)) && !NAME_CHARACTER.test(text.charAt(after))) {
+      if (wholeNameAt(text, entry.old, at)) {
         named.add(entry.old);
         break;
       }

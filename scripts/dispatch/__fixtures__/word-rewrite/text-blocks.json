@@ -1,118 +1,102 @@
 {
   "markdown": "Café ✓ — the parked tree waits for the release.\n\n:::ask{#ask-word urgency=\"med\" multiple=\"false\" state=\"open\"}\nShould the parked issue move to backlog?\n\n- Yes\n- No\n:::\n\n:::check{#check-word surface=\"cli\" run=\"go test -run TestParkedDecision ./internal/daemon/\" when=\"before_merge\"}\nThe parked tree resumes.\n:::\n\nAlice added this: the parked tree is hers.\n",
-  "token": "sha256:3350c3824f6914c23b1b763d2616c4e594bdaee571e32c8f99da2f02d52ad641",
-  "version": 3,
+  "token": "sha256:32465f59b7d785a25888a5901326a6400b300e1dff77570391d21da96f890b4e",
+  "version": 2,
   "blocks": [
     {
-      "id": "n0000001",
+      "id": "5661b70c-62b3-48a0-9450-9d002da3e39b",
       "type": "paragraph",
       "from": 0,
       "to": 52,
-      "token": "sha256:aa82fc4933effd4d7dcd31967f0464f7cafd262edf7f23e0814d481389c7565f",
-      "references": {
-        "comments": 0,
-        "asks": 0
-      }
+      "token": "sha256:b08a4ce32dd1f6329711f8fec264be84caaad7e9f512d281f5e01d7d00fb00de",
+      "references": { "comments": 0, "asks": 0 },
+      "embedding": "none"
     },
     {
       "id": "ask-word",
       "type": "ask",
       "from": 54,
       "to": 172,
-      "token": "sha256:95d116dc6c0d8a739a5875ee28c5347abd7f330dfe5afd90070b1db363f01228",
-      "references": {
-        "comments": 0,
-        "asks": 1
-      },
+      "token": "sha256:df8dba3a920b3afc2e3d7255f3c07cbeb4e8cb6e0ca32948fb7b82dd0796f625",
+      "references": { "comments": 0, "asks": 0 },
       "attributes": [
-        {
-          "name": "urgency",
-          "value": "med",
-          "kind": "enum"
-        },
-        {
-          "name": "multiple",
-          "value": "false",
-          "kind": "bool"
-        },
-        {
-          "name": "state",
-          "value": "open",
-          "kind": "enum"
-        }
-      ]
+        { "name": "urgency", "value": "med", "kind": "enum" },
+        { "name": "multiple", "value": "false", "kind": "bool" },
+        { "name": "state", "value": "open", "kind": "enum" }
+      ],
+      "embedding": "none"
     },
     {
-      "id": "n0000002",
+      "id": "40c1a643-a165-4641-b1ef-05aef188a8ef",
       "type": "paragraph",
       "from": 116,
       "to": 156,
-      "token": "sha256:39456f826cb37f9c1ee93287d4ad88490e4507f210d9d70ed3619531257a9986",
-      "references": {
-        "comments": 0,
-        "asks": 0
-      }
+      "token": "sha256:0ac86c9885d66a2fdc84cfcb775bac2b2243a1793f119355f3a134479468371f",
+      "references": { "comments": 0, "asks": 0 },
+      "embedding": "none"
     },
     {
-      "id": "n0000003",
+      "id": "80099849-2be4-4c02-a3f3-4c8dcc1a0b9d",
       "type": "bullet_list",
       "from": 158,
       "to": 168,
-      "token": "sha256:49c0546753551fc529f1679ba1f7a622b78604fc9af5a07b0141e116dcd49a05",
-      "references": {
-        "comments": 0,
-        "asks": 0
-      }
+      "token": "sha256:74229bb623edf0d46d4a352c57a506dd741bf3482e8e31012ddb952bddfbc909",
+      "references": { "comments": 0, "asks": 0 },
+      "embedding": "none"
+    },
+    {
+      "id": "6a858da5-6fce-4a9d-b1a1-c4e203085d47",
+      "type": "paragraph",
+      "from": 160,
+      "to": 163,
+      "token": "sha256:c6a7d447ae936f718888c67d32c107add18c20cc06cc58a3c6024126f61fef0a",
+      "references": { "comments": 0, "asks": 0 },
+      "embedding": "none"
+    },
+    {
+      "id": "398b0f1f-390d-45cc-a4ba-e241214685a4",
+      "type": "paragraph",
+      "from": 166,
+      "to": 168,
+      "token": "sha256:ef542cb93c5ca9b6bf1b2acccf81c911a923d06a9a8f672d5aaa66a84305a80d",
+      "references": { "comments": 0, "asks": 0 },
+      "embedding": "none"
     },
     {
       "id": "check-word",
       "type": "check",
       "from": 174,
       "to": 315,
-      "token": "sha256:52fdaad79263012274881880ad56272c1ce416d775c368fb346ffc26c23579ea",
-      "references": {
-        "comments": 0,
-        "asks": 0
-      },
+      "token": "sha256:852b8e96c9219b58c7d7ba418c63dac0f1c479103ce0f91a99f21bb350ed2616",
+      "references": { "comments": 0, "asks": 0 },
       "attributes": [
-        {
-          "name": "surface",
-          "value": "cli",
-          "kind": "enum"
-        },
+        { "name": "surface", "value": "cli", "kind": "enum" },
         {
           "name": "run",
           "value": "go test -run TestParkedDecision ./internal/daemon/",
           "kind": "string"
         },
-        {
-          "name": "when",
-          "value": "before_merge",
-          "kind": "enum"
-        }
-      ]
+        { "name": "when", "value": "before_merge", "kind": "enum" }
+      ],
+      "embedding": "none"
     },
     {
-      "id": "n0000004",
+      "id": "5beb5394-a621-4e3b-80e1-80587a46ec46",
       "type": "paragraph",
       "from": 287,
       "to": 311,
-      "token": "sha256:8d0d9f2d6dbd47dd1483e8ed1025ae1e0b3ec61d392354da0ced62c3da8be318",
-      "references": {
-        "comments": 0,
-        "asks": 0
-      }
+      "token": "sha256:e62b441c97c396026029218d7c8a459d59d7ad419d615429b78500afb0f5da64",
+      "references": { "comments": 0, "asks": 0 },
+      "embedding": "none"
     },
     {
-      "id": "n0000005",
+      "id": "a3fb9730-0b71-4c9c-bd42-66d6fdf993a1",
       "type": "paragraph",
       "from": 317,
       "to": 359,
-      "token": "sha256:00c2f3f2da63ef5dca95d535535b5925c7fa09d18d4850758501bab6e2e1efd5",
-      "references": {
-        "comments": 0,
-        "asks": 0
-      }
+      "token": "sha256:27511e323c1a2b7b7664a6c7901cfb9b2992f133f15b0c047ce9f3b3db8a8fdd",
+      "references": { "comments": 0, "asks": 0 },
+      "embedding": "none"
     }
   ]
 }

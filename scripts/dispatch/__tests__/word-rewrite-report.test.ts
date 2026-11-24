@@ -27,6 +27,7 @@ interface Listed {
 function fixtureServer() {
   const artifacts = fixture("issue-artifacts.json") as Listed[];
   const mixed = artifacts.find((artifact) => artifact.name === "mixed.md")?.id ?? "";
+  const verification = artifacts.find((artifact) => artifact.name === "verification.md")?.id ?? "";
   const daemon = (fixture("legion-daemon-set.json") as { state_url: string }).state_url;
   const json = (body: unknown, status = 200) =>
     new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -60,10 +61,13 @@ function fixtureServer() {
     [/^\/api\/v1\/issues\/[^/]+\/events$/, () => json([])],
     [
       /^\/api\/v1\/artifacts\/[^/]+\/text$/,
-      (url) =>
-        url.pathname.includes(mixed)
-          ? json(fixture("text-blocks.json"))
-          : json({ markdown: "Nothing here.\n", token: "sha256:0", version: 1, blocks: [] }),
+      (url) => {
+        if (url.pathname.includes(mixed)) return json(fixture("text-blocks.json"));
+        if (url.pathname.includes(verification)) {
+          return json(fixture("text-blocks-verification.json"));
+        }
+        return json({ markdown: "Nothing here.\n", token: "sha256:0", version: 1, blocks: [] });
+      },
     ],
     [
       /^\/api\/v1\/artifacts\/[^/]+\/versions\/(\d+)$/,
@@ -96,7 +100,8 @@ function fixtureServer() {
 }
 
 async function reportRun(extraEntries: readonly MapEntry[] = []) {
-  const log = requestLog();
+  const requestLines: string[] = [];
+  const log = requestLog((line) => requestLines.push(line));
   const clock = new FakeClock();
   const fetchImpl = loggingFetch(fixtureServer(), log, new RequestRate(clock, 0));
   const credential = {
@@ -120,9 +125,9 @@ async function reportRun(extraEntries: readonly MapEntry[] = []) {
     contract: 220,
     extraEntries,
     out: (line) => lines.push(line),
-    requests: () => log.lines().length,
+    requests: () => log.count(),
   });
-  return { code, lines, log, recorded, model };
+  return { code, lines, requestLines, recorded, model };
 }
 
 describe("report mode", () => {
@@ -136,7 +141,7 @@ describe("report mode", () => {
 
   test("its request log holds only GET lines, with no host and no header", async () => {
     const run = await reportRun();
-    const lines = run.log.lines();
+    const lines = run.requestLines;
     expect(lines.length).toBeGreaterThan(10);
     for (const line of lines) expect(line).toMatch(/^GET \/\S* \d{3}$/);
     expect(lines).toContain("GET /api/v1/whoami 200");
@@ -146,9 +151,8 @@ describe("report mode", () => {
 
   test("lists each occurrence with its place, counted by kind and project and by reason", async () => {
     const { lines } = await reportRun();
-    expect(lines).toContain(
-      "dispatch commit=df349e33f1520ecd5d6de0458259254a054dc0be holds-merge=no"
-    );
+    const health = fixture("dispatch-healthz.json") as { commit: string };
+    expect(lines).toContain(`dispatch commit=${health.commit} holds-merge=no`);
     expect(lines).toContain("daemon SEED source=dispatch contract=188");
     const occurrences = lines.filter((line) => line.startsWith("occurrence "));
     expect(
@@ -177,13 +181,16 @@ describe("report mode", () => {
   });
 
   test("lists each open issue's check block that names an old name of the map, counted (spec version 19)", async () => {
-    // The Go test's name text-blocks.json's check block runs, which holds the word: no row of the
-    // built-in map names it, so the section lists nothing until a row of the run's map does.
+    // verification.md's check block runs a test the built-in map renames. The Go test's name
+    // mixed.md's check block runs, which holds the word, no row of the built-in map names, so it
+    // is listed only once a row of the run's map does.
     const text = fixture("text-blocks.json") as { markdown: string };
     const testName = /Test[A-Za-z]+/.exec(text.markdown)?.[0] ?? "";
+    const verificationLine =
+      "check-name issue=SEED-3 document=verification-md block=k1 old=TestBootReleasesParkedClaims";
     const bare = await reportRun();
-    expect(bare.lines.filter((line) => line.startsWith("check-name "))).toEqual([]);
-    expect(bare.lines).toContain("check-names 0");
+    expect(bare.lines.filter((line) => line.startsWith("check-name "))).toEqual([verificationLine]);
+    expect(bare.lines).toContain("check-names 1");
     const extra = {
       old: testName,
       new: "TestTheRenamedTest",
@@ -193,8 +200,9 @@ describe("report mode", () => {
     const { lines } = await reportRun([extra]);
     expect(lines.filter((line) => line.startsWith("check-name "))).toEqual([
       `check-name issue=SEED-3 document=mixed-md block=check-word old=${testName}`,
+      verificationLine,
     ]);
-    expect(lines).toContain("check-names 1");
+    expect(lines).toContain("check-names 2");
   });
 
   test("a check block that names an old name of the map is listed under that name", async () => {

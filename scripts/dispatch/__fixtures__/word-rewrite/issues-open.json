@@ -2,15 +2,15 @@
   {
     "key": "SEED-2",
     "title": "Rename the parked names",
-    "status": "todo",
+    "status": "triage",
     "priority": null,
-    "rank": "a0",
+    "rank": "V",
     "labels": [],
     "parent": "SEED-1",
     "blocked_by": [],
     "advances": [],
     "advances_revision": 0,
-    "assignee": null,
+    "assignee": "alice",
     "claim": null,
     "components": {
       "mode": "inherit",
@@ -25,33 +25,27 @@
     "route_status": null,
     "route_holder": null,
     "route_status_reason": null,
-    "created_by": {
-      "kind": "session",
-      "id": "5b0f3c2e-8d41-4a7e-9c16-2f7a9e0d4b31"
-    },
-    "created_at": "2026-11-24T10:00:00Z",
-    "updated_at": "2026-11-24T10:30:00Z",
+    "created_by": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
+    "created_at": "2026-11-24T04:47:15.696584Z",
+    "updated_at": "2026-11-24T04:47:15.696584Z",
     "closed_at": null,
-    "last_seq": 4,
-    "primary_artifact_id": "0b9a0020-6c1d-4e2f-8a3b-5c7d9e1f2a20",
+    "last_seq": 1,
+    "primary_artifact_id": "dc396641-69eb-41ad-b18e-f8136c27d738",
     "open_asks": 0,
-    "progress": {
-      "tasks": null,
-      "children": null
-    }
+    "progress": { "tasks": null, "children": null }
   },
   {
     "key": "SEED-3",
     "title": "Parked until the release lands",
-    "status": "backlog",
+    "status": "triage",
     "priority": null,
-    "rank": "a0",
+    "rank": "W",
     "labels": [],
     "parent": null,
     "blocked_by": [],
     "advances": [],
     "advances_revision": 0,
-    "assignee": null,
+    "assignee": "alice",
     "claim": null,
     "components": {
       "mode": "inherit",
@@ -66,33 +60,27 @@
     "route_status": null,
     "route_holder": null,
     "route_status_reason": null,
-    "created_by": {
-      "kind": "session",
-      "id": "5b0f3c2e-8d41-4a7e-9c16-2f7a9e0d4b31"
-    },
-    "created_at": "2026-11-24T10:00:00Z",
-    "updated_at": "2026-11-24T10:30:00Z",
+    "created_by": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
+    "created_at": "2026-11-24T04:47:15.761298Z",
+    "updated_at": "2026-11-24T04:47:16.196954Z",
     "closed_at": null,
-    "last_seq": 17,
-    "primary_artifact_id": "0b9a0030-6c1d-4e2f-8a3b-5c7d9e1f2a30",
-    "open_asks": 0,
-    "progress": {
-      "tasks": null,
-      "children": null
-    }
+    "last_seq": 16,
+    "primary_artifact_id": "088bc2e5-35f3-404a-9d19-463ab2b3b859",
+    "open_asks": 1,
+    "progress": { "tasks": null, "children": null }
   },
   {
     "key": "SEED-4",
     "title": "Approved plan",
-    "status": "todo",
+    "status": "triage",
     "priority": null,
-    "rank": "a0",
+    "rank": "X",
     "labels": [],
     "parent": null,
     "blocked_by": [],
     "advances": [],
     "advances_revision": 0,
-    "assignee": null,
+    "assignee": "alice",
     "claim": null,
     "components": {
       "mode": "inherit",
@@ -107,33 +95,27 @@
     "route_status": null,
     "route_holder": null,
     "route_status_reason": null,
-    "created_by": {
-      "kind": "session",
-      "id": "5b0f3c2e-8d41-4a7e-9c16-2f7a9e0d4b31"
-    },
-    "created_at": "2026-11-24T10:00:00Z",
-    "updated_at": "2026-11-24T10:30:00Z",
+    "created_by": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
+    "created_at": "2026-11-24T04:47:16.145274Z",
+    "updated_at": "2026-11-24T04:47:16.223102Z",
     "closed_at": null,
     "last_seq": 4,
-    "primary_artifact_id": "0b9a0040-6c1d-4e2f-8a3b-5c7d9e1f2a40",
+    "primary_artifact_id": "7172cac3-576c-4110-a24b-a01d44854e79",
     "open_asks": 0,
-    "progress": {
-      "tasks": null,
-      "children": null
-    }
+    "progress": { "tasks": null, "children": null }
   },
   {
     "key": "SEED-5",
     "title": "Approved earlier",
-    "status": "todo",
+    "status": "triage",
     "priority": null,
-    "rank": "a0",
+    "rank": "Y",
     "labels": [],
     "parent": null,
     "blocked_by": [],
     "advances": [],
     "advances_revision": 0,
-    "assignee": null,
+    "assignee": "alice",
     "claim": null,
     "components": {
       "mode": "inherit",
@@ -148,33 +130,27 @@
     "route_status": null,
     "route_holder": null,
     "route_status_reason": null,
-    "created_by": {
-      "kind": "session",
-      "id": "5b0f3c2e-8d41-4a7e-9c16-2f7a9e0d4b31"
-    },
-    "created_at": "2026-11-24T10:00:00Z",
-    "updated_at": "2026-11-24T10:30:00Z",
+    "created_by": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
+    "created_at": "2026-11-24T04:47:16.250407Z",
+    "updated_at": "2026-11-24T04:47:16.619252Z",
     "closed_at": null,
-    "last_seq": 4,
-    "primary_artifact_id": "0b9a0050-6c1d-4e2f-8a3b-5c7d9e1f2a50",
-    "open_asks": 0,
-    "progress": {
-      "tasks": null,
-      "children": null
-    }
+    "last_seq": 5,
+    "primary_artifact_id": "f754b451-5a26-4b29-a0fc-6c80b37908d2",
+    "open_asks": 1,
+    "progress": { "tasks": null, "children": null }
   },
   {
     "key": "SEED-6",
     "title": "Requested",
-    "status": "needs_review",
+    "status": "triage",
     "priority": null,
-    "rank": "a0",
+    "rank": "Z",
     "labels": [],
     "parent": null,
     "blocked_by": [],
     "advances": [],
     "advances_revision": 0,
-    "assignee": null,
+    "assignee": "alice",
     "claim": null,
     "components": {
       "mode": "inherit",
@@ -189,33 +165,27 @@
     "route_status": null,
     "route_holder": null,
     "route_status_reason": null,
-    "created_by": {
-      "kind": "session",
-      "id": "5b0f3c2e-8d41-4a7e-9c16-2f7a9e0d4b31"
-    },
-    "created_at": "2026-11-24T10:00:00Z",
-    "updated_at": "2026-11-24T10:30:00Z",
+    "created_by": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
+    "created_at": "2026-11-24T04:47:16.383451Z",
+    "updated_at": "2026-11-24T04:47:16.420842Z",
     "closed_at": null,
-    "last_seq": 4,
-    "primary_artifact_id": "0b9a0060-6c1d-4e2f-8a3b-5c7d9e1f2a60",
-    "open_asks": 0,
-    "progress": {
-      "tasks": null,
-      "children": null
-    }
+    "last_seq": 2,
+    "primary_artifact_id": "bbd5e53c-8b18-4a65-a631-7dd427b73e2b",
+    "open_asks": 1,
+    "progress": { "tasks": null, "children": null }
   },
   {
     "key": "SEED-7",
     "title": "Gated",
-    "status": "todo",
+    "status": "triage",
     "priority": null,
-    "rank": "a0",
+    "rank": "a",
     "labels": [],
     "parent": null,
     "blocked_by": [],
     "advances": [],
     "advances_revision": 0,
-    "assignee": null,
+    "assignee": "alice",
     "claim": null,
     "components": {
       "mode": "inherit",
@@ -230,33 +200,27 @@
     "route_status": null,
     "route_holder": null,
     "route_status_reason": null,
-    "created_by": {
-      "kind": "session",
-      "id": "5b0f3c2e-8d41-4a7e-9c16-2f7a9e0d4b31"
-    },
-    "created_at": "2026-11-24T10:00:00Z",
-    "updated_at": "2026-11-24T10:30:00Z",
+    "created_by": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
+    "created_at": "2026-11-24T04:47:16.442122Z",
+    "updated_at": "2026-11-24T04:47:16.442122Z",
     "closed_at": null,
-    "last_seq": 4,
-    "primary_artifact_id": "0b9a0070-6c1d-4e2f-8a3b-5c7d9e1f2a70",
+    "last_seq": 1,
+    "primary_artifact_id": "5da2fe35-af8c-4b3b-96da-f839bae6f958",
     "open_asks": 0,
-    "progress": {
-      "tasks": null,
-      "children": null
-    }
+    "progress": { "tasks": null, "children": null }
   },
   {
     "key": "SEED-9",
     "title": "Capture",
-    "status": "todo",
+    "status": "triage",
     "priority": null,
-    "rank": "a0",
+    "rank": "c",
     "labels": [],
     "parent": null,
     "blocked_by": [],
     "advances": [],
     "advances_revision": 0,
-    "assignee": null,
+    "assignee": "alice",
     "claim": null,
     "components": {
       "mode": "inherit",
@@ -271,33 +235,27 @@
     "route_status": null,
     "route_holder": null,
     "route_status_reason": null,
-    "created_by": {
-      "kind": "session",
-      "id": "5b0f3c2e-8d41-4a7e-9c16-2f7a9e0d4b31"
-    },
-    "created_at": "2026-11-24T10:00:00Z",
-    "updated_at": "2026-11-24T10:30:00Z",
+    "created_by": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
+    "created_at": "2026-11-24T04:47:16.629832Z",
+    "updated_at": "2026-11-24T04:47:16.658651Z",
     "closed_at": null,
-    "last_seq": 4,
-    "primary_artifact_id": "0b9a0090-6c1d-4e2f-8a3b-5c7d9e1f2a90",
+    "last_seq": 2,
+    "primary_artifact_id": "772acfe9-5a82-44bf-bbbf-ff7d3a1254fe",
     "open_asks": 0,
-    "progress": {
-      "tasks": null,
-      "children": null
-    }
+    "progress": { "tasks": null, "children": null }
   },
   {
     "key": "SEED-10",
     "title": "Log steps, renamed",
-    "status": "todo",
+    "status": "triage",
     "priority": null,
-    "rank": "a0",
+    "rank": "d",
     "labels": [],
     "parent": null,
     "blocked_by": [],
     "advances": [],
     "advances_revision": 0,
-    "assignee": null,
+    "assignee": "alice",
     "claim": null,
     "components": {
       "mode": "inherit",
@@ -312,19 +270,13 @@
     "route_status": null,
     "route_holder": null,
     "route_status_reason": null,
-    "created_by": {
-      "kind": "session",
-      "id": "5b0f3c2e-8d41-4a7e-9c16-2f7a9e0d4b31"
-    },
-    "created_at": "2026-11-24T10:00:00Z",
-    "updated_at": "2026-11-24T10:30:00Z",
+    "created_by": { "kind": "session", "id": "938ef652-34c2-4787-82ed-99480a3947a4" },
+    "created_at": "2026-11-24T04:47:16.746382Z",
+    "updated_at": "2026-11-24T04:47:16.97864Z",
     "closed_at": null,
-    "last_seq": 4,
-    "primary_artifact_id": "0b9a0100-6c1d-4e2f-8a3b-5c7d9e1f2a100",
+    "last_seq": 5,
+    "primary_artifact_id": "13f1ca0e-a14a-4f2e-b508-2a7e6a38b08f",
     "open_asks": 0,
-    "progress": {
-      "tasks": null,
-      "children": null
-    }
+    "progress": { "tasks": null, "children": null }
   }
 ]

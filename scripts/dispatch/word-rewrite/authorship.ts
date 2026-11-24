@@ -13,10 +13,11 @@ import type { Author } from "./places.ts";
  * only when no person made or changed its block and no person's version added it.
  *
  * Each version of a document records its authors. A version whose authors are all sessions
- * wrote nothing a person wrote. Any other version is suspect: a person (`kind: "user"`, an agent
- * acting through a person's token included, which Dispatch records as the person), or authors no
- * program can read as sessions alone (`null`, a `system` actor, a person beside a session). A
- * document with no suspect version costs no read.
+ * wrote nothing a person wrote: a session is an agent whatever its owner, so an agent acting
+ * through a person's personal agent token (which Dispatch records as a session with the person as
+ * its `owner`) writes as a session (spec version 44). Any other version is suspect: a person
+ * (`kind: "user"`), or authors no program can read as sessions alone (`null`, a `system` actor, a
+ * person beside a session). A document with no suspect version costs no read.
  *
  * For each suspect version the tool reads it and the version before it with `?blocks=true`. A
  * past version lists only its typed blocks (`docs.VersionBlocks`): a paragraph has no id in a
@@ -27,13 +28,19 @@ import type { Author } from "./places.ts";
  */
 
 /** How a version's authors read. */
-export type VersionClass = "session" | "person" | "unknown";
+type VersionClass = "session" | "person" | "unknown";
+
+/** How one author reads: a person, a session (an agent, whatever its owner), or neither. */
+function authorClass(author: Actor): VersionClass {
+  if (author.kind === "user") return "person";
+  return author.kind === "session" ? "session" : "unknown";
+}
 
 export function versionClass(authors: readonly Actor[] | null): VersionClass {
   if (authors === null || authors.length === 0) return "unknown";
-  const kinds = new Set(authors.map((author) => author.kind));
-  if (kinds.size === 1 && kinds.has("session")) return "session";
-  if (kinds.size === 1 && kinds.has("user")) return "person";
+  const classes = new Set(authors.map(authorClass));
+  if (classes.size === 1 && classes.has("session")) return "session";
+  if (classes.size === 1 && classes.has("person")) return "person";
   return "unknown";
 }
 

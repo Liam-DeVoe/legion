@@ -9,10 +9,10 @@
 
 /** Four letters in any case, not after the letters that make them "spark". The look-behinds are
  *  case-sensitive on purpose: they are the checks' own, character for character. */
-export const WORD_SOURCE = "[Pp][Aa][Rr][Kk](?<![Ss]park)(?<!SPARK)";
+const WORD_SOURCE = "[Pp][Aa][Rr][Kk](?<![Ss]park)(?<!SPARK)";
 
 /** A fresh global pattern, so no caller shares another's `lastIndex`. */
-export function wordPattern(): RegExp {
+function wordPattern(): RegExp {
   return new RegExp(WORD_SOURCE, "g");
 }
 
@@ -25,13 +25,6 @@ export interface Match {
   readonly byteEnd: number;
 }
 
-const encoder = new TextEncoder();
-
-/** The UTF-8 length of `text`, which `Buffer.byteLength` would give, without a buffer. */
-export function utf8Length(text: string): number {
-  return encoder.encode(text).length;
-}
-
 /** Every match of the word in `text`, in order. The byte offsets are counted once, from the end
  *  of the previous match, so a long text costs one pass. A match is four ASCII letters, so no
  *  slice taken here splits a surrogate pair. */
@@ -41,7 +34,7 @@ export function matches(text: string): Match[] {
   let index = 0;
   let bytes = 0;
   for (let hit = pattern.exec(text); hit !== null; hit = pattern.exec(text)) {
-    bytes += utf8Length(text.slice(index, hit.index));
+    bytes += Buffer.byteLength(text.slice(index, hit.index), "utf8");
     const end = hit.index + hit[0].length;
     found.push({ start: hit.index, end, byteStart: bytes, byteEnd: bytes + hit[0].length });
     index = end;
@@ -61,14 +54,17 @@ export function countWord(text: string): number {
 }
 
 /** The JavaScript index of a UTF-8 byte offset into `text`. An offset inside a multi-byte
- *  character answers the index of that character. */
+ *  character answers the index of that character. Each character is counted by its code point,
+ *  as `TextEncoder` encodes it (a lone surrogate as the three bytes of U+FFFD), with nothing
+ *  allocated. */
 export function indexOfByte(text: string, byte: number): number {
   let bytes = 0;
   let index = 0;
-  for (const character of text) {
+  while (index < text.length) {
     if (bytes >= byte) return index;
-    bytes += utf8Length(character);
-    index += character.length;
+    const point = text.codePointAt(index) ?? 0;
+    bytes += point < 0x80 ? 1 : point < 0x800 ? 2 : point < 0x10000 ? 3 : 4;
+    index += point > 0xffff ? 2 : 1;
   }
   return index;
 }

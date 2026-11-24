@@ -1,5 +1,7 @@
 import { z } from "zod";
+import { Health } from "../production-check-runtime.ts";
 import { DaemonSetting, type DispatchReads } from "./dispatch-api.ts";
+import { inPool, READ_CONCURRENCY } from "./inventory.ts";
 
 /**
  * Which release defines a name in each place the tool writes: each project's Legion daemon,
@@ -47,7 +49,8 @@ export function readingOf(state: unknown, source: Source): DaemonReading {
   return { kind: "contract", daemon: contract.daemon, source };
 }
 
-/** Each project's daemon reading. A daemon that does not answer, or answers no JSON object, is
+/** Each project's daemon reading, the projects read at most `READ_CONCURRENCY` at a time and
+ *  answered in their order. A daemon that does not answer, or answers no JSON object, is
  *  `no-answer`; none of these readings turns a contract on but `contract` at or above it. */
 export async function readDaemons(
   projects: readonly string[],
@@ -55,27 +58,25 @@ export async function readDaemons(
   states: DaemonStates,
   options: DaemonOptions
 ): Promise<Map<string, DaemonReading>> {
-  const readings = new Map<string, DaemonReading>();
-  for (const project of projects) {
-    if (options.noDaemon.has(project)) {
-      readings.set(project, { kind: "none" });
-      continue;
-    }
+  const readingOfProject = async (project: string): Promise<DaemonReading> => {
+    if (options.noDaemon.has(project)) return { kind: "none" };
     const setting = DaemonSetting.parse(await reads.daemonSetting(project));
-    const given = options.stateAddress.get(project);
-    const address = setting?.state_url ?? given;
-    if (address === undefined) {
-      readings.set(project, { kind: "unknown" });
-      continue;
-    }
+    const address = setting?.state_url ?? options.stateAddress.get(project);
+    if (address === undefined) return { kind: "unknown" };
     const source: Source = setting === null ? "run" : "dispatch";
     try {
-      readings.set(project, readingOf(await states.read(address), source));
+      return readingOf(await states.read(address), source);
     } catch {
-      readings.set(project, { kind: "no-answer", source });
+      return { kind: "no-answer", source };
     }
-  }
-  return readings;
+  };
+  return new Map(
+    await inPool(
+      projects,
+      READ_CONCURRENCY,
+      async (project) => [project, await readingOfProject(project)] as const
+    )
+  );
 }
 
 /** Whether a daemon's names of `contract` hold in the project: its daemon reads at or above it,
@@ -101,8 +102,8 @@ export function describeReading(reading: DaemonReading): string {
 }
 
 /** Dispatch's bound on one state read (`legion/client.go`): 60 seconds and 32 MiB. */
-export const STATE_DEADLINE_MS = 60_000;
-export const STATE_MAX_BYTES = 32 * 1024 * 1024;
+const STATE_DEADLINE_MS = 60_000;
+const STATE_MAX_BYTES = 32 * 1024 * 1024;
 
 /** Reads a daemon's state as Dispatch's own sampler does: no credential, bounded in time and in
  *  size. A body past the size bound is refused rather than cut. */
@@ -153,12 +154,11 @@ export function gitAncestry(root: string): Ancestry {
   };
 }
 
-const HealthCommit = z.looseObject({
-  commit: z
-    .string()
-    .regex(/^[0-9a-f]{7,40}$/)
-    .nullable(),
-});
+/** A commit sha, as `--merge-commit` takes one. */
+export const COMMIT = /^[0-9a-f]{7,40}$/;
+
+/** The build Dispatch's `/healthz` names, read as every check of this directory reads it. */
+const HealthCommit = z.looseObject({ commit: Health.shape.commit });
 
 /** The running Dispatch build, and whether it holds the merge commit the run names. A build
  *  that answers no commit holds nothing. */

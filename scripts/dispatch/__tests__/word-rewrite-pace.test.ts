@@ -8,14 +8,16 @@ import {
   runTimeMs,
   WRITE_GAP_MS,
 } from "../word-rewrite/pace.ts";
-import { readStateDocument } from "../word-rewrite/state.ts";
+import { emptyState, serializeState } from "../word-rewrite/state.ts";
 import {
   deps,
   FakeClock,
   FakeDispatch,
   input,
-  options,
+  keptState,
   rewritingModel,
+  TOOL_SESSION,
+  writeOptions,
 } from "./word-rewrite-fake.ts";
 
 const write = (owner: string, project: string): PacedWrite => ({ owner, project });
@@ -64,20 +66,77 @@ describe("the pace of write mode", () => {
     const second = dispatch.issue("SEED", input("title"));
     const clock = new FakeClock();
     const model = rewritingModel();
-    const stateDocument = { project: "SEED", slug: "rewrite-state-md" } as const;
-    const run = options({ mode: "write", summary: "INFRA-2017: a test", stateDocument });
-    expect(await runTool(run, deps(dispatch, { model, clock }))).toBe(0);
+    expect(await runTool(writeOptions(), deps(dispatch, { model, clock }))).toBe(0);
     const written = [first, second].filter((issue) => issue.title !== input("title"));
     expect(written).toHaveLength(1);
-    const kept = await readStateDocument(dispatch.reads(), stateDocument);
-    expect(kept.state.held.map((held) => held.id)).toEqual(
+    expect((await keptState(dispatch)).held.map((held) => held.id)).toEqual(
       [first, second].filter((issue) => issue.title === input("title")).map((issue) => issue.key)
     );
 
     clock.time += PROJECT_WINDOW_MS;
-    expect(await runTool(run, deps(dispatch, { model, clock }))).toBe(0);
+    expect(await runTool(writeOptions(), deps(dispatch, { model, clock }))).toBe(0);
     expect([first, second].every((issue) => issue.title !== input("title"))).toBe(true);
-    expect((await readStateDocument(dispatch.reads(), stateDocument)).state.held).toEqual([]);
+    expect((await keptState(dispatch)).held).toEqual([]);
+  });
+
+  test("the pace counts another process's writes, read from Dispatch's events of the sessions the state lists (spec version 43)", async () => {
+    // A run of another process wrote the issue's spec five minutes ago, as the session the state
+    // lists: this run holds the title of that issue back until a quarter-hour has passed.
+    const dispatch = new FakeDispatch();
+    const clock = new FakeClock();
+    dispatch.now = () => clock.now();
+    const issue = dispatch.issue("SEED", input("title"));
+    const spec = dispatch.document({ issue: issue.key }, "spec.md", "Spec.\n");
+    const cursor = dispatch.log.length;
+    clock.time -= 5 * 60_000;
+    dispatch.editAsOther(spec.id, "Spec.", "The spec.", TOOL_SESSION, "INFRA-2017: another run");
+    clock.time += 5 * 60_000;
+    const another = deps(dispatch, { model: rewritingModel(), clock, session: "0ther-session" });
+    dispatch.document(
+      { project: "SEED" },
+      "rewrite-state.md",
+      serializeState({ ...emptyState(), cursor, writeCursor: cursor, sessions: [TOOL_SESSION.id] })
+    );
+    expect(await runTool(writeOptions(), another)).toBe(0);
+    expect(issue.title).toBe(input("title"));
+    expect((await keptState(dispatch)).held.map((held) => held.id)).toEqual([issue.key]);
+
+    clock.time += 10 * 60_000;
+    expect(await runTool(writeOptions(), deps(dispatch, { model: rewritingModel(), clock }))).toBe(
+      0
+    );
+    expect(issue.title).not.toBe(input("title"));
+  });
+
+  test("the pace counts every write of a listed session in the last quarter-hour, even one before the state's cursors", async () => {
+    // Another run wrote a project document of SEED 30 seconds ago, before the cursors this state
+    // names; the log read back from its newest event shows it, so this run holds SEED's other
+    // document back for the project's minute.
+    const dispatch = new FakeDispatch();
+    const clock = new FakeClock();
+    dispatch.now = () => clock.now();
+    const other = dispatch.document({ project: "SEED" }, "other.md", "Other.\n");
+    const notes = dispatch.document({ project: "SEED" }, "notes.md", input("notes"));
+    clock.time -= 30_000;
+    dispatch.editAsOther(other.id, "Other.", "The other.", TOOL_SESSION, "INFRA-2017: another run");
+    clock.time += 30_000;
+    const cursor = dispatch.log.length;
+    dispatch.document(
+      { project: "SEED" },
+      "rewrite-state.md",
+      serializeState({ ...emptyState(), cursor, writeCursor: cursor, sessions: [TOOL_SESSION.id] })
+    );
+    expect(await runTool(writeOptions(), deps(dispatch, { model: rewritingModel(), clock }))).toBe(
+      0
+    );
+    expect(notes.version).toBe(1);
+    expect((await keptState(dispatch)).held.map((held) => held.id)).toEqual([notes.id]);
+
+    clock.time += 30_000;
+    expect(await runTool(writeOptions(), deps(dispatch, { model: rewritingModel(), clock }))).toBe(
+      0
+    );
+    expect(notes.version).toBe(2);
   });
 
   test("the run time the three bounds give, over a mix of owners and projects", () => {

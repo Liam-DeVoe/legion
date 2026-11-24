@@ -132,7 +132,9 @@ describe("each project's daemon", () => {
 
 describe("Dispatch's own build", () => {
   test("holds the merge only where git says the merge is an ancestor of its commit", async () => {
-    const health = fixture("dispatch-healthz.json");
+    // dispatch-healthz.json: production Dispatch's build, which names its commit.
+    const health = fixture("dispatch-healthz.json") as { commit: string };
+    expect(health.commit).toMatch(/^[0-9a-f]{40}$/);
     const asked: string[] = [];
     const yes = await dispatchBuild(health, "abc1234", {
       holds: async (merge, commit) => {
@@ -140,14 +142,15 @@ describe("Dispatch's own build", () => {
         return true;
       },
     });
-    expect(yes).toEqual({ commit: "df349e33f1520ecd5d6de0458259254a054dc0be", holdsMerge: true });
-    expect(asked).toEqual(["abc1234 df349e33f1520ecd5d6de0458259254a054dc0be"]);
+    expect(yes).toEqual({ commit: health.commit, holdsMerge: true });
+    expect(asked).toEqual([`abc1234 ${health.commit}`]);
     const no = await dispatchBuild(health, "abc1234", { holds: async () => false });
     expect(no.holdsMerge).toBe(false);
   });
 
-  test("a build that names no commit holds nothing", async () => {
-    const build = await dispatchBuild({ ok: true, commit: null }, "abc1234", {
+  test("a build that names no commit holds nothing: dispatch-healthz-local.json", async () => {
+    // The local Dispatch, built from a checkout with no commit stamped in, answers `commit: null`.
+    const build = await dispatchBuild(fixture("dispatch-healthz-local.json"), "abc1234", {
       holds: async () => true,
     });
     expect(build).toEqual({ commit: null, holdsMerge: false });

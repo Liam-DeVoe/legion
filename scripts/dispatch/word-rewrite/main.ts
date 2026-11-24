@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { parseArgs } from "node:util";
+import { type ParseArgsOptionsConfig, parseArgs } from "node:util";
 import {
   type Category,
   ISSUE_KEY,
@@ -8,8 +8,10 @@ import {
   runScript,
   UsageError,
 } from "../production-check-runtime.ts";
+import { Changes } from "./changes.ts";
 import {
   type Ancestry,
+  COMMIT,
   type DaemonStates,
   daemonAtLeast,
   describeReading,
@@ -34,11 +36,11 @@ import {
   examine,
   type Item,
   inPool,
-  issueItems,
-  projectDocumentItem,
   projectItems,
   READ_CONCURRENCY,
+  readItems,
   readTree,
+  type Wanted,
 } from "./inventory.ts";
 import {
   builtInMap,
@@ -47,16 +49,31 @@ import {
   parseExtraMap,
   readContract,
 } from "./name-map.ts";
-import { Pace, runTimeMs } from "./pace.ts";
+import { Pace, type PacedWrite, PaceLog, runTimeMs } from "./pace.ts";
 import { Tally } from "./report.ts";
-import { type Clock, loggingFetch, RequestRate, requestLog, SYSTEM_CLOCK } from "./request-log.ts";
+import {
+  appendTo,
+  type Clock,
+  loggingFetch,
+  RequestRate,
+  requestLog,
+  SYSTEM_CLOCK,
+} from "./request-log.ts";
+import { runSettle, type SettleOptions } from "./settle.ts";
 import {
   emptyState,
   eventsAfter,
+  gateReached,
+  type HeldWrite,
+  keepRefused,
+  keepWaiting,
+  type LoggedEvent,
   newestEventId,
+  PROJECT_KEY,
   parseState,
   parseStateDocument,
   type RunState,
+  readLog,
   readStateDocument,
   STATE_BOUND_BYTES,
   type StateDocument,
@@ -80,11 +97,15 @@ import {
  * mode reads every project's open issues and project documents, lists each occurrence of the word
  * with the place that leaves it, and writes nothing but its local `--state` copy. Write mode asks
  * the model about every occurrence no place leaves and writes each rewrite through Dispatch's own
- * edit routes, keeping its state in a project document between runs.
+ * edit routes, keeping its state in a project document between runs. The settle command is write
+ * mode with the tester's answers in place of the model's, for the occurrences whose two answers
+ * failed (`settle.ts`).
  */
 
 export const USAGE = `bun scripts/dispatch/word-rewrite/main.ts report|write --tree <KEY> --merge-commit <sha> [flags]
+bun scripts/dispatch/word-rewrite/main.ts settle --state-document <ref> --answers <file> --summary <text> --merge-commit <sha> [flags]
 
+report and write:
   --tree <KEY>                 the root whose issues name the word as the subject of the change
   --merge-commit <sha>         the merge the Dispatch API names wait for (before the merge: the head)
   --project <KEY>              a project to read; repeat; every project when none is named
@@ -107,6 +128,16 @@ write mode only:
   --concurrency <n>            model calls at once (default 4)
   --max-writes <n>             stop writing after n writes; the rest wait for the next run
   --pause-before-write <file>  wait before each write until the file exists
+settle (write mode with the tester's answers in place of the model's):
+  --state-document <ref>       the state that keeps the occurrences as judge-refused (required)
+  --answers <file>             one JSON object: under the key of a judge-refused occurrence, as a
+                               report lists it, the answer for its paragraph in the model's shape:
+                               {"rewrite": "<paragraph>"}, that with "left": {"<at>": "<place>"},
+                               or {"allowed": "<place>"}; a place is quote, word-as-word,
+                               other-team-technical, third-party-name or record
+  --summary <text>             the summary of each document version it writes (required)
+  --merge-commit <sha>         as for report and write
+  --daemon-state, --no-daemon, --extra-map, --request-log: as for report and write
   --help                       print this text`;
 
 export interface Options {
@@ -134,17 +165,21 @@ export interface Options {
   readonly whole: boolean;
 }
 
+const DAEMON_FLAGS = {
+  "daemon-state": { type: "string", multiple: true },
+  "no-daemon": { type: "string", multiple: true },
+  "extra-map": { type: "string" },
+  "request-log": { type: "string" },
+} as const;
+
 const FLAGS = {
+  ...DAEMON_FLAGS,
   tree: { type: "string" },
   "merge-commit": { type: "string" },
   project: { type: "string", multiple: true },
   "include-closed": { type: "boolean" },
   "state-document": { type: "string" },
   state: { type: "string" },
-  "extra-map": { type: "string" },
-  "request-log": { type: "string" },
-  "daemon-state": { type: "string", multiple: true },
-  "no-daemon": { type: "string", multiple: true },
   summary: { type: "string" },
   model: { type: "string" },
   concurrency: { type: "string" },
@@ -155,25 +190,43 @@ const FLAGS = {
   whole: { type: "boolean" },
 } as const;
 
-const FLAG_TYPES: Readonly<Record<string, { readonly type: string }>> = FLAGS;
+const SETTLE_FLAGS = {
+  ...DAEMON_FLAGS,
+  "state-document": { type: "string" },
+  answers: { type: "string" },
+  summary: { type: "string" },
+  "merge-commit": { type: "string" },
+} as const;
+
+type FlagTable = Readonly<Record<string, { readonly type: string }>>;
 const WRITE_ONLY = ["summary", "model", "concurrency", "max-writes", "pause-before-write"];
-const PROJECT_KEY = /^[A-Z][A-Z0-9]*$/;
-const COMMIT = /^[0-9a-f]{7,40}$/;
 
 function refuse(reason: string): never {
   throw new UsageError(`${reason}\n${USAGE}`);
 }
 
-/** The first argument that names no flag of the tool, so a refusal can name it. */
-function unknownFlag(argv: readonly string[]): string | undefined {
+/** The first argument that names no flag of `table`, so a refusal can name it. */
+function unknownFlag(argv: readonly string[], table: FlagTable): string | undefined {
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index] ?? "";
     if (!argument.startsWith("-")) continue;
     const name = argument.replace(/^--?/, "").split("=")[0] ?? "";
-    if (!argument.startsWith("--") || !Object.hasOwn(FLAG_TYPES, name)) {
+    if (!argument.startsWith("--") || !Object.hasOwn(table, name)) {
       return argument.split("=")[0];
     }
-    if (FLAG_TYPES[name]?.type === "string" && !argument.includes("=")) index += 1;
+    if (table[name]?.type === "string" && !argument.includes("=")) index += 1;
+  }
+  return undefined;
+}
+
+/** The mode a command line names: its first argument that is neither a flag nor a flag's value. */
+function modeOf(argv: readonly string[]): string | undefined {
+  const table: FlagTable = { ...FLAGS, ...SETTLE_FLAGS };
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index] ?? "";
+    if (!argument.startsWith("-")) return argument;
+    const name = argument.replace(/^--?/, "").split("=")[0] ?? "";
+    if (table[name]?.type === "string" && !argument.includes("=")) index += 1;
   }
   return undefined;
 }
@@ -207,23 +260,59 @@ function stopDuration(value: string | undefined): number | undefined {
   return ms;
 }
 
-/** The flags as `parseArgs` reads them, once every argument names a flag of the tool. */
-function readFlags(argv: readonly string[]) {
+/** The flags as `parseArgs` reads them, once every argument names a flag of the mode. */
+function readFlags<T extends ParseArgsOptionsConfig>(argv: readonly string[], options: T) {
   try {
-    return parseArgs({ args: [...argv], options: FLAGS, allowPositionals: true, strict: true });
+    return parseArgs({ args: [...argv], options, allowPositionals: true, strict: true });
   } catch {
     // parseArgs's own message is not repeated: every flag it can refuse here is named already.
     return refuse("a flag is missing its value");
   }
 }
 
+/** `--merge-commit`, which every mode needs. */
+function mergeCommitOf(value: string | undefined): string {
+  if (value === undefined || !COMMIT.test(value)) refuse("--merge-commit takes a commit sha");
+  return value;
+}
+
+/** `--daemon-state` and `--no-daemon`, which every mode reads alike. */
+function daemonOptions(
+  pairs: readonly string[] | undefined,
+  none: readonly string[] | undefined
+): { stateAddress: Map<string, string>; noDaemon: Set<string> } {
+  const stateAddress = new Map<string, string>();
+  for (const pair of pairs ?? []) {
+    const [project, url] = [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)];
+    if (!pair.includes("=") || !PROJECT_KEY.test(project) || !/^https?:\/\/[^/]+\/?$/.test(url)) {
+      refuse("--daemon-state takes <PROJECT>=<http(s) URL with no path>");
+    }
+    stateAddress.set(project, url);
+  }
+  const noDaemon = new Set(none ?? []);
+  for (const project of noDaemon) {
+    if (!PROJECT_KEY.test(project)) refuse(`--no-daemon takes a project key, not ${project}`);
+    if (stateAddress.has(project)) refuse(`--no-daemon ${project} and --daemon-state ${project}`);
+  }
+  return { stateAddress, noDaemon };
+}
+
+/** `--state-document`, as a document reference, where it is given. */
+function stateDocumentOf(ref: string | undefined): StateDocument | undefined {
+  const stateDocument = ref === undefined ? undefined : parseStateDocument(ref);
+  if (ref !== undefined && stateDocument === undefined) {
+    refuse("--state-document takes dispatch://<PROJECT>/artifact/<slug>");
+  }
+  return stateDocument;
+}
+
+/** The command line of report or write mode. */
 export function parseArguments(argv: readonly string[]): Options {
-  const unknown = unknownFlag(argv);
+  const unknown = unknownFlag(argv, FLAGS);
   if (unknown !== undefined) refuse(`unknown flag ${unknown}`);
-  const parsed = readFlags(argv);
-  const { values, positionals } = parsed;
+  const { values, positionals } = readFlags(argv, FLAGS);
   const [mode, ...rest] = positionals;
-  if (mode !== "report" && mode !== "write") refuse("name the mode: report or write");
+  if (mode !== "report" && mode !== "write") refuse("name the mode: report, write or settle");
   if (rest.length > 0) refuse(`unexpected argument ${rest[0]}`);
   if (mode === "report") {
     const given = WRITE_ONLY.find((flag) => values[flag as keyof typeof values] !== undefined);
@@ -234,31 +323,11 @@ export function parseArguments(argv: readonly string[]): Options {
   }
   const tree = values.tree;
   if (tree === undefined || !ISSUE_KEY.test(tree)) refuse("--tree takes an issue key");
-  const mergeCommit = values["merge-commit"];
-  if (mergeCommit === undefined || !COMMIT.test(mergeCommit)) {
-    refuse("--merge-commit takes a commit sha");
-  }
+  const mergeCommit = mergeCommitOf(values["merge-commit"]);
   const projects = values.project ?? [];
   const badProject = projects.find((project) => !PROJECT_KEY.test(project));
   if (badProject !== undefined) refuse(`--project takes a project key, not ${badProject}`);
-  const stateRef = values["state-document"];
-  const stateDocument = stateRef === undefined ? undefined : parseStateDocument(stateRef);
-  if (stateRef !== undefined && stateDocument === undefined) {
-    refuse("--state-document takes dispatch://<PROJECT>/artifact/<slug>");
-  }
-  const stateAddress = new Map<string, string>();
-  for (const pair of values["daemon-state"] ?? []) {
-    const [project, url] = [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)];
-    if (!pair.includes("=") || !PROJECT_KEY.test(project) || !/^https?:\/\/[^/]+\/?$/.test(url)) {
-      refuse("--daemon-state takes <PROJECT>=<http(s) URL with no path>");
-    }
-    stateAddress.set(project, url);
-  }
-  const noDaemon = new Set(values["no-daemon"] ?? []);
-  for (const project of noDaemon) {
-    if (!PROJECT_KEY.test(project)) refuse(`--no-daemon takes a project key, not ${project}`);
-    if (stateAddress.has(project)) refuse(`--no-daemon ${project} and --daemon-state ${project}`);
-  }
+  const stateDocument = stateDocumentOf(values["state-document"]);
   const summary = values.summary;
   if (mode === "write") {
     if (summary === undefined || summary.trim() === "") refuse("write mode needs --summary");
@@ -274,8 +343,7 @@ export function parseArguments(argv: readonly string[]): Options {
     stateFile: values.state,
     extraMap: values["extra-map"],
     requestLog: values["request-log"],
-    stateAddress,
-    noDaemon,
+    ...daemonOptions(values["daemon-state"], values["no-daemon"]),
     summary,
     model: values.model ?? DEFAULT_MODEL,
     concurrency: count(values.concurrency, "concurrency", 1) ?? 4,
@@ -285,6 +353,42 @@ export function parseArguments(argv: readonly string[]): Options {
     stopAfterMs: stopDuration(values["stop-after"]),
     whole: values.whole === true,
   };
+}
+
+/** The command line of the settle command. */
+export function parseSettle(argv: readonly string[]): SettleOptions {
+  const unknown = unknownFlag(argv, SETTLE_FLAGS);
+  if (unknown !== undefined) {
+    const name = unknown.replace(/^--?/, "");
+    refuse(
+      Object.hasOwn(FLAGS, name) ? `flag ${unknown} is not for settle` : `unknown flag ${unknown}`
+    );
+  }
+  const { values, positionals } = readFlags(argv, SETTLE_FLAGS);
+  const [mode, ...rest] = positionals;
+  if (mode !== "settle") refuse("name the mode: report, write or settle");
+  if (rest.length > 0) refuse(`unexpected argument ${rest[0]}`);
+  const stateDocument = stateDocumentOf(values["state-document"]);
+  if (stateDocument === undefined) refuse("settle needs --state-document");
+  const answers = values.answers;
+  if (answers === undefined) refuse("settle needs --answers");
+  const summary = values.summary;
+  if (summary === undefined || summary.trim() === "") refuse("settle needs --summary");
+  return {
+    mode: "settle",
+    stateDocument,
+    answers,
+    summary,
+    mergeCommit: mergeCommitOf(values["merge-commit"]),
+    extraMap: values["extra-map"],
+    requestLog: values["request-log"],
+    ...daemonOptions(values["daemon-state"], values["no-daemon"]),
+  };
+}
+
+/** The command line of any mode. */
+export function parseCommandLine(argv: readonly string[]): Options | SettleOptions {
+  return modeOf(argv) === "settle" ? parseSettle(argv) : parseArguments(argv);
 }
 
 /** What a run calls out to, which a test replaces with fakes. */
@@ -301,6 +405,9 @@ export interface Deps {
   readonly out: (line: string) => void;
   /** How many requests the run made so far, for its last lines. */
   readonly requests: () => number;
+  /** The session the process acts as (`DISPATCH_SESSION_ID`): write mode and the settle command
+   *  write as it and keep its id in the state, so that a report sets their edits aside. */
+  readonly session?: string | undefined;
 }
 
 /** How many items are read before their turn of writing, so a project's texts are not all held
@@ -308,15 +415,19 @@ export interface Deps {
 const CHUNK = 16;
 
 /** Report mode's lines of the pace: each owner whose items wait for the judge, whose subscribers
- *  no credential of the tool can read, and the run time the three bounds give for one write per
- *  waiting item. */
+ *  no credential of the tool can read; the run time the three bounds give for one write per
+ *  waiting item; and the same for the settle command's writes, one per item that holds a
+ *  judge-refused occurrence the report lists. */
 function paceLines(tally: Tally): string[] {
   const lines = tally.owners().map((owner) => `owner ${ownerName(owner)} subscribers=unknown`);
-  const writes = tally.waiting.map(({ item }) => ({
+  const writes = tally.waiting.map((item) => ({
     owner: ownerName(item.owner),
     project: item.project,
   }));
-  lines.push(`pace writes=${writes.length} run-time-s=${Math.ceil(runTimeMs(writes) / 1_000)}`);
+  const runTime = (paced: readonly PacedWrite[]) => Math.ceil(runTimeMs(paced) / 1_000);
+  lines.push(`pace writes=${writes.length} run-time-s=${runTime(writes)}`);
+  const settles = [...tally.settles.values()];
+  lines.push(`settle-pace writes=${settles.length} run-time-s=${runTime(settles)}`);
   return lines;
 }
 
@@ -336,95 +447,20 @@ async function startingState(
 
 /**
  * The items a run reads again after the first whole read: each item an event after the cursor
- * belongs to, in the projects the run reads. Dispatch gives an issue document's events to its
- * issue and sets no top-level `artifact_id` on them (`ownerForArtifact`), so an event of an issue
- * names the issue's title and every document of it; an event of a project document names that
- * document.
+ * belongs to, in the projects the run reads. The events are read before the run's first read of
+ * an item (`runTool`). Dispatch gives an issue document's events to its issue and sets no
+ * top-level `artifact_id` on them (`ownerForArtifact`), so an event of an issue names the issue's
+ * title and every document of it; an event of a project document names that document.
  */
-async function itemsOfEvents(
-  reads: DispatchReads,
-  state: RunState,
-  projects: ReadonlySet<string>
-): Promise<Item[]> {
-  const events = await eventsAfter(reads, state.cursor ?? 0);
-  const last = events.at(-1);
-  if (last !== undefined) state.cursor = last.id;
-  const wanted = new Map<string, Promise<Item[]>>();
-  for (const event of events) {
-    if (!projects.has(event.project)) continue;
-    const key = event.issue_key;
-    const id = event.artifact_id;
-    if (key !== null) {
-      if (!wanted.has(key)) wanted.set(key, issueItems(reads, key));
-    } else if (id !== null && !wanted.has(id)) {
-      wanted.set(id, projectDocumentItem(reads, event.project, id));
+function wantedOfEvents(events: readonly LoggedEvent[], projects: ReadonlySet<string>): Wanted[] {
+  return events.flatMap((event): Wanted[] => {
+    if (!projects.has(event.project)) return [];
+    if (event.issue_key !== null)
+      return [{ project: event.project, issue: event.issue_key, id: null }];
+    if (event.artifact_id !== null) {
+      return [{ project: event.project, issue: null, id: event.artifact_id }];
     }
-  }
-  return (await Promise.all(wanted.values())).flat();
-}
-
-/** Each item of a list of state entries, read afresh: an issue's title or document, or a project
- *  document. An item that is gone is left out. */
-async function readEntries(
-  reads: DispatchReads,
-  entries: readonly {
-    readonly project: string;
-    readonly issue: string | null;
-    readonly id: string;
-  }[]
-): Promise<Item[]> {
-  const items: Item[] = [];
-  const seen = new Set<string>();
-  for (const entry of entries) {
-    if (seen.has(entry.id)) continue;
-    seen.add(entry.id);
-    const found =
-      entry.issue === null
-        ? await projectDocumentItem(reads, entry.project, entry.id)
-        : (await issueItems(reads, entry.issue)).filter((item) => item.id === entry.id);
-    items.push(...found);
-  }
-  return items;
-}
-
-/** The gate an occurrence's kept name waits for, as the state's `waiting` writes it, or null for
- *  a name no reach of a daemon or of Dispatch's build turns on. */
-function gateOf(entry: MapEntry | null): string | null {
-  if (entry === null || entry.new === "" || entry.from === "merged") return null;
-  return "contract" in entry.from ? `c${entry.from.contract}` : "m";
-}
-
-/** The state's `waiting` entries for one item, as its occurrences stand now: each gate of a name
- *  kept as `code-name-not-yet`, once. */
-function keepWaiting(state: RunState, examined: Examined): void {
-  const item = examined.item;
-  state.waiting = state.waiting.filter((entry) => entry.id !== item.id);
-  const gates = new Set<string>();
-  for (const occurrence of examined.occurrences) {
-    if (occurrence.reason !== "code-name-not-yet") continue;
-    const gate = gateOf(occurrence.name);
-    if (gate !== null) gates.add(gate);
-  }
-  for (const gate of gates) {
-    state.waiting.push({
-      project: item.project,
-      issue: item.issue?.key ?? null,
-      id: item.id,
-      gate,
-    });
-  }
-}
-
-/** The state's `refused` entries for one item, as its text stands now: an entry whose key no
- *  occurrence of the item holds any more (its text changed) goes, with its `j` verdict, so the
- *  new text is judged. */
-function keepRefused(state: RunState, examined: Examined): void {
-  const item = examined.item;
-  const keys = new Set(examined.occurrences.map((occurrence) => occurrence.key));
-  state.refused = state.refused.filter((entry) => {
-    if (entry.id !== item.id || keys.has(entry.key)) return true;
-    state.verdicts.delete(entry.key);
-    return false;
+    return [];
   });
 }
 
@@ -433,7 +469,7 @@ function stateMark(state: RunState): string {
   const held = state.held.map((write) => `${write.id}${write.retry ? "!" : ""}`).join(",");
   const waiting = state.waiting.map((entry) => `${entry.id}:${entry.gate}`).join(",");
   const refused = state.refused.map((entry) => entry.key).join(",");
-  return `${state.cursor}|${state.whole}|${state.finished.join(",")}|${state.verdicts.size}|${held}|${waiting}|${refused}`;
+  return `${state.cursor}|${state.writeCursor}|${state.whole}|${state.finished.join(",")}|${state.verdicts.size}|${held}|${waiting}|${refused}|${state.sessions.join(",")}`;
 }
 
 /** Write mode saves its state at most once in this time while it holds something unsaved. */
@@ -452,7 +488,7 @@ function callsLine(calls: JudgeCalls): string {
   return `model-calls first=${calls.first} second=${calls.second} again=${calls.again} judged-again=${calls.againOccurrences}`;
 }
 
-/** One whole run of either mode; answers the exit status. */
+/** One whole run of report or write mode; answers the exit status. */
 export async function runTool(options: Options, deps: Deps): Promise<number> {
   const { reads, out } = deps;
   const started = deps.clock.now();
@@ -468,8 +504,9 @@ export async function runTool(options: Options, deps: Deps): Promise<number> {
   let saveOnFailure: (() => Promise<void>) | undefined;
   try {
     const whoami = Whoami.parse(await reads.whoami());
-    if (options.mode === "write") {
-      const refusal = writerRefusal(whoami);
+    const writing = options.mode === "write";
+    if (writing) {
+      const refusal = writerRefusal(whoami, deps.session);
       if (refusal !== null) {
         out(`refused: ${refusal}`);
         return 2;
@@ -498,32 +535,77 @@ export async function runTool(options: Options, deps: Deps): Promise<number> {
       daemonAtLeast: (contract: number) => daemonAtLeast(daemons.get(project), contract),
       dispatchHoldsMerge: build.holdsMerge,
     });
-    const tree = await readTree(reads, options.tree);
     let { state, token } = await startingState(options, reads);
+    /** Whether the state document already names the session this run writes as. */
+    let sessionSaved = !writing || deps.session === undefined;
+    if (deps.session !== undefined && !sessionSaved) {
+      sessionSaved = state.sessions.includes(deps.session);
+      if (!sessionSaved) state.sessions.push(deps.session);
+    }
+    // The event log is read before the run's first read of an item, and the cursor moves only to
+    // the newest event read here (spec version 32): an edit made while the run goes on has a
+    // later event, which the next run reads. A report lists apart what an event after the last
+    // write-mode run's cursor changed, the edits of the sessions that ran the tool set aside
+    // (`changes.ts`); where both cursors are one, the log is read once for both.
+    /** The cursor a run after the whole read moves to once it has read the events' items. */
+    let eventCursor = state.cursor;
+    /** The newest id at the start of a whole write run: its own cursor, for `write_cursor`. */
+    let wholeCursor: number | undefined;
+    let evented: readonly LoggedEvent[] = [];
+    let changes: Changes | undefined;
+    if (!stopped()) {
+      const listed = writing || state.writeCursor === null ? undefined : state.writeCursor;
+      if (listed !== undefined) changes = new Changes(new Set(state.sessions));
+      let listedRead = false;
+      if (options.whole) {
+        if (writing) wholeCursor = await newestEventId(reads);
+      } else if (!state.whole) {
+        if (state.cursor === null) state.cursor = await newestEventId(reads);
+      } else {
+        const from = state.cursor ?? 0;
+        listedRead = listed === from;
+        evented = await eventsAfter(
+          reads,
+          from,
+          listedRead ? (page) => changes?.add(page) : undefined
+        );
+        eventCursor = evented.at(-1)?.id ?? state.cursor;
+      }
+      if (listed !== undefined && !listedRead) {
+        await readLog(reads, listed, (page) => changes?.add(page));
+      }
+    }
+    const tree = await readTree(reads, options.tree);
     const context: Context = { reads, entries, reachOf, scope, tree };
-    const tally = new Tally();
+    const tally = new Tally(changes);
     const seen = new Set<string>();
-    const writing = options.mode === "write";
     let writeContext: WriteContext | undefined;
     if (writing) {
       const model = deps.model;
       if (deps.writes === undefined || model === undefined || options.summary === undefined) {
         throw new Error("write mode runs with writes, a model and a summary");
       }
+      const pace = new Pace(deps.clock);
       writeContext = {
         reads,
         writes: deps.writes,
-        model,
-        pace: new Pace(deps.clock),
+        answerer: { kind: "model", model, concurrency: options.concurrency },
+        pace,
+        paceLog: new PaceLog(reads, pace, new Set(state.sessions), deps.clock),
+        // The session's id is saved before the run's first write (`save` is set below).
+        beforeWrite: async () => {
+          if (sessionSaved) return;
+          sessionSaved = true;
+          await save(true, true);
+        },
         clock: deps.clock,
         state,
         entries,
         reachOf,
         summary: options.summary,
-        concurrency: options.concurrency,
         remaining: options.maxWrites ?? Number.POSITIVE_INFINITY,
         pauseFile: options.pauseBeforeWrite,
-        events: new Map(),
+        statusLines: new Map(),
         retried: new Set(state.held.filter((write) => write.retry).flatMap((write) => write.keys)),
         calls,
       };
@@ -533,18 +615,28 @@ export async function runTool(options: Options, deps: Deps): Promise<number> {
     // its last save (or its start), and once more when the run stops; report mode never does.
     let savedAt = started;
     let savedMark = stateMark(state);
-    const save = async (final: boolean) => {
+    const save = async (final: boolean, force = false) => {
       const writes = writeContext?.writes;
       if (writes === undefined || options.stateDocument === undefined) return;
-      const mark = stateMark(state);
-      if (mark === savedMark) return;
       const now = deps.clock.now();
       if (!final && now - savedAt < SAVE_INTERVAL_MS) return;
+      const mark = stateMark(state);
+      if (mark === savedMark && !force) return;
       token = await writeStateDocument({ reads, writes }, options.stateDocument, state, token);
       savedAt = now;
       savedMark = mark;
     };
-    saveOnFailure = () => save(true);
+    /** The held-back writes this run took up, and the items whose turn it has handled: a read
+     *  that fails puts back each held-back write whose item it had not handled. */
+    let takenHeld: readonly HeldWrite[] = [];
+    const handled = new Set<string>();
+    saveOnFailure = async () => {
+      for (const write of takenHeld) {
+        if (handled.has(write.id) || state.held.some((kept) => kept.id === write.id)) continue;
+        state.held.push(write);
+      }
+      await save(true);
+    };
 
     /** Handles each item once; answers the items the stop time left unhandled. */
     const handle = async (items: readonly Item[]): Promise<Item[]> => {
@@ -562,10 +654,12 @@ export async function runTool(options: Options, deps: Deps): Promise<number> {
           keepRefused(state, one);
           if (writeContext === undefined) {
             tally.add(one, state.verdicts);
+            handled.add(one.item.id);
             continue;
           }
           const result = await writeItem(writeContext, one);
           tally.add(one, state.verdicts);
+          handled.add(one.item.id);
           await save(false);
           if (result === "nothing-to-judge") continue;
           const item = one.item;
@@ -581,39 +675,40 @@ export async function runTool(options: Options, deps: Deps): Promise<number> {
       if (!writing) return;
       for (const item of left) state.held.push(heldWrite(item, []));
     };
+    /** The held-back writes first, with `extra`: report mode reads them and leaves the held-back
+     *  list as it is; write mode takes them up. */
+    const handleHeld = async (extra: readonly Wanted[]) => {
+      if (stopped()) return;
+      const held = state.held;
+      if (writing) {
+        state.held = [];
+        takenHeld = held;
+      }
+      holdLeft(await handle(await readItems(reads, [...held, ...extra])));
+      takenHeld = [];
+    };
 
     if (options.whole) {
       // The whole read: the held-back writes, then every project from the start, with the
       // state's verdicts. Its cursor and the projects it finished stay as they were, and a project
       // the stop time cuts is left to the next whole read. Write mode saves its state; report mode
       // writes none.
-      if (!stopped()) {
-        const held = state.held;
-        if (writing) state.held = [];
-        holdLeft(await handle(await readEntries(reads, held)));
-      }
+      await handleHeld([]);
       for (const project of projects) {
         if (stopped()) break;
         await handle(await projectItems(reads, project, options.includeClosed));
       }
-      await save(true);
+      if (writing && wholeCursor !== undefined) state.writeCursor = wholeCursor;
     } else {
       // First the held-back writes, and the items whose kept names the project or Dispatch's
-      // build has now reached. Report mode reads them and leaves the held-back list as it is.
-      if (!stopped()) {
-        const held = state.held;
-        if (writing) state.held = [];
-        const reached = state.waiting.filter(
+      // build has now reached.
+      await handleHeld(
+        state.waiting.filter(
           (entry) =>
-            projects.includes(entry.project) &&
-            (entry.gate === "m"
-              ? build.holdsMerge
-              : reachOf(entry.project).daemonAtLeast(Number(entry.gate.slice(1))))
-        );
-        holdLeft(await handle(await readEntries(reads, [...held, ...reached])));
-      }
+            projects.includes(entry.project) && gateReached(entry.gate, reachOf(entry.project))
+        )
+      );
       if (!stopped() && !state.whole) {
-        if (state.cursor === null) state.cursor = await newestEventId(reads);
         for (const project of projects) {
           if (state.finished.includes(project)) continue;
           if (stopped()) break;
@@ -626,19 +721,34 @@ export async function runTool(options: Options, deps: Deps): Promise<number> {
         }
         if (!stopped()) state.whole = true;
       } else if (!stopped()) {
-        holdLeft(await handle(await itemsOfEvents(reads, state, new Set(projects))));
+        holdLeft(await handle(await readItems(reads, wantedOfEvents(evented, new Set(projects)))));
+        state.cursor = eventCursor;
       }
-      await save(true);
-      if (options.stateFile !== undefined) writeFileSync(options.stateFile, serializeState(state));
+      // What a write-mode run has read stands at its cursor: its items' later events are after it.
+      if (writing) state.writeCursor = state.cursor;
     }
+    // Each occurrence kept as judge-refused is listed under the place a program tells while that
+    // place holds it: its item is read, in the projects the run reads, where this run has not
+    // read it.
+    if (!stopped()) {
+      const unread = state.refused.filter(
+        (entry) => projects.includes(entry.project) && !seen.has(entry.id)
+      );
+      await handle(await readItems(reads, unread));
+    }
+    await save(true);
+    if (options.stateFile !== undefined) writeFileSync(options.stateFile, serializeState(state));
 
     tally.addKeptRefused(state.refused);
     for (const line of tally.lines) out(line);
     for (const line of tally.summary()) out(line);
     for (const line of tally.checkSection()) out(line);
-    if (options.mode === "report") for (const line of paceLines(tally)) out(line);
+    if (options.mode === "report") {
+      for (const line of tally.changedSection()) out(line);
+      for (const line of paceLines(tally)) out(line);
+    }
     const bytes = stateBytes(state);
-    const projected = bytes + tally.notJudged * VERDICT_BYTES;
+    const projected = bytes + (tally.notJudged - tally.judgeRefused) * VERDICT_BYTES;
     out(
       `state verdicts=${state.verdicts.size} held=${state.held.length} waiting=${state.waiting.length} not-judged=${tally.notJudged} bytes=${bytes} projected-bytes=${projected} bound=${STATE_BOUND_BYTES}`
     );
@@ -680,7 +790,7 @@ async function main(argv: readonly string[]): Promise<number> {
     console.log(`usage: ${USAGE}`);
     return 0;
   }
-  const prelude = readCommandLine(argv, parseArguments, "config" satisfies Category);
+  const prelude = readCommandLine(argv, parseCommandLine, "config" satisfies Category);
   if (!prelude.ready) return prelude.code;
   const { options, config } = prelude;
   const root = resolve(import.meta.dir, "../../..");
@@ -693,12 +803,25 @@ async function main(argv: readonly string[]): Promise<number> {
       return 2;
     }
   }
-  const log = requestLog(options.requestLog);
+  let answers = "";
+  if (options.mode === "settle") {
+    try {
+      answers = readFileSync(options.answers, "utf8");
+    } catch {
+      console.error("--answers cannot be read");
+      return 2;
+    }
+  }
+  const log = requestLog(
+    options.requestLog === undefined ? undefined : appendTo(options.requestLog)
+  );
   const fetchImpl = loggingFetch(fetch, log, new RequestRate());
-  const { reads, writes } = liveDispatch(config, fetchImpl);
-  return runTool(options, {
+  // An empty DISPATCH_SESSION_ID names no session, as an unset one does.
+  const session = process.env.DISPATCH_SESSION_ID || undefined;
+  const { reads, writes } = liveDispatch(config, fetchImpl, session);
+  const deps: Deps = {
     reads,
-    writes: options.mode === "write" ? writes : undefined,
+    writes: options.mode === "report" ? undefined : writes,
     model:
       options.mode === "write"
         ? gatewayModel(options.model, (detail) => console.error(`model fault: ${detail}`))
@@ -709,8 +832,10 @@ async function main(argv: readonly string[]): Promise<number> {
     contract: readContract(root),
     extraEntries,
     out: (line) => console.log(line),
-    requests: () => log.lines().length,
-  });
+    requests: () => log.count(),
+    session,
+  };
+  return options.mode === "settle" ? runSettle(options, answers, deps) : runTool(options, deps);
 }
 
 if (import.meta.main) await runScript(main);

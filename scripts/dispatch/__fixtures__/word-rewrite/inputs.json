@@ -7,6 +7,7 @@
     "notes": "The notes say it was parked.\n",
     "requested": "The requested spec says the issue was parked.\n",
     "requirement": ":::requirement{#r-parked}\nThe tree resumes.\n:::\n",
+    "requirement-attribute": ":::requirement{#r1 title=\"Unpark the tree\"}\nThe tree resumes.\n:::\n",
     "no-authors": "A version with no authors parked this.\n",
     "notice": "The controller reads the parked-decision notice.\n",
     "project-notes": "The release notes say the issue was parked.\n",
@@ -17,7 +18,8 @@
     "beta": "The beta issue was parked.\n",
     "quiet-title": "A quiet issue that was parked",
     "untouched": "Untouched, and parked.\n",
-    "quote": "A quote: \"park it\", Sami wrote.\n"
+    "quote": "A quote: \"park it\", Sami wrote.\n",
+    "quote-and-status": "Sami wrote \"park it\". The issue was parked.\n"
   },
   "check-names": ["park_child", "parked-decisions.md"],
   "rewrites": [

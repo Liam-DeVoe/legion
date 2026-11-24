@@ -1,8 +1,8 @@
 {
   "kind": "agent",
-  "owner": "alice@example.com",
+  "owner": "alice",
   "project": null,
-  "scopes": ["person"],
+  "scopes": ["person", "approve"],
   "service": null,
   "session": null
 }

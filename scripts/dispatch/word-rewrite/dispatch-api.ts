@@ -19,7 +19,13 @@ import {
  * path it was sent to or the answer's text.
  */
 
-const Actor = z.looseObject({ kind: z.string(), id: z.string().optional() });
+/** Who did something. An agent that acts through a person's personal agent token is a session
+ *  with that person as its `owner`. */
+const Actor = z.looseObject({
+  kind: z.string(),
+  id: z.string().optional(),
+  owner: z.string().nullable().optional(),
+});
 export type Actor = z.infer<typeof Actor>;
 
 export const Project = z.looseObject({ key: z.string() });
@@ -60,6 +66,9 @@ export const Artifact = z.looseObject({
   kind: z.string(),
   /** Whether the document is its issue's primary document, its spec. */
   primary: z.boolean().optional(),
+  /** The part an issue's document plays beside its spec (`verification` for its Verification
+   *  document), or null; Dispatch leaves it out of an older row. */
+  role: z.string().nullable().optional(),
   versions: z.array(Version).nullable(),
   approval: Approval.optional(),
 });
@@ -89,7 +98,6 @@ export type Block = z.infer<typeof Block>;
 export const Text = z.looseObject({
   markdown: z.string(),
   token: z.string(),
-  version: z.int().nullable(),
   blocks: z.array(Block).optional(),
 });
 
@@ -162,6 +170,8 @@ export interface DispatchReads {
   issue(key: string): Promise<unknown>;
   /** `GET /api/v1/issues/{key}/artifacts`: every document, its versions and its approval. */
   issueArtifacts(key: string): Promise<unknown>;
+  /** `GET /api/v1/artifacts/{id}`: one document and its approval, or null when it is gone. */
+  artifact(artifactId: string): Promise<unknown>;
   /** `GET /api/v1/projects/{key}/artifacts?unlinked=true`: the project's own documents. */
   projectDocuments(project: string): Promise<unknown>;
   /** `GET /api/v1/artifacts/{id}/text?blocks=true`. */
@@ -258,15 +268,25 @@ async function written(write: () => Promise<unknown>): Promise<WriteOutcome> {
  * The reads and writes against the Dispatch `config` names, every request through `fetchImpl`
  * (the logging fetch). Each call gets a client of its own, since a client's deadline runs from its
  * construction. Reads the client has no method for go around it with the credential's own
- * headers, as `ask-census.ts`'s `get` does.
+ * headers, as `ask-census.ts`'s `get` does. Each write acts as `session` (`DISPATCH_SESSION_ID`);
+ * with no session there are no writes.
  */
 export function liveDispatch(
   config: DispatchConfig,
-  fetchImpl: typeof fetch
-): { reads: DispatchReads; writes: DispatchWrites } {
+  fetchImpl: typeof fetch,
+  session: string
+): { reads: DispatchReads; writes: DispatchWrites };
+export function liveDispatch(
+  config: DispatchConfig,
+  fetchImpl: typeof fetch,
+  session?: string
+): { reads: DispatchReads; writes: DispatchWrites | undefined };
+export function liveDispatch(
+  config: DispatchConfig,
+  fetchImpl: typeof fetch,
+  session?: string
+): { reads: DispatchReads; writes: DispatchWrites | undefined } {
   const client = () => new DispatchClient(config.url, config.credential, fetchImpl);
-  // An empty DISPATCH_SESSION_ID names no session, as an unset one does.
-  const actor = { kind: "session", id: process.env.DISPATCH_SESSION_ID || "unknown" };
 
   /** One read around the client: the parsed body for a status `accept` admits, or null for 404
    *  where `absent` says a missing thing is an answer. */
@@ -314,6 +334,10 @@ export function liveDispatch(
     issue: (key) => named("GET /api/v1/issues/{key}", () => client().getIssue(key)),
     issueArtifacts: (key) =>
       named("GET /api/v1/issues/{key}/artifacts", () => client().listIssueArtifacts(key)),
+    artifact: (id) =>
+      named("GET /api/v1/artifacts/{id}", () =>
+        get(`/api/v1/artifacts/${segment(id)}`, { absent: [404] })
+      ),
     projectDocuments: (project) =>
       named("GET /api/v1/projects/{key}/artifacts", () =>
         client().listProjectArtifacts(project, true)
@@ -341,6 +365,8 @@ export function liveDispatch(
       ),
   };
 
+  if (session === undefined) return { reads, writes: undefined };
+  const actor = { kind: "session", id: session };
   const writes: DispatchWrites = {
     edit: (artifactId, ops, token, summary) =>
       written(() =>

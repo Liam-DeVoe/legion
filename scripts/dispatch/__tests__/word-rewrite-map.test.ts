@@ -84,6 +84,23 @@ describe("the map", () => {
     }
   });
 
+  test("a renamed Go test's name is gated at the contract version.json records, read and not written down", () => {
+    for (const old of [
+      "TestAParkedDecisionKeepsItsDecisionThroughTheRow",
+      "TestAnOperatorsResumeRefusedByTheParkedClaimLeavesItsWakeItsTurn",
+    ]) {
+      expect(entry(old).from).toEqual({ contract: readContract(ROOT) });
+      expect(applies(entry(old), reach(RECORDED - 1))).toBe(false);
+      expect(applies(entry(old), reach(RECORDED))).toBe(true);
+      const text = `go test -run '${old}' ./internal/daemon/`;
+      const start = text.indexOf(old) + old.indexOf("Parked");
+      expect(nameAt(text, start, start + 4, builtInMap(RECORDED))?.new).toBe(entry(old).new);
+    }
+    expect(entry("TestAnOperatorsResumeRefusedByTheParkedClaimLeavesItsWakeItsTurn").new).toBe(
+      "TestAnOperatorsResumeRefusedByTheDelayedClaimLeavesItsWakeItsTurn"
+    );
+  });
+
   test("an entry from now (an --extra-map row) applies everywhere", () => {
     const [extra] = parseExtraMap(
       '{"old":"OLD-NAME","new":"NEW-NAME","codeName":true,"from":"merged"}\n'

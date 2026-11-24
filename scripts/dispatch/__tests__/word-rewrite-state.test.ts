@@ -12,11 +12,11 @@ import {
   newestEventId,
   parseState,
   type RunState,
-  readStateDocument,
   STATE_BOUND_BYTES,
   StateTooLarge,
   serializeState,
   stateBytes,
+  type WaitingItem,
 } from "../word-rewrite/state.ts";
 import { verdictKey } from "../word-rewrite/verdicts.ts";
 import {
@@ -26,21 +26,15 @@ import {
   FakeModel,
   fixture,
   input,
+  keptState,
   options,
   promptParagraph,
   rewriteByRules,
   rewritingModel,
+  STATE_DOCUMENT as STATE,
+  TOOL_SESSION,
+  writeOptions,
 } from "./word-rewrite-fake.ts";
-
-const SUMMARY = "INFRA-2017: the word is replaced by what happened";
-const STATE = { project: "SEED", slug: "rewrite-state-md" } as const;
-
-const writeOptions = (overrides = {}) =>
-  options({ mode: "write", summary: SUMMARY, stateDocument: STATE, ...overrides });
-
-async function keptState(dispatch: FakeDispatch): Promise<RunState> {
-  return (await readStateDocument(dispatch.reads(), STATE)).state;
-}
 
 describe("the state between runs", () => {
   test("a run that ends after its first project leaves a state the next goes on from, judging no item twice", async () => {
@@ -126,7 +120,6 @@ describe("the state between runs", () => {
     const issue = dispatch.issue("SEED", "Waits on the release");
     const held = dispatch.document({ issue: issue.key }, "notes.md", input("notes"));
     const write: HeldWrite = {
-      kind: "i",
       project: "SEED",
       issue: issue.key,
       id: held.id,
@@ -212,13 +205,16 @@ describe("the state between runs", () => {
   });
 
   test("a run with nothing new to keep writes no state at all", async () => {
+    // The state a write-mode run left: its own cursor is the cursor, and no event came since.
     const dispatch = new FakeDispatch();
     const kept = dispatch.document({ project: "SEED" }, "rewrite-state.md", "");
     kept.markdown = serializeState({
       ...emptyState(),
       cursor: dispatch.log.length,
+      writeCursor: dispatch.log.length,
       whole: true,
       finished: ["SEED"],
+      sessions: [TOOL_SESSION.id],
     });
     const run = deps(dispatch, { model: rewritingModel() });
     expect(await runTool(writeOptions({ projects: ["SEED"] }), run)).toBe(0);
@@ -238,7 +234,8 @@ describe("the state between runs", () => {
     const credential = { scheme: "Bearer", headers: () => ({}), secret: () => "" } as const;
     const { writes } = liveDispatch(
       { url: "http://dispatch.test", credential },
-      Object.assign(answer, { preconnect: fetch.preconnect })
+      Object.assign(answer, { preconnect: fetch.preconnect }),
+      TOOL_SESSION.id
     );
     const content = serializeState(emptyState());
     expect((await writes.uploadState("SEED", "rewrite-state.md", content, null)).ok).toBe(true);
@@ -271,11 +268,17 @@ describe("the state between runs", () => {
     ).toBe(true);
   });
 
-  test("state-document.json, the captured state, reads back", () => {
+  test("state-document.json: Dispatch serves the state as it was uploaded, and a state of an older shape is refused, not read as empty", () => {
+    // The capture uploaded a state the serializer of its day made (its held write still named
+    // its kind, and the state named no sessions): Dispatch kept it byte for byte, one fenced line
+    // of JSON, which today's reader refuses rather than take for an empty state.
     const captured = fixture("state-document.json") as { markdown: string };
-    const state = parseState(captured.markdown);
-    expect(state.whole).toBe(true);
-    expect(serializeState(state)).toBe(captured.markdown);
+    const [fence, json, close, end] = captured.markdown.split("\n");
+    expect([fence, close, end]).toEqual(["```json", "```", ""]);
+    expect(JSON.stringify(JSON.parse(json ?? ""))).toBe(json);
+    expect(() => parseState(captured.markdown)).toThrow();
+    const today = { ...emptyState(), cursor: 93, whole: true, sessions: [TOOL_SESSION.id] };
+    expect(parseState(serializeState(today))).toEqual(today);
   });
 
   test("19,000 verdicts, 200 held writes and 22 projects serialize under 900 KiB; one past it is refused", () => {
@@ -283,7 +286,6 @@ describe("the state between runs", () => {
     for (let index = 0; index < 19_000; index += 1)
       state.verdicts.set(verdictKey("item", String(index), 0), "t");
     state.held = Array.from({ length: 200 }, (_, index) => ({
-      kind: "i" as const,
       project: "SEED",
       issue: `SEED-${index + 1}`,
       id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
@@ -312,7 +314,7 @@ describe("the state between runs", () => {
         project: "SEED",
         issue: `SEED-${index + 1}`,
         id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
-        gate: "c241",
+        gate: "c241" as WaitingItem["gate"],
       }));
     state.waiting = waiting(1_000);
     expect(stateBytes(state)).toBeLessThan(STATE_BOUND_BYTES);
@@ -520,7 +522,6 @@ describe("report mode's counts", () => {
     const dispatch = new FakeDispatch();
     const issue = dispatch.issue("SEED", input("title"));
     const held: HeldWrite = {
-      kind: "t",
       project: "SEED",
       issue: issue.key,
       id: issue.key,
@@ -622,7 +623,7 @@ describe("an occurrence whose two answers fail", () => {
     expect(await runTool(writeOptions(), first)).toBe(0);
     expect(model.prompts).toHaveLength(2);
     expect(first.lines).toContain("model-calls first=1 second=1 again=0 judged-again=0");
-    expect(first.lines.some((line) => line.endsWith(" judge-refused"))).toBe(true);
+    expect(first.lines.some((line) => line.includes(" judge-refused item="))).toBe(true);
     expect(first.lines).toContain("judge-refused 1");
     const saved = await keptState(dispatch);
     expect([...saved.verdicts.values()]).toEqual(["j"]);
@@ -632,14 +633,17 @@ describe("an occurrence whose two answers fail", () => {
     expect(saved.held).toEqual([]);
     expect(notes.version).toBe(1);
 
-    // A later report that does not read the item lists it from the state.
+    // A later report reads the item, and lists it by its code, with its item, its key and its
+    // offset in its paragraph; it counts as not judged.
     clock.time += 15 * 60_000;
     const report = deps(dispatch, { clock });
     expect(await runTool(options({ stateDocument: STATE }), report)).toBe(0);
+    const key = saved.refused[0]?.key;
     expect(report.lines).toContain(
-      `occurrence project=SEED issue=- item=${notes.id} key=${saved.refused[0]?.key} judge-refused from=state`
+      `occurrence kind=project-document project=SEED issue=- document=notes-md byte=${Buffer.byteLength("The notes say it was ")} judge-refused item=${notes.id} key=${key} at=${"The notes say it was ".length}`
     );
     expect(report.lines).toContain("judge-refused 1");
+    expect(report.lines).toContain("not-judged 1");
 
     // A later write run that reads it asks nothing about it.
     const whole = deps(dispatch, { model, clock });
@@ -692,7 +696,18 @@ describe("the state's contents", () => {
     expect(state.waiting.length).toBe(1);
     expect(state.refused.length).toBe(1);
 
-    const FIELDS = ["v", "cursor", "whole", "finished", "verdicts", "held", "waiting", "refused"];
+    const FIELDS = [
+      "v",
+      "cursor",
+      "write_cursor",
+      "whole",
+      "finished",
+      "verdicts",
+      "held",
+      "waiting",
+      "refused",
+      "sessions",
+    ];
     const ITEM_FIELDS = ["k", "p", "i", "id", "keys", "r", "g"];
     const VALUE =
       /^([0-9a-f]{32}|[A-Z][A-Z0-9]*|[A-Z][A-Z0-9]*-[1-9][0-9]*|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z]|c[1-9][0-9]*)$/;
@@ -769,5 +784,215 @@ describe("the newest id of the event log", () => {
     const run = deps(dispatch, { clock: new FakeClock(), model: rewritingModel() });
     expect(await runTool(writeOptions(), run)).toBe(0);
     expect((await keptState(dispatch)).cursor).toBe(newest);
+  });
+});
+
+/** A fully read state at the log's head now (its own document's creation included), which a run
+ *  after the whole read starts from. */
+function readState(dispatch: FakeDispatch, extra: Partial<RunState> = {}): void {
+  const kept = dispatch.document({ project: "SEED" }, "rewrite-state.md", "");
+  const cursor = dispatch.log.length;
+  kept.markdown = serializeState({
+    ...emptyState(),
+    cursor,
+    writeCursor: cursor,
+    whole: true,
+    finished: ["SEED"],
+    sessions: [TOOL_SESSION.id],
+    ...extra,
+  });
+}
+
+describe("the cursor (spec version 32)", () => {
+  test("an event logged after a run's first read of an item is read by the next run", async () => {
+    const dispatch = new FakeDispatch();
+    const first = dispatch.document({ project: "SEED" }, "first.md", "First.\n");
+    const later = dispatch.document({ project: "SEED" }, "later.md", "Later.\n");
+    readState(dispatch);
+    dispatch.editAsOther(first.id, "First.", "The first.");
+    const firstEvent = dispatch.log.length;
+    const base = dispatch.reads();
+    let edited = false;
+    const reads = {
+      ...base,
+      text: async (id: string) => {
+        // Another session edits a document while the run reads its first item.
+        if (!edited) {
+          edited = true;
+          dispatch.editAsOther(later.id, "Later.", input("notes").trimEnd());
+        }
+        return base.text(id);
+      },
+    };
+    expect(await runTool(writeOptions(), deps(dispatch, { reads, model: rewritingModel() }))).toBe(
+      0
+    );
+    expect((await keptState(dispatch)).cursor).toBe(firstEvent);
+    expect(later.version).toBe(2);
+
+    dispatch.calls.length = 0;
+    const next = deps(dispatch, { model: rewritingModel() });
+    expect(await runTool(writeOptions(), next)).toBe(0);
+    expect(dispatch.calls).toContain(`text ${later.id}`);
+    expect(later.version).toBe(3);
+  });
+});
+
+describe("a read that fails mid-run (simplify defect 2)", () => {
+  test("leaves the cursor where it was, and the next run reads the evented items again", async () => {
+    const dispatch = new FakeDispatch();
+    const one = dispatch.document({ project: "SEED" }, "one.md", "One.\n");
+    const two = dispatch.document({ project: "SEED" }, "two.md", "Two.\n");
+    readState(dispatch);
+    const cursor = (await keptState(dispatch)).cursor;
+    dispatch.editAsOther(one.id, "One.", "The one.");
+    dispatch.editAsOther(two.id, "Two.", "The two.");
+    dispatch.failingCalls.add(`text ${two.id}`);
+    const failed = deps(dispatch, { model: rewritingModel() });
+    expect(await runTool(writeOptions(), failed)).toBe(2);
+    expect(failed.lines.at(-1)).toBe(`unavailable: GET (fake) text ${two.id} transport`);
+    expect((await keptState(dispatch)).cursor).toBe(cursor);
+
+    dispatch.failingCalls.clear();
+    dispatch.calls.length = 0;
+    expect(await runTool(writeOptions(), deps(dispatch, { model: rewritingModel() }))).toBe(0);
+    expect(dispatch.calls).toContain(`text ${one.id}`);
+    expect(dispatch.calls).toContain(`text ${two.id}`);
+  });
+
+  test("leaves the held-back writes in the state for the next run", async () => {
+    const dispatch = new FakeDispatch();
+    const one = dispatch.document({ project: "SEED" }, "one.md", input("notes"));
+    const two = dispatch.document({ project: "SEED" }, "two.md", input("beta"));
+    const held = [one, two].map((document) => ({
+      project: "SEED",
+      issue: null,
+      id: document.id,
+      keys: [],
+      retry: false,
+    }));
+    readState(dispatch, { held });
+    dispatch.failingCalls.add("projectDocuments SEED");
+    expect(await runTool(writeOptions(), deps(dispatch, { model: rewritingModel() }))).toBe(2);
+    expect((await keptState(dispatch)).held.map((write) => write.id)).toEqual([one.id, two.id]);
+
+    dispatch.failingCalls.clear();
+    const clock = new FakeClock();
+    expect(await runTool(writeOptions(), deps(dispatch, { model: rewritingModel(), clock }))).toBe(
+      0
+    );
+    expect(one.version).toBe(2);
+  });
+});
+
+describe("the reads of a run after the whole read (simplify defects 1 and 3)", () => {
+  test("the items events name are read at most four at a time", async () => {
+    const dispatch = new FakeDispatch();
+    const issues = Array.from({ length: 10 }, (_, index) =>
+      dispatch.issue("SEED", `Issue ${index}`)
+    );
+    readState(dispatch);
+    for (const issue of issues) dispatch.touch(issue.key);
+    const base = dispatch.reads();
+    let inFlight = 0;
+    let most = 0;
+    const reads = {
+      ...base,
+      issue: async (key: string) => {
+        inFlight += 1;
+        most = Math.max(most, inFlight);
+        // Each read yields a few turns, so the other reads that may run beside it start.
+        for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
+        inFlight -= 1;
+        return base.issue(key);
+      },
+    };
+    expect(await runTool(options({ stateDocument: STATE }), deps(dispatch, { reads }))).toBe(0);
+    expect(dispatch.calls.filter((call) => call.startsWith("issue "))).toHaveLength(10);
+    expect(most).toBeGreaterThan(1);
+    expect(most).toBeLessThanOrEqual(4);
+  });
+
+  test("each issue is read once however many of its items are held, and each project's documents are listed once", async () => {
+    const dispatch = new FakeDispatch();
+    const issue = dispatch.issue("SEED", "An issue");
+    const docs = ["a.md", "b.md"].map((name) =>
+      dispatch.document({ issue: issue.key }, name, "Text.\n")
+    );
+    const projectDocs = ["c.md", "d.md"].map((name) =>
+      dispatch.document({ project: "SEED" }, name, "Text.\n")
+    );
+    const held = [
+      { project: "SEED", issue: issue.key, id: issue.key, keys: [], retry: false },
+      ...docs.map((doc) => ({
+        project: "SEED",
+        issue: issue.key,
+        id: doc.id,
+        keys: [],
+        retry: false,
+      })),
+      ...projectDocs.map((doc) => ({
+        project: "SEED",
+        issue: null,
+        id: doc.id,
+        keys: [],
+        retry: false,
+      })),
+    ];
+    readState(dispatch, { held });
+    dispatch.calls.length = 0;
+    const run = deps(dispatch, { model: rewritingModel() });
+    expect(await runTool(writeOptions(), run)).toBe(0);
+    expect(dispatch.calls.filter((call) => call === `issue ${issue.key}`)).toHaveLength(1);
+    expect(dispatch.calls.filter((call) => call === "projectDocuments SEED")).toHaveLength(1);
+    expect(run.lines).toContain("items-read 5");
+  });
+});
+
+describe("the state a write run keeps", () => {
+  test("write mode's --whole writes its --state copy too (simplify defect 4)", async () => {
+    const dispatch = new FakeDispatch();
+    dispatch.document({ project: "SEED" }, "notes.md", input("notes"));
+    const directory = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "word-rewrite-whole-"));
+    try {
+      const file = join(directory, "state.md");
+      const run = deps(dispatch, { model: rewritingModel() });
+      expect(await runTool(writeOptions({ whole: true, stateFile: file }), run)).toBe(0);
+      expect(existsSync(file)).toBe(true);
+      expect(parseState(readFileSync(file, "utf8")).sessions).toEqual([TOOL_SESSION.id]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("write mode saves its session's id before its first write, so a write whose later save fails is still its own edit", async () => {
+    const dispatch = new FakeDispatch();
+    const notes = dispatch.document({ project: "SEED" }, "notes.md", input("notes"));
+    readState(dispatch, { sessions: [], whole: false, finished: [] });
+    const writes = dispatch.writes();
+    const order: string[] = [];
+    let saves = 0;
+    const run = deps(dispatch, {
+      model: rewritingModel(),
+      writes: {
+        ...writes,
+        edit: (...args) => {
+          order.push("edit");
+          return writes.edit(...args);
+        },
+        uploadState: (...args) => {
+          order.push("uploadState");
+          saves += 1;
+          // Every save after the first is refused, as when another run saved in between.
+          return saves === 1
+            ? writes.uploadState(...args)
+            : Promise.resolve({ ok: false, status: 409, code: "PRECONDITION_FAILED" });
+        },
+      },
+    });
+    expect(await runTool(writeOptions(), run)).toBe(1);
+    expect(order.slice(0, 2)).toEqual(["uploadState", "edit"]);
+    expect(notes.version).toBe(2);
+    expect((await keptState(dispatch)).sessions).toEqual([TOOL_SESSION.id]);
   });
 });

@@ -5,6 +5,7 @@ import {
   approvalSkip,
 } from "./approval-skips.ts";
 import type { Block } from "./dispatch-api.ts";
+import type { Span } from "./judge.ts";
 
 /**
  * The places a program can tell: each occurrence the tool leaves, with the reason the report
@@ -27,7 +28,9 @@ export const PLACE_REASONS = [
   "name-or-slug",
   /** Inside a typed block that is an ask. */
   "ask-block",
-  /** Inside a `check` block, whose change would void the results recorded against it. */
+  /** Inside a `check` block of the issue's Verification document, whose change would void the
+   *  results recorded against it. Dispatch records results only against those checks, so a
+   *  `check` block of any other document is judged as its text is. */
   "check-block",
   /** Inside a typed block's opening line, its id or an attribute: a changed id moves the block. */
   "block-attribute",
@@ -65,6 +68,8 @@ export interface OccurrenceFacts {
   /** Every block whose range holds the occurrence. */
   readonly enclosing: readonly Block[];
   readonly inOpeningLine: boolean;
+  /** Whether the occurrence's document is its issue's Verification document. */
+  readonly verification: boolean;
   readonly author: Author;
   readonly nameNotYet: boolean;
 }
@@ -74,15 +79,25 @@ export function itemPlace(item: ItemFacts): Reason | null {
   if (item.outOfScope) return "credential-scope";
   if (item.thisTree) return "this-tree";
   if (item.closed) return "closed-issue";
-  if (item.approval?.state === "awaiting") return "approval-request";
-  return approvalSkip(item);
+  return approvalPlace(item);
+}
+
+/** The reason a person's approval, or an open request for it, leaves a whole document, or null:
+ *  what a write reads again just before it writes. */
+export function approvalPlace(
+  facts: ApprovalFacts
+): "approval-request" | ApprovalSkipReason | null {
+  if (facts.approval?.state === "awaiting") return "approval-request";
+  return approvalSkip(facts);
 }
 
 /** The reason that leaves one occurrence of an item no item reason leaves, or null. */
 export function occurrencePlace(facts: OccurrenceFacts): PlaceReason | null {
   if (facts.inName) return "name-or-slug";
   if (facts.enclosing.some((block) => block.type === "ask")) return "ask-block";
-  if (facts.enclosing.some((block) => block.type === "check")) return "check-block";
+  if (facts.verification && facts.enclosing.some((block) => block.type === "check")) {
+    return "check-block";
+  }
   if (facts.inOpeningLine) return "block-attribute";
   if (facts.author === "person") return "person";
   if (facts.author === "unknown") return "unknown-author";
@@ -93,14 +108,17 @@ export function occurrencePlace(facts: OccurrenceFacts): PlaceReason | null {
 /** A Dispatch link to a document, whose slug no one can change. */
 const ARTIFACT_LINK = /dispatch:\/\/[^\s)\]>"'`]*?\/artifact\/([A-Za-z0-9._-]+)/g;
 
-/** Whether the text from `start` to `end` lies in the slug of a document link. */
-export function inArtifactSlug(text: string, start: number, end: number): boolean {
-  for (const link of text.matchAll(ARTIFACT_LINK)) {
-    const slug = link[1] ?? "";
-    const slugStart = link.index + link[0].length - slug.length;
-    if (start >= slugStart && end <= slugStart + slug.length) return true;
-  }
-  return false;
+/** The spans of the slugs of a text's document links, read once per text. */
+export function artifactSlugSpans(text: string): Span[] {
+  return [...text.matchAll(ARTIFACT_LINK)].map((link) => {
+    const end = link.index + link[0].length;
+    return { start: end - (link[1] ?? "").length, end };
+  });
+}
+
+/** Whether the text from `start` to `end` lies in one of the slugs `artifactSlugSpans` found. */
+export function inArtifactSlug(slugs: readonly Span[], start: number, end: number): boolean {
+  return slugs.some((slug) => start >= slug.start && end <= slug.end);
 }
 
 const FENCE = Buffer.from(":::");
