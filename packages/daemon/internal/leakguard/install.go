@@ -392,7 +392,9 @@ func unpackServed(body []byte, dir string) (int, error) {
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return files, err
 			}
-			if err := writeMember(target, archive, header.FileInfo().Mode().Perm()); err != nil {
+			// GitHub's tarball carries git archive's modes, made under its tar.umask of 002: the
+			// member keeps the mode umask 022 gave it, the archive's less group and other write.
+			if err := writeMember(target, archive, header.FileInfo().Mode().Perm()&^0o022); err != nil {
 				return files, err
 			}
 			files++
