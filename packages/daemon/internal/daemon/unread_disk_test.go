@@ -427,7 +427,10 @@ func TestAKeptPodIsReadAgainAfterARoleOfItRanAgain(t *testing.T) {
 		ran  string
 	}{
 		{"a_start_since_the_read", `update claims set last_start_row = last_start_row + 100 where token = $1`},
-		{"a_turn_since_the_read", `update claims set last_turn_start = now() where token = $1`},
+		// The turn starts a second after the decline's read began, by the daemon's clock, which the
+		// rig does not hold to the database's.
+		{"a_turn_since_the_read", `update claims set last_turn_start = (select checked_at + interval '1 second'
+			from idle_release_declines d where d.issue = claims.issue) where token = $1`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig, publisher := noRoleRig(t, false)
