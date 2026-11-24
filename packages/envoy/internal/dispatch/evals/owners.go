@@ -202,6 +202,33 @@ func viaAsRead(via string) string {
 	return `case when o.via then ` + via + ` else 0 end`
 }
 
+// ownedKeys is the condition that a row of eval_days or eval_day_members (alias) stands under one of
+// the keys the projects read (eval_project_owners), where projects is the condition on
+// eval_project_owners.project_key that names them (`= $1`, `= any($1::text[])`). A read joins
+// eval_project_owners o on alias.project_key = o.owner, and the planner joins the view by a hash,
+// which carries that equality into no index condition of the table: without this condition a read
+// of a repository's rows takes every project's rows of that repository and of the days through its
+// index on (project_key, repo, day), and the items read of one eval merges every project's rows of
+// it. The array is one InitPlan, so each index range of the read is bounded by the keys. Measured at
+// INFRA's size on the build farm, the eval list's 84-day read of one repository with a compare
+// range took 93 to 132 ms (median 125, 8 fresh connections) of execution without it and 92 to
+// 131 ms (median 99) with it and its values in the plan (DayWindowIn); on the pod, at a tenth of
+// that size, it reads 8,985 + 9,272 heap rows for the 8,985 + 9,272 it keeps where it read
+// 13,417 + 9,372, and the items read of one eval takes 3.4 ms where it took 455 ms.
+func ownedKeys(alias, projects string) string {
+	return alias + `.project_key = any(array(select owner from eval_project_owners where project_key ` + projects + `))`
+}
+
+// repoCut is the condition that a row (alias) read through eval_project_owners o is one of the
+// repositories repos (a text[] expression) names: a row of one of them, or a row of the project's
+// own stored under legionfacts.DefaultRepo where project (an expression of its key) publishes one
+// of them as its default (eval_project_repos), since such a row is one of that repository. A read
+// that names no repository adds none of it.
+func repoCut(alias, repos, project string) string {
+	return `(` + alias + `.repo = any(` + repos + `) or (` + alias + `.repo = '` + legionfactsDefault + `' and ` + alias + `.project_key = o.project_key and exists (
+		select 1 from eval_project_repos p where p.project_key = ` + project + ` and p.repo = any(` + repos + `))))`
+}
+
 // ownedDayColumns is dayColumns of a day row d read through eval_project_owners o: the row as the
 // project o names reads it, under its own key and its eval id of the row's slug, its
 // via_repository as that project reads it (viaAsRead).

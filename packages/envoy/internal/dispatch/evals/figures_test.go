@@ -1453,7 +1453,15 @@ func (r rig) measured(t *testing.T, sent []pgx.TraceQueryStartData) []sentStatem
 			}
 			oids, described[data.SQL] = description.ParamOIDs, description.ParamOIDs
 		}
-		statements[index] = sentStatement{sql: data.SQL, args: data.Args, oids: oids, bytes: encodedBytes(t, oids, data.Args)}
+		// A statement that names its exec mode carries it as its first argument (pgx.QueryExecMode),
+		// which pgx takes and sends no parameter for.
+		args := data.Args
+		if len(args) > 0 {
+			if _, mode := args[0].(pgx.QueryExecMode); mode {
+				args = args[1:]
+			}
+		}
+		statements[index] = sentStatement{sql: data.SQL, args: args, oids: oids, bytes: encodedBytes(t, oids, args)}
 	}
 	return statements
 }

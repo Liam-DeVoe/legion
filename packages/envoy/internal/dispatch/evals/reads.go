@@ -300,15 +300,16 @@ func (s *Store) EvalDays(ctx context.Context, definition Definition, deployRepo,
 // the published defaults (eval_project_owners, owners.go), each read under the project's key and
 // its eval id of the row's slug, and the rows several owners hold of one series, repository and
 // day added into one (addOwnedRows). It is the items route's read of an eval's day rows: one range
-// of eval_days' primary key for each owner.
+// of eval_days' primary key for each owner, bounded by the owner keys (ownedKeys).
 func EvalDaysIn(ctx context.Context, q delivery.Querier, definition Definition, deployRepo, series string, repos []string, window Range) ([]DayRow, error) {
+	cut := `d.repo = any($5)`
 	if len(repos) == 0 {
 		repos = []string{""}
+	} else {
+		cut = repoCut("d", "$5", "$1")
 	}
-	filter := `o.project_key = $1 and d.eval_id = o.owner || substr($2, length($1) + 1) and d.writer = $3 and d.deploy_repo = $4
-		and (d.repo = any($5) or (d.repo = '` + legionfactsDefault + `' and d.project_key = o.project_key and exists (
-			select 1 from eval_project_repos p where p.project_key = $1 and p.repo = any($5))))
-		and d.day >= $6::date and d.day < $7::date`
+	filter := `o.project_key = $1 and ` + ownedKeys("d", "= $1") + ` and d.eval_id = o.owner || substr($2, length($1) + 1)
+		and d.writer = $3 and d.deploy_repo = $4 and ` + cut + ` and d.day >= $6::date and d.day < $7::date`
 	args := []any{definition.ProjectKey, definition.EvalID, definition.writer(), DeployRepoOf(definition, deployRepo), repos, window.From.UTC(), window.To.UTC()}
 	if series != "" {
 		args = append(args, series)
@@ -344,12 +345,11 @@ type Counted struct {
 // defaults (eval_project_owners, owners.go). An items read answers them, so it lists
 // the items the window's numbers fold.
 func CountedIn(ctx context.Context, q delivery.Querier, project, family, deployRepo string, repos []string, window Range) ([]Counted, error) {
-	filter := `m.family = $2 and m.deploy_repo = $3 and m.day >= $4::date and m.day < $5::date`
+	filter := ownedKeys("m", "= $1") + ` and m.family = $2 and m.deploy_repo = $3 and m.day >= $4::date and m.day < $5::date`
 	args := []any{project, family, deployRepo, window.From.UTC(), window.To.UTC()}
 	if len(repos) > 0 {
 		args = append(args, repos)
-		filter += ` and (m.repo = any($6) or (m.repo = '` + legionfactsDefault + `' and m.project_key = o.project_key and exists (
-			select 1 from eval_project_repos p where p.project_key = $1 and p.repo = any($6))))`
+		filter += ` and ` + repoCut("m", "$6", "$1")
 	}
 	rows, err := q.Query(ctx, `
 		select m.row_key, m.repo, m.shipped_by, m.day
@@ -400,11 +400,15 @@ func (s *Store) DayWindow(ctx context.Context, projects []string, entries []Entr
 // project's eval id of its slug and its via_repository as the project reads it (viaAsRead): a
 // selection at read time too, which a move of a default repository rewrites no row for. A project
 // and an owner key can each hold a row of one series and day, and the folds add the two as they
-// add two days' (WindowRow is a part, not a day). A row stored under the Legion default
-// (legionfactsDefault) is read under the projects named as well as under o's project: the
-// planner joins o by a hash and cannot carry d.project_key = o.project_key into one arm of the
-// repository's OR, so without the named projects that arm's index range reads every project's
-// default rows (13,417 heap rows for 9,070 kept, on the pod at a tenth of INFRA's size).
+// add two days' (WindowRow is a part, not a day). Each index range is bounded by the keys the
+// projects read (ownedKeys), and a read that names repositories reads, besides their rows, the
+// projects' own rows stored under the Legion default where they publish one of them (repoCut).
+//
+// The statement is planned with its values each time it runs (pgx.QueryExecModeDescribeExec), as
+// refs' read of several blocks is: a connection's prepared statement takes a generic plan from its
+// sixth run where Postgres prices it no dearer, and that plan, which knows neither the projects nor
+// the evals, read the 84-day repository read on the build farm in 183 to 227 ms where the plan
+// with its values took 96 to 124 ms.
 //
 // A row answers what the folds and the answer read and nothing more (WindowRow), since what the
 // read costs is the bytes it sends: no project, repository, listing or build, but the owner it is
@@ -429,8 +433,11 @@ func (s *Store) DayWindow(ctx context.Context, projects []string, entries []Entr
 // read, every run reads the one moment the answer's other reads read, as one statement would; on
 // the pool, or in a transaction at read committed, each reads the rows that stand when it runs.
 func DayWindowIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepo string, repos []string, window Range, compare *Range) ([]WindowRow, error) {
+	cut := `d.repo = any($2)`
 	if len(repos) == 0 {
 		repos = []string{""}
+	} else {
+		cut = repoCut("d", "$2", "o.project_key")
 	}
 	ranged := func(inWindow string, from, to int) string {
 		return `select ` + inWindow + `, eval_id, series, day, n, sum, num, den, max,
@@ -444,9 +451,8 @@ func DayWindowIn(ctx context.Context, q delivery.Querier, projects []string, ent
 					d.n, d.sum, d.num, d.den, d.max, d.samples, d.last_value, d.last_at, d.last_recorded_at, d.last_reading, d.counts,
 					` + viaAsRead("d.via_repository") + ` as via_repository, d.updated_at
 				from eval_project_owners o join eval_days d on d.project_key = o.owner
-				where o.project_key = any($1::text[]) and d.listed
-				  and (d.repo = any($2) or (d.repo = '` + legionfactsDefault + `' and d.project_key = any($1::text[]) and d.project_key = o.project_key and exists (
-					select 1 from eval_project_repos p where p.project_key = o.project_key and p.repo = any($2))))
+				where o.project_key = any($1::text[]) and ` + ownedKeys("d", "= any($1::text[])") + ` and d.listed
+				  and ` + cut + `
 				  and d.day >= $` + strconv.Itoa(from) + `::date and d.day < $` + strconv.Itoa(to) + `::date
 			) owned
 			where eval_id = any($3)
@@ -484,7 +490,7 @@ func DayWindowIn(ctx context.Context, q delivery.Querier, projects []string, ent
 				}
 			}
 		}
-		args := []any{projects, repos, evalIDs, sampledEvals, sampledSeries, computedEvals, lastEvals, lastSeries,
+		args := []any{pgx.QueryExecModeDescribeExec, projects, repos, evalIDs, sampledEvals, sampledSeries, computedEvals, lastEvals, lastSeries,
 			keyedEvals(run), deployRepo, window.From.UTC(), window.To.UTC()}
 		if compare != nil {
 			args = append(args, compare.From.UTC(), compare.To.UTC())
