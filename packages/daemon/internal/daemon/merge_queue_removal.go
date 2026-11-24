@@ -257,14 +257,7 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 	// A message whose telling is recorded (m.told) takes the session the listener forwarded it to
 	// (publishTo), beside the claim as it was read before the publish, as an owner-step does.
 	before := r.supervisedClaim(m.token).Claim
-	var recipient string
-	var published error
-	topic := notify.RoleTopicPrefix + string(m.token)
-	if m.told != nil {
-		recipient, published = r.publishTo(ctx, topic, m.message, m.message, record.OutboxKey(row.ID))
-	} else {
-		published = r.publish(ctx, topic, m.message, m.message, record.OutboxKey(row.ID))
-	}
+	recipient, published := r.publishTo(ctx, notify.RoleTopicPrefix+string(m.token), m.message, m.message, record.OutboxKey(row.ID))
 	switch {
 	case published == nil:
 		if m.told != nil {

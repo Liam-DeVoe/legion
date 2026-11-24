@@ -314,8 +314,9 @@ type recipientPublisher interface {
 }
 
 // publishTo is publish, held back as publish is, that answers the session the listener forwarded
-// the message to where the publisher can say ("" where it cannot): the owner-step's executor
-// records it on the step's run (ownerStepTold).
+// the message to where the publisher can say ("" where it cannot). The executors that record whom
+// a publish reached read it (ownerStepTold, mergeForwardTold); the others publish through it too
+// and leave it unread.
 func (r *outbox) publishTo(ctx context.Context, topic, message string, payload any, dedupeKey string) (string, error) {
 	if err := r.heldBack(ctx, topic, dedupeKey); err != nil {
 		return "", err
@@ -2002,18 +2003,13 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	// before the publish, and the publish answers the session the listener forwarded it to; which
 	// of the two the step's run records is ownerStepTold's.
 	var told supervise.Claim
-	var recipient string
-	var published error
-	topic, summary := notify.RoleTopicPrefix+string(architect), noticeSummary(payload.Kind, row.Issue)
 	if payload.Kind == record.OwnerStepNotice {
 		if holds, err := r.ownerSlotHolds(ctx, row, payload, architect); err != nil || !holds {
 			return err
 		}
 		told = r.supervisedClaim(architect).Claim
-		recipient, published = r.publishTo(ctx, topic, summary, notice, key)
-	} else {
-		published = r.publish(ctx, topic, summary, notice, key)
 	}
+	recipient, published := r.publishTo(ctx, notify.RoleTopicPrefix+string(architect), noticeSummary(payload.Kind, row.Issue), notice, key)
 	if published == nil && payload.OwnerStep != nil {
 		if err := r.ownerStepTold(ctx, row.Issue, *payload.OwnerStep, told, recipient); err != nil {
 			return err
