@@ -22,7 +22,9 @@ import (
 // launching. In-lifetime recovery only rechecks the bound epoch (checkLaunch), so an old launch
 // cannot cross a cleanup confirmation into a later admission. exempt is whether the request that
 // asked for it is one the wake pacing never makes wait (exemptWake); every caller reads it from
-// its own event, so a request that carries no such field is paced.
+// its own event, so a request that carries no such field is paced. turn is the moment the request
+// already reserved for this launch in the pacing (RequestSpawn.Turn), the zero time for every
+// request that reserved none (launchAfter).
 //
 // admitted, where a caller gives one, runs once the admission has bound the claim and before
 // anything else of the start: it is where a caller puts what it may change only for a claim
@@ -36,7 +38,7 @@ import (
 // resume of a claim the project release stopped (resumeByRule): that is the daemon's next boot
 // starting every role of the pods the release deleted at once, which the gate orders as the
 // starts no request raised.
-func (m *Machine) revive(ctx context.Context, exempt, requested bool, admitted func()) error {
+func (m *Machine) revive(ctx context.Context, exempt, requested bool, turn time.Time, admitted func()) error {
 	bound, err := m.deps.Store.AdmitClaim(ctx, m.claim)
 	if err != nil {
 		return err
@@ -45,7 +47,7 @@ func (m *Machine) revive(ctx context.Context, exempt, requested bool, admitted f
 	if admitted != nil {
 		admitted()
 	}
-	return m.launchAfter(ctx, false, exempt, requested, noEnd)
+	return m.launchAfter(ctx, false, exempt, requested, turn, noEnd)
 }
 
 // checkLaunch is the lifecycle recheck every launch makes first: a claim whose tree cleanup is
