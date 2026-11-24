@@ -144,12 +144,13 @@ func keeperStep(ctx context.Context, run func(ctx context.Context) error) error 
 // episode's; the refused asks that end each backoff after it are not. The episode ends at any
 // answer the server gives the request it refused (answeredRequests): a read's answer, a bucket
 // that is not there and every other API error included, or an update's, an API error included;
-// that logs that the grant now covers the bucket, and then the raise's own line, or its failure's.
-// An ask that sends no such request leaves the episode as it is: a read that finds the bucket at
-// its copies, or not there, sends no update and says nothing of a refused one, which a later
-// lowering sends again. So does an ask that draws no answer, a lost one say: it logs its failure
-// as any bucket's does, says nothing of the grant, and the next pass asks again. The episode's
-// backoff is timed on the client's clock (now, WithReconnectErrClock).
+// that logs that the grant now covers the bucket, and then the raise's own line, or its failure's
+// unless the answer is that the bucket is not there. An ask that sends no such request leaves the
+// episode as it is: a read that finds the bucket at its copies, or not there, sends no update and
+// says nothing of a refused one, which a later lowering sends again. So does an ask that draws no
+// answer, a lost one say: it logs its failure as any bucket's does, says nothing of the grant, and
+// the next pass asks again. The episode's backoff is timed on the client's clock (now,
+// WithReconnectErrClock).
 func (c *Client) keepBuckets(ctx context.Context, js nats.JetStreamContext, buckets []string, replicas int, refused refusedBuckets) {
 	if replicas <= 1 {
 		return
