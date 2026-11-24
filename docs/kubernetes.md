@@ -2668,6 +2668,28 @@ A deleted row is a hook's words that no worker reads for that move.
 The counts of moves back a task's row holds (`plan_tasks.backward_moves`) can keep a pair in another order; the release before reads the map and lists only its own pairs in a hook's words, so such a count stays and harms nothing.
 The outbox and the plan rows are shared by every project's daemon on the database, and each statement above takes the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project, since a project key holds no hyphen), so one project can roll back while another stays on this release.
 
+#### Rolling back the release that holds every worker while a merge forward is owed
+
+This release holds the worker of each phase that starts while another role's merge forward of the head is owed, the planner among them, tells the implementer when the merge forward it was asked for is no longer its work, and keeps an ask whose role's claim ended until that role starts again (cybermonklabs/legion#5312).
+It adds no migration: a `merge_forward` row's payload and `pull_requests.merge_forward` are JSON.
+The release before refuses two kinds of `merge_forward` row that this release writes:
+
+- a row whose step is `withdrawn`, which it knows as no step;
+- a hold or a landed row to the planner, since it sends those to the tester, the reviewer and the merger alone (`mergeForwardRoles` in `record/outbox.go`).
+
+Its decode refuses each one (`validateOutboxPayload` in `record/outbox.go`), which is no permanent refusal for that kind (`permanentRefusal` in `internal/daemon/outbox.go`), so it fails the row at every attempt and retries it on its backoff until the roll forward.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+delete from outbox where kind = 'merge_forward' and split_part(issue, '-', 1) = '<PROJECT>'
+  and (payload->>'step' = 'withdrawn' or (payload->>'step' in ('hold', 'landed') and payload->>'role' = 'planner'));
+```
+
+A deleted withdrawal leaves the implementer with the ask it was told is no longer its work; a deleted row to the planner is a hold or a new head the planner does not read.
+`pull_requests.merge_forward` can hold the keys `withdrawn` and `waits`. The release before decodes that column without them (`json.Unmarshal` in `record/store.go`), so it reads a withdrawn ask as one its role still holds, and it never sends an ask that waits for a role's ended claim again.
+For an issue whose ask waits (`merge_forward->>'waits' = 'true'`), have its architect move it back to `implementing`, which drops the ask: the release before asks once for each head, so nothing else asks again.
+The statement takes the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project), so one project can roll back while another stays on this release.
+
 #### Rolling back the release whose owner's plan picks the steps
 
 This release's migration `20261117034837_issue_plans.up.sql` adds three tables, `issue_plans`, `plan_tasks` and `plan_steps`, and two columns, `phases.step_task` and `phases.step_place`.

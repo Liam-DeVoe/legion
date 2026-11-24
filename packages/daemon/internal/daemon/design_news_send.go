@@ -343,10 +343,10 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 	for _, heard := range listened {
 		news := workflow.News{Audience: heard.listener.audience, Tree: heard.issue.Tree, Issue: heard.issue.Key,
 			Phase: heard.issue.Phase, Steps: steps, Gates: heard.tree.gates, OpeningOwed: heard.opening != nil}
-		// The answer of an issue held in accepting names the phases a move back reaches, read from
-		// the issue's task (workflow.LineOf).
+		// The holder form of an issue in accepting answers with a move back, whose phases are read
+		// from the issue's task (moveBackOf).
 		if heard.listener.audience == record.AudienceHolder && heard.issue.Phase == phase.Accepting {
-			if news.Line, err = workflow.LineOf(ctx, records, tx, heard.issue); err != nil {
+			if news.Back, err = moveBackOf(ctx, tx, records, heard.issue); err != nil {
 				return newsAtSend{}, err
 			}
 		}
@@ -532,14 +532,14 @@ func (n newsRecorded) carriedChange(item record.DeliveryNewsItem) (workflow.News
 // sets are read: its record, how it is told (memberTelling: its state, and the issue whose
 // architect holds it in accepting where that is not the tree root's), for a member owed news, the
 // items its holder is owed now (record.OwedNews) and whether its holder row owes the opening, and,
-// for a member in accepting, the line its task walks (workflow.LineOf), whose answer names the
-// phases a move back reaches.
+// for a member the root architect answers itself (workflow.NewsYouAnswer), the phases a move back
+// of it reaches (moveBackOf), which its line names.
 type memberDraft struct {
 	memberTelling
 	issue       record.Issue
 	owed        []record.NewsItem
 	openingOwed bool
-	line        []phase.Phase
+	back        []phase.Phase
 }
 
 // told is the member as the summary names it, given what is recorded: its owed items with their
@@ -551,7 +551,7 @@ type memberDraft struct {
 // with its items and how its holder is told. An owed item the record cannot tell yet
 // (newsRecorded.change) is named by none.
 func (m memberDraft) told(recorded newsRecorded) workflow.NewsMember {
-	member := workflow.NewsMember{Issue: m.issue.Key, Phase: m.issue.Phase, State: m.state, Architect: m.architect, Line: m.line}
+	member := workflow.NewsMember{Issue: m.issue.Key, Phase: m.issue.Phase, State: m.state, Architect: m.architect, Back: m.back}
 	if len(m.owed) > 0 && settlementOf(m.owed, recorded, m.openingOwed) == settleRaise {
 		member.State = workflow.NewsWorkUnchanged
 		return member
@@ -614,14 +614,32 @@ func readTreeMembers(ctx context.Context, tx pgx.Tx, records record.Store, steps
 		} else {
 			draft.state = untoldReason(owed.Untold[member.Key])
 		}
-		if member.Phase == phase.Accepting {
-			if draft.line, err = workflow.LineOf(ctx, records, tx, member); err != nil {
+		if draft.state == workflow.NewsYouAnswer {
+			if draft.back, err = moveBackOf(ctx, tx, records, member); err != nil {
 				return nil, err
 			}
 		}
 		drafts = append(drafts, draft)
 	}
 	return drafts, nil
+}
+
+// moveBackOf is the phases a move back of issue, standing in accepting, reaches: the phases of
+// the steps of its task before the acceptance (workflow.MoveBackTargets over workflow.LineOf),
+// which the answer of its news names. It is the one reader of them for both forms that name that
+// answer, the holder form and the root architect's line for a member it answers itself. A task
+// whose line holds no step before an acceptance is an error, so no news goes out with an answer
+// that names no move back.
+func moveBackOf(ctx context.Context, tx pgx.Tx, records record.Store, issue record.Issue) ([]phase.Phase, error) {
+	line, err := workflow.LineOf(ctx, records, tx, issue)
+	if err != nil {
+		return nil, err
+	}
+	back, err := workflow.MoveBackTargets(line)
+	if err != nil {
+		return nil, fmt.Errorf("the answer to the news of %s in accepting: %w", issue.Key, err)
+	}
+	return back, nil
 }
 
 // memberTelling is how one member owed news is told (readMemberClaims): the state the summary

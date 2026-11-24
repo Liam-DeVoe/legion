@@ -1073,10 +1073,15 @@ type ConflictRead struct {
 // landed message read. Earlier is every merge forward that landed before this ask in the same
 // stretch of work, oldest first: a later ask replaces the one the record holds, so when the head a
 // merge left conflicts in its turn and is merged forward again, Earlier is what still names the
-// head the first merge replaced (PullRequest.MergeForward says how long the stretch lasts). It is
-// stored as the jsonb of pull_requests.merge_forward (migration 20261119003157), null for nil; the
-// jsonb takes Earlier and Role with no migration of their own, and leaves each out while it is
-// empty.
+// head the first merge replaced (PullRequest.MergeForward says how long the stretch lasts).
+// Withdrawn is whether the implementer was told that the ask is no longer its work (workflow's
+// MergeForwardWithdrawn): the merge of the head is owed to nobody then until a role is asked
+// again. Waits is whether the asked role's claim ended while the merge of the head is still owed
+// to it: the workers held for it stay held, and the ask is sent again at that role's next start
+// (workflow's sendWaitingAsk). It is stored as the jsonb of pull_requests.merge_forward (migration
+// 20261119003157), null for nil; the jsonb takes Earlier, Role, Withdrawn and Waits with no
+// migration of their own, and leaves each out while it is empty, and a release before them reads
+// the jsonb without them.
 type MergeForward struct {
 	Head        string               `json:"head"`
 	Base        string               `json:"base"`
@@ -1087,6 +1092,8 @@ type MergeForward struct {
 	Landed      string               `json:"landed,omitempty"`
 	ReviewAsked bool                 `json:"reviewAsked,omitempty"`
 	Earlier     []LandedMergeForward `json:"earlier,omitempty"`
+	Withdrawn   bool                 `json:"withdrawn,omitempty"`
+	Waits       bool                 `json:"waits,omitempty"`
 }
 
 // Asked is the role the ask names: Role, or the implementer for an ask that names none, which a

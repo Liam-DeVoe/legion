@@ -1275,9 +1275,15 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	}
 	working := issue.WorkingPhase()
 	failure := noticeFailure(fact)
+	// A merge owed to the role whose claim failed waits for that role's next start (askWaits),
+	// and the notice its failure sends says so.
+	waits, err := e.askWaits(ctx, tx, *issue, fact.Role)
+	if err != nil {
+		return intake.Result{}, err
+	}
 	if phase.RoleFor(working) != fact.Role {
 		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: failure,
-			Reason: fmt.Sprintf("the %s does not work %s's phase %s; nothing is held", fact.Role, issue.Key, working)})
+			Reason: fmt.Sprintf("the %s does not work %s's phase %s; nothing is held%s", fact.Role, issue.Key, working, waits)})
 	}
 	if issue.Phase == phase.Held {
 		return intake.Result{}, nil
@@ -2275,9 +2281,13 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	// The release puts the issue back in the phase the hold is from, which is no move between
 	// phases, so the merge forward stands as the hold left it; but the worker it starts again is
-	// held as a worker a move starts is, where another role's merge forward of the head is open
-	// (holdStartedWorker). Then it queues the reconcile of the tree's news as a move does after its
+	// held as a worker a move starts is, where the merge of the head is owed to another role
+	// (holdStartedWorker), and an ask that waited for this worker's claim is sent to it again
+	// (sendWaitingAsk). Then it queues the reconcile of the tree's news as a move does after its
 	// start (queueMovedNews).
+	if err := e.sendWaitingAsk(ctx, tx, issue, pr); err != nil {
+		return "", err
+	}
 	if _, err := e.holdStartedWorker(ctx, tx, issue, pr); err != nil {
 		return "", err
 	}

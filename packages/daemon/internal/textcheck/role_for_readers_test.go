@@ -69,7 +69,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/projection/project.go", fn: "Project"}:                  {calls: 1, test: "TestProjectShowsARootsArchitectHandshake"},
 	{file: "internal/record/design_news.go", fn: "untold"}:                   {calls: 1, test: "TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken"},
 	{file: "internal/record/outbox.go", fn: "MergeForwardWorker"}:            {calls: 1, test: "TestAHoldOrALandedGoesToTheWorkerOfThePhaseItNames"},
-	{file: "internal/record/outbox.go", fn: "MergeForwardMessage.Message"}:   {calls: 1, test: "TestAMergeForwardTellsTheWorkerOfThePhaseInEveryOrder"},
+	{file: "internal/record/outbox.go", fn: "MergeForwardMessage.Tells"}:     {calls: 1, test: "TestAMergeForwardTellsTheWorkerOfThePhaseInEveryOrder"},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}:  {calls: 1, test: "TestTheArchitectTaskOfEachShape"},
 	{file: "internal/workflow/catch_up.go", fn: "Engine.readyWorkerTask"}:    {calls: 1, test: "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted"},
 	{file: "internal/workflow/design_news.go", fn: "memberWords"}:            {calls: 1, test: "TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend"},

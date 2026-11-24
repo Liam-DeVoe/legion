@@ -27,6 +27,20 @@ func heldIn(role claim.Role, at phase.Phase, why record.ConflictWhy) record.Merg
 		PullRequest: 42, Why: why}
 }
 
+// withdrawnIn is the implementer's withdrawal of the merge forward of conflictHead onto main, told
+// while the issue stands at at, for why: the message that the merge is no longer its work.
+func withdrawnIn(at phase.Phase, why record.ConflictWhy) record.MergeForwardMessage {
+	return record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardWithdrawn, Head: conflictHead, Base: "main",
+		Phase: at, PullRequest: 42, Why: why}
+}
+
+// mergerAsked is the merger's ask of the merge forward of conflictHead onto main in merging, where
+// the merge comes next.
+func mergerAsked() record.MergeForwardMessage {
+	return record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: conflictHead, Base: "main",
+		Phase: phase.Merging, PullRequest: 42, Why: record.ConflictMergeNext}
+}
+
 // approvesConflictHead is the reviewer's approval of conflictHead, a minute before the first read
 // of the merge state that finds it conflicting.
 func approvesConflictHead(t *testing.T, pool *pgxpool.Pool) {
@@ -246,8 +260,9 @@ func TestAWorkerStartedAgainWhileTheMergeIsOpenIsHeld(t *testing.T) {
 // reviewing. The reviewer's approval of that head starts the tester while the second merge is
 // open, so the tester is held, and its hold tells it not to complete at the head the pull request
 // stands at. A completion of testing at the head the first merge replaced is refused, and the
-// refusal must not send the tester to the head its hold tells it not to complete at: it says the
-// merge is asked and has not landed, and tells the tester to wait for the daemon's landed message.
+// fence's held rule (heldWorker), which picks the refusal that tells the role to wait for the
+// landed message over the one that sends it to the head the pull request stands at, names the
+// tester.
 func TestARefusalTellsATesterHeldAtItsStartToWaitForTheOpenMerge(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	pool := plannedConflictIssue(t, phase.Reviewing, settledGreen("lint"), "implementer", "reviewer", "tester")
@@ -266,21 +281,15 @@ func TestARefusalTellsATesterHeldAtItsStartToWaitForTheOpenMerge(t *testing.T) {
 	if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Head != forwardHead || asked.Landed != "" || asked.Phase != phase.Reviewing {
 		t.Fatalf("the record's merge forward = %+v, want the second ask, of %s in reviewing, not landed", asked, forwardHead)
 	}
+	if worker, held := heldWorker(storedIssue(t, pool, "LEGION-208"), recordedPR(t, pool, "LEGION-208")); !held || worker != claim.RoleTester {
+		t.Errorf("the fence's held rule names %q (held %t), want the tester, whom the hold at its start told to wait", worker, held)
+	}
 
 	result := applyFacts(t, pool, readsAfter(7*time.Minute))("the tester at the first replaced head", intake.HandoffComplete{Generation: 1,
 		Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested", Verdict: "pass", Commit: conflictHead,
 		HandoffRecord: "test-1", HandoffVersion: 1})
 	if code := refusalCode(result); code != "HANDOFF_HEAD_MERGED_FORWARD" {
 		t.Fatalf("the tester's completion at %s was answered %q (%+v), want HANDOFF_HEAD_MERGED_FORWARD", conflictHead, code, result.Refusal)
-	}
-	msg := result.Refusal.Message
-	for _, says := range []string{"onto head " + forwardHead + " is asked and has not landed", "Wait for the daemon's message that this merge landed"} {
-		if !strings.Contains(msg, says) {
-			t.Errorf("the refusal reads %q, want it to say %q", msg, says)
-		}
-	}
-	if says := "do the phase's work at head " + forwardHead; strings.Contains(msg, says) {
-		t.Errorf("the refusal reads %q, want it not to say %q: the tester's hold tells it not to complete at %s", msg, says, forwardHead)
 	}
 }
 
@@ -335,13 +344,12 @@ func TestTheDefaultStepsSendWhatTheySentWhenAReviewedHeadConflicts(t *testing.T)
 // the hold and the landed to the worker of the phase the issue stands in (phase.RoleFor) where it
 // is a role that works the head - the planner, the tester, the reviewer or the merger - and the
 // review to the reviewer whose step already ran, which tells what it decided to the architect and
-// to the worker of that phase. Each row is the recipients a confirmed conflict and the landing of
-// its merge queue, written out. The planner is held and told wherever its step follows the
-// implementer; every other recipient, and how many messages each gets, is as before.
+// to the worker of that phase (record.MergeForwardMessage.Tells), the architect alone in
+// accepting. Each row is the recipients a confirmed conflict and the landing of its merge queue,
+// written out. The planner is held and told wherever its step follows the implementer; every other
+// recipient, and how many messages each gets, is as before.
 func TestAMergeForwardTellsTheWorkerOfThePhaseInEveryOrder(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
-	status := map[phase.Phase]string{phase.Implementing: "in_progress", phase.Planning: "in_progress", phase.Testing: "testing",
-		phase.Reviewing: "needs_review", phase.Accepting: "needs_review", phase.Retro: "retro", phase.Merging: "retro"}
 	for _, tc := range []struct {
 		name  string
 		steps []string // none: no plan rows, today's line
@@ -349,8 +357,8 @@ func TestAMergeForwardTellsTheWorkerOfThePhaseInEveryOrder(t *testing.T) {
 		pr    record.PullRequest
 		ask   []string
 		land  []string
-		// tells is what the review asks the reviewer to tell, where the landing asks one.
-		tells string
+		// tells is the worker the review tells beside the architect, where the landing asks one.
+		tells claim.Role
 	}{
 		{name: "the default steps, implementing", at: phase.Implementing, pr: settledGreen("lint"),
 			ask: []string{"implementer ask"}, land: []string{}},
@@ -359,13 +367,13 @@ func TestAMergeForwardTellsTheWorkerOfThePhaseInEveryOrder(t *testing.T) {
 		{name: "the default steps, reviewing", at: phase.Reviewing, pr: settledGreen("lint"),
 			ask: []string{"implementer ask", "reviewer hold"}, land: []string{"reviewer landed"}},
 		{name: "the default steps, accepting", at: phase.Accepting, pr: askedInReviewing(),
-			ask: []string{}, land: []string{"reviewer review"}, tells: "Then tell the architect what you decided, on its role topic."},
+			ask: []string{}, land: []string{"reviewer review"}},
 		{name: "the default steps, retro", at: phase.Retro, pr: askedInReviewing(),
-			ask: []string{}, land: []string{"reviewer review"}, tells: "Then tell the architect and the implementer what you decided"},
+			ask: []string{}, land: []string{"reviewer review"}, tells: claim.RoleImplementer},
 		{name: "the default steps, merging", at: phase.Merging, pr: settledGreen("lint"),
-			ask: []string{"merger ask"}, land: []string{"merger landed", "reviewer review"}, tells: "Then tell the architect and the merger what you decided"},
+			ask: []string{"merger ask"}, land: []string{"merger landed", "reviewer review"}, tells: claim.RoleMerger},
 		{name: "implementer reviewer tester, testing", steps: []string{"implementer", "reviewer", "tester"}, at: phase.Testing, pr: settledGreen("lint"),
-			ask: []string{"implementer ask", "tester hold"}, land: []string{"tester landed", "reviewer review"}, tells: "Then tell the architect and the tester what you decided"},
+			ask: []string{"implementer ask", "tester hold"}, land: []string{"tester landed", "reviewer review"}, tells: claim.RoleTester},
 		{name: "implementer reviewer tester, reviewing", steps: []string{"implementer", "reviewer", "tester"}, at: phase.Reviewing, pr: settledGreen("lint"),
 			ask: []string{"implementer ask", "reviewer hold"}, land: []string{"reviewer landed"}},
 		{name: "implementer acceptance:owner reviewer, accepting", steps: []string{"implementer", "acceptance:owner", "reviewer"}, at: phase.Accepting, pr: settledGreen("lint"),
@@ -375,12 +383,12 @@ func TestAMergeForwardTellsTheWorkerOfThePhaseInEveryOrder(t *testing.T) {
 		{name: "implementer planner reviewer, planning", steps: []string{"implementer", "planner", "reviewer"}, at: phase.Planning, pr: settledGreen("lint"),
 			ask: []string{"implementer ask", "planner hold"}, land: []string{"planner landed"}},
 		{name: "implementer reviewer planner, planning", steps: []string{"implementer", "reviewer", "planner"}, at: phase.Planning, pr: settledGreen("lint"),
-			ask: []string{"implementer ask", "planner hold"}, land: []string{"planner landed", "reviewer review"}, tells: "Then tell the architect and the planner what you decided"},
+			ask: []string{"implementer ask", "planner hold"}, land: []string{"planner landed", "reviewer review"}, tells: claim.RolePlanner},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var pool *pgxpool.Pool
 			if len(tc.steps) == 0 {
-				pool = seedConflictIssue(t, tc.at, status[tc.at], tc.pr)
+				pool = seedConflictIssue(t, tc.at, PhaseStatus(tc.at), tc.pr)
 			} else {
 				pool = plannedConflictIssue(t, tc.at, tc.pr, tc.steps...)
 			}
@@ -395,11 +403,8 @@ func TestAMergeForwardTellsTheWorkerOfThePhaseInEveryOrder(t *testing.T) {
 				t.Errorf("the landing in %s queued %v, want %v", tc.at, got, tc.land)
 			}
 			for _, message := range landed {
-				if message.Step != record.MergeForwardReview {
-					continue
-				}
-				if told := message.Message("LEGION-208", recordedPR(t, pool, "LEGION-208")); !strings.Contains(told, tc.tells) {
-					t.Errorf("the reviewer's review in %s reads %q, want it to say %q", tc.at, told, tc.tells)
+				if message.Step == record.MergeForwardReview && message.Tells() != tc.tells {
+					t.Errorf("the reviewer's review in %s tells %q beside the architect, want %q", tc.at, message.Tells(), tc.tells)
 				}
 			}
 		})

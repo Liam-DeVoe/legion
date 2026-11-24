@@ -45,12 +45,19 @@ func TestAHoldOrALandedGoesToTheWorkerOfThePhaseItNames(t *testing.T) {
 			})
 		}
 	}
+	// The architect works accepting, and no hold or landed reaches it: the ask's checks-red notice
+	// tells it.
+	for _, step := range []MergeForwardStep{MergeForwardHold, MergeForwardLanded} {
+		if worker, told := MergeForwardWorker(step, phase.Accepting); told || worker != claim.RoleArchitect {
+			t.Errorf("MergeForwardWorker(%s, accepting) = %q, %t; want the architect, told nothing", step, worker, told)
+		}
+	}
 }
 
 // The withdrawal of an ask tells the implementer that the merge forward it was asked for is no
-// longer its work, since the merger is asked for that head (workflow's mergeForward). It goes to
-// the implementer alone, names the head, the base, the phase the issue stands in and the pull
-// request, and names no head that landed.
+// longer its work (workflow's mergeForward and withdrawUnowed). It goes to the implementer alone,
+// names the head, the base, the phase the issue stands in, the pull request and why the act was
+// taken, as the ask and the hold of the same act do, and names no head that landed.
 func TestAWithdrawalGoesToTheImplementerAlone(t *testing.T) {
 	now := time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)
 	withdrawn := MergeForwardWithdrawn
@@ -59,10 +66,11 @@ func TestAWithdrawalGoesToTheImplementerAlone(t *testing.T) {
 		payload MergeForwardMessage
 		taken   bool
 	}{
-		{name: "to the implementer", payload: MergeForwardMessage{Role: claim.RoleImplementer, Step: withdrawn, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42}, taken: true},
-		{name: "to the merger", payload: MergeForwardMessage{Role: claim.RoleMerger, Step: withdrawn, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42}},
-		{name: "to the tester", payload: MergeForwardMessage{Role: claim.RoleTester, Step: withdrawn, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42}},
-		{name: "naming a head that landed", payload: MergeForwardMessage{Role: claim.RoleImplementer, Step: withdrawn, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Merging, PullRequest: 42}},
+		{name: "to the implementer", payload: MergeForwardMessage{Role: claim.RoleImplementer, Step: withdrawn, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext}, taken: true},
+		{name: "to the merger", payload: MergeForwardMessage{Role: claim.RoleMerger, Step: withdrawn, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext}},
+		{name: "to the tester", payload: MergeForwardMessage{Role: claim.RoleTester, Step: withdrawn, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictCheckNotGreen}},
+		{name: "naming a head that landed", payload: MergeForwardMessage{Role: claim.RoleImplementer, Step: withdrawn, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext}},
+		{name: "with no why", payload: MergeForwardMessage{Role: claim.RoleImplementer, Step: withdrawn, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := NewOutboxRow("LEGION-208", tc.payload, now)

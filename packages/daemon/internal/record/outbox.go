@@ -1864,7 +1864,7 @@ const (
 // hold and the landed go to each role that works the head in the
 // workspace every role of the issue shares: the planner, whose step may follow the implementer's,
 // the tester, the reviewer, and the merger, which is held in merging while another role's merge
-// forward of the head stands (workflow's holdWorker).
+// forward of the head stands (workflow's heldWorker, which names the worker a hold told to wait).
 var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
 	MergeForwardAsk:       {claim.RoleImplementer, claim.RoleMerger},
 	MergeForwardHold:      {claim.RolePlanner, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
@@ -1882,9 +1882,10 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 
 // MergeForwardWorker is the worker of the phase at, the role phase.RoleFor gives it, and whether
 // step of a merge forward, a hold or a landed, goes to it (MergeForwardReaches). It is the one rule
-// the workflow addresses the hold and the landed by (workflow's mergeForward, holdWorker and
-// mergeForwardLanded) and a row of either is validated against (validateOutboxPayload): each goes
-// to the worker of the phase it names, and to no other role.
+// the workflow addresses the hold and the landed by (workflow's mergeForward, heldWorker, which
+// the start's hold and the completion fence read, and mergeForwardLanded) and a row of either is
+// validated against (validateOutboxPayload): each goes to the worker of the phase it names, and to
+// no other role.
 func MergeForwardWorker(step MergeForwardStep, at phase.Phase) (claim.Role, bool) {
 	worker := phase.RoleFor(at)
 	return worker, MergeForwardReaches(step, worker)
@@ -1982,9 +1983,10 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // testing, the implementer in retro, the merger in merging; the architect alone in accepting).
 //
 // The withdrawal names the head, the base and the phase the issue stands in, and tells the
-// implementer that the merge forward it was asked for is no longer its work, since the merger is
-// asked for that head, and to merge and push nothing for that ask, with no handoff and no
-// completion for the message.
+// implementer that the merge forward it was asked for is no longer its work - the merger is asked
+// for that head, or the issue moved where the ask no longer stands (workflow's withdrawUnowed) - and
+// to merge and push nothing for that ask, with no handoff and no completion for the message: the
+// daemon asks the role whose merge it is where the next step needs it.
 func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 	pull := fmt.Sprintf("pull request %s#%d", pr.Repo, p.PullRequest)
 	switch p.Step {
@@ -2025,13 +2027,13 @@ func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 			issue, p.Base, pull, p.Head, p.Landed, p.Phase, p.readMerge(), merge)
 	case MergeForwardWithdrawn:
 		return fmt.Sprintf("%s: the merge of %s forward onto head %s of %s is no longer your work."+
-			" The issue stands in %s, and the merger is asked to merge %s forward onto that head."+
-			" Merge nothing for the merge-forward message about head %s, and push no merge of %s for it."+
+			" The issue stands in %s. Merge nothing for the merge-forward message about head %s, and push no merge of %s for it."+
+			" The daemon asks the role whose merge it is when the next step needs the merge."+
 			" Write no handoff and make no completion for this message.",
-			issue, p.Base, p.Head, pull, p.Phase, p.Base, p.Head, p.Base)
+			issue, p.Base, p.Head, pull, p.Phase, p.Head, p.Base)
 	default: // MergeForwardReview, the one step left: validateOutboxPayload admits no other.
 		tell := "the architect what you decided, on its role topic"
-		if worker := phase.RoleFor(p.Phase); worker != "" && worker != claim.RoleArchitect && worker != p.Role {
+		if worker := p.Tells(); worker != "" {
 			tell = fmt.Sprintf("the architect and the %s what you decided, each on its own role topic", worker)
 		}
 		return fmt.Sprintf("%s: the merge of %s forward landed on %s, and the issue stands in %s. The old head is %s, and the new head is %s."+
@@ -2040,6 +2042,20 @@ func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 			" Write no handoff and make no completion for this review. Then tell %s.",
 			issue, p.Base, pull, p.Phase, p.Head, p.Landed, p.readMerge(), p.Landed, tell)
 	}
+}
+
+// Tells is the worker of the phase a review names that the reviewer tells what it decided beside
+// the architect (Message): the role phase.RoleFor gives that phase, the planner, the tester, the
+// implementer in retro or the merger, and "" where that is the architect, in accepting, or the
+// reviewer itself. It is "" for every other step, which tells nobody.
+func (p MergeForwardMessage) Tells() claim.Role {
+	if p.Step != MergeForwardReview {
+		return ""
+	}
+	if worker := phase.RoleFor(p.Phase); worker != claim.RoleArchitect && worker != p.Role {
+		return worker
+	}
+	return ""
 }
 
 // readMerge is how the landed and the review tell their role to read what a landed merge forward
@@ -2612,8 +2628,8 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if landing != (value.Landed != "") {
 			return fmt.Errorf("a merge-forward landed or review names the head that landed, and an ask or a hold names none; a %s names %q", value.Step, value.Landed)
 		}
-		if mergeForwardReason(value.Why, value.Base) == "" && (value.Why != "" || value.Step == MergeForwardAsk || value.Step == MergeForwardHold) {
-			return fmt.Errorf("a merge-forward ask or hold names why the daemon acted, as one of R0's reasons, and a landed or a review names one of them or none, as a withdrawal does; a %s names %q", value.Step, value.Why)
+		if mergeForwardReason(value.Why, value.Base) == "" && (value.Why != "" || !landing) {
+			return fmt.Errorf("a merge-forward ask or hold names why the daemon acted, as one of R0's reasons, and a landed or a review names one of them or none; a %s names %q", value.Step, value.Why)
 		}
 	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
 	// with a warning (the outbox's permanentRefusal). These two it would not: an empty id

@@ -124,7 +124,7 @@ func firstApprovalHolderNews() News {
 // sub-architect that owns it, on the default steps.
 func acceptingHolderNews() News {
 	return News{Audience: record.AudienceHolder, Tree: newsTree, Issue: "LEGION-210", Phase: phase.Accepting,
-		Steps: newsSteps, Gates: newsGates(), Items: []NewsChange{specChanges(4)}, Line: phase.Order}
+		Steps: newsSteps, Gates: newsGates(), Items: []NewsChange{specChanges(4)}, Back: phase.Order[:4]}
 }
 
 // plannerHolderNews is the news of a child's planner, which took spec version 4.
@@ -167,7 +167,7 @@ func treeSummaryNews() News {
 			{Issue: newsTree, Phase: phase.AwaitingPerson, State: NewsAwaitingPerson},
 			{Issue: "LEGION-209", Phase: phase.Implementing, State: NewsSentNow, Items: []NewsChange{specChanges(3)}},
 			{Issue: "LEGION-210", Phase: phase.Testing, State: NewsAtNextStart, Items: []NewsChange{specChanges(4)}},
-			{Issue: "LEGION-211", Phase: phase.Accepting, State: NewsYouAnswer, Items: []NewsChange{specChanges(4)}, Line: phase.Order},
+			{Issue: "LEGION-211", Phase: phase.Accepting, State: NewsYouAnswer, Items: []NewsChange{specChanges(4)}, Back: phase.Order[:4]},
 			{Issue: "LEGION-212", Phase: phase.Reviewing, State: NewsWorkUnchanged},
 			{Issue: "LEGION-213", Phase: phase.Planning, State: NewsAlreadyTaken},
 			{Issue: "LEGION-214", Phase: phase.Admitted, State: NewsAdmitted},
@@ -428,36 +428,19 @@ func TestNewsOfAnItemWhoseReviewHistoryCouldNotBeReadSaysSoAndNotAFirstApproval(
 }
 
 // The architect holding a child in accepting answers its news as its prompt says it answers
-// accepting: by its sign-off, or by a move back to the phase of a step of the child's task before
-// the acceptance, each of them and no other. The control is the default steps, where those are
-// planning, implementing, testing and reviewing.
+// accepting: by its sign-off, or by a move back. The phases the move back names are
+// MoveBackTargets's (TestMoveBackTargetsAreThePhasesOfTheStepsBeforeTheAcceptance).
 func TestNewsToTheArchitectHoldingAnAcceptingIssueEndsWithItsAnswer(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		line []phase.Phase
-		back string
-	}{
-		{name: "control: the default steps", line: phase.Order, back: "move it back to planning, implementing, testing or reviewing, with a reason"},
-		{name: "implementer reviewer acceptance:owner", line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging},
-			back: "move it back to implementing or reviewing, with a reason"},
-		{name: "implementer acceptance:owner tester", line: []phase.Phase{phase.Implementing, phase.Accepting, phase.Testing, phase.Retro, phase.Merging},
-			back: "move it back to implementing, with a reason"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			news := acceptingHolderNews()
-			news.Line = tc.line
-			text := RenderNews(news)
-			t.Logf("the news of an accepting child:\n%s", text)
-			rule := lastParagraph(text)
-			for _, want := range []string{"sign LEGION-210 off with `sign_off`", "`request_backward_move`", tc.back} {
-				if !strings.Contains(rule, want) {
-					t.Errorf("the accepting holder's closing rule %q does not say %q", rule, want)
-				}
-			}
-			if strings.Contains(rule, "dispatch comment") {
-				t.Errorf("the accepting holder is told to answer as a phase worker does: %q", rule)
-			}
-		})
+	text := RenderNews(acceptingHolderNews())
+	t.Logf("the news of an accepting child:\n%s", text)
+	rule := lastParagraph(text)
+	for _, want := range []string{"sign LEGION-210 off with `sign_off`", "`request_backward_move`"} {
+		if !strings.Contains(rule, want) {
+			t.Errorf("the accepting holder's closing rule %q does not say %q", rule, want)
+		}
+	}
+	if strings.Contains(rule, "dispatch comment") {
+		t.Errorf("the accepting holder is told to answer as a phase worker does: %q", rule)
 	}
 }
 
@@ -667,12 +650,12 @@ func TestTheSummaryGivesTheArchitectTheDutyOfAMergedMember(t *testing.T) {
 }
 
 // A member in accepting that the root architect owns is named as the architect's own to answer:
-// what it is owed, then its sign-off or a move back to the phase of an earlier step of its task.
+// what it is owed, then its sign-off or a move back.
 func TestTheSummaryNamesAnAcceptingMemberTheArchitectAnswersItself(t *testing.T) {
 	text := RenderNews(treeSummaryNews())
 	line := newsLine(t, text, "- LEGION-211, in accepting: ")
 	for _, want := range []string{"owed version 5 of the spec document, since version 4", "you answer it yourself", "`sign_off`",
-		"`request_backward_move`", "move it back to planning, implementing, testing or reviewing."} {
+		"`request_backward_move`"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the accepting member's line %q does not say %q", line, want)
 		}
