@@ -416,6 +416,11 @@ const StepAgentTextPattern = "^[!-~]{1,128}$"
 // Generated from STEP_AGENT_TEXT_RULE_WORDS in packages/contracts.
 const StepAgentTextRule = "printable ASCII with no space, from 1 to 128 characters"
 
+// StepAnswersMax is the most models a step record's answers names, each with its count of calls.
+// Generated from STEP_ANSWERS_MAX in packages/contracts: Dispatch's step write refuses more, and the
+// Legion daemon, through github.com/sjawhar/envoy/steprecord, writes no more.
+const StepAnswersMax = 16
+
 // ProjectNameMax is the longest project name, in UTF-16 units, that POST /api/v1/projects
 // accepts. Generated from PROJECT_NAME_MAX in packages/contracts so the server's refusal, the
 // Settings name field and the dispatch command cannot drift apart.

@@ -63,6 +63,7 @@ import {
   SEARCH_QUERY_MAX,
   STEP_AGENT_TEXT_PATTERN,
   STEP_AGENT_TEXT_RULE_WORDS,
+  STEP_ANSWERS_MAX,
   STEP_INPUT_CODE,
   STEP_KINDS,
   STEP_OTHER_ISSUE_CODE,
@@ -594,6 +595,11 @@ const StepAgentTextPattern = ${JSON.stringify(STEP_AGENT_TEXT_PATTERN.source)}
 // StepAgentTextRule says StepAgentTextPattern's rule in words, which Dispatch's refusal gives.
 // Generated from STEP_AGENT_TEXT_RULE_WORDS in packages/contracts.
 const StepAgentTextRule = ${JSON.stringify(STEP_AGENT_TEXT_RULE_WORDS)}
+
+// StepAnswersMax is the most models a step record's answers names, each with its count of calls.
+// Generated from STEP_ANSWERS_MAX in packages/contracts: Dispatch's step write refuses more, and the
+// Legion daemon, through github.com/sjawhar/envoy/steprecord, writes no more.
+const StepAnswersMax = ${STEP_ANSWERS_MAX}
 
 // ProjectNameMax is the longest project name, in UTF-16 units, that POST /api/v1/projects
 // accepts. Generated from PROJECT_NAME_MAX in packages/contracts so the server's refusal, the

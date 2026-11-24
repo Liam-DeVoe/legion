@@ -3,9 +3,10 @@
 // refusals and the plan write's refusals that no retry changes, the form of the agent, the session
 // and the model a record names (printable ASCII with no space, from 1 to 128 characters), and the
 // scale and the rule of the rating a retro gives the plan, which Dispatch stores on the retro's
-// record. Each is the one generated from packages/contracts (internal/contracts), which Dispatch's
-// store and routes use, so a word the Legion daemon writes or reads is the word Dispatch holds, and
-// the daemon never sends a record Dispatch would refuse whole for a word or a text.
+// record. It also holds the most models a record's answers names. Each is the one generated from
+// packages/contracts (internal/contracts), which Dispatch's store and routes use, so a word the
+// Legion daemon writes or reads is the word Dispatch holds, and the daemon never sends a record
+// Dispatch would refuse whole for a word or a text.
 //
 // It exists because the Legion daemon (packages/daemon, module github.com/sjawhar/legion/daemon)
 // is a Go module of its own, and Go's internal rule bars it from
@@ -61,6 +62,10 @@ var agentText = regexp.MustCompile(contracts.StepAgentTextPattern)
 func AgentTextHolds(text string) bool {
 	return agentText.MatchString(text)
 }
+
+// AnswersMax is the most models a step record's answers names, each with its count of calls
+// (contracts.StepAnswersMax, the limit Dispatch's step write refuses more by).
+const AnswersMax = contracts.StepAnswersMax
 
 // PlaceHolds reports whether place is a place a run of kind can stand at: from 1 for a step, 0 for
 // a retro or a merge (contracts.StepPlaceHolds, the rule Dispatch's store refuses a write by).
