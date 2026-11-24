@@ -534,9 +534,13 @@ test("another tab turning the new issue page on while this tab's frame is on the
 
   await issuePageCheckbox(second).check();
   await expect(newPageHeading(page)).toHaveText(issue.title);
-  expect(new URL(await frameChunk.url).pathname, "the switch asked for no frame").toMatch(
-    FRAME_SHELL_CHUNK
-  );
+  // The frame's download is held from its first request on, so `url` answers only once the switch
+  // has asked for it; the poll bounds that wait and names a switch that asks for no frame.
+  let frameAsked = false;
+  void frameChunk.url.then(() => {
+    frameAsked = true;
+  });
+  await expect.poll(() => frameAsked, { message: "the switch asked for no frame" }).toBe(true);
   // The frame marks its `main` as no place for reference cards (`frame-shell.tsx`), at every
   // width; today's shell does not.
   const frameMain = page.locator("main[data-no-hover-preview]");

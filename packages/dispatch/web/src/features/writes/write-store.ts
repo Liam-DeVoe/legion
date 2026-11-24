@@ -826,9 +826,10 @@ export class Writes {
     this.#resetKinds();
     void this.#files.keepOnly(undefined);
     this.#kept.clear();
-    this.#notTakenUp = [];
+    const dropped = this.#notTakenUp.length > 0;
+    if (dropped) this.#notTakenUp = [];
     this.#endTakeUp();
-    this.#publish();
+    if (dropped) this.#notify();
   }
 
   /** This page's sign-out of `login` landed: every write goes (`clear`), what the reload kept of
@@ -1028,12 +1029,13 @@ export class Writes {
    *  its person's writes left it nothing to take up (`#dropKept`, `clear`). Every write pressed
    *  meanwhile that the store still holds joins its line now, in press order, as the newest in
    *  it. One a drop ended stays in `takeUpsWaiting` until the kinds come, and finds nothing to
-   *  take up then (`resume`). */
+   *  take up then (`resume`). Its list of the writes pressed meanwhile is emptied here, so such a
+   *  take-up holds none of those writes until then, nor their requests and files. */
   #endTakeUp(): void {
     const takingUp = this.#takingUp;
     if (takingUp === undefined) return;
     this.#takingUp = undefined;
-    for (const entry of takingUp.pressedMeanwhile) {
+    for (const entry of takingUp.pressedMeanwhile.splice(0)) {
       if (this.#entries.get(entry.write.id) !== entry) continue;
       entry.write = { ...entry.write, joined: this.#nextJoin() };
       this.#join(entry, "sending");
@@ -1079,15 +1081,19 @@ export class Writes {
             if (!this.#notTakenUp.includes(kept)) return;
             this.#notTakenUp = this.#notTakenUp.filter((write) => write !== kept);
             this.#resume(kept, kind, detail, now, file);
-            this.#publish();
+            this.#notify();
           })
         );
       } else {
         this.#resume(kept, kind, detail, now, undefined);
       }
     }
-    this.#notTakenUp = reading;
-    this.#publish();
+    // What is left is a part of `#notTakenUp`, in its order, so one as long holds the same writes:
+    // nothing was taken up or let go, and the list stays one array.
+    if (reading.length !== this.#notTakenUp.length) {
+      this.#notTakenUp = reading;
+      this.#notify();
+    }
     // Settled rather than all: a write pressed meanwhile goes on whatever a read made.
     return Promise.allSettled(files);
   }
@@ -1102,14 +1108,16 @@ export class Writes {
    *  in the tab from its press - and goes on as its press asked; and a sweep of every file but
    *  `login`'s would delete the files of the uploads someone signed in since pressed meanwhile. */
   #dropKept(login: string): void {
-    this.#notTakenUp = this.#notTakenUp.filter((kept) => {
+    const left = this.#notTakenUp.filter((kept) => {
       if (kept.login !== login) return true;
       this.#kept.forget(kept.key);
       if (kept.request !== null && "form" in kept.request) void this.#files.delete(kept.key);
       return false;
     });
+    const dropped = left.length < this.#notTakenUp.length;
+    if (dropped) this.#notTakenUp = left;
     if (this.#takingUp?.login === login) this.#endTakeUp();
-    this.#publish();
+    if (dropped) this.#notify();
   }
 
   #resume(kept: KeptWrite, kind: AnyKind, detail: unknown, now: number, file?: File): void {
@@ -1535,11 +1543,18 @@ export class Writes {
     if (this.#entries.get(write.id) === entry) this.#publish();
   }
 
+  /** Builds the rows again from the writes held (`rows`), and tells every listener. */
   #publish(): void {
     const rows = [...this.#entries.values()]
       .map((entry) => entry.write)
       .sort((a, b) => a.id - b.id);
     this.#rows = rows.length === 0 ? NO_WRITES : rows;
+    this.#notify();
+  }
+
+  /** Tells every listener of a change: of the rows (`#publish`), or of what the reload kept that
+   *  the store has not taken up (`#notTakenUp`) alone, which leaves the rows one array. */
+  #notify(): void {
     for (const listener of this.#listeners) listener();
   }
 
@@ -1635,4 +1650,11 @@ export function useWriteSelection<R>(key: string, select: (rows: readonly Write[
     last.current = { key, picked: kept, rows };
     return kept;
   });
+}
+
+/** What the reload kept that the store has not taken up yet (`Writes.notTakenUp`), re-rendering
+ *  only when that changes. */
+export function useNotTakenUp(): readonly KeptWrite[] {
+  const store = useWrites();
+  return useSyncExternalStore(store.subscribe, store.notTakenUp);
 }

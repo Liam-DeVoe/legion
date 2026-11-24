@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type RenderResult, render, waitFor } from "@testing-library/react";
 
-import { keyMinted } from "../../__tests__/kept-sends-harness";
+import { keepWrite, keyMinted } from "../../__tests__/kept-sends-harness";
 import { api } from "../../api/client";
 import { PendingWritesHost } from "./write-hosts";
 import { kindsRegistered, plainWrite, writesOf } from "./write-store";
@@ -34,23 +34,7 @@ import { kindsRegistered, plainWrite, writesOf } from "./write-store";
 // the stub rather than the network guard of a later row or run.
 async function takeUpEndsWithTheHost(): Promise<void> {
   const kept = keyMinted(Date.now());
-  window.sessionStorage.setItem(
-    `dispatch.write:${kept}`,
-    JSON.stringify({
-      detail: null,
-      key: kept,
-      kind: "write",
-      label: "CORE-1 set to done",
-      login: "alice",
-      presentation: "composer",
-      pressedAt: Date.now(),
-      request: { body: { status: "done" }, method: "PATCH", path: "/api/v1/issues/CORE-1" },
-      sent: true,
-      state: { status: "sending" },
-      target: null,
-      version: 1,
-    })
-  );
+  keepWrite(window.sessionStorage, kept, { presentation: "composer" });
   const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   const send = spyOn(api, "send").mockResolvedValue(null as never);

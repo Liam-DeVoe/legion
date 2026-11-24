@@ -1305,11 +1305,11 @@ test("a pin on a turn and a priority pick pressed during an outage survive a rel
     await fetchedChunk(page, WRITE_KINDS_CHUNK);
     const kindsCode = await holdFirstRequest(page, WRITE_KINDS_CHUNK);
     await page.reload();
-    const statuses = watchWrites(page, "PATCH", path);
+    const reloadedPatches = watchWrites(page, "PATCH", path);
     const kinds = await kindsCode.held;
     await page.getByLabel("Status").selectOption("todo");
     await expect(pendingWrites(page)).toContainText("Waiting to send");
-    expect(statuses, "a write pressed before the take-up is held").toEqual([]);
+    expect(reloadedPatches, "a write pressed before the take-up is held").toEqual([]);
     await fetchedChunk(page, KEPT_WRITES_CHUNK);
     await load().settled();
     changesNetwork.end();
@@ -1331,7 +1331,7 @@ test("a pin on a turn and a priority pick pressed during an outage survive a rel
       })
       .toBe(2);
     // One press, one key, however many attempts the reloaded page made of it.
-    const statusChanges = statuses.filter(
+    const statusChanges = reloadedPatches.filter(
       (write) => typeof write.input === "object" && write.input !== null && "status" in write.input
     );
     expect(new Set(statusChanges.map((status) => status.key)).size).toBe(1);
@@ -1359,6 +1359,25 @@ async function holdStatusChanges(page: Page, path: string): Promise<{ first: Pro
     first.resolve(route);
   });
   return { first: first.promise };
+}
+
+/** Changes the status of the issue `key` to todo on its page, and waits until the indicator says
+ *  it saves it. The row holds or fails every status change of the issue at the network first, so
+ *  the write stays out and the tab keeps it. */
+async function keepAStatusChange(page: Page, key: string): Promise<void> {
+  await page.goto(`/issues/${key}`);
+  await page.getByLabel("Status").selectOption("todo");
+  await expect(pendingWrites(page).getByRole("status")).toHaveText("Saving 1 change…");
+}
+
+/** Reloads `page` with its first request for the kinds of write held on the wire, and answers
+ *  with that held download once the reloaded page says alice is signed in. */
+async function reloadWithKindsHeld(page: Page): Promise<Route> {
+  const kindsCode = await holdFirstRequest(page, WRITE_KINDS_CHUNK);
+  await page.reload();
+  const held = await kindsCode.held;
+  await expect(page.getByText("Signed in as alice")).toBeVisible();
+  return held;
 }
 
 // The pending-writes indicator is a chunk of its own, and its download can fail while the browser
@@ -1429,6 +1448,35 @@ test("a pending-writes indicator whose chunk fails to download online with no re
   }
 });
 
+/** Opens the issue `key` in a new page of `alice`'s, with the tab's three recovery reloads spent,
+ *  every status change of the issue held at the network and the first download of the
+ *  pending-writes indicator held on the wire. A status change pressed then mounts the indicator
+ *  on the held download, which then fails. Answers with the page, the tab's reloads as spent,
+ *  and the status change held. */
+async function failTheIndicatorOverAHeldWrite(
+  alice: BrowserContext,
+  key: string
+): Promise<{ page: Page; spent: number[]; statusChange: Route }> {
+  const page = await alice.newPage();
+  await page.goto("/");
+  await expect(page.getByText("Signed in as alice")).toBeVisible();
+  const spent = await recordTabReloads(page, [3, 2, 1]);
+  const statusChanges = await holdStatusChanges(page, `/api/v1/issues/${key}`);
+  const indicatorCode = await holdFirstRequest(page, PENDING_WRITES_CHUNK);
+  await page.goto(`/issues/${key}`);
+  const indicator = await indicatorCode.held;
+  await expect(page.getByText("Signed in as alice")).toBeVisible();
+  await page.getByLabel("Status").selectOption("backlog");
+  const statusChange = await statusChanges.first;
+
+  const caught = page.waitForEvent("console", (message) =>
+    message.text().includes("Failed to fetch dynamically imported module")
+  );
+  await indicator.abort();
+  await caught;
+  return { page, spent, statusChange };
+}
+
 // The same failure, and then the one write the indicator would show turns refused: Dispatch
 // answers the status change held at the network with its verdict, a refusal, whose Retry and
 // Discard only the indicator offers. How many writes the indicator shows does not change - it is
@@ -1442,26 +1490,9 @@ test("a pending-writes indicator whose chunk fails to download online with no re
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "A refusal the indicator shows" });
-  const path = `/api/v1/issues/${issue.key}`;
   const alice = await asUser(browser, "alice");
   try {
-    const page = await alice.newPage();
-    await page.goto("/");
-    await expect(page.getByText("Signed in as alice")).toBeVisible();
-    const spent = await recordTabReloads(page, [3, 2, 1]);
-    const statusChanges = await holdStatusChanges(page, path);
-    const indicatorCode = await holdFirstRequest(page, PENDING_WRITES_CHUNK);
-    await page.goto(`/issues/${issue.key}`);
-    const indicator = await indicatorCode.held;
-    await expect(page.getByText("Signed in as alice")).toBeVisible();
-    await page.getByLabel("Status").selectOption("backlog");
-    const statusChange = await statusChanges.first;
-
-    const caught = page.waitForEvent("console", (message) =>
-      message.text().includes("Failed to fetch dynamically imported module")
-    );
-    await indicator.abort();
-    await caught;
+    const { page, spent, statusChange } = await failTheIndicatorOverAHeldWrite(alice, issue.key);
     await expect(page.getByTestId("error-boundary")).toHaveCount(0);
     await expect(pendingWrites(page)).toHaveCount(0);
     expect(await tabReloads(page), "the failure reloaded the page").toEqual(spent);
@@ -1494,26 +1525,9 @@ test("a pending-writes indicator whose chunk failed to download online asks for 
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "The indicator's last write" });
-  const path = `/api/v1/issues/${issue.key}`;
   const alice = await asUser(browser, "alice");
   try {
-    const page = await alice.newPage();
-    await page.goto("/");
-    await expect(page.getByText("Signed in as alice")).toBeVisible();
-    const spent = await recordTabReloads(page, [3, 2, 1]);
-    const statusChanges = await holdStatusChanges(page, path);
-    const indicatorCode = await holdFirstRequest(page, PENDING_WRITES_CHUNK);
-    await page.goto(`/issues/${issue.key}`);
-    const indicator = await indicatorCode.held;
-    await expect(page.getByText("Signed in as alice")).toBeVisible();
-    await page.getByLabel("Status").selectOption("backlog");
-    const statusChange = await statusChanges.first;
-
-    const caught = page.waitForEvent("console", (message) =>
-      message.text().includes("Failed to fetch dynamically imported module")
-    );
-    await indicator.abort();
-    await caught;
+    const { page, spent, statusChange } = await failTheIndicatorOverAHeldWrite(alice, issue.key);
     await expect(pendingWrites(page)).toHaveCount(0);
     expect(await keptWrites(page)).toBe(1);
     const asked: string[] = [];
@@ -1788,27 +1802,22 @@ async function keptThroughALapse(browser: Browser, kinds: KindsThroughALapse): P
     const page = await alice.newPage();
     page.on("dialog", (dialog) => void dialog.accept());
     await holdStatusChanges(page, path);
-    await page.goto(`/issues/${issue.key}`);
-    await page.getByLabel("Status").selectOption("todo");
-    await expect(pendingWrites(page).getByRole("status")).toHaveText("Saving 1 change…");
+    await keepAStatusChange(page, issue.key);
     const spent = await recordTabReloads(page, [3, 2, 1]);
 
-    const kindsCode = await holdFirstRequest(page, WRITE_KINDS_CHUNK);
-    await page.reload();
-    const held = await kindsCode.held;
-    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    const held = await reloadWithKindsHeld(page);
     // The writes host starts the three chunks of writes in one effect, so the list's fetch says
     // its prefetch of the kinds has joined the held download, and shares its end.
     await fetchedChunk(page, KEPT_WRITES_CHUNK);
     await expect(pendingWrites(page), "the take-up did not wait for the kinds").toHaveCount(0);
+    const isKinds = (request: { url: () => string }) =>
+      WRITE_KINDS_CHUNK.test(new URL(request.url()).pathname);
     if (kinds !== "never arrive") {
       // The failure is read in this process, from the browser's report of the request, which a
       // reload it began cannot take away with the document. The two frames after it leave the
       // page the time to handle that failure and ask for any reload it would, and the tab's
       // record of its reloads then says whether it did, as the row's last check reads it again.
-      const failed = page.waitForEvent("requestfailed", (request) =>
-        WRITE_KINDS_CHUNK.test(new URL(request.url()).pathname)
-      );
+      const failed = page.waitForEvent("requestfailed", isKinds);
       await held.abort();
       await failed;
       await nextFrames(page);
@@ -1818,8 +1827,6 @@ async function keptThroughALapse(browser: Browser, kinds: KindsThroughALapse): P
 
     // The next request for the kinds is the sign-in page's, as it draws: no press is left to ask
     // for them on this page, and the take-up asks only at a press. A later one goes through.
-    const isKinds = (request: { url: () => string }) =>
-      WRITE_KINDS_CHUNK.test(new URL(request.url()).pathname);
     let signInPageAsked: Promise<unknown> | undefined;
     if (kinds === "fail") signInPageAsked = page.waitForRequest(isKinds);
     if (kinds === "fail on the sign-in page too") {
@@ -1934,14 +1941,9 @@ test("Sign out pressed while the take-up waits for the kinds of write names the 
     });
     // Every status change is held at the network: out, never answered, and kept in the tab.
     await holdStatusChanges(page, path);
-    await page.goto(`/issues/${issue.key}`);
-    await page.getByLabel("Status").selectOption("todo");
-    await expect(pendingWrites(page).getByRole("status")).toHaveText("Saving 1 change…");
+    await keepAStatusChange(page, issue.key);
 
-    const kindsCode = await holdFirstRequest(page, WRITE_KINDS_CHUNK);
-    await page.reload();
-    await kindsCode.held;
-    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    await reloadWithKindsHeld(page);
     // The take-up waits: the store holds no row of the write, which the tab keeps.
     await expect(pendingWrites(page)).toHaveCount(0);
     // The names of what the tab keeps, read from each kept write's own record, leaving out read
@@ -2004,18 +2006,13 @@ test("Sign out pressed while the take-up waits for kinds of write that never arr
       // Sign out's question, and the reload's own "leave this page?", are both accepted.
       page.on("dialog", (dialog) => void dialog.accept());
       await holdStatusChanges(page, `/api/v1/issues/${issue.key}`);
-      await page.goto(`/issues/${issue.key}`);
-      await page.getByLabel("Status").selectOption("todo");
-      await expect(pendingWrites(page).getByRole("status")).toHaveText("Saving 1 change…");
+      await keepAStatusChange(page, issue.key);
       tabs.push(page);
     }
     const [reloading, other] = tabs;
     if (reloading === undefined || other === undefined) throw new Error("no tab was opened");
     await reloading.bringToFront();
-    const kindsCode = await holdFirstRequest(reloading, WRITE_KINDS_CHUNK);
-    await reloading.reload();
-    await kindsCode.held;
-    await expect(reloading.getByText("Signed in as alice")).toBeVisible();
+    await reloadWithKindsHeld(reloading);
     // The take-up waits: the store holds no row of the write, which the tab keeps.
     await expect(pendingWrites(reloading)).toHaveCount(0);
     expect(await keptWrites(reloading)).toBe(1);
@@ -2101,9 +2098,7 @@ test("a write pending for alice is dropped when bob signs in from another tab, a
       }
     });
     const network = await outage(page, `**${path}`, "PATCH");
-    await page.goto(`/issues/${issue.key}`);
-    await page.getByLabel("Status").selectOption("todo");
-    await expect(pendingWrites(page).getByRole("status")).toHaveText("Saving 1 change…");
+    await keepAStatusChange(page, issue.key);
     await expect.poll(() => keptWrites(page)).toBe(1);
 
     const other = await alice.newPage();

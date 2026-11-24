@@ -1,8 +1,8 @@
-import { type ReactNode, useSyncExternalStore } from "react";
+import type { ReactNode } from "react";
 
 import { dangerText, secondaryButtonCompact, textSecondaryOnSurface } from "../../theme/classes";
 import { keptRecords, keptWrites } from "./shown-writes";
-import { useWriteSelection, useWrites } from "./write-store";
+import { useNotTakenUp, useWriteSelection, useWrites } from "./write-store";
 
 /**
  * What a lapsed session keeps, on the sign-in page: the person's writes by name, under the login
@@ -15,7 +15,7 @@ import { useWriteSelection, useWrites } from "./write-store";
 export function KeptWrites(): ReactNode {
   const writes = useWrites();
   const rows = useWriteSelection("kept-while-signed-out", keptWrites);
-  const records = keptRecords(useSyncExternalStore(writes.subscribe, writes.notTakenUp));
+  const records = keptRecords(useNotTakenUp());
   const shown = [...rows, ...records].sort((a, b) => a.pressedAt - b.pressedAt);
   if (shown.length === 0) return null;
   const logins = [...new Set(shown.map((write) => write.login))];

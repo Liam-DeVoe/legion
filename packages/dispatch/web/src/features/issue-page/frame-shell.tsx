@@ -108,8 +108,7 @@ function IssueFrameFallback(): ReactNode {
  * (`ShellNavigation`); the margin is Details, a drawer over the page, which the shell makes
  * (`AppShell`). Every other page keeps the shell exactly as it is for every other reader.
  */
-export const frameOf: FrameOf = (input) => {
-  const { location, navigationOpen, railFits, setNavigationOpen } = input;
+export const frameOf: FrameOf = ({ location, navigationOpen, railFits, setNavigationOpen }) => {
   if (parseIssuePath(location.pathname, location.search) === undefined) return undefined;
   return {
     fallback: <IssueFrameFallback />,

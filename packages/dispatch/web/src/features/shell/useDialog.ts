@@ -133,13 +133,19 @@ export function dialogOpen(): boolean {
  * one rule, so an Escape that leaves a drawn Details open calls no waiting open off. It passes by:
  * - an Escape already handled;
  * - one that ends an input method's composition, which is the input method's;
- * - one in a field, which keeps its own Escape to leave the field or close its picker: an
- *   editable element, a select, a textarea, and every input but the button family, a checkbox
- *   and a radio. A range, a colour and a file input are fields here, though they take no typed
- *   text (`isEditableTarget` in `keymap.ts` counts only the inputs that do);
- * - one in a dialog, or under an open dialog (`dialogOpen`), which closes on its own Escape.
+ * - one in a field, inside the drawer or beside it, which keeps its own Escape to leave the field
+ *   or close its picker: an editable element, a select, a textarea, and every input but the
+ *   button family, a checkbox and a radio. A range, a colour and a file input are fields here,
+ *   though they take no typed text (`isEditableTarget` in `keymap.ts` counts only the inputs that
+ *   do);
+ * - one in a dialog, or under an open dialog (`dialogOpen`) - the navigation's sheet, the list of
+ *   keys - which closes on its own Escape and leaves the drawer open under it, wherever the focus
+ *   is: on the dialog's field, on the dialog itself (the first frame of one that names no text
+ *   field or whose field took no focus as it opened), or on the page (a press on the list's
+ *   text).
  */
 export function escapeClosesDrawer(event: KeyboardEvent): boolean {
+  if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return false;
   const { target } = event;
   const field =
     target instanceof HTMLElement &&
@@ -149,9 +155,6 @@ export function escapeClosesDrawer(event: KeyboardEvent): boolean {
       (target instanceof HTMLInputElement &&
         !["button", "checkbox", "radio", "reset", "submit"].includes(target.type)));
   return (
-    event.key === "Escape" &&
-    !event.defaultPrevented &&
-    !event.isComposing &&
     !field &&
     !(target instanceof Element && target.closest('[role="dialog"]') !== null) &&
     !dialogOpen()

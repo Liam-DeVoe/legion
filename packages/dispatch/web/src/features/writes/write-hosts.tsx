@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 
 import { ChunkBoundary } from "../shell/ChunkBoundary";
 import { chunk, chunkComponent } from "../shell/chunk-component";
@@ -10,7 +10,7 @@ import {
 } from "../shell/chunk-loads";
 import { useContentDrawn } from "../shell/content-drawn";
 import { indicatorWrites, keptRecords, keptWrites } from "./shown-writes";
-import { kindsRegistered, useWriteSelection, useWrites, type Write } from "./write-store";
+import { kindsRegistered, useNotTakenUp, useWriteSelection, type Write } from "./write-store";
 
 /**
  * Where the shell places its two lists of writes, and where their code is fetched: the
@@ -147,13 +147,12 @@ export function PendingWritesHost(): ReactNode {
 
 /** What a lapsed session keeps, for the sign-in page. */
 export function KeptWritesHost(): ReactNode {
-  const writes = useWrites();
   const rows = useWriteSelection("kept-while-signed-out", keptWrites);
   // What the reload kept that the store has not taken up, read from each write's own record with
   // no kind of write in. This list is the reader's one warning, before they sign in as someone
   // else, of the writes that sign-in drops, so it lists these at once, also while the kinds are
   // still on their way; a write the store takes up later shows as the store's row instead.
-  const records = keptRecords(useSyncExternalStore(writes.subscribe, writes.notTakenUp));
+  const records = keptRecords(useNotTakenUp());
   // The kinds of write, for a take-up of what a reload kept that still waits for them as the
   // session lapses (`Writes.resume`): it takes them up all the same, for the sign-in that follows,
   // and only the store's rows offer what the kinds know, such as a refused write's Discard. The

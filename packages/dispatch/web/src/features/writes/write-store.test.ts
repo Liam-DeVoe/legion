@@ -5,10 +5,12 @@ import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { onFakeClock, settle } from "../../__tests__/fake-clock";
 import {
   type KeptTab,
+  keepWrite,
   keptTab,
   keyMinted,
   type MemoryFiles,
   memoryFiles,
+  patch,
   UnloadTarget,
 } from "../../__tests__/kept-sends-harness";
 import { answerSends, type SendAnswers } from "../../__tests__/send-answers";
@@ -30,7 +32,7 @@ import {
   SendStoppedError,
   WriteDiscardedError,
 } from "./keyed-write";
-import { KEPT_SEND_RESUME_MS, type KeptState, type KeptWrite } from "./write-storage";
+import { KEPT_SEND_RESUME_MS, type KeptState } from "./write-storage";
 import { defineWriteKind, kindsRegistered, plainWrite, type Write, Writes } from "./write-store";
 
 /** A page's query client, signed in: the store stamps every write with this login at its press
@@ -64,12 +66,6 @@ function attemptOf(
     return answer();
   };
 }
-
-const patch: WriteRequest = {
-  body: { status: "done" },
-  method: "PATCH",
-  path: "/api/v1/issues/CORE-1",
-};
 
 /** A pin of CORE-1: a `PUT` sends no `Idempotency-Key`, since making it again is the same
  *  change. */
@@ -173,35 +169,6 @@ function storeOf(tab = keptTab(), login = "alice", files = memoryFiles()) {
 /** The write `writes` holds now, at `index` in press order. */
 const row = (writes: Writes, index = 0): Write | undefined => writes.rows()[index];
 
-/** The fields of a kept write a row names (`keepWrite`), its request as the page made it. */
-type KeptFields = Omit<KeptWrite, "carried" | "key" | "keyed" | "request"> & {
-  readonly request: WriteRequest | null;
-};
-
-/** Keeps in `tab`, under `key`, one write of alice's as a page that went away left it: a status
- *  pick of CORE-1 out within its deadline, pressed now, as the request it last went out as,
- *  unless `fields` names otherwise. */
-function keepWrite(tab: KeptTab, key: string, fields: Partial<KeptFields> = {}): void {
-  tab.storage.setItem(
-    `dispatch.write:${key}`,
-    JSON.stringify({
-      detail: null,
-      key,
-      kind: "write",
-      label: "CORE-1 set to done",
-      login: "alice",
-      presentation: "indicator",
-      pressedAt: Date.now(),
-      request: patch,
-      sent: true,
-      state: { status: "sending" },
-      target: null,
-      version: 1,
-      ...fields,
-    })
-  );
-}
-
 /** A page that has just resumed one write on CORE-1, kept in `tab` under `key` as it stood
  *  (`state`) when the page that pressed it went away, as the request it last went out as: a
  *  status pick unless a row names another. */
@@ -211,7 +178,7 @@ function resuming(
   state: KeptState,
   request: WriteRequest = patch
 ): Writes {
-  keepWrite(tab, key, { request, state });
+  keepWrite(tab.storage, key, { request, state });
   const writes = new Writes(signedIn(), tab.page(), memoryFiles());
   writes.resume("alice");
   return writes;
@@ -549,7 +516,7 @@ test("a write pressed after the take-up's ask for the kinds of write failed asks
   await onFakeClock(async () => {
     const tab = keptTab();
     const kept = keyMinted(Date.now());
-    keepWrite(tab, kept, { target: "issue:CORE-1" });
+    keepWrite(tab.storage, kept, { target: "issue:CORE-1" });
     const send = spyOn(api, "send").mockResolvedValue(null as never);
     try {
       const writes = new Writes(signedIn(), tab.page(), memoryFiles());
@@ -587,7 +554,7 @@ test("a write pressed after the take-up's ask for the kinds of write failed asks
 test("a resume with nothing kept for the person asks for no kinds of write, and a press goes straight out", async () => {
   await onFakeClock(async () => {
     const tab = keptTab();
-    keepWrite(tab, keyMinted(Date.now()), { login: "bob", target: "issue:CORE-1" });
+    keepWrite(tab.storage, keyMinted(Date.now()), { login: "bob", target: "issue:CORE-1" });
     const send = spyOn(api, "send").mockResolvedValue(null as never);
     try {
       const writes = new Writes(signedIn("alice"), tab.page(), memoryFiles());
@@ -621,7 +588,7 @@ test("a write pressed while the take-up waits is kept from its press, and leavin
   await onFakeClock(async () => {
     const tab = keptTab();
     const kept = keyMinted(Date.now());
-    keepWrite(tab, kept, {
+    keepWrite(tab.storage, kept, {
       state: { refusal: { kind: "error", message: "not now" }, status: "refused" },
       target: "issue:CORE-1",
     });
@@ -690,7 +657,7 @@ async function pressedWhileTakingUp(
 ): Promise<TakingUp> {
   const tab = keptTab();
   const kept = keyMinted(Date.now());
-  keepWrite(tab, kept, { target: "issue:CORE-1" });
+  keepWrite(tab.storage, kept, { target: "issue:CORE-1" });
   const send = spyOn(api, "send").mockResolvedValue(null as never);
   const kinds = Promise.withResolvers<void>();
   const end = async () => {
@@ -810,7 +777,7 @@ test("another person's write a reload kept goes as the take-up begins, so their 
   await onFakeClock(async () => {
     const tab = keptTab();
     const bobs = keyMinted(Date.now());
-    keepWrite(tab, bobs, { login: "bob", target: "issue:CORE-1" });
+    keepWrite(tab.storage, bobs, { login: "bob", target: "issue:CORE-1" });
     const send = spyOn(api, "send").mockResolvedValue(null as never);
     const kinds = Promise.withResolvers<void>();
     try {
@@ -852,7 +819,7 @@ test("a take-up waiting when another person signs in drops what the reload kept 
   await onFakeClock(async () => {
     const tab = keptTab();
     const alices = keyMinted(Date.now());
-    keepWrite(tab, alices, { target: "issue:CORE-1" });
+    keepWrite(tab.storage, alices, { target: "issue:CORE-1" });
     const unload = new UnloadTarget();
     const send = spyOn(api, "send").mockResolvedValue(null as never);
     const kinds = Promise.withResolvers<void>();
@@ -897,7 +864,7 @@ test("another person's sign-in while the take-up waits for kinds that never come
   await onFakeClock(async () => {
     const tab = keptTab();
     const alices = keyMinted(Date.now());
-    keepWrite(tab, alices, { target: "issue:CORE-1" });
+    keepWrite(tab.storage, alices, { target: "issue:CORE-1" });
     const unload = new UnloadTarget();
     const client = signedIn("alice");
     const send = spyOn(api, "send").mockResolvedValue(null as never);
@@ -953,7 +920,7 @@ test("another tab's sign-out that lands while the take-up waits for kinds that n
     for (const [name, way] of Object.entries(ways)) {
       const tab = keptTab();
       const kept = keyMinted(Date.now());
-      keepWrite(tab, kept, { target: "issue:CORE-1" });
+      keepWrite(tab.storage, kept, { target: "issue:CORE-1" });
       const unload = new UnloadTarget();
       const send = spyOn(api, "send").mockResolvedValue(null as never);
       try {
@@ -1000,7 +967,7 @@ test("another person's sign-in that drops what the reload kept of the person the
   await onFakeClock(async () => {
     const tab = keptTab();
     const alices = keyMinted(Date.now());
-    keepWrite(tab, alices, { target: "issue:CORE-1" });
+    keepWrite(tab.storage, alices, { target: "issue:CORE-1" });
     const files = memoryFiles();
     const client = signedIn("alice");
     const send = spyOn(api, "send").mockResolvedValue(null as never);
@@ -1154,7 +1121,7 @@ test("another tab's sign-out before the take-up begins names the write the reloa
   await onFakeClock(async () => {
     const tab = keptTab();
     const kept = keyMinted(Date.now());
-    keepWrite(tab, kept, { target: "issue:CORE-1" });
+    keepWrite(tab.storage, kept, { target: "issue:CORE-1" });
     const send = spyOn(api, "send").mockResolvedValue(null as never);
     try {
       const writes = new Writes(signedIn("alice"), tab.page(), memoryFiles());
@@ -2847,7 +2814,7 @@ test("a resumed write whose key Dispatch has forgotten makes no attempt", async 
  *  was planned as, as every write waiting its turn is, and `sent` says nothing has gone out
  *  under its key. */
 function neverSent(tab: KeptTab, key: string, pressedAt: number): Writes {
-  keepWrite(tab, key, { pressedAt, sent: false, state: { status: "queued" } });
+  keepWrite(tab.storage, key, { pressedAt, sent: false, state: { status: "queued" } });
   const writes = new Writes(signedIn(), tab.page(), memoryFiles());
   writes.resume("alice");
   return writes;
@@ -2925,7 +2892,7 @@ test("a resumed write that sent nothing makes its attempt on the first Retry", a
     try {
       const spent = keyMinted(Date.now() - IDEMPOTENCY_KEY_TTL_MS);
       composedAttempts = 0;
-      keepWrite(tab, spent, {
+      keepWrite(tab.storage, spent, {
         kind: composedWrite.name,
         label: "A message",
         presentation: "composer",

@@ -549,6 +549,16 @@ function detailsControl(page: Page): Locator {
   return page.getByTestId("issue-details-control");
 }
 
+/** Presses Shift+M, and waits until the header's control says the reader has Details asked for,
+ *  drawn or not (`detailsControl`). */
+async function askForDetails(page: Page): Promise<void> {
+  await page.keyboard.press("Shift+M");
+  await expect(detailsControl(page), "Shift+M did not ask for Details").toHaveAttribute(
+    "aria-expanded",
+    "true"
+  );
+}
+
 // The phone's half of the row above. Below the phone's width Details is a sheet over the whole
 // page, a dialog that takes the focus as it opens (`useDialog`), so one that opened late would
 // take the focus from where the reader went, under a sheet they no longer wait for. So the open
@@ -601,11 +611,7 @@ test("Escape pressed before the margin's chunk is in calls off the Details Shift
     await gotoIssue(page, `/issues/${key}`);
     await expectOpeningLanded(page);
     await focusThePage(page);
-    await page.keyboard.press("Shift+M");
-    await expect(detailsControl(page), "Shift+M did not ask for Details").toHaveAttribute(
-      "aria-expanded",
-      "true"
-    );
+    await askForDetails(page);
     await expect(marginShell(page), "Details opened with the margin's chunk held").toHaveCount(0);
     await page.keyboard.press("Escape");
     await expect(detailsControl(page), "Escape did not call the open off").toHaveAttribute(
@@ -635,11 +641,7 @@ test("Escape pressed on an outline row before the margin's chunk is in calls off
     await expectOpeningLanded(page);
     const row = await focusedNodeId(page);
     expect(row, "the load's opening put the focus on no row").not.toBeNull();
-    await page.keyboard.press("Shift+M");
-    await expect(detailsControl(page), "Shift+M did not ask for Details").toHaveAttribute(
-      "aria-expanded",
-      "true"
-    );
+    await askForDetails(page);
     await expect(marginShell(page), "Details opened with the margin's chunk held").toHaveCount(0);
     await page.keyboard.press("Escape");
     await expect(detailsControl(page), "Escape did not call the open off").toHaveAttribute(
@@ -667,11 +669,7 @@ test("Escape pressed in a field before the margin's chunk is in is the field's, 
     await gotoIssue(page, `/issues/${key}`);
     await expectOpeningLanded(page);
     await focusThePage(page);
-    await page.keyboard.press("Shift+M");
-    await expect(detailsControl(page), "Shift+M did not ask for Details").toHaveAttribute(
-      "aria-expanded",
-      "true"
-    );
+    await askForDetails(page);
     const status = issuePage(page).getByRole("combobox", {
       exact: true,
       name: PROPERTY_LABELS.status,
@@ -705,11 +703,7 @@ test("Escape pressed on a range input before the margin's chunk is in calls noth
     await gotoIssue(page, `/issues/${key}`);
     await expectOpeningLanded(page);
     await focusThePage(page);
-    await page.keyboard.press("Shift+M");
-    await expect(detailsControl(page), "Shift+M did not ask for Details").toHaveAttribute(
-      "aria-expanded",
-      "true"
-    );
+    await askForDetails(page);
     await expect(marginShell(page), "Details opened with the margin's chunk held").toHaveCount(0);
     await page.evaluate(() => {
       const range = document.createElement("input");
@@ -762,11 +756,7 @@ test("with the margin's chunk failing online and no reload to follow, the margin
     await expectOpeningLanded(page);
     const row = await focusedNodeId(page);
     expect(row, "the load's opening put the focus on no row").not.toBeNull();
-    await page.keyboard.press("Shift+M");
-    await expect(detailsControl(page), "Shift+M did not ask for Details").toHaveAttribute(
-      "aria-expanded",
-      "true"
-    );
+    await askForDetails(page);
 
     asked.resolve();
     await expect(
