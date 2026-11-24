@@ -1,5 +1,5 @@
 import type { ArtifactBlock, AskWithTrees, EditOp, TextAsk } from "@legion/contracts";
-import { typedBlockIdAttribute } from "@legion/contracts";
+import { askOpenerLines, typedBlockIdAttribute } from "@legion/contracts";
 import { commandName } from "../dispatch-command";
 import type { DispatchClient } from "../dispatch-http";
 import {
@@ -27,12 +27,17 @@ async function blockAsks(
   );
 }
 
-/** The lines of `lines` that open the ask block `blockId`: `:::ask{<id> …}`, the id as the
- *  renderer writes it (`typedBlockIdAttribute`: `#<id>`, or `id="…"` for an id the shortcut
- *  cannot hold). A line that quotes the opener (in code, say) is one of them too. */
-function askOpeners(lines: readonly string[], blockId: string): string[] {
+/** The lines of `openers`, a version's ask block openers past their containers' markers
+ *  (`askOpenerLines`, which skips fenced code and front matter), that open the ask block
+ *  `blockId`: `:::ask{<id> …}`, the id as the renderer writes it (`typedBlockIdAttribute`: `#<id>`,
+ *  or `id="…"` for an id the shortcut cannot hold). */
+function askOpeners(openers: readonly string[], blockId: string): string[] {
   const id = typedBlockIdAttribute(blockId);
-  return lines.filter((line) => line.includes(`ask{${id} `) || line.includes(`ask{${id}}`));
+  return openers.filter((line) => {
+    // Each line opens the directive (`:::ask{`), so its first brace is the directive's.
+    const attributes = line.slice(line.indexOf("{") + 1);
+    return attributes.startsWith(`${id} `) || attributes.startsWith(`${id}}`);
+  });
 }
 
 /**
@@ -56,9 +61,11 @@ function askOpeners(lines: readonly string[], blockId: string): string[] {
  * already carries its own record, so no edit is needed for that; a waiver carries none, so the
  * agent's next edit is where the human's decision gets written into the text. A block whose every
  * opening line records the state the server's ask holds, or that records none, is judged without
- * asking which release serves, since both read it alike, so a line quoting the opener (in code,
- * say) can add an open block but never hide one. The live text is read once, and only for a block
- * that needs it.
+ * asking which release serves, since both read it alike. Only a real opening line counts
+ * (`askOpenerLines`): a line that quotes the opener in fenced code or in front matter is the
+ * document's own text, and a quote in an inline code span never starts a line, so a quote records
+ * no state and neither opens a block nor hides one. The live text is read once, and only for a
+ * block that needs it.
  *
  * A block removed from the document is not judged here; `refuseRemovingOpenDecisionBlocks` keeps
  * one whose ask is open in it. A document already approved at its latest version is left to the
@@ -80,7 +87,7 @@ export async function refuseOpenDecisionBlocks(
     client.docRead(artifact.id, latest),
   ]);
   const asks = new Map(documentAsks.map((ask) => [ask.block_id, ask]));
-  const lines = version.markdown.split("\n");
+  const openerLines = askOpenerLines(version.markdown);
   // The live text's asks, read once, the first time a block needs them: a Dispatch of this release
   // answers `asks`, and one of the release before sends none and writes them on each opening line.
   let live: Promise<{ readonly served: boolean; readonly asks: readonly TextAsk[] }> | undefined;
@@ -129,7 +136,7 @@ export async function refuseOpenDecisionBlocks(
       ask === undefined
         ? `block ${block.id}`
         : `${JSON.stringify(ask.question)} (block ${block.id}, ask ${ask.id})`;
-    const openers = askOpeners(lines, block.id);
+    const openers = askOpeners(openerLines, block.id);
     const states = openers.map(stateOf);
     if (states.length === 0) return `${named}, which version ${latest} does not hold yet`;
     const recordsOpen = states.includes("open");
