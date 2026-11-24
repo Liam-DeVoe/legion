@@ -9,7 +9,7 @@ GATE = gate("envoy_client", "envoy-client", reads=reads(
     (f"{FIX}/ask-reply-recipients.json", "packages/envoy-client/src/__tests__/ask-reply-recipients.test.ts:61 renders the copies packages/envoy's TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers writes"),
     (f"{FIX}/dispatch-public-url.json", "packages/envoy-client/src/__tests__/dispatch-config.test.ts:5"),
     (f"{FIX}/session-grant.json", "packages/envoy-client/test/nats-server.ts:4 imports it (sessionGrantConfig), which src/__tests__/session-reply-grant.test.ts runs"),
-    (f"{FIX}/dispatch-frame-property.json", "packages/envoy-client/src/__tests__/dispatch-frame-property.test.ts:26 readFileSync: renders the generated frames packages/envoy's TestEdgeFrameVerdictOnGeneratedDispatchFrames records"),
+    (f"{FIX}/dispatch-frame-property.json", "packages/envoy-client/src/__tests__/dispatch-frame-property.test.ts:27 readFileSync: renders the generated frames packages/envoy's TestEdgeFrameVerdictOnGeneratedDispatchFrames records"),
     (f"{FIX}/dispatch-frame-verdicts.json", "packages/envoy-client/src/__tests__/dispatch-payload-reader.test.ts:21 readFileSync: renders every payload of readDispatchPayload's verdicts, which packages/envoy's TestDispatchPayloadIsEventAgreesWithTheHostsReading reads too"),
     (f"{ENVOY}/internal/dispatch/api/testdata/**", "packages/envoy-client/src/__tests__/askgate-new-asks.test.ts:23-30 reads the Dispatch server's table of decision-block inserts, which packages/envoy/internal/dispatch/api's TestDocumentEditAdviceCountsTheAskBlocksTheEditAdded reads too"),
     ("skills/**", "packages/envoy-client/src/__tests__/dispatch-advice.test.ts:2244 reads skills/<skill>/SKILL.md for every skill a notice cites"),

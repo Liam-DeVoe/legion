@@ -75,9 +75,9 @@ func readShape(raw json.RawMessage) (*jsonShape, error) {
 		var err error
 		switch keyword {
 		case "$schema", "$comment", "description", "title", "readOnly", "format":
-			// Annotations, which JSON Schema validates nothing by (main's #3512 marks a deleted
-			// item's origin readOnly); format is checked by the pattern zod writes beside it, and
-			// one without a pattern is refused below.
+			// Annotations, which JSON Schema validates nothing by (readOnly is an annotation: the
+			// schema marks a deleted item's origin with it); format is checked by the pattern zod
+			// writes beside it, and one without a pattern is refused below.
 		case "type":
 			var one string
 			if json.Unmarshal(value, &one) == nil {

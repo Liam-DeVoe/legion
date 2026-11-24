@@ -2,7 +2,7 @@ kind: Fixed
 body: |-
   An edge listener now passes a Dispatch frame (an envelope whose `source` is `dispatch`) only
   when its payload is an event the session's plugin shows, of a project the session's token lists
-  (`dispatchFrameWithheld`, `dispatchFrameEvent`). Before, Dispatch could send another
+  (`dispatchFrameWithheld`, `dispatchEventProject`). Before, Dispatch could send another
   project's event to an outside session by the session's name - an owner route, a claim, a
   document's or an author's route, a follow, the previous claimant, a mention, a targeted message,
   a role forward - on its own agent subject or its role's lane, under a topic that names no

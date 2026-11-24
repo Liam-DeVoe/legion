@@ -132,7 +132,7 @@ func withPayload(t *testing.T, frame []byte, payload string) []byte {
 }
 
 // TestEdgeFrameVerdictPassesADispatchFrameOnlyOfAListedProject holds the edge's frame rule to the
-// project of the Dispatch event a frame carries (dispatchFrameWithheld, dispatchFrameEvent).
+// project of the Dispatch event a frame carries (dispatchFrameWithheld, dispatchEventProject).
 // Dispatch sends an issue's event to a session by the session's name - the owner route, the
 // claimant, a primary document's author, an author route, a follower, the previous claimant, a
 // mention (the API's send, and the outbox's copy to a session whose mention failed), a targeted

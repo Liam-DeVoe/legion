@@ -4,17 +4,18 @@ import { readDispatchPayload } from "@legion/contracts";
 import { renderInbound } from "../delivery";
 import { parseFrameJSON } from "../frame-json";
 
-// The plugin's side of #5192's property: the generated Dispatch frames the edge listener passes on
-// a session's own agent subject for a token of PRIV, which TestEdgeFrameVerdictOnGeneratedDispatchFrames
+// The plugin's side of the edge's Dispatch property: the generated Dispatch frames the edge
+// listener passes on a session's own agent subject for a token of PRIV, which
+// TestEdgeFrameVerdictOnGeneratedDispatchFrames
 // (packages/envoy/cmd/listener/edge_dispatch_property_test.go, the one generator) records in
-// packages/contracts/fixtures/dispatch-frame-property.json with its own verdicts, must not reach the
-// session as a card that shows another project's event.
+// packages/contracts/fixtures/dispatch-frame-property.json with its own verdicts, must not reach
+// the session as a card that shows another project's event.
 //
 // The card is the frame rendered by renderInbound on the session's own agent subject; it shows
 // another project's event when it holds "PUB" or "pub-1". This plugin shows nothing of a Dispatch
-// payload readDispatchPayload reads no event of; a plugin before #5192 showed that payload whole,
-// so the oracle adds it back for such a frame, read as the plugin reads it (parseFrameJSON), and
-// holds the edge's rule alone, without the plugin's change behind it.
+// payload readDispatchPayload reads no event of; the plugin's earlier raw display showed that
+// payload whole, so the oracle adds it back for such a frame, read as the plugin reads it
+// (parseFrameJSON), and holds the edge's rule alone, without the plugin's change behind it.
 //
 // The oracle can fail: over the first frames the edge withholds, which the fixture records too, it
 // finds cards that show PUB, and a fixed frame - the token's project beside another project's
@@ -32,8 +33,8 @@ const fixture = JSON.parse(
 const session = "ses_v";
 const own = `notifications.agent.${session}`;
 
-/** The payload value a plugin before #5192 showed whole for a frame it read no event of, or
- *  undefined for a frame whose payload it read as an event. */
+/** The payload value the plugin's earlier raw display showed whole for a frame it read no event
+ *  of, or undefined for a frame whose payload it read as an event. */
 function rawShownPayload(frame: string): unknown {
   const envelope = JSON.parse(frame) as { readonly payload?: unknown };
   if (typeof envelope.payload !== "string") return undefined;

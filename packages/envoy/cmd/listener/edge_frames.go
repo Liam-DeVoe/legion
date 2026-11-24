@@ -44,12 +44,12 @@ const withheldAmbiguousKey = "ambiguous_key"
 const withheldPrototypeKey = "prototype_key"
 
 // withheldDispatchProjectUnread is the reason envoy_edge_github_withheld_total counts a Dispatch
-// frame under that the edge cannot place in a project (dispatchFrameEvent): no payload, a payload
-// the session's plugin reads as no event (contracts.DispatchPayloadIsEvent), an event that names
-// no project and no issue and is no person's message in the session's own conversation
-// (dispatchDirectMessage), or two projects that disagree. The frame cannot be shown to be of a
-// project the token lists, so it is withheld; the log line names its subject and this reason,
-// never its content.
+// frame under that the edge cannot place in a project: no payload, or a payload the session's
+// plugin reads as no event (dispatchFrameEvent, contracts.DispatchPayloadIsEvent), an event that
+// names no project and no issue and is no person's message in the session's own conversation
+// (dispatchDirectMessage), or two projects that disagree (dispatchEventProject). The frame cannot
+// be shown to be of a project the token lists, so it is withheld; the log line names its subject
+// and this reason, never its content.
 const withheldDispatchProjectUnread = "dispatch_project_unread"
 
 // frameKeyWithheld is the verdict on a frame whose read of a field the edge judges by answered err
@@ -114,7 +114,7 @@ func frameAnswerUnknownVerdict() frameVerdict {
 // key's fields as the envelope's own (errPrototypeFrameKey). A Dispatch frame (source "dispatch")
 // is withheld, on every branch and before its subject or topic is judged, unless its payload is an
 // event the session's plugin shows (contracts.DispatchPayloadIsEvent) of a project the token lists
-// (dispatchFrameWithheld, dispatchFrameEvent), or a person's message in the session's own
+// (dispatchFrameWithheld, dispatchEventProject), or a person's message in the session's own
 // conversation on its own agent subject (dispatchDirectMessage); one the edge cannot place in a
 // project is withheld under dispatch_project_unread.
 //
@@ -434,11 +434,11 @@ func dispatchEventProject(event map[string]json.RawMessage) (project string, nam
 // directMessageEventKeys and directMessageKeys are the keys a direct message's delivery frame may
 // hold in its event and in the event's payload (dispatchDirectMessage): the event's header, and the
 // message - its id, its sender, its body, its target, the thread it answers in the same
-// conversation, the broadcast it is a copy of, its times, its edit and delete marks (main's #3512)
-// and its attempts - which is all a person's message to a session in its own conversation carries
-// (message_delivery.go builds the frame from messageEvent and messageReplyThread.payload). A key of
-// neither list, such as an issue, a document, a project, references or thread logins, makes a
-// frame no direct message.
+// conversation, the broadcast it is a copy of, its times, its edit and delete marks ("edited_at",
+// "deleted_at", "deleted_by") and its attempts - which is all a person's message to a session in
+// its own conversation carries (message_delivery.go builds the frame from messageEvent and
+// messageReplyThread.payload). A key of neither list, such as an issue, a document, a project,
+// references or thread logins, makes a frame no direct message.
 var (
 	directMessageEventKeys = []string{"id", "issue_key", "artifact_id", "project", "seq", "type", "actor", "notify", "created_at", "payload"}
 	directMessageKeys      = []string{"id", "issue_key", "author", "body", "target", "in_reply_to", "broadcast_id",
@@ -458,9 +458,9 @@ var (
 // nothing else (the keys directMessageEventKeys and directMessageKeys name); an event naming a
 // document, a message aimed at another session or in another session's thread, or an event of any
 // other type is none, and is withheld as a frame the edge cannot place in a project. A comment
-// mention names its project on every send since #4683 (lockEventOwner stamps the first send's
-// event, and the re-sends read it back), so it never reaches here; one whose event names no project
-// is a comment.created event, which this refuses.
+// mention's event names its project on every send (lockEventOwner stamps the first send's event,
+// and a re-send reads it back), so it never reaches here; one whose event names no project is a
+// comment.created event, which this refuses.
 func dispatchDirectMessage(event map[string]json.RawMessage, delivery json.RawMessage, sessionID string) (bool, error) {
 	target := "session:" + sessionID
 	if !jsonKeysAmong(event, directMessageEventKeys...) || jsonText(event["type"]) != "message.created" ||
