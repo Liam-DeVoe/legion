@@ -16,14 +16,18 @@ import (
 // that is not reviewing, no pull request, no review, a request for changes, an approval that does
 // not stand - of a head the branch has left, or of a head a push is already on its way from - an
 // approval that stands on a head GitHub reports one the issue may advance on, in each of the
-// three spellings of that (record.MergeState.Mergeable), and an approval of the head of a pull
-// request that is not open: a merged one, whose state GitHub answers `unknown` for good, and a
-// closed one, whose recorded `blocked` waits on nothing until a reopen. Nor does it hold for an
+// three spellings of that (record.MergeState.Mergeable), or `blocked` with the head MERGEABLE once
+// every check run GitHub reported on that head has concluded (ChecksConcludedOnHead), and an
+// approval of the head of a pull request that is not open: a merged one, whose state GitHub
+// answers `unknown` for good, and a closed one, whose recorded `blocked` waits on nothing until a
+// reopen. Nor does it hold for an
 // approval of a head the record holds in a confirmed conflict with its base: that approval ends
 // its round whatever GitHub's state (dispatch://INFRA-4374 R0). It is true for the stuck round,
-// whose head GitHub has answered `blocked` or `behind` for, for the round still waiting for a
-// first answer, whose state is unread, and for a `dirty` head whose first conflicting read waits
-// for its second, alike: each waits on GitHub's next answer about the same head.
+// whose head GitHub has answered `behind` or `draft` for, for the round still waiting for a first
+// answer, whose state is unread, for a `blocked` head with no check run of its own concluded, its
+// CI still running, for a `blocked` head whose mergeability the record does not hold MERGEABLE,
+// and for a head whose first conflicting read waits for its second, alike: each
+// waits on GitHub's next answer about the same head.
 func TestARoundWaitsOnTheMergeStateOnlyWhereAnApprovalStandsOnAHeadGitHubWillNotMergeFrom(t *testing.T) {
 	const issue, head = "LEGION-208", "h2"
 	reviewing := record.Issue{Key: issue, Tree: issue, Phase: phase.Reviewing}
@@ -52,6 +56,26 @@ func TestARoundWaitsOnTheMergeStateOnlyWhereAnApprovalStandsOnAHeadGitHubWillNot
 	// The head GitHub answered `dirty` for once: the first read waits for its second.
 	firstRead := pullRequest(record.MergeStateDirty)
 	firstRead.ConflictRead = &record.ConflictRead{Head: head, Base: "main"}
+	// The head GitHub answered `blocked` and MERGEABLE for once every check run it reported there
+	// concluded: the merger's enqueue, not this state, is GitHub's answer about merging it, since a
+	// reader's `blocked` can be a rule about the reader or one the daemon cannot read.
+	concluded := pullRequest(record.MergeStateBlocked)
+	concluded.Mergeability = record.MergeabilityMergeable
+	concluded.CheckRuns = []record.AttemptRun{{Name: "unit", ID: 2, Head: head, Conclusion: record.RunSucceeded}}
+	// The same head with no mergeability on record: GitHub has not said the head merges cleanly.
+	concludedUnmerged := *concluded
+	concludedUnmerged.Mergeability = record.MergeabilityUnknown
+	// The same head with a review GitHub asked for and that is not given yet: a code owner's, a
+	// team's or a person's, which the merger would meet as a refusal.
+	concludedRequested := *concluded
+	concludedRequested.ReviewsRequested = 1
+	// The same head with a first conflicting read still waiting for its second.
+	concludedFirstRead := *concluded
+	concludedFirstRead.ConflictRead = &record.ConflictRead{Head: head, Base: "main"}
+	// The head GitHub answered `blocked` for whose only run is of the head before it: its own CI
+	// still runs.
+	running := pullRequest(record.MergeStateBlocked)
+	running.CheckRuns = []record.AttemptRun{{Name: "unit", ID: 1, Head: "h1", Conclusion: record.RunSucceeded}}
 
 	for _, tc := range []struct {
 		name     string
@@ -73,8 +97,14 @@ func TestARoundWaitsOnTheMergeStateOnlyWhereAnApprovalStandsOnAHeadGitHubWillNot
 		{"an approval of the head of a closed pull request", reviewing, approved(head), closed, false},
 		{"an approval of a head held in a confirmed conflict", reviewing, approved(head), conflicting, false},
 		{"an approval of a dirty head whose first conflicting read waits for its second", reviewing, approved(head), firstRead, true},
-		{"an approval of a head GitHub reports blocked", reviewing, approved(head), pullRequest(record.MergeStateBlocked), true},
+		{"an approval of a blocked head whose own check runs have all concluded", reviewing, approved(head), concluded, false},
+		{"an approval of a blocked head whose checks concluded and whose first conflicting read waits", reviewing, approved(head), &concludedFirstRead, true},
+		{"an approval of a blocked head whose checks concluded and whose mergeability GitHub has not answered", reviewing, approved(head), &concludedUnmerged, true},
+		{"an approval of a blocked head whose checks concluded and on which GitHub holds a review request open", reviewing, approved(head), &concludedRequested, true},
+		{"an approval of a blocked head whose only check run is of the head before it", reviewing, approved(head), running, true},
+		{"an approval of a blocked head GitHub reported no check run on", reviewing, approved(head), pullRequest(record.MergeStateBlocked), true},
 		{"an approval of a head GitHub reports behind", reviewing, approved(head), pullRequest(record.MergeStateBehind), true},
+		{"an approval of a head GitHub reports draft", reviewing, approved(head), pullRequest(record.MergeStateDraft), true},
 		{"an approval of a head GitHub has not been read for", reviewing, approved(head), pullRequest(record.MergeStateUnread), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -823,11 +823,18 @@ func (PullRequestChecks) namedIssue() (string, bool) { return "", false }
 // once it has. MergeState is
 // GitHub's own merge state for the head from the same answer's `mergeable_state`, and it is what
 // an approval standing on the head waits for: a state the issue may advance on
-// (record.MergeState.Mergeable) ends the round, and the issue moves on to its task's next step
-// (accepting, in the default steps); any other state leaves the
-// approval standing where it is and tells the architect and the reviewer so (workflow's
-// reviewRound). It tells a head GitHub holds on a check or a review the repository requires from
-// one GitHub would merge now, which Mergeable cannot.
+// (record.MergeState.Mergeable), or `blocked` with Mergeable MERGEABLE once every check run GitHub
+// reported on the head has concluded, ends the round, and the issue moves on to its task's next
+// step (accepting, in the default steps), where the merger's enqueue is GitHub's answer about the
+// merge; any other state leaves the approval standing where it is and tells the architect and the
+// reviewer so (workflow's reviewRound). It tells a head GitHub holds on a check that is still
+// running, a review, or a rule about the reader from one GitHub would merge now, which Mergeable
+// cannot.
+//
+// ReviewsRequested is how many review requests the same answer holds open (`requested_reviewers`
+// and `requested_teams`), which record.PullRequest.ReviewsRequested is written from beside
+// MergeState: a `blocked` head with a review still asked for waits for it rather than ending its
+// round. A fact minted by anything that did not read GitHub states it as it states MergeState.
 //
 // HeadSHA is the head GitHub answered both of them for, from the same answer's `head.sha`. Every
 // read fills it, and the engine records the answer only while the record still stands at that
@@ -861,8 +868,10 @@ type PullRequestMergeability struct {
 	HeadSHA    string
 	Mergeable  record.Mergeability
 	MergeState record.MergeState
-	ReadAt     time.Time
-	Rules      *record.BaseRules
+	// ReviewsRequested is the count of open review requests (above).
+	ReviewsRequested int
+	ReadAt           time.Time
+	Rules            *record.BaseRules
 }
 
 func (PullRequestMergeability) namedIssue() (string, bool) { return "", false }

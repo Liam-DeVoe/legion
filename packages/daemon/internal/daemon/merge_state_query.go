@@ -50,10 +50,11 @@ func (w *workflowRuntime) chunkSize() int {
 }
 
 // pullRequestFields is what a read of a base's batch asks GitHub of each pull request: its
-// number, whether it is open, its head, the base it sits on now, and GitHub's lazily computed
-// mergeability and merge state for that head, which a GET /pulls/{number} answers as `state`,
-// `head`, `base`, `mergeable` and `mergeable_state` (graphQLPull.githubPullRequest).
-const pullRequestFields = "number state headRefOid headRefName baseRefName mergeable mergeStateStatus"
+// number, whether it is open, its head, the base it sits on now, GitHub's lazily computed
+// mergeability and merge state for that head, and how many review requests it holds open, which a
+// GET /pulls/{number} answers as `state`, `head`, `base`, `mergeable`, `mergeable_state`,
+// `requested_reviewers` and `requested_teams` (graphQLPull.githubPullRequest).
+const pullRequestFields = "number state headRefOid headRefName baseRefName mergeable mergeStateStatus reviewRequests { totalCount }"
 
 // chunkQuery is the GraphQL query of numbers, pull requests of the repository $owner/$name: each
 // asked for by its number under its own alias (pullAlias), so one that GitHub cannot answer leaves
@@ -83,6 +84,9 @@ type graphQLPull struct {
 	BaseRefName      string `json:"baseRefName"`
 	Mergeable        string `json:"mergeable"`
 	MergeStateStatus string `json:"mergeStateStatus"`
+	ReviewRequests   struct {
+		TotalCount int `json:"totalCount"`
+	} `json:"reviewRequests"`
 }
 
 // githubPullRequest is p as GET /pulls/{number} answers the same pull request, the shape
@@ -90,9 +94,13 @@ type graphQLPull struct {
 // are its `closed`; its `mergeable` MERGEABLE, CONFLICTING and UNKNOWN are the REST `mergeable`
 // true, false and null; and its `mergeStateStatus` is the REST `mergeable_state` in capitals
 // (CLEAN, BLOCKED, BEHIND, DIRTY, DRAFT, HAS_HOOKS, UNSTABLE, UNKNOWN). A state outside those reads
-// as unknown, as a REST one does (githubPullRequest.mergeState).
+// as unknown, as a REST one does (githubPullRequest.mergeState). Its `reviewRequests` count is the
+// REST `requested_reviewers` and `requested_teams` together, people, Apps and teams alike, which
+// the REST shape holds as entries the record only counts (githubPullRequest.reviewsRequested); an
+// entry of an empty struct takes no memory.
 func (p graphQLPull) githubPullRequest() githubPullRequest {
-	pull := githubPullRequest{Number: p.Number, State: "closed", MergeableState: strings.ToLower(p.MergeStateStatus), Merged: p.State == "MERGED"}
+	pull := githubPullRequest{Number: p.Number, State: "closed", MergeableState: strings.ToLower(p.MergeStateStatus), Merged: p.State == "MERGED",
+		RequestedReviewers: make([]struct{}, p.ReviewRequests.TotalCount)}
 	if p.State == "OPEN" {
 		pull.State = "open"
 	}

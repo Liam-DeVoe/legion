@@ -164,7 +164,7 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 func (w *workflowRuntime) applyMergeability(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest, readAt time.Time, eventID string) error {
 	base, mergeable, state := pull.Base.Ref, pull.mergeability(), pull.mergeState()
 	fact := intake.PullRequestMergeability{Repo: pr.Repo, Number: pr.Number, Base: base, HeadSHA: pull.Head.SHA,
-		Mergeable: mergeable, MergeState: state, ReadAt: readAt}
+		Mergeable: mergeable, MergeState: state, ReviewsRequested: pull.reviewsRequested(), ReadAt: readAt}
 	if mergeable == record.MergeabilityConflicting {
 		if base == "" {
 			base = pr.Base

@@ -984,6 +984,15 @@ type PullRequest struct {
 	// required checks or reviews (MergeStateBlocked) from one GitHub would merge now
 	// (MergeStateClean): GitHub answers `mergeable: true` for both.
 	MergeState MergeState
+	// ReviewsRequested is how many review requests GitHub holds open on the pull request
+	// (`requested_reviewers` and `requested_teams`), read from the same /pulls/{number} answer as
+	// MergeState and cleared and carried with it. A review GitHub asked a code owner, a team or a
+	// person for and that is not given yet is the one cause of a `blocked` head the daemon can read
+	// without a ruleset: the round does not end on `blocked` while one is open
+	// (classify.RoundWaitsOnMergeState). GitHub does not ask again after it dismisses an approval,
+	// so 0 does not say that no review is required; the merger's enqueue names any review still
+	// required. 0 is also what a row written before migration 20261124130001 holds.
+	ReviewsRequested int
 	// StateReadAt is the moment the daemon last got GitHub's answer about the merge state of the
 	// head this record stands at, taken from the reader's own clock when that answer was in hand.
 	// This is the one full account of the stamp; every other comment that needs part of it points
@@ -1291,6 +1300,8 @@ type Judgement struct {
 	Moves        []Move         `json:"moves,omitempty"`
 	Mergeability Mergeability   `json:"mergeability,omitempty"`
 	MergeState   MergeState     `json:"mergeState,omitempty"`
+	// omitempty, so a run anchored before the field reads as it did (PullRequest.ReviewsRequested).
+	ReviewsRequested int `json:"reviewsRequested,omitempty"`
 	// omitzero, as HeadRun.Since and Named.At are: omitempty leaves a zero time in the JSON. A run
 	// anchored before any read answered carries none, and so does one anchored before migration
 	// 20261112070503 (PullRequest.StateReadAt says what that means).

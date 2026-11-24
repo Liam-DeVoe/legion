@@ -72,7 +72,9 @@ func (w *workflowRuntime) unapplied(ctx context.Context, eventID string) bool {
 // and MergeCommitSHA are whether GitHub merged it and the commit the merge made, which the
 // merge-queue read applies as the merge (outbox's mergeQueueRead): GitHub answers a merged pull
 // request `closed`, so State alone cannot tell a merge from a close. The list leaves Merged out,
-// and only the read of one pull request names it.
+// and only the read of one pull request names it. RequestedReviewers and RequestedTeams are the
+// review requests GitHub holds open on the pull request, each one person, App or team asked for a
+// review not given yet (reviewsRequested).
 type githubPullRequest struct {
 	Number  int    `json:"number"`
 	State   string `json:"state"`
@@ -85,11 +87,21 @@ type githubPullRequest struct {
 		Ref string `json:"ref"`
 		SHA string `json:"sha"`
 	} `json:"head"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	Mergeable      *bool     `json:"mergeable"`
-	MergeableState string    `json:"mergeable_state"`
-	Merged         bool      `json:"merged"`
-	MergeCommitSHA string    `json:"merge_commit_sha"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	Mergeable          *bool      `json:"mergeable"`
+	MergeableState     string     `json:"mergeable_state"`
+	Merged             bool       `json:"merged"`
+	MergeCommitSHA     string     `json:"merge_commit_sha"`
+	RequestedReviewers []struct{} `json:"requested_reviewers"`
+	RequestedTeams     []struct{} `json:"requested_teams"`
+}
+
+// reviewsRequested is how many review requests GitHub holds open on the pull request, people and
+// Apps and teams alike, which the record keeps beside the merge state
+// (record.PullRequest.ReviewsRequested): a `blocked` head with one open waits for that review
+// rather than ending its round (classify.RoundWaitsOnMergeState).
+func (p githubPullRequest) reviewsRequested() int {
+	return len(p.RequestedReviewers) + len(p.RequestedTeams)
 }
 
 // mergeability is the pull request's `mergeable` as the mergeability fact reads it: null

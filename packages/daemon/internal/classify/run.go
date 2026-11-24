@@ -103,7 +103,7 @@ func replayRun(pr record.PullRequest) record.PullRequest {
 	// new head judges the move to it like any other (advance), from the verdict the run was
 	// anchored with.
 	if pr.MergeState != record.MergeStateUnread && at.HeadSHA == pr.HeadSHA {
-		at.Mergeability, at.MergeState, at.StateReadAt = pr.Mergeability, pr.MergeState, pr.StateReadAt
+		at.Mergeability, at.MergeState, at.ReviewsRequested, at.StateReadAt = pr.Mergeability, pr.MergeState, pr.ReviewsRequested, pr.StateReadAt
 	}
 	waiting := len(run.Steps)
 	for _, i := range unchained {
@@ -246,7 +246,7 @@ func judgementOf(pr record.PullRequest) record.Judgement {
 	return record.Judgement{HeadSHA: pr.HeadSHA,
 		CheckedHead: pr.CheckedHead, Failing: clone(pr.Failing), Cancelled: clone(pr.Cancelled), CheckRuns: clone(pr.CheckRuns),
 		Generation: pr.Generation, Snapshot: pr.Snapshot, Statuses: clone(pr.Statuses), Moves: clone(pr.Moves),
-		Mergeability: pr.Mergeability, MergeState: pr.MergeState, StateReadAt: pr.StateReadAt}
+		Mergeability: pr.Mergeability, MergeState: pr.MergeState, ReviewsRequested: pr.ReviewsRequested, StateReadAt: pr.StateReadAt}
 }
 
 // withJudgement is pr with j as its judgement. GitHub's verdict on merging the head, and the time
@@ -264,7 +264,7 @@ func withJudgement(pr record.PullRequest, j record.Judgement) record.PullRequest
 	pr.Generation, pr.Snapshot, pr.Statuses = j.Generation, j.Snapshot, clone(j.Statuses)
 	pr.Moves = clone(j.Moves)
 	if pr.MergeState == record.MergeStateUnread {
-		pr.Mergeability, pr.MergeState, pr.StateReadAt = j.Mergeability, j.MergeState, j.StateReadAt
+		pr.Mergeability, pr.MergeState, pr.ReviewsRequested, pr.StateReadAt = j.Mergeability, j.MergeState, j.ReviewsRequested, j.StateReadAt
 	}
 	return pr
 }
