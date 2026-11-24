@@ -61,13 +61,14 @@ import (
 
 // promptShutdown bounds a SIGTERM's whole ordered shutdown with a dashboard open. Closing the
 // sockets, finishing the requests in flight and settling one small document take milliseconds; a
-// connection that held the HTTP drain open would cost the scene's whole drain share, which is past
-// the run there (stagedPastTheRun), and httpDrainBeforeDocuments, eleven seconds, in a deployment.
+// connection that held the HTTP drain open would cost the scene's whole drain share, which ends at
+// the test's give-up there (endsAtTheGiveUp), and httpDrainBeforeDocuments, eleven seconds, in a
+// deployment.
 const promptShutdown = 3 * time.Second
 
 // stagedPastTheRun is what a row stages a bound or a TTL the product judges against its own clock
-// at, where the row needs the product never to reach it: a settle delay, an intake's hold. It is
-// longer
+// at, where the row needs the product never to reach it: a settle delay, an intake's hold, a
+// peer's heartbeat, the expiry of an installation token a GitHub stand-in answers. It is longer
 // than any go test -timeout CI gives this package (the multiprocess job's 35 minutes, every other
 // lane's under 80), so no run reaches it. It is staged state, not a wait: no wait of a test reads
 // it, and each wait the rows make still ends at the shared wait's give-up (testwait).
@@ -86,8 +87,9 @@ const streamedSessionID = "01a0e090-4848-7473-acc5-fc96e6a646d3"
 // the signal can reach the document service after it, so this child is given a settle delay past
 // the run (stagedPastTheRun): the edit's settlement is still owed when the signal comes, and
 // Shutdown is always the one that runs it. The child's HTTP drain share and its document service's
-// budget are past the run too, so how long a loaded machine takes over either ends neither: the
-// drain ends only once the requests in flight have, and the settlement only once it has run.
+// budget end at the test's give-up (endsAtTheGiveUp), so however long a loaded machine takes over
+// either, neither ends before the test's own waits would give up: the drain ends once the requests
+// in flight have, and the settlement once it has run.
 func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing.T) {
 	sigtermWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t, benchtime.EveryRun)
 }
@@ -137,9 +139,10 @@ func sigtermWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing.T, 
 			t.Errorf("%s ended with %v, want the server to close it with 1012", name, ended.err)
 		}
 	}
-	// The drain's share is past the run, so a drain that no request in flight holds open ends
-	// before it, and the line that says the share ran out can come only from a defect that held the
-	// drain - one that, with this share, keeps the process from exiting at all (waitPromptExit).
+	// The drain's share ends at the test's give-up, so a drain that no request in flight holds open
+	// ends before it, and the line that says the share ran out can come only from a defect that held
+	// the drain - one that, with this share, keeps the process up until the give-up, where
+	// waitPromptExit fails.
 	if output := process.Output.String(); strings.Contains(output, `msg="dispatch: shutdown"`) ||
 		strings.Contains(output, "requests still in flight") {
 		t.Errorf("HTTP shutdown did not drain before the document service started")
@@ -154,10 +157,11 @@ func sigtermWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing.T, 
 // timer never settles it and Shutdown's settlement is the one owed settlement there is; the lock is
 // released once that settlement is queued behind it, behind the title change. Shutdown's worker
 // starts its settlement only once it has read that the document owes one, so that settlement's
-// place in the queue is the fact the release needs. The document service's budget is past the run
-// too, so the settlement waits on the lock for as long as the row takes to see it queued and
-// release the lock, and never gives up on its own; the drain's share keeps production's eleven
-// seconds, since the row waits for that share to run out (its line) and nothing ends sooner for it.
+// place in the queue is the fact the release needs. The document service's budget ends at the
+// test's give-up (endsAtTheGiveUp), so the settlement waits on the lock for as long as the row
+// takes to see it queued and release the lock, and gives up no sooner than the row's own waits
+// would; the drain's share keeps production's eleven seconds, since the row waits for that share to
+// run out (its line) and nothing ends sooner for it.
 func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *testing.T) {
 	database := storetest.Open(t)
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
@@ -762,11 +766,12 @@ func intakeLeasesOf(t *testing.T, pool *store.Pool) delivery.IntakeLeases {
 // githubAnswersAfterSignal is how long into the stop the fake GitHub of
 // TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool holds a merged pull request's fetch: a
 // GitHub call that answers a few seconds into the stop, as a REST call can. It is the stand-in's
-// own latency, not a window the row leans on: the row gives the intakes a stop budget and a hold
-// past its run (delivery.IntakeBounds, stagedPastTheRun), and its App client a bound past its run
-// on each call (testGitHubApp), so a stop that waits for the handler sees it finish rather than
-// give up however long a loaded machine takes. A stop that closed the pool first would close it
-// inside these seconds, and nothing the product reports marks that moment for a gate.
+// own latency, not a window the row leans on: the row gives the intakes a hold past its run
+// (delivery.IntakeBounds' HoldTTL, stagedPastTheRun) and a stop that ends at the test's give-up
+// (its StopDeadline), and its App client calls that end at the give-up too (testGitHubApp), so a
+// stop that waits for the handler sees it finish rather than give up however long a loaded machine
+// takes. A stop that closed the pool first would close it inside these seconds, and nothing the
+// product reports marks that moment for a gate.
 const githubAnswersAfterSignal = 3 * time.Second
 
 // An intake handler waiting on GitHub when the signal comes holds no database connection, so on an
@@ -774,9 +779,10 @@ const githubAnswersAfterSignal = 3 * time.Second
 // closes the pool: GitHub answers a few seconds into the stop, and the handler's writes land and its
 // message is acknowledged. With the pool closed under it, the handler's write failed and its
 // message was acknowledged all the same, which left the event to the reconcile minutes later. The
-// intakes' stop budget and their hold are past the run, so neither a stop that gives the handler up
-// at production's fifteen seconds nor a hold lost to a renewal late on a loaded machine (which
-// gives the handler up too, and hands its message back) can stand in for the stop's wait.
+// intakes' hold is past the run and their stop ends at the test's give-up, so neither a stop that
+// gives the handler up at production's fifteen seconds nor a hold lost to a renewal late on a
+// loaded machine (which gives the handler up too, and hands its message back) can stand in for the
+// stop's wait.
 func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 	database := storetest.Open(t)
 	// The fetched pull request's author is outside the population, so the handler deletes any row
@@ -810,7 +816,7 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 	})
 	github.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_shutdown", "expires_at": time.Now().Add(time.Hour).Format(time.RFC3339)})
+		_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_shutdown", "expires_at": time.Now().Add(stagedPastTheRun).Format(time.RFC3339)})
 	})
 	github.HandleFunc("GET /repos/acme/widgets/pulls/7", func(w http.ResponseWriter, r *http.Request) {
 		enter.Do(func() { close(entered) })
@@ -897,8 +903,9 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 	if err := reader.QueryRow(context.Background(), `select last_event_at from delivery_settings`).Scan(&recorded); err != nil {
 		t.Fatalf("read last_event_at: %v", err)
 	}
-	// The intakes' stop and hold are past the run, so the handler finishes rather than being given
-	// up. Its acknowledgement is on its way to the server once the stop returns.
+	// The intakes' hold is past the run and their stop ends at the test's give-up, so the handler
+	// finishes rather than being given up. Its acknowledgement is on its way to the server once the
+	// stop returns.
 	var info *natsgo.ConsumerInfo
 	testwait.Eventually(t, "the message to be acknowledged", func() bool {
 		info = consumer()
@@ -1165,8 +1172,9 @@ func (p *dispatchProcess) renameIssue(key, title string) (int, error) {
 
 // A deploy usually finds someone with a document open: the spec tab holds the document's websocket,
 // so its room is loaded with an editor connected. The test gives its test-only process a settle
-// delay past the run, so only Shutdown can version the edit, and a document service budget past the
-// run, so the settlement runs however long a loaded machine takes over it.
+// delay past the run (stagedPastTheRun), so only Shutdown can version the edit, and a document
+// service budget that ends at the test's give-up (endsAtTheGiveUp), so the settlement runs however
+// long a loaded machine takes over it, up to the moment the test's own waits would give up.
 func TestSIGTERMWithAnEditorConnectedSettlesItsDocumentBeforeExit(t *testing.T) {
 	database := storetest.Open(t)
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
@@ -1780,9 +1788,9 @@ type dispatchProcess struct {
 	*cmdtest.Process
 	port int
 	// database is the Postgres database the test gave the process (DATABASE_URL's). The wait
-	// for the event feed's events_start needs it to judge a horizon stall, which an event write of
-	// that database holds, as the process's own hold past horizontest.OwnHoldBound
-	// (live_events_wait_test.go).
+	// for the event feed's events_start (waitEventsStart) hands it to horizontest.Wait, whose
+	// account, when the wait gives up, names a holder of the horizon in that database, with its
+	// client and how long its transaction held the horizon back.
 	database string
 	// databaseURL is the URL the test gave the process (DATABASE_URL). A start that exits before
 	// it is healthy reads the server's connection ceiling through it when Postgres refused the
@@ -1930,9 +1938,10 @@ func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatch
 		"DISPATCH_TEST_HORIZON_STALL_AFTER": horizontest.StallWarning.String(),
 		"DISPATCH_TEST_HORIZON_WARN_EVERY":  horizontest.StallWarning.String(),
 		// The boot exits 1 when its publish of the dashboard build outruns its bound, a minute in a
-		// deployment, and every row waits on a boot: the bound is past the run, so a loaded
-		// machine's slow publish is a slow boot and never a failed one. A binary of an earlier build,
-		// which has no such setting, reads nothing of it.
+		// deployment, and every row waits on a boot: the bound is the test's give-up
+		// (endsAtTheGiveUp), so a loaded machine's slow publish is a slow boot and never a failed
+		// one before the test's own waits would give up. A binary of an earlier build, which has no
+		// such setting, reads nothing of it.
 		"DISPATCH_TEST_DASHBOARD_PUBLISH_DEADLINE": endsAtTheGiveUp(t),
 	}
 	if options.NATSURL == "" {

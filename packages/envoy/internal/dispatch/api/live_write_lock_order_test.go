@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
@@ -114,7 +113,7 @@ func newUploadRaceFixture(t *testing.T) *uploadRaceFixture {
 			Store:       database,
 			Persistence: f.persistence,
 			Identity:    headerIdentity(database),
-			Settle:      time.Hour,
+			Settle:      stagedAhead,
 		})
 		// Runs before the service shuts down: a failed assertion must not leave the upload
 		// held inside its transaction.

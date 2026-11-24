@@ -40,7 +40,7 @@ import (
 // reconciliation of its asks' own references on short questions, planAskReferences), and
 // reaching it needs the reworded state an earlier release leaves.
 
-// xidService is a document service on a traced pool of a fresh database, settling after an hour so
+// xidService is a document service on a traced pool of a fresh database, settling after a day so
 // only the settlement a test runs itself settles. Its document store and its identity check every
 // call (checkedVersioned, collabtest.CheckedIdentity): none may run inside a transaction's xid
 // window, from its first write to its end (store.InXidWindow); and the tracer fails the test for
@@ -55,7 +55,7 @@ func xidService(t *testing.T) (*Service, *store.Store, *storetest.XidTracer) {
 		Events:      events.NewBroker(),
 		Identity:    collabtest.CheckedIdentity(t, headerIdentity(database)),
 		ServerURL:   "https://dispatch.example",
-		Settle:      time.Hour,
+		Settle:      stagedAhead,
 	})
 	t.Cleanup(func() {
 		if err := docstest.Shutdown(t, context.Background(), service); err != nil {

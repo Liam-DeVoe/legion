@@ -9,7 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
 
@@ -321,7 +320,7 @@ func roomLoadService(t *testing.T) (*Service, *PgVersioned, *roomDecodes) {
 	t.Helper()
 	database := storetest.Open(t)
 	versioned := NewPgVersioned(database)
-	service := New(Deps{Store: database, Persistence: versioned, Events: events.NewBroker(), Settle: time.Hour})
+	service := New(Deps{Store: database, Persistence: versioned, Events: events.NewBroker(), Settle: stagedAhead})
 	decodes := &roomDecodes{states: make(map[string][][]byte)}
 	service.bootstrapping = decodes.decoded
 	t.Cleanup(func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })

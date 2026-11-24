@@ -395,7 +395,7 @@ func TestMarkThreadReadRefusesWhatItCannotStore(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Refusals", "A spec")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Root"}, "alice")
-	if response := markThreadRead(t, handler, "alice", root.ID, time.Now().Add(2*time.Minute)); response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_STATE"`) {
+	if response := markThreadRead(t, handler, "alice", root.ID, time.Now().Add(stagedAhead)); response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_STATE"`) {
 		t.Fatalf("future mark: status=%d body=%s", response.Code, response.Body.String())
 	}
 	if response := markThreadRead(t, handler, "alice", "not-a-uuid", time.Now()); response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"THREAD_ID_INPUT"`) {

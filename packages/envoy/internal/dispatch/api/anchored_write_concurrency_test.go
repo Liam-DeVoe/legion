@@ -39,7 +39,7 @@ func TestConcurrentAnchoredWritesDoNotWedgeTheirPool(t *testing.T) {
 	const maxConns = 4
 	for _, writers := range []int{maxConns, maxConns * 2} {
 		t.Run(fmt.Sprintf("writers=%d", writers), func(t *testing.T) {
-			handler, _ := pooledDocumentHandler(t, maxConns, time.Hour)
+			handler, _ := pooledDocumentHandler(t, maxConns, stagedAhead)
 			handler = withDeadline(t, handler)
 			issue := createInteractionIssue(t, handler, "TEST", "Anchored concurrency",
 				"alpha bravo charlie delta echo foxtrot golf hotel")

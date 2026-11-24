@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -257,8 +256,9 @@ func TestAVersionCommittedWhileTheFillRunsIsNotReplacedByTheOlderOneItRead(t *te
 	// later by default here, and a settlement that comes due after that write finds the stored
 	// latest version is not the one its room holds and writes the room's text as a further
 	// version (docs' writeVersionTx), which 20261101182454's trigger puts in document_search in
-	// place of the row this test reads. An hour holds that settlement past the test instead.
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	// place of the row this test reads. A day (stagedAhead) holds that settlement past the test
+	// instead.
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	issue := createInteractionIssue(t, handler, "RACE", "Range survey", "The herd crosses the plateau in spring.")
 	undoDocumentSearch(t, database)
 	notes := uploadIssueDocument(t, handler, issue.Key, "field-notes.md", "# Field notes\n\nQuagga sightings in the north.\n")

@@ -22,7 +22,7 @@ import (
 // closed with their issue without ever loading.
 func TestCloseGatesDoNotOutliveTheirRooms(t *testing.T) {
 	service, first := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	ctx := context.Background()
 	generation := owedStamp(t, service, first)
 	service.settleRoom(first, generation) // a repair (applySuppressed)
@@ -62,7 +62,7 @@ func TestCloseGatesDoNotOutliveTheirRooms(t *testing.T) {
 // holds the document's lock, which a failed room's close compacts under (roomServer).
 func TestARepairRefusesRatherThanWaitsForACloseUnderWay(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	generation := owedStamp(t, service, artifactID)
 
 	closing := service.srv.acquireGate(artifactID)
@@ -98,7 +98,7 @@ func TestARepairRefusesRatherThanWaitsForACloseUnderWay(t *testing.T) {
 // holdOpen refuses and releases the gate it acquired for the check.
 func TestHoldOpenRefusesRoomThatNoLongerHoldsItsDocument(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	owedStamp(t, service, artifactID)
 	doc := service.srv.GetDoc(artifactID)
 	if doc == nil {
@@ -140,7 +140,7 @@ func TestACancelledEvictionLeavesTheFailedRoomForItsOwnEviction(t *testing.T) {
 	server := websocket.NewServer()
 	// Only to keep ygo's idle sweep away from the room the test holds open: that sweep reads the
 	// wall clock inside ygo (provider/websocket/idle_sweep.go), so no clock of the test's reaches it.
-	server.RoomIdleTimeout = time.Hour
+	server.RoomIdleTimeout = stagedAhead
 	service := &Service{srv: newRoomServer(server)}
 	entered, release, applied := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	evicting, evict := make(chan struct{}), make(chan struct{})

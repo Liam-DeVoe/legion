@@ -472,10 +472,10 @@ func TestATargetedMessageDeletedDuringItsLastTryIsNotQueued(t *testing.T) {
 	t.Cleanup(listener.Close)
 	// A window already spent leaves one try, so the send held here is the last: the server's
 	// take-over window (Deps.ListenerTakeoverWindow, which a real-clock test server sets to
-	// testTakeoverWindow) is set spent before the server takes any request, as a row whose outcome
-	// is that no near-copy check was made spends the gate's bound (spentGateBound).
-	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
-	served.deps.ListenerTakeoverWindow = -time.Nanosecond
+	// testTakeoverWindow) is given spent as the server is built (testServerOptions.takeoverWindow),
+	// as a row whose outcome is that no near-copy check was made spends the gate's bound
+	// (spentGateBound).
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, takeoverWindow: -time.Nanosecond})
 	answerSend := sync.OnceFunc(func() { close(release) })
 	t.Cleanup(answerSend)
 	issue := createInteractionIssue(t, handler, "TEST", "A message deleted during its last try", "before")

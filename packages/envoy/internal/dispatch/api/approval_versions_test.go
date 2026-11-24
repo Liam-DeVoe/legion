@@ -35,7 +35,7 @@ func TestApprovalRequestFollowsDocumentVersions(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
@@ -165,7 +165,7 @@ func TestApprovalHandBackWaitsOnTheHuman(t *testing.T) {
 		t.Run(flow.name, func(t *testing.T) {
 			var documentService *docs.Service
 			handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-				documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
+				documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 				t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 				return documentService
 			})
@@ -331,7 +331,7 @@ func TestARewordlessHandBackKeepsTheQuestionsRevision(t *testing.T) {
 		t.Run(flow.name, func(t *testing.T) {
 			var documentService *docs.Service
 			handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-				documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
+				documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 				t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 				return documentService
 			})
@@ -525,7 +525,7 @@ func TestHeaderReviewAnswersMovedApprovalAskBeforeTheAgentHandsItBack(t *testing
 		t.Run(review.name, func(t *testing.T) {
 			var documentService *docs.Service
 			handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-				documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
+				documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 				t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 				return documentService
 			})
@@ -672,10 +672,10 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 		editor     model.Actor
 		askerHears bool
 	}{
-		{"an edit", time.Hour, func(t *testing.T, doc *document) {
+		{"an edit", stagedAhead, func(t *testing.T, doc *document) {
 			edit(t, doc.handler, doc.artifactID, map[string]any{"summary": "revise"})
 		}, 1, asker, false},
-		{"an edit with no summary", time.Hour, func(t *testing.T, doc *document) {
+		{"an edit with no summary", stagedAhead, func(t *testing.T, doc *document) {
 			edit(t, doc.handler, doc.artifactID, map[string]any{})
 		}, 1, asker, false},
 		{"a write only settlement versions", 20 * time.Millisecond, func(t *testing.T, doc *document) {
@@ -703,7 +703,7 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 				}
 			})
 		}, 1, alice, true},
-		{"a named version", time.Hour, func(t *testing.T, doc *document) {
+		{"a named version", stagedAhead, func(t *testing.T, doc *document) {
 			if _, err := replaceDocumentText(doc.database, doc.documentService, doc.artifactID, "A revised spec", alice); err != nil {
 				t.Fatalf("revise document: %v", err)
 			}
@@ -711,7 +711,7 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 				t.Fatalf("name a version: status=%d body=%s", named.Code, named.Body.String())
 			}
 		}, 1, alice, true},
-		{"an upload", time.Hour, func(t *testing.T, doc *document) {
+		{"an upload", stagedAhead, func(t *testing.T, doc *document) {
 			if uploaded := sessionRequest(t, doc.handler, http.MethodPost, "/api/v1/issues/"+doc.issueKey+"/artifacts", map[string]any{
 				"actor": sessionActor(), "name": "spec.md", "content": "A revised spec",
 				"precondition": uploadBase(t, doc.handler, doc.artifactID),
@@ -719,11 +719,11 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 				t.Fatalf("upload a version: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 			}
 		}, 1, asker, false},
-		{"two connected peers where the second types", time.Hour, func(t *testing.T, doc *document) {
+		{"two connected peers where the second types", stagedAhead, func(t *testing.T, doc *document) {
 			connect(t, doc, secondHumanPeer)
 			typeNote(t, connect(t, doc, humanPeer), "A note from bob.")
 		}, 2, docs.SettlementActor, true},
-		{"an earlier author and the next browser editor", time.Hour, func(t *testing.T, doc *document) {
+		{"an earlier author and the next browser editor", stagedAhead, func(t *testing.T, doc *document) {
 			earlierCtx := context.Background()
 			earlierTx, err := doc.database.Pool.Begin(earlierCtx)
 			if err != nil {
@@ -753,7 +753,7 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 			}
 			typeNote(t, connect(t, doc, humanPeer), "A note from bob.")
 		}, 2, bob, true},
-		{"an agent's joined write and a human's typing in one settlement window", time.Hour, func(t *testing.T, doc *document) {
+		{"an agent's joined write and a human's typing in one settlement window", stagedAhead, func(t *testing.T, doc *document) {
 			typist := connect(t, doc, humanPeer)
 			ctx := context.Background()
 			tx, err := doc.database.Pool.Begin(ctx)
@@ -777,11 +777,11 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 			typist.barrier(t)
 			typeNote(t, typist, "A note from bob.")
 		}, 2, bob, true},
-		{"a human's typing and then an agent's edit that versions both", time.Hour, func(t *testing.T, doc *document) {
+		{"a human's typing and then an agent's edit that versions both", stagedAhead, func(t *testing.T, doc *document) {
 			typeNote(t, connect(t, doc, humanPeer), "A note from bob.")
 			edit(t, doc.handler, doc.artifactID, map[string]any{})
 		}, 2, asker, false},
-		{"the only connected peer types", time.Hour, func(t *testing.T, doc *document) {
+		{"the only connected peer types", stagedAhead, func(t *testing.T, doc *document) {
 			typeNote(t, connect(t, doc, humanPeer), "A note from bob.")
 		}, 1, bob, true},
 	} {
@@ -847,7 +847,7 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 	}
 
 	t.Run("a write that versions nothing", func(t *testing.T) {
-		doc := open(t, time.Hour)
+		doc := open(t, stagedAhead)
 		unchanged := sessionRequest(t, doc.handler, http.MethodPost, "/api/v1/artifacts/"+doc.artifactID+"/edits", map[string]any{
 			"ops":     []map[string]string{{"op": "replace", "find": "A spec", "with": "A spec"}},
 			"summary": "nothing", "actor": sessionActor(),
@@ -866,7 +866,7 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 	t.Run("a version no writer is credited with", func(t *testing.T) {
 		// Settlement can version a change it credits to nobody, such as one written before a room
 		// reload; it is the actor of the moved approval event.
-		doc := open(t, time.Hour)
+		doc := open(t, stagedAhead)
 		ctx := context.Background()
 		tx, err := doc.database.Pool.Begin(ctx)
 		if err != nil {

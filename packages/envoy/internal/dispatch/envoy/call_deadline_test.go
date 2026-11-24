@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -40,7 +41,7 @@ func TestACallDeadlineEndsAHeldSendAtItsOwnMoment(t *testing.T) {
 	t.Run("a moment", func(t *testing.T) {
 		fake := clocktest.New(start)
 		deadline := start.Add(2 * CallWindow)
-		answered := send(context.Background(), New(listener.URL, WithClock(fake), WithCallDeadline(CallsEndAt(deadline, true))))
+		answered := send(context.Background(), New(listener.URL, WithClock(fake), WithCallDeadline(clock.DeadlineAt(deadline, true))))
 		testwait.Receive(t, "the held send to reach the listener", reached)
 		if armed := fake.AwaitArmed(t, "the send's window", 1); !armed[0].Equal(deadline) {
 			t.Fatalf("the send's window ends at %v, want the deadline %v", armed[0], deadline)
@@ -59,7 +60,7 @@ func TestACallDeadlineEndsAHeldSendAtItsOwnMoment(t *testing.T) {
 		fake := clocktest.New(start)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		answered := send(ctx, New(listener.URL, WithClock(fake), WithCallDeadline(CallsEndAt(time.Time{}, false))))
+		answered := send(ctx, New(listener.URL, WithClock(fake), WithCallDeadline(clock.DeadlineAt(time.Time{}, false))))
 		testwait.Receive(t, "the held send to reach the listener", reached)
 		// The window is armed before the request leaves (roundTrip), so a send at the listener
 		// has armed whatever window it has.
@@ -71,33 +72,4 @@ func TestACallDeadlineEndsAHeldSendAtItsOwnMoment(t *testing.T) {
 			t.Fatalf("a send with no end, its context cancelled = %v, want the context's error", err)
 		}
 	})
-}
-
-// A deadline's written form reads back as itself: a moment in RFC 3339 with its nanoseconds, and
-// none for no end. Anything else is refused, the zero value's empty form among it, and a bounded
-// deadline at the zero time, which would read as CallWindow, cannot be made.
-func TestACallDeadlineReadsBackAsWritten(t *testing.T) {
-	for _, deadline := range []CallDeadline{
-		CallsEndAt(time.Date(2026, time.November, 24, 12, 0, 0, 123456789, time.UTC), true),
-		CallsEndAt(time.Time{}, false),
-	} {
-		read, err := ParseCallDeadline(deadline.String())
-		if err != nil || read.String() != deadline.String() {
-			t.Errorf("ParseCallDeadline(%q) = %q, %v; want %q", deadline, read, err, deadline)
-		}
-	}
-	if written := CallsEndAt(time.Time{}, false).String(); written != "none" {
-		t.Errorf("a deadline with no end is written %q, want none", written)
-	}
-	for _, invalid := range []string{"", "5s", "2026-11-24", "never"} {
-		if read, err := ParseCallDeadline(invalid); err == nil {
-			t.Errorf("ParseCallDeadline(%q) = %q, want a refusal", invalid, read)
-		}
-	}
-	defer func() {
-		if recover() == nil {
-			t.Error("CallsEndAt(the zero time, bounded) made a deadline, want a panic")
-		}
-	}()
-	CallsEndAt(time.Time{}, true)
 }

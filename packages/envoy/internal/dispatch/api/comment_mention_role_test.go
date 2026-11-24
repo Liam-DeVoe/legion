@@ -227,7 +227,7 @@ func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
 	var mu sync.Mutex
 	var sent []string
 	var gaveUp []mentionKey
-	sender := newMentionSender(lifetime, time.Hour, nil,
+	sender := newMentionSender(lifetime, stagedAhead, nil,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) {
 			if item.comment.ID == "first" {
 				once.Do(func() { close(started) })
@@ -288,7 +288,7 @@ func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
 func TestEverySendOnAHeldLaneIsCounted(t *testing.T) {
 	t.Parallel()
 	lifetime, stop := context.WithCancel(context.Background())
-	sender := newMentionSender(lifetime, time.Hour, nil,
+	sender := newMentionSender(lifetime, stagedAhead, nil,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) { return item, true },
 		func(_ context.Context, queued []mentionClaim) ([]mentionClaim, error) { return queued, nil },
 		rereadNone,

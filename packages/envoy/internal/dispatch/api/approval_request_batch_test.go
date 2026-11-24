@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
@@ -29,7 +28,7 @@ import (
 func TestApprovalRequestsSentAtOnceReadTheirApprovalInTheirTransaction(t *testing.T) {
 	t.Parallel()
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documents := docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		documents := docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 		return documents
 	})
@@ -199,7 +198,7 @@ func TestApprovalRequestsCostAtMostTwentyFourRoundTrips(t *testing.T) {
 		identity: headerIdentity(database),
 		// A settlement of the document is database work of its own on the same pool; a delay no
 		// test run reaches keeps it out of the count.
-		settle: time.Hour,
+		settle: stagedAhead,
 	})
 	issue := createInteractionIssue(t, handler, "APPRC", "Count the request", "A spec")
 	counter.take()

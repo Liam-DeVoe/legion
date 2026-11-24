@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
@@ -103,7 +102,7 @@ func TestAResultsWriteReadsTheChecksWordsWithBothIssuesOwnerLocksFree(t *testing
 		reread:   make(chan struct{}),
 	}
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		service := docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 		t.Cleanup(func() {
 			if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 				t.Errorf("shutdown document service: %v", err)
@@ -218,7 +217,7 @@ func TestAResultsWriteRefusesACheckRewordedAtEveryAttempt(t *testing.T) {
 	t.Parallel()
 	reads := &contendedCheckReads{stop: t.Context().Done(), held: make(chan int), let: make(chan struct{}, resolutionAttempts)}
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
-		service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		service := docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 		t.Cleanup(func() {
 			if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 				t.Errorf("shutdown document service: %v", err)
@@ -353,7 +352,7 @@ func TestAResultsWriteReadsTheCheckAgainWhenALaterVersionRestoredItsDigest(t *te
 		restored:  make(chan struct{}),
 	}
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
-		service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		service := docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 		t.Cleanup(func() {
 			if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 				t.Errorf("shutdown document service: %v", err)

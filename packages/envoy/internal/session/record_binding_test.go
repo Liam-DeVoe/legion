@@ -19,24 +19,22 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/kvwatch/kvwatchtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// openBindingRegistry opens a registry on the test's own session bucket and waits until its copy
-// follows the bucket (kvwatch.Watcher.Following). A give-up prints the watcher's state as the last
-// try read it.
+// openBindingRegistry opens a registry on the test's own session bucket, its records' TTL staged
+// (stagedSessionTTL), and waits until its copy follows the bucket (kvwatchtest.AwaitFollowing),
+// whose give-up prints the watcher's state as the last try read it.
 func openBindingRegistry(t *testing.T, client *bus.Client, options ...SessionRegistryOption) *SessionRegistry {
 	t.Helper()
-	r, err := OpenSessionRegistry(t.Context(), client.Conn, append([]SessionRegistryOption{WithSessionReplicas(1), WithSessionTTL(time.Minute)}, options...)...)
+	r, err := OpenSessionRegistry(t.Context(), client.Conn, append([]SessionRegistryOption{WithSessionReplicas(1), WithSessionTTL(stagedSessionTTL)}, options...)...)
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
 	t.Cleanup(r.StopWatch)
-	testwait.Until(t, "the session registry's copy to follow its bucket", func() (string, bool) {
-		following := r.watcher.Following()
-		return fmt.Sprintf("Following %t, NeedsRead %t, Err %v", following, r.watcher.NeedsRead(), r.watcher.Err()), following
-	})
+	kvwatchtest.AwaitFollowing(t, "the session registry's copy to follow its bucket", r.watcher)
 	return r
 }
 

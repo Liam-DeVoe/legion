@@ -394,7 +394,7 @@ func assertStoredOrder(t *testing.T, service *Service, artifactID string) Stored
 func storedOrderService(t *testing.T) (*Service, string) {
 	t.Helper()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	return service, artifactID
@@ -415,7 +415,7 @@ func heldAppendService(t *testing.T) (service *Service, artifactID string, enter
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
 		ServerURL:   "https://dispatch.example",
-		Settle:      time.Hour,
+		Settle:      stagedAhead,
 	})
 	release = func() {
 		if held.released.CompareAndSwap(false, true) {

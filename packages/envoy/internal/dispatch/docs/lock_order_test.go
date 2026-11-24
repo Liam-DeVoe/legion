@@ -3,7 +3,6 @@ package docs
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
@@ -17,7 +16,7 @@ import (
 
 func lockOrderServiceFor(t *testing.T, database *store.Store) *Service {
 	t.Helper()
-	service := New(Deps{Store: database, Settle: time.Hour})
+	service := New(Deps{Store: database, Settle: stagedAhead})
 	// Taken before the cleanup below is registered, so the context is cancelled after it runs.
 	stop := testwait.Context(t)
 	t.Cleanup(func() { _ = docstest.Shutdown(t, stop, service) })

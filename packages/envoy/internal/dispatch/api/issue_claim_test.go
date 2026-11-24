@@ -1205,7 +1205,7 @@ func TestAnIssueWriteKeepsAnUpdatedAtAheadOfItsClock(t *testing.T) {
 	live.set("session-one")
 	handler, database, _ := claimHandler(t, live)
 	key := claimIssueKey(t, handler, "todo")
-	future := time.Now().UTC().Truncate(time.Microsecond).Add(time.Hour)
+	future := time.Now().UTC().Truncate(time.Microsecond).Add(stagedAhead)
 	if _, err := database.Pool.Exec(context.Background(), `update issues set updated_at = $2 where key = $1`, key, future); err != nil {
 		t.Fatalf("set a future updated_at: %v", err)
 	}

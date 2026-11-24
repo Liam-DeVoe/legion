@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -84,7 +83,7 @@ func artifactIDNamed(tb testing.TB, handler http.Handler, ownerPath, name string
 // uploadBaseHandler is a server whose settlement is held back for the test's duration.
 func uploadBaseHandler(t *testing.T) (http.Handler, *store.Store) {
 	t.Helper()
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	return handler, database
 }
 
@@ -358,7 +357,7 @@ func TestUploadReplacingADocumentWithNoTokenIsTakenCountedAndLogged(t *testing.T
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	registry := metrics.New()
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour, metrics: registry})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead, metrics: registry})
 	issue := createArtifactIssue(t, handler)
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
 	if sample := unguardedReplacementSample(t, registry); sample != "" {
@@ -606,7 +605,7 @@ func TestRepairingUploadNamingABaseIsRefused(t *testing.T) {
 func TestSecondUploadOfARacedNewNameIsAReplacement(t *testing.T) {
 	t.Parallel()
 	registry := metrics.New()
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour, metrics: registry})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead, metrics: registry})
 	issue := createArtifactIssue(t, handler)
 
 	first := postUpload(t, handler, issue.Key, map[string]any{"name": "raced.md", "content": "# Raced\n\nfirst\n"})

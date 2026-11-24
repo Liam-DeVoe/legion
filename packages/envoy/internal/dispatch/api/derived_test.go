@@ -17,12 +17,12 @@ import (
 // the one before it is derived instead: in SQL, or in the read phase before the batch is built.
 // Each test here checks one such value against the row the write left.
 
-// derivedHandler is an interaction server whose document service settles after an hour, so no
-// settlement writes beside the request under test.
+// derivedHandler is an interaction server whose document service settles after a day
+// (stagedAhead), so no settlement writes beside the request under test.
 func derivedHandler(t *testing.T) (http.Handler, *store.Store) {
 	t.Helper()
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		service := docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 		return service
 	})

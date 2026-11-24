@@ -58,7 +58,7 @@ func liveNamedToken(jkt string) ciphertoken.Introspection {
 		ProjectScope: ciphertoken.ProjectScopeNamed,
 		Projects:     []string{brokerTestProject},
 		Scope:        "dispatch.write",
-		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		ExpiresAt:    time.Now().Add(stagedAhead).Unix(),
 		ClientID:     ciphertoken.ExchangeClientID,
 		Thumbprint:   jkt,
 	}
@@ -85,7 +85,7 @@ func serviceOnlyToken(jkt string) ciphertoken.Introspection {
 		Service:      brokerTestService,
 		ProjectScope: ciphertoken.ProjectScopePerson,
 		Scope:        "dispatch.write",
-		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		ExpiresAt:    time.Now().Add(stagedAhead).Unix(),
 		ClientID:     ciphertoken.ExchangeClientID,
 		Thumbprint:   jkt,
 	}
@@ -106,7 +106,7 @@ func personlessAccountToken(jkt string) ciphertoken.Introspection {
 		Session:      brokerTestSession,
 		Service:      brokerTestAccount,
 		ProjectScope: ciphertoken.ProjectScopeNamed,
-		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		ExpiresAt:    time.Now().Add(stagedAhead).Unix(),
 		ClientID:     ciphertoken.ExchangeClientID,
 		Thumbprint:   jkt,
 	}
@@ -124,7 +124,7 @@ func readOnlyToken(jkt string) ciphertoken.Introspection {
 		Service:      brokerTestReader,
 		ProjectScope: ciphertoken.ProjectScopeNone,
 		Scope:        ciphertoken.ScopeRead,
-		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		ExpiresAt:    time.Now().Add(stagedAhead).Unix(),
 		ClientID:     ciphertoken.ExchangeClientID,
 		Thumbprint:   jkt,
 	}
@@ -138,7 +138,7 @@ func machineLoginToken(jkt string) ciphertoken.Introspection {
 	return ciphertoken.Introspection{
 		Active:     true,
 		Scope:      "machine",
-		ExpiresAt:  time.Now().Add(time.Hour).Unix(),
+		ExpiresAt:  time.Now().Add(stagedAhead).Unix(),
 		ClientID:   "agent-secrets-helper",
 		Thumbprint: jkt,
 	}
@@ -673,7 +673,7 @@ func TestAnOlderBrokersNamedAnswerWritesNothing(t *testing.T) {
 	caller := newBrokerCaller(t)
 	const token = "a-named-token-an-older-replica-answers-for"
 	rig.broker.SaysRaw(token, fmt.Sprintf(`{"active":true,"session":%q,"person":%q,"project_scope":"named","project":%q,"exp":%d,"client_id":%q,"jkt":%q}`,
-		brokerTestSession, brokerTestPerson, brokerTestProject, time.Now().Add(time.Hour).Unix(), ciphertoken.ExchangeClientID, caller.jkt))
+		brokerTestSession, brokerTestPerson, brokerTestProject, time.Now().Add(stagedAhead).Unix(), ciphertoken.ExchangeClientID, caller.jkt))
 	seedProject(t, rig, "OTHER", "Other")
 	written := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
 		"project": "OTHER", "title": "Written under an older replica's answer", "spec": "# Spec",
@@ -1020,11 +1020,13 @@ func TestABrokerTokensReresolutionIsNotProofCheckedAgain(t *testing.T) {
 // TestTheRateRefusalCarriesTheWaitInItsHeader: the introspection bucket's refusal tells the
 // caller when to come back in Retry-After as well as in its prose, as the broker's own 429s do,
 // so a client reads the wait without parsing a sentence. The bucket here holds one request, so
-// the second presentation of a token the broker has not been asked about meets it.
+// the second presentation of a token the broker has not been asked about meets it; it refills one
+// request every stagedAhead on the real clock, so the second presentation meets it however long
+// the row takes.
 func TestTheRateRefusalCarriesTheWaitInItsHeader(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t, func(o *ciphertoken.Options) {
-		o.AddressLimit = ratelimit.Limit{Every: time.Minute, Burst: 1}
+		o.AddressLimit = ratelimit.Limit{Every: stagedAhead, Burst: 1}
 	})
 	caller := newBrokerCaller(t)
 
@@ -1038,8 +1040,8 @@ func TestTheRateRefusalCarriesTheWaitInItsHeader(t *testing.T) {
 	if limited.Code != http.StatusTooManyRequests || refusal.Code != "BROKER_TOKEN_RATE_LIMITED" {
 		t.Fatalf("status=%d refusal=%+v, want 429 BROKER_TOKEN_RATE_LIMITED", limited.Code, refusal)
 	}
-	if got := limited.Header().Get("Retry-After"); got != "60" {
-		t.Fatalf("Retry-After = %q, want the bucket's minute as whole seconds", got)
+	if got, want := limited.Header().Get("Retry-After"), fmt.Sprint(int(stagedAhead/time.Second)); got != want {
+		t.Fatalf("Retry-After = %q, want %q: the bucket's Every (stagedAhead) as whole seconds", got, want)
 	}
 	if rig.broker.Count() != 1 {
 		t.Fatalf("the refused request reached the broker: %d introspections, want 1", rig.broker.Count())

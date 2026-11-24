@@ -1207,9 +1207,9 @@ func execOnAdmin(admin url.URL, statement string) error {
 
 // storeTestParallelism is how many of this package's tests run at once when the command line names
 // no -parallel. Every test calls t.Parallel but those that change or measure something the whole
-// process or the server shares (the default logger, a package variable, openTestStore's one
-// database, a wall-clock bound), which stay serial and run before the rest. Each parallel test has
-// a database of its own and waits on Postgres far more than on a core: alone, the package used 22%
+// process or the server shares (the default logger, a package variable, a wall-clock bound), which
+// stay serial and run before the rest. Each parallel test has a database of its own
+// (openEmptyTestStore) and waits on Postgres far more than on a core: alone, the package used 22%
 // of 4 CPUs. go test's default of GOMAXPROCS is four on CI's arm runner, but hundreds on a dev box,
 // where every test's database and pools would open more connections than the test server allows
 // (testlimits.ServerConnections). At eight, envoy-go-race's service peaked at 42 of its 483

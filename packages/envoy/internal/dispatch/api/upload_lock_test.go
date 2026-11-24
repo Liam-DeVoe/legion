@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -27,7 +26,7 @@ import (
 func TestProjectDocumentUploadTakesItsOwnerRowBeforeTheRoomLock(t *testing.T) {
 	t.Parallel()
 	ctx := testwait.Context(t)
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "LOCK", "name": "Lock order",
 	}, "alice"); response.Code != http.StatusCreated {
@@ -246,7 +245,7 @@ func awaitCopyShows(t *testing.T, ctx context.Context, database *store.Store, co
 func TestProjectDocumentUploadOwnerLockLeavesTheForeignKeyFree(t *testing.T) {
 	t.Parallel()
 	ctx := testwait.Context(t)
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "LEVEL", "name": "Lock level",
 	}, "alice"); response.Code != http.StatusCreated {

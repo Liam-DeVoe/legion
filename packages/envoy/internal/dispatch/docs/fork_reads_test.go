@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	ygws "github.com/reearth/ygo/provider/websocket"
 
@@ -193,12 +192,12 @@ func forkReadsDocument() string {
 	return b.String()
 }
 
-// newForkReadsRoom is a service whose settlement waits an hour, holding forkReadsDocument in a
-// room one browser edit has written to, durable.
+// newForkReadsRoom is a service whose settlement waits a day (stagedAhead), holding
+// forkReadsDocument in a room one browser edit has written to, durable.
 func newForkReadsRoom(t *testing.T) (*Service, string) {
 	t.Helper()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, forkReadsDocument())
 	editAsConnectedPeer(t, service, artifactID, 1, model.Actor{Kind: "user", ID: "carol"}, replaceRun("Paragraph 0 opens", "Paragraph 0 first opens"))
 	waitForLandedAppends(t, service, artifactID)

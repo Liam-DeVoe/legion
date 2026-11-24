@@ -111,7 +111,7 @@ func newColdBenchmarkDocument(b *testing.B, size int) (*Service, *PgVersioned, s
 	if _, err := versioned.AppendUpdate(ctx, artifactID, crdt.EncodeStateAsUpdateV1(live, nil)); err != nil {
 		b.Fatal(err)
 	}
-	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: stagedAhead})
 	b.Cleanup(func() {
 		if err := docstest.Shutdown(b, context.Background(), service); err != nil {
 			b.Errorf("shutdown cold benchmark service: %v", err)

@@ -1571,15 +1571,15 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 // refusal. The census sets lock_timeout to the constant LockTimeout and offers no option for it,
 // so the statement timeout is a second short of it, as far from what those statements take as the
 // read's 57014 allows. That is the one bound of real time left in this row, PostgreSQL's own,
-// which no clock of the test's reaches. LongTransaction is stagedLongTransaction, so the holder,
-// opened just before the census, is never old enough to refuse.
+// which no clock of the test's reaches. LongTransaction is stagedAhead, so the holder, opened just
+// before the census, is never old enough to refuse.
 func TestCensusRefusesATouchedTableWhoseReadOutlastsTheStatementTimeout(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	pid := "pid " + strconv.FormatUint(uint64(holdLock(t, store, "things", "access exclusive")), 10)
 	timeout := pgmigrate.LockTimeout - time.Second
-	report, err := census(ctx, url, withCheck("select 0"), pgmigrate.CensusOptions{StatementTimeout: timeout, LongTransaction: stagedLongTransaction})
+	report, err := census(ctx, url, withCheck("select 0"), pgmigrate.CensusOptions{StatementTimeout: timeout, LongTransaction: stagedAhead})
 	if err != nil {
 		t.Fatalf("census: %v", err)
 	}
@@ -1799,12 +1799,17 @@ func holdLock(t *testing.T, store *Store, table, mode string) uint32 {
 // under the census's own CensusLongTransaction.
 const censusHolderAge = time.Millisecond
 
-// stagedLongTransaction is the "open for longer than the bound" age a row gives the census when the
-// holder it opened just before the census must read younger than the bound. The census judges a
-// holder's age on the database's clock (clock_timestamp() - xact_start), so the bound is staged
-// state for that clock, not a wait: longer than any `go test -timeout` CI gives this package, so
-// the holder never reads old enough to refuse however long the machine takes.
-const stagedLongTransaction = 24 * time.Hour
+// stagedAhead is how long a row of this package stages a time the product judges against the
+// database's clock, where the row needs that time not to have passed when the product reads it.
+// It is the "open for longer than the bound" age a row gives the census when the holder it opened
+// just before the census must read younger than the bound: the census judges a holder's age on
+// the database's clock (clock_timestamp() - xact_start). It is also how far ahead a row dates a
+// DPoP proof's expiry when the proof's record must still stand at a later presentation or a
+// sweep: the record lasts until that expiry and jtiRetentionMargin more, judged by the database's
+// now(). It is staged state for that clock, not a wait: longer than any `go test -timeout` CI
+// gives this package (30 minutes in the race lane), so what the row staged reads as not yet passed
+// however long the machine takes, where a minute would pass on a loaded one.
+const stagedAhead = 24 * time.Hour
 
 // A session that has held a lock on a touched table for longer than the bound refuses, naming the
 // session; the same hold on a table no pending migration touches does not.

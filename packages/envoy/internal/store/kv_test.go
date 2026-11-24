@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/kvwatch"
+	"github.com/sjawhar/envoy/internal/kvwatch/kvwatchtest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testport"
@@ -535,16 +536,6 @@ func waitForMatches(t *testing.T, r *Registry, what, machineID, topic string, wa
 		return "", true
 	})
 	return got
-}
-
-// awaitFollowing waits for what, until w's copy follows its bucket (kvwatch.Watcher.Following), a
-// read of it having completed. A give-up prints the watcher's state as the last try read it.
-func awaitFollowing(t *testing.T, what string, w *kvwatch.Watcher) {
-	t.Helper()
-	testwait.Until(t, what, func() (string, bool) {
-		following := w.Following()
-		return fmt.Sprintf("Following %t, NeedsRead %t, Err %v", following, w.NeedsRead(), w.Err()), following
-	})
 }
 
 func TestOpen_WatchPopulatesExistingKeys(t *testing.T) {
@@ -3172,13 +3163,13 @@ func TestRewatchOntoARecreatedBucketRefillsTheCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	awaitFollowing(t, "the registry's first read of the interest bucket to complete", reg.watcher)
+	kvwatchtest.AwaitFollowing(t, "the registry's first read of the interest bucket to complete", reg.watcher)
 	reg.watcher.End(testwait.Context(t))
 	held := &holdingCache{Cache: interestCache{reg}}
 	reg.watcher = kvwatch.New("interest registry", reg.watcher.KV(), held)
 	t.Cleanup(reg.StopWatch)
 	reg.watcher.Start()
-	awaitFollowing(t, "the started watcher to complete its read of the interest bucket", reg.watcher)
+	kvwatchtest.AwaitFollowing(t, "the started watcher to complete its read of the interest bucket", reg.watcher)
 	for i := range 20 {
 		if _, err := reg.Upsert(Interest{SessionID: "ses_a", MachineID: "m1"}, []string{fmt.Sprintf("notifications.old.%d", i)}); err != nil {
 			t.Fatalf("upsert ses_a: %v", err)
@@ -3228,7 +3219,7 @@ func TestRewatchOntoARecreatedBucketRefillsTheCache(t *testing.T) {
 	if want := []string{"ses_a", "ses_b"}; !slices.Equal(swept, want) {
 		t.Fatalf("cached right after the sweep = %v, want the new bucket's %v", swept, want)
 	}
-	awaitFollowing(t, "the rebuilt watcher to follow the recreated bucket", reg.watcher)
+	kvwatchtest.AwaitFollowing(t, "the rebuilt watcher to follow the recreated bucket", reg.watcher)
 	if got := reg.Match("m1", "notifications.ghost"); len(got) != 0 {
 		t.Fatalf("the cache kept a session the recreated bucket does not hold: %v", got)
 	}
@@ -3392,14 +3383,15 @@ func TestOpeningTheRegistryReadsEveryRoleRevisionWithoutAGetPerKey(t *testing.T)
 	// What the snapshot is for, through the caller that reads it: an absent holder keeps its claim
 	// for one session TTL after the restart, and a key the bucket no longer holds has none to keep.
 	// The release is handed the claim its caller read, as the reaper's pass hands it the claim it
-	// read to find the holder gone (ReapRoleClaims).
+	// read to find the holder gone (ReapRoleClaims), and a session TTL of stagedAhead, so the
+	// restored claim is still within its grace however long the row takes.
 	release := func(role string) (ExpiredRoleClaimRelease, error) {
 		t.Helper()
 		claim, err := registry.RoleClaim(context.Background(), role)
 		if err != nil {
 			return ExpiredRoleClaimRetained, err
 		}
-		return registry.releaseReadExpiredRoleClaim(context.Background(), role, claim, time.Minute)
+		return registry.releaseReadExpiredRoleClaim(context.Background(), role, claim, stagedAhead)
 	}
 	if got, err := release("role-000"); err != nil || got != ExpiredRoleClaimRetained {
 		t.Fatalf("restored claim within its grace = %v, %v; want it retained", got, err)

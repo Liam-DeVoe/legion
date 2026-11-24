@@ -35,7 +35,7 @@ func TestEverySendHeldPastTheThresholdIsReportedOnce(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	lifetime, stop := context.WithCancel(context.Background())
-	sender := newMentionSender(lifetime, time.Hour, nil,
+	sender := newMentionSender(lifetime, stagedAhead, nil,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) { return item, true },
 		func(_ context.Context, queued []mentionClaim) ([]mentionClaim, error) { return queued, nil },
 		rereadNone,
@@ -96,7 +96,7 @@ func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T
 	lifetime, stop := context.WithCancel(context.Background())
 	retrying, release := make(chan struct{}), make(chan struct{})
 	var tries atomic.Int32
-	sender := newMentionSender(lifetime, time.Hour, nil,
+	sender := newMentionSender(lifetime, stagedAhead, nil,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) {
 			if item.comment.ID == "a-first" {
 				if tries.Add(1) == 1 {
@@ -198,7 +198,7 @@ func TestAReparkedHeldLaneHasOneGoroutine(t *testing.T) {
 	var mu sync.Mutex
 	var sent []string
 	entered, proceed, abort := make(chan string, 8), make(chan struct{}), make(chan struct{})
-	sender := newMentionSender(lifetime, time.Hour, nil,
+	sender := newMentionSender(lifetime, stagedAhead, nil,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) {
 			now := active.Add(1)
 			defer active.Add(-1)
@@ -276,7 +276,7 @@ func TestAParkedLanesTimerStartsOnceNoGoroutineServesIt(t *testing.T) {
 	t.Parallel()
 	lifetime, stop := context.WithCancel(context.Background())
 	var tries atomic.Int32
-	sender := newMentionSender(lifetime, time.Hour, nil,
+	sender := newMentionSender(lifetime, stagedAhead, nil,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) {
 			if item.comment.ID == "a-first" && tries.Add(1) <= 3 {
 				item.heldFor, item.heldBy = "s1", model.MentionCopyHolder{EventID: 7}
@@ -347,7 +347,7 @@ func TestASendParkedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
 			logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 			lifetime, stop := context.WithCancel(context.Background())
 			tried := make(chan mentionKey, 4)
-			sender := newMentionSender(lifetime, time.Hour, nil,
+			sender := newMentionSender(lifetime, stagedAhead, nil,
 				func(_ context.Context, item mentionSend) (mentionSend, bool) {
 					tried <- item.key()
 					return mentionSend{}, false
@@ -459,7 +459,7 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 			if tc.readFail {
 				fails.Store(1)
 			}
-			sender := newMentionSender(lifetime, time.Hour, nil,
+			sender := newMentionSender(lifetime, stagedAhead, nil,
 				func(_ context.Context, item mentionSend) (mentionSend, bool) {
 					tried <- item.key()
 					if tc.headWaits && item.comment.ID == "a-first" && headTries.Add(1) == 1 {

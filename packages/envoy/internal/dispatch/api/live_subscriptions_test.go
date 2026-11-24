@@ -263,7 +263,7 @@ func TestAReplacedDeliveryViewsAnswerGoesOutBeforeItsReplacementsFrames(t *testi
 	rig := newLiveSocketRig(t, testServerOptions{
 		liveKinds: map[string]liveKind{liveEventsView: events.kind(true)},
 		// No heartbeat takes one of the writer's turns while the test holds it.
-		streamHeartbeat: time.Hour,
+		streamHeartbeat: stagedAhead,
 	}, nil)
 	writer := newIdleWriterHold(t)
 	rig.served.liveWriterBeforePick = writer.beforePick

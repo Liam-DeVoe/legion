@@ -384,7 +384,7 @@ type deliveryFreshnessVerdict struct {
 
 // deliveryHubNote is one thing the hub did, for a test's observe.
 type deliveryHubNote struct {
-	what  string // "recompute begin", "recompute position", "recompute read", "recompute end", "connected", "feed ready", "events seeded", "event", "feed closed"
+	what  string // "recompute begin", "recompute position", "recompute read", "recompute end", "connected", "feed ready", "events seeded", "event", "feed closed", "notified"
 	view  string // the view's key
 	cause string
 	sent  int
@@ -394,6 +394,8 @@ type deliveryHubNote struct {
 	// eventID is the event an "event" note applied, or the head a "feed ready" or "events seeded"
 	// note's feed began at.
 	eventID int64
+	// channel and payload are the notification a "notified" note's onNotify routed.
+	channel, payload string
 }
 
 const (
@@ -497,7 +499,9 @@ func (h *deliveryHub) note(n deliveryHubNote) {
 // onNotify routes one notification to g, on the listener's goroutine: a change wakes the intake's
 // catch-up of the change log, a freshness row is applied at once, reading nothing, a read of a
 // Legion daemon or a write of its setting marks that project's Legion views, and a write of a run
-// marks the legion_issue views of its issue.
+// marks the legion_issue views of its issue. Once it has, it notes the notification ("notified")
+// for a test's observe, with no lock held; the note does nothing in production, where observe is
+// nil. A Legion notification's marks are made by then; a change's are the intake's to make later.
 func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 	switch channel {
 	case deliveryChangesChannel:
@@ -509,6 +513,7 @@ func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 	case workflowstore.RunsChannel:
 		h.dirtyLegionIssue(g, payload)
 	}
+	h.note(deliveryHubNote{what: "notified", channel: channel, payload: payload})
 }
 
 // dirtyLegionProject marks every Legion view of the project a read of a Legion daemon just recorded,

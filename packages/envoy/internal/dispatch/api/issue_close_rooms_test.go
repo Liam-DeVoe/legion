@@ -93,7 +93,7 @@ func TestClosingAnIssueClosesItsRoomsFromItsCommit(t *testing.T) {
 		documentService = docs.New(docs.Deps{
 			Store:    database,
 			Identity: headerIdentity(database),
-			Settle:   time.Hour,
+			Settle:   stagedAhead,
 		})
 		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
@@ -162,7 +162,7 @@ func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 
 	// The browser's room is on another process, which hears the close from its commit.
 	second := storetest.SecondProcess(t, database)
-	other := docs.New(docs.Deps{Store: second, Identity: headerIdentity(second), Settle: time.Hour})
+	other := docs.New(docs.Deps{Store: second, Identity: headerIdentity(second), Settle: stagedAhead})
 	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), other) })
 	runDocumentRoomSync(t, second, other)
 	peer := connectBrowserPeer(t, other, issue.PrimaryArtifactID)

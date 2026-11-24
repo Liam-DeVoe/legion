@@ -404,7 +404,7 @@ func peerApplied(service *Service, artifactID string, peer crdt.ClientID) uint64
 func newPeeredService(t *testing.T, markdown string) (*Service, string, string) {
 	t.Helper()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, markdown)
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(server.Close)

@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 	"weak"
 
 	"github.com/reearth/ygo/crdt"
@@ -732,9 +731,9 @@ func sortedIDs(ids map[string]struct{}) []string {
 	return slices.Sorted(maps.Keys(ids))
 }
 
-// newRenderReuseService is a service whose settlement waits an hour and whose rooms stay resident
-// for the test's run (holdRoomsResident), with renders watched from before the document is seeded
-// with renderReuseDocument. No room holds the document yet.
+// newRenderReuseService is a service whose settlement waits a day (stagedAhead) and whose rooms
+// stay resident for the test's run (holdRoomsResident), with renders watched from before the
+// document is seeded with renderReuseDocument. No room holds the document yet.
 //
 // These tests read the room they wrote (renderShadow.check) and hold its updates across an open
 // transaction, and under load a test's steps outlasted ygo's idle minute. The room was gone at the
@@ -746,7 +745,7 @@ func sortedIDs(ids map[string]struct{}) []string {
 func newRenderReuseService(t *testing.T) (*Service, string, *renderShadow) {
 	t.Helper()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	holdRoomsResident(t, service)
 	sh := watchRenders(t, service, artifactID)
 	seedServiceText(t, service, artifactID, renderReuseDocument())
@@ -1681,7 +1680,7 @@ func insertBlocksAfter(t *testing.T, prefix, markdown string) func(*pmdoc.Node) 
 // margin record.
 func TestRenderReuseABrowserTypingScript(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	// The browser applies its updates to the room's document directly, so its rooms are held
 	// resident: the script can outlast ygo's idle minute on a loaded machine (it ran 98 s under
 	// -race beside eight busy loops).
@@ -1789,7 +1788,7 @@ func TestRenderReuseABrowserTypingScript(t *testing.T) {
 // layout that flags it was recorded.
 func TestRenderReuseAnUnreadableAskBlockKeepsTheRoomsAskAuthors(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	holdRoomsResident(t, service)
 	seedServiceText(t, service, artifactID, "The typed paragraph opens the document.\n\nThe last paragraph closes it.\n")
 	browser := newRoomPeer(t, service, artifactID, 1, reuseBob, nil)

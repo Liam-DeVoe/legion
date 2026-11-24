@@ -155,7 +155,7 @@ func TestVerifyTableAnchorSnapshotsRejectsMarkAddedAfterPrevalidation(t *testing
 
 func TestCheckTableAnchorRowsRejectsCommentReopenedAfterPrevalidation(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "| Key | Value |\n| --- | --- |\n| delete | row |\n| retain | row |\n")
 	const commentID = "00000000-0000-4000-8000-000000000009"
 	anchored, err := joinedMarkQuote(service, artifactID, MarkSpec{
@@ -370,7 +370,7 @@ func TestApplyOperationLabelsInvalidRetypeFields(t *testing.T) {
 
 func TestSetBlockAttributesWritesTypedBlockState(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, ":::ask{#ask-1 multiple=\"false\" state=\"open\" urgency=\"med\"}\nShip it?\n:::\n")
 	actor := model.Actor{Kind: "user", ID: "alice"}
 
@@ -404,7 +404,7 @@ func TestApplyOpsRejectsAmbiguousTargetWithoutChangingDocument(t *testing.T) {
 
 func TestApplyOpsResolvesAgainstDocumentInsideApply(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "# First")
 	if _, err := joinedReplaceText(service, artifactID, "base", model.Actor{Kind: "user", ID: "alice"}); err != nil {
 		t.Fatalf("prepare document: %v", err)
@@ -1690,7 +1690,7 @@ func TestSettlementVersionsCodeWithAPipeAfterABackslashInATableCellWithThePipeAf
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, "| Cmd | Count |\n| --- | --- |\n| run | n |\n")
 			editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 				tree.Children[0].Children[1].Children[1].Children[0].Children = []*pmdoc.Node{{Type: "text", Text: test.code, Marks: []pmdoc.Mark{{Type: "inlineCode"}}}}
@@ -2700,7 +2700,7 @@ func blocksCarryingComment(tree *pmdoc.Node, id string) []string {
 // line a reader sees where the words it was written about stood, rather than being orphaned.
 func TestApplyOpsReplaceWithAListKeepsAnOpenCommentsQuote(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "Intro.\n\nBody text here.\n")
 	commentID := insertAnchoredComment(t, service, artifactID, "Body text here.")
 
@@ -3418,7 +3418,7 @@ func TestApplyOperationsJudgesTableRowsAgainstTheirTable(t *testing.T) {
 func blockAskHarness(t *testing.T) (*Service, string, string, func(), func() int) {
 	t.Helper()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, askFixture+"\nContext ends with no drift.\n")
 	service.settleRoom(artifactID, 0)
 	var askID string
@@ -3562,7 +3562,7 @@ func TestAnEditCannotDropAnOpenAskBlockAndTheEditorsRemovalRetractsIt(t *testing
 func TestAnEditIsRefusedForTheOpenAsksOfTheBlocksItDropsItself(t *testing.T) {
 	const second = ":::ask{#second urgency=\"high\" multiple=\"false\" state=\"open\"}\nWhich store?\n:::\n"
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, askFixture+"\n"+second+"\nContext ends with no drift.\n")
 	service.settleRoom(artifactID, 0)
 	// The row of the second ask is made an orphan: it stays open, pointing at a block the

@@ -120,7 +120,7 @@ func copiedSourceStates(t *testing.T, service *Service, original string, asks ma
 // names it, and a later settlement of the copy shows a later answer to its source.
 func TestADocumentCopiedOnItsIssueShowsItsSourcesAsksAndOpensNone(t *testing.T) {
 	service, original := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	asks := copiedAskSource(t, service, original)
 	copied := createIssueDocument(t, service.store, 1, "# Copy")
 	seedServiceText(t, service, copied, copiedAsksDocument)
@@ -166,7 +166,7 @@ func openAskBlocksOn(t *testing.T, service *Service, document string) string {
 // own, with other options, is no copy: it asks something else, and opens its own ask.
 func TestABlockAskingTheSameQuestionWithOtherOptionsUnderTheSameIDOpensItsOwnAsk(t *testing.T) {
 	service, original := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, original, ":::ask{#decision urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Matches the platform.\n- gRPC: Streams.\n:::\n")
 	settleCurrentGeneration(t, service, original)
 	second := createIssueDocument(t, service.store, 1, "# Second")
@@ -188,7 +188,7 @@ func TestABlockAskingTheSameQuestionWithOtherOptionsUnderTheSameIDOpensItsOwnAsk
 // its first document indexed when the block left it, so the second opens an ask of its own.
 func TestABlockMovedFromADocumentWhoseAskSettlementRetractedOpensItsOwnAsk(t *testing.T) {
 	service, original := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	moved := ":::ask{#moved urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
 	seedServiceText(t, service, original, "Context\n\n"+moved)
 	settleCurrentGeneration(t, service, original)
@@ -217,7 +217,7 @@ func TestABlockMovedFromADocumentWhoseAskSettlementRetractedOpensItsOwnAsk(t *te
 // A copied block whose question the copy rewords is a new question, and opens an ask.
 func TestACopiedAskBlockRewordedOnTheCopyOpensAnAsk(t *testing.T) {
 	service, original := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	copiedAskSource(t, service, original)
 	copied := createIssueDocument(t, service.store, 1, "# Copy")
 	seedServiceText(t, service, copied, strings.Replace(copiedAsksDocument, "Which region?", "Which regions?", 1))
@@ -231,7 +231,7 @@ func TestACopiedAskBlockRewordedOnTheCopyOpensAnAsk(t *testing.T) {
 // document of another issue carrying the same block ids is no copy and opens its own.
 func TestCopiedAskSourcesAreTheDocumentOwnersOwn(t *testing.T) {
 	service, _ := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	original := createProjectDocument(t, service.store, "# Original")
 	asks := copiedAskSource(t, service, original)
 	copied := createProjectDocument(t, service.store, "# Copy")
@@ -362,7 +362,7 @@ func TestACopyOpensItsOwnAskWhenItsOpenSourceLeavesItsDocument(t *testing.T) {
 // is open.
 func TestACopyOfTwoMatchingAsksShowsTheEarlierAsked(t *testing.T) {
 	service, original := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	block := func(question string) string {
 		return ":::ask{#tie urgency=\"med\" multiple=\"false\"}\n" + question + "\n:::\n"
 	}
@@ -398,7 +398,7 @@ func TestACopyOfTwoMatchingAsksShowsTheEarlierAsked(t *testing.T) {
 // ask.edited event records: it is a copy of that ask, opens none, and shows its state.
 func TestACopyOfASourcesEarlierWordingShowsItsStateAndOpensNoAsk(t *testing.T) {
 	service, original := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	asks := copiedAskSource(t, service, original)
 	editLiveTree(t, service, original, replaceRun("Which region?", "Which regions?"))
 	settleCurrentGeneration(t, service, original)
@@ -453,7 +453,7 @@ func TestAnAnswerOrResolutionOfACopysSourceAfterARewordingOpensTheCopysOwnAsk(t 
 	for _, closing := range []string{"answered", "resolved"} {
 		t.Run(closing, func(t *testing.T) {
 			service, original := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, original, "Context\n\n"+shipBlock)
 			settleCurrentGeneration(t, service, original)
 			source := blockAskOn(t, service, original, "ship")
@@ -541,7 +541,7 @@ func TestADocumentEditOfADecidedAsksWordingIsWrittenBackAndLeavesItsRow(t *testi
 		for name, write := range writes {
 			t.Run(closing+"/"+name, func(t *testing.T) {
 				service, original := newTestService(t)
-				service.settle = time.Hour
+				service.settle = stagedAhead
 				seedServiceText(t, service, original, "Context\n\n"+shipBlock)
 				settleCurrentGeneration(t, service, original)
 				source := blockAskOn(t, service, original, "ship")
@@ -623,7 +623,7 @@ func TestASettlementRestoresADecidedAskAnEarlierReleaseReworded(t *testing.T) {
 	for _, closing := range []string{"answered", "resolved"} {
 		t.Run(closing, func(t *testing.T) {
 			service, original := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, original, "Context\n\n"+shipBlock)
 			settleCurrentGeneration(t, service, original)
 			answer, opener := decidedShip(closing)
@@ -668,7 +668,7 @@ func TestARestorationOfACopysSourceSettlesTheCopyAgain(t *testing.T) {
 		for _, restoration := range []string{"settlement", "boot"} {
 			t.Run(closing+"/"+restoration, func(t *testing.T) {
 				service, original := newTestService(t)
-				service.settle = time.Hour
+				service.settle = stagedAhead
 				seedServiceText(t, service, original, "Context\n\n"+shipBlock)
 				settleCurrentGeneration(t, service, original)
 				answer, _ := decidedShip(closing)
@@ -734,7 +734,7 @@ func TestTheBootsRestorationSettlesTheRestoredAsksOwnDocument(t *testing.T) {
 	for _, closing := range []string{"answered", "resolved"} {
 		t.Run(closing, func(t *testing.T) {
 			service, original := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, original, "Context\n\n"+shipBlock)
 			settleCurrentGeneration(t, service, original)
 			answer, opener := decidedShip(closing)
@@ -791,7 +791,7 @@ func TestASettlementLogsEachBlockItTakesForACopyOnce(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	service, original := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	asks := copiedAskSource(t, service, original)
 	copied := createIssueDocument(t, service.store, 1, "# Copy")
 	seedServiceText(t, service, copied, copiedAsksDocument)
@@ -858,7 +858,7 @@ func TestASettlementLogsEachBlockItTakesForACopyOnce(t *testing.T) {
 // answered and opens its own ask, and a copy of the wording that was answered shows the answer.
 func TestACopyOfADecidedAsksEditedTextOpensItsOwnAskAndACopyOfItsDecidedWordingShowsTheDecision(t *testing.T) {
 	service, original := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, original, "Context\n\n"+shipBlock)
 	settleCurrentGeneration(t, service, original)
 	source := blockAskOn(t, service, original, "ship")
@@ -900,7 +900,7 @@ func TestACopyOfADecidedAsksEditedTextOpensItsOwnAskAndACopyOfItsDecidedWordingS
 // is reworded and the new wording answered: the copy then opens its own ask.
 func TestACopyOfARestoredSourceRewordedAndAnsweredOpensItsOwnAsk(t *testing.T) {
 	service, original := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, original, "Context\n\n"+shipBlock)
 	settleCurrentGeneration(t, service, original)
 	source := blockAskOn(t, service, original, "ship")
@@ -1095,7 +1095,7 @@ func roomGeneration(t *testing.T, service *Service, document string) uint64 {
 // before any committed, and each would open an ask.
 func TestThreeProjectCopiesOfARetractedAskSettlingAtOnceShareOneAsk(t *testing.T) {
 	service, _ := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	shared := ":::ask{#shared urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
 	original := createProjectDocument(t, service.store, "# Original")
 	seedServiceText(t, service, original, "Context\n\n"+shared)
@@ -1163,7 +1163,7 @@ func TestThreeProjectCopiesOfARetractedAskSettlingAtOnceShareOneAsk(t *testing.T
 // opposite orders.
 func TestACopySettlingWhileItsSourceIsAnsweredWaitsForTheAnswerAndNeitherFails(t *testing.T) {
 	service, _ := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	ctx := testwait.Context(t)
 	shared := ":::ask{#shared urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
 	original := createProjectDocument(t, service.store, "# Original")
@@ -1379,7 +1379,7 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 	for _, order := range []string{"answer first", "settlement first"} {
 		t.Run(order, func(t *testing.T) {
 			service, _ := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			ctx := testwait.Context(t)
 			shared := ":::ask{#shared urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
 			original := createProjectDocument(t, service.store, "# Original")
@@ -1497,7 +1497,7 @@ func copyOwed(t *testing.T, service *Service, document string) int {
 // asking that wording is a copy of A, though only B asks it now.
 func TestACopyNamesTheEarliestAskedMatchThoughALaterAskAsksItsWordingNow(t *testing.T) {
 	service, original := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	block := func(question string) string {
 		return ":::ask{#tie urgency=\"med\" multiple=\"false\"}\n" + question + "\n:::\n"
 	}

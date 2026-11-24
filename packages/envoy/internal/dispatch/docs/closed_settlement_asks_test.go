@@ -95,7 +95,7 @@ func editNoticeRows(t *testing.T, database *store.Store, artifactID string, held
 // alice's edit, which the settlement saved while DOC-1 was closed.
 func TestASettlementAfterACloseWakesNobody(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n\nThird.\n")
 	settleCurrentGeneration(t, service, artifactID)
@@ -422,7 +422,7 @@ func TestTheSettlementAfterAReopenCreditsTheEditorTheClosedSettlementSaved(t *te
 func settleReturnedAskBlockWhileClosed(t *testing.T) (*Service, string, model.Actor) {
 	t.Helper()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	ctx := context.Background()
 	const block = ":::ask{#returning-ask urgency=\"med\" multiple=\"false\"}\nWill it come back?\n:::\n"
 	seedServiceText(t, service, artifactID, "Context.\n\n"+block)
@@ -538,12 +538,12 @@ func TestAReopenForgetsTheKeptEditorOfADocumentThatOwesNothing(t *testing.T) {
 // DOC-1 closes in the database alone, stagedAhead ahead, so the close margin admits alice's edit of
 // the document's one paragraph, and the resumption settles the document on the closed issue, which
 // keeps alice as its closed edit source. It answers the service, the document and alice once that
-// settlement has committed, with the document owing nothing and the settle delay an hour, so no
-// settlement runs that the test does not run itself.
+// settlement has committed, with the document owing nothing and the settle delay a day
+// (stagedAhead), so no settlement runs that the test does not run itself.
 func settleEditWhileClosed(t *testing.T) (*Service, string, model.Actor) {
 	t.Helper()
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "Context.\n")
 	settleCurrentGeneration(t, service, artifactID)
@@ -563,7 +563,7 @@ func settleEditWhileClosed(t *testing.T) (*Service, string, model.Actor) {
 		t.Fatalf("resume the closed issue's owed settlement: %v", err)
 	}
 	waitForNoPendingSettlement(t, service, artifactID, "the closed issue's document to settle alice's edit")
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	if kept := keptClosedEditSource(t, service, artifactID); kept == nil || !kept.SameAs(alice) {
 		t.Fatalf("the closed issue's settlement kept %+v as the document's closed edit source, want alice", kept)
 	}

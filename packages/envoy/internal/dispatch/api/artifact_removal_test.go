@@ -261,7 +261,7 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 	// The settlement is held back for the test's duration, so an edit written into a room is
 	// still unsettled when the removal reads it. The room test below runs a server of its own,
 	// whose settlements run as that case moves their clock.
-	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: stagedAhead})
 	spec := createInteractionIssue(t, handler, "TEST", "A spec of its own", "# Spec\n\nA passage.\n")
 	ctx := context.Background()
 
@@ -673,7 +673,7 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 	t.Run("a settlement queued behind the removal finds the document gone and says nothing", func(t *testing.T) {
 		// A server of its own, whose settlement runs only when the case starts it (SettleNow),
 		// so the one settlement queued below is the case's, and whose rooms Quiesce closes.
-		queueHandler, queueDatabase, queueDeps := newTestServer(t, testServerOptions{settle: time.Hour})
+		queueHandler, queueDatabase, queueDeps := newTestServer(t, testServerOptions{settle: stagedAhead})
 		documents, ok := queueDeps.Docs.(*docs.Service)
 		if !ok {
 			t.Fatalf("the test server's document service is %T, which holds no rooms to settle", queueDeps.Docs)

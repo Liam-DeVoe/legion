@@ -33,7 +33,7 @@ import (
 // settles: the asking session can reword it, and readers can tell who asked.
 func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterAReopen(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // the issue closes before the edit's own settlement runs
+	service.settle = stagedAhead // the issue closes before the edit's own settlement runs
 	actor := model.Actor{Kind: "session", ID: "asking-session"}
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 
@@ -54,7 +54,7 @@ func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterAReopen(t *testi
 // block's ask, credited to that recorded author.
 func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterRestartAndReopen(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // the issue closes before the edit's own settlement runs
+	service.settle = stagedAhead // the issue closes before the edit's own settlement runs
 	ctx := context.Background()
 	actor := model.Actor{Kind: "session", ID: "restarted-asking-session"}
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
@@ -100,7 +100,7 @@ func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterRestartAndReopen
 // author, or its pending authors without this edit's author.
 func TestCommittedLedgerWritePersistsSettlementCreditWhenCallerContextCancelsAfterCommit(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -165,7 +165,7 @@ func TestCloseAfterSettlementDoesNotRecreatePendingSettlementFromConsumedLastAct
 // (LEGION-503).
 func TestADocumentLoadsAPendingSettlementRowNamingAnotherLastActor(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // the seed's own settlement never runs
+	service.settle = stagedAhead // the seed's own settlement never runs
 	ctx := context.Background()
 	seed := model.Actor{Kind: "user", ID: "seed"}
 	seedServiceText(t, service, artifactID, ":::ask{#null-pending-ask urgency=\"med\" multiple=\"false\"}\nWho asked?\n:::\n")
@@ -194,7 +194,7 @@ func TestADocumentLoadsAPendingSettlementRowNamingAnotherLastActor(t *testing.T)
 // a later process settles, when the process that took their writes ended without settling them.
 func TestTwoCreditedWritersBothSurviveACrashRestart(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // the writing process never settles them
+	service.settle = stagedAhead // the writing process never settles them
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	first := model.Actor{Kind: "session", ID: "first-writer-session"}
@@ -228,7 +228,7 @@ func TestClosingAnIssueOnATrackedContextPersistsEveryDocumentsCredit(t *testing.
 		t.Run(fmt.Sprintf("GOMAXPROCS=%d", procs), func(t *testing.T) {
 			defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(procs))
 			service, database := newRoomReleaseService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			ctx := context.Background()
 			ids := createDocuments(t, database, 500)
 			writer := model.Actor{Kind: "session", ID: "closing-writer"}
@@ -315,7 +315,7 @@ func ledgerWrite(service *Service, artifactID string, actor model.Actor, markdow
 // the document's issue closes and reopens credits only the author who wrote it.
 func TestAReopenedDocumentsNextVersionCreditsOnlyItsOwnAuthor(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // no settlement runs between the edits
+	service.settle = stagedAhead // no settlement runs between the edits
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	alpha := model.Actor{Kind: "session", ID: "alpha-session"}
 	delta := model.Actor{Kind: "session", ID: "delta-session"}
@@ -334,7 +334,7 @@ func TestAReopenedDocumentsNextVersionCreditsOnlyItsOwnAuthor(t *testing.T) {
 // reopens: the settlement credits the later writer's ask and version to that writer alone.
 func TestAVersionedAuthorIsNotCreditedAgainAfterAReopen(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // the issue closes before any settlement runs
+	service.settle = stagedAhead // the issue closes before any settlement runs
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	versioned := model.Actor{Kind: "session", ID: "versioned-session"}
 	asking := model.Actor{Kind: "session", ID: "asking-session"}
@@ -360,7 +360,7 @@ func TestAVersionedAuthorIsNotCreditedAgainAfterAReopen(t *testing.T) {
 // process's settlement credits the ask to the session that wrote it, not to one already versioned.
 func TestAVersionedAuthorIsNotCreditedAgainAfterACrashRestart(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // the writing process never settles them
+	service.settle = stagedAhead // the writing process never settles them
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	versioned := model.Actor{Kind: "session", ID: "versioned-session"}
@@ -391,7 +391,7 @@ func TestAVersionedAuthorIsNotCreditedAgainAfterACrashRestart(t *testing.T) {
 // version would list carol again alongside delta.
 func TestABrowserEditQueuedBehindAnOpenVersionIsNotCreditedAgainAfterAReopen(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // no settlement runs between the edits
+	service.settle = stagedAhead // no settlement runs between the edits
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
@@ -539,7 +539,7 @@ func connectedBrowsers(service *Service, artifactID string) int {
 // (state.connected), never another edit's authors.
 func TestATwoPeerBrowserEditQueuedBehindAnOpenVersionIsNotCreditedAgainAfterAReopen(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // no settlement runs between the edits
+	service.settle = stagedAhead // no settlement runs between the edits
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
@@ -613,7 +613,7 @@ func TestATwoPeerBrowserEditQueuedBehindAnOpenVersionIsNotCreditedAgainAfterAReo
 // records her once the version has committed.
 func TestABrowserEditAfterAVersionsCaptureStaysOwed(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // no settlement runs between the edits
+	service.settle = stagedAhead // no settlement runs between the edits
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
@@ -650,7 +650,7 @@ func TestABrowserEditAfterAVersionsCaptureStaysOwed(t *testing.T) {
 // just the uploader: bob's landed edit owes nothing once the upload commits (LEGION-513).
 func TestAnUploadsFullReleaseClearsTheDurableRowOfAPendingAuthorItWasNeverCreditedWith(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // no settlement runs between the edit and the upload
+	service.settle = stagedAhead // no settlement runs between the edit and the upload
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
@@ -705,7 +705,7 @@ func TestAnUploadsFullReleaseClearsTheDurableRowOfAPendingAuthorItWasNeverCredit
 // read, so the edit's append lands only after the commit and records bob then (LEGION-513).
 func TestAnUploadsFullReleaseKeepsABrowserEditCreditedWhileItsTransactionWasOpen(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // no settlement runs during the race window
+	service.settle = stagedAhead // no settlement runs during the race window
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
@@ -775,7 +775,7 @@ func newTestServiceInstanceOn(t *testing.T, database *store.Store, serviceClock 
 		Events:    events.NewBroker(),
 		Identity:  headerIdentity(database),
 		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Settle:    stagedAhead,
 		Clock:     serviceClock,
 	})
 	t.Cleanup(func() {
@@ -827,7 +827,7 @@ func nextVersionNumber(t *testing.T, database *store.Store, artifactID string) i
 // own in-flight credits afresh, and the edit's append records its author.
 func TestABrowserEditAfterARoomReloadIsOwed(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	// The writes below publish into this room, which the test then reloads; a write to a document
 	// no room holds publishes into none (publishLiveWrite).
@@ -878,7 +878,7 @@ func requireOwedAlone(t *testing.T, service *Service, artifactID string, want mo
 // and neither lists an author twice nor loses one (LEGION-513).
 func TestConcurrentBrowserAndVersionedWritesListEveryAuthorOnceAfterEveryRound(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour // no settlement runs between the edits
+	service.settle = stagedAhead // no settlement runs between the edits
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
@@ -977,7 +977,7 @@ func TestABrowserEditAnotherTransactionsObserverReachesFirstIsCreditedExactly(t 
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, test.seed)
 			settleCurrentGeneration(t, service, artifactID)
 			bob := model.Actor{Kind: "user", ID: "bob"}
@@ -1169,7 +1169,7 @@ func (tx pausedCommitTx) Commit(ctx context.Context) error {
 // the lock keeps it from taking.
 func TestAVersionsCreditIsConsumedExactlyWhenItsCommitLands(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n")
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	state := service.lockState(artifactID)

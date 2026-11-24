@@ -79,7 +79,7 @@ func newCorpusSearchHandler(t *testing.T, databaseURL string) http.Handler {
 
 	broker := events.NewBroker()
 	documentService := docs.New(docs.Deps{
-		Store: database, Events: broker, ServerURL: "https://dispatch.example", Settle: time.Hour,
+		Store: database, Events: broker, ServerURL: "https://dispatch.example", Settle: stagedAhead,
 	})
 	t.Cleanup(func() {
 		if err := docstest.Shutdown(t, context.Background(), documentService); err != nil {

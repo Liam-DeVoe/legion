@@ -28,7 +28,7 @@ func TestAColdWriteLoadsNoRoom(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, "Alpha paragraph.\n\nBravo paragraph.\n")
 			closeRoom := func() {
 				if service.srv.GetDoc(artifactID) == nil {
@@ -165,7 +165,7 @@ func TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits(t *testing.T) {
 				Events:      events.NewBroker(),
 				Identity:    headerIdentity(database),
 				ServerURL:   "https://dispatch.example",
-				Settle:      time.Hour,
+				Settle:      stagedAhead,
 			})
 			t.Cleanup(func() {
 				if err := docstest.Shutdown(t, context.Background(), service); err != nil {

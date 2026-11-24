@@ -675,7 +675,7 @@ func TestUnsubscribeArtifactSessionRejectsIssueLinkedArtifacts(t *testing.T) {
 // read before it, the request would be answered twice.
 func TestASubscriptionRemovalCompletionQueuedBehindAnotherAppendsNoSecondRemoval(t *testing.T) {
 	t.Parallel()
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: stagedAhead})
 	issue := createInteractionIssue(t, handler, "TEST", "Removed once", "A spec")
 	ctx := context.Background()
 	own := issueOwner(issue.Key)

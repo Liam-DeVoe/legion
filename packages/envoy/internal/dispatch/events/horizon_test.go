@@ -474,7 +474,7 @@ func TestHorizonIsNotHeldByATransactionThatWritesNoEvent(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := testwait.Context(t)
 	storetest.HoldClusterTransactionID(t)
-	holdTransactionIDWithoutAnEvent(ctx, t, database)
+	storetest.HoldTransactionIDWithoutAnEvent(t, database)
 
 	id := commitHorizonEvent(ctx, t, database)
 	horizon := NewHorizon(database.Pool)
@@ -1728,19 +1728,6 @@ func commitHorizonEvent(ctx context.Context, t *testing.T, database *store.Store
 		t.Fatalf("commit event: %v", err)
 	}
 	return id
-}
-
-// holdTransactionIDWithoutAnEvent opens a transaction in Dispatch's own database that takes a
-// transaction id and writes a table other than events, and holds it open until the test ends.
-func holdTransactionIDWithoutAnEvent(ctx context.Context, t *testing.T, database *store.Store) {
-	t.Helper()
-	holder, _ := openEventWriter(ctx, t, database)
-	if _, err := holder.Exec(ctx, `create temporary table no_event (id int) on commit drop`); err != nil {
-		t.Fatalf("create the table the holder writes: %v", err)
-	}
-	if _, err := holder.Exec(ctx, `insert into no_event values (1)`); err != nil {
-		t.Fatalf("write a table other than events: %v", err)
-	}
 }
 
 func resetEventLog(ctx context.Context, t *testing.T, database *store.Store) {

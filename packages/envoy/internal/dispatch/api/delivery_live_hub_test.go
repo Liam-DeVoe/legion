@@ -1243,8 +1243,8 @@ func TestAReconnectCatchesUpWhatTheListenerMissed(t *testing.T) {
 	// keeps, since its change cursor stands below the merge until a catch-up runs either way.
 	// The reconnection below is what makes the hub hear the merge, so the later action whose
 	// effect would prove the absence is the one that ends it.
-	testwait.Quiet(t, "the page's frames while the listener is blind", conn.frames, viewMaxWait+time.Second,
-		"no state of the hub tells a merge it could not hear from one it has yet to catch up, and the only later action whose effect would, the listener's reconnection, is what makes it hear the merge")
+	testwait.Quiet(t, "the page's frames while the listener is blind", conn.frames, viewMaxWait,
+		"no state of the hub tells a merge it could not hear from one it has yet to catch up, and the only later action whose effect would, the listener's reconnection, is what makes it hear the merge; the span is viewMaxWait from the store, the latest a hub that marked the view by then would begin its recompute")
 	blind.Store(false)
 	rig.waitFor(t, start, "the listener's reconnection", func(note deliveryHubNote) bool { return note.what == "connected" })
 	delta := conn.delta(t, "t")

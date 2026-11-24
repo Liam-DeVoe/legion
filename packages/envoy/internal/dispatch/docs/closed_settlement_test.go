@@ -41,7 +41,8 @@ const (
 	// document's settlement writes a version.
 	closedSettlementVersionOne = "Versioned before the document was edited.\n"
 	// closedSettlementDelay is the settle delay a test sets once the settlement it waits for may
-	// run: the fixture's own delay is an hour, so a settlement armed before then does not run.
+	// run: the fixture's own delay is a day (stagedAhead), so a settlement armed before then does
+	// not run.
 	closedSettlementDelay = 20 * time.Millisecond
 	// refusedKeystroke is what a browser types after the close margin, which the store refuses.
 	refusedKeystroke = "Typed after the close margin."
@@ -65,9 +66,9 @@ func TestAClosedIssuesOwedSettlementCompletes(t *testing.T) {
 // closedSettlementFixture is one document of issue CORE-1 that owes a settlement, with CORE-1 still
 // open: its live text, which its store holds, is closedSettlementText, and its version 1 is
 // closedSettlementVersionOne (createOwedDocument). Its seed arms no settlement and loads no room.
-// The service serves browsers on server, its settle delay is an hour, and held holds the room's
-// next append of a browser's update once a test arms it (holdOneRoomUpdate), until the test lets
-// it go.
+// The service serves browsers on server, its settle delay is a day (stagedAhead), and held holds
+// the room's next append of a browser's update once a test arms it (holdOneRoomUpdate), until the
+// test lets it go.
 type closedSettlementFixture struct {
 	database   *store.Store
 	service    *Service
@@ -99,7 +100,7 @@ func newClosedSettlementFixture(t *testing.T) closedSettlementFixture {
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
 		ServerURL:   "https://dispatch.example",
-		Settle:      time.Hour,
+		Settle:      stagedAhead,
 		TestHooks:   true,
 	})
 	t.Cleanup(func() {
@@ -368,7 +369,7 @@ func settleAnAppendInsideTheCloseMargin(t *testing.T) {
 }
 
 // loadWhileOpen loads the document's room while CORE-1 is open (warmLiveDocument), and the load
-// arms the settlement the document owes, an hour out (onLoadDocument).
+// arms the settlement the document owes, a day out (onLoadDocument).
 func (f closedSettlementFixture) loadWhileOpen(t *testing.T) {
 	t.Helper()
 	if err := f.service.warmLiveDocument(context.Background(), f.artifactID); err != nil {
@@ -423,7 +424,7 @@ func settleOnTheResumption(t *testing.T) {
 }
 
 // ArmedBeforeTheClose: the document's room loads while CORE-1 is open and arms the settlement the
-// document owes an hour out, and CORE-1 closes before it runs. The close stops that settlement
+// document owes a day out, and CORE-1 closes before it runs. The close stops that settlement
 // (closeRecordLocked) and closes the room, and no version is written; the document's
 // pending-settlement row keeps the work, and the resumption pass settles the document on the
 // closed issue.

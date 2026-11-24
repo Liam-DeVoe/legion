@@ -7,7 +7,8 @@
 // because Go cannot share test-only code across packages. kvwatch's own tests keep fakes of their
 // own (armed in repair_test.go, pending in probe_test.go) because those keep every wait the
 // watcher arms, the short ones included, for the test to fire, where Waits hands the short waits
-// to time.AfterFunc.
+// to time.AfterFunc. It also holds the one wait for a watcher's copy to follow its bucket
+// (AwaitFollowing), which internal/store's and internal/session's tests both make.
 package kvwatchtest
 
 import (

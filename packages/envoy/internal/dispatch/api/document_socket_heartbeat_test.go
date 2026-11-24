@@ -58,7 +58,7 @@ func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration, fake *cloc
 	rig.sessions = store.NewPgSessionStore(database.Pool)
 	person := identity.CookieIdentity{SigningKey: testSigningKey, Sessions: rig.sessions}
 	broker := events.NewBroker()
-	documents := docs.New(docs.Deps{Store: database, Events: broker, Identity: person, Settle: time.Hour})
+	documents := docs.New(docs.Deps{Store: database, Events: broker, Identity: person, Settle: stagedAhead})
 	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: person, AgentTokens: sharedAgentTokens(t, "agent-token"),

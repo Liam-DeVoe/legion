@@ -878,7 +878,7 @@ func TestARoomReservedForTheInstanceItReplacedIsTriedAgain(t *testing.T) {
 // the room the document holds when the close closes it.
 func TestACloseOfAReplacedRoomHoldsItAgainstTheIdleSweep(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	// Shortened so ygo's idle sweep happens within the test: a room idle for a second is retired
 	// at the next sweep, which then runs every second, and the test waits for that through the
 	// shared wait. The sweep reads the wall clock inside ygo (provider/websocket/idle_sweep.go),
@@ -1024,7 +1024,7 @@ func TestAWriteOpenedWhileASettlementRunsArmsItWhenItEnds(t *testing.T) {
 func TestAWriteOpenedAsASettlementStartsArmsItWhenItEnds(t *testing.T) {
 	for _, start := range []struct {
 		name string
-		// fire starts the settlement the write meets, its timer armed an hour out.
+		// fire starts the settlement the write meets, its timer armed a day out (stagedAhead).
 		fire func(t *testing.T, service *Service, artifactID string, browser *docstest.Peer)
 	}{
 		{"its timer fired", func(t *testing.T, service *Service, artifactID string, _ *docstest.Peer) {
@@ -1036,7 +1036,7 @@ func TestAWriteOpenedAsASettlementStartsArmsItWhenItEnds(t *testing.T) {
 	} {
 		t.Run(start.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
-			service.settle = time.Hour
+			service.settle = stagedAhead
 			seedServiceText(t, service, artifactID, "before")
 			server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 			t.Cleanup(server.Close)
@@ -1052,7 +1052,7 @@ func TestAWriteOpenedAsASettlementStartsArmsItWhenItEnds(t *testing.T) {
 			versions := latestVersionNumber(t, service, artifactID)
 
 			// From here every settlement runs within 20 ms of being armed; the one armed now is
-			// the hour-long timer the edit armed. The hook opens a write as the settlement starts.
+			// the day-long timer the edit armed. The hook opens a write as the settlement starts.
 			// The state lock the timer check takes orders the delay's write and the hook's before
 			// the settlement's goroutines read them: settleLastPeer takes that lock before it
 			// settles, and a timer armed after it runs after it, while a browser's leaving reaches
@@ -1313,7 +1313,7 @@ func TestARoomLoadedAfterAnotherProcessesAppendStandsAtTheHead(t *testing.T) {
 // appends, and its derived writes are refused until a catch-up reads them back.
 func TestARoomWritesAgainAfterItsOwnBrowserAppend(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	editAsConnectedPeer(t, service, artifactID, 1, model.Actor{Kind: "user", ID: "alice"}, appendBlocks(t, "Alice's paragraph.\n"))
 	waitForLandedAppends(t, service, artifactID)
@@ -1325,7 +1325,7 @@ func TestARoomWritesAgainAfterItsOwnBrowserAppend(t *testing.T) {
 // own process's write refuses its derived writes until a catch-up reads that write back.
 func TestARoomWritesAgainAfterACommittedWritePublishesIntoIt(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("load the room: %v", err)
@@ -1346,7 +1346,7 @@ func TestARoomWritesAgainAfterACommittedWritePublishesIntoIt(t *testing.T) {
 // that advance every settlement that repairs anything would leave its own room behind the head.
 func TestARoomWritesAgainAfterItsSettlementAppendsARepair(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	editLiveTree(t, service, artifactID, appendUnidentifiedBlocks(t, "A paragraph with no block id."))
@@ -1365,7 +1365,7 @@ func TestARoomWritesAgainAfterItsSettlementAppendsARepair(t *testing.T) {
 // and the room takes that version in there too.
 func TestARoomWritesAgainAfterASupersededSettlementAppendsItsRepair(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	editLiveTree(t, service, artifactID, appendUnidentifiedBlocks(t, "A paragraph with no block id."))
@@ -1410,7 +1410,7 @@ func TestARoomWritesAgainAfterASupersededSettlementAppendsItsRepair(t *testing.T
 // write would answer 503 for a conflict Yjs resolves (coldFork, appendingCursor).
 func TestAColdWriteAppendsUnderABrowserThatOpenedBehindItsRead(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	closeDocumentRoom(t, service, artifactID)
 	read := storedHead(t, service.store, artifactID)
@@ -1454,7 +1454,7 @@ func TestAColdWriteAppendsUnderABrowserThatOpenedBehindItsRead(t *testing.T) {
 // that lock, and the room's derived writes were refused until something took that version in.
 func TestABrowserAppendQueuedBehindThisProcessesWriteIsNotRefused(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("load the room: %v", err)
@@ -1500,7 +1500,7 @@ func TestABrowserAppendQueuedBehindThisProcessesWriteIsNotRefused(t *testing.T) 
 // not the whole document.
 func TestAWriteDoesNotForkFromTheStoreInsideAnAppendsCursorWindow(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("load the room: %v", err)
@@ -1588,7 +1588,7 @@ func TestAWriteDoesNotForkFromTheStoreInsideAnAppendsCursorWindow(t *testing.T) 
 // appends have landed the stored document holds both by itself.
 func TestAReadInsideAnAppendsCursorWindowHoldsTheRoomsKeystroke(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n")
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("load the room: %v", err)
@@ -1946,7 +1946,7 @@ func TestAMarginWriteFromAWarmForkKeepsTheRenderingOfTheRoomItWasForkedFrom(t *t
 // refused until a catch-up read back from the store an update the room was about to receive.
 func TestARoomLoadingWhileThisProcessesWriteCommitsStandsAtTheHead(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	closeDocumentRoom(t, service, artifactID)
 
@@ -2041,7 +2041,7 @@ func TestAFailedRoomsEvictionWaitsForTheStampsCommitAndReloadsIt(t *testing.T) {
 	// failingBrowserAppendStore fails nothing here; it is the hook that runs just before the
 	// backfill's append, inside the transaction that holds the document's advisory lock.
 	appends := &failingBrowserAppendStore{VersionedStore: NewPgVersioned(database)}
-	service := New(Deps{Store: database, Persistence: appends, Events: events.NewBroker(), Settle: time.Hour})
+	service := New(Deps{Store: database, Persistence: appends, Events: events.NewBroker(), Settle: stagedAhead})
 	t.Cleanup(func() {
 		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)

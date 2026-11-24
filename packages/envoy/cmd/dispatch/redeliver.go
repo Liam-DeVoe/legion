@@ -33,8 +33,9 @@ const redeliveryPace = time.Second
 // (serverBus), and a bus that is down at boot must not stop the boot. A sweep before then is
 // skipped and logged as failed. Its App client and its own backoff obey the GitHub rate limits
 // every process shares, in the database's github_rate_limits. githubOptions add to that client's
-// own (main's gitHubClientOptions: a test process's bound on each call, and none in a deployment or
-// the redeliver-webhooks command).
+// own (main's gitHubClientOptions): a test process's bound on each call, none in a deployment, and
+// in the redeliver-webhooks command none unless an end-to-end test sets
+// DISPATCH_TEST_GITHUB_REQUEST_DEADLINE under DISPATCH_TEST_HOOKS=1.
 func webhookSweeper(natsClient *bus.Client, database *store.Store, app *auth.AppConfig, apiBase string, replicas int, githubOptions ...githubapp.Option) (*redeliver.Sweeper, error) {
 	if natsClient == nil {
 		return nil, nil

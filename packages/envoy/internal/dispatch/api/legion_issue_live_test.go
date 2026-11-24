@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"slices"
@@ -142,25 +143,52 @@ func (p *legionIssuePage) mark(t *testing.T) int {
 	return p.rig.mark()
 }
 
-// unread requires that the page is sent nothing for viewMaxWait after row's store, and that its
-// hub began no recompute of the page's view since start, the page's mark before that store, by
-// the span's end. A hub that heard a signal for the view marks it dirty and begins its recompute
-// viewQuiet after the mark, and viewMaxWait after it at the latest (dueAt), so the span is the
-// hub's own bound. A store that moves nothing the view shows sends the page nothing even where
-// the hub marks the view for it, since the recompute finds no change; so the page's silence alone
-// cannot tell a hub that filtered the store's signal from one that did not, and the hub's own
-// notes, counted once the span has passed, can.
-func (p *legionIssuePage) unread(t *testing.T, start int, row string) {
+// unread requires that row's store, made after start, the page's mark, left the page's hub owing
+// its view nothing. The hub routes the store's notification, on channel with payload, on its
+// listener's goroutine, and marks every view that notification moves before it notes it routed
+// (a "notified" note, onNotify), so the row waits for that note and then reads the hub's own state:
+// a hub that took the notification for the view has by then marked it dirty or begun the
+// recompute the mark made due, and a recompute begun since start, ended or not, left a "recompute
+// begin" note. A store that moves nothing the view shows sends the page nothing even where the hub
+// marks the view for it, since the recompute finds no change; so the page's silence alone could
+// not tell a hub that filtered the store's notification from one that did not, and the hub's state
+// and its notes can.
+func (p *legionIssuePage) unread(t *testing.T, start int, row, channel, payload string) {
 	t.Helper()
-	testwait.Quiet(t, "the frames of "+p.what()+" after "+row, p.conn.frames, viewMaxWait,
-		"no state of the hub tells a signal it filtered from one it has yet to act on: both leave the view clean "+
-			"until its recompute begins, which a hub that took the signal for the view begins within viewMaxWait of its mark, "+
-			"and no later action of the row is ordered after the hub's read of the notification")
+	p.rig.waitFor(t, start, fmt.Sprintf("%s: hub %s to route the notification on %s of %q", row, p.hub, channel, payload), func(note deliveryHubNote) bool {
+		return note.what == "notified" && note.channel == channel && note.payload == payload
+	})
+	if owed := p.rig.owesView(p.view); owed != "" {
+		t.Fatalf("%s: once hub %s routed the notification on %s of %q, it owes %s's view (%s) %s, want nothing", row, p.hub, channel, payload, p.key, p.view, owed)
+	}
+	p.requireNoRecomputeSince(t, start, row)
+}
+
+// requireNoRecomputeSince requires that the page's hub began no recompute of the page's view since
+// start, the page's mark.
+func (p *legionIssuePage) requireNoRecomputeSince(t *testing.T, start int, row string) {
+	t.Helper()
 	if n := p.rig.count(start, func(note deliveryHubNote) bool {
 		return note.what == "recompute begin" && note.view == p.view
 	}); n != 0 {
 		t.Fatalf("%s: hub %s began %d recomputes of %s's view (%s) since its mark, want 0", row, p.hub, n, p.key, p.view)
 	}
+}
+
+// owesView names what the hub will do of its own accord to the view whose key is key (viewOwes):
+// empty when nothing, a recompute under way, or a mark that makes one due.
+func (r *hubRig) owesView(key string) string {
+	now := r.clock.Now()
+	r.hub.mu.Lock()
+	defer r.hub.mu.Unlock()
+	if r.hub.generation == nil {
+		return "no generation running"
+	}
+	view, held := r.hub.generation.views[key]
+	if !held {
+		return "no view held under its key"
+	}
+	return viewOwes(view, now, r.clock.standsStill())
 }
 
 // announce sends the notification one read of project's daemon sends (legion.StateChannel), as the
@@ -325,9 +353,9 @@ func TestAnIssuesLegionLiveView(t *testing.T) {
 		page.runsRise(t, body, "L-9, a rating write that makes a retro's record")
 	}
 
-	// L-10: a stored change of another project, and its notify. Each hub settles first; then each
-	// page is sent nothing for viewMaxWait, by whose end its hub may not have read LIVE-1's view
-	// again for it (unread), which the page's silence alone does not show.
+	// L-10: a stored change of another project, and its notify. Each hub settles first; then, once
+	// each hub has routed the notify, it owes LIVE-1's view nothing and began no recompute of it
+	// (unread), which the page's silence alone does not show.
 	marks := map[*legionIssuePage]int{}
 	for _, page := range pages {
 		marks[page] = page.mark(t)
@@ -336,16 +364,17 @@ func TestAnIssuesLegionLiveView(t *testing.T) {
 	seedLegionRead(t, rig.database, "OTHER", tick(), "")
 	announce(t, rig, "OTHER")
 	for _, page := range pages {
-		page.unread(t, marks[page], "L-10, a notify of another project")
+		page.unread(t, marks[page], "L-10, a notify of another project", legion.StateChannel, "OTHER")
 	}
 
-	// L-11: a run of another issue of the same project, counted as L-10 is.
+	// L-11: a run of another issue of the same project, read as L-10 is once each hub has routed
+	// the run's notify (workflowstore.RunsChannel).
 	for _, page := range pages {
 		marks[page] = page.mark(t)
 	}
 	putStepOK(t, rig.handler, "LIVE-2", uuid.NewString(), implementerStart(daemonSessionOf("LIVE")))
 	for _, page := range pages {
-		page.unread(t, marks[page], "L-11, a run of another issue")
+		page.unread(t, marks[page], "L-11, a run of another issue", workflowstore.RunsChannel, "LIVE-2")
 	}
 
 	// L-12: two run writes of the issue that overlap. Run A's write is made the way the route
@@ -439,14 +468,19 @@ func TestAnIssuesLegionLiveView(t *testing.T) {
 	terminateListener(t, rig.database, &dials)
 	state.phase, state.since = "testing", tick()
 	observe("LIVE", "LIVE-1", legion.FieldPhase, `"testing"`, state.since)
-	// A hub that heard the phase all the same would recompute the view and send its delta within
-	// viewMaxWait of its mark; a hub that could not hear it owes nothing for it, and the two read
-	// alike in every state the hub keeps. The reconnection below is what makes the hub hear the
-	// phase, so the later action whose effect would prove the absence is the one that ends it.
-	testwait.Quiet(t, "the frames of "+pages[0].what()+" while hub A's listener is down", pages[0].conn.frames, viewMaxWait+time.Second,
-		"L-13: no state of the hub tells a phase it could not hear from one it has yet to catch up, and the only later "+
-			"action whose effect would, the listener's reconnection, is what makes it hear the phase; the span is past "+
-			"viewMaxWait, the latest a hub that heard it would have begun the view's recompute")
+	// No notification of the phase is sent, and terminateListener has returned with no dial of the
+	// listener's in flight, so the hub's listener can hear nothing until the reconnection below, and
+	// nothing the hub holds says whether it hears the phase some other way. A hub that marked the
+	// view by the phase's store would begin its recompute within viewMaxWait of that mark (dueAt):
+	// the span is exactly viewMaxWait from the store, and the recompute count after it catches a
+	// recompute begun in it whose delta is not sent yet. The reconnection is what makes the hub
+	// hear the phase, so the later action whose effect would prove the absence is the one that ends
+	// it.
+	testwait.Quiet(t, "the frames of "+pages[0].what()+" while hub A's listener is down", pages[0].conn.frames, viewMaxWait,
+		"L-13: no state of the hub tells a phase it cannot hear from one it hears some other way, and the only later "+
+			"action whose effect would, the listener's reconnection, is what makes it hear the phase; the span is "+
+			"viewMaxWait from the store, the latest a hub that marked the view by then would begin its recompute")
+	pages[0].requireNoRecomputeSince(t, start, "L-13, while hub A's listener is down")
 	blind.Store(false)
 	rig.waitFor(t, start, "L-13, hub A's listener's reconnection", listenerConnected)
 	pages[0].step(t, body, "state")

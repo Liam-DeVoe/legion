@@ -24,7 +24,7 @@ func TestADPoPProofIsUsedOncePerTargetURI(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	proofs := proofFixture(t)
-	exp := time.Now().Add(time.Minute)
+	exp := time.Now().Add(stagedAhead)
 
 	used, err := proofs.CheckAndSetDPoPProofUsed(ctx, "jti-1", "jkt", "", "GET", "https://dispatch.test/a", exp)
 	if err != nil || used {
@@ -46,7 +46,7 @@ func TestTwoPresentationsOfOneProofAtOnceLeaveExactlyOneUnused(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	proofs := proofFixture(t)
-	exp := time.Now().Add(time.Minute)
+	exp := time.Now().Add(stagedAhead)
 
 	const presentations = 8
 	outcomes := make([]bool, presentations)
@@ -109,7 +109,7 @@ func TestSweepDeletesOnlyTheRecordsThatCanNoLongerBePresented(t *testing.T) {
 			t.Fatalf("record %s: %v", jti, err)
 		}
 	}
-	if _, err := proofs.CheckAndSetDPoPProofUsed(ctx, "jti-live", "jkt", "", "GET", "https://dispatch.test/a", time.Now().Add(time.Minute)); err != nil {
+	if _, err := proofs.CheckAndSetDPoPProofUsed(ctx, "jti-live", "jkt", "", "GET", "https://dispatch.test/a", time.Now().Add(stagedAhead)); err != nil {
 		t.Fatalf("record the live proof: %v", err)
 	}
 

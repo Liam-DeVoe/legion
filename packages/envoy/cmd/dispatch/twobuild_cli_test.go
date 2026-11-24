@@ -5,8 +5,8 @@
 
 package main
 
-// The two-build suite's CLI half runs this tree's dispatch command with bun (currentCLI,
-// :42-46), which loads bin/dispatch.ts and its imports: envoy-client's sources and
+// The two-build suite's CLI half runs this tree's dispatch command with bun (currentCLI),
+// which loads bin/dispatch.ts and its imports: envoy-client's sources and
 // cipher-client's with them, which are reads here, and some of contracts' modules, which are
 // not: check-ts-filters.sh builds that entry (ci_ts_programs.py, BUNDLES), writes the
 // contracts modules its bundle loads into the listed blocks of dispatch_two_builds_go,

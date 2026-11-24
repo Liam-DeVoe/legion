@@ -690,7 +690,7 @@ func TestSessionRegistry_Ping_ClosedConnReturnsError(t *testing.T) {
 
 func TestSessionRegistry_RewatchRestartsStoppedWatcher(t *testing.T) {
 	client := setupNATS(t)
-	registry, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute), standingClock())
+	registry, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(stagedSessionTTL), standingClock())
 	if err != nil {
 		t.Fatalf("open registry: %v", err)
 	}

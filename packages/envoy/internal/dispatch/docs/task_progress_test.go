@@ -99,7 +99,7 @@ func TestTaskProgressIsCountedAtStartAndThenNothingRuns(t *testing.T) {
 	}
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
-	service := New(Deps{Store: counted, Events: events.NewBroker(), Settle: time.Hour})
+	service := New(Deps{Store: counted, Events: events.NewBroker(), Settle: stagedAhead})
 	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 
 	done := runTaskProgress(t, service)
@@ -132,7 +132,7 @@ func TestTaskProgressLockedThroughTheBootPassIsCountedByARetry(t *testing.T) {
 	if err := store.LockOwner(ctx, writer, store.IssueOwner(held)); err != nil {
 		t.Fatalf("hold %s: %v", held, err)
 	}
-	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: stagedAhead})
 	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 
 	done := runTaskProgress(t, service)

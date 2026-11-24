@@ -11,7 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -32,7 +31,7 @@ import (
 // "Waiting on you (3)" counts this request).
 func TestAReopenedIssuesApprovalRequestStillWaitsOnThePersonOnceItsDocumentsSettle(t *testing.T) {
 	t.Parallel()
-	f := newCloseAsksFixtureSettlingAfter(t, time.Hour)
+	f := newCloseAsksFixtureSettlingAfter(t, stagedAhead)
 	ctx := context.Background()
 	before := readBlockAsk(t, f.handler, f.approvalAsk)
 	if before.State != "open" || before.WaitingOn != "human" {
@@ -513,7 +512,8 @@ func keptClosedEditSource(t *testing.T, database *store.Store, document string) 
 // decision the close withdraws and writes resolved, the settlement on the closed issue saves that,
 // the reopen restores the decision and writes it open, and the settlement it leaves owed writes the
 // named version's text again, which leaves the request waiting on the person, now naming and
-// requesting that version. The settle delay is an hour, so the test runs each settlement itself.
+// requesting that version. The settle delay is a day (stagedAhead), so the test runs each
+// settlement itself.
 func TestOnlyASettlementsVersionKeepsAnApprovalRequestWithThePerson(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -565,7 +565,7 @@ func TestOnlyASettlementsVersionKeepsAnApprovalRequestWithThePerson(t *testing.T
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			handler, database, documents := settlingCarryDocuments(t, time.Hour)
+			handler, database, documents := settlingCarryDocuments(t, stagedAhead)
 			issue := createInteractionIssue(t, handler, "TEST", "A version of the requested text: "+test.name, test.spec)
 			c := reopenCarryCase{handler: handler, database: database, documents: documents, issue: issue.Key, spec: issue.PrimaryArtifactID}
 			c.settle(t, "the spec")
@@ -731,11 +731,11 @@ const reopenDecisionSpec = "Context\n\n" +
 // by alice at L+1, carried from her approval of L (docs.reopenedApproval). Before a closed issue's
 // document settled, no version came of the close, alice's review pinned the version from before
 // it, and the settlement after the reopen, which rendered that version's text again, wrote none,
-// so her approval stood. The settle delay is an hour, so the test runs each settlement itself
-// (SettleIssueDocuments), and nothing settles between the reopen and alice's review.
+// so her approval stood. The settle delay is a day (stagedAhead), so the test runs each settlement
+// itself (SettleIssueDocuments), and nothing settles between the reopen and alice's review.
 func TestAnApprovalGivenBetweenTheReopenAndItsSettlementStaysApproved(t *testing.T) {
 	t.Parallel()
-	handler, database, documentService := settlingCarryDocuments(t, time.Hour)
+	handler, database, documentService := settlingCarryDocuments(t, stagedAhead)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "An approval between the reopen and its settlement", reopenDecisionSpec)
 	spec := issue.PrimaryArtifactID
@@ -779,7 +779,7 @@ func TestAnApprovalGivenBetweenTheReopenAndItsSettlementStaysApproved(t *testing
 }
 
 // reopenCarryCase is one issue of TestAReopenCarriesAnApprovalOnlyOverTheAsksTheCloseWithdrew,
-// served with a settle delay of an hour, so the test runs each settlement itself.
+// served with a settle delay of a day (stagedAhead), so the test runs each settlement itself.
 type reopenCarryCase struct {
 	handler   http.Handler
 	database  *store.Store
@@ -828,8 +828,8 @@ func (c reopenCarryCase) requireRetracted(t *testing.T, blockID, when string) {
 // opens one, and the block of an ask a settlement retracted before the close, which her browser
 // brings back inside the margin, stays retracted until that settlement restores it. Neither
 // question was open when the issue closed, so A+1 asks something no approval of alice's covered.
-// The settle delay is an hour, so the test runs each settlement itself (SettleIssueDocuments), and
-// nothing settles between the reopen and alice's review.
+// The settle delay is a day (stagedAhead), so the test runs each settlement itself
+// (SettleIssueDocuments), and nothing settles between the reopen and alice's review.
 func TestAReopenCarriesAnApprovalOnlyOverTheAsksTheCloseWithdrew(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -915,7 +915,7 @@ func TestAReopenCarriesAnApprovalOnlyOverTheAsksTheCloseWithdrew(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			handler, database, documents := closedSettlementHandlerSettlingAfter(t, time.Hour)
+			handler, database, documents := closedSettlementHandlerSettlingAfter(t, stagedAhead)
 			issue := createInteractionIssue(t, handler, "TEST", "A reopen carry: "+test.name, test.spec)
 			c := reopenCarryCase{handler: handler, database: database, documents: documents, issue: issue.Key, spec: issue.PrimaryArtifactID}
 			c.settle(t, "the spec")

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -75,7 +74,7 @@ func TestBackfillAnchorBlocksPinsResolvableLegacyRowsOnce(t *testing.T) {
 func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 	const holdKey = int64(4815162342)
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "Introduction.\n\nTarget passage.\n\nOther passage.\n")
 	askID := insertAnchoredAsk(t, service, artifactID, "Other passage")
 	commentID := insertAnchoredComment(t, service, artifactID, "Target passage")

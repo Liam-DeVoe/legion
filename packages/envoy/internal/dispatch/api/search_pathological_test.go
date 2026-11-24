@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -97,7 +96,7 @@ import (
 // beside the counts a rung reads, and the test server's shutdown, which would otherwise spend its
 // drain budget settling 1 MiB documents, finds no document loaded and leaves each to resume.
 func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	issue := createArtifactIssue(t, handler)
 	documents := 0
 	// Each of the seven search triggers the header names is held by what it stores: its row saves,
@@ -489,8 +488,9 @@ const replacementBlockLimit = 1 << 31
 // each allocation's size and which no collection or load of the machine moves). The coverage
 // counters the run writes when it exits count all it did; the run that replaced none counts all of
 // that but the one replacement (countReplacements). Of the server's own work beside its requests,
-// what would read the blocks again does not run: it settles no document within the hour its
-// settle delay is, and it runs no block-index reconciliation, which only a server's boot starts.
+// what would read the blocks again does not run: it settles no document within the day its settle
+// delay is (stagedAhead), and it runs no block-index reconciliation, which only a server's boot
+// starts.
 func replaceManyBlocksCounted(t *testing.T, handler http.Handler, issue model.Issue, replace string) {
 	owner := "/api/v1/issues/" + issue.Key + "/artifacts"
 	upload := func(fields map[string]string, body []byte, block string, blocks int) {

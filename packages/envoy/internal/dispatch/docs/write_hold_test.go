@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -24,7 +23,7 @@ import (
 // document's work twice while it holds the issue row.
 func TestSnapshotReusesTheTransactionsRenderedDocument(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 
 	ctx := context.Background()
@@ -69,7 +68,7 @@ func TestSnapshotReusesTheTransactionsRenderedDocument(t *testing.T) {
 // follows the write's publish versions it.
 func TestContentTheRoomGainsAfterAWritesReadIsVersionedAfterTheWrite(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
 
 	ctx := context.Background()
@@ -141,7 +140,7 @@ func countedService(t *testing.T) (*Service, string, *anchorQueryCounter) {
 	service := newTestServiceWith(t, Deps{
 		Store:  &store.Store{Pool: pool},
 		Events: events.NewBroker(),
-		Settle: time.Hour,
+		Settle: stagedAhead,
 	})
 	return service, artifactID, counter
 }
@@ -357,7 +356,7 @@ func boldBlock(t *testing.T, text string) func(*pmdoc.Node) *pmdoc.Node {
 // version, which is the write's own state, and the settlement that follows versions it.
 func TestFormattingTheRoomGainsAfterAWritesReadIsVersionedAfterTheWrite(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before\n\nplain paragraph")
 
 	ctx := context.Background()

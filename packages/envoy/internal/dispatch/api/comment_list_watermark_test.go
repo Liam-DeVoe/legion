@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -222,7 +221,7 @@ func TestAWarmCommentListReadRunsOnlyItsValidatorsStatement(t *testing.T) {
 		identity: headerIdentity(database),
 		// A settlement of the issue's spec is database work of its own on the same pool; a delay
 		// no test run reaches keeps it out of the count.
-		settle: time.Hour,
+		settle: stagedAhead,
 	})
 	key := issueWithComments(t, handler, "WARMW", 5)
 	target := commentListOf(key)

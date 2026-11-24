@@ -137,7 +137,7 @@ func TestARefreshDuringAParkedSendsTryLeavesTheSenderHoldingTheRowsClaim(t *test
 			refreshGo, letRefreshGo := heldUntilReleased(t)
 			tryGo, letTryGo := heldUntilReleased(t)
 			refreshEntered, tryEntered := make(chan struct{}), make(chan struct{})
-			sender := newMentionSender(served.lifetime, time.Hour, nil,
+			sender := newMentionSender(served.lifetime, stagedAhead, nil,
 				func(ctx context.Context, item mentionSend) (mentionSend, bool) {
 					if item.heldFor != "" && gated.Load() {
 						tryEntered <- struct{}{}
@@ -328,7 +328,7 @@ func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPar
 			var unsureDuring bool
 			gate := newParkGate(t)
 			var sender *mentionSender
-			sender = newMentionSender(served.lifetime, time.Hour, nil,
+			sender = newMentionSender(served.lifetime, stagedAhead, nil,
 				func(ctx context.Context, item mentionSend) (mentionSend, bool) {
 					again, waits := served.sendCommentMention(ctx, item)
 					if (tc.during || tc.between) && item.heldFor == "" && refreshed.CompareAndSwap(false, true) {
@@ -353,7 +353,7 @@ func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPar
 				},
 				served.rereadMentionClaims, served.releaseMentionClaims)
 			// No goroutine of the sender's takes its lock before a send is queued: keepClaims's
-			// first refresh is an hour away.
+			// first refresh is a day away (stagedAhead).
 			sender.mu = gate
 			timers := make(chan func(), 4)
 			sender.mu.Lock()
@@ -455,7 +455,7 @@ func TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim(t *testing.T) {
 			// tried is the claim each try of the parked send carried, in order.
 			var mu sync.Mutex
 			var tried []time.Time
-			sender := newMentionSender(served.lifetime, time.Hour, nil,
+			sender := newMentionSender(served.lifetime, stagedAhead, nil,
 				func(ctx context.Context, item mentionSend) (mentionSend, bool) {
 					if item.heldFor != "" {
 						mu.Lock()
@@ -599,7 +599,7 @@ func TestAHandOffAfterTheRetryCheckIsNotDropped(t *testing.T) {
 			var mu sync.Mutex
 			var tried []time.Time
 			triedHandOff := make(chan struct{}, 1)
-			sender = newMentionSender(lifetime, time.Hour, nil,
+			sender = newMentionSender(lifetime, stagedAhead, nil,
 				func(_ context.Context, try mentionSend) (mentionSend, bool) {
 					mu.Lock()
 					tried = append(tried, try.claimed)

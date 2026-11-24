@@ -144,6 +144,30 @@ func HoldClusterTransactionID(t testing.TB) (release func()) {
 	return release
 }
 
+// HoldTransactionIDWithoutAnEvent opens a transaction in database, Dispatch's own, that takes a
+// transaction id and writes a table other than events, as a write that appends no event does, and
+// holds it open until the test ends, when it rolls back. It holds no event id, so it holds no
+// horizon back (events.Horizon). Its round trips run on the shared wait's context
+// (testwait.Context), so one the server never answers fails t by name.
+func HoldTransactionIDWithoutAnEvent(t testing.TB, database *store.Store) {
+	t.Helper()
+	ctx := testwait.Context(t)
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that writes no event: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	for _, statement := range []string{
+		`select pg_current_xact_id()`,
+		`create temporary table no_event (id int) on commit drop`,
+		`insert into no_event values (1)`,
+	} {
+		if _, err := tx.Exec(ctx, statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+}
+
 // Available reports whether DISPATCH_TEST_DATABASE_URL is set: whether Open would give a database
 // rather than skip. It is for a test that takes its databases another way, such as in a child
 // process of its own binary, and skips where Open would.

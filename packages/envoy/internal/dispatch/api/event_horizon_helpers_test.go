@@ -87,26 +87,3 @@ func holdEventWrite(t *testing.T, database *store.Store) (release func()) {
 	t.Cleanup(release)
 	return release
 }
-
-// holdTransactionIDWithoutAnEvent opens a transaction in Dispatch's own database that takes a
-// transaction id and writes a table other than events, as a write that appends no event does, and
-// holds it open until the test ends. Its round trips run on the shared wait's context
-// (testwait.Context), so one the server never answers fails t by name.
-func holdTransactionIDWithoutAnEvent(t *testing.T, database *store.Store) {
-	t.Helper()
-	ctx := testwait.Context(t)
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the transaction that writes no event: %v", err)
-	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
-	for _, statement := range []string{
-		`select pg_current_xact_id()`,
-		`create temporary table no_event (id int) on commit drop`,
-		`insert into no_event values (1)`,
-	} {
-		if _, err := tx.Exec(ctx, statement); err != nil {
-			t.Fatalf("%s: %v", statement, err)
-		}
-	}
-}

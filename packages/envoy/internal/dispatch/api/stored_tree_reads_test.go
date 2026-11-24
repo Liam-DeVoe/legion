@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -206,7 +205,7 @@ func TestACommentListReadsItsStoredTreesInOneStatement(t *testing.T) {
 		identity: headerIdentity(database),
 		// A settlement of the document is database work of its own on the same pool; a delay no
 		// test run reaches keeps it out of the count.
-		settle: time.Hour,
+		settle: stagedAhead,
 	})
 	bodies := []string{
 		unshownText("The **first** of several bodies this list answers."),

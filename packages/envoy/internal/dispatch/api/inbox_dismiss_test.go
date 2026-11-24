@@ -568,7 +568,7 @@ func TestDismissRefusesWhatItCannotChange(t *testing.T) {
 		"no mark":               {map[string]any{}, "INVALID_STATE"},
 		"no mark with filters":  {map[string]any{"project": []string{"TEST"}}, "INVALID_STATE"},
 		"unreadable mark":       {map[string]any{"dismiss_through": "yesterday"}, "INVALID_STATE"},
-		"mark ahead":            {map[string]any{"dismiss_through": time.Now().Add(2 * time.Minute).UTC().Format(time.RFC3339Nano)}, "INVALID_STATE"},
+		"mark ahead":            {map[string]any{"dismiss_through": time.Now().Add(stagedAhead).UTC().Format(time.RFC3339Nano)}, "INVALID_STATE"},
 		"both owners":           {map[string]any{"dismiss_through": now, "issue": issue.Key, "artifact": thread}, "INVALID_QUERY"},
 		"unknown kind":          {map[string]any{"dismiss_through": now, "kind": []string{"ask"}}, "INVALID_QUERY"},
 		"unknown priority":      {map[string]any{"dismiss_through": now, "priority": []string{"P9"}}, "INVALID_QUERY"},

@@ -849,7 +849,7 @@ func TestSessionAnswersRefusesASinceOlderThanSevenDays(t *testing.T) {
 	now := time.Now().UTC()
 	for _, since := range []string{
 		now.Add(-7*24*time.Hour - time.Minute).Format(time.RFC3339), // older than 7 days
-		now.Add(time.Hour).Format(time.RFC3339),                     // in the future
+		now.Add(stagedAhead).Format(time.RFC3339),                   // in the future
 		"yesterday",
 	} {
 		response := dispatchRequest(t, f.handler, http.MethodGet, "/api/v1/agents/"+answersSession+"/answers?since="+since, nil, "alice")

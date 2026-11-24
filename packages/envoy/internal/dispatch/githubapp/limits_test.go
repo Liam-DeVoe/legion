@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -189,48 +190,14 @@ func twoProcesses(t *testing.T, fake *limitGitHub) (database *store.Store, a, b 
 	return database, a, b
 }
 
-// passLimits moves every recorded limit's end into the past, as waiting GitHub's wait out would.
-func passLimits(t *testing.T, database *store.Store) {
-	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `update github_rate_limits set until = now() - interval '1 second'`); err != nil {
-		t.Fatalf("move the recorded limits back: %v", err)
-	}
-}
-
 // stagedAhead is how far past the database's clock a row of this package stages the end of a
 // rate limit the client judges against that clock (github_rate_limits.until): a limit a row
-// records itself (ratelimit.Store.Record) or holds on (holdLimits). It is staged state for the
-// product's clock, not a wait: longer than any `go test -timeout` CI gives this package, so the
-// limit is still in force when the row's later request is made however slow the row is. A wait
-// GitHub's answer names is held to serverwait.MaxWait, an hour, so no answer the fake gives can
-// stage a limit longer than that.
+// records itself (ratelimit.Store.Record) or holds on (githubapptest.HoldLimits). It is staged
+// state for the product's clock, not a wait: longer than any `go test -timeout` CI gives this
+// package, so the limit is still in force when the row's later request is made however slow the
+// row is. A wait GitHub's answer names is held to serverwait.MaxWait, an hour, so no answer the
+// fake gives can stage a limit longer than that.
 const stagedAhead = 24 * time.Hour
-
-// holdLimits moves every recorded limit's end stagedAhead past the database's clock, for a row
-// that reads a request made inside a limit a slow row may outlast before it gets there: GitHub's
-// minute where its answer names no wait (rateLimitWait). The row reads the wait the limit was
-// recorded with first (recordedWait).
-func holdLimits(t *testing.T, database *store.Store) {
-	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `update github_rate_limits set until = now() + make_interval(secs => $1)`,
-		stagedAhead.Seconds()); err != nil {
-		t.Fatalf("hold the recorded limits stagedAhead on: %v", err)
-	}
-}
-
-// recordedWait is the wait scope's recorded limit was last written with: its end less the
-// database's now() at that write (updated_at), which neither the moment of this read nor the
-// time since moves.
-func recordedWait(t *testing.T, database *store.Store, scope string) time.Duration {
-	t.Helper()
-	var micros int64
-	if err := database.Pool.QueryRow(context.Background(), `
-		select (extract(epoch from until - updated_at) * 1000000)::bigint from github_rate_limits where scope = $1
-	`, scope).Scan(&micros); err != nil {
-		t.Fatalf("read the wait the limit under %s was recorded with: %v", scope, err)
-	}
-	return time.Duration(micros) * time.Microsecond
-}
 
 // requireHeld requires err to be a limit recorded by the other process: no request was sent.
 func requireHeld(t *testing.T, err error, what string) {
@@ -254,7 +221,8 @@ func requireHeld(t *testing.T, err error, what string) {
 // names is an hour, serverwait.MaxWait, the longest the client records, so the limit is still in
 // force when the other process's requests are read however slow the row is (no
 // `go test -timeout` CI gives this package reaches an hour); where GitHub names none, the limit is
-// its minute, which the row reads as recorded and then holds stagedAhead on (holdLimits).
+// its minute, which the row reads as recorded and then holds stagedAhead on
+// (githubapptest.HoldLimits).
 func TestAGraphQLLimitIsRecordedUnderTheScopeGitHubBudgetsIt(t *testing.T) {
 	reset := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)
 	primary := `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for installation"}]}`
@@ -324,7 +292,7 @@ func TestAGraphQLLimitIsRecordedUnderTheScopeGitHubBudgetsIt(t *testing.T) {
 			if err != nil || !found {
 				t.Fatalf("github_rate_limits holds no limit under %s: %v, %v", want, found, err)
 			}
-			if wait := recordedWait(t, database, want); wait <= 0 {
+			if wait := githubapptest.RecordedWait(t, database, want); wait <= 0 {
 				t.Errorf("the limit under %s was recorded for %s, want GitHub's own wait", want, wait)
 			}
 			wantStrikes := 0
@@ -344,7 +312,7 @@ func TestAGraphQLLimitIsRecordedUnderTheScopeGitHubBudgetsIt(t *testing.T) {
 					installation, found, err)
 			}
 			if shape.unnamed {
-				holdLimits(t, database)
+				githubapptest.HoldLimits(t, database, stagedAhead)
 			}
 
 			// What the other process may still do under that installation: its REST reads go on
@@ -737,7 +705,7 @@ func TestAnInstallationsLimitMetByOneProcessHoldsTheOthersReads(t *testing.T) {
 	}
 
 	fake.limit("")
-	passLimits(t, database)
+	githubapptest.PassLimits(t, database)
 	if _, status, _, err := b.Read(ctx, tokenB, "/repos/acme/web/issues/2"); err != nil || status != http.StatusOK {
 		t.Fatalf("B's read once the limit passed: status %d, %v; want GitHub's 200", status, err)
 	}
@@ -893,7 +861,7 @@ func TestTheAppsLimitMetByOneProcessHoldsTheOthersAppCalls(t *testing.T) {
 	}
 
 	fake.limit("")
-	passLimits(t, database)
+	githubapptest.PassLimits(t, database)
 	if _, err := b.Token(ctx, 9); err != nil {
 		t.Fatalf("B's token mint once the limit passed: %v", err)
 	}

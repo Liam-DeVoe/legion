@@ -375,7 +375,7 @@ func TestIssueReferencesRefuseWhenALaterStatementReachesTheBound(t *testing.T) {
 	clock := clocktest.New(time.Now())
 	// No document settles during the test, so no write of the server's own waits on events with a
 	// connection of the pool.
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour, clock: clock, tracer: statements})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead, clock: clock, tracer: statements})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
 	linked := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{

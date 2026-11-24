@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -18,7 +17,7 @@ import (
 // once the gate opens; a dependency write naming the neighbour finishes while the move still waits.
 func TestBoardMoveStatusAndDependencyWriteDoNotDeadlock(t *testing.T) {
 	t.Parallel()
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	keys := createListedIssues(t, handler, "CORE", 6)
 	anchor, parent, moving, neighbor, dependent := keys[1], keys[2], keys[3], keys[4], keys[5]
 	requireOwnerLockOrder(t, database, neighbor, anchor)
@@ -67,7 +66,7 @@ func TestBoardMoveStatusAndDependencyWriteDoNotDeadlock(t *testing.T) {
 
 func TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks(t *testing.T) {
 	t.Parallel()
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	keys := createListedIssues(t, handler, "CORE", 3)
 	other := createListedIssues(t, handler, "SIDE", 2)
 	gate, err := database.Pool.Begin(context.Background())

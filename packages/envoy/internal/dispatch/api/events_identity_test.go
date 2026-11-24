@@ -264,7 +264,7 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration, serverClock clo
 		Membership: &identity.Membership{People: rig.people, Sessions: rig.sessions, SignIn: flow, Rule: identity.GroupRule{Group: "dispatch-members"}},
 	}
 	broker := events.NewBroker()
-	rig.documents = docs.New(docs.Deps{Store: database, Events: broker, Identity: person, Settle: time.Hour})
+	rig.documents = docs.New(docs.Deps{Store: database, Events: broker, Identity: person, Settle: stagedAhead})
 	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), rig.documents) })
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: person, AgentTokens: sharedAgentTokens(t, "agent-token"), Docs: rig.documents, Events: broker,
@@ -311,7 +311,7 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration, serverClock clo
 // same cookie is served again after one refresh.
 func TestASignInIssuerOutageAnswersTheAPIAndTheDocumentSocket503AndKeepsTheSession(t *testing.T) {
 	t.Parallel()
-	rig := newDocumentSocketRig(t, time.Hour, nil)
+	rig := newDocumentSocketRig(t, stagedAhead, nil)
 	ctx := context.Background()
 	signedIn, found, err := rig.people.Membership(ctx, rig.email)
 	if err != nil || !found {

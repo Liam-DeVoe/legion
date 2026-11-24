@@ -1241,8 +1241,8 @@ func TestAFallbackCopyWhoseMentionIsStillBeingSentIsClaimedAgainOnlyOnceItsWaitH
 	}
 
 	// A pass inside that wait claims the row again, and so reads it again, only if it is due: the
-	// claim it would take is a next_attempt_at of its own. The wait is put an hour off first, so
-	// the pass runs inside it however late it comes (notDueAhead).
+	// claim it would take is a next_attempt_at of its own. The wait is put a day off first
+	// (stagedAhead), so the pass runs inside it however late it comes (notDueAhead).
 	wait := notDueAhead(t, database, commentID, sessionTopic)
 	publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 	if again := readHeldCopy(t, database, commentID, sessionTopic); again.attempts != 0 || again.due == nil ||
@@ -1329,8 +1329,8 @@ func TestAFallbackCopyNATSDeniesIsRetriedPastTheDeadLetterThresholdUntilItIsPubl
 				want, *row.due, want, retry.Delay(want))
 		}
 		if want == 1 {
-			// A pass before the backoff has passed leaves the row alone. The backoff is put an
-			// hour off first, so the pass runs before it however late it comes (notDueAhead).
+			// A pass before the backoff has passed leaves the row alone. The backoff is put a day
+			// off first (stagedAhead), so the pass runs before it however late it comes (notDueAhead).
 			backoff := notDueAhead(t, database, commentID, sessionTopic)
 			publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 			if again := readHeldCopy(t, database, commentID, sessionTopic); again.attempts != 1 || again.due == nil || !again.due.Equal(backoff) {

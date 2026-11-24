@@ -21,7 +21,7 @@ func TestQuoteAnchorWritesServerMark(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
@@ -60,7 +60,7 @@ func TestMarkAnchorVerifiesBrowserMark(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
@@ -122,7 +122,7 @@ func TestMarkAnchorSuggestionProjectsBrowserKind(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
@@ -150,7 +150,7 @@ func TestQuoteAnchorCommentSpansParagraphs(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
@@ -171,7 +171,7 @@ func TestSuggestionAcceptSpansParagraphs(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond})
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead, MarkWait: 50 * time.Millisecond})
 		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
@@ -215,7 +215,7 @@ func browserDocumentServer(t testing.TB) (*docs.Service, http.Handler, *store.St
 	var documentService *docs.Service
 	handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{
-			Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond,
+			Store: database, Settle: stagedAhead, MarkWait: 50 * time.Millisecond,
 			Identity: headerIdentity(database),
 		})
 		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
@@ -318,7 +318,7 @@ func TestSuggestionAcceptKeepsTheCalloutItLandsIn(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var documentService *docs.Service
 			handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
-				documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond})
+				documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead, MarkWait: 50 * time.Millisecond})
 				t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 				return documentService
 			})
@@ -422,7 +422,7 @@ func TestSuggestionAcceptRewritesOnlyTheTypedBlockUnderItsOwnID(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var documentService *docs.Service
 			handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
-				documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond})
+				documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead, MarkWait: 50 * time.Millisecond})
 				t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 				return documentService
 			})
@@ -695,7 +695,7 @@ func TestMarkAnchorMissingAfterWaitIs409(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond})
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead, MarkWait: 50 * time.Millisecond})
 		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})

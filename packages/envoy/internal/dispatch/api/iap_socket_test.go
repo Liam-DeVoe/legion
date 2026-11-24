@@ -263,7 +263,7 @@ func newIAPDocumentRig(t *testing.T, heartbeat time.Duration, clk, judged clock.
 	rig := &iapDocumentRig{iap: newIAPSocketKeys(t, database, judged)}
 	rig.switched = newSwitchedIdentity(rig.iap.identity)
 	broker := events.NewBroker()
-	documents := docs.New(docs.Deps{Store: database, Events: broker, Identity: rig.switched, Settle: time.Hour})
+	documents := docs.New(docs.Deps{Store: database, Events: broker, Identity: rig.switched, Settle: stagedAhead})
 	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: rig.switched, AgentTokens: sharedAgentTokens(t, "agent-token"),

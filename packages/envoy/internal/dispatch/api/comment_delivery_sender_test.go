@@ -932,16 +932,23 @@ func TestAListenerThatAnswersNoLookupDelaysARoutedCommentByOneTimeoutAtMost(t *t
 	settledCommentDeliveries(t, database, created.ID)
 }
 
-// stagedAhead is how far past the database's now() a row of this package stages a time the
-// product judges against its own clock: a heartbeat, a lease, a claim, a run's ends_at, a close,
-// a snooze's end, the lease a key is taken for (testServerOptions.idempotencyLease), or a TTL the
-// roster cache keeps an answer or a silence for. It is also how long a row sets a product delay
-// on the real clock that must not run out inside the row: a document service's settle delay
-// (docs.Deps.Settle) and a stand-in embedder's stall (fakeEmbedder.delay). It is staged state for
-// the product's clock, not a wait: longer than any `go test -timeout` CI gives this package (70
-// minutes in api's race lane), so what the row staged reads as not yet passed however long the
-// run takes, where a stamp of now() would pass a minute or a few seconds later on a loaded
-// machine.
+// stagedAhead is how far past the database's now(), or the real clock's now, a row of this
+// package stages a time the product judges against that clock: a heartbeat, a lease (an
+// enrollment's too: enroll.Service.Lease and a seeded lease_expires_at), a claim, a run's ends_at,
+// a close, a snooze's end, an issue's updated_at, a moment a request names ahead of now for the
+// product to refuse (a mark, a since), a token's expiry (a broker introspection's exp, a GitHub
+// installation token's expires_at), the lease a key is taken for
+// (testServerOptions.idempotencyLease), or a TTL the roster cache keeps an answer or a silence
+// for. It is also how long a row sets a product delay or period on the real clock that must not
+// run out inside the row: a document service's settle delay (docs.Deps.Settle, and the settle
+// argument of this package's document fixtures), a socket's heartbeat (Deps.StreamHeartbeat), the
+// mention sender's claim refresh (newMentionSender's claimRefresh), an introspection bucket's
+// refill (ratelimit.Limit.Every), and a stand-in embedder's stall (fakeEmbedder.delay). It is
+// staged state for the product's clock, not a wait: longer than any `go test -timeout` CI gives
+// this package (70 minutes in api's race lane), so what the row staged reads as not yet passed
+// however long the run takes, where a stamp of now() would pass a minute or a few seconds later on
+// a loaded machine. A value the product caps stays as the product allows and is named where it
+// stands (tokenLogin's exp, held to machine.MaxTokenLoginLifetime).
 const stagedAhead = 24 * time.Hour
 
 // ageAttempts moves the creation of the comments' attempts a claim lease and a second into the
@@ -1611,7 +1618,7 @@ func TestTheMentionDrainGivesBackItsClaimsAfterItsSendContextIsCancelled(t *test
 	started, finish := make(chan struct{}), make(chan struct{})
 	var released []mentionClaim
 	var releaseErr error
-	sender := newMentionSender(lifetime, time.Hour, nil,
+	sender := newMentionSender(lifetime, stagedAhead, nil,
 		func(context.Context, mentionSend) (mentionSend, bool) {
 			close(started)
 			<-finish

@@ -6,7 +6,6 @@ import (
 	"runtime"
 	"sync"
 	"testing"
-	"time"
 	"weak"
 
 	gws "github.com/gorilla/websocket"
@@ -29,7 +28,7 @@ import (
 // takes its own class, and only a slice no class holds falls back to the bytes.
 func TestAnUpdateClassHoldsNoCopyAndMatchesByIdentity(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	// Durable classes, so the room's record holds them (pendingUpdates) until each is taken.
 	recordClass := func(update []byte) *UpdateCredit {
 		credit := &UpdateCredit{}

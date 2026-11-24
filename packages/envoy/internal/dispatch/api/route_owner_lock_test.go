@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -712,7 +711,7 @@ func TestADeliverySettleWaitsForItsReceiptOwnersLockHoldingNoTransactionID(t *te
 			close(release)
 		}
 	}()
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, settle: time.Hour})
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, settle: stagedAhead})
 	issue := createInteractionIssue(t, handler, "LOCK", "Delivery settle", "A spec.\n")
 	ctx := context.Background()
 

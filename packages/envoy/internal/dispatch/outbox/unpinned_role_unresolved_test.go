@@ -45,7 +45,7 @@ func seedCreatedAttempt(t *testing.T, database *store.Store, commentID, target, 
 // creation and its claim, for a row that reads an attempt seedCreatedAttempt opened as live: that
 // statement dates both now(), as the API's does, which reads live for model.DeliveryClaimLapse
 // only (model.MentionLiveSQL), so a row that took a minute to read it would read it past its
-// lease. Dated ahead it reads live for that hour and the lease past it.
+// lease. Dated ahead it reads live for that day and the lease past it.
 func keepLive(t *testing.T, database *store.Store, commentID string) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `

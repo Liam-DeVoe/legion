@@ -867,7 +867,7 @@ func TestADurableAppendIsAnnouncedOnlyWhenItsTransactionCommits(t *testing.T) {
 // version it appended (Ledger.announceAppends), not once per append.
 func TestAJoinedTransactionAnnouncesEachDocumentOnceWithItsLastVersion(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	heard := listenForDocumentChanges(t, service.store)
 	ctx := context.Background()

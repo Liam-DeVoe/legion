@@ -304,7 +304,7 @@ func TestALiveSubscriptionIsSentAnEventWhileTransactionsThatWriteNoEventAreOpen(
 	subscribeEvents(t, client, "events", nil)
 
 	storetest.HoldClusterTransactionID(t)
-	holdTransactionIDWithoutAnEvent(t, rig.database)
+	storetest.HoldTransactionIDWithoutAnEvent(t, rig.database)
 	renameIssue(t, rig.handler, issue.Key, "Renamed while transactions that write no event are open")
 	expectEventsInOrder(t, client, "events", eventHead(t, rig.database))
 }
@@ -582,7 +582,7 @@ func TestTheRelaysFirstStartDoesNotReadTheWholeEventLogWhileAWriterFromBeforeBoo
 	// transaction id is older than the mark, as a write open across a restart's boot is. It stays
 	// open until the test ends.
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: liveHorizonHeartbeat, liveSocketClock: clocktest.Held(), persistence: func(database *store.Store) docs.VersionedStore {
-		holdTransactionIDWithoutAnEvent(t, database)
+		storetest.HoldTransactionIDWithoutAnEvent(t, database)
 		return nil
 	}}, nil)
 	testwait.Receive(t, "the server's boot mark", rig.served.bootMark)

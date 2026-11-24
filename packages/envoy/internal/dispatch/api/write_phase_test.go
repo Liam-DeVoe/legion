@@ -56,7 +56,7 @@ func (g *gatedProjectMark) ProjectMark(ctx context.Context, artifactID, markID s
 func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 	t.Parallel()
 	// The seeded spec's settlement takes the owner lock this test holds; keep it out of the queue.
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: stagedAhead})
 	issue := createInteractionIssue(t, handler, "TEST", "Closed while waiting", "A spec")
 	// Creating the issue starts the project's term-statistics refresh, which commits its rows
 	// whenever it finishes: waited out here, it cannot read as a write of the refused ask.
@@ -106,7 +106,7 @@ func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 func TestAThreadReadWaitsForAWritersReadPhase(t *testing.T) {
 	t.Parallel()
 	gate := &gatedProjectMark{entered: make(chan struct{}), release: make(chan struct{})}
-	handler, _, database := pooledDocumentHandlerWith(t, 8, time.Hour, func(service *docs.Service) docs.API {
+	handler, _, database := pooledDocumentHandlerWith(t, 8, stagedAhead, func(service *docs.Service) docs.API {
 		gate.API = service
 		return gate
 	})
@@ -234,7 +234,7 @@ func awaitNoTransactionIDHolder(t *testing.T, database *store.Store, projects ..
 func TestTwoWritersOfOneOwnerSerializeWithoutATransactionID(t *testing.T) {
 	t.Parallel()
 	gate := &gatedMarkQuote{entered: make(chan struct{}), release: make(chan struct{})}
-	handler, _, database := pooledDocumentHandlerWith(t, 8, time.Hour, func(service *docs.Service) docs.API {
+	handler, _, database := pooledDocumentHandlerWith(t, 8, stagedAhead, func(service *docs.Service) docs.API {
 		gate.API = service
 		return gate
 	})
@@ -322,7 +322,7 @@ func TestTwoWritersOfOneOwnerSerializeWithoutATransactionID(t *testing.T) {
 // what the one before it committed: both labels land, and the issue's sequence has no gap.
 func TestTwoPatchesOfOneIssueSerializeOnItsOwnerLockAndLoseNoUpdate(t *testing.T) {
 	t.Parallel()
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	issue := createInteractionIssue(t, handler, "TEST", "Two patches", "A spec")
 	awaitNoTransactionIDHolder(t, database, "TEST")
 
@@ -432,7 +432,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		var service *docs.Service
 		var gate *firstReplaceGate
 		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
-			service = docs.New(docs.Deps{Store: database, Settle: time.Hour})
+			service = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 			t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 			gate = &firstReplaceGate{
 				API: service, firstEntered: make(chan struct{}), releaseFirst: make(chan struct{}), secondEntered: make(chan struct{}),
@@ -478,7 +478,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 	t.Run("a unique violation", func(t *testing.T) {
 		var service *docs.Service
 		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
-			service = docs.New(docs.Deps{Store: database, Settle: time.Hour})
+			service = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 			t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 			return service
 		})
@@ -521,7 +521,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 	t.Run("a comment whose event collides", func(t *testing.T) {
 		var service *docs.Service
 		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
-			service = docs.New(docs.Deps{Store: database, Settle: time.Hour})
+			service = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 			t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 			return service
 		})
@@ -549,7 +549,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 	// of their own (store.RunWrite): the event's collision takes the message's row with it.
 	t.Run("a message whose event collides", func(t *testing.T) {
 		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
-			service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
+			service := docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 			t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 			return service
 		})

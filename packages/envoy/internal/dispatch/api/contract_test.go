@@ -119,7 +119,7 @@ func newContractRig(t *testing.T) *contractRig {
 		t.Fatalf("oidc.New: %v", err)
 	}
 	enr := &enroll.Service{
-		Store: brokerStore, Lease: time.Hour, Pod: enroll.K8sPodVerifier{Verifier: tokenVerifier},
+		Store: brokerStore, Lease: stagedAhead, Pod: enroll.K8sPodVerifier{Verifier: tokenVerifier},
 		ServiceLogins: map[string]string{contractDaemonAccount: "legion-daemon"},
 	}
 	enr.Chain = enroll.NewChainVerifier(brokerStore, brokerServer.URL, time.Minute)
@@ -206,7 +206,7 @@ func (rig *contractRig) newSessionEnrollment(t *testing.T, operator string) (enr
 	}
 	enrollmentID = uuid.NewString()
 	if _, err := rig.brokerStore.Pool.Exec(ctx, `insert into enrollments (id, kind, runtime_id, operator, thumbprint, launcher_credential_id, lease_expires_at)
-		values ($1,'session',$2,$3,$4,$5, now() + interval '1 hour')`, enrollmentID, "session-"+t.Name(), operator, thumbprint, credentialID); err != nil {
+		values ($1,'session',$2,$3,$4,$5, now() + make_interval(secs => $6))`, enrollmentID, "session-"+t.Name(), operator, thumbprint, credentialID, stagedAhead.Seconds()); err != nil {
 		t.Fatalf("insert enrollments: %v", err)
 	}
 	return enrollmentID, key
@@ -848,6 +848,9 @@ func (rig *contractRig) tokenLogin(t *testing.T) (string, *ecdsa.PrivateKey) {
 	t.Helper()
 	claims := rig.issuer.Claims(contractDaemonAccount, contractTokenAudience)
 	claims["iat"] = time.Now().Add(-5 * time.Second).Unix()
+	// An hour from its issue, the longest a token login takes (machine.MaxTokenLoginLifetime), and
+	// the launcher credential the login issues expires with it: the product caps this value, so it
+	// stays an hour rather than stagedAhead.
 	claims["exp"] = time.Now().Add(time.Hour).Unix()
 	key := contractSigningKey(t)
 	compact, err := record.Sign(key, rig.BrokerURL,

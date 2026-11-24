@@ -9,7 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
@@ -67,7 +66,7 @@ func TestARemoteChangeRearmsOnlyAnArmedSettlement(t *testing.T) {
 		t.Fatal("task B's change armed a settlement on task A, which had none armed: two processes would each version the burst")
 	}
 
-	// Task A's own peer types: its settlement is armed a settle delay out (an hour here).
+	// Task A's own peer types: its settlement is armed a settle delay out (a day here, stagedAhead).
 	editAsConnectedPeer(t, pair.taskA, pair.artifactID, 2, model.Actor{Kind: "user", ID: "alice-on-task-a"}, appendBlocks(t, "Alice's paragraph.\n"))
 	waitForLandedAppends(t, pair.taskA, pair.artifactID)
 	before, armed, generation := settleOf()
@@ -217,7 +216,7 @@ func newGatedServiceInstance(t *testing.T, database *store.Store) (*Service, *ga
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
 		ServerURL:   "https://dispatch.example",
-		Settle:      time.Hour,
+		Settle:      stagedAhead,
 	})
 	t.Cleanup(func() {
 		if err := docstest.Shutdown(t, testwait.Context(t), service); err != nil {

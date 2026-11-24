@@ -531,7 +531,7 @@ func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
 	held := heldPut{Memory: filestest.NewMemory(), entered: make(chan struct{}), release: make(chan struct{})}
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(held.release) }) }
-	handler, database, _ := newTestServer(t, testServerOptions{files: held, settle: time.Hour})
+	handler, database, _ := newTestServer(t, testServerOptions{files: held, settle: stagedAhead})
 	issue := fileIssue(t, handler)
 
 	var body bytes.Buffer

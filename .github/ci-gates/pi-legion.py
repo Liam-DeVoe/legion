@@ -8,20 +8,20 @@ GATE = gate("pi_legion", "pi-legion", runs=[
 ], reads=reads(
     ("packages/pi-legion/**", f"{at('pi-legion', 'Test pi-legion')} in packages/pi-legion"),
     ("packages/pi-envoy/**", "packages/pi-legion/extensions/legion.test.ts:77,331 and legion-role-claim.test.ts:14,102 import ../../pi-envoy/extensions/envoy; packages/pi-shared/test/omp-harness.ts:1265"),
-    ("packages/claude-envoy/**", "packages/pi-legion/src/skills-guard.test.ts:318 spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER :29) and asserts an exact file list over the tree it writes, so that script and everything it reads - its BUNDLE_ENTRYPOINTS at scripts/build.ts:39-44 among them - are read by this job through a spawn, which carries no import and which no derivation sees"),
-    ("packages/envoy-client/bin/dispatch.ts", "the fourth entry of that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:43), outside the package it builds"),
+    ("packages/claude-envoy/**", "packages/pi-legion/src/skills-guard.test.ts spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER) and asserts an exact file list over the tree it writes, so that script and everything it reads - its BUNDLE_ENTRYPOINTS among them - are read by this job through a spawn, which carries no import and which no derivation sees"),
+    ("packages/envoy-client/bin/dispatch.ts", "the dispatch entry of that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts), outside the package it builds"),
     ("packages/pi-shared/src/**", "packages/pi-legion/tsconfig.json paths @legion/pi-shared/* and include ../pi-shared/src/omp-host.d.ts"),
     ("packages/pi-shared/test/**", "packages/pi-legion/extensions/legion-phase-stall-omp.test.ts:14, legion-role-tools-omp.test.ts:13, src/skills-guard.test.ts:20, scripts/prepack.test.ts:4"),
-    ("packages/envoy-client/test/subscribe-answer.ts", "packages/pi-legion/extensions/legion-role-claim.test.ts:46 "
-                                                       "imports @legion/envoy-client/test/subscribe-answer, and "
+    ("packages/envoy-client/test/subscribe-answer.ts", "packages/pi-legion/extensions/legion-role-claim.test.ts "
+                                                       "imports @legion/envoy-client/test/subscribe-answer (consumerDelivery), and "
                                                        "packages/pi-shared/test/omp-harness.ts:17, which this "
                                                        "package's omp tests drive, imports it too"),
     # envoy-client's sources, and cipher-client's with them, are the shared read below.
     (CONTRACTS_SRC, f"{at('pi-legion', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
     (TEST_FIXTURES_SRC, "packages/pi-legion's extensions and src tests import @legion/test-fixtures"),
-    (f"{FIX}/daemon-api/**", "packages/pi-legion/extensions/legion.test.ts:1440,4080, legion-role-claim.test.ts:21, src/daemon-api-version.test.ts:14"),
+    (f"{FIX}/daemon-api/**", "packages/pi-legion/extensions/legion.test.ts (launchedController, and the row of /legion-claim-controller in a phase worker's pane), legion-role-claim.test.ts:21, src/daemon-api-version.test.ts:14"),
     (f"{FIX}/capability-redaction.json", "packages/pi-legion/src/capability-report.test.ts:848"),
-    (f"{FIX}/capability-redaction-plugin-report.json", "packages/pi-legion/src/capability-report.test.ts:969 (PLUGIN_REPORT :854)"),
+    (f"{FIX}/capability-redaction-plugin-report.json", "packages/pi-legion/src/capability-report.test.ts's credential redaction row reads it (PLUGIN_REPORT)"),
     ("packages/dispatch/e2e/**", "packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts:83 names packages/dispatch/e2e/run-server.sh in the checkout it builds, and seed.ts:111, which that test names at :112, imports packages/dispatch/e2e/api.ts"),
     ("packages/dispatch/web/src/api/types.ts", "packages/dispatch/e2e/api.ts:20"),
     ("packages/dispatch/web/src/api/paths.ts", "packages/dispatch/e2e/api.ts:8-19 imports PathsOf, Op, PathParams, QueryParams, RequestBody, Query, Body and Answer from it, since that client is keyed on the generated document's path patterns"),

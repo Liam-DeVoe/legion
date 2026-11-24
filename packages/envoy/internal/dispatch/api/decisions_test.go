@@ -88,7 +88,7 @@ const (
 
 func newDecisionsFixture(t *testing.T) decisionsFixture {
 	t.Helper()
-	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: stagedAhead})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE",
 		shipIt("Ship it.")+"\n\n"+holdIt("Hold it.")+"\n\nOther paragraph.\n")

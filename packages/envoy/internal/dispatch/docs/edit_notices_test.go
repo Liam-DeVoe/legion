@@ -25,13 +25,17 @@ import (
 
 // stagedAhead is how far past the database's now() a row of this package stages a time the
 // service judges against the database's clock: a notice's quiet time, an issue's close the store's
-// close margin is read against, or a process's heartbeat (fleetProcess). It is also how long a
-// row sets a delay of the service's own on the real clock that must not run out inside the row: a
-// settle delay (Deps.Settle) no timer may run before the row settles the document itself, and the
-// idle time ygo's sweep retires a room after (RoomIdleTimeout). It is staged state for the
-// product's clock, not a wait: longer than any `go test -timeout` CI gives this package (80
-// minutes in docs's race lane), so what the row staged reads as not yet passed however long the
-// run takes, where the production thirty seconds or a minute would pass on a loaded machine.
+// close margin is read against, or a process's heartbeat (fleetProcess). It is also the age a row
+// passes the settlement resumption (resumeOwedSettlements), which takes only a pending settlement
+// marked that long before the database's now(), so one the row marked reads as too young however
+// long the row takes. And it is how long a row sets a delay of the service's own on the real clock
+// that must not run out inside the row: a settle delay (Deps.Settle) no timer may run before the
+// row settles the document itself, a settle timer a row arms itself (roomstate_lifecycle_test.go's
+// "armed settlement timer"), and the idle time ygo's sweep retires a room after
+// (RoomIdleTimeout). It is staged state for the product's clock, not a wait: longer than any
+// `go test -timeout` CI gives this package (80 minutes in docs's race lane), so what the row
+// staged reads as not yet passed however long the run takes, where the production thirty seconds
+// or a minute would pass on a loaded machine.
 const stagedAhead = 24 * time.Hour
 
 // editNoticeRow is a document's pending edit notice as document_edit_notices holds it, with the
@@ -92,7 +96,7 @@ func requireDueQuietAfterItsWrite(t *testing.T, service *Service, artifactID str
 // both people.
 func TestEditNoticeAPersonsSettledEditOpensAndExtendsTheWindow(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	service.editNoticeQuiet = 30 * time.Second
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
@@ -142,7 +146,7 @@ func TestEditNoticeAPersonsSettledEditOpensAndExtendsTheWindow(t *testing.T) {
 // last in the quiet window.
 func TestEditNoticeNamesThePersonWhoEditedLast(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	zoe := model.Actor{Kind: "user", ID: "zoe@example.com"}
@@ -166,7 +170,7 @@ func TestEditNoticeNamesThePersonWhoEditedLast(t *testing.T) {
 // row takes to reach them.
 func TestEditNoticeQuietStartsWhenTheNoticeIsWrittenNotWhenItsTransactionBegan(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	service.editNoticeQuiet = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
@@ -210,7 +214,7 @@ func versionCreatedAt(t *testing.T, database *store.Store, document string, numb
 // notice's last editor, not the one whose id sorts last.
 func TestEditNoticeAnAgentsNamedVersionNamesThePersonWhoEditedLast(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	zoe := model.Actor{Kind: "user", ID: "zoe@example.com"}
@@ -231,7 +235,7 @@ func TestEditNoticeAnAgentsNamedVersionNamesThePersonWhoEditedLast(t *testing.T)
 // A snapshot version an agent writes over two people's edits names the person who edited last too.
 func TestEditNoticeASnapshotVersionNamesThePersonWhoEditedLast(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	zoe := model.Actor{Kind: "user", ID: "zoe@example.com"}
@@ -260,7 +264,7 @@ func TestEditNoticeQuietDefaultsToThirtySeconds(t *testing.T) {
 // An agent's settled edit opens no quiet window: the notice is for a person's edit alone.
 func TestEditNoticeAnAgentsSettledEditOpensNone(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	before := latestVersionNumber(t, service, artifactID)
@@ -279,7 +283,7 @@ func TestEditNoticeAnAgentsSettledEditOpensNone(t *testing.T) {
 // version lists that person. A named version that lists no person opens none.
 func TestEditNoticeANamedVersionByAPersonOverTheirOwnEditOpensTheWindow(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
@@ -302,7 +306,7 @@ func TestEditNoticeANamedVersionByAPersonOverTheirOwnEditOpensTheWindow(t *testi
 // A named version by an agent, with no person's credit pending, opens no window.
 func TestEditNoticeAnAgentOnlyNamedVersionOpensNone(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	session := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
@@ -323,7 +327,7 @@ func TestEditNoticeAnAgentOnlyNamedVersionOpensNone(t *testing.T) {
 // extends the window (writeVersionTx), so the settlement is not the only path.
 func TestEditNoticeAnAgentsNamedVersionThatCapturesAPersonsEditOpensTheWindow(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
@@ -351,7 +355,7 @@ func TestEditNoticeAnAgentsNamedVersionThatCapturesAPersonsEditOpensTheWindow(t 
 // A snapshot version that carries a person's edit opens the same window.
 func TestEditNoticeASnapshotVersionThatCapturesAPersonsEditOpensTheWindow(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
@@ -464,7 +468,7 @@ func addPersonsVersion(t *testing.T, database *store.Store, document string, num
 // diff; the row goes, and the event is published once its transaction commits.
 func TestEditNoticeSweepSendsADueNotice(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
@@ -576,7 +580,7 @@ func TestEditNoticeSweepSendsNothingForANoticeMovedBehindItsClaim(t *testing.T) 
 // it.
 func TestEditNoticeSweepLeavesANoticeThatIsNotDue(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	service.editNoticeQuiet = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
@@ -663,8 +667,8 @@ func TestEditNoticeSweepDropsANoticeOnAClosedIssue(t *testing.T) {
 // lock, so the second sweep to reach it finds nothing to delete.
 func TestEditNoticeSweepOfTwoServicesSendsEachNoticeOnce(t *testing.T) {
 	database := storetest.Open(t)
-	first := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	second := New(Deps{Store: storetest.SecondProcess(t, database), Events: events.NewBroker(), Settle: time.Hour})
+	first := New(Deps{Store: database, Events: events.NewBroker(), Settle: stagedAhead})
+	second := New(Deps{Store: storetest.SecondProcess(t, database), Events: events.NewBroker(), Settle: stagedAhead})
 	t.Cleanup(func() {
 		_ = docstest.Shutdown(t, context.Background(), first)
 		_ = docstest.Shutdown(t, context.Background(), second)
@@ -712,7 +716,7 @@ func TestEditNoticeSweepDuringSettlement(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
@@ -978,7 +982,7 @@ func TestEditNoticeAPersonsQuestionEditSendsOne(t *testing.T) {
 // no room's memory in another process decides it.
 func TestOutsideReviewColdAgentVersionLastHuman(t *testing.T) {
 	first, artifactID := newTestService(t)
-	first.settle = time.Hour
+	first.settle = stagedAhead
 	seedServiceText(t, first, artifactID, "First.\n\nSecond.\n\nThird.\n")
 	settleCurrentGeneration(t, first, artifactID)
 	zoe := model.Actor{Kind: "user", ID: "zoe@example.com"}
@@ -986,7 +990,7 @@ func TestOutsideReviewColdAgentVersionLastHuman(t *testing.T) {
 	editAsConnectedPeer(t, first, artifactID, 1, zoe, replaceRun("First.", "First, by zoe."))
 	editAsConnectedPeer(t, first, artifactID, 2, adam, replaceRun("Second.", "Second, by adam."))
 	waitForLandedAppends(t, first, artifactID)
-	second := New(Deps{Store: storetest.SecondProcess(t, first.store), Events: events.NewBroker(), Settle: time.Hour})
+	second := New(Deps{Store: storetest.SecondProcess(t, first.store), Events: events.NewBroker(), Settle: stagedAhead})
 	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), second) })
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	if err := joinedWrite(second, func(ctx context.Context) error {
@@ -1013,7 +1017,7 @@ func TestOutsideReviewColdAgentVersionLastHuman(t *testing.T) {
 // Adam edits and names the version, and the notice must name Adam.
 func TestOutsideReviewJoinedHumanEditLastHuman(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	zoe := model.Actor{Kind: "user", ID: "zoe@example.com"}
@@ -1046,7 +1050,7 @@ func TestEditNoticeTwoConnectedOneEditsNamesNobody(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	adam := model.Actor{Kind: "user", ID: "adam@example.com"}
@@ -1069,7 +1073,7 @@ func TestEditNoticeTwoConnectedOneEditsNamesNobody(t *testing.T) {
 // not be named as the editor.
 func TestEditNoticeASessionPeerEditingBesideAConnectedPersonNamesNobody(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	adam := model.Actor{Kind: "user", ID: "adam@example.com"}
@@ -1091,7 +1095,7 @@ func TestEditNoticeASessionPeerEditingBesideAConnectedPersonNamesNobody(t *testi
 // the write read the document, so the settlement that follows the write versions it.
 func TestEditNoticeABrowserEditAfterAJoinedWriteNamesTheBrowserEditor(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	adam := model.Actor{Kind: "user", ID: "adam@example.com"}
@@ -1181,7 +1185,7 @@ func recordLatestEditSourceTx(t *testing.T, service *Service, artifactID string,
 // no person's, so the settlement's notice must still name the person who typed.
 func TestEditNoticeAnAgentsCommittedEditAfterAPersonsLandedEditNamesThePerson(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
@@ -1207,7 +1211,7 @@ func TestEditNoticeAnAgentsCommittedEditAfterAPersonsLandedEditNamesThePerson(t 
 // of its own. That version captures alice's edit, and its notice must name her.
 func TestEditNoticeAnAgentsNamedVersionAfterItsCommittedEditNamesThePerson(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
@@ -1237,7 +1241,7 @@ func TestEditNoticeAnAgentsNamedVersionAfterItsCommittedEditNamesThePerson(t *te
 // settlement's notice must name zoe, whose edit is the later one, and not the memory of adam.
 func TestEditNoticeAClosedAndReopenedIssueNamesTheLaterBrowserEditor(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	adam := model.Actor{Kind: "user", ID: "adam@example.com"}
@@ -1275,7 +1279,7 @@ func TestEditNoticeAClosedAndReopenedIssueNamesTheLaterBrowserEditor(t *testing.
 // holds both changes and its editors hold bob.
 func TestEditNoticeAnUnnamedVersionAfterASentNoticeIsInTheNextNotice(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n\nThird.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
@@ -1326,7 +1330,7 @@ func TestEditNoticeAnUnnamedVersionAfterASentNoticeIsInTheNextNotice(t *testing.
 // the notice would name her for an edit that may be Bob's.
 func TestEditNoticeATwoPeerEditThatLandedClearsTheStoredPerson(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}

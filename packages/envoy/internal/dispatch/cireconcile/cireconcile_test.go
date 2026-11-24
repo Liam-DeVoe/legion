@@ -583,13 +583,20 @@ func atHead(repository, sha string, item object) object {
 	return item
 }
 
+// stagedAhead is how long a limit a row records in force lasts (ratelimit.Store.Record), on the
+// database's clock, where the row's verdict needs the pass to meet it still in force. It is staged
+// state for that clock, not a wait: longer than any `go test -timeout` CI gives this package (20
+// minutes in envoy-go's unit step), so the limit is still in force however long the machine
+// takes to reach the pass, where ten minutes would pass on a loaded one.
+const stagedAhead = 24 * time.Hour
+
 // A limit already in force on the App ends a pass before it sends GitHub anything, and the pass
 // line names the scope and when the limit ends.
 func TestALimitInForceEndsThePassBeforeItReadsGitHub(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
-	if err := h.reconciler.Limits.Record(h.ctx, "app", 10*time.Minute); err != nil {
+	if err := h.reconciler.Limits.Record(h.ctx, "app", stagedAhead); err != nil {
 		t.Fatalf("record a limit on the App: %v", err)
 	}
 
@@ -895,7 +902,7 @@ func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 		arrange: func(h *harness) {
 			h.seedProjectDefault(rowRepository)
 			h.listHead()
-			if err := h.reconciler.Limits.Record(h.ctx, githubapp.AppScope, 10*time.Minute); err != nil {
+			if err := h.reconciler.Limits.Record(h.ctx, githubapp.AppScope, stagedAhead); err != nil {
 				h.t.Fatalf("record a limit on the App: %v", err)
 			}
 		},

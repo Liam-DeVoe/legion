@@ -53,7 +53,7 @@ func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t
 				store: &store.Store{Pool: store.NewPool(pool)}, envoyURL: listener.URL, outboxPublishes: true,
 			})
 			joinRegisteredMentions(t, served)
-			sender := newMentionSender(served.lifetime, time.Hour, nil, served.sendCommentMention,
+			sender := newMentionSender(served.lifetime, stagedAhead, nil, served.sendCommentMention,
 				served.refreshMentionClaims, served.rereadMentionClaims, served.releaseMentionClaims)
 			timers := make(chan func(), 4)
 			sender.mu.Lock()
@@ -149,7 +149,7 @@ func TestALostRefreshNeverRevivesALapsedClaim(t *testing.T) {
 			})
 			joinRegisteredMentions(t, served)
 			var down atomic.Bool
-			sender := newMentionSender(served.lifetime, time.Hour, nil, served.sendCommentMention,
+			sender := newMentionSender(served.lifetime, stagedAhead, nil, served.sendCommentMention,
 				func(ctx context.Context, queued []mentionClaim) ([]mentionClaim, error) {
 					if down.Load() {
 						return nil, errDatabaseUnreachable

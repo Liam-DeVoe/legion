@@ -585,7 +585,7 @@ func TestEventDoesNotMoveIssueUpdatedAtBackward(t *testing.T) {
 		t.Fatalf("create issue: status=%d body=%s", created.Code, created.Body.String())
 	}
 	issue := decodeBody[model.Issue](t, created)
-	future := time.Now().UTC().Truncate(time.Microsecond).Add(time.Hour)
+	future := time.Now().UTC().Truncate(time.Microsecond).Add(stagedAhead)
 	if _, err := database.Pool.Exec(context.Background(), "update issues set updated_at = $2 where key = $1", issue.Key, future); err != nil {
 		t.Fatalf("set future updated_at: %v", err)
 	}

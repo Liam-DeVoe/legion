@@ -317,7 +317,7 @@ func TestInboxReadRefusesWhatItCannotMark(t *testing.T) {
 	}{
 		"no mark":          {map[string]any{}, "INVALID_STATE"},
 		"unreadable mark":  {map[string]any{"read_through": "yesterday"}, "INVALID_STATE"},
-		"mark ahead":       {map[string]any{"read_through": time.Now().Add(2 * time.Minute).UTC().Format(time.RFC3339Nano)}, "INVALID_STATE"},
+		"mark ahead":       {map[string]any{"read_through": time.Now().Add(stagedAhead).UTC().Format(time.RFC3339Nano)}, "INVALID_STATE"},
 		"both owners":      {map[string]any{"read_through": now, "issue": issue.Key, "artifact": "7c9e6679-7425-40de-944b-e07fc1f90ae7"}, "INVALID_QUERY"},
 		"unknown kind":     {map[string]any{"read_through": now, "kind": []string{"ask"}}, "INVALID_QUERY"},
 		"empty kind":       {map[string]any{"read_through": now, "kind": []string{""}}, "INVALID_QUERY"},
@@ -740,7 +740,7 @@ func TestInboxReadRacingAnotherMarkAll(t *testing.T) {
 // it waited for the first's, and Postgres would break the cycle as a deadlock.
 func TestAMarkAllOverTwoProjectsTakesTheirLocksInLockKeyOrder(t *testing.T) {
 	t.Parallel()
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	ctx := context.Background()
 	// Two project keys whose order by name, which the events follow, is the opposite of their
 	// order by lock key.

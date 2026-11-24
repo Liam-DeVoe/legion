@@ -229,7 +229,7 @@ func countVersionAuthor(t *testing.T, database *store.Store, artifactID string, 
 // append stores nothing when it lands.
 func TestASettlementsListedEditIsNotOwedAgainWhenItsHeldAppendLands(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -276,7 +276,7 @@ func TestASettlementsListedEditIsNotOwedAgainWhenItsHeldAppendLands(t *testing.T
 // editor alone.
 func TestABrowserEditBeforeAVersionCommitsLeavesOnlyItsOwnAuthorOwed(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -414,7 +414,7 @@ func playTwoProcesses(t *testing.T, seed int64) {
 // her edits armed, which writes no version: the document reads as its latest version again.
 func arrangeNoVersionSettlement(t *testing.T, service *Service, artifactID string, alice model.Actor) {
 	t.Helper()
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	before := latestVersionNumber(t, service, artifactID)
@@ -495,7 +495,7 @@ func TestAnAuthorAnotherProcessLandedIsListedOnce(t *testing.T) {
 // settlement while another transaction holds that lock.
 func TestALoadNeverWaitsForTheDocumentLock(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	writeThroughLedger(t, service, artifactID, model.Actor{Kind: "session", ID: "writer-session"}, "Writer's paragraph.\n", withoutVersion)
 	if owed, err := settlementPending(context.Background(), service.store.Pool, artifactID); err != nil || !owed {
@@ -537,7 +537,7 @@ func TestALoadNeverWaitsForTheDocumentLock(t *testing.T) {
 // not bob, and nothing owes bob.
 func TestAnUploadClearsOnlyTheEditsItsForkHeld(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -751,7 +751,7 @@ func TestUpsertPendingAuthorsRefusesAnAuthorNamedTwiceAtOneUpdate(t *testing.T) 
 // second consumes the first author alone.
 func TestAJoinedWritesAuthorsAreRecordedByTheAppendsThatCreditedThem(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	first := model.Actor{Kind: "session", ID: "first-session"}
@@ -956,7 +956,7 @@ func TestAnUploadOnARoomLoadedFromACompactedHistoryConsumesExactlyItsRoomsAuthor
 // write's earlier change.
 func TestAWriteAfterItsOwnTransactionsVersionStaysPending(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	agent := model.Actor{Kind: "session", ID: "agent-session"}
@@ -991,7 +991,7 @@ func TestAWriteAfterItsOwnTransactionsVersionStaysPending(t *testing.T) {
 // lists the uploader on the upload's version alone, appends no event, and leaves nothing owed.
 func TestAPlainUploadsSettlementAddsNothingVisible(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	uploader := model.Actor{Kind: "session", ID: "uploader-session"}
@@ -1035,7 +1035,7 @@ func TestAPlainUploadsSettlementAddsNothingVisible(t *testing.T) {
 // committed version.
 func TestADiscardedNamedVersionMarksNothing(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -1088,7 +1088,7 @@ func TestADiscardedNamedVersionMarksNothing(t *testing.T) {
 // that version alone, and nothing owes her once her append lands.
 func TestAnEvictionDuringAVersionsCommitListsItsAuthorOnce(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -1165,7 +1165,7 @@ func TestTwoVersionsBeforeAnAppendAsksForTheLockListItsAuthorOnce(t *testing.T) 
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
 		ServerURL:   "https://dispatch.example",
-		Settle:      time.Hour,
+		Settle:      stagedAhead,
 	})
 	t.Cleanup(func() {
 		if err := docstest.Shutdown(t, context.Background(), service); err != nil {

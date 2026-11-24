@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
@@ -98,7 +97,7 @@ func TestASocketOpenReadsTheIssueAndTheCallerOnce(t *testing.T) {
 	counter := &statementCounter{}
 	counted := storetest.TracedStore(t, storetest.Open(t), counter)
 	// No heartbeat resolves the caller again while the test counts.
-	handler, _, cookie, request, documentService := newCookieServerOn(t, counted, time.Hour)
+	handler, _, cookie, request, documentService := newCookieServerOn(t, counted, stagedAhead)
 	if response := request(http.MethodPost, "/api/v1/projects", map[string]string{"key": "TEST", "name": "Test"}); response.Code != http.StatusCreated {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
 	}

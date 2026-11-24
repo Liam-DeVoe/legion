@@ -673,7 +673,7 @@ func TestAnEditedPostsNodeAndItsBlocksCarryTheEditTime(t *testing.T) {
 // version adds names that version's author as its maker.
 func TestABlockSeenFirstAtItsDocumentsFirstIndexingHasNoMaker(t *testing.T) {
 	t.Parallel()
-	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: stagedAhead})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", "First paragraph.\n\nSecond paragraph.\n")

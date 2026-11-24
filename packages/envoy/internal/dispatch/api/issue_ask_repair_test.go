@@ -506,11 +506,11 @@ func TestRepairRestoresTheWithdrawnAsksOfAnIssueReopenedWithoutRestoring(t *test
 // A browser on another process's room - one that never hears of the close, as a process of an
 // older build does not, or has not yet when its room stores the write - writes an ask block into a
 // closed issue's document, leaving it owing a settlement that the other process, whose settle
-// delay is an hour, does not run here. The repair gives that issue the close's final sweep, so the
-// block reads resolved, and the sweep's write arms this process's settlement of the document,
-// which runs on the closed issue as on an open one and saves what the sweep wrote: the block still
-// has no ask, the latest version shows it resolved, and the one event the issue gains is that
-// version's artifact.version, which notifies nobody. A closed issue whose document owes no
+// delay is a day (stagedAhead), does not run here. The repair gives that issue the close's final
+// sweep, so the block reads resolved, and the sweep's write arms this process's settlement of the
+// document, which runs on the closed issue as on an open one and saves what the sweep wrote: the
+// block still has no ask, the latest version shows it resolved, and the one event the issue gains
+// is that version's artifact.version, which notifies nobody. A closed issue whose document owes no
 // settlement is not touched.
 func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) {
 	t.Parallel()
@@ -518,7 +518,7 @@ func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) 
 	swept := createInteractionIssue(t, f.handler, "TEST", "Written after its close", "Context\n")
 	untouched := createInteractionIssue(t, f.handler, "OTHER", "Settled after its close", "Context\n")
 	awaitSettled(t, f.database, swept.PrimaryArtifactID, untouched.PrimaryArtifactID)
-	other := docs.New(docs.Deps{Store: f.database, Identity: headerIdentity(f.database), Settle: time.Hour})
+	other := docs.New(docs.Deps{Store: f.database, Identity: headerIdentity(f.database), Settle: stagedAhead})
 	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), other) })
 	peers := map[string]*syncedPeer{
 		swept.PrimaryArtifactID:     connectBrowserPeer(t, other, swept.PrimaryArtifactID),
@@ -580,7 +580,7 @@ func TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass(t *testing
 	stale := createInteractionIssue(t, f.handler, "TEST", "Marked before the bound", "Context\n")
 	fresh := createInteractionIssue(t, f.handler, "OTHER", "Marked after the bound", "Context\n")
 	awaitSettled(t, f.database, stale.PrimaryArtifactID, fresh.PrimaryArtifactID)
-	other := docs.New(docs.Deps{Store: f.database, Identity: headerIdentity(f.database), Settle: time.Hour})
+	other := docs.New(docs.Deps{Store: f.database, Identity: headerIdentity(f.database), Settle: stagedAhead})
 	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), other) })
 	peers := map[string]*syncedPeer{
 		stale.PrimaryArtifactID: connectBrowserPeer(t, other, stale.PrimaryArtifactID),
@@ -630,8 +630,8 @@ func TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass(t *testing
 // either document, and leave each document's owed settlement marked when it was.
 func TestARepairThatChangesNothingAppendsNoUpdateAndMarksNoDocument(t *testing.T) {
 	t.Parallel()
-	// An hour, so the only settlement is the one the close through PATCH runs.
-	f := newRepairFixtureSettlingAfter(t, time.Hour)
+	// A day (stagedAhead), so the only settlement is the one the close through PATCH runs.
+	f := newRepairFixtureSettlingAfter(t, stagedAhead)
 	closed := createInteractionIssue(t, f.handler, "TEST", "Closed by this release", closeDecision)
 	older := createInteractionIssue(t, f.handler, "OTHER", "Closed by an older release", "Context\n")
 	if response := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+closed.Key, map[string]string{"status": "done"}, "alice"); response.Code != http.StatusOK {
@@ -731,8 +731,8 @@ func (d *issueAskFailingDocs) takeWrites() map[string]int {
 // one marked again, never the third.
 func TestARepairPassThatFailsOneIssueStillMovesTheWindowAndRetriesIt(t *testing.T) {
 	t.Parallel()
-	// An hour, so the only settlement is the one each close through PATCH runs.
-	f := newRepairFixtureSettlingAfter(t, time.Hour)
+	// A day (stagedAhead), so the only settlement is the one each close through PATCH runs.
+	f := newRepairFixtureSettlingAfter(t, stagedAhead)
 	failing := createInteractionIssue(t, f.handler, "FAIL", "Fails every pass", closeDecision)
 	remarked := createInteractionIssue(t, f.handler, "MARK", "Marked again", closeDecision)
 	untouched := createInteractionIssue(t, f.handler, "LEFT", "Left as it is", closeDecision)

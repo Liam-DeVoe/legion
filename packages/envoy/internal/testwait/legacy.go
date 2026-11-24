@@ -6,14 +6,15 @@ import (
 )
 
 // This file holds the bounded waits main had before the one wait of testwait.go, with main's
-// bodies, for the tests of the Envoy module that have not moved to that wait yet. Their callers
-// are in files this pull request does not edit, among them callers main added since (#5132's
-// cmd/listener/role_claim_copy_behind_test.go, and bus/async_error_test.go and
-// cmd/listener/drain_watchers_test.go), and are the package-local bounded helpers kept for those
-// files: cmd/listener's waitFor (main_test.go), internal/store's waitFor and pollMatch
-// (kv_test.go) and internal/session's waitFor (registry_test.go). Nothing else in a file this pull
-// request edits calls one of those helpers, directly or through another function. A2 moves each
-// such caller onto the one wait and deletes this file with the last of them.
+// bodies, for the tests of the Envoy module that have not moved to that wait yet. All but three
+// of the files that call them are files this pull request does not edit, among them callers main
+// added since (#5132's cmd/listener/role_claim_copy_behind_test.go, and bus/async_error_test.go
+// and cmd/listener/drain_watchers_test.go). The three it edits hold the package-local bounded
+// helpers kept for those files: cmd/listener's waitFor (main_test.go), internal/store's waitFor and
+// pollMatch (kv_test.go) and internal/session's waitFor (registry_test.go). Nothing else in a file
+// this pull request edits calls one of them or one of those helpers, directly or through another
+// function. A2 moves each such caller onto the one wait and deletes this file with the last of
+// them.
 
 // Poll is how often a condition is asked.
 // A2's callers still use this; A2 deletes it with its last caller.

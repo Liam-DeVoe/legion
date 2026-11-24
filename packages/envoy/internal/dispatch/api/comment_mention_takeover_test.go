@@ -652,7 +652,7 @@ func TestASendTakenFromAHeldLaneStartsItsTakeOverWindowAtItsDelivery(t *testing.
 				envoyURL: listener.URL, outboxPublishes: true, clock: clock,
 			})
 			joinRegisteredMentions(t, served)
-			sender := newMentionSender(served.lifetime, time.Hour, nil, served.sendCommentMention,
+			sender := newMentionSender(served.lifetime, stagedAhead, nil, served.sendCommentMention,
 				served.refreshMentionClaims, served.rereadMentionClaims, served.releaseMentionClaims)
 			timers := make(chan func(), 4)
 			sender.mu.Lock()

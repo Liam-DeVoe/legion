@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/persistence"
 
@@ -24,7 +23,7 @@ import (
 // needs the person scope, which the deployment's shared token does not hold.
 func TestRebuildArtifactRouteNeedsThePersonScopeAndRefusesADocumentThatLoads(t *testing.T) {
 	t.Parallel()
-	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{settle: stagedAhead})
 	issue := createArtifactIssue(t, handler)
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
 		"name": "healthy.md", "content": "before\n",
@@ -115,7 +114,7 @@ func newBrokenTestServer(t *testing.T) (http.Handler, *store.Store, *invalidLoad
 	t.Helper()
 	var broken *invalidLoadOnceStore
 	handler, database, _ := newTestServer(t, testServerOptions{
-		settle: time.Hour,
+		settle: stagedAhead,
 		persistence: func(database *store.Store) docs.VersionedStore {
 			broken = &invalidLoadOnceStore{VersionedStore: docs.NewPgVersioned(database), invalid: make(map[string]bool)}
 			return broken
@@ -294,7 +293,7 @@ func TestClosedIssueRebuildRefusesBeforeChangingTheDocument(t *testing.T) {
 	t.Parallel()
 	var broken *invalidLoadOnceStore
 	handler, database, deps := newTestServer(t, testServerOptions{
-		settle: time.Hour,
+		settle: stagedAhead,
 		persistence: func(database *store.Store) docs.VersionedStore {
 			broken = &invalidLoadOnceStore{VersionedStore: docs.NewPgVersioned(database), invalid: make(map[string]bool)}
 			return broken

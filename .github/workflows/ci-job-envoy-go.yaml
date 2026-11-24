@@ -92,13 +92,25 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # The service allows prepared transactions: the image leaves max_prepared_transactions at 0,
+      # which refuses PREPARE TRANSACTION, and internal/dispatch/events'
+      # TestAnObservationFindsAnEventWriterThatPreparesDuringItsRead, whose subject is an event writer
+      # that prepares its transaction, skips on such a server. The setting takes effect at a restart,
+      # which the sizing step below makes (pg-connection-ceiling.sh restarts the service), and the
+      # version step after it fails the job if the restarted server still allows none.
+      - name: Allow the service prepared transactions
+        run: docker exec "${{ job.services.postgres.id }}" psql -U postgres -c "alter system set max_prepared_transactions = 10"
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The server's version and the pgvector version it offers, read from the service itself, so
-      # the run shows which Postgres the tests below ran on.
+      # the run shows which Postgres the tests below ran on, and the prepared transactions it allows,
+      # which the first step above set and the sizing step's restart applied.
       - name: Postgres service version
         run: |
           docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
+          prepared=$(docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "show max_prepared_transactions")
+          echo "max_prepared_transactions = $prepared"
+          [ "$prepared" -gt 0 ]
       # Every image the tests here start: testnats.HubImage, which the natslive step below runs
       # Envoy on, testnats.Image (nats:2.10), which only the tests of that server itself and of the
       # listener's refusal of it start, and tests3.Image, pulled first for the reason the action

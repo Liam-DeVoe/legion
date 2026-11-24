@@ -127,7 +127,7 @@ func TestARoomThatFailsWhileItIsLoadingRecovers(t *testing.T) {
 		room:           artifactID,
 		failed:         make(chan struct{}),
 	}
-	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour})
+	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: stagedAhead})
 	t.Cleanup(func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
 	persist.service.Store(service)
 	seedServiceText(t, service, artifactID, "before")
@@ -175,7 +175,7 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 		room:           artifactID,
 		failed:         make(chan struct{}),
 	}
-	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour})
+	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: stagedAhead})
 	t.Cleanup(func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
 	persist.service.Store(service)
 	seedServiceText(t, service, artifactID, "before")
@@ -289,7 +289,7 @@ func publishWaitsForALoadingRoom() bool {
 // asks until someone edited the document. The replacement settles once instead.
 func TestAFailedRoomsReplacementSettlesWithoutAnotherEdit(t *testing.T) {
 	service, artifactID := newTestService(t)
-	service.settle = time.Hour
+	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID,
 		":::ask{#ask-block urgency=\"high\" multiple=\"false\" state=\"open\"}\nWhich transport?\n:::\n")
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
@@ -751,7 +751,7 @@ func TestAWriteWhoseRoomFailsBeforeItsFirstAppendFailsFast(t *testing.T) {
 		entered:        make(chan struct{}),
 		release:        make(chan struct{}),
 	}
-	service := New(Deps{Store: database, Persistence: store, Events: events.NewBroker(), Settle: time.Hour})
+	service := New(Deps{Store: database, Persistence: store, Events: events.NewBroker(), Settle: stagedAhead})
 	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	seedServiceText(t, service, artifactID, "before")
 	liveTree(t, service, artifactID)

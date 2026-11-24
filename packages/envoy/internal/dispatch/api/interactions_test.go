@@ -426,7 +426,7 @@ func TestAnswerAskLocksIssueBeforeAskRow(t *testing.T) {
 	t.Parallel()
 	// The seeded spec's settlement would take the issue's owner lock this test holds; keep it
 	// out of the lock queue so the counted waiter is the answer handler.
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: stagedAhead})
 	issue := createInteractionIssue(t, handler, "TEST", "Answer lock order", "A spec")
 	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
 		"question": "Can this be answered?", "actor": sessionActor(),
@@ -693,7 +693,7 @@ func TestAnchorsCaptureAnUnnamedVersionWhenLiveTextChanged(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 		t.Cleanup(func() {
 			if err := docstest.Shutdown(t, context.Background(), documentService); err != nil {
 				t.Errorf("shutdown document service: %v", err)
@@ -904,7 +904,7 @@ func TestCommentsSuggestionsAndArtifactFilter(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond})
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead, MarkWait: 50 * time.Millisecond})
 		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
@@ -995,7 +995,7 @@ func TestSuggestionAcceptAppliesLiveDocument(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond})
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead, MarkWait: 50 * time.Millisecond})
 		t.Cleanup(func() {
 			if err := docstest.Shutdown(t, context.Background(), documentService); err != nil {
 				t.Errorf("shutdown document service: %v", err)
@@ -1049,7 +1049,7 @@ func TestSuggestionAcceptEmitsAnchorRefreshEventsForChangedOpenRows(t *testing.T
 	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond})
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead, MarkWait: 50 * time.Millisecond})
 		t.Cleanup(func() {
 			if err := docstest.Shutdown(t, context.Background(), documentService); err != nil {
 				t.Errorf("shutdown document service: %v", err)
@@ -1385,7 +1385,7 @@ func TestSuggestionAcceptClearsPendingAuthorBeforeNextVersion(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
@@ -1592,7 +1592,7 @@ func TestConcurrentSuggestionAcceptAppliesReplacementExactlyOnce(t *testing.T) {
 	var documentService *docs.Service
 	var gate *firstReplaceGate
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		gate = &firstReplaceGate{
 			API: documentService, firstEntered: make(chan struct{}), releaseFirst: make(chan struct{}), secondEntered: make(chan struct{}),
@@ -1652,7 +1652,7 @@ func TestSuggestionAcceptChecksClosureBeforeApplyingReplacement(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		documentService = docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
@@ -2156,7 +2156,7 @@ func TestEmptyArtifactEditDoesNotScheduleSettlement(t *testing.T) {
 	t.Parallel()
 	var tracked *scheduleTrackingDocs
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
-		service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		service := docs.New(docs.Deps{Store: database, Settle: stagedAhead})
 		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 		tracked = &scheduleTrackingDocs{API: service}
 		return tracked
