@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
@@ -91,7 +92,10 @@ interface Call {
 /** The scratch Dispatch seed.ts talks to, held in memory: just the routes seed.ts calls. */
 class FakeDispatch {
   calls: Call[] = [];
-  issues = new Map<string, { key: string; title: string; spec_artifact: string }>();
+  issues = new Map<
+    string,
+    { key: string; title: string; spec_artifact: string; parent: string | null; status: string }
+  >();
   asks: FakeAsk[] = [];
   messages: { message: Record<string, unknown>; replies: Record<string, unknown>[] }[] = [];
   comments: Record<string, unknown>[] = [];
@@ -115,9 +119,9 @@ class FakeDispatch {
   id(prefix: string): string {
     return `${prefix}-${++this.#ids}`;
   }
-  issue(key: string, title = "A title"): string {
+  issue(key: string, title = "A title", parent: string | null = null): string {
     const spec = this.id("art");
-    this.issues.set(key, { key, title, spec_artifact: spec });
+    this.issues.set(key, { key, title, spec_artifact: spec, parent, status: "triage" });
     this.artifacts.push({
       id: spec,
       issue_key: key,
@@ -160,15 +164,63 @@ class FakeDispatch {
         /^POST \/api\/v1\/issues$/,
         () => {
           const key = `LWEVAL-${this.issues.size + 2}`;
-          const spec = this.issue(key, body?.title);
+          const spec = this.issue(key, body?.title, body?.parent ?? null);
           const artifact = this.artifacts.find((a) => a.id === spec);
           if (artifact !== undefined && typeof body?.spec === "string") {
             artifact.markdown = body.spec;
+            // A spec given at the create is its version 1, which approval-requests reads.
+            artifact.versions = [
+              {
+                number: 1,
+                created_at: new Date().toISOString(),
+                authors: [actor()],
+                markdown: body.spec,
+              },
+            ];
             const blocks = askBlocks(body.spec);
             artifact.askBlocks = blocks.map((block) => block.block_id);
             if (blocks.length > 0) this.unsettled.set(key, blocks);
           }
           return json({ key, primary_artifact_id: spec }, 201);
+        },
+      ],
+      [
+        /^PATCH \/api\/v1\/issues\/([^/]+)$/,
+        (key) => {
+          const issue = this.issues.get(key);
+          if (issue === undefined) return json({ code: "ISSUE_NOT_FOUND" }, 404);
+          if (typeof body?.status === "string") issue.status = body.status;
+          return json(issue);
+        },
+      ],
+      [
+        /^POST \/api\/v1\/artifacts\/([^/]+)\/approval-requests$/,
+        (id) => {
+          const artifact = this.artifacts.find((a) => a.id === id);
+          if (artifact === undefined) return json({ code: "ARTIFACT_NOT_FOUND" }, 404);
+          const version = artifact.versions.length;
+          if (version === 0) return json({ code: "NO_VERSION" }, 409);
+          const ask: FakeAsk = {
+            id: this.id("ask"),
+            issue_key: artifact.issue_key,
+            author: actor(),
+            kind: "approval",
+            question: `Approve ${artifact.name} version ${version}?`,
+            options: [{ label: "Approve" }, { label: "Request changes" }],
+            multiple: false,
+            state: "open",
+            answer: null,
+            edited_at: null,
+            created_at: new Date().toISOString(),
+            approval: {
+              artifact_id: id,
+              name: artifact.name,
+              version,
+              requested_version: version,
+            },
+          };
+          this.asks.push(ask);
+          return json({ artifact_id: id, version, ask }, 201);
         },
       ],
       [
@@ -272,11 +324,16 @@ class FakeDispatch {
       ],
       [
         /^GET \/api\/v1\/issues\/([^/]+)$/,
-        (issue) =>
-          json({
+        (issue) => {
+          const held = this.issues.get(issue);
+          return json({
             key: issue,
+            title: held?.title ?? "A title",
+            status: held?.status ?? "triage",
+            parent: held?.parent ?? null,
             artifacts: this.artifacts.filter((a) => a.issue_key === issue).map(strip),
-          }),
+          });
+        },
       ],
       [
         /^GET \/api\/v1\/artifacts\/([^/]+)\/text$/,
@@ -1123,6 +1180,226 @@ describe("tester-proof", () => {
     ).toEqual([
       ["h-test", '{"phase":"test"}'],
       [dispatch.handoffs[0]?.id, '{"phase":"implement"}'],
+    ]);
+  });
+});
+
+describe("owner-walk", () => {
+  /** The recorded plans answer: two finished issues of another project, newest first. */
+  const recorded = {
+    project: "SRX1",
+    issues: [
+      { issue: "SRX1-2", title: "A second change rates its plan", ratings: [] },
+      { issue: "SRX1-1", title: "One issue walks to done", ratings: [] },
+    ],
+  };
+  // The fake numbers LWEVAL's issues from 2, as the run's Dispatch numbers them from 1: the map
+  // names the keys the seed's first creates get.
+  const keyMap = { SRX1: "LWEVAL", "SRX1-1": "LWEVAL-2", "SRX1-2": "LWEVAL-3" };
+  /** plans-answer.json and plans-answer.source in `dir`, as the rig writes them; the path of the
+   * first. `sha256` stands in for the body's own sum. */
+  function plansAnswer(dir: string, map: Record<string, string> = keyMap, sha256?: string) {
+    const body = `${JSON.stringify(recorded)}\n`;
+    writeFileSync(path.join(dir, "plans-answer.json"), body);
+    const source = {
+      commit: "a".repeat(40),
+      sha256: sha256 ?? createHash("sha256").update(body).digest("hex"),
+      keyMap: map,
+    };
+    writeFileSync(path.join(dir, "plans-answer.source"), `${JSON.stringify(source)}\n`);
+    return path.join(dir, "plans-answer.json");
+  }
+  const fixtureOf = (file: string) => JSON.parse(readFileSync(file, "utf8"));
+  const keyOf = (fixture: { issues: { part: string; key: string }[] }, part: string) => {
+    const found = fixture.issues.find((issue) => issue.part === part);
+    if (found === undefined) throw new Error(`the fixture holds no ${part} issue`);
+    return found.key;
+  };
+  /** Whether the person approved the spec of `key` through an approval request. */
+  const approved = (key: string) =>
+    dispatch.asks.some(
+      (ask) =>
+        ask.kind === "approval" &&
+        ask.approval?.artifact_id === dispatch.issues.get(key)?.spec_artifact &&
+        ask.state === "answered" &&
+        ask.answer?.user === "alice@example.invalid" &&
+        ask.answer.selected.join() === "Approve"
+    );
+
+  // Catches: keys the owner reads in the plans answer that do not exist in the run's Dispatch, a
+  // root whose gate is not open, a G the release cannot release, an E1 that is still open or
+  // whose record is the run's own, and a G spec that names no E1.
+  test("owner-walk seeds the root's spec approved, G backlog, and E1 and the recorded plans' issues closed with their titles", async () => {
+    const dir = freshDir("owner-walk");
+    const file = path.join(dir, "fixture.json");
+    await seed.ownerWalkIssues(file, "root", plansAnswer(dir));
+    expect(dispatch.issues.get("LWEVAL-2")).toMatchObject({
+      title: "One issue walks to done",
+      status: "done",
+    });
+    expect(dispatch.issues.get("LWEVAL-3")).toMatchObject({
+      title: "A second change rates its plan",
+      status: "done",
+    });
+    const fixture = fixtureOf(file);
+    const root = keyOf(fixture, "root");
+    const earlier = keyOf(fixture, "earlier");
+    const planned = keyOf(fixture, "planned");
+    expect(fixture.issues.map((issue: { part: string }) => issue.part).sort()).toEqual([
+      "earlier",
+      "planned",
+      "root",
+    ]);
+    expect(dispatch.issues.get(root)).toMatchObject({ parent: null, status: "todo" });
+    expect(approved(root)).toBe(true);
+    expect(dispatch.issues.get(earlier)).toMatchObject({ status: "done" });
+    expect(dispatch.issues.get(planned)).toMatchObject({ parent: root, status: "backlog" });
+    const plannedSpec = dispatch.artifacts.find(
+      (artifact) => artifact.id === dispatch.issues.get(planned)?.spec_artifact
+    )?.markdown;
+    expect(plannedSpec).toContain(earlier);
+    expect(plannedSpec).not.toContain("{{");
+    const records = dispatch.handoffs.filter((handoff) => handoff.issue_key === earlier);
+    expect(records).toEqual([
+      expect.objectContaining({
+        phase: "implement",
+        version: 1,
+        author: seed.EARLIER_IMPLEMENTER,
+      }),
+    ]);
+    expect(JSON.parse(records[0]?.body ?? "{}")).toMatchObject({
+      schemaVersion: 1,
+      phase: "implement",
+      issue: earlier,
+    });
+    // The world holds no plan: the owner writes the first one.
+    expect(dispatch.artifacts.filter((artifact) => artifact.name === "plan.md")).toEqual([]);
+    expect(fixture).toMatchObject({
+      scenario: "owner-walk",
+      kind: "root",
+      owner: root,
+      planned,
+      earlier: {
+        key: earlier,
+        record: { id: records[0]?.id, version: 1 },
+        session: seed.EARLIER_IMPLEMENTER.id,
+      },
+      plans: [
+        { recorded: "SRX1-1", key: "LWEVAL-2", title: "One issue walks to done" },
+        { recorded: "SRX1-2", key: "LWEVAL-3", title: "A second change rates its plan" },
+      ],
+    });
+  });
+
+  // Catches: a child owner's world whose parent issues are not in implementing, or whose G hangs
+  // under the root rather than under the owner's own issue.
+  test("owner-walk seeds, for a child owner, R and C in progress with their specs approved, and G a backlog child of C", async () => {
+    const dir = freshDir("owner-walk");
+    const file = path.join(dir, "fixture.json");
+    await seed.ownerWalkIssues(file, "child", plansAnswer(dir));
+    const fixture = fixtureOf(file);
+    const root = keyOf(fixture, "root");
+    const child = keyOf(fixture, "child");
+    const planned = keyOf(fixture, "planned");
+    expect(dispatch.issues.get(root)).toMatchObject({ parent: null, status: "in_progress" });
+    expect(dispatch.issues.get(child)).toMatchObject({ parent: root, status: "in_progress" });
+    expect(approved(root)).toBe(true);
+    expect(approved(child)).toBe(true);
+    expect(dispatch.issues.get(planned)).toMatchObject({ parent: child, status: "backlog" });
+    expect(fixture).toMatchObject({ kind: "child", owner: child, planned });
+  });
+
+  // Catches: a seed that serves the owner an answer other than the one the capture recorded.
+  test("owner-walk refuses a plans answer whose sha256 is not its source's, and writes nothing", async () => {
+    const dir = freshDir("owner-walk");
+    const answer = plansAnswer(dir, keyMap, "c".repeat(64));
+    await expect(
+      seed.ownerWalkIssues(path.join(dir, "fixture.json"), "root", answer)
+    ).rejects.toThrow("c".repeat(64));
+    expect(dispatch.calls.filter((call) => call.method !== "GET")).toEqual([]);
+  });
+
+  // Catches: a key the owner reads in the answer that the run's Dispatch does not hold.
+  test("owner-walk refuses a key map that leaves an issue of the answer unmapped, and writes nothing", async () => {
+    const dir = freshDir("owner-walk");
+    const answer = plansAnswer(dir, { SRX1: "LWEVAL", "SRX1-1": "LWEVAL-2" });
+    await expect(
+      seed.ownerWalkIssues(path.join(dir, "fixture.json"), "root", answer)
+    ).rejects.toThrow("SRX1-2");
+    expect(dispatch.calls.filter((call) => call.method !== "GET")).toEqual([]);
+  });
+});
+
+describe("capture-scored", () => {
+  // Catches: a capture that keeps only the newest plan, or drops a version's authors, so the
+  // scorer cannot tell which session wrote which version.
+  test("capture-scored keeps each plan version with its author", async () => {
+    dispatch.issue("LWEVAL-6", "Finish the CSV importer", "LWEVAL-4");
+    const other = { kind: "session", id: "ses-other" } as const;
+    dispatch.artifacts.push({
+      id: "art-plan",
+      issue_key: "LWEVAL-6",
+      name: "plan.md",
+      slug: "plan-md",
+      kind: "doc",
+      primary: false,
+      markdown: "v2",
+      versions: [
+        {
+          number: 1,
+          created_at: "2026-11-24T12:00:05.000001Z",
+          authors: [runSession],
+          markdown: "v1",
+        },
+        { number: 2, created_at: "2026-11-24T12:10:05.000001Z", authors: [other], markdown: "v2" },
+      ],
+    });
+    dispatch.handoffs.push({
+      id: "h-1",
+      issue_key: "LWEVAL-6",
+      phase: "implement",
+      version: 1,
+      author: other,
+      created_at: "2026-11-24T12:20:00.000001Z",
+      body: '{"phase":"implement"}',
+    });
+    const dir = runDir();
+    const file = path.join(dir, "fixture.json");
+    writeFileSync(
+      file,
+      `${JSON.stringify({ scenario: "owner-walk", issues: [{ key: "LWEVAL-6" }] })}\n`
+    );
+    await seed.captureScored(file, dir);
+    const captured = JSON.parse(readFileSync(path.join(dir, "captured.json"), "utf8"));
+    expect(captured.fixture).toEqual({ scenario: "owner-walk", issues: [{ key: "LWEVAL-6" }] });
+    expect(captured.issues).toHaveLength(1);
+    expect(captured.issues[0]).toMatchObject({
+      key: "LWEVAL-6",
+      title: "Finish the CSV importer",
+      parent: "LWEVAL-4",
+      status: "triage",
+    });
+    const plan = captured.issues[0].artifacts.find(
+      (artifact: { name: string }) => artifact.name === "plan.md"
+    );
+    expect(plan.versions).toEqual([
+      {
+        version: 1,
+        created_at: "2026-11-24T12:00:05.000001Z",
+        authors: [runSession],
+        markdown: "v1",
+      },
+      { version: 2, created_at: "2026-11-24T12:10:05.000001Z", authors: [other], markdown: "v2" },
+    ]);
+    expect(captured.issues[0].handoffs).toEqual([
+      {
+        id: "h-1",
+        phase: "implement",
+        version: 1,
+        author: other,
+        created_at: "2026-11-24T12:20:00.000001Z",
+        body: '{"phase":"implement"}',
+      },
     ]);
   });
 });
