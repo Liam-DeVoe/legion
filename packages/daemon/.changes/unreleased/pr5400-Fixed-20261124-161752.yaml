@@ -7,4 +7,4 @@ body: |-
     refused every claim after it. The pass now reads each claim as its machine last published it.
 time: 2026-11-24T16:17:52Z
 custom:
-    Issue: refresh-pass-published-claim
+    Issue: pr5400

@@ -237,3 +237,51 @@ func (s *stepHeldStore) PutClaimStep(ctx context.Context, token claim.Token, ste
 	}
 	return s.memStore.PutClaimStep(ctx, token, step)
 }
+
+// The claim the joint write publishes is the claim it writes: normalized, as the store takes it
+// (stored, NormalizeClaim). A publish made before that call would show a reader state a claim may
+// hold only while it records a compatible running process — a suspension source on a claim that
+// is not suspended, a death charged against a process that is gone — where the store holds
+// neither. The daemon's refresh pass reads the published claim and decides the lane's terms from
+// it (internal/daemon's refreshStalePlugins).
+//
+// The claim is given both of those to hold and the write is made under the machine's lock,
+// which is where every caller makes it (confirmCarrying, settle, repair, retirePending): the
+// published claim is read inside that section, before the decision's end publishes again. The
+// control is the publish put back before the stored call: each field then reads as the claim held
+// it.
+func TestTheJointWriteOfAClaimAndItsTaskPublishesTheClaimTheStoreTakes(t *testing.T) {
+	h := newBareHarness(t)
+	if err := h.store.PutClaim(h.ctx, queuedClaim()); err != nil {
+		t.Fatal(err)
+	}
+	h.start(queuedClaim())
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+
+	// What only a claim recording a compatible running process may hold, on a claim that is ready
+	// and records none: the write takes neither, so neither may the publish.
+	h.m.mu.Lock()
+	h.m.claim.Locator, h.m.claim.SuspendedBy, h.m.claim.DeathCharged = nil, SuspendedByOperator, true
+	err := h.m.putClaimAndPending(h.ctx)
+	published := h.m.Published()
+	h.m.mu.Unlock()
+	if err != nil {
+		t.Fatalf("the joint write of the claim and its task: %v", err)
+	}
+	stored := h.store.load(h.token)
+	for _, held := range []struct {
+		what             string
+		published, store bool
+	}{
+		{"a suspension source", published.SuspendedBy != "", stored.SuspendedBy != ""},
+		{"a death charged", published.DeathCharged, stored.DeathCharged},
+	} {
+		if held.store {
+			t.Fatalf("the store holds %s for a ready claim recording no process: the write normalizes the claim it takes", held.what)
+		}
+		if held.published {
+			t.Errorf("the claim is published holding %s where the store holds none: the publish is of the claim the write takes", held.what)
+		}
+	}
+}

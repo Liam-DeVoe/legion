@@ -4654,22 +4654,26 @@ func (m *Machine) putClaimAndDelivery(ctx context.Context, c Claim, d Delivery) 
 // pause's stop is owed, the two rows go through that stop's transaction instead (putStops,
 // Deps.PauseStopped), the delivery carried on the claim it is handed.
 //
-// It publishes the claim before it writes it, as putClaim does: a turn's start writes the claim
-// working here and then goes on to write its step record, and a reader of the published claim must
-// not read it ready while the store holds it working (Published, internal/daemon's
+// It publishes the claim before it writes it, as putClaim does, and publishes what the write
+// takes: stored normalizes the machine's live claim, so the publish follows that call and no
+// reader sees a claim holding what only a running process may hold (Published, stored,
+// NormalizeClaim). A turn's start writes the claim working here and then goes on to write its step
+// record, and a reader of the published claim must not read it ready meanwhile (internal/daemon's
 // refreshStalePlugins).
 func (m *Machine) putClaimAndPending(ctx context.Context) error {
-	m.publish()
 	if len(m.owedStops()) > 0 {
 		c, pending := m.stored(), *m.claim.Pending
 		c.Pending = &pending
+		m.publish()
 		if err := m.putStops(ctx, c); err != nil {
 			return err
 		}
 		m.unsaved = false
 		return nil
 	}
-	if err := m.putClaimAndDelivery(ctx, m.stored(), *m.claim.Pending); err != nil {
+	c, pending := m.stored(), *m.claim.Pending
+	m.publish()
+	if err := m.putClaimAndDelivery(ctx, c, pending); err != nil {
 		return err
 	}
 	m.unsaved = false
