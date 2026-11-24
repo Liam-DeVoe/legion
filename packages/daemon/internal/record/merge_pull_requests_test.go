@@ -128,6 +128,69 @@ func TestTheMergePullRequestsOfAnIssueAreThoseOfItsMergingTasks(t *testing.T) {
 	})
 }
 
+// A part of a task merges only where its block says merges, so a sub-owner's first part leaves the
+// issue's merge where it was. Of f, a task with a sub-owner at its parts (#4 open), and h, which
+// needs f (#5 open), the one task that merges is h, and the issue's merge pull request is #5. A
+// later version that adds f1, a part of f that names no merges, leaves both as they were: f1 is a
+// task no task needs, but it is a part, and its work joins its task's.
+//
+// The fault it catches is the merge read from every task that no task needs, parts included, so f1
+// beside h leaves the issue with no task that merges and no merge pull request (its control: the
+// store at the revision before, whose MergingTask reads plan.Sinks over every row).
+func TestAPartLeavesTheIssuesMergeWithItsTaskThatMerges(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	issue := issueFixture(planIssue)
+	version := func(n int) PlanVersion {
+		return PlanVersion{Issue: planIssue, Generation: issue.Generation, Version: n, ArtifactID: planAuthor, Source: PlanSourceOwner,
+			GivenBy: planOwner, GivenAt: planGivenAt.Add(time.Duration(n) * time.Minute)}
+	}
+	f := PlanTask{Issue: planIssue, Generation: issue.Generation, Task: "f", PlanVersion: 1, BlockText: "Task f.", OwnerRole: "architect",
+		State: TaskRunning, Place: TaskPlace{Kind: PlaceParts}}
+	h := PlanTask{Issue: planIssue, Generation: issue.Generation, Task: "h", PlanVersion: 1, BlockText: "Task h.", Needs: []string{"f"},
+		State: TaskWaiting}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, issue))
+		putPlan(t, tx, version(1), []PlanTask{f, h}, nil)
+		for task, number := range map[string]int{"f": 4, "h": 5} {
+			branch, err := records.AssignTaskBranch(ctx, tx, planIssue, issue.Generation, task)
+			if err != nil {
+				t.Fatalf("give task %s its branch: %v", task, err)
+			}
+			must(t, records.PutPullRequest(ctx, tx, taskPullRequest(planIssue, task, branch, number)))
+		}
+	})
+	reads := func(what string) {
+		t.Helper()
+		inTx(t, st, func(tx pgx.Tx) {
+			stored, err := records.Plan(ctx, tx, planIssue, issue.Generation)
+			must(t, err)
+			if task, ok := stored.OnlyTaskThatMerges(); task != "h" || !ok {
+				t.Fatalf("%s: the one task of %s that merges = %q, %t, want h", what, planIssue, task, ok)
+			}
+			got, err := records.MergePullRequest(ctx, tx, planIssue)
+			must(t, err)
+			if got == nil || got.Number != 5 {
+				t.Fatalf("%s: the merge pull request of %s = %+v, want #5, h's", what, planIssue, got)
+			}
+			of, err := records.PullRequestsOf(ctx, tx, []string{planIssue})
+			must(t, err)
+			if pr, named := of[planIssue]; !named || pr.Number != 5 {
+				t.Fatalf("%s: the merge pull requests of the issues %s = %+v, want #5, h's", what, planIssue, of)
+			}
+		})
+	}
+	reads("f at its parts, h needing f")
+
+	f1 := PlanTask{Issue: planIssue, Generation: issue.Generation, Task: "f1", PlanVersion: 2, BlockText: "Part f1 of f.", PartOf: "f",
+		State: TaskWaiting}
+	inTx(t, st, func(tx pgx.Tx) {
+		putPlan(t, tx, version(2), []PlanTask{f, h, f1}, nil)
+	})
+	reads("a version adds f1, a part of f")
+}
+
 // A parked issue's merge is still its task's pull request: a person parked LEGION-208, a child of one
 // task c, at c's review, so its leave wrote c left at its third step with its pull request #7 open.
 // The merge of the issue (MergePullRequest), its merges (MergePullRequests) and the merge of each of
