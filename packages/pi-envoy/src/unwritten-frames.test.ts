@@ -555,6 +555,25 @@ describe("a stored card", () => {
     expect(frames.waitsOnStored()).toBe(true);
   });
 
+  // The architect's ruling on test handoff v20's class search (the class of
+  // PRRT_kwDORFy7ds67LAM9): a late BTW goes to the host as an inert card with its relay claim
+  // (extensions/envoy.ts, `relayed.late`), and an inert card sent while the host is busy waits for
+  // the first settled heartbeat. Its claim must not hold one of the edge listener's 16 in-flight
+  // places of the session while it waits, or 16 late BTWs held through one long turn stop every
+  // later card (the spec's Design: a held card keeps no later card from its reader).
+  test("an inert card held while the host is busy, more than an edge listener's relay holds in flight, leaves no claim open", () => {
+    const { frames, state, handed, claim, claimState } = harness();
+    const lates = Array.from({ length: 17 }, (_, n) => dispatchFrame(n + 1));
+    const card = dispatchFrame(18);
+    state.settled = false;
+    for (const late of lates)
+      frames.sendCard("s1", `late ${late.event_id}`, "inert", late, claim(late));
+
+    expect(lates.map(claimState)).toEqual(lates.map(() => "settled"));
+    expect(frames.sendCard("s1", "card", "card", card, claim(card))).toBe("queued");
+    expect(handed.map(({ content }) => content)).toEqual(["card"]);
+  });
+
   test("whose record cannot be written keeps its claim until the session's store holds it", async () => {
     const { frames, state, recorded, storedRecordFailures, claim, claimState } = harness();
     const frame = dispatchFrame(1);
