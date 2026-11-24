@@ -101,6 +101,10 @@ func TestFarmChangeLockHolds(t *testing.T) {
 	for _, name := range []string{"run", "run-jobs", "deployed", "session-group"} {
 		writers[name] = newFarmWriter(t, ctx, o.database, name)
 	}
+	var startSeq int64
+	if err := setup.Pool.QueryRow(ctx, `select coalesce(max(seq), 0) from delivery_changes`).Scan(&startSeq); err != nil {
+		t.Fatalf("read the change log's head: %v", err)
+	}
 	stopHolds := storetest.SampleAdvisoryHolds(t, setup.Pool, changeLockClass, changeLockObject)
 	stopWaits := sampleLockWaits(t, setup.Pool, changeLockClass, changeLockObject)
 
@@ -137,7 +141,15 @@ func TestFarmChangeLockHolds(t *testing.T) {
 	waits := stopWaits()
 	server.stop()
 	r.result("window seconds=%.1f (from the drive's start to %s after the read)", time.Since(plan.start).Seconds(), o.after)
-	judgeFarmHolds(r, o, writers, holds, waits)
+	// The drain's takes: each transaction that moved outbox rows into the log wrote them, so the
+	// moved rows' distinct inserting transactions since the measurement began are its takes.
+	var drainTakes int64
+	if err := setup.Pool.QueryRow(ctx, `
+		select count(distinct xmin::text) from delivery_changes
+		where seq > $1 and kind in ('issue_facts', 'issue_filings')`, startSeq).Scan(&drainTakes); err != nil {
+		t.Fatalf("count the drain's transactions: %v", err)
+	}
+	judgeFarmHolds(r, o, writers, holds, waits, drainTakes)
 }
 
 // The change log's lock: the two-key transaction advisory lock (6900, 0) (delivery's
@@ -778,7 +790,7 @@ var (
 
 // judgeFarmHolds classifies each hold and each wait by its writer, and prints and judges them by
 // the run's gate.
-func judgeFarmHolds(r *farmReport, o farmOptions, writers map[string]*farmWriter, holds []storetest.AdvisoryHold, waits []lockWait) {
+func judgeFarmHolds(r *farmReport, o farmOptions, writers map[string]*farmWriter, holds []storetest.AdvisoryHold, waits []lockWait, drainTakes int64) {
 	writerOf := func(backend uint32) string {
 		for name, writer := range writers {
 			if writer.owns(backend) {
@@ -801,14 +813,22 @@ func judgeFarmHolds(r *farmReport, o farmOptions, writers map[string]*farmWriter
 		}
 		byWriter[name] = append(byWriter[name], hold.Held())
 	}
+	// How many times each writer took the lock: an intake writer once for each write it committed,
+	// and the drain once for each transaction that moved rows (drainTakes). A take no sample saw held
+	// the lock less than a sample's interval; the p99 judged is the sampled holds' alone, which those
+	// would only lower.
+	takes := map[string]int64{"drain": drainTakes}
+	for _, name := range intakeWriters {
+		takes[name] = writers[name].writes.Load()
+	}
 	for _, name := range append(slices.Clone(gatedWriters), "run", "other") {
 		held := byWriter[name]
-		writes := "-"
+		failed := "-"
 		if writer := writers[name]; writer != nil {
-			writes = fmt.Sprintf("%d failed=%d", writer.writes.Load(), writer.failures.Load())
+			failed = strconv.FormatInt(writer.failures.Load(), 10)
 		}
-		r.result("writer=%s writes=%s holds=%d p99_ms=%.1f longest_ms=%.1f median_ms=%.1f", name, writes, len(held),
-			ms(durationPercentile(held, 0.99)), ms(slices.Max(append(held, 0))), ms(durationPercentile(held, 0.5)))
+		r.result("writer=%s takes=%d failed_writes=%s holds_seen=%d p99_ms=%.1f longest_ms=%.1f median_ms=%.1f", name, takes[name], failed,
+			len(held), ms(durationPercentile(held, 0.99)), ms(slices.Max(append(held, 0))), ms(durationPercentile(held, 0.5)))
 	}
 	for _, query := range slices.Sorted(maps.Keys(others)) {
 		r.result("other_holds count=%d query=%q", others[query], query)
@@ -851,8 +871,8 @@ func judgeFarmHolds(r *farmReport, o farmOptions, writers map[string]*farmWriter
 			if name == "drain" {
 				floor = farmDrainFloor
 			}
-			if len(held) < floor {
-				r.fail("writer=%s took the lock %d times the samples saw, fewer than %d", name, len(held), floor)
+			if takes[name] < int64(floor) {
+				r.fail("writer=%s took the lock %d times, fewer than %d", name, takes[name], floor)
 			}
 		}
 		if statements == 0 {
