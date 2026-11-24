@@ -1349,6 +1349,7 @@ test.each(
     await user.click(requestChanges);
     const reasonField = view.getByLabelText("Reason (required)");
     expect(reasonField).toHaveFocus();
+    // The key that ends a composition: user-event has no form for `isComposing` or keyCode 229.
     fireEvent.keyDown(reasonField, { ...composing, key: "Escape" });
     expect(requestChanges.checked, "the Escape that ended a composition dropped the pick").toBe(
       true

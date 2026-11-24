@@ -74,6 +74,7 @@ test.each(
     const field = within(view.container).getByRole("textbox", { name: "Title" });
     await user.clear(field);
     await user.paste("New name");
+    // The key that ends a composition: user-event has no form for `isComposing` or keyCode 229.
     fireEvent.keyDown(field, { ...composing, key: "Enter" });
     expect(saved, "the Enter that ended a composition saved").toEqual([]);
     expect(field, "the Enter that ended a composition left the field").toHaveFocus();

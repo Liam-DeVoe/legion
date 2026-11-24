@@ -460,6 +460,8 @@ test("a press on no row that takes the focus out of the row at the centre keeps 
 // every commit after it, at the top of the page too, where no row is held.
 test("a press that ends with no mouseup - a drag, a cancel, a context menu, the window's blur - holds no row once it has ended", () => {
   const endings: readonly (readonly [string, (target: Element) => void])[] = [
+    // Each ending as the browser sends it: user-event has no form for a drag, a pointer cancel, a
+    // context menu or the window's blur.
     [
       "a drag",
       (target) => {
@@ -467,6 +469,7 @@ test("a press that ends with no mouseup - a drag, a cancel, a context menu, the 
         fireEvent.dragEnd(target);
       },
     ],
+    // As above: no user-event form for these endings.
     ["a cancel", (target) => fireEvent.pointerCancel(target)],
     ["a context menu", (target) => fireEvent.contextMenu(target)],
     ["the window's blur", () => fireEvent.blur(window)],
@@ -478,6 +481,8 @@ test("a press that ends with no mouseup - a drag, a cancel, a context menu, the 
     try {
       const pressed = document.querySelector<HTMLElement>('[data-row="r3"] button');
       if (pressed === null) throw new Error("r3 button missing");
+      // A press's own events, as a browser sends them before one of the endings below: user-event
+      // has no form for a press it does not release.
       fireEvent.pointerDown(pressed, { clientX: 50, clientY: 225 });
       fireEvent.mouseDown(pressed, { clientX: 50, clientY: 225 });
       expect(chosen(), `${ending}: the press under way is the hand on its row`).toEqual({

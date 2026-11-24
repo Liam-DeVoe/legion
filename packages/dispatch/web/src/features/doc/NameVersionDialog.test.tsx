@@ -112,6 +112,7 @@ test.each(
     const input = screen.getByLabelText("What changed?");
     await user.click(input);
     await user.paste("Tightened the intro");
+    // The key that ends a composition: user-event has no form for `isComposing` or keyCode 229.
     fireEvent.keyDown(input, { ...composing, key: "Enter" });
     expect(saved, "the Enter that ended a composition named a version").toEqual([]);
 
