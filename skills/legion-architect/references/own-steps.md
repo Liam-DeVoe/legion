@@ -15,7 +15,7 @@ Read it also when a retro reports to you.
 - Retro's output is in `skill://legion-retro`, steps 3 to 5.
   When it reports that it cannot compute, read or write the pull request body, it is still in its phase.
   Answer it on its role topic from the deployment instructions, or open a `dispatch ask` naming the missing instruction.
-  A child's own architect sends that question to the architect above it instead.
+  The architect that holds a child opens that ask on the child's own issue.
 
 ## Which steps are yours
 

@@ -18,8 +18,8 @@ Where it disagrees with the code or a `--help`, follow those and say so.
 - Check each claim against the code as fetched now (the default branch your addressing line names, or the head under review), and tell every reader you dispatch to do the same.
 
 - Before you end a turn that waits on a person, make sure their question is open: a decision block, a `dispatch ask` or `dispatch request-approval`.
-  A root's questions go on the root: one on a child starts no wait, and the tree stands still.
-  A child's own architect opens none; it sends each question to the architect above it with `envoy_publish`.
+  Ask about an issue's work on that issue, a root's on the root.
+  The architect that holds a child asks a person about that child's work on the child's own issue.
 
 - Message a step's worker with `envoy_publish` to `notifications.role.<token>`, the token your addressing line or `dispatch steps --issue <KEY>` gives its agent; a role's own token reaches the agent named for that role, and a typed one may reach nobody.
 
@@ -52,7 +52,7 @@ Where it disagrees with the code or a `--help`, follow those and say so.
   A check carrying `ci_check` is CI's and takes no `run` (`skill://legion-architect/references/design-gate.md#a-check-ci-proves`).
 
 - Where this tree builds or changes a page, screen or dashboard a person opens, that person sees it and answers before you request approval (`skill://legion-architect/references/design-gate.md`, "Show the surface before you ask").
-  A child's own architect sends such a surface up to the root's architect.
+  For a child's work, the architect that holds the child asks on the child's own issue.
 
 ## 2. Children in flight
 

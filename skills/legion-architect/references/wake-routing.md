@@ -7,7 +7,7 @@ While that architect's claim has failed or retired, the notice is told again whe
 A `child-status` or `child-closed`, and a `worker-died` or `worker-stalled` about a child's own architect, reach the architect above the child.
 Your role prompt describes each notice; this table says what to do.
 "Section N" is that section of `skill://legion-architect`.
-Where a row says to ask a person, a child's own architect sends the question to the architect above it.
+The architect that holds a child asks a person about its work on the child's own issue.
 
 | Wake | What to do |
 | --- | --- |
@@ -27,7 +27,7 @@ Where a row says to ask a person, a child's own architect sends the question to 
 | `pull-request-missing` | Tell the agent of the implementer step to open the pull request from the branch the reason names, or open it yourself where that step is yours. |
 | `child-status` | A child left, re-entered, joined the tree or started. The daemon starts what runs. When a park leaves an issue in `accepting` waiting on no child, run its last round. |
 | `child-closed` | Section 2. File any new child it calls for after the red-team check, and release it at once. When it was the last child an issue in `accepting` waits on, run that issue's last round. |
-| `children-first` | Release every child that should run. Move one that should not run now where your role prompt's `children-first` paragraph says, then ask the person on the root when it should run; sign off neither issue until they answer. A `blocked_by` link up the parent chain: ask a person to remove it. |
+| `children-first` | Release every child that should run. Move one that should not run now where your role prompt's `children-first` paragraph says. Then ask a person on that child's own issue when it should run, and sign off neither issue until they answer. A `blocked_by` link up the parent chain: ask a person to remove it. |
 | `child-release-stalled` | Read the parent's record (`read_record`), release the parent first when the reason says so, then release the child again. Tell the controller if the parent never records. |
 | `child-not-recorded` | Set the child's repository (`dispatch issue-update --repo owner/name`) or get the named App installed, then release it again; else tell the controller. |
 | `worker-died` | A phase worker: the issue is held; `retry_or_escalate` with `retry` for an agent or transient failure (its `reason` says what changed), `escalate` for an environmental one or a prompt too large for its pod. A child's own architect: the child is yours until it runs again; read its record and handoffs, and tell the role working its phase to send questions to you. At a step that architect does itself other than its acceptance, or at the retro it does, only it can report the step: the daemon starts it again at most three times in that step's run, and then the controller is told, and the stranded list names it for the operator's retry; wait, as the `reason` says. At its acceptance, `sign_off` for it or `request_backward_move`: the daemon queues no start of that architect there, and the controller is not told. Elsewhere the child's next phase start brings it back. A finished role: nothing is held; read its handoff. |
