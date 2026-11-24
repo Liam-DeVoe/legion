@@ -259,8 +259,8 @@ test.each([
     want: [opener("b")],
   },
   {
-    // A rule after text is no front matter, and nor is an opening line nothing closes.
-    name: "front matter opens only on the first line, and only where a later line closes it",
+    // A rule after text is no front matter.
+    name: "front matter opens only on the first line",
     lines: ["Intro", "---", opener("a"), "---"],
     want: [opener("a")],
   },

@@ -497,7 +497,7 @@ export function typedBlockIdAttribute(id: string): string {
  * block's opening line skips each marker and the spaces and tabs after it. `askOpenerLines`, the
  * scan the web's and the CLI's readers of ask blocks' opening lines share, skips them by it.
  */
-export const CONTAINER_MARKER_PATTERN = String.raw`(?:>|[-*+][ \t]|\d+[.)][ \t]|\[\^(?!\s*\])[^\]\n]*\]:)`;
+const CONTAINER_MARKER_PATTERN = String.raw`(?:>|[-*+][ \t]|\d+[.)][ \t]|\[\^(?!\s*\])[^\]\n]*\]:)`;
 
 /** A fenced code block's fence: its character, a backtick or a tilde, and its length. */
 type CodeFence = { readonly char: string; readonly run: number };
@@ -551,6 +551,20 @@ export function askOpenerLines(markdown: string): string[] {
     if (/^:{3,}ask\{/.test(rest)) openers.push(rest);
   }
   return openers;
+}
+
+/** The lines of `openers`, a version's ask block openers as `askOpenerLines` gives them, that
+ *  open the ask block `blockId`: `:::ask{<id> …}`, the id as the renderer writes it
+ *  (`typedBlockIdAttribute`: `#<id>`, or `id="…"` for an id the shortcut cannot hold), followed
+ *  by a space or the closing brace. The web's and the CLI's readers of one block's opening line
+ *  both take it here. */
+export function askOpeners(openers: readonly string[], blockId: string): string[] {
+  const id = typedBlockIdAttribute(blockId);
+  return openers.filter((line) => {
+    // Each line opens the directive (`:::ask{`), so its first brace is the directive's.
+    const attributes = line.slice(line.indexOf("{") + 1);
+    return attributes.startsWith(`${id} `) || attributes.startsWith(`${id}}`);
+  });
 }
 
 /**

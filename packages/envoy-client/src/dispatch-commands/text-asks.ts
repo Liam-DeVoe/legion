@@ -23,7 +23,13 @@ export type LiveText = { readonly markdown: string; readonly asks?: readonly Tex
  */
 export function liveTextAsks(text: LiveText): readonly TextAsk[] {
   if (text.asks !== undefined && text.asks !== null) return text.asks;
-  return askOpenerLines(text.markdown).flatMap((line) => {
+  return openerAsks(askOpenerLines(text.markdown));
+}
+
+/** The asks that `lines`, opening lines of ask blocks as `askOpenerLines` gives them, carry on
+ *  them, as the release before writes them: one per line that names a block id. */
+export function openerAsks(lines: readonly string[]): readonly TextAsk[] {
+  return lines.flatMap((line) => {
     const opener = openerOf(line);
     return opener === undefined ? [] : [opener];
   });
