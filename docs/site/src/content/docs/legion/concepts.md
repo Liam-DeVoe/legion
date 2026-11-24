@@ -203,9 +203,9 @@ session of its own. A key keeps its name in every version of the plan, and while
 the key out no other agent takes that name, so the key's agent finds its session again when a later
 version names the key; the agent that would have taken the name takes a numbered one and a slot of
 its own, so its start can wait for the issue pod's update round. A name that only agents with no
-key held is given again to a later agent of their role, which starts in a session of its own, and
-never to an agent of another role. The architect writes the plan as the issue's `plan.md`
-document, with one
+key held is free again once no agent of the version holds it: a later agent of their role can take
+it, in a session of its own, and an agent of another role never does. The architect writes the plan
+as the issue's `plan.md` document, with one
 `plan_task` block such as
 `:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver, and
 gives that version to Legion with the `legion` tool's `register_plan` before the issue's work
@@ -707,9 +707,13 @@ still moving, and a call that carries a start and no end is the shape a turn tha
 leaves behind. The daemon's own backstop reads that record and nothing else before it ends such a
 turn (`worker_stall_backstop_hours` in
 [legion.yaml](/legion/legion/running-legion/#legionyaml)), and a person reads the same record
-three ways: `legion state`'s `agents in a tool call` line, which names each claim in an open call
-by issue and role ([Observe](/legion/legion/running-legion/#observe)); `legion claims list`, whose
-last column is that call for each claim, the project controller's — which is on no issue, and so
-on no part of the `legion state` line — included; and `GET /legion/v1/state`, the bytes
-`legion state --json` prints, under `issues.<KEY>.architect.step` and
-`issues.<KEY>.workers.<role>.claim.step`.
+three ways: `legion state`'s `agents in a tool call` line, which reads each claim of an issue, its
+architect's, each worker's and each other claim, and names each in an open call by issue and role,
+with its token beside them for an agent not named for its role, such as
+`LEGION-208 implementer (claim legion-legion-legion-208-implementer-2)`
+([Observe](/legion/legion/running-legion/#observe));
+`legion claims list`, whose last column is that call for each claim, the project controller's —
+which is on no issue, and so on no part of the `legion state` line — included; and
+`GET /legion/v1/state`, the bytes `legion state --json` prints, under
+`issues.<KEY>.architect.step`, `issues.<KEY>.workers.<role>.claim.step` and
+`issues.<KEY>.otherClaims[].claim.step`.

@@ -1522,10 +1522,13 @@ Closing the terminal leaves the project without one, and the daemon logs
   round read longest ago, although the read is the only moment the line prints — the wait an
   operator acts on is the one a head has sat through.
 
-  The `agents in a tool call` line names every claim whose agent is in a tool call the daemon has
-  seen the start of and no end of: how many, and each by issue and role with the tool, the call id
-  the stream's start and end frames pair by, and when the daemon received that start (`none` when
-  no agent is in one). It is the shape a stalled turn leaves behind, which is what
+  The `agents in a tool call` line names every claim of an issue whose agent is in a tool call the
+  daemon has seen the start of and no end of — the architect's, each worker's and each other claim,
+  such as the `implementer-2` of a plan that runs the role twice: how many, and each by issue and
+  role, with its token beside them for an agent not named for its role
+  (`WIDGETS-12 implementer (claim legion-widgets-widgets-12-implementer-2)`), then the tool, the
+  call id the stream's start and end frames pair by, and when the daemon received that start
+  (`none` when no agent is in one). It is the shape a stalled turn leaves behind, which is what
   `worker_stall_backstop_hours` above acts on, so a call that has been open for hours is the one
   to look at. The call's arguments are in no column of this surface or any other: the daemon keeps
   their length and a fingerprint alone, because a shell command routinely holds a credential. The
