@@ -1078,10 +1078,11 @@ type ConflictRead struct {
 // MergeForwardWithdrawn): the merge of the head is owed to nobody then until a role is asked
 // again. Waits is whether the asked role's claim ended while the merge of the head is still owed
 // to it: the workers held for it stay held, and the ask is sent again at that role's next start
-// (workflow's sendWaitingAsk). It is stored as the jsonb of pull_requests.merge_forward (migration
-// 20261119003157), null for nil; the jsonb takes Earlier, Role, Withdrawn and Waits with no
-// migration of their own, and leaves each out while it is empty, and a release before them reads
-// the jsonb without them.
+// (workflow's sendWaitingAsk). SentLaunch is the launch of the asked role's claim
+// (intake.ClaimReady.Launch) at whose ready the ask was last sent, 0 while no ready has sent it. It
+// is stored as the jsonb of pull_requests.merge_forward (migration 20261119003157), null for nil;
+// the jsonb takes Earlier, Role, Withdrawn, Waits and SentLaunch with no migration of their own,
+// and leaves each out while it is empty, and a release before them reads the jsonb without them.
 type MergeForward struct {
 	Head        string               `json:"head"`
 	Base        string               `json:"base"`
@@ -1094,6 +1095,7 @@ type MergeForward struct {
 	Earlier     []LandedMergeForward `json:"earlier,omitempty"`
 	Withdrawn   bool                 `json:"withdrawn,omitempty"`
 	Waits       bool                 `json:"waits,omitempty"`
+	SentLaunch  uint64               `json:"sentLaunch,omitempty"`
 }
 
 // Asked is the role the ask names: Role, or the implementer for an ask that names none, which a
