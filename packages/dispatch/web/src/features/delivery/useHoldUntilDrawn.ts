@@ -10,9 +10,11 @@ import { SEND_DEADLINE_MS } from "../writes/keyed-write";
  * update that carries the write brings a new version, or takes the component away, and the hold
  * ends then. So a control the reader pressed stays held until that update. The hold keeps the
  * armed hand-off of the reader's press that made the write live (`holdHandOff`) from the call of
- * `hold` until the commit that ends it, so a component's hand-off reads a loss that update makes
- * as the press's doing (`causedByReader`), and the focus goes to the control now at the lost
- * one's place. An update that never comes ends the hold at the app's write deadline
+ * `hold` until the commit that ends it, so a loss that update makes is still the press's doing
+ * (`causedByReader`). No component's hand-off answers for the controls of either caller - the
+ * Delivery page's settings form, which the timeline replaces, and the Session groups editor, a
+ * dialog of its own - so a control that update takes away leaves the focus where the browser
+ * leaves it. An update that never comes ends the hold at the app's write deadline
  * (`SEND_DEADLINE_MS`), counted from the latest `hold`, so no control is ever locked. Answers
  * whether the hold is on, and what puts it on: called as the write lands, never on a refusal,
  * whose control comes back with its error at once. A `hold` of a render whose version a later
