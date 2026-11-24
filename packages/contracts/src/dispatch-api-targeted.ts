@@ -157,9 +157,12 @@ export function readDispatchPayload(value: unknown): DispatchPayloadReading {
   // A targeted frame requires `delivery`, so only a payload carrying the key can be one.
   if (typeof value === "object" && value !== null && "delivery" in value) {
     const targeted = DispatchTargetedFrameSchema.safeParse(value);
-    if (targeted.success && "event" in value) {
-      // The schema has just read `value.event` as an event, so it is an object.
-      const wireEvent = value.event as Readonly<Record<string, unknown>>;
+    if (targeted.success) {
+      // The schema has just read `value.event` as an event, so the payload holds it as an object.
+      const { event: wireEvent } = value as {
+        readonly delivery: unknown;
+        readonly event: Readonly<Record<string, unknown>>;
+      };
       return {
         kind: "event",
         event: targeted.data.event,
