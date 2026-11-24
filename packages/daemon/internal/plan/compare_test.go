@@ -81,7 +81,8 @@ func TestARunningTaskTakesAChangeOfItsTextAlone(t *testing.T) {
 		{name: "the steps", next: planOf(t, 2, task(attributes("steps", "implementer tester reviewer"), "Text one.")), refused: true},
 		{name: "needs", next: planOf(t, 2, task(attributes("needs", "dispatch://ACME-1/artifact/plan-md#b-b"), "Text one.")), refused: true},
 		{name: "owner", next: planOf(t, 2, task(attributes("owner", "sub-architect"), "Text one.")), refused: true},
-		{name: "part_of", next: planOf(t, 2, task(attributes("part_of", "b"), "Text one.")), refused: true},
+		{name: "the task it is a part of", next: planOf(t, 2, Block{ID: "f", Type: TaskBlockType, Attributes: map[string]string{"owner": "sub-architect"}, Text: "Text of f."},
+			Block{ID: "a", Type: TaskBlockType, Parent: "f", Attributes: attributes(), Text: "Text one."}), refused: true},
 		{name: "merges", next: planOf(t, 2, task(attributes("merges", "true"), "Text one.")), refused: true},
 		{name: "the task removed", next: planOf(t, 2, Block{ID: "b", Type: TaskBlockType, Attributes: attributes(), Text: "Text one."}), refused: true},
 	} {
