@@ -7,6 +7,7 @@ import * as path from "node:path";
 import {
   type Block,
   type Cleanup,
+  deleteRelayCapturingStreams,
   isSummarization,
   messageStream,
   ompRoot,
@@ -390,6 +391,9 @@ async function startSession(
   );
   const connection: NatsConnection = await connect({ servers: nats });
   cleanup.push(() => connection.close());
+  // No stream another suite left on this server may answer the frames
+  // (`deleteRelayCapturingStreams`).
+  await deleteRelayCapturingStreams(connection);
   const codec = StringCodec();
   const subject = `notifications.agent.${sid}`;
   const control = `agentstream.${sid}.control`;

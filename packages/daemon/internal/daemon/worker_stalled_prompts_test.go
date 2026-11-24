@@ -1,5 +1,7 @@
 package daemon
 
+//ci:reads skills/legion-controller/references/wakes.md TestTheWorkerStalledPromptsSayWhatTheDaemonDidToTheTurn reads it under ../../../.. through workerStalledReadRepo
+
 import (
 	"os"
 	"path/filepath"
