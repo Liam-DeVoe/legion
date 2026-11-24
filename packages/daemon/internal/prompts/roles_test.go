@@ -867,13 +867,14 @@ func TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI(t *testing.T) {
 	}
 }
 
-// The implementer, the tester and the reviewer build from, test against and review against the
-// plan at the newest version the plan review approved, and not at the version the planner's
-// handoff names or at a newer revision no review approved. A one-time run on a real model
-// measured which wording a worker follows (#3108); this holds the wording that run chose in the
-// prompt each of the three roles is launched with. The prompt is composed as a launch composes it
-// (New, then Compose, then the parts read in order from the snapshot), so the rule is read where
-// the role reads it: the role's own part says to read that version first, and the daemon's part
+// The implementer, the tester and the reviewer that work from a planner's plan build from, test
+// against and review against the plan at the newest version the plan review approved, and not at
+// the version the planner's handoff names or at a newer revision no review approved. A one-time
+// run on a real model measured which wording a worker follows (#3108); this holds the wording that
+// run chose in the prompt each of the three roles is launched with. The prompt is composed as a
+// launch composes it (New, then Compose, then the parts read in order from the snapshot), so the
+// rule is read where the role reads it: the role's own part says to read that version first where
+// a planner step comes before the role's or the task has no `Task:` line, and the daemon's part
 // every worker shares says how to find it, to build from it rather than from a newer one, and to
 // read it again before each task. The match runs over a body whose whitespace is collapsed to
 // one space, since a part hard-wraps.
@@ -883,7 +884,7 @@ func TestTheWorkersThatBuildFromThePlanAreToldToReadItsNewestApprovedVersion(t *
 		t.Fatalf("New: %v", err)
 	}
 	rule := []string{
-		"Read the plan first: it is the issue's `plan.md` at the newest version the plan review approved",
+		"Read the plan first: where a planner step comes before yours, or your task has no `Task:` line, it is the issue's `plan.md` at the newest version the plan review approved",
 		"The plan you build from is `plan.md` at the newest version the plan review approved",
 		"A newer version that the `Approval:` line does not name is a revision the plan review has not approved: build from the approved version and not from that one",
 		"Read `plan.md` again before each task of the plan you begin and before you write your handoff",

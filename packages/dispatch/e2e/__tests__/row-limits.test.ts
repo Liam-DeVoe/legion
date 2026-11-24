@@ -428,7 +428,7 @@ test("a row that polls with whether or eventually states a rowLimit of the short
     expect.arrayContaining([
       "__tests__/bounded-subprocess.test.ts",
       "__tests__/local-instance-support.test.ts",
-      "__tests__/psql-session.test.ts",
+      "__tests__/psql-session-postgres.test.ts",
       "__tests__/round-robin-proxy.test.ts",
     ])
   );
