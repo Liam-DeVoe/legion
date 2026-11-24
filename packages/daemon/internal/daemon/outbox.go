@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/steprecord"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
@@ -2577,7 +2578,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return nil
 			}
 		}
-		if err := r.roleWaitsForItsPod(ctx, row, issue, slot, payload.Role); err != nil {
+		if err := r.roleWaitsForItsPod(ctx, row, issue, token, slot, payload.Role); err != nil {
 			return err
 		}
 		// A child carried into a tree of its own — a finished root's hand-over, or a person's label
@@ -2802,7 +2803,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if errors.Is(brought, runtime.ErrAwaitsPodUpdate) {
 			var awaits runtime.AwaitsPodUpdate
 			errors.As(brought, &awaits)
-			prefix, err := r.podWaitPrefix(ctx, row, issue.Key, awaits.Pod, payload.Role, "before this start could run in it")
+			prefix, err := r.podWaitPrefix(ctx, row, issue.Key, awaits.Pod, payload.Role, token, "before this start could run in it")
 			if err != nil {
 				return err
 			}
@@ -4014,7 +4015,7 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 // between two waits replaces the last error, and the next wait that finds no process tells it
 // again. Where the release is on, main's rule ends the wait, and its pass tells an operator's
 // suspension that holds the pod (releaseUnownedPod).
-func (r *outbox) roleWaitsForItsPod(ctx context.Context, row record.OutboxRow, issue record.Issue, slot claim.Agent, role claim.Role) error {
+func (r *outbox) roleWaitsForItsPod(ctx context.Context, row record.OutboxRow, issue record.Issue, token claim.Token, slot claim.Agent, role claim.Role) error {
 	podRoles, ok := r.supervisor.deps.Runtime.(runtime.IssuePodRoles)
 	if !ok {
 		return nil
@@ -4030,7 +4031,7 @@ func (r *outbox) roleWaitsForItsPod(ctx context.Context, row record.OutboxRow, i
 	if lacking == "" {
 		return nil
 	}
-	prefix, err := r.podWaitPrefix(ctx, row, issue.Key, pod, role, "without "+lacking)
+	prefix, err := r.podWaitPrefix(ctx, row, issue.Key, pod, role, token, "without "+lacking)
 	if err != nil {
 		return err
 	}
@@ -4067,15 +4068,16 @@ func (r *outbox) agentLeftItsPlan(ctx context.Context, issue string, token claim
 	return !named, nil
 }
 
-// podWaitPrefix is what the text of a start of role that waits for pod, the issue's live pod, begins
-// with: startWaitToldPrefix where the controller is told of the wait, as the row's last error says
-// it was or as this try tells it now, and pods.StartWaitsForPodPrefix otherwise. A try tells it
-// where nothing ends the wait: the deployment's idle release is off (idleReleases false), so main's
-// rule never releases the pod, and no claim of the issue records a process in it (podRecorded), so
-// no update round opens over it. The notice is one pod-wait-held notice in a transaction of its
-// own, which says how the pod was made (made), and the row's last error is then the one record
-// that it was written, so the row's next try writes none.
-func (r *outbox) podWaitPrefix(ctx context.Context, row record.OutboxRow, issue, pod string, role claim.Role, made string) (string, error) {
+// podWaitPrefix is what the text of a start of role on the claim token that waits for pod, the
+// issue's live pod, begins with: startWaitToldPrefix where the controller is told of the wait, as
+// the row's last error says it was or as this try tells it now, and pods.StartWaitsForPodPrefix
+// otherwise. A try tells it where nothing ends the wait: the deployment's idle release is off
+// (idleReleases false), so main's rule never releases the pod, and no claim of the issue records a
+// process in it (podRecorded), so no update round opens over it. The notice is one pod-wait-held
+// notice in a transaction of its own, which names the start as `legion state` names a claim
+// (api.ClaimNameInIssue) and says how the pod was made (made), and the row's last error is then
+// the one record that it was written, so the row's next try writes none.
+func (r *outbox) podWaitPrefix(ctx context.Context, row record.OutboxRow, issue, pod string, role claim.Role, token claim.Token, made string) (string, error) {
 	if strings.HasPrefix(row.LastError, startWaitToldPrefix) {
 		return startWaitToldPrefix, nil
 	}
@@ -4089,7 +4091,8 @@ func (r *outbox) podWaitPrefix(ctx context.Context, row record.OutboxRow, issue,
 	if podRecorded(claims, issue, pod) {
 		return pods.StartWaitsForPodPrefix, nil
 	}
-	notice := record.ControllerNotice{Kind: record.PodWaitHeldNotice, Role: role, Reason: podWaitWithNoReleaseWords(issue, pod, role, made)}
+	notice := record.ControllerNotice{Kind: record.PodWaitHeldNotice, Role: role,
+		Reason: podWaitWithNoReleaseWords(issue, pod, api.ClaimNameInIssue(role, token), made)}
 	if err := r.enqueueNotice(ctx, issue, notice); err != nil {
 		return "", err
 	}
@@ -4110,16 +4113,17 @@ func podRecorded(claims []supervise.Claim, issue, pod string) bool {
 	})
 }
 
-// podWaitWithNoReleaseWords is what the controller is told of a start of role that waits for the
-// pod of issue under a deployment with no idle release (ruling 19): the pod, the waiting role, what
-// the pod was made (made: without what it lacks, in runtime.PodLacks's words, or before its
-// launchers waited for a new role's credential, or before this start could run in it), what is
-// true now, and that the pod's disk can hold work a role did not push. It tells nobody to take the
-// pod away.
-func podWaitWithNoReleaseWords(issue, pod string, role claim.Role, made string) string {
+// podWaitWithNoReleaseWords is what the controller is told of a start that waits for the pod of
+// issue under a deployment with no idle release (ruling 19): the pod, the waiting start, named as
+// `legion state` names its claim (start: its role, with the claim's token beside it for a claim not
+// named for that role, since two claims of one issue can hold one role), what the pod was made
+// (made: without what it lacks, in runtime.PodLacks's words, or before its launchers waited for a
+// new role's credential, or before this start could run in it), what is true now, and that the
+// pod's disk can hold work a role did not push. It tells nobody to take the pod away.
+func podWaitWithNoReleaseWords(issue, pod, start, made string) string {
 	return fmt.Sprintf("%s of %s cannot start. The pod %s of %s was made %s, and no role runs in that pod now. "+
 		"The idle release of this deployment is off (idle_minutes: 0), so the daemon keeps that pod. The start of %s waits until an operator acts. "+
-		"The disk of that pod can hold work that a role did not push.", role, issue, pod, issue, made, role)
+		"The disk of that pod can hold work that a role did not push.", start, issue, pod, issue, made, start)
 }
 
 // enqueueNotice writes one controller notice of issue in a transaction of its own on the pool, as

@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -30,7 +31,7 @@ type projectionStore struct {
 	held         []record.HeldRow
 	// waitingForPod is each issue's starts that wait for its pod, each with its role and the
 	// claim its row names (record.Store.StartsWaitingForPod).
-	waitingForPod map[string][]record.PodWaitStart
+	waitingForPod map[string][]pods.WaitingStart
 	// mirror is what Dispatch says each issue of the project waits on, as the store lists it: by
 	// key, which is the order the state's `blocked` is judged from. DispatchIssuesOf serves the rows
 	// of the keys asked for and of what they wait on, as the real store does.
@@ -94,7 +95,7 @@ func (s projectionStore) HeldRows(context.Context, pgx.Tx, string, string, time.
 	return s.held, nil
 }
 func (s projectionStore) StartsWaitingForPod(context.Context, pgx.Tx, string,
-) (map[string][]record.PodWaitStart, error) {
+) (map[string][]pods.WaitingStart, error) {
 	return s.waitingForPod, nil
 }
 func (s projectionStore) Phases(_ context.Context, _ pgx.Tx, issue string) ([]record.PhaseRow, error) {
@@ -1321,7 +1322,7 @@ func TestTheServedIssueNamesEachStartThatWaitsForItsPodByTheClaimItStarts(t *tes
 		phases: map[string][]record.PhaseRow{"LEGION-208": {
 			{Issue: "LEGION-208", Role: checker, Entry: 1, Claim: checkerAgent, StepTask: "t1"},
 		}},
-		waitingForPod: map[string][]record.PodWaitStart{"LEGION-208": {
+		waitingForPod: map[string][]pods.WaitingStart{"LEGION-208": {
 			{Role: claim.RoleImplementer, Claim: second},
 			{Role: checker},
 			{Role: claim.RoleTester},

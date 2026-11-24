@@ -762,18 +762,24 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 		issue, idleWaitingKinds, pods.StartWaitsForPodPrefix).Scan(&view.Waiting); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the queued rows of %s for its idle view: %w", issue, err)
 	}
-	waitingForPod, err := tx.Query(ctx, fmt.Sprintf(`select payload->>'role' from outbox
-		where issue = $1 and %s order by id`, fmt.Sprintf(startWaitsForPodRow, "$2")), issue, pods.StartWaitsForPodPrefix)
+	waitingForPod, err := tx.Query(ctx, fmt.Sprintf(`select payload->>'role',
+		coalesce(payload->>'claim', '') from outbox where issue = $1 and %s order by id`,
+		fmt.Sprintf(startWaitsForPodRow, "$2")), issue, pods.StartWaitsForPodPrefix)
 	if err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the starts of %s that wait for its pod: %w", issue, err)
 	}
-	roles, err := pgx.CollectRows(waitingForPod, pgx.RowTo[string])
+	scan := func(row pgx.CollectableRow) (pods.WaitingStart, error) {
+		var role, token string
+		err := row.Scan(&role, &token)
+		return pods.WaitingStart{Role: claim.Role(role), Claim: claim.Token(token)}, err
+	}
+	starts, err := pgx.CollectRows(waitingForPod, scan)
 	if err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the starts of %s that wait for its pod: %w", issue, err)
 	}
-	for _, role := range roles {
-		if !slices.Contains(view.StartsWaitingForPod, claim.Role(role)) {
-			view.StartsWaitingForPod = append(view.StartsWaitingForPod, claim.Role(role))
+	for _, start := range starts {
+		if !slices.Contains(view.StartsWaitingForPod, start) {
+			view.StartsWaitingForPod = append(view.StartsWaitingForPod, start)
 		}
 	}
 	if err := tx.QueryRow(ctx, `select coalesce((select reason from pod_holds
