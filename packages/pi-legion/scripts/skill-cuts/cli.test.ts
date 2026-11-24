@@ -1673,6 +1673,34 @@ const NO_READS_PAST = `0 ${READS_PAST_LAST_ROUND}`;
 /** The report's count of `provider-refused` drops when there is none. */
 const NO_REFUSED = "0 provider-refused";
 
+/** Run `n` (from 0) of `arm` in case `caseId`'s `stage`, as the runner records one, with `verdict`
+ *  and `reason`. */
+function plantedRun(
+  caseId: string,
+  arm: string,
+  stage: Stage,
+  n: number,
+  verdict: "pass" | "fail" | null,
+  reason: string
+): Record<string, unknown> {
+  return {
+    caseId,
+    arm,
+    stage,
+    verdict,
+    reason,
+    run: n + 1,
+    round: 1,
+    sendPlace: n,
+    userId: null,
+    id: null,
+    skillRounds: null,
+    reply: null,
+    replaySpent: [],
+    judgeSpent: [],
+  };
+}
+
 /** A finished stage of case `caseId`, made with the texts of `s` (and by `runner`, when given),
  *  each arm of `passes` passing that many of the stage's judged runs. */
 function plantedStage(
@@ -1683,22 +1711,9 @@ function plantedStage(
   runner?: string
 ): Record<string, unknown> {
   const runs = Object.entries(passes).flatMap(([arm, passed]) =>
-    Array.from({ length: STAGE_RUNS[stage] }, (_, n) => ({
-      caseId,
-      arm,
-      stage,
-      verdict: n < passed ? "pass" : "fail",
-      reason: "planted",
-      run: n + 1,
-      round: 1,
-      sendPlace: n,
-      userId: null,
-      id: null,
-      skillRounds: null,
-      reply: null,
-      replaySpent: [],
-      judgeSpent: [],
-    }))
+    Array.from({ length: STAGE_RUNS[stage] }, (_, n) =>
+      plantedRun(caseId, arm, stage, n, n < passed ? "pass" : "fail", "planted")
+    )
   );
   return {
     state: "counted",
@@ -2699,11 +2714,15 @@ describe("behaviour: a case the provider refuses on every replay", () => {
   /** What the stand-in provider says of the content it refuses. */
   const POLICY_TEXT = "This content was flagged for possible cybersecurity risk.";
   /** The reason of a refused replay as a run saved before the gateway stopped trying a policy
-   *  refusal again holds it (3ca1eb87e539's 45 runs): GATEWAY_TRIES tries, named at its end. */
+   *  refusal again holds it: GATEWAY_TRIES tries, named at its end. */
   const REFUSED_RUN = `the replay failed: the stream ended in an error: cyber_policy: ${POLICY_TEXT}, on each of ${GATEWAY_TRIES} tries`;
   /** The reason of another failure that names a policy outside a stream error's type. */
   const OTHER_FAILURE =
     "the replay failed: the model answered 400 invalid_request_error: the body names cyber_policy, which is no stream error";
+  /** A screen's runs per arm: its runs and its extra runs. */
+  const SCREEN_ALL = SCREEN_RUNS + MAX_EXTRA_RUNS;
+  /** The drop of a case whose screen the provider refused on every replay. */
+  const SCREEN_REFUSED = `provider-refused: provider refused every replay (cyber_policy): ${3 * SCREEN_ALL} refusals (old ${SCREEN_ALL}, new ${SCREEN_ALL}, none ${SCREEN_ALL})`;
 
   /** Case `caseId`'s `stage` as a run saved it unscreened with the texts of `s`, and no drop: each
    *  arm of `byArm` holding one run per reason, a judged pass for "pass", else a run with no
@@ -2717,22 +2736,11 @@ describe("behaviour: a case the provider refuses on every replay", () => {
     ...plantedStage(s, caseId, stage, {}),
     state: "unscreened",
     runs: Object.entries(byArm).flatMap(([arm, reasons]) =>
-      reasons.map((reason, n) => ({
-        caseId,
-        arm,
-        stage,
-        verdict: reason === "pass" ? "pass" : null,
-        reason: reason === "pass" ? "planted" : reason,
-        run: n + 1,
-        round: 1,
-        sendPlace: n,
-        userId: null,
-        id: null,
-        skillRounds: null,
-        reply: null,
-        replaySpent: [],
-        judgeSpent: [],
-      }))
+      reasons.map((reason, n) =>
+        reason === "pass"
+          ? plantedRun(caseId, arm, stage, n, "pass", "planted")
+          : plantedRun(caseId, arm, stage, n, null, reason)
+      )
     ),
   });
 
@@ -2740,8 +2748,9 @@ describe("behaviour: a case the provider refuses on every replay", () => {
   const allRefused = (stage: Stage) => Array(STAGE_RUNS[stage] + MAX_EXTRA_RUNS).fill(REFUSED_RUN);
 
   // Catches: a case whose every replay the provider refuses left unscreened, as if a later run
-  // could judge it, and counted as unscreened by the report.
-  test("a case whose every replay the provider refuses on a content policy is dropped at screen as provider-refused with its refusals by arm, the report counts it, and the screen goes on to the next case", async () => {
+  // could judge it, and counted as unscreened by the report; and a refused call logged with no
+  // error name of its own and no status, where a call that fails in postMessages logs both.
+  test("a case whose every replay the provider refuses on a content policy is dropped at screen as provider-refused with its refusals by arm, each refused call is logged as a MessagesApiError of status 200, the report counts it, and the screen goes on to the next case", async () => {
     const s = scenario("provider-refused", LOSS_SKILL(), [
       { id: "c04", marker: "REFUSED" },
       { id: "c05" },
@@ -2761,29 +2770,36 @@ describe("behaviour: a case the provider refuses on every replay", () => {
         : behaviourStandIn(body);
     const ran = await cli(behaviour("screen", s));
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
-    const all = SCREEN_RUNS + MAX_EXTRA_RUNS;
-    const reason = `provider-refused: provider refused every replay (cyber_policy): ${3 * all} refusals (old ${all}, new ${all}, none ${all})`;
     const c = result(s.out, "c04");
     expect({ dropped: c.dropped, at: c.droppedAt, state: c.stages.screen?.state }).toEqual({
-      dropped: reason,
+      dropped: SCREEN_REFUSED,
       at: "screen",
       state: "unscreened",
     });
     const runs = c.stages.screen?.runs ?? [];
-    expect(runs).toHaveLength(3 * all);
+    expect(runs).toHaveLength(3 * SCREEN_ALL);
     for (const run of runs) {
       expect({ verdict: run.verdict, reason: run.reason }).toEqual({
         verdict: null,
         reason: `the replay failed: the stream ended in an error: cyber_policy: ${POLICY_TEXT}`,
       });
     }
-    expect(ran.stdout).toContain(`case c04: dropped: ${reason}; `);
+    // The request log names each refused call's error and the status of its answer.
+    const failed = readFileSync(path.join(s.out, "requests.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter((line) => line.kind === "replay" && line.error !== undefined);
+    expect(failed.map((line) => `${line.error} ${line.status}`)).toEqual(
+      Array(3 * SCREEN_ALL).fill("MessagesApiError 200")
+    );
+    expect(ran.stdout).toContain(`case c04: dropped: ${SCREEN_REFUSED}; `);
     // The screen goes on to the next case.
     expect(result(s.out, "c05").stages.screen?.state).toBe("counted");
     const reported = await cli(report(s));
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
     expect(reported.stdout).toContain(
-      `case c04: dropped at screen: ${reason}; screen: unscreened: an arm lacks its ${SCREEN_RUNS} judged runs after ${MAX_EXTRA_RUNS} extra runs (${3 * all} runs with no verdict, run again)\n`
+      `case c04: dropped at screen: ${SCREEN_REFUSED}; screen: unscreened: an arm lacks its ${SCREEN_RUNS} judged runs after ${MAX_EXTRA_RUNS} extra runs (${3 * SCREEN_ALL} runs with no verdict, run again)\n`
     );
     expect(reported.stdout).toContain(
       `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 0 unscreened, 0 not run`
@@ -2803,23 +2819,21 @@ describe("behaviour: a case the provider refuses on every replay", () => {
         }),
       },
     });
-    const all = SCREEN_RUNS + MAX_EXTRA_RUNS;
-    const reason = `provider-refused: provider refused every replay (cyber_policy): ${3 * all} refusals (old ${all}, new ${all}, none ${all})`;
     const from = recorder.requests.length;
     const ran = await cli(behaviour("screen", s));
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
     expect(requestsSince(from)).toHaveLength(0);
     expect(ran.stdout).not.toContain("case c04: screened before, skipped");
-    expect(ran.stdout).toContain(`case c04: dropped: ${reason}; `);
+    expect(ran.stdout).toContain(`case c04: dropped: ${SCREEN_REFUSED}; `);
     const c = result(s.out, "c04");
     expect({ dropped: c.dropped, at: c.droppedAt, runs: c.stages.screen?.runs.length }).toEqual({
-      dropped: reason,
+      dropped: SCREEN_REFUSED,
       at: "screen",
-      runs: 3 * all,
+      runs: 3 * SCREEN_ALL,
     });
     // A screen started again skips the dropped case.
     const again = await cli(behaviour("screen", s));
-    expect(again.stdout).toContain(`case c04: dropped before, skipped: ${reason}`);
+    expect(again.stdout).toContain(`case c04: dropped before, skipped: ${SCREEN_REFUSED}`);
     const reported = await cli(report(s));
     expect(reported.stdout).toContain(
       `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 0 unscreened, 0 not run`
@@ -2836,15 +2850,19 @@ describe("behaviour: a case the provider refuses on every replay", () => {
       SIX.map((id) => ({ id }))
     );
     // Six informative cases, the control rule's first of them (c01) with its control saved so.
-    for (const id of SIX) {
-      const screen = plantedStage(s, id, "screen", KEPT);
-      const control = unscreenedStage(s, id, "control", {
-        old: allRefused("control"),
-        minus: allRefused("control"),
-        twin: allRefused("control"),
-      });
-      plantResult(s, id, { stages: id === "c01" ? { screen, control } : { screen } });
+    for (const id of SIX.slice(1)) {
+      plantResult(s, id, { stages: { screen: plantedStage(s, id, "screen", KEPT) } });
     }
+    plantResult(s, "c01", {
+      stages: {
+        screen: plantedStage(s, "c01", "screen", KEPT),
+        control: unscreenedStage(s, "c01", "control", {
+          old: allRefused("control"),
+          minus: allRefused("control"),
+          twin: allRefused("control"),
+        }),
+      },
+    });
     const all = STAGE_RUNS.control + MAX_EXTRA_RUNS;
     const reason = `provider-refused: provider refused every replay (cyber_policy): ${3 * all} refusals (old ${all}, minus ${all}, twin ${all})`;
     const from = recorder.requests.length;
@@ -2853,10 +2871,8 @@ describe("behaviour: a case the provider refuses on every replay", () => {
     expect(requestsSince(from)).toHaveLength(0);
     expect(ran.stdout).not.toContain("case c01: control runs made before, skipped");
     expect(ran.stdout).toContain(`case c01: dropped: ${reason}; `);
-    expect({ dropped: result(s.out, "c01").dropped, at: result(s.out, "c01").droppedAt }).toEqual({
-      dropped: reason,
-      at: "control",
-    });
+    const c01 = result(s.out, "c01");
+    expect({ dropped: c01.dropped, at: c01.droppedAt }).toEqual({ dropped: reason, at: "control" });
     const reported = await cli(report(s));
     expect(reported.stdout.split("\n")).toContain(
       "control case: c02, in place of c01 (dropped at control), which the control rule chose before it"

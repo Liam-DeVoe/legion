@@ -210,8 +210,8 @@ Sonnet, Fable and Mythos 5 on or Haiku 5.5 on, which take none, so their hints r
 default of 1. `gateway.ts` sends each body to its API's route (the key as `x-api-key`, or as
 `authorization: Bearer` on the Responses route), tries a call again on a 429 or a 5xx, a failed
 connection, a timeout or a reply it cannot read (8 tries in all, 91 s of back-off), but never a
-stream the provider refuses on a content policy (its error event's type ends in `_policy`, as
-`cyber_policy`), which fails at once, since the provider refuses the same content on each try. It
+stream refused on a content policy (the error's type, a Responses error's `code`, ends in `_policy`,
+as `cyber_policy`), which fails at once, since the provider refuses the same content on each try. It
 reads the stream whole, and prices each reply at its model's list price (`PRICES`, from
 Anthropic's and OpenAI's pricing pages; gpt-6.1-sol at $2 input, $10 output, $0.10 a cache read
 and $2.50 a 30-minute cache write per million tokens, more above 272,000 input tokens), counting a

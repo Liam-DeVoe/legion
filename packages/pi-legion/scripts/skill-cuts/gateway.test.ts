@@ -829,18 +829,26 @@ test("tries again a Responses stream cut short before response.completed, or end
 });
 
 // Catches: a provider's content-policy refusal tried again GATEWAY_TRIES times, each try paid
-// for and refused the same, with 91 s of back-off between them.
-test("a stream whose error event's type ends in _policy, the provider's content policy, throws at once and is not tried again, on either route, and counts no spend", async () => {
+// for and refused the same, with 91 s of back-off between them; and a refusal thrown as no
+// MessagesApiError, so the request log named no error of its own and no status.
+test("a stream whose error's type (a Responses error's code) ends in _policy, the provider's content policy, throws at once as a MessagesApiError of status 200 and is not tried again, on either route, and counts no spend", async () => {
   const said = "This content was flagged for possible cybersecurity risk.";
+  const refused = {
+    name: "MessagesApiError",
+    message: `the stream ended in an error: cyber_policy: ${said}`,
+    status: 200,
+  };
   const messages = world(
     () =>
       new Response(
         `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "cyber_policy", message: said } })}\n\n`
       )
   );
-  await expect(messages.gateway.send({ ...BODY, stream: true })).rejects.toThrow(
-    new RegExp(`^the stream ended in an error: cyber_policy: ${said.replaceAll(".", "\\.")}$`)
-  );
+  const fromMessages = await messages.gateway
+    .send({ ...BODY, stream: true })
+    .catch((caught: unknown) => caught);
+  expect(fromMessages).toBeInstanceOf(MessagesApiError);
+  expect(fromMessages).toMatchObject(refused);
   expect({ sent: messages.sent.length, slept: messages.slept }).toEqual({ sent: 1, slept: [] });
   expect(messages.gateway.spend().usd).toBe(0);
 
@@ -850,10 +858,13 @@ test("a stream whose error event's type ends in _policy, the provider's content 
         `data: ${JSON.stringify({ type: "error", code: "cyber_policy", message: said })}\n\n`
       )
   );
-  await expect(responses.gateway.send(RESPONSES_BODY)).rejects.toThrow(
-    `the stream ended in an error: cyber_policy: ${said}`
-  );
+  const fromResponses = await responses.gateway
+    .send(RESPONSES_BODY)
+    .catch((caught: unknown) => caught);
+  expect(fromResponses).toBeInstanceOf(MessagesApiError);
+  expect(fromResponses).toMatchObject(refused);
   expect({ sent: responses.sent.length, slept: responses.slept }).toEqual({ sent: 1, slept: [] });
+  expect(responses.gateway.spend().usd).toBe(0);
 });
 
 test("postMessages on the bearer route posts to its path with the key as authorization and no API version, and no header given replaces the key", async () => {

@@ -22,9 +22,10 @@
  *   GATEWAY_TRIES tries in all, whose waits add up to 91 s at least: more than the 60 s a
  *   gateway's rate guard looks back over, so a refusal that names a 1 s `retry-after` but holds a
  *   team back for a minute is outlasted. Any other status, a 400 among them, throws at once, and
- *   so does a streamed reply whose error event's type ends in `_policy` (the provider's content
- *   policy, as `cyber_policy`; POLICY_REFUSAL), as `the stream ended in an error: <type>:
- *   <message>`: the provider refuses the same content on each try, and each try is paid for.
+ *   so does a streamed reply whose error's type (a Responses error's `code`) ends in `_policy`
+ *   (the provider's content policy, as `cyber_policy`), as a MessagesApiError of the answer's
+ *   status whose message is `the stream ended in an error: <type>: <message>` (STREAM_FAILED):
+ *   the provider refuses the same content on each try, and each try is paid for.
  * - At most `concurrency` calls are in flight; the others wait their turn, in the order sent. A
  *   reply says when its call got its place and was sent and how many calls were in flight then
  *   (`sentAt`, `inFlight`; `onSent` is told the same as the call goes), and carries the
@@ -53,7 +54,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { holdSecret, scrubError } from "@legion/contracts/held-secrets";
 import { z } from "zod";
-import { postMessages, readKeyFile } from "../skill-scenarios/messages-api";
+import { MessagesApiError, postMessages, readKeyFile } from "../skill-scenarios/messages-api";
 import type { Fetch, Sleep } from "../skill-scenarios/production-dispatch";
 
 /** How many times one call is tried before `send` fails: the back-off's waits before the last of
@@ -740,22 +741,20 @@ const StreamError = z.looseObject({
   error: z.looseObject({ type: z.string().optional(), message: z.string().optional() }),
 });
 
+/** How the error a streamed reply's reader throws on the stream's error begins (StreamFailed). */
+export const STREAM_FAILED = "the stream ended in an error";
+
 /** What a streamed reply's reader throws on the stream's `error` event (a Responses stream's
- *  `response.failed` too): `the stream ended in an error: <type>: <message>`, its error's type
- *  (`error` where the event names none) kept as `type`. */
+ *  `response.failed` too): `<STREAM_FAILED>: <type>: <message>`, its error's type (a Responses
+ *  error's `code`; `error` where the event names none) kept as `type`. */
 class StreamFailed extends Error {
   constructor(
     readonly type: string,
     said: string
   ) {
-    super(`the stream ended in an error: ${type}: ${said}`);
+    super(`${STREAM_FAILED}: ${type}: ${said}`);
   }
 }
-
-/** A stream error's type that the provider's content policy gives (`cyber_policy`): the provider
- *  refuses the same content on each try, so `send` throws such an error at once and tries no
- *  more. */
-const POLICY_REFUSAL = /_policy$/;
 
 /** The block at `index` of `blocks`, or a throw naming the event that names a block not started. */
 function blockAt(blocks: Record<string, unknown>[], index: number, event: string) {
@@ -1044,29 +1043,29 @@ export function createGateway(options: GatewayOptions): Gateway {
         tries: GATEWAY_TRIES,
         timeoutMs,
         accept: (reply, response) => {
-          let read: { message: ReplyMessage; usage: ResponsesUsage | undefined };
           try {
-            read = responses
-              ? responseReply(streamed ? streamedResponse(reply) : JSON.parse(reply))
-              : { message: replyMessage(reply, streamed), usage: undefined };
+            return {
+              ...(responses
+                ? responseReply(streamed ? streamedResponse(reply) : JSON.parse(reply))
+                : { message: replyMessage(reply, streamed), usage: undefined }),
+              requestId: response.headers.get("request-id") ?? undefined,
+              gatewayHeaders: Object.fromEntries(
+                GATEWAY_HEADERS.flatMap((name): [string, string][] => {
+                  const value = response.headers.get(name);
+                  return value === null ? [] : [[name, value]];
+                })
+              ),
+            };
           } catch (error) {
-            // A content-policy refusal is given back, not thrown: postMessages tries again on a
-            // throw, and the provider refuses the same content on each try.
-            if (error instanceof StreamFailed && POLICY_REFUSAL.test(error.type)) {
-              return { refused: error };
+            // A stream error whose type ends in `_policy` is the provider's content policy, which
+            // refuses the same content on each try: it is given back, not thrown, since
+            // postMessages tries again on a throw. It leaves `send` as postMessages' own errors
+            // do, a MessagesApiError with the answer's status, which the request log records.
+            if (error instanceof StreamFailed && error.type.endsWith("_policy")) {
+              return { refused: new MessagesApiError(error.message, response.status) };
             }
             throw error;
           }
-          return {
-            ...read,
-            requestId: response.headers.get("request-id") ?? undefined,
-            gatewayHeaders: Object.fromEntries(
-              GATEWAY_HEADERS.flatMap((name): [string, string][] => {
-                const value = response.headers.get(name);
-                return value === null ? [] : [[name, value]];
-              })
-            ),
-          };
         },
       });
       if ("refused" in answer) throw answer.refused;

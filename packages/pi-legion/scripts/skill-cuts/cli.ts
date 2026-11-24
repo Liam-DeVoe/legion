@@ -292,6 +292,7 @@ import {
   type RequestBody,
   type Sent,
   SpentRecord,
+  STREAM_FAILED,
   usdOf,
 } from "./gateway";
 import {
@@ -1502,12 +1503,15 @@ async function judgeTheControls(r: Runner, c: Case, result: CaseResult): Promise
   };
 }
 
+/** How the reason of a run whose replay failed begins (runRound): `<REPLAY_FAILED>: <why>`. */
+const REPLAY_FAILED = "the replay failed";
+
 /** Round `round` of a stage: `toStart` replays of each arm, every arm's sent in one order under
  *  `seed` (replay.ts's `replayInterleaved`; the gateway bounds the calls in flight), each run with
  *  a session id of its own and its arm's installed copies of the profile's other skills, from its
  *  capture's record and the cache (context.ts's `installedCopies`); then every reply judged blind
- *  under `seed`. A replay that fails is a run with no verdict, its reason `the replay failed:
- *  <why>` (POLICY_REFUSAL reads a content-policy refusal there), and so is one whose reply after
+ *  under `seed`. A replay that fails is a run with no verdict, its reason `<REPLAY_FAILED>:
+ *  <why>` (REFUSED_REPLAY reads a content-policy refusal there), and so is one whose reply after
  *  the last answered round still only reads skill files (replay.ts's ReadsPastLastRound: its
  *  reason begins READS_PAST_LAST_ROUND, and it keeps that run's reads, reply and spend); one the
  *  budget refused, or whose judgement the budget refused, is no run. The runs are numbered, within
@@ -1568,7 +1572,7 @@ async function runRound(
         ...base,
         run: next(),
         verdict: null,
-        reason: past?.message ?? `the replay failed: ${messageFor(outcome.reason)}`,
+        reason: past?.message ?? `${REPLAY_FAILED}: ${messageFor(outcome.reason)}`,
         id: null,
         skillRounds: past?.replayed.rounds ?? null,
         skillReads: past?.replayed.reads.map((each) => [...each]) ?? null,
@@ -1709,8 +1713,6 @@ async function runStage(
     const outcome = stageOutcome(state.runs, c.id, stage);
     if (outcome.state !== "running") {
       update({ ...state, state: outcome.state });
-      // An arm's reads past the last round drop the stage first; a stage whose every run the
-      // provider refused cannot be run again to a verdict.
       const dropped =
         outcome.state === "unscreened"
           ? (readsPastDrop(state.runs, stage) ?? refusedDrop(state.runs, stage))
@@ -2066,25 +2068,26 @@ function readsPastDrop(runs: readonly Run[], stage: Stage): string | undefined {
 const PROVIDER_REFUSED = "provider-refused";
 
 /** A run's reason when the provider refused its replay on a content policy: runRound's replay
- *  failure (`the replay failed: `) of the stream error gateway.ts throws (`the stream ended in an
- *  error: <type>: <message>`), whose type ends in `_policy`, as the provider's `cyber_policy`
- *  does; the type is group 1. gateway.ts throws it at once; a run saved before it did holds
- *  `, on each of <n> tries` after the message, which this reads alike. */
-const POLICY_REFUSAL = /^the replay failed: the stream ended in an error: ([^\s:]*_policy): /;
+ *  failure (REPLAY_FAILED) of the stream error gateway.ts throws (`<STREAM_FAILED>: <type>:
+ *  <message>`), whose type ends in `_policy`, as the provider's `cyber_policy` does; the type is
+ *  group 1. gateway.ts throws it at once; a run saved before it did holds `, on each of <n>
+ *  tries` after the message, which this reads alike. Neither prefix holds a character a pattern
+ *  reads otherwise. */
+const REFUSED_REPLAY = new RegExp(`^${REPLAY_FAILED}: ${STREAM_FAILED}: ([^\\s:]*_policy): `);
 
 /** Why a case whose `stage` is unscreened is dropped because the provider refused every replay of
- *  it on a content policy, from the stage's `runs`: each policy (POLICY_REFUSAL) in the order first
+ *  it on a content policy, from the stage's `runs`: each policy (REFUSED_REPLAY) in the order first
  *  seen, and how many runs each arm of the stage made, every one of them a refusal. Undefined when
  *  the stage has no run, or a run that was judged or got no verdict for another reason: the stage
  *  then stays unscreened. */
 function refusedDrop(runs: readonly Run[], stage: Stage): string | undefined {
+  if (runs.length === 0) return undefined;
   const policies = new Set<string>();
   for (const run of runs) {
-    const policy = run.verdict === null ? POLICY_REFUSAL.exec(run.reason)?.[1] : undefined;
+    const policy = run.verdict === null ? REFUSED_REPLAY.exec(run.reason)?.[1] : undefined;
     if (policy === undefined) return undefined;
     policies.add(policy);
   }
-  if (policies.size === 0) return undefined;
   const byArm = STAGE_ARMS[stage].map((arm) => ({
     arm,
     count: runs.filter((run) => run.arm === arm).length,
