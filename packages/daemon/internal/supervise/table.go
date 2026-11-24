@@ -248,6 +248,21 @@ type StallBackstop struct {
 	Step     StepRecord
 }
 
+// ReviewHeadMoved is a reviewer's process found working at another head than the one its record
+// holds for the issue's pull request now (Deps.ReviewHead): the clone a reviewer works in is made
+// at the head its launch's spec gave it (runtime.SpawnSpec.ReviewHead), on the daemon's host on
+// tmux and by its role-init in a pod, and nothing moves that clone while the process runs. The
+// machine posts it to itself (raiseReviewRelaunch) where a send to the reviewer, or a message the
+// daemon holds for it (ReviewHeadHolds), finds the two heads apart, and the row replaces the
+// process at that head as a stale plugin's is replaced, on the same session: the launch's spec is
+// built again, reading the record's head, and the clone is brought there before the new process
+// starts. Generation is the launch it was raised over, and Head the record's head it read.
+type ReviewHeadMoved struct {
+	Claim      claim.Token
+	Generation uint64
+	Head       string
+}
+
 // PodUpdateOpen opens, or keeps open, an update round over this claim: the process holding it is
 // about to be replaced, and the role is asked first to do the steps of its update message
 // (UpdateTask) and answer ready_for_update. Round is the round's identity and kind in one string
@@ -689,6 +704,7 @@ func (PromptRefused) isEvent()        {}
 func (Timer) isEvent()                {}
 func (StalePlugin) isEvent()          {}
 func (StallBackstop) isEvent()        {}
+func (ReviewHeadMoved) isEvent()      {}
 func (PodUpdateOpen) isEvent()        {}
 func (PodUpdateEnded) isEvent()       {}
 func (PodUpdateSignalled) isEvent()   {}
@@ -763,6 +779,7 @@ const (
 
 	onStalePlugin   eventKind = "stale_plugin"
 	onStallBackstop eventKind = "stall_backstop"
+	onReviewHead    eventKind = "review_head_moved"
 
 	onPodUpdateOpen      eventKind = "pod_update_open"
 	onPodUpdateEnded     eventKind = "pod_update_ended"
@@ -805,6 +822,8 @@ func kindOf(ev Event) eventKind {
 		return onStalePlugin
 	case StallBackstop:
 		return onStallBackstop
+	case ReviewHeadMoved:
+		return onReviewHead
 	case PodUpdateOpen:
 		return onPodUpdateOpen
 	case PodUpdateEnded:
@@ -1109,6 +1128,13 @@ func fillTable(t *builder) {
 		[]ClaimState{StateLaunching, StateFailed}, StateRegistered, StateReady, StateWorking, StateIdle)
 	t.ignore(onStalePlugin, "a claim still launching is left to its registration, which decides it the moment it arrives",
 		StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateSuspended, StateFailed, StateRetired)
+
+	// A reviewer's process found working at another head than its record's (ReviewHeadMoved).
+	t.row(onReviewHead, "the reviewer's clone stands at another head than its record's: start its process again at the record's head", relaunchAtReviewHead,
+		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, prompted...)
+	t.ignore(onReviewHead, "the claim is in a turn; the send after that turn asks again", StateWorking)
+	t.ignore(onReviewHead, "a launch is under way or none is made, and the launch that starts its process reads the record's head itself", unready...)
+	t.ignore(onReviewHead, noProcess, gone...)
 
 	// The daemon's stall backstop over a claim whose agent stopped stepping mid-turn. It is a
 	// row of the one state a turn runs in; the machine re-reads the claim's record before it

@@ -225,6 +225,14 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 	} else if waits {
 		return wait.Errorf("%s waits for its %s's released pod to come back", m.what, m.role)
 	}
+	// A reviewer is told nothing by a process launched at another head than the one the record
+	// holds now: its clone stands where that launch made it (supervise's ReviewHeadHolds, which
+	// raises the relaunch at the record's head), and the row waits for the process that starts.
+	if m.role == claim.RoleReviewer {
+		if err := r.reviewerAtRecordedHead(ctx, m); err != nil {
+			return err
+		}
+	}
 	published := r.publish(ctx, notify.RoleTopicPrefix+string(m.token), m.message, m.message, record.OutboxKey(row.ID))
 	switch {
 	case published == nil:
@@ -236,6 +244,30 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 		return wait.Errorf("%s waits for its %s, whose session the listener reports %s: %w", m.what, m.role, notify.StateUnresponsive, published)
 	}
 	return fmt.Errorf("publish %s to its %s: %w", m.what, m.role, published)
+}
+
+// reviewerAtRecordedHead is nil once the reviewer m is for works at the head its record holds now,
+// and otherwise the wait deliverHeld returns: while the machine raises the relaunch at that head,
+// while it is deciding something else (ErrMachineBusy), or while the record does not answer. A
+// reviewer with no machine here holds nothing back: the publish that follows waits for its holder.
+func (r *outbox) reviewerAtRecordedHead(ctx context.Context, m heldMessage) error {
+	if r.supervisor == nil {
+		return nil
+	}
+	machine, ok := r.supervisor.Machine(m.token)
+	if !ok {
+		return nil
+	}
+	holds, err := machine.ReviewHeadHolds(ctx)
+	switch {
+	case errors.Is(err, supervise.ErrMachineBusy):
+		return wait.Errorf("%s waits for its reviewer's machine, which is deciding something else", m.what)
+	case err != nil:
+		return fmt.Errorf("read which head %s's reviewer works at: %w", m.what, err)
+	case !holds:
+		return wait.Errorf("%s waits for its reviewer to be started again at the head its record holds, so its clone stands there", m.what)
+	}
+	return nil
 }
 
 // mergingAt reads, in one transaction, what a merge-queue row reads of its issue before it acts:

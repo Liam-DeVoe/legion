@@ -74,7 +74,7 @@ import (
 // dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's design news (20261119203047),
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, the check states' two (20261121065041, 20261121074614),
-// the copy's applied sequence (20261121170714) and the verdict records (20261122045825), so an
+// the copy's applied sequence (20261121170714) and the verdict records (20261123213816), so an
 // upgrade of a database main migrated applies it just before them. It adds pull_requests.statuses
 // at its default, the empty list, and it touches no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
@@ -157,11 +157,13 @@ import (
 // The applied sequence of the copy of Dispatch's issues (20261121170714) is applied after all of
 // these but the verdict records and touches no outbox_kind_check: it adds
 // dispatch_issues.applied_seq at its default, 0, on every row it finds.
-// The verdict records (20261122045825) stand above every other version of this list, the check
-// states' two included (TestTheVerdictRecordsStandAboveEveryOtherMigration): they create five
-// tables and their indexes and touch no outbox_kind_check, so an upgrade of a database main
-// migrated applies them last and they need no row of their own here (verdicts_test.go writes and
-// reads each table). So the design news stays the last word of that check.
+// The verdict records (20261123213816), this release's one migration, stand above every other
+// version of this list, the check states' two and the copy's applied sequence included
+// (TestTheVerdictRecordsStandAboveEveryOtherMigration): they create five tables and their indexes
+// and add claims.review_launch_head and claims.review_launch_generation, nullable with no default,
+// and touch no outbox_kind_check, so an upgrade of a database main migrated applies them last and
+// they need no row of their own here (verdicts_test.go writes and reads each table, and
+// claims_test.go each column). So the design news stays the last word of that check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -173,7 +175,7 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717, 20261121065041,
-	20261121074614, 20261121170714, 20261122045825,
+	20261121074614, 20261121170714, 20261123213816,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -195,7 +197,7 @@ var thisBranchsMigrations = []int{
 // why the loop below holds the list rather than counting it, so that a version added above any of
 // them is named here rather than read as main's.
 // The check states' 20261121065041 and the phase verdict's removal, 20261121074614, stand above
-// main's newest too, and are named in that list with the rest. The verdict records' 20261122045825
+// main's newest too, and are named in that list with the rest. The verdict records' 20261123213816
 // stands above all of them, and the list names it too.
 const mainsNewestMigration = 20261111212544
 

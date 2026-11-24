@@ -547,7 +547,9 @@ func (k Known) Validate() error {
 // pod's reviewer is told it as workspace.ReviewHeadEnv, and its role-init refuses to start it
 // where its own clone cannot stand there (workspace.ProvisionReviewClone); "" for every other
 // role and for a reviewer whose issue the daemon records no head for. The tmux runtime ignores
-// it: the daemon makes a tmux reviewer's clone itself, at that head, before the launch.
+// it: the daemon makes a tmux reviewer's clone itself, at that head, before the launch. It is the
+// head of this launch alone: a reviewer whose record's head has moved since is started again, on
+// its session, by a launch that reads the head again (supervise's ReviewHeadMoved).
 type SpawnSpec struct {
 	Claim             claim.Token
 	Project           string

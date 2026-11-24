@@ -87,3 +87,32 @@ func TestAPodReviewerIsToldItsOwnCloneAndGit(t *testing.T) {
 		}
 	}
 }
+
+// A reviewer's relaunch in its pod (Resume over the process it records, as the machine's relaunch
+// at the record's head makes one: supervise's ReviewHeadMoved) keeps the pod and starts the next
+// generation with the head that relaunch's spec gives it, so that generation's role-init brings
+// the reviewer's own clone there before its shim starts (internal/launcher's roleWorkspace). The
+// head the first generation was told is not carried on.
+func TestAReviewersRelaunchInItsPodIsToldTheNewHead(t *testing.T) {
+	g := newRig(t, nil)
+	reviewer := testSpec(t, otherToken, claim.RoleReviewer, testTree)
+	reviewer.ReviewHead = "1111111111111111111111111111111111111111"
+	loc := g.spawn(reviewer)
+	if got := startEnv(lastStart(t, g, otherToken))[workspace.ReviewHeadEnv]; got != reviewer.ReviewHead {
+		t.Fatalf("the reviewer's first generation was told %s=%q, want %s", workspace.ReviewHeadEnv, got, reviewer.ReviewHead)
+	}
+
+	const moved = "2222222222222222222222222222222222222222"
+	reviewer.Generation, reviewer.BootToken, reviewer.ResumeSessionFile, reviewer.ReviewHead = 2, "boot-reviewer-g2", resumeSession, moved
+	relaunched, err := g.r.Resume(g.ctx, &loc, reviewer)
+	if err != nil {
+		t.Fatalf("Resume the reviewer at the moved head: %v", err)
+	}
+	if relaunched.Sandbox.PodUID != loc.Sandbox.PodUID {
+		t.Fatalf("the reviewer's relaunch moved it from pod %s to %s, want its pod kept", loc.Sandbox.PodUID, relaunched.Sandbox.PodUID)
+	}
+	start := lastStart(t, g, otherToken)
+	if got := startEnv(start)[workspace.ReviewHeadEnv]; start.Generation != 2 || got != moved {
+		t.Fatalf("the reviewer's generation %d was told %s=%q, want generation 2 told %s", start.Generation, workspace.ReviewHeadEnv, got, moved)
+	}
+}

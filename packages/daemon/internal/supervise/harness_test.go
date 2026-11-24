@@ -505,23 +505,34 @@ func (s *memStore) history() []Claim {
 }
 
 // testSpecs answers every launch with the same environment, or with the error it was told to, and
-// records the claim each launch was built for.
+// records the claim each launch was built for. Its review head is the head each launch's spec
+// gives a reviewer (runtime.SpawnSpec.ReviewHead), "" until a test sets it (setReviewHead).
 type testSpecs struct {
-	err    error
-	mu     sync.Mutex
-	claims []Claim
+	err        error
+	mu         sync.Mutex
+	claims     []Claim
+	reviewHead string
 }
 
 func (s *testSpecs) SpawnSpec(_ context.Context, c Claim) (runtime.SpawnSpec, error) {
 	s.mu.Lock()
 	s.claims = append(s.claims, copyClaim(c))
+	head := s.reviewHead
 	s.mu.Unlock()
 	if s.err != nil {
 		return runtime.SpawnSpec{}, s.err
 	}
 	return runtime.SpawnSpec{
-		Env: map[string]string{"LEGION_ISSUE": c.Issue},
+		Env:        map[string]string{"LEGION_ISSUE": c.Issue},
+		ReviewHead: head,
 	}, nil
+}
+
+// setReviewHead is the head every launch built from now on gives a reviewer.
+func (s *testSpecs) setReviewHead(head string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reviewHead = head
 }
 
 // last is the claim the latest launch was built for.

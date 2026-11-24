@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
@@ -31,13 +32,15 @@ import (
 // rollout puts back on that database.
 //
 // So this file calls only code that every build before B has, and that 52b3cf5c, the build the
-// daemons ran on 2026-11-17, already had: Open, Store.Migrate, Store.Tx, Store.BeginTx and
-// Store.SchemaVersion, migrations.All, testdb.DatabaseURL, pgx's pgconn.ParseConfig, and in record
+// daemons ran on 2026-11-17, already had: Open, Store.Migrate, Store.Pool, Pool.BeginTx,
+// Store.SchemaVersion, Store.Claims and Store.PutClaim, migrations.All, testdb.DatabaseURL, pgx's
+// pgconn.ParseConfig, supervise.StateIdle and the fields of supervise.Claim it sets, and in record
 // NewStore, Issues, Phases, PullRequest, PutIssue, PutPullRequest, PutPhase, Enqueue,
 // NewOutboxRow, DecodeOutboxPayload and LaneOf, and the fields of Issue, PullRequest, PhaseRow,
-// ReviewDecision and OutboxRow that it sets. It names none of this package's test helpers, since
-// a build before B may lack them or spell them otherwise, and every name it declares but the
-// test's own starts with beforeB, which no build declares.
+// ReviewDecision and OutboxRow that it sets. Its SQL names B's two claims columns, which the
+// database B migrated holds and no Go code of the build reads. It names none of this package's
+// test helpers, since a build before B may lack them or spell them otherwise, and every name it
+// declares but the test's own starts with beforeB, which no build declares.
 
 // beforeBDatabaseName is the shape of the pair's database name: one Postgres identifier that needs
 // no quotes, within Postgres's 63 bytes.
@@ -66,7 +69,7 @@ func beforeBDatabase(t *testing.T, dsn string) (database, url string) {
 	return database, url
 }
 
-// beforeBTables are the five tables B's migration 20261122045825_verdicts adds, which no build
+// beforeBTables are the five tables B's migration 20261123213816_verdicts adds, which no build
 // before B names in any statement. The test reads them only to know that the database is the one
 // TestRowsForTheBuildBeforeB wrote.
 var beforeBTables = []string{"outside_pull_requests", "verdict_reviews", "side_reviewers", "verdicts", "verdict_writes"}
@@ -91,6 +94,11 @@ var beforeBTables = []string{"outside_pull_requests", "verdict_reviews", "side_r
 //   - The record's writes write an issue, its pull request, the reviewer's verdict (the round's
 //     decision, as this build records a review's) and an outbox row with no error, and each
 //     reads back.
+//   - The claim store reads every claims row, the reviewer's claim B wrote with the head its
+//     launch gave it among them, and writes claims: B's claim written back keeps the two columns
+//     B's migration adds as they were, since a build before B names neither in any statement,
+//     and a claim this build writes records no launch head: a build before B leaves both null,
+//     which the nullable columns with no default take, and B writes no head at generation 0.
 //
 // The rows this test writes are committed and left in the database, under a fresh ACME issue key
 // each run, as TestRowsForTheBuildBeforeB leaves its own.
@@ -111,7 +119,7 @@ func TestTheBuildBeforeBReadsBsStore(t *testing.T) {
 	for _, table := range beforeBTables {
 		var present bool
 		var rows int64
-		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := beforeBTx(ctx, st, func(tx pgx.Tx) error {
 			if err := tx.QueryRow(ctx, "select to_regclass($1) is not null", table).Scan(&present); err != nil || !present {
 				return err
 			}
@@ -148,7 +156,7 @@ func TestTheBuildBeforeBReadsBsStore(t *testing.T) {
 	t.Run("DecodeOutboxPayload decodes every outbox row", func(t *testing.T) {
 		decoded := map[record.OutboxKind]int{}
 		read := 0
-		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := beforeBTx(ctx, st, func(tx pgx.Tx) error {
 			rows, err := tx.Query(ctx, "select id, kind, issue, payload from outbox order by id")
 			if err != nil {
 				return err
@@ -180,7 +188,7 @@ func TestTheBuildBeforeBReadsBsStore(t *testing.T) {
 			t.Fatal("the outbox holds no row, so no decode ran: TestRowsForTheBuildBeforeB writes one of each kind B writes")
 		}
 		var ofB int
-		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := beforeBTx(ctx, st, func(tx pgx.Tx) error {
 			return tx.QueryRow(ctx, "select count(*) from outbox where issue in (select issue from verdicts where issue <> '')").Scan(&ofB)
 		}); err != nil {
 			t.Fatalf("count the outbox rows of the issues whose verdicts B recorded: %v", err)
@@ -284,7 +292,7 @@ func TestTheBuildBeforeBReadsBsStore(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewOutboxRow: %v", err)
 		}
-		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := beforeBTx(ctx, st, func(tx pgx.Tx) error {
 			if err := records.PutIssue(ctx, tx, issue); err != nil {
 				return err
 			}
@@ -299,7 +307,7 @@ func TestTheBuildBeforeBReadsBsStore(t *testing.T) {
 			t.Fatalf("write an issue, its pull request, the reviewer's verdict and an outbox row on the database B migrated: %v", err)
 		}
 
-		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := beforeBTx(ctx, st, func(tx pgx.Tx) error {
 			readPR, err := records.PullRequest(ctx, tx, key)
 			if err != nil {
 				return err
@@ -330,6 +338,87 @@ func TestTheBuildBeforeBReadsBsStore(t *testing.T) {
 		}
 		t.Logf("wrote and read back issue %s, pull request #%d at %s, the reviewer's approval and an outbox row", key, number, head)
 	})
+
+	t.Run("the claim store reads every claims row and writes one", func(t *testing.T) {
+		var rows int
+		var launched string
+		if err := beforeBTx(ctx, st, func(tx pgx.Tx) error {
+			if err := tx.QueryRow(ctx, "select count(*) from claims").Scan(&rows); err != nil {
+				return err
+			}
+			return tx.QueryRow(ctx, "select coalesce(min(token), '') from claims where review_launch_head <> ''").Scan(&launched)
+		}); err != nil {
+			t.Fatalf("read the claims rows: %v", err)
+		}
+		if launched == "" {
+			t.Fatal("no claims row holds a launch head, so no row read here is one B's reviewer launch wrote: TestRowsForTheBuildBeforeB writes one")
+		}
+		claims, err := st.Claims(ctx)
+		if err != nil {
+			t.Fatalf("Claims on the database B migrated and wrote: %v", err)
+		}
+		if len(claims) != rows {
+			t.Fatalf("Claims read %d claims; the table holds %d rows", len(claims), rows)
+		}
+		var bs *supervise.Claim
+		for i := range claims {
+			if string(claims[i].Token) == launched {
+				bs = &claims[i]
+			}
+		}
+		if bs == nil {
+			t.Fatalf("Claims read no claim %s, whose row holds B's launch head", launched)
+		}
+
+		// B's claim, written back by this build: B's two columns keep what B wrote.
+		var headBefore, headAfter string
+		var generationBefore, generationAfter int64
+		readLaunch := func(head *string, generation *int64) error {
+			return beforeBTx(ctx, st, func(tx pgx.Tx) error {
+				return tx.QueryRow(ctx, "select review_launch_head, review_launch_generation from claims where token = $1", launched).
+					Scan(head, generation)
+			})
+		}
+		if err := readLaunch(&headBefore, &generationBefore); err != nil {
+			t.Fatalf("read B's launch head of %s: %v", launched, err)
+		}
+		if err := st.PutClaim(ctx, *bs); err != nil {
+			t.Fatalf("PutClaim of B's claim %s: %v", launched, err)
+		}
+		if err := readLaunch(&headAfter, &generationAfter); err != nil {
+			t.Fatalf("read B's launch head of %s again: %v", launched, err)
+		}
+		if headAfter != headBefore || generationAfter != generationBefore {
+			t.Errorf("this build's write of %s moved B's launch head from %s at %d to %s at %d; want it left as B wrote it",
+				launched, headBefore, generationBefore, headAfter, generationAfter)
+		}
+
+		// A claim this build writes: its row holds neither of B's columns.
+		key := fmt.Sprintf("ACME-%d", beforeBNumber(t))
+		mine := supervise.Claim{Token: claim.Token("legion-acme-" + strings.ToLower(key) + "-reviewer"), Project: "acme", Tree: key, Issue: key,
+			Role: claim.RoleReviewer, Generation: 1, State: supervise.StateIdle}
+		if err := st.PutClaim(ctx, mine); err != nil {
+			t.Fatalf("PutClaim of a claim this build makes, on the database B migrated: %v", err)
+		}
+		var none bool
+		if err := beforeBTx(ctx, st, func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx, "select coalesce(review_launch_head, '') = '' and coalesce(review_launch_generation, 0) = 0 from claims where token = $1",
+				string(mine.Token)).Scan(&none)
+		}); err != nil {
+			t.Fatalf("read B's columns of the claim this build wrote: %v", err)
+		}
+		if !none {
+			t.Errorf("the claim %s this build wrote records a launch head in B's columns; want none", mine.Token)
+		}
+		again, err := st.Claims(ctx)
+		if err != nil {
+			t.Fatalf("Claims after this build's write: %v", err)
+		}
+		if len(again) != rows+1 {
+			t.Errorf("Claims read %d claims after this build wrote one; want %d", len(again), rows+1)
+		}
+		t.Logf("read %d claims, %s among them with B's launch head %s at %d, wrote it back and left that head, and wrote %s", rows, launched, headAfter, generationAfter, mine.Token)
+	})
 }
 
 // beforeBNumber is a fresh issue and pull request number, so that each run's rows take keys of
@@ -351,6 +440,22 @@ func beforeBSHA(t *testing.T) string {
 		t.Fatalf("random commit: %v", err)
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// beforeBTx runs fn in one transaction on st's pool and commits it, or rolls it back when fn or
+// the commit fails. It is built of Store.Pool and Pool.BeginTx alone, which every build before B
+// and B itself have: Store.Tx is gone from B (store.Transact took its place), and store.Transact is
+// in no build before B, so the file names neither. Nothing fn runs here registers a commit hook.
+func beforeBTx(ctx context.Context, st *Store, fn func(tx pgx.Tx) error) error {
+	tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback(ctx)
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // beforeBSum is the sum of counts.

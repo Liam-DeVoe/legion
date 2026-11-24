@@ -140,6 +140,7 @@ const (
 	endDisplaced   = "its pod was replaced"
 	endRepointed   = "its address changed"
 	endStopped     = "its claim was stopped"
+	endReviewHead  = "the head it reviews moved, and it was started again in a clone at that head"
 )
 
 // endDied is a death's cause, with the runtime's own account of it (Claim.LastDeathCause), quoted.

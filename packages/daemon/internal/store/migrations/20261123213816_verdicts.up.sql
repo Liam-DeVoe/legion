@@ -1,9 +1,10 @@
--- 20261122045825_verdicts.up.sql — the records of the daemon's writes of the required check
+-- 20261123213816_verdicts.up.sql — the records of the daemon's writes of the required check
 -- legion-verdict: the pull requests of a verdict repository that no Legion issue owns, with their
 -- heads; the reviews of a verdict repository's pull requests; the reviewer session a controller
 -- names for such a pull request at a head; the verdicts reviewers give on a head; and each check
 -- run and commit status named legion-verdict that the daemon writes. store/verdicts.go reads and
--- writes each table.
+-- writes each table. And the head a reviewer's launch gave it, on the claim's row. This is the one
+-- migration of this release (B).
 --
 -- outside_pull_requests records each sighting of such a pull request at a head, from webhook
 -- events and the writers' sweep, with GitHub's updated_at of the pull request the sighting carried
@@ -31,15 +32,34 @@
 -- nullable, and each index keys on lower(repository), as the store's reads compare a repository's
 -- names without case.
 --
--- This migration only adds tables and indexes that are not unique, and it adds no outbox kind, so
--- a release before this one runs on the schema it leaves: that release names none of these tables
--- in any statement, so it neither reads nor writes them, and its Migrate finds every version it
--- embeds recorded and applies nothing.
+-- claims.review_launch_head and claims.review_launch_generation are supervise.Claim's
+-- ReviewLaunchHead and ReviewLaunchGeneration: the head the launch that started a reviewer's
+-- process gave it (runtime.SpawnSpec.ReviewHead) and that launch's generation, at which the launch
+-- made or moved the reviewer's own clone; nothing moves that clone while the process runs. The
+-- machine sets both as it builds a reviewer's launch (spawnSpec), and they reach the store with the
+-- write that records the process the launch started (launchNow). Before each send to a reviewer,
+-- and before each message the daemon holds for one, the machine compares the head the record holds
+-- for the issue's pull request with this one, read only where the generation is the claim's own
+-- (reviewHeadHolds), and starts the process again at the record's head where they differ. Kept on
+-- the row, the comparison survives a restart of the daemon, which re-adopts a live reviewer and
+-- hands it its next task in the process it found where the head has not moved. Both columns are
+-- nullable and have no default, so the alter writes no row. The store reads a row that holds
+-- neither (one written before this migration, or by a release before it) as no head at generation
+-- 0, which names no launch: the next task of such a reviewer waits for a launch at the record's
+-- head, which brings its clone there.
+--
+-- This migration only adds tables, indexes that are not unique and two nullable columns, and it
+-- adds no outbox kind, so a release before this one runs on the schema it leaves: that release
+-- names none of these tables and neither column in any statement, so it neither reads nor writes
+-- them, its writes of a claim leave the two columns as they were, and a claim it inserts holds
+-- neither. Its Migrate finds every version it embeds recorded and applies nothing.
 --
 -- There is no down file: migrations here are forward-only. Nothing of this migration need come
--- off to roll the daemon back either: the tables stand unread under the earlier release, and at
--- the roll forward Migrate finds this version recorded and runs nothing again, so the rows written
--- before the rollback read as they were written.
+-- off to roll the daemon back either: the tables and the two columns stand unread under the
+-- earlier release, and at the roll forward Migrate finds this version recorded and runs nothing
+-- again, so the rows written before the rollback read as they were written. Every launch the
+-- earlier release makes moves a claim's generation past the one the columns record, so at the
+-- roll forward a head they record is read for no process the earlier release started.
 create table outside_pull_requests (
   id bigserial,
   repository text not null default '',
@@ -94,3 +114,6 @@ create table verdict_writes (
   foreign_id bigint not null default 0,
   written_at timestamptz not null default now());
 create index verdict_writes_head on verdict_writes (lower(repository), head, id);
+
+alter table claims add column review_launch_head text;
+alter table claims add column review_launch_generation bigint;
