@@ -3542,6 +3542,50 @@ package api
 // main's 228 that no other open pull request declares. Read main's own number and every open head
 // again at the next merge rather than from this line.)
 //
+// 246: each issue of `GET /legion/v1/state` (and the issue record, which is one issue of that
+// body) carries `podHold`, the standing hold of the issue's pod: why the
+// idle rule keeps that pod past the idle period. It is `{reason, firstAt, at, detail}`: `reason`
+// is the rule's own word for the hold (workflow.IdleHold's String, as the daemon's hold records
+// spell it), `firstAt` the first pass of the hold's streak, `at` its newest pass, and `detail`
+// what that word leaves out, cut to its first 200 characters and absent where the record holds
+// none. The daemon reads it from `pod_holds` in the state's own snapshot, one statement for the
+// whole project (store.StandingPodHoldsTx), and writes the key only for an issue whose pod a hold
+// stands on: a pod the rule has not held, one it released and one whose streak a later pass ended
+// carry none. A plugin below 246 reads each issue with a strict schema that names no `podHold`,
+// so a caller below 246 is served every issue without it (shaping.go's podHoldContract and
+// withoutPodHold, its row of stateNarrowings). The caller is placed as 193 places every caller of
+// the state: a plugin from 228 to 245 states its contract and is served 228's keys. No enumerated
+// field arrives: `reason` is a string a reader takes whole, so a hold a later rule adds is read
+// rather than refused. `packages/contracts/src/legion-api.ts` mirrors the key on its issue and
+// takes each of its four members as optional, since no plugin code reads them
+// (LEGION_ANSWER_READS).
+// (This entry took 221 at first, the lowest number above main's 205 that no open pull request
+// declared at a reading of every open pull request of cybermonklabs/legion that ended at
+// 2026-11-22T04:57Z. 220 to 222 had been named for three changes, #4930 among them, and 223 for
+// #4805, before each of them declared its number, so 221 was taken twice. This entry moved to 224,
+// the lowest number above 223 that no open pull request declares and that no change had been named
+// for. A reading of every open pull request that ended at 2026-11-22T06:08:16Z found 206 (#3712
+// and #4940), 207 (#3993 and #4432), 208 (#4175), 209 (#4049), 210 (#4661), 211 (#2230), 212
+// (#4030, #4392, #4540 and #4580), 213 (#4553), 214 (#4592), 215 (#4065 and #4596), 216 (#4173,
+// #4180, #4182, #4193, #4259 and #4932), 217 (#4273, #4590 and #4771), 218 (#3831), 219 (#4611),
+// 220 (#4930), 221 (this change at its first number) and 223 (#4805) declared, and none above 223.
+// The forward merge of 2026-11-24 that brought in e14345bf brought main's 228 (INFRA-1575's entry,
+// over 213, 217, 219 and 220). A reading of `const DaemonAPIVersion` at refs/pull/<n>/head for
+// each open pull request whose files touch this file, made between 2026-11-24T09:38:10Z and
+// 09:42:57Z, found 229 (#2230), 230 (#4580), 231 (#4540), 233 (#4173, #4180, #4182, #4193 and
+// #4932), 234 (#4065), 235 (#5204), 236 (#4984), 237 (#5168 and #5169), 238 (#5285), 239 (#4592),
+// 240 (#3831 and #5271), 241 (#4771 and #5307), 242 (#4596) and 243 (#5349) declared, and 244 had
+// been named for another change before it declared it, so this entry moved to 245, above every
+// number an open pull request declares or a change had been named for. A second reading, between
+// 2026-11-24T11:29:31Z and 11:32:10Z, found 245 declared by #5158 as well, with 244 (#3831 and
+// #5365), 243 (#5349) and 242 (#4596) below it, so this entry moved to 246, above every number an
+// open pull request declares.
+// The forward merge of 2026-11-24 that brought in 3dbaa2b2 brought main's 232 (INFRA-4508's
+// entry, right above this one), and a reading of the open heads that change this file, between
+// 2026-11-24T12:30:11Z and 12:32:24Z, found 246 declared by this change alone (245 by #5158,
+// 251 by #5307), so this entry kept 246. Read the base's own number and every open pull request
+// again at every forward merge rather than from this line.)
+//
 // 257: INFRA-4172 (cybermonklabs/legion) -- every workflow role's pane and pod is told
 // LEGION_ROLE_IDENTITIES (runtime.RoleIdentitiesVariable), every role's git identity as JSON: one
 // object from each role of claim.Roles to `{"name": …, "email": …}`, the identity that role's App
@@ -3554,18 +3598,24 @@ package api
 // and the daemon logs a warning naming the claim, that App and the error. The controller's launch
 // carries none, and `legion controller start` drops one it inherits.
 // An operator's `runtime.tmux.pane_env`, `runtime.kubernetes.pod.env` and provider keys may not
-// name it (runtime.PaneVariableRefusal, sandbox's podVariables). A role process of an earlier
-// release has no table, and its step does nothing; the reader passes over a field of an identity
-// it does not know, so a field a later release adds turns no step off. No shape of `GET
-// /legion/v1/state` or of a request moves, and this change adds no store migration; its records
-// in contract-shapes.json and request-shapes.json are 232's, written again at 257 by `-update`.
+// name it (runtime.PaneVariableRefusal; config's checkTmuxProviderKeyNames for a provider key under
+// runtime tmux; sandbox's podVariables). A role process of an earlier release has no table, and its
+// step does nothing; the reader passes over a field of an identity it does not know, so a field a
+// later release adds turns no step off. No shape of `GET /legion/v1/state` or of a request moves,
+// and this change adds no store migration; its records in contract-shapes.json and
+// request-shapes.json are 246's, written again at 257 by `-update`.
 // (This entry moved from 230 to 247 at the forward merge of 2026-11-24 that brought in acade985,
 // where main carried 232, dispatch://INFRA-4508's entry above, and from 247 to 257 on 2026-11-24,
 // because open pull request #5384 declares 247 too. The architect of INFRA-3118 gave this change
 // 257, and a reading of `const DaemonAPIVersion` at refs/pull/<n>/head of each of the 141 open pull
 // requests of cybermonklabs/legion, of 473 open, whose file list names this file or is cut short,
 // made on 2026-11-24 between 15:24:54Z and 15:27:05Z, found 247 declared by #4580 and #5384, 250 by
-// #5365, 251 by #5307, 252 by #4540, 254 by #4432 and 255 by #5164, and 257 by none. This entry
-// stood at 200, 202, 209, 212, 221, 225, 230 and 247 before. Read the base's own number and every
-// open pull request again at the next merge rather than from this line.)
+// #5365, 251 by #5307, 252 by #4540, 254 by #4432 and 255 by #5164, and 257 by none. The forward
+// merge of 2026-11-24 that brought in 7e75126f brought main's 246 (the entry above), and a reading
+// of the 142 open heads, of 476 open, that change this file or whose file list is cut short, made
+// between 16:02:14Z and 16:04:33Z, found 257 declared by this change alone (247 by #5384, 248 by
+// #3993 and #4065, 250 by #5365, 251 by #5307, 252 by #4540, 254 by #4432, 255 by #5164, 261 by
+// #5332), so this entry kept 257. This entry stood at 200, 202, 209, 212, 221, 225, 230 and 247
+// before. Read the base's own number and every open pull request again at the next merge rather
+// than from this line.)
 const DaemonAPIVersion = 257
