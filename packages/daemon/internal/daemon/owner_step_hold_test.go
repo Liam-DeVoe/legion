@@ -41,21 +41,8 @@ func newOwnerHoldRig(t *testing.T, at phase.Phase, place record.TaskPlace, words
 		now: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), pub: &holderPublisher{}, logged: &syncBuffer{}}
 	issue := record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION",
 		Title: "LEGION-1", Phase: at, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "A", LastDispatchSeq: 1}
-	roles := stepplan.BuiltinRoles()
-	steps := make([]record.PlanStep, 0, len(words))
-	for i, word := range words {
-		role, key, _ := strings.Cut(word, ":")
-		steps = append(steps, record.PlanStep{Issue: "LEGION-1", Generation: 1, Task: "a", Position: i + 1, Role: role, AgentKey: key, Type: roles[role].Type})
-	}
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		version := record.PlanVersion{Issue: "LEGION-1", Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
-			GivenBy: r.owner, GivenAt: r.now}
-		task := record.PlanTask{Issue: "LEGION-1", Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.",
-			State: record.TaskRunning, Place: place}
-		if err := r.records.PutIssue(ctx, tx, issue); err != nil {
-			return err
-		}
-		return r.records.PutPlan(ctx, tx, version, []record.PlanTask{task}, record.NameAgents(nil, nil, steps))
+		return putPlannedIssue(t, ctx, tx, r.records, issue, place, r.now, words...)
 	}); err != nil {
 		t.Fatalf("seed LEGION-1: %v", err)
 	}
@@ -65,6 +52,29 @@ func newOwnerHoldRig(t *testing.T, at phase.Phase, place record.TaskPlace, words
 	r.runner = &outbox{log: slog.New(slog.NewJSONHandler(r.logged, nil)), pool: r.pool, dispatchProject: "LEGION", records: r.records, notices: r.pub,
 		supervisor: sup, project: "legion", now: time.Now}
 	return r
+}
+
+// putPlannedIssue writes issue in tx and the plan its architect gave at given: version 1, its one
+// task a running at place, whose steps are words (`role` or `role:key`), each of its built-in
+// role's type, with their agents named as a plan's are (record.NameAgents).
+func putPlannedIssue(t *testing.T, ctx context.Context, tx pgx.Tx, records record.Store, issue record.Issue, place record.TaskPlace, given time.Time,
+	words ...string) error {
+	t.Helper()
+	version := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+		GivenBy: mustClaimToken(t, issue.Key, claim.RoleArchitect), GivenAt: given}
+	task := record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: "a", PlanVersion: 1, BlockText: "Build the widget.",
+		State: record.TaskRunning, Place: place}
+	roles := stepplan.BuiltinRoles()
+	steps := make([]record.PlanStep, 0, len(words))
+	for i, word := range words {
+		role, key, _ := strings.Cut(word, ":")
+		steps = append(steps, record.PlanStep{Issue: issue.Key, Generation: issue.Generation, Task: "a", Position: i + 1, Role: role, AgentKey: key,
+			Type: roles[role].Type})
+	}
+	if err := records.PutIssue(ctx, tx, issue); err != nil {
+		return err
+	}
+	return records.PutPlan(ctx, tx, version, []record.PlanTask{task}, record.NameAgents(nil, nil, steps))
 }
 
 // started counts a start of LEGION-1's place kind/at and leaves its run open, as a start does
