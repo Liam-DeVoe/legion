@@ -20,13 +20,11 @@ body: |-
   sent to (`sentLaunch`), and a failed claim's notice tells the owning architect. One case can be
   told two times: a launch that resumes the session of an earlier launch, where the message was
   stored for that session. Envoy stores a message for a session, and it cannot say which launch read
-  it: the resumed launch reads the copy stored for its session and is asked again at its ready, or
-  the earlier launch read it before it ended and the resumed one is asked again. The second ask
-  names the same merge. So can a launch that runs a new session and takes the message in the moment
-  between the daemon's read of the launch and the publish. The news of an approved design to the
-  architect
-  that holds an issue in `accepting` names, as its move-back targets, the phases of the task's steps
-  before the acceptance.
+  it. The second ask names the same merge. One more case can be told two times. It is a launch with
+  a new session that starts between the daemon's read of the launch and its publish. Its second ask
+  names the same merge and the same commit. A second ask of the same commit changes nothing that
+  the daemon holds. The news of an approved design to the architect that holds an issue in
+  `accepting` names, as its move-back targets, the phases of the task's steps before the acceptance.
 
   The release before refuses a merge-forward row whose step is `withdrawn` and a hold or landed
   row to the planner. A rollback past this release deletes those queued `merge_forward` rows first
