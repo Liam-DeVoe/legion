@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/steprecord"
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
@@ -255,12 +256,14 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 // given its own App back at a step's end: where the run it ends is a step of a stored plan whose
 // start named an architect (the owner, or the architect above that ran the step for it,
 // ownerAgent), and the one rule of what the owner's place switches the slot to gives a role for
-// the place (record.OwnersPlaceActsAs, which the daemon's ActsAs reads while the place runs), it
-// queues a supervise slot_credential of the owner's claim in the same transaction, which writes the
-// owner's slot back to its own App when it runs (ownerSlotCredential). So the owner's retro of a
-// task with no step of the type implementation, done as itself, queues none: its slot held the
-// owner's own App throughout. A merge's start names the merger, so its end queues none. A run on no
-// step of its walk is ended, and its write-back queued, by endOffWalk.
+// the place (record.OwnersPlaceActsAs, which the daemon's ActsAs reads while the place runs) that
+// acts as another App than the owner's own (actsAsOwnApp), it queues a supervise slot_credential of
+// the owner's claim in the same transaction, which writes the owner's slot back to its own App
+// when it runs (ownerSlotCredential). So the owner's retro of a task with no step of the type
+// implementation, done as itself, queues none: its slot held the owner's own App throughout. Nor
+// does the end of the owner's tester, reviewer or acceptance step, each of which acts as the review
+// App, the owner's own. A merge's start names the merger, so its end queues none. A run on no step
+// of its walk is ended, and its write-back queued, by endOffWalk.
 func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, w Walk, site stepSite, end StepEnd) error {
 	step, ok := stepAt(w, before, site)
 	if !ok {
@@ -274,10 +277,28 @@ func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, w 
 	if err != nil || !ended || !w.Stored {
 		return err
 	}
-	if _, switched := record.OwnersPlaceActsAs(step.at, claim.Role(step.role), w.Steps); !switched {
+	if role, switched := record.OwnersPlaceActsAs(step.at, claim.Role(step.role), w.Steps); !switched || actsAsOwnApp(role) {
 		return nil
 	}
 	return e.ownerSlotCredential(ctx, tx, before, agent)
+}
+
+// actsAsOwnApp is whether role acts as the App of the owner's own role, the architect's, by the one
+// role-to-App rule (appauth.AppRoleFor), where the workflow can read it: a name of Legion's, whose
+// App the rule names whatever the deployment's settings or a plan say. A role a plan or the
+// deployment defines is answered false, since its App is the deployment's settings or the plan's
+// type, which the daemon reads (appauth.RoleApps), so its end queues the write-back, and the
+// runtime rewrites nothing where the slot holds that App already (runtime.SlotCredentials).
+func actsAsOwnApp(role claim.Role) bool {
+	if !plan.IsLegionName(string(role)) {
+		return false
+	}
+	app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
+	if err != nil {
+		return false
+	}
+	own, err := appauth.AppRoleFor(claim.RoleArchitect, nil, appauth.Planned{})
+	return err == nil && app == own
 }
 
 // ownerSlotCredential queues, where agent, the agent the start of an ended step or retro named, is
@@ -482,9 +503,11 @@ func (e *Engine) implementationAgent(ctx context.Context, tx pgx.Tx, issue recor
 // task where the issue stands in at, on w, issue's walk, as a recipient of a role message: the
 // agent of the step Walk.workPlace names from the place of at (placeIn, none where the walk holds
 // no place for at), with that step's role and the claim stepToken makes for it, the claim the start
-// of that step names. Where that step's key is owner, the agent is the architect that owns issue
-// now (ownerAgent), read as of at, the phase the issue stands in. ok is false for a task with no
-// step that does that work.
+// of that step names. Where that step's agent is the owner (Walk.OwnerAt), the claim is the owner's
+// (record.OwnerClaim), as for every message to the worker of an owner's step
+// (record.Issue.StepWorker): the owner does that step, since its owner-step and its report are the
+// owner's, while the start names the architect above where the issue's own architect holds no role
+// (ownerAgent). ok is false for a task with no step that does that work.
 func (e *Engine) workAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, at phase.Phase, work claim.Role) (roleRecipient, bool, error) {
 	place, _ := w.placeIn(at)
 	step, ok := w.workPlace(place, work)
@@ -492,7 +515,13 @@ func (e *Engine) workAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 		return roleRecipient{}, false, nil
 	}
 	role := claim.Role(w.Steps[step.Position-1].Role)
-	token, err := e.stepToken(ctx, tx, issue, w, step, at, role)
+	var token claim.Token
+	var err error
+	if w.OwnerAt(step) {
+		token, err = record.OwnerClaim(issue)
+	} else {
+		token, err = e.stepToken(ctx, tx, issue, w, step, at, role)
+	}
 	if err != nil {
 		return roleRecipient{}, false, err
 	}

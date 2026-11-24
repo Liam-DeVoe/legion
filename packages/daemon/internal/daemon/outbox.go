@@ -2023,13 +2023,27 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 }
 
 // ownerStepTold records on the run step names whom its owner-step reached
-// (record.Store.MarkOwnerStepTold), in a transaction of its own before the row is finished. A
-// published row is deleted, so this is what the owner's catch-up at a later ready reads to tell
-// the step only to a session that was not given it (workflow's claimReady): between the publish
-// and the row's deletion the row itself is still queued, which that ready reads as the step being
-// told already.
-//
-// Whom it reached is recipient, the session the listener says it forwarded the publish to
+// (record.Store.MarkOwnerStepTold), in a transaction of its own before the row is finished, by the
+// one rule of told (ownerToldMark). A published row is deleted, so this is what the owner's
+// catch-up at a later ready reads to tell the step only to a session that was not given it
+// (workflow's claimReady): between the publish and the row's deletion the row itself is still
+// queued, which that ready reads as the step being told already.
+func (r *outbox) ownerStepTold(ctx context.Context, issue string, step record.NoticeStep, told supervise.Claim, recipient string) error {
+	mark, ok := ownerToldMark(told, recipient)
+	if !ok {
+		return nil
+	}
+	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		return r.records.MarkOwnerStepTold(ctx, tx, issue, step, mark)
+	}); err != nil {
+		return fmt.Errorf("record whom the owner-step of %s reached: %w", issue, err)
+	}
+	return nil
+}
+
+// ownerToldMark is the one rule of whom a message to the owner reached (record.OwnerTold), which
+// an owner-step's run (ownerStepTold) and a merge forward's ask (mergeForwardTold) both record:
+// recipient, the session the listener says it forwarded the publish to
 // (notify.HTTPPublisher.PublishTo), where it names one. told, the owner's claim as it was read
 // before the publish, adds its launch only where that claim runs in recipient's session: a
 // relaunch into a fresh session during the publish can hand the role to the fresh session before
@@ -2039,26 +2053,17 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // one session to the next between the agent's plugin and the listener, under no lock and in no
 // transaction of the daemon's, which is why the listener's own answer is what is recorded. A
 // listener that names no recipient — one older than the field — leaves told alone, launch and
-// session, so the same relaunch then tells the fresh session the step once more: a repeat, never
-// a step left untold. The catch-up decides a mark that names a session by that session alone, so
-// a fresh session the same launch starts after its resume of the session told failed is told the
-// step again; only a mark with no session, a claim that recorded none, is decided by its launch
-// (workflow's toldThisSession). A claim this daemon does not supervise, with no recipient named,
-// records nothing, and its next ready tells the step again.
-func (r *outbox) ownerStepTold(ctx context.Context, issue string, step record.NoticeStep, told supervise.Claim, recipient string) error {
+// session, so the same relaunch then tells the fresh session the message once more: a repeat,
+// never a message left untold. The catch-up decides a mark that names a session by that session
+// alone, and only a mark with no session, a claim that recorded none, by its launch (workflow's
+// toldNow). ok is false for a mark that names nobody, a claim this daemon does not supervise with
+// no recipient named, which records nothing, so its next ready tells the message again.
+func ownerToldMark(told supervise.Claim, recipient string) (record.OwnerTold, bool) {
 	mark := record.OwnerTold{Launch: told.Generation, Session: told.Session}
 	if recipient != "" && !told.HoldsSession(recipient) {
 		mark = record.OwnerTold{Session: recipient}
 	}
-	if mark.Launch == 0 && mark.Session == "" {
-		return nil
-	}
-	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		return r.records.MarkOwnerStepTold(ctx, tx, issue, step, mark)
-	}); err != nil {
-		return fmt.Errorf("record whom the owner-step of %s reached: %w", issue, err)
-	}
-	return nil
+	return mark, mark != record.OwnerTold{}
 }
 
 // ownerStepStaleLine is the line of an owner-step that finished undelivered (ownerSlotHolds).

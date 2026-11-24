@@ -110,9 +110,17 @@ func TestTheOwnerAtItsOwnStepIsToldTheDesignGateMoved(t *testing.T) {
 			applyMirrored(t, pool, testEngine(config.DesignGateRootIssues, nil), "version-4", intake.DispatchArtifact{
 				Key: "LEGION-208", ArtifactID: "artifact-208", Kind: intake.DispatchArtifactVersion, Version: 4})
 
-			assertRoleMessages(t, pool, "LEGION-209", []record.RoleMessage{
-				{Role: string(worker), Body: gateMovedBody(record.DesignStepSpec, "artifact-208", 4, false)},
-			})
+			// Who is told is the claim each role message is published to (record.RoleMessage.Role),
+			// and the rows of LEGION-209's outbox are the messages to its workers.
+			var told []string
+			for _, row := range queuedRows(t, pool) {
+				if message, ok := row.payload.(record.RoleMessage); ok && row.issue == "LEGION-209" {
+					told = append(told, message.Role)
+				}
+			}
+			if len(told) != 1 || told[0] != string(worker) {
+				t.Fatalf("the gate's move told %v on LEGION-209, want the worker of its step, %s, alone", told, worker)
+			}
 		})
 	}
 }

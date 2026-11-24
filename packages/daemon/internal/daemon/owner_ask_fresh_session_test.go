@@ -2,61 +2,56 @@ package daemon
 
 import (
 	"context"
-	"strings"
+	"encoding/json"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// An ask the owner was told lives in the session it was told in: a fresh session holds nothing of
-// it. On `implementer:owner reviewer` at the reviewer's step, the merge forward's ask reaches the
-// owner in its session, and its delivery records that session. The owner's claim then comes back
-// at its next launch: in a fresh session, the catch-up of that launch names the open ask, with its
-// head, and no second message of the ask is queued; in the session it was told in, resumed, the
-// catch-up does not name it, since that session still holds the ask.
-func TestAnOwnersFreshSessionIsToldTheMergeForwardStillAskedOfIt(t *testing.T) {
+// toldMark is the mark of whom a merge-forward ask reached, as the record of the pull request holds
+// it (record.MergeForward.Told): the launch and the session of the owner's claim, the one rule of
+// told an owner-step's run holds too (record.OwnerTold).
+type toldMark struct {
+	Launch  uint64 `json:"launch"`
+	Session string `json:"session"`
+}
+
+// An ask delivered to the owner records whom it reached by the one rule an owner-step's run records
+// it by: the launch and the session of the owner's claim as it was read before the publish. On
+// `implementer:owner reviewer` at the reviewer's step, the ask reaches the owner at its launch 1.
+// Its claim runs in a session, which the mark names beside the launch; or its claim recorded no
+// session, and the mark names the launch alone, so the catch-up of that same launch judges the ask
+// told by its launch, as it judges an owner-step (workflow's toldThisSession).
+func TestAnAskToTheOwnerRecordsWhomItReachedAsAnOwnerStepDoes(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		session string
-		names   bool
+		want    toldMark
 	}{
-		{name: "a fresh session", session: "ses_fresh", names: true},
-		{name: "control: the session it was told in, resumed", session: ownerHoldSession},
+		{name: "a claim that runs in a session", session: ownerHoldSession, want: toldMark{Launch: ownerHoldLaunch, Session: ownerHoldSession}},
+		{name: "a claim that recorded no session", want: toldMark{Launch: ownerHoldLaunch}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			ctx := context.Background()
 			r := newOwnerHoldRig(t, phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 2}, "implementer:owner", "reviewer")
 			r.started(t, "step", 1, true)
-			r.relaunched(t, ownerHoldLaunch, ownerHoldSession)
+			r.relaunched(t, ownerHoldLaunch, tc.session)
 			r.askedOf(t, r.owner, phase.Reviewing)
 			if err := r.sent(t, mergeForwardAsk(r.owner, phase.Reviewing)); err != nil {
-				t.Fatalf("the ask to the owner in its session = %v", err)
+				t.Fatalf("the ask to the owner = %v", err)
 			}
 			if got := r.published(); len(got) != 1 {
 				t.Fatalf("the ask published %v, want one: this case proves nothing", got)
 			}
-
-			r.relaunched(t, ownerHoldLaunch+1, tc.session)
-			r.ready(t, "ready-2", ownerHoldLaunch+1, false)
-			var catchUps []record.Notice
-			for _, notice := range r.queuedNotices(t) {
-				if notice.Kind == "catch-up" {
-					catchUps = append(catchUps, notice)
-				}
+			var raw []byte
+			if err := r.pool.QueryRow(context.Background(), "select coalesce(merge_forward->'told', 'null'::jsonb) from pull_requests where issue = 'LEGION-1'").Scan(&raw); err != nil {
+				t.Fatalf("read the told mark of LEGION-1's merge forward: %v", err)
 			}
-			if len(catchUps) != 1 {
-				t.Fatalf("the launch queued the catch-ups %+v, want one", catchUps)
-			}
-			reason := catchUps[0].Reason
-			if names := strings.Contains(reason, "a merge forward the daemon asked of you") && strings.Contains(reason, mergeForwardHead); names != tc.names {
-				t.Fatalf("the catch-up of the launch in %s says %q; want it to name the open ask at head %s: %t", tc.session, reason, mergeForwardHead, tc.names)
-			}
-			var asks int
-			if err := r.pool.QueryRow(ctx, "select count(*) from outbox where kind = $1", string(record.OutboxKindMergeForward)).Scan(&asks); err != nil || asks != 0 {
-				t.Fatalf("the launch queued %d merge-forward messages (%v), want none: the catch-up is the one telling", asks, err)
+			var got toldMark
+			if err := json.Unmarshal(raw, &got); err != nil || got != tc.want {
+				t.Fatalf("the merge forward's told mark is %s (%v), want %+v", raw, err, tc.want)
 			}
 		})
 	}

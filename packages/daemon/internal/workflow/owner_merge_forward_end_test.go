@@ -145,14 +145,21 @@ func TestEveryEndOfAMergeForwardAskedOfTheOwnerGivesItsSlotItsOwnApp(t *testing.
 // The controls: on `implementer reviewer` the ask went to the implementer's own claim, whose slot no
 // hold writes, so the retry asks nothing again; and an ask of the owner at that head still queued at
 // the retry is the one that writes the slot and tells the owner, so none is queued behind it.
+//
+// The ask asked again is the ask the record holds, built by the one builder both writers use: its
+// role is the role the record's ask was made as (record.MergeForward.Role), the role of the owner's
+// implementation step, which a step of a role the plan defines, `coder`, names in place of the
+// implementer.
 func TestARetriedHoldAsksTheOwnerAgainForTheMergeForwardItsPullRequestHolds(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		steps  []string
+		role   claim.Role
 		queued bool
 		asked  int
 	}{
 		{name: "the owner's ask, told before the hold", steps: []string{"implementer:owner", "reviewer"}, asked: 1},
+		{name: "the owner's ask made as another role", steps: []string{"implementer:owner", "reviewer"}, role: "coder", asked: 1},
 		{name: "control: the ask of a fresh implementer", steps: []string{"implementer", "reviewer"}},
 		{name: "control: the owner's ask still queued at the retry", steps: []string{"implementer:owner", "reviewer"}, queued: true},
 	} {
@@ -163,6 +170,14 @@ func TestARetriedHoldAsksTheOwnerAgainForTheMergeForwardItsPullRequestHolds(t *t
 			asked := *pr.MergeForward
 			want := record.MergeForwardMessage{Role: claim.RoleImplementer, Claim: owner, Step: record.MergeForwardAsk, Head: asked.Head, Base: asked.Base,
 				Phase: asked.Phase, PullRequest: pr.Number, Why: asked.Why}
+			if tc.role != "" {
+				seedRecord(t, pool, func(tx pgx.Tx) error {
+					_, err := tx.Exec(t.Context(), `update pull_requests set merge_forward = jsonb_set(merge_forward, '{role}', to_jsonb($2::text)) where issue = $1`,
+						issue.Key, string(tc.role))
+					return err
+				})
+				want.Role = tc.role
+			}
 			if tc.queued {
 				seedRecord(t, pool, func(tx pgx.Tx) error {
 					row, err := record.NewOutboxRow(issue.Key, want, stepClock)

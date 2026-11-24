@@ -91,23 +91,29 @@ func (e *Engine) owedOwnersStep(ctx context.Context, tx pgx.Tx, issue record.Iss
 
 // toldThisSession says whether an owner-step of the run owed names already reached the owner of
 // issue as its claim is ready now at launch (record.Store.OwnerStepTold, which the outbox writes
-// as the listener takes the notice): published to the session the claim runs in now, whose
-// transcript holds the notice, at this launch or at an earlier one this launch resumed. The mark
-// names the session the listener forwarded to, and a launch only where the claim the outbox read
-// ran in that session (the daemon's ownerStepTold). A mark that names a session is decided by that
-// session alone: a fresh session — after a loss, or in the same launch, whose resume of the session
-// told failed — was not given the notice, and the catch-up tells it again. Only a mark with no
-// session, where the claim the outbox read recorded none, is decided by its launch. A run no
-// owner-step reached is told again too. A delivered notice row is deleted, so the step's row is
-// the one record of it.
+// as the listener takes the notice), by the one rule of told (toldNow). A run no owner-step reached
+// is told again too. A delivered notice row is deleted, so the step's row is the one record of it.
 func (e *Engine) toldThisSession(ctx context.Context, tx pgx.Tx, issue record.Issue, owed owedStep, launch uint64) (bool, error) {
 	told, err := e.store.OwnerStepTold(ctx, tx, issue.Key, owed.step.place)
-	if err != nil || told == (record.OwnerTold{}) {
+	if err != nil {
 		return false, err
 	}
-	// A mark that names a session is decided by it alone: a launch whose resume failed starts a
-	// fresh session in the same launch, and that session was not told. Only a mark with no
-	// session, a claim that recorded none when the outbox read it, is decided by its launch.
+	return toldNow(ctx, tx, e.store, issue, told, launch)
+}
+
+// toldNow is the one rule of whether a message whose mark is told (record.OwnerTold: an owner-step
+// of a step's run, a merge forward's ask) reached the owner of issue as its claim is ready now at
+// launch: published to the session the claim runs in now, whose transcript holds the message, at
+// this launch or at an earlier one this launch resumed. The mark names the session the listener
+// forwarded to, and a launch only where the claim the outbox read ran in that session (the
+// daemon's ownerToldMark). A mark that names a session is decided by that session alone: a fresh
+// session — after a loss, or in the same launch, whose resume of the session told failed — was not
+// given the message, and the catch-up tells it again. Only a mark with no session, where the claim
+// the outbox read recorded none, is decided by its launch. A mark that names nobody reached nobody.
+func toldNow(ctx context.Context, tx pgx.Tx, store record.Store, issue record.Issue, told record.OwnerTold, launch uint64) (bool, error) {
+	if told == (record.OwnerTold{}) {
+		return false, nil
+	}
 	if told.Session == "" {
 		return told.Launch == launch, nil
 	}
@@ -115,7 +121,7 @@ func (e *Engine) toldThisSession(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err != nil {
 		return false, nil
 	}
-	session, err := e.store.ClaimSession(ctx, tx, owner)
+	session, err := store.ClaimSession(ctx, tx, owner)
 	if err != nil {
 		return false, err
 	}

@@ -1145,28 +1145,33 @@ type ConflictRead struct {
 // same head, the ask is made again, with the hold and the notice.
 // Agent is the claim the ask reached, the agent of the task's implementation step where the issue
 // stood (workflow's implementationAgent), and "" where no task step does that work: what says whose
-// ask it is (OwnersMergeForward), whatever that step's role is called. Told is the session of that
-// claim the ask's message was published to (the daemon's mergeForwardTold, Store.MarkMergeForwardTold),
-// "" until one was: a fresh session of the owner holds nothing of the one told, so the owner's
+// ask it is (OwnersMergeForward), whatever that step's role is called, and who pushed the merge,
+// whom the landing tells nothing (workflow's mergeForwardLanded). Role is the role the ask was made
+// as, that step's role, "" in a record of the release before, which asked the implementer: the one
+// builder of the ask's message reads both (MergeForward.Ask). Told is whom the ask's message
+// reached, by the one rule of told an owner-step's run holds too (OwnerTold: the launch and the
+// session of the owner's claim, the daemon's ownerToldMark, Store.MarkMergeForwardTold), nil until
+// it reached one: a fresh session of the owner holds nothing of the one told, so the owner's
 // catch-up at a launch names an open ask its session was not told (workflow's untoldMergeForward).
 // AskedAt is when the ask was written. Landed is the first new head that arrived after the ask, ""
-// until one does; ReviewAsked is whether that landing asked the reviewer to read the merge, which
-// it does when the issue stands past review and its task has a reviewer step (workflow's
-// mergeForwardLanded), and which the merger's task and its landed message read. Earlier is every
-// merge forward that landed before this ask in the same stretch of work, oldest first: a later ask
-// replaces the one the record holds, so when the head a merge left conflicts in its turn and is
-// merged forward again, Earlier is what still names the head the first merge replaced
+// until one does; ReviewAsked is whether that landing queued a review of the merge for the
+// reviewer, which it does when the issue stands past review and its task has a reviewer step
+// (workflow's mergeForwardLanded), and which the merger's task and its landed message read. Earlier
+// is every merge forward that landed before this ask in the same stretch of work, oldest first: a
+// later ask replaces the one the record holds, so when the head a merge left conflicts in its turn
+// and is merged forward again, Earlier is what still names the head the first merge replaced
 // (PullRequest.MergeForward says how long the stretch lasts). It is stored as the jsonb of
 // pull_requests.merge_forward (migration 20261119003157), null for nil; the jsonb takes Earlier,
-// Own, Agent and Told with no migration of their own, and leaves each out while it is empty. Migration
-// 20261123060645 marks Own on each ask the release before recorded in implementing.
+// Own, Agent, Role and Told with no migration of their own, and leaves each out while it is empty.
+// Migration 20261123060645 marks Own on each ask the release before recorded in implementing.
 type MergeForward struct {
 	Head        string               `json:"head"`
 	Base        string               `json:"base"`
 	Phase       phase.Phase          `json:"phase"`
 	Own         bool                 `json:"own,omitempty"`
 	Agent       claim.Token          `json:"agent,omitempty"`
-	Told        string               `json:"told,omitempty"`
+	Role        claim.Role           `json:"role,omitempty"`
+	Told        *OwnerTold           `json:"told,omitempty"`
 	Why         ConflictWhy          `json:"why"`
 	AskedAt     time.Time            `json:"askedAt"`
 	Landed      string               `json:"landed,omitempty"`
@@ -1174,11 +1179,23 @@ type MergeForward struct {
 	Earlier     []LandedMergeForward `json:"earlier,omitempty"`
 }
 
+// Ask is the message that asks m's agent for the merge forward of the pull request numbered pull,
+// the one builder of it, which the workflow's ask and its ask again both use: to the claim the ask
+// reached (Agent), as the role it was made as (Role, the implementer for a record of the release
+// before), with the head, the base, the phase and why the record holds, and covering covers, the
+// step of the message it stands in for (MergeForwardMessage.Covers).
+func (m MergeForward) Ask(pull int, covers MergeForwardStep) MergeForwardMessage {
+	role := m.Role
+	if role == "" {
+		role = claim.RoleImplementer
+	}
+	return MergeForwardMessage{Role: role, Claim: m.Agent, Step: MergeForwardAsk, Head: m.Head, Base: m.Base, Phase: m.Phase,
+		PullRequest: pull, Why: m.Why, Covers: covers}
+}
+
 // MergeForwardOpen says whether pr holds an ask of a merge forward that has not ended by the pull
 // request's own state: pr is open and holds an ask (MergeForward) that has not landed. It is the
-// pull request's half of whether a merge forward asked of the owner is open (OwnersMergeForward),
-// and of whether an ask or a hold is still to be delivered (workflow's leftMergeForwardAt); each
-// reader of either asks it here.
+// pull request's half of whether a merge forward asked of the owner is open (OwnersMergeForward).
 func (pr PullRequest) MergeForwardOpen() bool {
 	return pr.State == PullRequestOpen && pr.MergeForward != nil && pr.MergeForward.Landed == ""
 }
@@ -2437,11 +2454,11 @@ type Store interface {
 	// head head to the claim token, so an ask told again is never queued behind the one it repeats
 	// (workflow's askOwnerAgain; Postgres.MergeForwardAskPending).
 	MergeForwardAskPending(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, head string) (bool, error)
-	// MarkMergeForwardTold records session, the session of agent a merge-forward ask of issue's head
-	// head was published to, on the merge forward the record holds (MergeForward.Told), while the
+	// MarkMergeForwardTold records told, whom a merge-forward ask of issue's head head to agent
+	// reached (OwnerTold), on the merge forward the record holds (MergeForward.Told), while the
 	// record's ask is still of that head and agent and has not landed (Postgres.MarkMergeForwardTold).
 	// It is the one record that a session holds the ask's message: a delivered row is deleted.
-	MarkMergeForwardTold(ctx context.Context, tx pgx.Tx, issue, head string, agent claim.Token, session string) error
+	MarkMergeForwardTold(ctx context.Context, tx pgx.Tx, issue, head string, agent claim.Token, told OwnerTold) error
 
 	// PersonHandoverPending says whether outbox still holds a dispatch_status row of issue whose
 	// kind is PersonHandoverStatusRow: a finished row is deleted, so any such row
@@ -2863,29 +2880,36 @@ func (i Issue) OwnersRowRole() claim.Role {
 	return i.StepRole
 }
 
-// StepWorkerRole is the role a message to the worker of the step issue's task stands at in p is
-// addressed by (the workflow's addressRoles, through WorkerClaim): the role of the phases row that
-// step's run raises its entry on. At a place the owner works that is OwnersRowRole, the step's own
-// role, whose row names the owner's claim, and not RoleAt's architect, whose own row counts the
-// architect's own starts: so the owner at its own tester or reviewer step is that step's worker,
-// and each message to that worker reaches it (the workflow's mergeForward, mergeForwardLanded and
-// tellGateMoved). Everywhere else it is RoleAt(p).
-func (i Issue) StepWorkerRole(p phase.Phase) claim.Role {
+// StepWorker is the worker of the step issue's task stands at in p, as a message to that worker is
+// addressed (the workflow's addressRoles): the role of the phases row that step's run raises its
+// entry on, and the claim the message reaches where that is not the row's to name. At a place the
+// owner works the role is OwnersRowRole, the step's own role, and not RoleAt's architect, whose own
+// row counts the architect's own starts, and the claim is the owner's (OwnerClaim): the owner does
+// that step, since its owner-step and its report are the owner's, whatever the step's row names.
+// The row can name the architect above, which the start writes there while the issue's own
+// architect holds no role (the workflow's ownerAgent), and a message to the row's claim would reach
+// an architect that does not do the step. So the owner at its own tester or reviewer step is that
+// step's worker, and each message to that worker reaches it (the workflow's mergeForward,
+// mergeForwardLanded and tellGateMoved). Everywhere else the role is RoleAt(p) and the claim "",
+// for the role's phases row to name (WorkerClaim). err is OwnerClaim's, for an issue whose key
+// makes no claim token.
+func (i Issue) StepWorker(p phase.Phase) (claim.Role, claim.Token, error) {
 	if role := i.OwnersRowRole(); role != "" && p == i.Phase {
-		return role
+		owner, err := OwnerClaim(i)
+		return role, owner, err
 	}
-	return i.RoleAt(p)
+	return i.RoleAt(p), "", nil
 }
 
 // MergeForwardWorker is the worker a hold or a landed of a merge forward (step) goes to where
-// issue's task stands at at, and whether it goes there: the role of the worker of the step the task
-// stands at (Issue.StepWorkerRole: the step's own role at a place the owner works, so the owner at
-// its own step is held and told as a fresh worker of that step is), and whether step reaches that
-// role (MergeForwardReaches). It is the one rule of that worker, which the workflow's mergeForward
-// and mergeForwardLanded read.
-func MergeForwardWorker(step MergeForwardStep, issue Issue, at phase.Phase) (claim.Role, bool) {
-	worker := issue.StepWorkerRole(at)
-	return worker, MergeForwardReaches(step, worker)
+// issue's task stands at at, and whether it goes there: the worker of the step the task stands at
+// (Issue.StepWorker: the step's own role and the owner's claim at a place the owner works, so the
+// owner at its own step is held and told as a fresh worker of that step is), and whether step
+// reaches that role (MergeForwardReaches). It is the one rule of that worker, which the workflow's
+// mergeForward and mergeForwardLanded read.
+func MergeForwardWorker(step MergeForwardStep, issue Issue, at phase.Phase) (claim.Role, claim.Token, bool, error) {
+	worker, token, err := issue.StepWorker(at)
+	return worker, token, err == nil && MergeForwardReaches(step, worker), err
 }
 
 // OwnerActsAs is the role whose App the owner's slot holds while the owner works the place issue's

@@ -952,9 +952,10 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // closed (the daemon's supervise row) and releases it at the opening, and every other worker
 // decides for itself what the version means for the work in hand. A phase no worker holds names
 // nobody. The gate is the root's, so the root's architect is told, once. Each member's worker is
-// addressed by the role of its step (record.Issue.StepWorkerRole), so the owner at a step of its own
-// plan, a child's own architect among them, is told as a fresh worker of that step would be: it
-// builds to the same design. A member whose place's role is the architect with no step of its own
+// addressed as the worker of its step (record.Issue.StepWorker), so the owner at a step of its own
+// plan, a child's own architect among them, is told as a fresh worker of that step would be, by its
+// own claim whatever the step's row names: it builds to the same design. A member whose place's role
+// is the architect with no step of its own
 // (an acceptance the owner does on an issue with no plan rows) is passed over: the root's is the
 // root's architect, told once as such, and a child's own architect is not told of the root's gate
 // as an architect, since the gate's merge hold reaches the child's merger once it holds merging.
@@ -985,16 +986,23 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	}
 	// The members first, then the root's architect, since the gate is the root's. The root's own
 	// step is the root's architect's, which addressRoles then tells once.
+	unnamable := e.logUnnamable(ctx, "workflow: the design gate moved and this holder could not be named, so it is not told",
+		"tree", root.Tree, "step", string(step), "version", version, "open", open)
 	recipients := make([]roleRecipient, 0, len(members)+1)
 	for _, member := range members {
-		if role := member.StepWorkerRole(member.Phase); role != claim.RoleArchitect {
-			recipients = append(recipients, roleRecipient{issue: member.Key, role: role, row: member.Key})
+		role, token, err := member.StepWorker(member.Phase)
+		if err != nil {
+			if err := unnamable(roleRecipient{issue: member.Key, role: role, row: member.Key}, err); err != nil {
+				return err
+			}
+			continue
+		}
+		if role != claim.RoleArchitect {
+			recipients = append(recipients, roleRecipient{issue: member.Key, role: role, row: member.Key, claim: token})
 		}
 	}
 	recipients = append(recipients, roleRecipient{issue: root.Tree, role: claim.RoleArchitect, row: root.Tree})
-	told, err := e.addressRoles(ctx, tx, root.Project, recipients,
-		e.logUnnamable(ctx, "workflow: the design gate moved and this holder could not be named, so it is not told",
-			"tree", root.Tree, "step", string(step), "version", version, "open", open))
+	told, err := e.addressRoles(ctx, tx, root.Project, recipients, unnamable)
 	if err != nil {
 		return err
 	}

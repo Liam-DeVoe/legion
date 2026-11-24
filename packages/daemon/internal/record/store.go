@@ -2420,16 +2420,20 @@ func (s *Postgres) MergeForwardAskPending(ctx context.Context, tx pgx.Tx, issue 
 	return pending, nil
 }
 
-// MarkMergeForwardTold writes session as the session the record's merge-forward ask of issue was
-// told in (MergeForward.Told), where that ask is of head, reached agent and has not landed: an ask
-// a newer one replaced, or one that landed, is left as it is. It writes the jsonb in place, which
-// changes nothing of whether the ask is open or whose it is, so no write of the pull request's
-// record through the workflow is made for it.
-func (s *Postgres) MarkMergeForwardTold(ctx context.Context, tx pgx.Tx, issue, head string, agent claim.Token, session string) error {
-	if _, err := tx.Exec(ctx, `update pull_requests set merge_forward = jsonb_set(merge_forward, '{told}', to_jsonb($4::text))
+// MarkMergeForwardTold writes told as whom the record's merge-forward ask of issue reached
+// (MergeForward.Told, OwnerTold), where that ask is of head, reached agent and has not landed: an
+// ask a newer one replaced, or one that landed, is left as it is. It writes the jsonb in place,
+// which changes nothing of whether the ask is open or whose it is, so no write of the pull
+// request's record through the workflow is made for it.
+func (s *Postgres) MarkMergeForwardTold(ctx context.Context, tx pgx.Tx, issue, head string, agent claim.Token, told OwnerTold) error {
+	mark, err := json.Marshal(told)
+	if err != nil {
+		return fmt.Errorf("encode whom the merge-forward ask of %s at %s reached: %w", issue, head, err)
+	}
+	if _, err := tx.Exec(ctx, `update pull_requests set merge_forward = jsonb_set(merge_forward, '{told}', $4::jsonb)
 		where issue = $1 and merge_forward->>'head' = $2 and merge_forward->>'agent' = $3 and coalesce(merge_forward->>'landed', '') = ''`,
-		issue, head, string(agent), session); err != nil {
-		return fmt.Errorf("record the session the merge-forward ask of %s at %s was told in: %w", issue, head, err)
+		issue, head, string(agent), string(mark)); err != nil {
+		return fmt.Errorf("record whom the merge-forward ask of %s at %s reached: %w", issue, head, err)
 	}
 	return nil
 }
