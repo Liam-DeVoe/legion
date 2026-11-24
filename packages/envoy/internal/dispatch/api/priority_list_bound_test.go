@@ -106,13 +106,16 @@ func measurePriorityList(t *testing.T, corpus listCorpus, forced forcedPlan, req
 			over++
 		}
 	}
+	// Where the server preloads pg_stat_statements, it must count every read: a count of none
+	// means the reading looked at no statement, and the time it prints would be no time at all.
 	database := "not read: the server does not preload pg_stat_statements"
 	if callsAfter, msAfter, _ := listingStatementTime(t, corpus.database, statement.sql); counted {
-		if calls := callsAfter - callsBefore; calls == int64(len(reads)) {
-			database = fmt.Sprintf("%.2f ms a read (pg_stat_statements, %d calls)", (msAfter-msBefore)/float64(calls), calls)
-		} else {
-			database = fmt.Sprintf("not read: pg_stat_statements counted %d calls of the listing for %d reads", calls, len(reads))
+		calls := callsAfter - callsBefore
+		if calls != int64(len(reads)) {
+			t.Fatalf("pg_stat_statements counted %d calls of the listing for %d reads: its text up to the first constant, %q, names no statement it holds",
+				calls, len(reads), statementPrefix(statement.sql))
 		}
+		database = fmt.Sprintf("%.2f ms a read (pg_stat_statements, %d calls)", (msAfter-msBefore)/float64(calls), calls)
 	}
 
 	reading := forced.explain(t, statement, warmed+len(reads))
