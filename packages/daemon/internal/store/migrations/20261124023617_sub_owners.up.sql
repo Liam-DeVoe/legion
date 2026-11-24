@@ -3,14 +3,16 @@
 --
 -- plan_tasks.running_kind takes two kinds of place more (record.PlaceParts, record.PlaceReported),
 -- each the place of a task whose sub-owner does its work: parts, where the sub-owner writes, gives
--- and watches the tasks that are its parts, and reported, where the sub-owner reported the task
--- (complete_task) and the join of its parts runs. A task stands at either at position 0, as at its
--- retro and its merge: plan_tasks_place_check, unchanged, refuses a position from 1 at any kind but
--- step. The check is written whole again, with the kinds of 20261117034837, which last wrote it.
+-- and watches the tasks that are its parts, and reported, where a task will stand once its
+-- sub-owner has reported it, while the join of its parts runs. Nothing moves a task to reported
+-- yet: the sub-owner's report will. A task stands at either at position 0, as at its retro and its
+-- merge: plan_tasks_place_check, unchanged, refuses a position from 1 at any kind but step. The
+-- check is written whole again, with the kinds of 20261117034837, which last wrote it.
 -- plan_tasks.parts_conflicts is the id of each part whose join into the task's branch GitHub
--- refused as a conflict, at the last join of the task's parts (record.PlanTask.PartsConflicts),
--- beside join_conflicts, which holds the join of the task's needs alone. Every task the upgrade
--- finds takes the default, no part, since no release before this one gave a task parts.
+-- refused as a conflict (record.PlanTask.PartsConflicts), beside join_conflicts, which holds the
+-- join of the task's needs alone. Nothing writes it yet: the join of a task's parts will. Every
+-- task the upgrade finds takes the default, no part, since no release before this one gave a task
+-- parts.
 --
 -- The outbox check is one list, so this migration names every kind, as 20261123072431 did: its
 -- thirty-two kinds and parts_join. Its version stands above 20261123072431 on purpose: Migrate
@@ -26,7 +28,8 @@
 -- earlier image is pinned, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1, before the way back
 -- of any earlier migration. The release before decodes no parts_join row, and no notice of the
 -- kinds parts-done, report-refused and merge-returned (record.DecodeOutboxPayload refuses an
--- unknown kind), so it would fail such a row at every attempt: the block deletes each one first,
+-- unknown kind). This release writes no such notice yet, but a later one will. The release before
+-- would fail such a row at every attempt: the block deletes each one first,
 -- and the parts_join rows before the check written again without the kind, which refuses a row
 -- that holds it. Each task at parts or at reported then stands at no act, which the check written
 -- again takes: a running or a held one is stopped for the reason 'rolled back below sub-owners',

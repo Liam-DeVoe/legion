@@ -83,8 +83,8 @@ const (
 	PlaceRetro = steprecord.KindRetro
 	PlaceMerge = steprecord.KindMerge
 	// PlaceParts is where the sub-owner of a task writes, gives and watches the tasks that are its
-	// parts, and PlaceReported is where its sub-owner reported the task and the join of its parts
-	// runs.
+	// parts. PlaceReported is where a task will stand once its sub-owner has reported it, while the
+	// join of its parts runs. Nothing moves a task there yet: the sub-owner's report will.
 	PlaceParts    = "parts"
 	PlaceReported = "reported"
 )
@@ -156,12 +156,12 @@ type ReturnCounts struct {
 // where it has one (StoredPlan.BaseOf), else its branch (SetJoinConflicts). JoinUnmerged says
 // GitHub refused as a conflict the merge of its join branch into its branch, which the task's own
 // work there makes at a start again (SetJoinUnmerged). PartsConflicts is the id of each part of a
-// task with a sub-owner whose join into the task's branch GitHub refused as a conflict, at the last
-// join of its parts: the join of its needs is JoinConflicts' alone. StartReason is why the step the
-// task stands at was started: a start again at its first step, or a move back to an earlier step
-// (SetStartReason), "" for a first start and after any later move: the step that starts after a
-// wait reads it (the workflow's startAfterWait). Needs, JoinConflicts and PartsConflicts are nil
-// where they hold none.
+// task with a sub-owner whose join into the task's branch GitHub refused as a conflict. Nothing
+// writes it yet: the join of a task's parts will. The join of its needs writes JoinConflicts alone.
+// StartReason is why the step the task stands at was started: a start again at its first step, or
+// a move back to an earlier step (SetStartReason), "" for a first start and after any later move:
+// the step that starts after a wait reads it (the workflow's startAfterWait). Needs, JoinConflicts
+// and PartsConflicts are nil where they hold none.
 type PlanTask struct {
 	Issue       string
 	Generation  uint64

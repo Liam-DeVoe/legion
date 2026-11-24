@@ -2800,13 +2800,16 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // again on its backoff, and the reason names the task, the need and the branch GitHub lacks. No
 // earlier release decodes it, so the way back of migration 20261121165047 deletes its unsent rows.
 //
-// `parts-done`, `report-refused` and `merge-returned` are told to the sub-owner of a task, the agent
-// that writes the task's parts. `parts-done` says that each part of the task is done, so the
-// sub-owner can report the task with complete_task or give another part. `report-refused` says that
-// GitHub could not join the work of a part into the task's branch after the report, so the task
-// stands at its parts again, and the reason names each such part. `merge-returned` says that the
-// merger returned the task from its retro or its merge, with the reason of that move. No earlier
-// release decodes them, so the way back of migration 20261124023617 deletes their unsent rows.
+// `parts-done`, `report-refused` and `merge-returned` are for the sub-owner of a task, the agent
+// that writes the task's parts. Nothing writes them yet: this release decodes them, and the work
+// of a sub-owner that will write them comes later. `parts-done` will say that each part of the
+// task is done, so the sub-owner can report the task or give another part. The end of the task's
+// last part will write it. `report-refused` will say that GitHub could not join the work of a part
+// into the task's branch after the report. The task then stands at its parts again, and the reason
+// names each such part. The join of a task's parts will write it. `merge-returned` will say that
+// the merger returned the task from its retro or its merge, with the reason of that move. The
+// merger's move back will write it. No earlier release decodes them, so the way back of migration
+// 20261124023617 deletes their unsent rows.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
