@@ -23,6 +23,7 @@ import (
 // read holds no lock of the bus client's while it waits: Connected reads nats.go's status with the
 // client's lock released (bus.Client.Connected).
 func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
+	testnats.RequireSocketQueues(t)
 	shrinkIntakeFlowControl(t)
 	budget := intakeStopBudget
 	intakeStopBudget = stopBudget
@@ -136,6 +137,7 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 // connection and not the order of events: what the frozen relay had already read of the socket
 // before the sever is beyond the client, and reaches the server once the relay thaws.
 func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *testing.T) {
+	testnats.RequireSocketQueues(t)
 	logs := captureLogs(t)
 	shrinkIntakeFlowControl(t)
 	budget := intakeStopBudget
