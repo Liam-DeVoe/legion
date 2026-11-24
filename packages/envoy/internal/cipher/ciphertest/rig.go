@@ -230,9 +230,13 @@ func WithAccessLifetime(d time.Duration) Option {
 	return func(c *rigConfig) { c.accessLifetime = d }
 }
 
-// WithProjectAccess holds every token exchange to what access answers about the projects its
-// token names, as BROKER_PROJECT_ACCESS_URL wires the broker to Dispatch; by default the broker
-// checks no project, and so refuses every trade that names one.
+// WithProjectAccess gives the broker access, a client of Dispatch's project access, as
+// BROKER_PROJECT_ACCESS_URL wires the broker to Dispatch in cmd/cipherd/main.go: every token
+// exchange is held to what access answers about the projects its token names, and the enrollment
+// and the request machine ask it, the machine login reading it through that enrollment. By
+// default the broker checks no project, and so refuses every trade that names one, as on a broker
+// with that setting unset. The rig's secrets carry no project tag, so its policy is the same
+// either way.
 func WithProjectAccess(access projectaccess.Access) Option {
 	return func(c *rigConfig) { c.projectAccess = access }
 }
@@ -271,8 +275,9 @@ func WithPersonPod(account, service, person string) Option {
 // authenticates the listed caller of the routes Dispatch's server calls, and mounts api.Register
 // on an httptest.Server as cmd/cipherd/main.go and api_test.go's newTestServer mount it, but with
 // no answer recorder in front (answer.Middleware): its answers carry no answer id, and its
-// Registry counts none of them. It skips t when BROKER_TEST_DATABASE_URL is unset
-// (storetest.Open's own contract).
+// Registry counts none of them. It skips t when BROKER_TEST_DATABASE_URL is unset, and fails it
+// when the calling package's TestMain does not run its tests through storetest.Main or
+// storetest.Run (storetest.Open's own contract).
 func NewRig(t *testing.T, options ...Option) *Rig {
 	t.Helper()
 	config := rigConfig{lease: time.Hour, accessLifetime: 15 * time.Minute}
@@ -342,6 +347,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	enr := &enroll.Service{
 		Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier},
 		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount, PodOperators: podOperators,
+		Projects: config.projectAccess,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	enr.Chain.EdgeAudience = edgeURL
@@ -355,7 +361,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
-		PodOperators: podOperators,
+		PodOperators: podOperators, Projects: config.projectAccess,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	provider := newOAuthProvider(t, st, issuer, config.accessLifetime, config.projectAccess)
@@ -420,6 +426,10 @@ func Caller(t *testing.T, name string) api.Account {
 // MachineLoginURL is the rig broker's machine-login page, the device grant's verification_uri.
 const MachineLoginURL = "https://dispatch.example/credentials/machine"
 
+// DeviceLifetime is how long a device code and its user code the rig broker issues wait for a
+// person's decision (oauth.Config.DeviceLifetime), as long as cmd/cipherd's pending machine login.
+const DeviceLifetime = 15 * time.Minute
+
 // NewOAuthProvider builds the machine login's OAuth provider on st's database as
 // cmd/cipherd/main.go does: device codes live as long as a pending machine login, access tokens
 // fifteen minutes, refresh tokens as long as a launcher credential, and verification_uri is
@@ -462,7 +472,7 @@ func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, ac
 		t.Fatalf("oidc.NewKeys: %v", err)
 	}
 	provider, err := oauth.New(oauth.Config{
-		Secret: secret, DeviceLifetime: 15 * time.Minute, AccessLifetime: accessLifetime,
+		Secret: secret, DeviceLifetime: DeviceLifetime, AccessLifetime: accessLifetime,
 		RefreshLifetime: 7 * 24 * time.Hour, VerificationURL: MachineLoginURL, ProofSkew: time.Minute,
 		Exchange: oauth.ExchangeConfig{
 			Policy:     policy,

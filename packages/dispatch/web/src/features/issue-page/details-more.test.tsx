@@ -8,6 +8,7 @@ import { MemoryRouter, type NavigateFunction, useNavigate } from "react-router-d
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { nextFrame } from "../../__tests__/frames";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { ApiError, api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
 import {
@@ -1151,6 +1152,7 @@ test("a delivery that could not reach its agent reads Not delivered with Retry, 
           state: "failed",
         }),
       ],
+      ...messageCorrectionFields(),
       id: "message-1",
       in_reply_to: null,
       issue_key: KEY,
@@ -1409,6 +1411,7 @@ const AGENTS_THREAD: MessageRead = {
     broadcast_id: null,
     created_at: new Date(NOON.getTime() - 60_000).toISOString(),
     deliveries: [],
+    ...messageCorrectionFields(),
     id: "message-agents",
     in_reply_to: null,
     issue_key: KEY,

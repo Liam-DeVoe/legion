@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { installResizeObserver } from "../../__tests__/scroll-box";
 import { api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
@@ -324,6 +325,7 @@ function agentMessage(id: string, ago: number): MessageRead {
       broadcast_id: null,
       created_at: new Date(Date.now() - ago * 1000).toISOString(),
       deliveries: [],
+      ...messageCorrectionFields(),
       id,
       in_reply_to: null,
       issue_key: KEY,
