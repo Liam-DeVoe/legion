@@ -1564,13 +1564,13 @@ request that still carries a placeholder after the swap is refused `403`
 (`PLACEHOLDER_NOT_SWAPPED`), and nothing of it goes to the service: the placeholder of a grant
 that has ended, of another session, of a second grant beside the one the request is handled for,
 or one outside the headers its entry names, in another header, the path or the query. Its refusal
-line names the grant the placeholder was minted for, in `placeholder_grant`, while the broker
-still holds the placeholder. The body is not read, so a placeholder there goes as the command
-wrote it. A decrypted connection speaks HTTP/1.1 to a client that offers it, and HTTP/2 to a
-client that offers nothing else, which is how every gRPC client connects. Each HTTP/2 stream is
-decided on its own, as one
-request, with its `:authority` as its `Host`, so one connection carries no request for another
-host. A `CONNECT` or an upgrade to `h2c` inside that connection is refused
+line names the grant the placeholder was minted for, in `placeholder_grant`: a release's while
+the broker still holds its row, and a minted capability's while its grant lives. The body is not
+read, so a placeholder there goes as the command wrote it. A decrypted connection speaks HTTP/1.1
+to a client that offers it, and HTTP/2 to a client that offers nothing else, which is how every
+gRPC client connects. Each HTTP/2 stream is decided on its own, as one request, with its
+`:authority` as its `Host`, so one connection carries no request for another host. A `CONNECT` or
+an upgrade to `h2c` inside that connection is refused
 (`PROTOCOL_SWITCH_REFUSED`), because what crosses after its answer is no request the proxy reads.
 How a stream becomes the request the entry decides is tested, not proved: the Lean model of the
 decision has no wire format. A refusal is an HTTP error from the proxy naming the rule that

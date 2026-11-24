@@ -1240,18 +1240,20 @@ approve_record() { # <record id>
 	session="$(sed -n 's/^Set-Cookie: \(__Host-broker-session=[^;]*\).*/\1/p' "$d/callback" | tr -d '\r')"
 	[ -n "$session" ] || return 1
 	curl -sS -H "Cookie: $session" -o "$d/page.html" "$AGENT_SECRETS_URL/approve/$rec"
-	local field value
-	field() { sed -n "s/.*name=\"$1\" value=\"\([^\"]*\)\".*/\1/p" "$d/page.html" | head -n 1; }
-	# Every value of a hidden field the page may print more than once, all on one line of its form:
-	# one printed field per record, and one profile_digest field per profile, each "<record> <name>
-	# <digest>".
+	# values is every value of the hidden field the page names, in the page's order, read one
+	# field at a time: the form prints all of its fields on one line, and a field it prints more
+	# than once - one printed field per record, one profile_digest field per profile, each
+	# "<record> <name> <digest>" - comes back once each. field is its first value.
+	local value
+	values() { grep -o "name=\"$1\" value=\"[^\"]*\"" "$d/page.html" | sed 's/.*value="\([^"]*\)"/\1/'; }
+	field() { values "$1" | head -n 1; }
 	local printed=() digests=()
 	while IFS= read -r value; do
 		printed+=(--data-urlencode "printed=$value")
-	done < <(grep -o 'name="printed" value="[^"]*"' "$d/page.html" | sed 's/.*value="\([^"]*\)"/\1/')
+	done < <(values printed)
 	while IFS= read -r value; do
 		digests+=(--data-urlencode "profile_digest=$value")
-	done < <(grep -o 'name="profile_digest" value="[^"]*"' "$d/page.html" | sed 's/.*value="\([^"]*\)"/\1/')
+	done < <(values profile_digest)
 	# The page's form token reaches curl on standard input (`--data-urlencode token@-`), in no
 	# command line.
 	printf '%s' "$(field token)" | curl -sS -o "$d/decided.html" -w '%{http_code}' -H "Cookie: $session" -H "Origin: $AGENT_SECRETS_URL" \

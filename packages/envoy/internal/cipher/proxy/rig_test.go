@@ -313,7 +313,9 @@ func (f *fakeGrants) ProxyGrantsOfEnrollment(_ context.Context, enrollmentID, ex
 	var live []requests.AirlockConnection
 	for _, placeholder := range slices.Sorted(maps.Keys(f.connections)) {
 		conn := f.connections[placeholder]
-		if conn.EnrollmentID != enrollmentID || conn.GrantID == exceptGrantID || ended[conn.GrantID] || seen[conn.GrantID] {
+		// An empty enrollment id is no enrollment, as the store's uuid column answers for none: a
+		// minted connection's EnrollmentID is empty, and its grant is in no enrollment.
+		if enrollmentID == "" || conn.EnrollmentID != enrollmentID || conn.GrantID == exceptGrantID || ended[conn.GrantID] || seen[conn.GrantID] {
 			continue
 		}
 		if !slices.ContainsFunc(names, func(name string) bool { _, held := conn.Names[name]; return held }) {

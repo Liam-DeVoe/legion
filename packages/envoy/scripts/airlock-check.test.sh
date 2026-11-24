@@ -5,7 +5,10 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/airlock-k7-inputs.XXXXXX")"
-trap 'rm -rf "$work"' EXIT
+approve_stand=""
+# One EXIT trap for the whole test: it stops the approval page's stand-in, where one was started,
+# by its PID and waits for it, then removes the work directory.
+trap '[[ -z "$approve_stand" ]] || { kill "$approve_stand" 2>/dev/null; wait "$approve_stand" 2>/dev/null; }; rm -rf "$work"' EXIT
 mkdir -p "$work/bin"
 cat >"$work/bin/mktemp" <<'EOF'
 #!/usr/bin/env bash
@@ -433,7 +436,6 @@ s.serve_forever()
 PY
 python3 "$approve_dir/stand.py" >"$approve_dir/port" &
 approve_stand=$!
-trap 'kill "$approve_stand" 2>/dev/null; rm -rf "$work"' EXIT
 for _ in $(seq 1 50); do [[ -s "$approve_dir/port" ]] && break; sleep 0.1; done
 definition="$(sed -n '/^approve_record() {/,/^}/p' "$script_dir/airlock-check.sh")"
 [[ -n "$definition" ]] || { printf 'FAIL: airlock-check.sh defines no approve_record()\n'; exit 1; }
@@ -458,7 +460,6 @@ unprinted="${definition//'printed+=(--data-urlencode "printed=$value")'/:}"
 output="$(approve_once "$unprinted" "$approve_dir/unprinted" 2>&1)" || status=$?
 label="control: the same helper without its printed fields is refused 403, its page token's records unnamed"
 check test "$output" = 403
-kill "$approve_stand" 2>/dev/null || true
 # --- k6's login steps, read out of airlock-check.sh and run by sh as each k6 run runs them under
 # its grant, with a fake az first on PATH that records its login and the state it was handed. Their
 # TMPDIR is a directory of the test's own, so what they leave there shows: nothing, after a login,

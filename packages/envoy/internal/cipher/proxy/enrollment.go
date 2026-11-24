@@ -123,7 +123,14 @@ func (s *Server) sessionBinds(ctx context.Context, grant requests.AirlockConnect
 // holds no secret for, cannot fail for a read of other grants. A grant that holds such a
 // placeholder is read and checked whole, a name of it its operator withheld included, so its
 // failed check can still answer such a call 503, failing closed.
+//
+// A minted capability's connection reads none: a minted grant is not one of the grants the
+// one-connection swap reads, and it belongs to no enrollment (its EnrollmentID is empty), so a
+// request on it is decided by its own grant alone, as on a broker without this read.
 func (s *Server) otherGrantsBinding(ctx context.Context, own requests.AirlockConnection, host string, port uint16) ([]requests.AirlockConnection, error) {
+	if own.Minted {
+		return nil, nil
+	}
 	names := s.boundEntries(host, port)
 	if len(names) == 0 {
 		return nil, nil
@@ -132,13 +139,18 @@ func (s *Server) otherGrantsBinding(ctx context.Context, own requests.AirlockCon
 }
 
 // boundEntries is the name of every entry of the rules that binds host on port (entryBinds), in
-// the rules' order. The rules are read once at New, and an entry binds a host for a grant only
-// through them (candidates), so a grant that holds none of these names binds host for no request.
+// the rules' order, but a dpop entry's. The rules are read once at New, and an entry binds a host
+// for a grant only through them (candidates), so a grant that holds none of these names binds host
+// for no request. A dpop entry's name is left out because no grant the read can answer holds it:
+// only a minted capability's grant does, in its kind's own table, and a stored secret's release
+// under a dpop entry writes no placeholder (requests.ErrMintedOnly). So a stored grant's call to a
+// dpop host reads nothing more, and gets the answer it gets on a broker without this read.
 func (s *Server) boundEntries(host string, port uint16) []string {
 	var names []string
 	for i := range s.rules.Secrets {
-		if entryBinds(&s.rules.Secrets[i], host, port) {
-			names = append(names, s.rules.Secrets[i].Name)
+		entry := &s.rules.Secrets[i]
+		if entry.Kind != proxyrules.KindDPoP && entryBinds(entry, host, port) {
+			names = append(names, entry.Name)
 		}
 	}
 	return names

@@ -113,9 +113,10 @@ type GrantSource interface {
 	// Every error of it is a read that did not happen, or a refusal of the whole enrollment
 	// (grantRefusal).
 	ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exceptGrantID string, names []string) ([]requests.AirlockConnection, error)
-	// ProxyPlaceholderGrant is the grant the broker minted a placeholder for, live or ended, and
-	// "" where no row holds it: the refusal of a request that still carries a placeholder after
-	// the swap names that grant (Server.placeholderGrant).
+	// ProxyPlaceholderGrant is the grant the broker minted a placeholder for, and "" where it
+	// knows none: a release's placeholder live or ended, until the sweep deletes an ended grant's
+	// rows, and a minted capability's while its grant lives. The refusal of a request that still
+	// carries a placeholder after the swap names that grant (Server.placeholderGrant).
 	ProxyPlaceholderGrant(ctx context.Context, placeholder string) (string, error)
 }
 

@@ -164,9 +164,11 @@ func alphabetOnly(s string) bool {
 	return true
 }
 
-// placeholderGrant is the grant the broker minted placeholder for, live or ended, which the
-// refusal of a request that still carried it after the swap names, and "" where no row holds it.
-// A read that failed is logged and names nothing: the request is refused either way.
+// placeholderGrant is the grant the broker minted placeholder for, which the refusal of a request
+// that still carried it after the swap names, and "" where the broker knows none: a release's
+// placeholder while its row is held, a minted capability's while its grant lives
+// (ProxyPlaceholderGrant). A read that failed is logged and names nothing: the request is refused
+// either way.
 func (s *Server) placeholderGrant(ctx context.Context, placeholder string) string {
 	grantID, err := s.grants.ProxyPlaceholderGrant(ctx, placeholder)
 	if err != nil {

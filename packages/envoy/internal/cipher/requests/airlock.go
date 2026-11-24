@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/githubname"
+	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
@@ -752,12 +753,31 @@ func (m *Machine) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exc
 	return answered, nil
 }
 
-// ProxyPlaceholderGrant is the grant the broker minted placeholder for, live or ended, and ""
-// when no row holds it: a placeholder it never minted, or one of a grant that has ended and that
-// the sweep has deleted the rows of since (deleteSpentPlaceholders). The proxy reads it to name,
-// in the refusal of a request that still carries a placeholder after the swap, which grant that
-// placeholder was minted for. It is one read by the table's primary key.
+// ProxyPlaceholderGrant is the grant the broker minted placeholder for, and "" when it knows
+// none. The proxy reads it to name, in the refusal of a request that still carries a placeholder
+// after the swap, which grant that placeholder was minted for.
+//
+//   - A secret's release placeholder is read from airlock_placeholders, by the table's primary
+//     key: it names its grant live or ended, until the sweep has deleted an ended grant's rows
+//     (deleteSpentPlaceholders).
+//   - A minted capability's placeholder is read from its kind's grants alone, as AirlockConnection
+//     reads it (mintedKindOfPlaceholder), and never falls through to airlock_placeholders: it
+//     names its grant, by the kind's word and the grant's id, while the grant lives, and none
+//     once it has ended or for a kind this broker does not serve.
 func (m *Machine) ProxyPlaceholderGrant(ctx context.Context, placeholder string) (string, error) {
+	if kind, minted := m.mintedKindOfPlaceholder(placeholder); minted {
+		if kind == nil || kind.Grants == nil {
+			return "", nil
+		}
+		grant, err := kind.Grants.MintedByPlaceholder(ctx, placeholderHash(placeholder))
+		if errors.Is(err, oauthstore.ErrMintedGrantNotLive) {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		return kind.Word + ":" + grant.ID, nil
+	}
 	var grantID string
 	err := m.Store.Pool.QueryRow(ctx, `select grant_id from airlock_placeholders where placeholder_sha256 = $1`, placeholderHash(placeholder)).Scan(&grantID)
 	if errors.Is(err, pgx.ErrNoRows) {

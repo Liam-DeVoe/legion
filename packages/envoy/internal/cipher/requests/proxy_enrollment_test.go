@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -158,6 +159,28 @@ func TestProxyPlaceholderGrantNamesTheGrantOfAPlaceholderLiveOrEnded(t *testing.
 		t.Fatalf("the sweep: %v", err)
 	}
 	named("an ended grant's placeholder after the sweep", held, "")
+}
+
+// TestProxyPlaceholderGrantNamesAMintedGrantWhileItLives: a minted capability's placeholder is
+// read from its kind's grants, as AirlockConnection reads it, so the refusal of a request that
+// still carries one after the swap names the grant, by its kind's word and its id. Its grant
+// past its end names none, nor does a minted placeholder of a kind this broker does not serve,
+// and neither falls through to airlock_placeholders.
+func TestProxyPlaceholderGrantNamesAMintedGrantWhileItLives(t *testing.T) {
+	m, _, _, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
+	grants := &memoryGrants{}
+	withMintedKind(m, grants, &mintedTokens{})
+	live, grant := grants.grant(t, testEntryDigest, time.Now().Add(time.Hour))
+	ended, _ := grants.grant(t, testEntryDigest, time.Now().Add(-time.Second))
+	for _, c := range []struct{ what, text, want string }{
+		{"a live minted grant's placeholder", live, testMintedWord + ":" + grant.ID},
+		{"an ended minted grant's placeholder", ended, ""},
+		{"a minted placeholder of a kind no one serves", placeholder.MintedPrefix("otherkind") + "OtherOtherOtherOtherOtherOtherOt", ""},
+	} {
+		if got, err := m.ProxyPlaceholderGrant(t.Context(), c.text); err != nil || got != c.want {
+			t.Fatalf("ProxyPlaceholderGrant(%s) = %q, %v; want %q", c.what, got, err, c.want)
+		}
+	}
 }
 
 // grantIDs is each grant's id, in the order given.
