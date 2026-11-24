@@ -25,8 +25,9 @@
 //
 // The `advances` relations of a page of issues at once are no call of this package: each caller
 // that answers them splices AdvancesTupleRead, the one reading of the log they rest on, into a
-// statement of its own (api/priority_queries.go, api/issue_queries.go, cmd/dispatch-seed),
-// because one statement over a page is not a read per issue.
+// statement of its own (api/priority_queries.go, api/issue_queries.go, cmd/dispatch-seed), or
+// AdvancesTupleReadOf, that reading for the few issues one issue's climb names, because one
+// statement over a page is not a read per issue.
 package prioritystore
 
 import (

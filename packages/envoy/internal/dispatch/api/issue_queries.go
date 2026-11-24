@@ -183,11 +183,11 @@ const issueAdvancesColumns = `coalesce(advances.ids, '{}'), coalesce(advances.re
 const issueAdvancesColumnsUnread = `'{}'::text[], 0::bigint, '{}'::text[]`
 
 // issueAdvancesTerms are the `advances` relations of every issue of `subjects` — its own and
-// the ones it inherits — which both the listing and the single-issue read splice into their
-// `with recursive` list and join to (issueAdvancesJoin). An issue advances a priority when its
-// own row names it or when any issue on its parent chain does, so the answer is read every time
-// and stored nowhere; a relation on a child places no issue above it, which is why the walk
-// climbs and never descends.
+// the ones it inherits — which the listing, the parked rows and, in the form
+// issueAdvancesTermsOfOne, the single-issue read splice into their `with recursive` list and join
+// to (issueAdvancesJoin). An issue advances a priority when its own row names it or when any
+// issue on its parent chain does, so the answer is read every time and stored nowhere; a relation
+// on a child places no issue above it, which is why the walk climbs and never descends.
 //
 // `advances_chain` is that climb, one row per (subject, issue whose relations the subject
 // reads): the subject itself at depth 0 and each issue above it one deeper, bounded by
@@ -196,17 +196,16 @@ const issueAdvancesColumnsUnread = `'{}'::text[], 0::bigint, '{}'::text[]`
 // subject's chain together, as refs.IssueRepoTerms' does, so a page of issues pays one walk
 // rather than one per row.
 //
-// `advances_current` is prioritystore.AdvancesTupleRead's reading of the log for every issue
-// those chains name at once (over graph_tuples_current): the newest tuple per (issue, priority),
-// asserted or not, read once however many subjects inherit from that issue. It is materialized,
-// so it is planned on its own and the listing's joins are planned around its answer. graph_tuples
-// holds every fact of the store, and Postgres estimates the read's three equalities on
-// from_kind, kind and to_kind as if they were independent, while every `advances` tuple is out of
-// an issue into a priority: on the speed corpus it estimates 37 rows where the read answers 400,
-// and the larger the store the further it falls short. Inlined, that estimate reordered the
-// joins of the whole listing under the generic plan a connection's later runs take, which then
-// read 3.17 times the rows of the page without the relation, against 1.20 times materialized
-// (TestAdvancesListingSpeed).
+// `advances_current` is the reading of the log for every issue those chains name at once: the
+// newest tuple per (issue, priority), asserted or not, read once however many subjects inherit
+// from that issue. It is materialized, so it is planned on its own and the listing's joins are
+// planned around its answer. graph_tuples holds every fact of the store, and Postgres estimates
+// the read's three equalities on from_kind, kind and to_kind as if they were independent, while
+// every `advances` tuple is out of an issue into a priority: on the speed corpus it estimates a
+// page's read at 37 rows where the read answers 400, and the larger the store the further it
+// falls short. Inlined, that estimate reordered the joins of the whole listing under the generic
+// plan a connection's later runs take, which then read 3.17 times the rows of the page without
+// the relation, against 1.20 times materialized (TestAdvancesListingSpeed).
 //
 // `advances` groups the two back onto the subject. The ids are the asserted relations to live
 // priorities alone: a relation whose last word is a retraction is no relation now, and a priority
@@ -231,7 +230,30 @@ const issueAdvancesColumnsUnread = `'{}'::text[], 0::bigint, '{}'::text[]`
 // left to the default collation an order that weighs punctuation last (glibc's en_US, which a
 // deployment's database was created with) answers `cicd` before `ci-fixes` where Go puts
 // `ci-fixes` first, and the merge then lists an id the issue holds both ways twice.
-var issueAdvancesTerms = `advances_chain as (
+//
+// The terms come in two forms, written from one text (issueAdvancesTermsReading), which differ
+// only in how `advances_current` reads the log. issueAdvancesTerms serves every read that climbs
+// from a page of rows (the listing pages and priorityParkedQuery) with
+// prioritystore.AdvancesTupleRead narrowed by `from_id in`, because a page's climb names about
+// 250 issues, and on the speed corpus one bitmap scan of the 400-tuple relation took 15 buffer
+// accesses where 250 probes took 538, which put TestAdvancesListingSpeed's generic plan at 3.30
+// times the page without the relation against its bound of 3.25. issueAdvancesTermsOfOne serves
+// the issue read (issueRowStatement) with prioritystore.AdvancesTupleReadOf, one probe per issue,
+// because one issue's climb names a handful, and under R32's estimate of the relation (1 row for
+// 2,012 tuples) the narrowed read scanned all of them off graph_tuples_as_of_in in 159 buffer
+// accesses where the probes took 16, under the custom plan and the generic one.
+var (
+	issueAdvancesTerms = issueAdvancesTermsReading(
+		prioritystore.AdvancesTupleRead(`, t.seq, t.asserted`, `and t.from_id in (select issue_key from advances_chain)`))
+	issueAdvancesTermsOfOne = issueAdvancesTermsReading(
+		prioritystore.AdvancesTupleReadOf(`, t.seq, t.asserted`, `select issue_key from advances_chain`))
+)
+
+// issueAdvancesTermsReading writes issueAdvancesTerms around current, the read of the log that
+// `advances_current` materializes, which answers from_id, to_id, seq and asserted for the issues
+// `advances_chain` names.
+func issueAdvancesTermsReading(current string) string {
+	return `advances_chain as (
 		select s.key as start, s.key as issue_key, 0 as depth
 		from subjects s
 		union all
@@ -239,7 +261,7 @@ var issueAdvancesTerms = `advances_chain as (
 		from advances_chain c join issues p on p.key = c.issue_key
 		where p.parent_key is not null and c.depth < ` + parentDepthCapSQL + `
 	), advances_current as materialized (
-		` + prioritystore.AdvancesTupleRead(`, t.seq, t.asserted`, `and t.from_id in (select issue_key from advances_chain)`) + `
+		` + current + `
 	), advances as (
 		select c.start as issue_key,
 		       coalesce(array_agg(distinct cu.to_id collate "C" order by cu.to_id collate "C")
@@ -253,9 +275,10 @@ var issueAdvancesTerms = `advances_chain as (
 			and live.state = '` + prioritystore.StateLive + `'
 		group by c.start
 	)`
+}
 
-// issueAdvancesJoin attaches issueAdvancesTerms' answer to the issue aliased `i`, one row per
-// subject.
+// issueAdvancesJoin attaches either form of issueAdvancesTerms' answer to the issue aliased `i`,
+// one row per subject.
 const issueAdvancesJoin = `left join advances on advances.issue_key = i.key`
 
 // issueAdvancesFilterTerms answer the listing's `advances` query keys, as one term computed once
@@ -1024,7 +1047,7 @@ func (s *server) loadIssue(ctx context.Context, q queryer, key string) (model.Is
 // for a statement that never differs, and pgx caches a prepared plan per statement text.
 var issueRowStatement = `
 		with recursive subjects as (select $1::text as key),
-		` + issueAdvancesTerms + `,
+		` + issueAdvancesTermsOfOne + `,
 		` + issueComponentsTerms + `,
 		` + refs.IssueRepoTerms + `
 		select i.key, i.project_key, i.number, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,

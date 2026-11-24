@@ -23,10 +23,11 @@ const nodeColumns = `kind, id, supertag, visibility, state, attributes, made_at,
 // what the revision of an issue's own set is read off (api/issue_queries.go). It is SQL text
 // rather than a read, because every caller splices it into a statement over a page of issues or
 // over a whole corpus: the priorities read and the issue reads (api/priority_queries.go,
-// api/issue_queries.go) and the seed's report of its corpus (cmd/dispatch-seed). Those readings
-// differ only in the columns each carries out and the one predicate that narrows it, and one
-// reading of the log written in each of them would be several to keep in step, which is how the
-// seed's report once counted a retracted relation the route did not.
+// api/issue_queries.go) and the seed's report of its corpus (cmd/dispatch-seed), and the issue
+// read's climb from one issue splices it through AdvancesTupleReadOf. Those readings differ only
+// in the columns each carries out and the one predicate that narrows it, and one reading of the
+// log written in each of them would be several to keep in step, which is how the seed's report
+// once counted a retracted relation the route did not.
 //
 // columns is what each row carries beside the two ids, written to follow them, and narrow is the
 // predicate that bounds the read, written inside the `where` so it cuts the rows the `distinct
@@ -37,10 +38,12 @@ const nodeColumns = `kind, id, supertag, visibility, state, attributes, made_at,
 // of an issue with ToKind KindPriority (relate), and `graph_tuples` holds every fact of the store,
 // so the three are what keep the read to this one relation. The equalities prove the predicate of
 // graph_tuples_current (to_kind <> 'value' and kind <> 'delivered_to'), whose column order this
-// `distinct on` walks (from_kind, from_id, kind, to_kind, to_id, seq desc), so a read narrowed to
-// a page of issues probes that index issue by issue. A read of the whole relation can take
-// graph_tuples_as_of_in instead, which leads with to_kind and holds kind third, and reads off it
-// the tuples into priorities alone.
+// `distinct on` walks (from_kind, from_id, kind, to_kind, to_id, seq desc). A read of the whole
+// relation, or of the issues into some priorities, can take graph_tuples_as_of_in instead, which
+// leads with to_kind and holds kind third, and reads off it the tuples into priorities alone. A
+// read narrowed to a page of issues by `from_id in` reads the whole relation off one of the two
+// and drops the other issues' tuples; a read of the few issues one issue's climb names is
+// AdvancesTupleReadOf, which probes each of them.
 func AdvancesTupleRead(columns, narrow string) string {
 	return `select distinct on (t.from_id, t.to_id) t.from_id, t.to_id` + columns + `
 		from graph_tuples t
@@ -48,6 +51,32 @@ func AdvancesTupleRead(columns, narrow string) string {
 			and t.to_kind = '` + KindPriority + `'
 			` + narrow + `
 		order by t.from_id, t.to_id, t.seq desc`
+}
+
+// AdvancesTupleReadOf is AdvancesTupleRead for a given set of issues: the same columns and the
+// same rows as that read narrowed to them, in no order. issues is a statement that answers the
+// issues' keys in its one column; a key it answers twice is read once, so each pair is still one
+// row. The caller writes columns and issues from its own text, as AdvancesTupleRead's caller does
+// columns and narrow.
+//
+// Each issue is read on its own, by a lateral that is AdvancesTupleRead narrowed by equality to
+// that issue's key, and not by one read narrowed by `from_id in (issues)`. Postgres estimates the
+// three equalities on from_kind, kind and to_kind as if they were independent, while every
+// `advances` tuple is out of an issue into a priority, so it estimates the relation far below
+// what the store holds: 1 row against 2,000 on the corpus of dispatch://INFRA-1098's R32. On that
+// estimate it read the narrowed form off graph_tuples_as_of_in, every tuple of the relation, and
+// then dropped all but the 5 issues of one climb. In the lateral, from_id is bound to a value of
+// the outer row, so each issue is one probe of graph_tuples_current on (from_kind, from_id, kind,
+// to_kind), under a custom plan and the generic one, whatever the estimate. from_id is the same on
+// every row of a probe, so the `distinct on` takes the index's own order and sorts nothing. It is
+// for the few issues one issue's climb names: a page's climb names hundreds, and one read of the
+// whole relation costs about what their probes do (api/issue_queries.go says where each goes).
+func AdvancesTupleReadOf(columns, issues string) string {
+	return `select newest.*
+		from (select distinct listed.key from (` + issues + `) listed (key)) issue
+		cross join lateral (
+			` + AdvancesTupleRead(columns, `and t.from_id = issue.key`) + `
+		) newest`
 }
 
 // History answers every tuple of one node under one kind, in the order they were written, each
