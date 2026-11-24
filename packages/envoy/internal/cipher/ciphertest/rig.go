@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	identityboot "github.com/sjawhar/envoy/internal/cipher/identity/boot"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
@@ -366,7 +367,8 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		PodOperators: podOperators, Projects: config.projectAccess,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Policy)
-	provider := newOAuthProvider(t, st, issuer, config.accessLifetime, config.projectAccess)
+	identities := rigIdentities(t, issuer)
+	provider := newOAuthProvider(t, st, identities, config.accessLifetime, config.projectAccess)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
 		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
@@ -380,16 +382,19 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// The listed callers are Kubernetes service accounts, the kind of the registry's pod provider.
+	pods := identities.Pods().Kind()
 	deps := api.Deps{
 		PublicURL: srv.URL,
-		APIAccounts: map[string]api.Account{
-			APIAccount:      Caller(t, APICaller),
-			ListenerAccount: Caller(t, ListenerCaller),
+		APIAccounts: map[identity.Account]api.Account{
+			{Kind: pods, Address: APIAccount}:      Caller(t, APICaller),
+			{Kind: pods, Address: ListenerAccount}: Caller(t, ListenerCaller),
 		},
-		// The one verifier serves both, as the broker's own wiring does: a pod enrolling and a
+		// The registry's API verifier, as the broker's own wiring has it: a pod enrolling and a
 		// listed caller present tokens of the same issuer for the same audience.
-		AccountTokens: enroll.K8sPodVerifier{Verifier: podVerifier},
-		Enroll:        enr, Machine: reqMachine, MachineLogin: mach, PodRegistrars: podRegistrars,
+		Callers: identities.Callers(identity.UseAPI),
+		Enroll:  enr, Machine: reqMachine, MachineLogin: mach, PodRegistrars: podRegistrars,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SettingsFields: secretsCfg.Settings(),
@@ -444,24 +449,17 @@ const MachineLoginURL = "https://dispatch.example/credentials/machine"
 // one, and an unlisted one to be refused as.
 func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *oauth.Provider {
 	t.Helper()
-	return newOAuthProvider(t, st, issuer, 15*time.Minute, nil)
+	return newOAuthProvider(t, st, rigIdentities(t, issuer), 15*time.Minute, nil)
 }
 
-// newOAuthProvider is NewOAuthProvider whose access tokens live accessLifetime and whose trades
-// are held to what access answers, nil for no project check.
-func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, accessLifetime time.Duration, access projectaccess.Access) *oauth.Provider {
+// rigIdentities is the rig's identity registry, built as cmd/cipherd builds it from the rig's
+// identity settings: its one stand-in issuer is both the cluster, whose tokens a pod enrolls and
+// a listed caller authenticates with at podAudience, and GitHub; and it lists no machine, so
+// there is no box a person could have signed in on and no domain to hold one to.
+func rigIdentities(t *testing.T, issuer *oidctest.Issuer) *identity.Registry {
 	t.Helper()
-	oauthStore := oauthstore.New(st.Pool)
-	oauthStore.Reused = enroll.RevokeReusedCredential
-	secret, err := oauthStore.Secret(context.Background())
-	if err != nil {
-		t.Fatalf("OAuth secret: %v", err)
-	}
-	// The rig's identity settings, built as cmd/cipherd builds them: its one stand-in issuer is
-	// both the cluster and GitHub, and it lists no machine, so there is no box a person could have
-	// signed in on and no domain to hold one to.
 	identities, err := identityboot.Open(context.Background(), config.Config{
-		K8sOIDCIssuer: issuer.URL(), ExchangeK8sAudience: ExchangeAudience,
+		K8sOIDCIssuer: issuer.URL(), K8sOIDCAudience: podAudience, ExchangeK8sAudience: ExchangeAudience,
 		ExchangeGitHubIssuer: issuer.URL(), ExchangeGitHubAudience: githubAudience,
 		ExchangeAccounts: []exchange.AccountEntry{
 			{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession},
@@ -472,11 +470,49 @@ func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, ac
 	if err != nil {
 		t.Fatalf("identityboot.Open: %v", err)
 	}
+	return identities.Registry
+}
+
+// ClusterCallers is what the identity registry hands the broker's API for a cluster whose
+// projected tokens issuer signs, held to audience: the kubernetes provider's API verifier, built
+// through identity/boot as cmd/cipherd builds it (BROKER_K8S_OIDC_ISSUER and
+// BROKER_K8S_OIDC_AUDIENCE), so a rig of another package needs no provider package of its own.
+func ClusterCallers(t testing.TB, issuer, audience string) []identity.CallerVerifier {
+	t.Helper()
+	identities, err := identityboot.Open(context.Background(), config.Config{K8sOIDCIssuer: issuer, K8sOIDCAudience: audience},
+		func(ctx context.Context, url string) (*oidc.Keys, error) { return oidc.NewKeys(ctx, url) })
+	if err != nil {
+		t.Fatalf("identityboot.Open: %v", err)
+	}
+	return identities.Registry.Callers(identity.UseAPI)
+}
+
+// ClusterAccount is the Kubernetes service account subject names, as BROKER_API_ACCOUNTS lists
+// one (config.ParseAccount): the key api.Deps.APIAccounts holds a cluster caller under.
+func ClusterAccount(t testing.TB, subject string) identity.Account {
+	t.Helper()
+	account, err := config.ParseAccount("BROKER_API_ACCOUNTS", subject, subject)
+	if err != nil {
+		t.Fatalf("config.ParseAccount(%s): %v", subject, err)
+	}
+	return account
+}
+
+// newOAuthProvider is NewOAuthProvider over registry, whose access tokens live accessLifetime and
+// whose trades are held to what access answers, nil for no project check.
+func newOAuthProvider(t *testing.T, st *store.Store, registry *identity.Registry, accessLifetime time.Duration, access projectaccess.Access) *oauth.Provider {
+	t.Helper()
+	oauthStore := oauthstore.New(st.Pool)
+	oauthStore.Reused = enroll.RevokeReusedCredential
+	secret, err := oauthStore.Secret(context.Background())
+	if err != nil {
+		t.Fatalf("OAuth secret: %v", err)
+	}
 	provider, err := oauth.New(oauth.Config{
 		Secret: secret, DeviceLifetime: 15 * time.Minute, AccessLifetime: accessLifetime,
 		RefreshLifetime: 7 * 24 * time.Hour, VerificationURL: MachineLoginURL, ProofSkew: time.Minute,
 		Exchange: oauth.ExchangeConfig{
-			Registry: identities.Registry,
+			Registry: registry,
 			Projects: access,
 		},
 	}, oauthStore)

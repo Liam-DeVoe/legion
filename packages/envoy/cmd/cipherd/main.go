@@ -46,6 +46,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/groups"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	identityboot "github.com/sjawhar/envoy/internal/cipher/identity/boot"
 	"github.com/sjawhar/envoy/internal/cipher/judge"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
@@ -375,12 +376,8 @@ func main() {
 	discovered, err := discoverVerifiers(ctx, cfg, keys)
 	fatal(err)
 	pod := discovered.Pod
-	// The verifiers of the NATS auth service's services' platform tokens, read at boot so an entry
-	// it could never admit refuses the start rather than every connection. config.Load parsed the
-	// list (cfg.NATS.Services); a broker that runs no auth service still answers its edge
-	// listeners' entries at GET /v1/project-repositories.
-	natsTokens, err := natsCalloutBoot(ctx, cfg, discovered, keys)
-	fatal(err)
+	// config.Load parsed BROKER_NATS_SERVICES (cfg.NATS.Services); a broker that runs no NATS auth
+	// service still answers its edge listeners' entries at GET /v1/project-repositories.
 	edgeListeners := cfg.NATS.EdgeListeners()
 
 	// This process's own sender id, minted once at boot. Postgres delivers a notification to every
@@ -646,21 +643,12 @@ func main() {
 	// their own next five-minute reload (policyRefresh) anyway. Neither the caller's answer nor the
 	// process is worth failing over a notification Postgres would not take.
 	notify := reread.Notifier(st.Pool, senderID)
-	// A Google caller's verifier is built only where the broker was told about Google, and it
-	// is an interface field, so it is assigned through a variable rather than inline: a nil
-	// *oidc.Verifier put straight into the field would be an interface that is not nil, and
-	// every Google caller would fault instead of being refused ACCOUNT_TOKENS_OFF.
-	var googleCallers api.GoogleVerifier
-	if discovered.GoogleIdentities != nil {
-		googleCallers = api.GoogleTokens{Verifier: discovered.GoogleIdentities}
-	}
 	// detached counts the rereads the API runs after answering 202, which srv.Shutdown does not
 	// wait for; the stop sequence waits for them (brokerStop.WaitDetached).
 	detached := &api.Detached{}
 	deps := api.Deps{PublicURL: cfg.PublicURL, RereadRate: rereadRate, Detached: detached,
-		APIAccounts: cfg.APIAccounts, AccountTokens: pod,
+		APIAccounts: cfg.APIAccounts, Callers: identities.Registry.Callers(identity.UseAPI),
 		PodRegistrars: cfg.PodRegistrars, PodRegistrationTokens: discovered.PodRegistration,
-		GoogleAPIAccounts: cfg.GoogleAPIAccounts, GoogleAccountTokens: googleCallers,
 		EdgeListeners: edgeListeners, ProjectRepositories: projectRepositories,
 		Enroll: enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
@@ -808,7 +796,7 @@ func main() {
 			URLs: cfg.NATS.URLs, SeedFile: cfg.NATS.SeedFile, IssuerSeedFile: cfg.NATS.IssuerSeedFile,
 			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: cfg.NATS.Services, Account: cfg.NATS.Account,
 		}, natscallout.Deps{
-			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify,
+			Introspect: provider.Introspect, ServiceToken: natscallout.PlatformTokens{Verifiers: identities.Registry.Callers(identity.UseNATS)}.Verify,
 			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
 		})
 		fatal(err)

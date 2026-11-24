@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/approval"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
@@ -1174,8 +1175,8 @@ func TestGoogleAPIAccountsAndVMServicesAreIndependent(t *testing.T) {
 			}
 			if row.api {
 				caller, _ := api.AccountFor("listener")
-				if want := map[string]api.Account{exampleListenerAccount: caller}; !maps.Equal(cfg.GoogleAPIAccounts, want) {
-					t.Fatalf("GoogleAPIAccounts = %v, want %v", cfg.GoogleAPIAccounts, want)
+				if want := map[identity.Account]api.Account{{Kind: googleAccountKind, Address: exampleListenerAccount}: caller}; !maps.Equal(cfg.APIAccounts, want) {
+					t.Fatalf("APIAccounts = %v, want %v", cfg.APIAccounts, want)
 				}
 			}
 			if !row.services && (cfg.VMServicesByAccount != nil || cfg.ExchangeGoogleAccounts != nil) {
@@ -2042,8 +2043,8 @@ func TestLoadReadsTheAPIAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.APIAccounts != nil || cfg.GoogleAPIAccounts != nil {
-		t.Fatalf("APIAccounts = %v and GoogleAPIAccounts = %v, want neither when BROKER_API_ACCOUNTS is unset", cfg.APIAccounts, cfg.GoogleAPIAccounts)
+	if cfg.APIAccounts != nil {
+		t.Fatalf("APIAccounts = %v, want none when BROKER_API_ACCOUNTS is unset", cfg.APIAccounts)
 	}
 	e := withK8sIssuer()
 	e["BROKER_API_ACCOUNTS"] = " dispatch=system:serviceaccount:example-ns:example-dispatch\nlistener=system:serviceaccount:example-ns:example-listener "
@@ -2053,12 +2054,12 @@ func TestLoadReadsTheAPIAccounts(t *testing.T) {
 	}
 	dispatchCaller, _ := api.AccountFor("dispatch")
 	listenerCaller, _ := api.AccountFor("listener")
-	want := map[string]api.Account{
-		"system:serviceaccount:example-ns:example-dispatch": dispatchCaller,
-		"system:serviceaccount:example-ns:example-listener": listenerCaller,
+	want := map[identity.Account]api.Account{
+		{Kind: kubernetesAccountKind, Address: "system:serviceaccount:example-ns:example-dispatch"}: dispatchCaller,
+		{Kind: kubernetesAccountKind, Address: "system:serviceaccount:example-ns:example-listener"}: listenerCaller,
 	}
-	if !maps.Equal(cfg.APIAccounts, want) || cfg.GoogleAPIAccounts != nil {
-		t.Fatalf("APIAccounts = %v and GoogleAPIAccounts = %v, want %v and no Google caller", cfg.APIAccounts, cfg.GoogleAPIAccounts, want)
+	if !maps.Equal(cfg.APIAccounts, want) {
+		t.Fatalf("APIAccounts = %v, want %v and no Google caller", cfg.APIAccounts, want)
 	}
 	for _, bad := range []string{
 		"dispatch", "=system:serviceaccount:a:b", "Dispatch=system:serviceaccount:a:b",
@@ -2098,9 +2099,9 @@ func TestLoadReadsAGoogleAPIAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantGoogle := map[string]api.Account{exampleListenerAccount: listenerCaller}
-	if !maps.Equal(cfg.GoogleAPIAccounts, wantGoogle) || cfg.APIAccounts != nil {
-		t.Fatalf("GoogleAPIAccounts = %v and APIAccounts = %v, want %v and no Kubernetes caller: a Google entry needs no cluster at all", cfg.GoogleAPIAccounts, cfg.APIAccounts, wantGoogle)
+	wantGoogle := map[identity.Account]api.Account{{Kind: googleAccountKind, Address: exampleListenerAccount}: listenerCaller}
+	if !maps.Equal(cfg.APIAccounts, wantGoogle) {
+		t.Fatalf("APIAccounts = %v, want %v and no Kubernetes caller: a Google entry needs no cluster at all", cfg.APIAccounts, wantGoogle)
 	}
 
 	both := validVMEnv()
@@ -2111,9 +2112,12 @@ func TestLoadReadsAGoogleAPIAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantK8s := map[string]api.Account{"system:serviceaccount:example-ns:example-dispatch": dispatchCaller}
-	if !maps.Equal(cfg.APIAccounts, wantK8s) || !maps.Equal(cfg.GoogleAPIAccounts, wantGoogle) {
-		t.Fatalf("APIAccounts = %v, GoogleAPIAccounts = %v; want %v and %v: each entry goes to the list its own kind is verified from", cfg.APIAccounts, cfg.GoogleAPIAccounts, wantK8s, wantGoogle)
+	want := map[identity.Account]api.Account{
+		{Kind: kubernetesAccountKind, Address: "system:serviceaccount:example-ns:example-dispatch"}: dispatchCaller,
+		{Kind: googleAccountKind, Address: exampleListenerAccount}:                                  listenerCaller,
+	}
+	if !maps.Equal(cfg.APIAccounts, want) {
+		t.Fatalf("APIAccounts = %v; want %v: each entry keyed by its own kind, which its token is verified as", cfg.APIAccounts, want)
 	}
 
 	noAudience := validEnv()

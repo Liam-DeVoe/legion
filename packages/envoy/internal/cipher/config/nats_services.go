@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -39,11 +40,9 @@ type NATSService struct {
 	// edge listener's name their durable and queue group, or the edge's inbox prefix, by; required
 	// for those three kinds and refused for the others.
 	MachineID string
-	// Account is the platform account whose token the service presents: a ServiceAccount
-	// subject, or a Google account address.
-	Account string
-	// Google is whether Account is a Google service account.
-	Google bool
+	// Account is the platform account whose token the service presents, with its kind: a
+	// ServiceAccount subject, or a Google account address.
+	Account identity.Account
 	// AllProjects is the grant whole; otherwise the projects come from the broker's exchange
 	// list for Account, but for an edge listener, whose projects are Projects.
 	AllProjects bool
@@ -60,7 +59,7 @@ func (s NATSService) Name() string {
 	if s.MachineID != "" {
 		return string(s.Kind) + "/" + s.MachineID
 	}
-	return string(s.Kind) + "/" + s.Account
+	return string(s.Kind) + "/" + s.Account.Address
 }
 
 // noMachineID is how an entry writes a kind that takes no machine id, and allProjectsScope and
@@ -91,10 +90,10 @@ func ParseNATSServices(raw string) ([]NATSService, error) {
 		if err != nil {
 			return nil, err
 		}
-		if other, twice := seen[entry.Account]; twice {
-			return nil, fmt.Errorf("%s names the account %s in both %q and %q; one account connects as one service, so name it once", NATSServicesVariable, entry.Account, other, text)
+		if other, twice := seen[entry.Account.Address]; twice {
+			return nil, fmt.Errorf("%s names the account %s in both %q and %q; one account connects as one service, so name it once", NATSServicesVariable, entry.Account.Address, other, text)
 		}
-		seen[entry.Account] = text
+		seen[entry.Account.Address] = text
 		services = append(services, entry)
 	}
 	return services, nil
@@ -153,7 +152,7 @@ func parseNATSService(text string) (NATSService, error) {
 	if err != nil {
 		return NATSService{}, err
 	}
-	entry.Account, entry.Google = parsed.Address, parsed.Google
+	entry.Account = parsed
 	return entry, nil
 }
 
@@ -180,7 +179,7 @@ func (n NATSCallout) EdgeListeners() []api.EdgeListener {
 	var edges []api.EdgeListener
 	for _, entry := range n.Services {
 		if entry.Kind == NATSEdgeListener {
-			edges = append(edges, api.EdgeListener{Account: entry.Account, Google: entry.Google, Projects: slices.Clone(entry.Projects)})
+			edges = append(edges, api.EdgeListener{Account: entry.Account, Projects: slices.Clone(entry.Projects)})
 		}
 	}
 	return edges
