@@ -2,9 +2,13 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -12,10 +16,12 @@ import (
 	"unsafe"
 
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
+	"github.com/sjawhar/legion/daemon/internal/lookpath"
 )
 
 // This file holds the step's reads (jjStep, jj.go): a read of commits with jjCommitTemplate (read,
-// readEach) and of commit ids (ids, eachID), each with --ignore-working-copy (jjStep.jj), and the
+// readEach) and of commit ids (ids, eachID), each with --ignore-working-copy (jjStep.jj), the
+// comparison of git's HEAD and branches with what jj last imported (gitMoved, gitRead), and the
 // revsets of a list of commit or change ids in as few words as keep each under jjWordBound bytes
 // (jjWords, jjChanges, jjCommitIDs), with the bytes Linux counts against jjArgMax (jjSize); and
 // how the step and the expansion run a jj command, name its failure and print what it printed on
@@ -92,6 +98,94 @@ func (s *jjStep) eachID(revsets []string) ([]string, error) {
 		ids, _, err := s.ids(revset)
 		return ids, err
 	}, func(id string) string { return id })
+}
+
+// jjGitBookmarkTemplate prints, for each @git bookmark that `jj bookmark list --all-remotes`
+// lists, the git branch as jj last imported it from git or exported it to git: its name as a JSON
+// string (json), a space, and the full id of the commit it points at, or nothing where it points
+// at no one commit, as a conflicted one does, then a newline. It prints nothing for a local
+// bookmark or another remote's. A template that prints the name itself gets it quoted where it is
+// no plain revset symbol (`"a@b"`), and json() prints each name whole: measured with jj 0.38.0,
+// 0.45.1-sami and 0.46.0, in a colocated repository with the git branches `main`, `legion/K-1`,
+// `a@b`, `q"x`, `x,y`, `p(q)`, `with|bar`, `a+b`, `n=1` and `é`, each release prints one line for
+// each branch, with the name git's `for-each-ref` prints, once decoded.
+const jjGitBookmarkTemplate = `if(remote == "git", json(name) ++ " " ++ if(normal_target, normal_target.commit_id()) ++ "\n")`
+
+// gitMoved is whether git has moved HEAD or a branch of the workspace the push runs in since jj
+// last imported them or exported them, which jj does in each of its commands: a commit that git
+// made, or a branch that git moved, which no jj command has imported yet. rewrite asks it before
+// the step's first read, where the step's snapshot is due, and where it answers true takes that
+// snapshot first, which imports git's HEAD and refs in jj's own order and keeps the working copy
+// current, so the step's first read sees what git did. Its reads import nothing: each jj read runs
+// with --ignore-working-copy (jj), and git's reads write nothing.
+//
+// It reads the root of that workspace (`jj workspace root`, which jj 0.38.0 and 0.45.1-sami alike
+// have). A root that holds no .git has no git working tree whose HEAD jj sets, such as an issue
+// workspace under jj 0.38, which colocates none, and compares nothing: it answers false, whatever
+// repository git would find in a directory above it. Otherwise it compares git's HEAD (`git
+// rev-parse --verify --quiet HEAD`) with @'s first parent (first_parent(@)), to which jj sets
+// git's HEAD after each of its commands, an unborn HEAD being equal to the root commit alone; and
+// then git's branches (`git for-each-ref refs/heads`) with jj's @git bookmarks
+// (jjGitBookmarkTemplate), as two sets of a name and a commit id, where a conflicted @git bookmark
+// is a difference. jj 0.45 has no read of the HEAD it last imported, and first_parent(@) is the
+// read jj 0.38 recommends in place of git_head(). Each git read runs as gitRead says.
+//
+// A jj read that fails is its jjStepFailure, as for every other read of the step. A git read that
+// cannot run or that fails, other than for an unborn HEAD, a .git that cannot be read, or a line
+// of jj's whose name does not decode, answers true: the snapshot that follows is the one the push
+// takes anyway, so a read that fails adds no refusal and still lets the step see what git did.
+func (s *jjStep) gitMoved() (bool, error) {
+	root, err := s.jj(s.env, "--color=never", "workspace", "root")
+	if err != nil {
+		return false, err
+	}
+	root = strings.TrimSuffix(root, "\n")
+	if _, err := os.Lstat(filepath.Join(root, ".git")); err != nil {
+		return !errors.Is(err, fs.ErrNotExist), nil
+	}
+	parent, err := s.jj(s.env, "--color=never", "log", "--no-graph", "-r", "first_parent(@)", "-T", `if(root, "", commit_id) ++ "\n"`)
+	if err != nil {
+		return false, err
+	}
+	// An unborn HEAD names no commit: rev-parse --verify --quiet exits 1 and prints nothing, as
+	// the read of @'s first parent prints nothing but its newline for the root commit.
+	head, code, ran := s.gitRead(root, "rev-parse", "--verify", "--quiet", "HEAD")
+	unborn := ran && code == 1 && head == ""
+	if !unborn && (!ran || code != 0) || strings.TrimSuffix(head, "\n") != strings.TrimSuffix(parent, "\n") {
+		return true, nil
+	}
+	branches, code, ran := s.gitRead(root, "for-each-ref", "--format=%(refname:strip=2) %(objectname)", "refs/heads")
+	if !ran || code != 0 {
+		return true, nil
+	}
+	bookmarks, err := s.jj(s.env, "--color=never", "bookmark", "list", "--all-remotes", "-T", jjGitBookmarkTemplate)
+	if err != nil {
+		return false, err
+	}
+	// Each line is `<JSON name> <id>\n`; an id holds no quote, so the name ends at the last `" `.
+	imported := slices.Collect(strings.Lines(bookmarks))
+	for i, line := range imported {
+		var name string
+		if end := strings.LastIndex(line, `" `); end >= 0 && json.Unmarshal([]byte(line[:end+1]), &name) == nil {
+			imported[i] = name + line[end+1:]
+		}
+	}
+	slices.Sort(imported)
+	return !slices.Equal(imported, slices.Sorted(strings.Lines(branches))), nil
+}
+
+// gitRead runs one git read of gitMoved's: the first git on the PATH of the step's environment
+// (lookpath.On), which is the image's git wrapper in a pod and a tmux pane's bin/git, each of which
+// passes a read through to the real git, with -C root, then args, in that environment, as a child
+// in this process's group with no standard input (runJJCommand). It answers what the read printed
+// on standard output and its status; ran is false where that PATH holds no git or it cannot start.
+func (s *jjStep) gitRead(root string, args ...string) (stdout string, code int, ran bool) {
+	git, found := lookpath.On(envValue(s.env, "PATH"), "git")
+	if !found {
+		return "", 0, false
+	}
+	stdout, _, code, err := runJJCommand(git, s.env, slices.Concat([]string{"-C", root}, args))
+	return stdout, code, err == nil
 }
 
 // jjEachOnce is each item of revsets, read with one command for each (read), and each item once
@@ -229,11 +323,12 @@ func (s *jjStep) command(env, args []string) (stdout, stderr string, code int, e
 }
 
 // runJJCommand runs next with args in env and waits for it, as a child in this process's group,
-// with no standard input: each command of the step (jjStep.command) and the read of the aliases
-// (readJJAliases). It answers what the command printed and its status, a death by a signal being
-// 128 and the signal's number, as a shell reads it. A file the kernel refuses to run runs with
-// /bin/sh, as execWrapped runs it. A command that cannot start is its start error alone, which
-// each caller names in its own words (jjStep.command, readJJAliases).
+// with no standard input: each command of the step (jjStep.command), each git read of its
+// comparison (jjStep.gitRead) and the read of the aliases (readJJAliases). It answers what the
+// command printed and its status, a death by a signal being 128 and the signal's number, as a
+// shell reads it. A file the kernel refuses to run runs with /bin/sh, as execWrapped runs it. A
+// command that cannot start is its start error alone, which each caller names in its own words
+// (jjStep.command, readJJAliases), or reads as gitRead does.
 func runJJCommand(next string, env, args []string) (stdout, stderr string, code int, err error) {
 	var out, errOut bytes.Buffer
 	run := func(path string, argv []string) error {

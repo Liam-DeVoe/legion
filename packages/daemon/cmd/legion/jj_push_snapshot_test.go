@@ -9,11 +9,12 @@ import (
 )
 
 // The tests in this file are more of the step's (jj_push_test.go): those of its one snapshot of
-// the working copy, which it takes before it changes a commit or a word of the push and which is
-// then the push's one snapshot: the order of the step's commands around that snapshot and the real
-// push, the role's own --ignore-working-copy, and a descendant of the working copy whose write no
-// command has snapshotted, with the helpers they use. descendant serves jj_push_race_test.go too,
-// and opsSince jj_push_test.go. As jj_push_test.go does, the file names nothing the step's change
+// the working copy, which it takes before it changes a commit or a word of the push, or before its
+// first read where git moved HEAD or a branch (jj_push_git_test.go), and which is then the push's
+// one snapshot: the order of the step's commands around that snapshot and the real push, the
+// role's own --ignore-working-copy, and a descendant of the working copy whose write no command
+// has snapshotted, with the helpers they use. descendant serves jj_push_race_test.go too, and
+// opsSince jj_push_test.go. As jj_push_test.go does, the file names nothing the step's change
 // adds, so it compiles and runs at the base too.
 
 // rolePushWaitingIgnoredForms are the waiting forms that send @ by legion/K-1 with the role's own
@@ -192,12 +193,15 @@ func (f *rolePushFixture) opsSince(op string) []string {
 // --config user.email, which so becomes @'s author's email, as jj alone's push would leave it.
 // With nothing to rewrite, @ by its trailer's role, every command of the step's carries
 // --ignore-working-copy, the real push carries none, as the role wrote none, and the one snapshot
-// is the real push's own. With the role's own --ignore-working-copy, before the subcommand pair or
-// after it, and a commit to rewrite, every command of the step's carries --ignore-working-copy,
-// the real push carries that flag once, as the role wrote it, and the push adds no snapshot: the
-// remote gets @ with the implementer's author and without the write, as jj alone, on a twin state
-// made the same way, sends @ without the write, with its author as it was, and adds no snapshot
-// either.
+// is the real push's own. Where the push takes a snapshot of its own, the step first compares
+// git's HEAD and branches with jj's, which git left as jj's commands set them, with reads that
+// carry --ignore-working-copy, before every other command of the step's but a read of the
+// configuration (checkCompared); where it takes none, the step compares nothing. With the role's
+// own --ignore-working-copy, before the subcommand pair or after it, and a commit to rewrite,
+// every command of the step's carries --ignore-working-copy, the real push carries that flag
+// once, as the role wrote it, and the push adds no snapshot: the remote gets @ with the
+// implementer's author and without the write, as jj alone, on a twin state made the same way,
+// sends @ without the write, with its author as it was, and adds no snapshot either.
 func TestTheStepsCommandsRunOneAfterAnother(t *testing.T) {
 	t.Parallel()
 	// Each row is a push of a state that setup makes, which answers the push's arguments and what
@@ -290,6 +294,11 @@ func TestTheStepsCommandsRunOneAfterAnother(t *testing.T) {
 					row.after(f, stderr)
 				}
 				calls := f.calls()
+				compared := len(rolePushComparisonReads)
+				if ignores {
+					compared = 0
+				}
+				f.checkCompared(calls, compared)
 				pushes := f.oneRealPush(calls)
 				push := calls[pushes]
 				steps := slices.Delete(slices.Clone(calls), pushes, pushes+1)

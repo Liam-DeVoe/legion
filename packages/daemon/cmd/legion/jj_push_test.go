@@ -771,43 +771,20 @@ var rolePushUnimportedRows = []struct {
 }
 
 // A push that names, by its commit id, a commit that a git commit in the colocated working copy
-// made and that jj has not imported yet sends it as jj alone does. The step's commands run with
-// --ignore-working-copy, so none of them imports the commit from git or can read it: the step
-// prints its one line of a dry run it cannot read, which names the commit, and changes nothing,
-// and the real push imports the commit and sends it as it is.
+// made and that jj has not imported yet sends it with the author its trailer names, the
+// implementer's in place of git's own. The git commit moved git's HEAD off @'s first parent, so
+// the step's comparison of git's HEAD with jj's finds that git moved it (spec v35 R1), and the
+// step takes the push's one snapshot first, which imports the commit: the step then reads it, and
+// prints no line of a dry run it cannot read (rolePushGitMade).
 func TestAPushOfACommitJJHasNotImportedSendsIt(t *testing.T) {
 	t.Parallel()
-	for _, row := range rolePushUnimportedRows {
-		t.Run(row.name, func(t *testing.T) {
-			t.Parallel()
-			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
-				f := newRolePushFixture(t, form, "")
-				f.write()
-				run := f.runner(f.setupPath, rolePushImplementer)
-				run.Run(f.repo, f.git, "add", "change-"+strconv.Itoa(f.files)+".txt")
-				run.Run(f.repo, f.git, "commit", "--quiet", "-m", rolePushMessage("work", "implementer"))
-				commit := strings.TrimSpace(run.Out(f.repo, f.git, "rev-parse", "HEAD"))
-				if change := f.changeOf(commit); change != "" {
-					t.Fatalf("jj reads the git commit %s as change %s before the push, want a commit no jj command imported", commit, change)
-				}
-				args := make([]string, len(row.args))
-				for i, arg := range row.args {
-					args[i] = strings.ReplaceAll(arg, rolePushGitCommit, commit)
-				}
-				divergent := f.divergence()
-				code, _, stderr := f.push(rolePushImplementer, args...)
-				change := f.changeOf(commit)
-				ref := row.ref
-				if ref == "" {
-					ref = "push-" + change[:min(12, len(change))]
-				}
-				f.check(rolePushWant{
-					refs:       []rolePushRef{{ref: "refs/heads/" + ref, commits: []rolePushCommit{{change: change, commit: commit}}}},
-					cannotRead: rolePushCannotReadIt, cannotReadNames: commit,
-				}, args, code, stderr, divergent, 0)
-			})
-		})
-	}
+	rolePushGitMade(t, func(f *rolePushFixture) (string, []rolePushCommit, bool) {
+		f.write()
+		run := f.runner(f.setupPath, rolePushImplementer)
+		run.Run(f.repo, f.git, "add", "change-"+strconv.Itoa(f.files)+".txt")
+		run.Run(f.repo, f.git, "commit", "--quiet", "-m", rolePushMessage("work", "implementer"))
+		return strings.TrimSpace(run.Out(f.repo, f.git, "rev-parse", "HEAD")), nil, false
+	})
 }
 
 // rolePushUntouchedRows are the commits a push leaves as they are, each beside a commit of the
@@ -1375,7 +1352,11 @@ func TestARoleIdentityTableThatDoesNotParseChangesNothing(t *testing.T) {
 
 // A push with no commit to change, of a clean working copy, adds the one operation that the same
 // push through the real jj alone adds in a repository made the same way, and the recording jj sees
-// no metaedit and a real push with no --ignore-working-copy, as the role wrote none.
+// no metaedit and a real push with no --ignore-working-copy, as the role wrote none. The step
+// compares git's HEAD and branches with jj's, which git left as jj's commands set them, with
+// reads that carry --ignore-working-copy (checkCompared), and takes no snapshot: a snapshot of a
+// clean working copy adds no operation, so only the recording jj, which sees no command of the
+// step's without --ignore-working-copy, tells a step that took one.
 func TestAPushWithNothingToChangeAddsNoOperation(t *testing.T) {
 	t.Parallel()
 	impl := rolePushImplementer
@@ -1401,7 +1382,9 @@ func TestAPushWithNothingToChangeAddsNoOperation(t *testing.T) {
 		f.check(rolePushWant{
 			refs:       []rolePushRef{{ref: "refs/heads/legion/K-1", commits: []rolePushCommit{{change: c.change, author: impl, commit: c.commit}}}},
 			noMetaedit: true,
+			snapshots:  rolePushTakesNoSnapshot,
 		}, rolePushBookmark, code, stderr, divergent, 0)
+		f.checkCompared(f.calls(), len(rolePushComparisonReads))
 		if added := f.ops() - before; added != aloneAdded {
 			t.Errorf("the push added %d operations, want %d, as jj alone adds", added, aloneAdded)
 		}

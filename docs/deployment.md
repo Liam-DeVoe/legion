@@ -487,15 +487,30 @@ the aliases loaded the same repository.
 A read of the push's configuration that fails stops the push with jj's error and exit status, as
 jj alone fails on the same configuration.
 The step decides from reads with `--ignore-working-copy`.
-Where its first run finds nothing of the push to change, no commit and no word, or where the push
-itself carries `--ignore-working-copy`, every jj command of the step runs with
-`--ignore-working-copy`, so it takes no snapshot, and where it found nothing to change it adds no
-operation; a role's own `--ignore-working-copy` goes to the real push alone.
-Otherwise it first takes the one snapshot of the working copy that the push would take itself,
+Where the push takes a snapshot of its own, the step first compares what git did in the
+workspace with what jj last imported, with reads that import nothing: git's `HEAD`
+(`git rev-parse HEAD`) with the first parent of `@` (`jj log -r 'first_parent(@)'`), to which jj
+sets git's `HEAD` after each of its commands, and git's branches (`git for-each-ref refs/heads`)
+with jj's `@git` bookmarks (`jj bookmark list --all-remotes`).
+An unborn `HEAD` where the first parent of `@` is the root commit counts as equal, and a
+conflicted `@git` bookmark as a difference.
+A workspace whose root (`jj workspace root`) holds no `.git`, such as an issue workspace under jj
+0.38, which colocates none, has no git working tree and compares nothing.
+Each git read runs the first `git` on `PATH`, the worker image's wrapper in a pod and `bin/git` in
+a pane, with `-C` and the workspace's root; one that fails, but for an unborn `HEAD`, counts as a
+difference, since the snapshot that follows is the one the push takes anyway.
+Where git moved neither `HEAD` nor a branch and the step's first run finds nothing of the push to
+change, no commit and no word, or where the push itself carries `--ignore-working-copy`, every jj
+command of the step runs with `--ignore-working-copy`, so it takes no snapshot, and where it found
+nothing to change it adds no operation; a role's own `--ignore-working-copy` goes to the real push
+alone, and the step then compares nothing.
+Otherwise the step takes the one snapshot of the working copy that the push would take itself,
 with the push's own `-R` and `--quiet` arguments and the `--config` and `--config-file` arguments
 that jj keeps for the push, and passes on what that snapshot prints but the warnings that jj
-prints on every command, which the push prints itself, then reads what the push sends again and
-acts on no commit id it read before the snapshot.
+prints on every command, which the push prints itself.
+It takes that snapshot before its first read where git moved `HEAD` or a branch, so that read
+sees what git did, and otherwise before it changes a commit or a word of the push, after which it
+reads what the push sends again and acts on no commit id it read before the snapshot.
 Each of its other commands runs with `--ignore-working-copy`, and so does the real push, which
 then takes no second snapshot: every id the step reads after its snapshot, `@` and each
 descendant of `@` included, stays valid through the push, a warning that a snapshot prints, such
@@ -572,10 +587,15 @@ Where it cannot read the dry run, it prints one line, and the push runs as writt
 metaedit of the step ran first, such as the fill of an empty author, after which each revision
 argument is held to its set as above, and with `--ignore-working-copy` where the step took its
 snapshot.
-A push that names a commit that no jj command has imported yet, such as one that a `git commit`
-made, has a dry run that the step cannot read: the step decides from reads that import nothing
-from git, so the dry run cannot find the commit, the step takes no snapshot, and the push imports
-the commit and sends it as it is.
+A commit that the push reaches only through what git did in a colocated workspace, which no jj
+command has imported yet, such as one that a `git commit`, a `git commit --amend` or a
+`git rebase` made, or one under a branch that git moved, is no exception: git moved `HEAD` or a
+branch, so the step takes its snapshot before its first read, which imports git's `HEAD` and refs
+in jj's own order and keeps the working copy current, and the step reads that commit and sets its
+author as for any other.
+`jj git import` is not that step: with `--ignore-working-copy` it imports no commit that git made
+on jj's detached `HEAD`, and after a `git rebase` of the branch under `@` it rewrites `@` and
+leaves the working copy that every role shares stale.
 jj prints a commit id short, as its first 12 hex digits, and the step never has jj resolve such an
 id over the whole repository, hidden commits included: it matches the id against the commits of
 the repository's bookmarks and tags and of the push's revision arguments, or, for jj's refusal of

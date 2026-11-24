@@ -102,20 +102,22 @@ func jjStepped(words []string) string {
 // own where they still name the commits jjStep.revisionGiven says it names; the line of an
 // argument it gets as the ids of its commits comes after the step's lines of its rewrites
 // (report). The step takes at most one snapshot of the working copy, the one the push would take
-// itself, before it changes a commit or a word of the push, and only where the push takes a
-// snapshot of its own (jjPush.noSnapshot); errJJSnapshot lists what makes it take it, and
-// jjStep.snapshotted says how the real push runs after it. After a step that changes nothing more
-// (errJJAsWritten), past a dry run it cannot read, a metaedit that jj refuses because the commit
-// it would make exists already (jjStep.metaedit), or a push whose command would pass jjArgMax
-// bytes (jjStep.checkArgMax), only a commit that a metaedit of the step moved counts as replaced,
-// and every argument is held to the commits it named before the step only where a metaedit ran.
+// itself, and only where the push takes a snapshot of its own (jjPush.noSnapshot): before its
+// first read where git has moved HEAD or a branch since jj last imported them (jjStep.gitMoved),
+// and otherwise before it changes a commit or a word of the push; errJJSnapshot lists what makes
+// it take it, and jjStep.snapshotted says how the real push runs after it. After a step that
+// changes nothing more (errJJAsWritten), past a dry run it cannot read, a metaedit that jj refuses
+// because the commit it would make exists already (jjStep.metaedit), or a push whose command would
+// pass jjArgMax bytes (jjStep.checkArgMax), only a commit that a metaedit of the step moved counts
+// as replaced, and every argument is held to the commits it named before the step only where a
+// metaedit ran.
 // The push that runs after the step, or after the line of a table it cannot use, gets
 // wrappedJJStepped set to the digest of the words it runs with, the step's --ignore-working-copy
 // among them; the step's own commands do not.
 //
 // An interrupt or a terminate ends legion jj where it stands. The read of the aliases and the
-// step's own commands, its read of the configuration among them, are children in this process's
-// group, so a signal sent to the group ends them too, and the command never starts.
+// step's own commands, its read of the configuration and its git reads among them, are children in
+// this process's group, so a signal sent to the group ends them too, and the command never starts.
 func runJJ(ctx context.Context, args []string, _, stderr io.Writer) int {
 	if status, runs := startWrapper(ctx, "jj", jjUsage, args, stderr); !runs {
 		return status
@@ -212,10 +214,12 @@ var jjDryRunQuiet = []string{"--config", "ui.quiet=false"}
 // once a metaedit of the step has run, every argument is held to them, whether or not it moved the
 // argument's own commits.
 // Each of its jj commands runs next, one after another, as a child in this process's group, with
-// the caller's repository and configuration options (jjPush.options). Each but one runs with
+// the caller's repository and configuration options (jjPush.options), and so does each of its git
+// reads (gitRead), with the first git on PATH. Each jj command but one runs with
 // --ignore-working-copy, so it takes no snapshot; the one is the snapshot the push would take
-// itself (snapshot), which the step takes before it changes a commit or a word of the push, where
-// errJJSnapshot says; snapshotted says how the real push runs after it.
+// itself (snapshot), which the step takes before its first read where git has moved HEAD or a
+// branch since jj last imported them (gitMoved), and otherwise before it changes a commit or a
+// word of the push, where errJJSnapshot says; snapshotted says how the real push runs after it.
 type jjStep struct {
 	push   jjPush
 	next   string   // the jj each command of the step runs, and the push after them
@@ -225,14 +229,15 @@ type jjStep struct {
 	// jjRun is what the current run of the step's reads and rewrites keeps (once), which rewrite
 	// forgets after the step's snapshot.
 	jjRun
-	// snapshotted is whether the step has taken its one snapshot of the working copy (snapshot). It
-	// outlasts the run that took it. After that snapshot, the real push runs with
-	// --ignore-working-copy (runJJ), on every path, a step that changes nothing more
-	// (errJJAsWritten) among them, and takes no snapshot of its own, so the step's snapshot is the
-	// push's one snapshot: @ resolves against it, a write another process makes after it stays in
-	// the working copy for the next jj command, and a warning a snapshot prints is printed once.
-	// The role's own --ignore-working-copy keeps the step from taking it (jjPush.noSnapshot), so
-	// the real push never gets that flag twice, which jj 0.38 refuses.
+	// snapshotted is whether the step has taken its one snapshot of the working copy (snapshot),
+	// before its first run (gitMoved) or after a run that answered errJJSnapshot. It outlasts the
+	// runs after it. After that snapshot, the real push runs with --ignore-working-copy (runJJ), on
+	// every path, a step that changes nothing more (errJJAsWritten) among them, and takes no
+	// snapshot of its own, so the step's snapshot is the push's one snapshot: @ resolves against
+	// it, a write another process makes after it stays in the working copy for the next jj command,
+	// and a warning a snapshot prints is printed once. The role's own --ignore-working-copy keeps
+	// the step from taking it (jjPush.noSnapshot), so the real push never gets that flag twice,
+	// which jj 0.38 refuses.
 	snapshotted bool
 }
 
@@ -298,6 +303,9 @@ var errJJAsWritten = errors.New("the step changes nothing more; the push runs as
 // the step's snapshot is due (snapshotDue). This is the one list of what makes the step take its
 // snapshot:
 //
+//   - before the first run, git's HEAD or a branch that git has moved since jj last imported them,
+//     which rewrite reads with reads that import nothing (gitMoved), and after which it takes the
+//     snapshot before any run, so that no run answers errJJSnapshot;
 //   - a metaedit, which answers errJJSnapshot before it runs any command (metaedit): the fill of a
 //     commit with no author that the dry run refuses (dryRunFilled), or the rewrite of an author
 //     where the push's command would still be under jjArgMax bytes (setAuthors, which asks
@@ -306,8 +314,8 @@ var errJJAsWritten = errors.New("the step changes nothing more; the push runs as
 //     revision argument names and that the step reads as its change's one visible commit, which
 //     the argument's words then name in its place (readRevisions, standsIn).
 //
-// That run ends there, before any metaedit and any line of the step's, and rewrite takes the
-// snapshot and runs again.
+// A run that answers errJJSnapshot ends there, before any metaedit and any line of the step's,
+// and rewrite takes the snapshot and runs again.
 var errJJSnapshot = errors.New("the step has a commit or a word to change and takes the push's snapshot first")
 
 // jjConfigurationRead is the read of the configuration that the pane's legion jj makes before the
@@ -343,19 +351,32 @@ func (s *jjStep) passOn(args []string) error {
 	return err
 }
 
-// rewrite runs the step's reads and rewrites (once) one time or two. The first run reads with
-// --ignore-working-copy, as every command of the step but its snapshot does, and so reads each
-// commit as it is before any snapshot. Where it finds nothing to change, or where it gives up
-// before it changes anything (errJJAsWritten), the step takes no snapshot and adds no operation,
-// and the real push takes its snapshot as jj alone does. Where it finds a commit or a word to
-// change (errJJSnapshot), the step takes the one snapshot the push would take itself (snapshot),
-// forgets all that the first run read (jjRun), and runs once more, with no other snapshot. The
-// real push then runs as snapshotted says, so each commit id the second run reads, @'s and those
-// of @'s descendants included, names the commit the push sees. Before a push that takes no
-// snapshot (jjPush.noSnapshot) the first run reads what the push will see, and is the one run. An
-// error is a jjStepFailure, a step that changes nothing more (errJJAsWritten), or output of jj's it
-// cannot parse.
+// rewrite runs the step's reads and rewrites (once) one time or two. Where the step's snapshot is
+// due (snapshotDue), it first asks whether git has moved HEAD or a branch since jj last imported
+// them (gitMoved), with reads that import nothing. Where git has, the step takes the one snapshot
+// the push would take itself (snapshot) before its first read, so that the run reads what git did,
+// and that run is the one run: it cannot answer errJJSnapshot, as the snapshot is taken. Otherwise
+// the first run reads with --ignore-working-copy, as every command of the step but its snapshot
+// does, and so reads each commit as it is before any snapshot. Where it finds nothing to change,
+// or where it gives up before it changes anything (errJJAsWritten), the step takes no snapshot and
+// adds no operation, and the real push takes its snapshot as jj alone does. Where it finds a
+// commit or a word to change (errJJSnapshot), the step takes the one snapshot the push would take
+// itself, forgets all that the first run read (jjRun), and runs once more, with no other snapshot.
+// The real push then runs as snapshotted says, so each commit id that the run after the snapshot
+// reads, @'s and those of @'s descendants included, names the commit the push sees. Before a push
+// that takes no snapshot (jjPush.noSnapshot) the step compares nothing, and the first run reads
+// what the push will see, and is the one run. An error is a jjStepFailure, a step that changes
+// nothing more (errJJAsWritten), or output of jj's it cannot parse.
 func (s *jjStep) rewrite() error {
+	if s.snapshotDue() {
+		moved, err := s.gitMoved()
+		if err == nil && moved {
+			err = s.snapshot()
+		}
+		if err != nil {
+			return err
+		}
+	}
 	err := s.once()
 	if !errors.Is(err, errJJSnapshot) {
 		return err
@@ -417,11 +438,12 @@ func (s *jjStep) snapshot() error {
 	return nil
 }
 
-// snapshotDue is whether the step must take its snapshot (snapshot) before it changes a word or a
-// commit of the push, where errJJSnapshot says: it has not taken it, and the push takes a snapshot
-// of its own. A push with the role's own --ignore-working-copy takes none (jjPush.noSnapshot):
-// every read of the step then sees what the push will see, and the step takes no snapshot, as the
-// push takes none.
+// snapshotDue is whether the step's snapshot (snapshot) is still due: it has not taken it, and the
+// push takes a snapshot of its own. rewrite compares git's HEAD and branches with jj's (gitMoved)
+// only then, and the step takes it before it changes a word or a commit of the push, where
+// errJJSnapshot says. A push with the role's own --ignore-working-copy takes none
+// (jjPush.noSnapshot): every read of the step then sees what the push will see, and the step
+// compares nothing and takes no snapshot, as the push takes none.
 func (s *jjStep) snapshotDue() bool {
 	return !s.snapshotted && !s.push.noSnapshot
 }
