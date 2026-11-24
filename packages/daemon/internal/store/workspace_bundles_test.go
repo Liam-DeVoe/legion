@@ -35,8 +35,9 @@ func bundleStore(t *testing.T) *Store {
 }
 
 // A released issue's bundle round-trips whole — its bytes, the commit its working copy sat on, the
-// heads it carries, the bookmarks that pointed into it, the release that saved it and the pod its
-// work came off — survives a second release replacing it, and goes when the restore is confirmed.
+// commit the fix's working copy sat on, the heads it carries, the bookmarks that pointed into it,
+// the release that saved it and the pod its work came off — survives a second release replacing
+// it, and goes when the restore is confirmed.
 func TestAWorkspaceBundleRoundTripsAndIsDeletedOnConfirmation(t *testing.T) {
 	ctx := context.Background()
 	s := bundleStore(t)
@@ -48,6 +49,7 @@ func TestAWorkspaceBundleRoundTripsAndIsDeletedOnConfirmation(t *testing.T) {
 	saved := runtime.WorkspaceBundle{
 		Bundle:    bytes.Repeat([]byte{0, 1, 2, 3, 0xff}, 1024),
 		Head:      "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
+		FixHead:   "c0de000000000000000000000000000000000003",
 		Tips:      []string{"da4f9f492e9f8349389c243743e0a000cd1c676f", "f2f134541b30dfa5160a5d1ce5e17b76c967c661"},
 		Bookmarks: map[string]string{"legion/INFRA-945": "dffe88ae2f793e13436cef3921adc988433fbd4e", "side": "da4f9f492e9f8349389c243743e0a000cd1c676f"},
 		At:        at,
@@ -66,7 +68,7 @@ func TestAWorkspaceBundleRoundTripsAndIsDeletedOnConfirmation(t *testing.T) {
 	if !bytes.Equal(read.Bundle, saved.Bundle) || read.Size() != saved.Size() {
 		t.Fatalf("the bundle read back is %d bytes, want the %d saved", read.Size(), saved.Size())
 	}
-	if read.Head != saved.Head || !slices.Equal(read.Tips, saved.Tips) || !maps.Equal(read.Bookmarks, saved.Bookmarks) {
+	if read.Head != saved.Head || read.FixHead != saved.FixHead || !slices.Equal(read.Tips, saved.Tips) || !maps.Equal(read.Bookmarks, saved.Bookmarks) {
 		t.Fatalf("the bundle read back is %+v, want %+v", read, saved)
 	}
 	if !read.At.Equal(at) {
@@ -90,8 +92,8 @@ func TestAWorkspaceBundleRoundTripsAndIsDeletedOnConfirmation(t *testing.T) {
 	if err != nil || take != runtime.WorkspaceBundleSend || string(read.Bundle) != "PACK newer" || read.Head != again.Head || read.Release != 12 {
 		t.Fatalf("after a second release the bundle is %q at %s of release %d (%v, %v), want the newer one", read.Bundle, read.Head, read.Release, take, err)
 	}
-	if len(read.Tips) != 0 || len(read.Bookmarks) != 0 {
-		t.Fatalf("the newer bundle reads tips %v and bookmarks %v, want neither", read.Tips, read.Bookmarks)
+	if len(read.Tips) != 0 || len(read.Bookmarks) != 0 || read.FixHead != "" {
+		t.Fatalf("the newer bundle reads tips %v, bookmarks %v and the fix's working copy %q, want none of them", read.Tips, read.Bookmarks, read.FixHead)
 	}
 
 	if err := s.DeleteWorkspaceBundle(ctx, "INFRA-945"); err != nil {
