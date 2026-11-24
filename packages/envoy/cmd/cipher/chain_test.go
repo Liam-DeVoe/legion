@@ -243,24 +243,17 @@ func newChainBroker(t *testing.T, settings map[string]any) *chainBroker {
 	mux.HandleFunc("POST /v1/grants/grant-chain/values", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, map[string]any{"values": map[string]string{"TEST_KEY": chainValue}, "expires_at": time.Now().Add(time.Hour)})
 	})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	b.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
 		b.calls++
 		b.mu.Unlock()
 		mux.ServeHTTP(w, r)
 	}))
-	b.mu.Lock()
-	b.server = server
-	b.mu.Unlock()
-	t.Cleanup(server.Close)
+	t.Cleanup(b.server.Close)
 	return b
 }
 
-func (b *chainBroker) URL() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.server.URL
-}
+func (b *chainBroker) URL() string { return b.server.URL }
 
 // refuseExchanges makes every token exchange from now on answer 400 invalid_grant, as a broker
 // whose entries list no such machine does.

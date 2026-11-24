@@ -67,10 +67,7 @@ func newWaitBroker(t *testing.T, key *proofKey, honoursWait, afterFirstHold bool
 	b := &waitBroker{meter: startStallMeter(t), client: make(chan int, 1)}
 	var publicURL string
 	verified := func(w http.ResponseWriter, r *http.Request) bool {
-		b.mu.Lock()
-		url := publicURL
-		b.mu.Unlock()
-		if err := key.verify(r, url); err != nil {
+		if err := key.verify(r, publicURL); err != nil {
 			b.mu.Lock()
 			b.badProofs++
 			b.mu.Unlock()
@@ -149,9 +146,7 @@ func newWaitBroker(t *testing.T, key *proofKey, honoursWait, afterFirstHold bool
 	})
 	b.Server = httptest.NewServer(mux)
 	t.Cleanup(b.Close)
-	b.mu.Lock()
 	publicURL = b.URL
-	b.mu.Unlock()
 	return b
 }
 
