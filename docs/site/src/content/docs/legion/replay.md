@@ -204,6 +204,16 @@ It names each issue that Dispatch does not have.
 The conflict draw reads how fast each base branch moved.
 `collect-merges` reads a base branch's first-parent history from GitHub's commit listing, with `GET` alone.
 It writes the history into the window as `merges/<owner>__<name>.jsonl`, and writes the file's new sha256 into `window.json`.
+It lists the branch's commits from a day before `--from` to the tip of the branch, with no end time.
+A commit's first parent can be committed after the commit, even after `--to`.
+So the walk starts at the tip and goes along first parents through every listed commit, whatever its time.
+It keeps the commits that were committed from `--from` to `--to`.
+The walk ends at the first commit of the branch, or at a first parent that the listing lacks.
+A walk that ends in the day before `--from` holds the whole history of the span.
+Where a walk ends at a missing parent while its last commit is inside the span, `collect-merges` reads that parent with one more `GET`.
+A parent that was committed before the start of the listing shows a branch that was quiet before the span, and the walk ends there.
+A parent that was committed later is a commit that the listing lacks, so the walk would lose the history before that parent.
+`collect-merges` refuses such a walk with an error that names the last commit walked and the parent, each with its time, and writes nothing.
 
 ```sh
 legion replay collect-merges \

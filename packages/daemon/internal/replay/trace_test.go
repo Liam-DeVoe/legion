@@ -112,7 +112,7 @@ func TestTheTraceReadsEveryCapturedShape(t *testing.T) {
 	for _, name := range slices.Sorted(maps.Keys(merges)) {
 		want := merges[name]
 		t.Run("github/"+name, func(t *testing.T) {
-			got, err := ParseMerges(capturedBranch, capturedFile(t, "github/"+name))
+			got, _, err := ParseMerges(capturedBranch, capturedFile(t, "github/"+name))
 			if err != nil {
 				t.Fatalf("ParseMerges refuses the page: %v", err)
 			}

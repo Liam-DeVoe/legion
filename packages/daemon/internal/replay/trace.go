@@ -1362,15 +1362,17 @@ func ParseDispatchEvent(event []byte) (DispatchEvent, error) {
 }
 
 // ParseMerges reads pages of GitHub's commit listing of one base branch
-// (GET /repos/<owner>/<name>/commits?sha=<branch>&since=<t>&until=<t>, each page newest first, as
-// GitHub serves them) and returns the branch's first-parent commits among them, oldest first, each
-// at its committer's time, which is when a merge landed it on the branch, with branch as its
-// Branch and, where the first line of its message ends with GitHub's squash suffix ` (#<n>)`, the
-// pull request it merged as its PR: the walk from the first page's first commit along each
-// commit's first parent, which ends at the first commit whose first parent no page holds. No page,
-// or an empty first page, is a branch that did not move in the span. A page that is not a list of
-// commits, or a commit without its sha or committer's time, is refused.
-func ParseMerges(branch string, pages ...[]byte) ([]Merge, error) {
+// (GET /repos/<owner>/<name>/commits?sha=<branch>&since=<t>, each page newest first, as GitHub
+// serves them) and returns the branch's first-parent commits among them, oldest first, each at its
+// committer's time, which is when a merge landed it on the branch, with branch as its Branch and,
+// where the first line of its message ends with GitHub's squash suffix ` (#<n>)`, the pull request
+// it merged as its PR: the walk from the first page's first commit, the branch's tip, along each
+// commit's first parent through every listed commit, whatever its time, since a first parent can
+// be committed after its child. The walk ends at a root commit or at the first commit whose first
+// parent no page holds, and ParseMerges also returns that parent, "" where the walk ended at a
+// root or walked nothing. No page, or an empty first page, is a branch with no commit listed. A
+// page that is not a list of commits, or a commit without its sha or committer's time, is refused.
+func ParseMerges(branch string, pages ...[]byte) ([]Merge, string, error) {
 	type listed struct {
 		SHA    string `json:"sha"`
 		Commit struct {
@@ -1388,11 +1390,11 @@ func ParseMerges(branch string, pages ...[]byte) ([]Merge, error) {
 	for i, page := range pages {
 		var commits []listed
 		if err := json.Unmarshal(page, &commits); err != nil {
-			return nil, fmt.Errorf("replay: page %d of the commits of %s is not a list of commits: %w", i+1, branch, err)
+			return nil, "", fmt.Errorf("replay: page %d of the commits of %s is not a list of commits: %w", i+1, branch, err)
 		}
 		for _, commit := range commits {
 			if commit.SHA == "" || commit.Commit.Committer.Date.IsZero() {
-				return nil, fmt.Errorf("replay: page %d of the commits of %s lists a commit without its sha or its committer's time", i+1, branch)
+				return nil, "", fmt.Errorf("replay: page %d of the commits of %s lists a commit without its sha or its committer's time", i+1, branch)
 			}
 			bySHA[commit.SHA] = commit
 		}
@@ -1401,9 +1403,11 @@ func ParseMerges(branch string, pages ...[]byte) ([]Merge, error) {
 		}
 	}
 	var merges []Merge
+	var lacking string
 	for sha := head; sha != ""; {
 		commit, listed := bySHA[sha]
 		if !listed {
+			lacking = sha
 			break
 		}
 		delete(bySHA, sha) // a commit is walked once, whatever a page says of its parents
@@ -1414,7 +1418,7 @@ func ParseMerges(branch string, pages ...[]byte) ([]Merge, error) {
 		}
 	}
 	slices.Reverse(merges)
-	return merges, nil
+	return merges, lacking, nil
 }
 
 // squashSuffix is GitHub's suffix of a squash merge's subject, the pull request's number.

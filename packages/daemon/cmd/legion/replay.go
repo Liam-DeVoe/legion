@@ -167,9 +167,15 @@ func newReplayCollectMergesCommand(stdout, stderr io.Writer) *cobra.Command {
 		Long: `Read a base branch's first-parent history in [--from, --to) from GitHub's commit listing, with
 GET alone, and write it into the window collect wrote in --out as merges/<owner>__<name>.jsonl,
 beside the commits of the repository's other base branches, with window.json's digest of the
-file written again. Each commit keeps the pull request it merged ("pr") where the first line of
-its message ends with GitHub's squash suffix " (#<n>)", which a replay's conflict draw reads to
-leave a stretch's own merge out of its count. The token is read from the environment variable
+file written again. The listing reads the branch's commits from a day before --from to its tip,
+with no end, since a commit's first parent can be committed after it, after --to too: the walk
+goes from the tip along first parents through every listed commit, and keeps those committed in
+[--from, --to). A walk that ends inside the span, at a first parent the listing lacks, reads that
+parent: one committed before the listing's start is where a branch quiet before the span ends,
+and one committed later is a commit the listing lacks, so the walk is refused, with nothing
+written. Each commit keeps the pull request it merged ("pr") where the first line of its message
+ends with GitHub's squash suffix " (#<n>)", which a replay's conflict draw reads to leave a
+stretch's own merge out of its count. The token is read from the environment variable
 --github-token-env names, and is never printed. Run it once for each base branch the window's
 pull requests name.`,
 		Args: noArguments,

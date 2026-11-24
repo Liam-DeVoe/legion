@@ -138,7 +138,7 @@ func githubStub(t *testing.T, pages [][]byte) (*httptest.Server, *stubRequests) 
 			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
 			return
 		case r.Method != http.MethodGet || r.URL.Path != "/repos/acme/widgets/commits", query.Get("sha") != capturedBranch,
-			query.Get("since") != "2026-11-20T00:00:00Z", query.Get("until") != "2026-11-20T06:00:00Z", query.Get("per_page") != "100":
+			query.Get("since") != "2026-11-19T04:56:30Z", query.Has("until"), query.Get("per_page") != "100":
 			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 			return
 		}
@@ -255,6 +255,14 @@ const (
 const collectChildAdded = `{"id":900001,"issue_key":"ACME-32","artifact_id":null,"project":"ACME","seq":5,"type":"child.added",` +
 	`"actor":{"kind":"session","id":"legion-daemon:ACME"},"notify":false,"created_at":"2026-11-20T10:00:00Z","payload":{"child_key":"ACME-60"}}`
 
+// collectBelowPage is the commit GitHub lists below the captured commit page: the first parent of
+// the page's oldest commit, committed 20 seconds before it, cut to what collect-merges reads, its
+// message neutralized as the page's are. The page holds five commits alone, so a collect-merges
+// that holds them as the span's whole history reads from the oldest one's time, and its walk ends
+// at this commit, before the span.
+const collectBelowPage = `{"sha":"e4584fae753a80a71074cd7d33aaaacb4c8660bf","commit":{"message":"fix(dispatch): captured commit message (#4559)",` +
+	`"committer":{"date":"2026-11-20T04:56:10Z"}},"parents":[{"sha":"c980d91b540ece46364256983f24a3f5a63b3841"}]}`
+
 // collectRun is one collect and collect-merges of the captured samples against the stubs, and
 // what each stub saw.
 type collectRun struct {
@@ -274,13 +282,14 @@ type collectRun struct {
 // a gzipped Cloud Logging export of JSON lines, a Cloud Logging export as one JSON array, and
 // `kubectl logs --timestamps` output under a directory of its own — and collects the window from
 // them against a Dispatch stub answering the captured events and a GitHub stub answering the
-// captured commit page in two pages, then collect-merges main of acme/widgets into it. The export
-// holds every captured line, a row with no jsonPayload and a line of a kind the trace does not
-// read; the array a line before the span and one at its end; the kubectl output every captured
-// line again (its attributes in the daemon's own order), the two lines of its own, a line of other
-// output and a line of a kind the trace does not read. Dispatch also answers a child.added event
-// of ACME-32 naming the child ACME-60, and an event of ACME-29 after the span; it refuses the first
-// read of ACME-29 with 503 and of ACME-58 with 429.
+// captured commit page and the commit below it (collectBelowPage) in two pages, then
+// collect-merges main of acme/widgets into it over [04:56:30, 06:00) of 2026-11-20, from the
+// page's oldest commit's time. The export holds every captured line, a row with no jsonPayload and
+// a line of a kind the trace does not read; the array a line before the span and one at its end;
+// the kubectl output every captured line again (its attributes in the daemon's own order), the two
+// lines of its own, a line of other output and a line of a kind the trace does not read. Dispatch
+// also answers a child.added event of ACME-32 naming the child ACME-60, and an event of ACME-29
+// after the span; it refuses the first read of ACME-29 with 503 and of ACME-58 with 429.
 func collectCaptured(t *testing.T) collectRun {
 	t.Helper()
 	run := collectRun{captured: capturedEntries(t), events: capturedEvents(t)}
@@ -331,6 +340,7 @@ func collectCaptured(t *testing.T) collectRun {
 	if err := json.Unmarshal(capturedFile(t, "github/commits.json"), &page); err != nil {
 		t.Fatal(err)
 	}
+	page = append(page, json.RawMessage(collectBelowPage))
 	var pages [][]byte
 	for _, part := range [][]json.RawMessage{page[:3], page[3:]} {
 		data, err := json.Marshal(part)
@@ -366,7 +376,7 @@ func collectCaptured(t *testing.T) collectRun {
 		t.Fatalf("Collect: %v", err)
 	}
 	run.merges, err = CollectMerges(context.Background(), MergesConfig{Repo: "acme/widgets", Branch: capturedBranch,
-		From: collectFrom, To: time.Date(2026, time.November, 20, 6, 0, 0, 0, time.UTC),
+		From: time.Date(2026, time.November, 20, 4, 56, 30, 0, time.UTC), To: time.Date(2026, time.November, 20, 6, 0, 0, 0, time.UTC),
 		Token: stubGitHubToken, API: githubServer.URL, Window: run.out, Wait: wait})
 	if err != nil {
 		t.Fatalf("CollectMerges: %v", err)
@@ -384,10 +394,10 @@ func collectCaptured(t *testing.T) collectRun {
 // 157), the kinds the log holds, the settings, the part and the collector; the events are each
 // captured issue's that a line names, up to the span's end, the blocker's and parent's those
 // events name, and the child a child.added names, every other key Dispatch did not have listed as
-// missing; and the merges are main's five first-parent commits, read over two pages. Every request
-// the collect and the collect-merges send is a GET: the stubs' record of what each served holds no
-// other method, and holds requests (a collect that read nothing would pass a check of its methods
-// alone).
+// missing; and the merges are the captured page's five first-parent commits, read over two pages
+// with the commit below it, which the walk passes and does not keep. Every request the collect and
+// the collect-merges send is a GET: the stubs' record of what each served holds no other method,
+// and holds requests (a collect that read nothing would pass a check of its methods alone).
 func TestCollectWritesAWindowThatReadsBackAndSendsGetAlone(t *testing.T) {
 	run := collectCaptured(t)
 	read, err := ReadWindow(run.out)
