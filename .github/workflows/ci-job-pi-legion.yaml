@@ -157,7 +157,10 @@ jobs:
     # install and contracts' build (14), the typecheck (16), the pack, the upload and the ci-ok
     # report (4), the post steps (5) and the job's own clock over its steps (5): 61 s, measured on
     # ubuntu-24.04. Ten minutes is about ten times that, room for a slow runner and a cold Bun
-    # download, and it still cuts off a hung pack long before pi-legion's 28.
+    # download, and it still cuts off a hung pack long before pi-legion's 28. The workspace
+    # install runs under .github/scripts/network-install.sh's bound for bun, 425 s at its worst
+    # (three attempts of 120 s, each killed 15 s after its SIGTERM, with two 10 s pauses), which
+    # the ten minutes hold too: 61 s + 425 s = 486 s.
     timeout-minutes: 10
     env:
       JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
@@ -166,7 +169,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       - name: Build contracts for pi-legion
         run: bun run build
         working-directory: packages/contracts

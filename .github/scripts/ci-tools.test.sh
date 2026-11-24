@@ -472,7 +472,7 @@ tools:
     second_url: https://releases.example.com/plugins/plugin-v8.0.0-linux-amd64.tar.gz
     second_member: ""
     # The one row whose bound is not the 7 every other row carries. The ladder case fetches
-    # this row after a row of 7 and holds the `--max-time` each call was handed to that row's
+    # this row after a row of 7 and holds the --max-time each call was handed to that row's
     # own value, which is what shows the bound follows the row and is no constant.
     max_time: 11
   # A row whose second source serves a .tar.gz it names a member of, which is the member rule on
