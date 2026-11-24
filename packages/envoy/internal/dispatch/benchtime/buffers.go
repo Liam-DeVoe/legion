@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -217,9 +218,11 @@ func (r *Runner) explainBuffers(t *testing.T, name, mode string, setup []string,
 }
 
 // sqlLiteral writes argument as the literal an EXECUTE takes in its place, with the type the
-// statement is prepared with for it: a string as text, a []string as text[] and a time.Time as
-// timestamptz, to the microsecond Postgres keeps. Those are the types the measured reads bind.
-// Any other type is an error rather than a literal of a guessed type.
+// statement is prepared with for it: a string as text, a []string as text[], a bool as boolean, a
+// []int16 as smallint[], and a time.Time as timestamptz, to the microsecond Postgres keeps, or a
+// *time.Time as one, null where it is nil. Those are the types the measured reads bind: the
+// listing binds the last four beside the first two (api's listIssues). Any other type is an error
+// rather than a literal of a guessed type.
 func sqlLiteral(argument any) (string, string, error) {
 	switch value := argument.(type) {
 	case string:
@@ -230,8 +233,21 @@ func sqlLiteral(argument any) (string, string, error) {
 			quoted = append(quoted, store.QuoteLiteral(element))
 		}
 		return "text[]", "array[" + strings.Join(quoted, ", ") + "]::text[]", nil
+	case bool:
+		return "boolean", strconv.FormatBool(value), nil
+	case []int16:
+		numbers := make([]string, 0, len(value))
+		for _, number := range value {
+			numbers = append(numbers, strconv.Itoa(int(number)))
+		}
+		return "smallint[]", "array[" + strings.Join(numbers, ", ") + "]::smallint[]", nil
 	case time.Time:
 		return "timestamptz", store.QuoteLiteral(value.UTC().Format(time.RFC3339Nano)) + "::timestamptz", nil
+	case *time.Time:
+		if value == nil {
+			return "timestamptz", "null::timestamptz", nil
+		}
+		return sqlLiteral(*value)
 	}
 	return "", "", fmt.Errorf("no literal is written for a value of type %T", argument)
 }
