@@ -425,7 +425,7 @@ for name in $hosted_scripts; do
 done
 
 # The proofs whose panes run the pinned Oh My Pi: each is a hosted row that has the job install it.
-for name in late-completion.sh role-prompt-rule.sh; do
+for name in claim-compaction.sh late-completion.sh provider-error-retry.sh role-prompt-rule.sh; do
   : > "$real_output"
   set +e
   out=$(EVENT=workflow_dispatch REQUESTED="$name" GITHUB_OUTPUT="$real_output" "$check_script" 2>&1)

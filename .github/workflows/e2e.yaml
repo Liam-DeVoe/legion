@@ -157,8 +157,8 @@ jobs:
       - if: matrix.jj
         uses: ./.github/actions/install-jj
 
-      # role-prompt-rule.sh and late-completion.sh run real Oh My Pi panes, each answered by a model
-      # stand-in of its driver's own, so each needs the Oh My Pi .omp-pin names and no model route. This installs
+      # A proof whose row sets `omp` runs real Oh My Pi panes, each answered by a model stand-in of
+      # its driver's own, so it needs the Oh My Pi .omp-pin names and no model route. This installs
       # that build, held to its pinned sha256, and exports its path as LEGION_TEST_OMP, which the
       # run step names to the script as LEGION_OMP_PATH.
       - if: matrix.omp
