@@ -336,7 +336,13 @@ func (s *Store) IssuesReleasedForWait(ctx context.Context, keys []string) (map[s
 	if len(keys) == 0 {
 		return nil, nil
 	}
-	rows, err := s.pool.Query(ctx, `select key from issues where key = any($1) and released_for_wait_at is not null`, keys)
+	return ReadOnly(ctx, s.pool, fmt.Sprintf("read which of %d issues wait on another issue", len(keys)), func(ctx context.Context, tx pgx.Tx) (map[string]bool, error) {
+		return issuesReleasedForWait(ctx, tx, keys)
+	})
+}
+
+func issuesReleasedForWait(ctx context.Context, tx pgx.Tx, keys []string) (map[string]bool, error) {
+	rows, err := tx.Query(ctx, `select key from issues where key = any($1) and released_for_wait_at is not null`, keys)
 	if err != nil {
 		return nil, fmt.Errorf("read which of %d issues wait on another issue: %w", len(keys), err)
 	}
