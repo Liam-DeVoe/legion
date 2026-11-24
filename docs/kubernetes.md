@@ -8156,8 +8156,8 @@ The release does five things, in this order:
    The mark comes first, before the record and before the release reads which claims it stops, and every role start reads the mark once more just before its role starts, so a start either sees the mark or is among the claims the release stops.
    A record that does not commit clears the mark again, and the command prints the daemon's refusal: so does one whose transaction finds that a pause committed after the first read of the pause, which the release answers `409 PROJECT_PAUSED` as above.
    The record's start is the moment of the write that commits, and the bound counts from that start.
-   The daemon tries to record the release for a tenth of the bound, and for at least 2 seconds.
-   A record that has not committed by then clears the mark, and the command prints the daemon's refusal.
+   The daemon tries to record the release for a tenth of the bound, and for at least 2 seconds, and waits up to 2 seconds more for a commit it has already sent.
+   A record that has not committed by then is refused as one that does not commit, above.
    From the mark until the daemon's process ends, the daemon starts nothing of the project: it creates no Sandbox, pod, repository cache or image probe, starts no role process, and hands no claim a task.
    The operator's spawn, retry, resume and deliver, and a fresh session and a compaction, are refused `409 PROJECT_RELEASED` (`… refused: the project release holds every start until the daemon's next boot`).
    A pause is refused `409 PROJECT_RELEASING` until the release has finished, and taken once it has ([Pausing a project](#pausing-a-project)), so a project is paused under the mark only once the release has finished.

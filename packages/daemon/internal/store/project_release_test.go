@@ -98,6 +98,19 @@ func outboxIDs(t *testing.T, st *Store) []int64 {
 	return ids
 }
 
+// faultedStore is st's database through a commit-fault proxy, opened as a store of its own: the
+// start runs on it, and st reads what committed.
+func faultedStore(t *testing.T, st *Store) (*Store, *testdb.CommitFault) {
+	t.Helper()
+	dsn, fault := testdb.CommitFaults(t, st.Pool().Config().ConnString())
+	faulted, err := Open(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("open the store through the fault proxy: %v", err)
+	}
+	t.Cleanup(faulted.Close)
+	return faulted, fault
+}
+
 // A project release's record is written in one transaction with the two things the release reads
 // from that same moment, and this case reads all three answers.
 //
@@ -262,18 +275,13 @@ func TestStartProjectReleaseRefusesAReleaseItCouldNotCarryOut(t *testing.T) {
 // while its reply was lost, and whose outcome the store could not say until it answered again,
 // answers nil once the store says it committed, with that run's record, take-over and stop set,
 // and its record is the project's one. The negative control is plain Transact: the start answers
-// ErrCommitOutcomeUnknown, on which its caller clears its mark beside a record that runs.
+// ErrCommitOutcomeUnknown.
 func TestAProjectReleaseStartWhoseCommitReplyIsLostAnswersTheRunThatCommitted(t *testing.T) {
 	st := migratedStore(t)
 	token := seedProjectClaim(t, st, "legion", "LEGION-208", claim.RoleImplementer, supervise.StateWorking, "")
 	teardown := queueReleaseRow(t, st, "LEGION-210", "issue_release", `{"tree":"LEGION-208","generation":3,"treeGeneration":1}`)
 	markIdleRelease(t, st, "legion", "LEGION-210", releaseKindUnowned, teardown, teardown)
-	proxied, fault := testdb.CommitFaults(t, st.Pool().Config().ConnString())
-	faulted, err := Open(context.Background(), proxied)
-	if err != nil {
-		t.Fatalf("open the store through the fault proxy: %v", err)
-	}
-	t.Cleanup(faulted.Close)
+	faulted, fault := faultedStore(t, st)
 
 	// The proxy refuses every connection once the reply is lost, so the commit's own read of the
 	// outcome fails, and passes them again two seconds later, while the start still waits.
@@ -313,12 +321,7 @@ func TestAProjectReleaseStartWhoseCommitReplyIsLostAnswersTheRunThatCommitted(t 
 // run's start, a minute before the run that committed.
 func TestAProjectReleaseStartRunAgainCountsItsBoundFromTheRunThatCommitted(t *testing.T) {
 	st := migratedStore(t)
-	proxied, fault := testdb.CommitFaults(t, st.Pool().Config().ConnString())
-	faulted, err := Open(context.Background(), proxied)
-	if err != nil {
-		t.Fatalf("open the store through the fault proxy: %v", err)
-	}
-	t.Cleanup(faulted.Close)
+	faulted, fault := faultedStore(t, st)
 
 	// The clock moves on a minute at each read, so the start a run reads tells which run it was.
 	var reads []time.Time

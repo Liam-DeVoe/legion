@@ -288,8 +288,8 @@ func (s *releaseRecord) PullRequestMerged(context.Context, string) (bool, error)
 }
 
 // unansweredStart is a release's store whose start answers only once its context ends, with that
-// context's error, as the store does while it runs a write that does not commit again and again
-// (store.StartProjectRelease).
+// context's error. The store's own start also runs until its context ends while its write does not
+// commit, and then answers the last run's error (store.StartProjectRelease).
 type unansweredStart struct{ *releaseRecord }
 
 func (unansweredStart) StartProjectRelease(ctx context.Context, _ string, _ func() time.Time, _ time.Duration) (store.ProjectRelease, []store.TakenOverIdleRelease, []store.ProjectReleaseClaim, error) {

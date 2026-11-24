@@ -125,7 +125,8 @@ func (r *projectRelease) finished() bool {
 // may have committed, and then, with no release running it, it refuses every pause until the
 // operator's retry runs a release whose finish leaves the newest record finished
 // (store.ProjectReleasingError), and every idle release until the next boot ends it
-// (store.Store.EndProjectReleasesAtBoot). A task a machine held back while the mark stood is sent
+// (store.Store.EndProjectReleasesAtBoot); and the claims that the idle releases it took over had
+// stopped get no backstop (armTakenOver). A task a machine held back while the mark stood is sent
 // at once (unmarked) rather than at the claim's next event; a held outbox row runs at its next
 // read, within releaseHoldSpacing, a launch the launch check refused at its probe-interval retry,
 // and the periodic work at its next tick.
