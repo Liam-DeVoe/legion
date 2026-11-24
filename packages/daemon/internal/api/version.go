@@ -3713,6 +3713,9 @@ package api
 // keeps 234: 229 (#2230), 230 (#4580), 231 (#4540), 232 (#5271) and 233 (#4173, #4180, #4182,
 // #4193 and #4932) are other open pull requests', and no open head but this one declares 234
 // (read at the head of each of the 492 open pull requests, 2026-11-24T10:02:56Z to 10:05:20Z).
+// The merge of main `e01affc8`, which still declares 228, keeps 234: no open head but this one
+// declares it (read at the head of each of the 483 open pull requests, 2026-11-24T11:35:13Z to
+// 11:37:36Z).
 // Read the base's own number and every open head again at the next merge rather than from
 // this line.)
 const DaemonAPIVersion = 234
