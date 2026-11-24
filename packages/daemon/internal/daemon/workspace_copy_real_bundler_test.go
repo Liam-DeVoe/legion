@@ -118,6 +118,7 @@ func bundledCommits(t *testing.T, w *shimtest.Workspace, bundle []byte) []string
 // commit since, so each copy is read back as the pod that replaces this one reads it, against a
 // clone of the remote alone.
 func TestTheCadenceStoresTheShimsBundleOfARealWorkspaceAtATurnsEndAndFiveMinutesIntoATurn(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	workspace := shimtest.New(t, rig.issue.Key)
 	bundler := &shimCopyBundler{workspace: workspace}

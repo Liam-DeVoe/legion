@@ -13,6 +13,7 @@ import (
 // each issue pod that runs the test database a disk of its own, while leaving the key out hands
 // the runtime no disk and keeps the cluster in the pod's emptyDir.
 func TestPGDiskTheSettingReachesTheSandboxRuntime(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{Project: "TEST", Projects: map[string]config.Project{"TEST": {}}}
 	k := config.Kubernetes{
 		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),

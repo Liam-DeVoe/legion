@@ -26,6 +26,7 @@ import (
 // cadence then leaves the idle issue alone, as it leaves every issue between turns whose last copy
 // holds the turn's end.
 func TestACopyThatFailedAtATurnsEndIsTakenAgainBetweenTurnsUntilOneIsStored(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	rig.copiesTurnEnds()
 	ctx := context.Background()
@@ -75,6 +76,7 @@ func TestACopyThatFailedAtATurnsEndIsTakenAgainBetweenTurnsUntilOneIsStored(t *t
 // The controls are noLiveRole without the period's limit, under which the test fails at the
 // second tick's line, and noLiveRole at Debug, under which it fails at the first tick's level.
 func TestTheCadenceNamesARetryWithNoLiveRoleAtInfoOnceAPeriodAndAsksNothing(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	rig.clock.advance(0)
@@ -125,6 +127,7 @@ func TestTheCadenceNamesARetryWithNoLiveRoleAtInfoOnceAPeriodAndAsksNothing(t *t
 // the first in a period (noLiveRole). A recorded issue still in the workflow keeps its retry,
 // whatever state its claim is in.
 func TestTheCadenceForgetsTheRetryOfAnIssueTheProjectDoesNotRecordAndKeepsALiveIssues(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	const unrecorded = "LEGION-404"
@@ -163,6 +166,7 @@ func TestTheCadenceForgetsTheRetryOfAnIssueTheProjectDoesNotRecordAndKeepsALiveI
 // The control is the cadence forgetting the retry of an issue whose claims are all retired: the
 // first due tick then forgets it, and the test fails there.
 func TestTheCadenceKeepsTheRetryOfALiveIssueBetweenPhases(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	rig.clock.advance(0)
@@ -204,6 +208,7 @@ func TestTheCadenceKeepsTheRetryOfALiveIssueBetweenPhases(t *testing.T) {
 // record, and the child of a parked tree's the decision without its root's; each fails at the
 // first due tick.
 func TestTheCadenceForgetsTheRetryOfAClosedIssue(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// close writes the records that close the issue it answers, which owes the retry.
@@ -281,6 +286,7 @@ func TestTheCadenceForgetsTheRetryOfAClosedIssue(t *testing.T) {
 // as it asks of every issue in a turn, and not inside the period. The shim refuses the bundle with
 // its size, as the fake connection answers it, as production's does.
 func TestACopyRefusedForItsSizeOwesNoRetryAndIsAskedAgainOnlyInsideATurn(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	rig.clock.advance(0)

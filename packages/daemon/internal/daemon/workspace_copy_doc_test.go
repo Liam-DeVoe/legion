@@ -55,6 +55,7 @@ const (
 // turn's copy from the same budget, and the line from runningCopyUnsavedLine, and the bullet for an
 // end the cluster made states how far behind the restored copy can be, which is the same period.
 func TestKubernetesDocStatesTheRunningCopysConstants(t *testing.T) {
+	t.Parallel()
 	period := docMinutes(t, runningCopyPeriod)
 
 	const cadence = `docs/kubernetes.md's cadence paragraphs of "The copy of a running pod's workspace"`
@@ -84,6 +85,7 @@ func TestKubernetesDocStatesTheRunningCopysConstants(t *testing.T) {
 // Its 5-minute bound and the line a copy that was not stored writes are this package's constants,
 // checked against them (TestKubernetesDocStatesTheRunningCopysConstants).
 func TestKubernetesDocStatesTheWorkspaceCopyCadence(t *testing.T) {
+	t.Parallel()
 	const what = `docs/kubernetes.md's cadence paragraphs of "The copy of a running pod's workspace"`
 	_, region := testdoc.Region(t, workspaceCopyDocExtract, what, copyCadenceStart, copyCadenceEnd)
 	testdoc.RequireDocFacts(t, what, region, []testdoc.Fact{
@@ -111,6 +113,7 @@ func TestKubernetesDocStatesTheWorkspaceCopyCadence(t *testing.T) {
 // What a pod loses and what it keeps at each kind of end, read as the three bullets it is: a
 // reader tells an end the cluster made from an idle release and from an issue's close by them.
 func TestKubernetesDocStatesWhatEachKindOfPodEndLosesAndKeeps(t *testing.T) {
+	t.Parallel()
 	const what = `docs/kubernetes.md's "What each kind of end loses and keeps" paragraph`
 	lines, _ := testdoc.Region(t, workspaceCopyDocExtract, what, endsApartStart, endsApartEnd)
 	bullets := testdoc.RegionBullets(lines)

@@ -24,6 +24,7 @@ import (
 // The control is the old behaviour, which started no copy before the run: the turn's end then
 // starts none, its held stop runs at once, and the test fails at the wait.
 func TestATurnsEndBeforeTheDaemonsRunStartsIsCopiedOnceTheRunHasStarted(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	rig.copiesTurnEnds()
 	rig.w.copies.mu.Lock()
@@ -53,6 +54,7 @@ func TestATurnsEndBeforeTheDaemonsRunStartsIsCopiedOnceTheRunHasStarted(t *testi
 // The control is that branch owing no retry: the cadence then never takes the copy again, and the
 // test fails at the retries the cadence owes.
 func TestACopyThatCannotReadItsPodsReleaseBundleOwesARetryAndTellsTheTurnsEnd(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	rig.setLocatorPod(t, releasedPodUID)
@@ -89,6 +91,7 @@ func TestACopyThatCannotReadItsPodsReleaseBundleOwesARetryAndTellsTheTurnsEnd(t 
 //
 // The control is that branch telling nobody: the test fails at the count of ends told.
 func TestAnOwedCopyThatCanNoLongerStartTellsEveryTurnsEndItStandsFor(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	run, stop := context.WithCancel(context.Background())
 	rig.w.copies.runUnder(run)
@@ -112,6 +115,7 @@ func TestAnOwedCopyThatCanNoLongerStartTellsEveryTurnsEndItStandsFor(t *testing.
 //
 // The control is the give-back starting no owed copy: the test fails waiting for the bundler.
 func TestACopyOwedToATurnsEndBehindAReleaseSaveAsksThatRoleAndTellsItsEnd(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	rig.liveArchitect(t)
 	giveBack, err := rig.w.copies.hold(context.Background(), rig.issue.Key)

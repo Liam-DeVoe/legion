@@ -116,6 +116,7 @@ func (r *copyRig) setLocatorPod(t *testing.T, pod string) {
 //
 // The refusal is logged at Info under a reason of its own, never as a failure a deployment counts.
 func TestASecondPushAfterAnIdleReleaseStillLeavesTheNextPodItsReleaseBundle(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	rig.bundler.answers(copyRigBundle, nil)
@@ -195,6 +196,7 @@ func TestASecondPushAfterAnIdleReleaseStillLeavesTheNextPodItsReleaseBundle(t *t
 // before: the pod that replaces the released one, once it has asked for the bundle, is copied
 // while it works.
 func TestNoShimIsAskedForACopyOfThePodAnIdleReleaseSavedItsBundleOff(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	apply := rig.pushEngine(t)

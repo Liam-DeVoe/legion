@@ -385,6 +385,7 @@ func (r *copyRig) copiesTurnEnds() {
 // period (runningCopy.started, the cadence's own clock), and how long the bundler took, which is
 // what a deployment reads the cadence by.
 func TestATurnThatEndsBundlesACopyOfTheIssueWorkspace(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	rig.copiesTurnEnds()
 	// An architect an earlier release left suspended holds no process, and the copy is asked of
@@ -424,6 +425,7 @@ func TestATurnThatEndsBundlesACopyOfTheIssueWorkspace(t *testing.T) {
 // eviction takes. The period runs from the start of the copy before it, so a pass before it is
 // due takes nothing and a pass after it takes another.
 func TestFiveMinutesIntoATurnTheCadenceBundlesTheWorkspaceCopyAgain(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	rig.turnStart(t)
@@ -456,6 +458,7 @@ func TestFiveMinutesIntoATurnTheCadenceBundlesTheWorkspaceCopyAgain(t *testing.T
 // the workspace of a pod whose roles are all idle changes under nobody: a cadence that copied it
 // anyway would store the same bundle again every period for as long as the pod stood.
 func TestNoWorkspaceCopyIsBundledBetweenTurnsOfAnIdleIssuesPod(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 
@@ -488,6 +491,7 @@ func TestNoWorkspaceCopyIsBundledBetweenTurnsOfAnIdleIssuesPod(t *testing.T) {
 // each. That the owed copy is what holds the work a turn ended with is the next test's
 // (TestATurnThatEndsWhileACopyIsInFlightIsCopiedAgainOnceThatCopyEnds).
 func TestACopyStillRunningStartsNoSecondWorkspaceBundleAndOwesTheRefusedOne(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	release := make(chan struct{})
@@ -554,6 +558,7 @@ func TestACopyStillRunningStartsNoSecondWorkspaceBundleAndOwesTheRefusedOne(t *t
 // next task is sent while the bundler is still holding. The copy itself is abandoned at its
 // budget and logged under that reason, rather than running into the next period.
 func TestABlockingBundlerDelaysNoTurnEndAndItsWorkspaceCopyIsAbandonedAtItsBudget(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	rig.copiesTurnEnds()
 	rig.w.copyBudget = 2 * time.Second
@@ -626,6 +631,7 @@ func TestABlockingBundlerDelaysNoTurnEndAndItsWorkspaceCopyIsAbandonedAtItsBudge
 // — which is the push's path. A workspace over the bound a copy carries is refused by the shim
 // with its size, and reaches the daemon as the fake connection answers it, as production's does.
 func TestEachFailedWorkspaceCopyIsLoggedByItsReasonAndLeavesTheIdleIssuesCopyAsItWas(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		reason string
@@ -714,6 +720,7 @@ func TestEachFailedWorkspaceCopyIsLoggedByItsReasonAndLeavesTheIdleIssuesCopyAsI
 // the claims are the caller's, as the cadence hands them, so the clock is the first thing the copy
 // reads of it.
 func TestACopyWhoseTakeCannotReadTheStoresClockAsksNoShimAndKeepsTheIssuesCopy(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	rig.copyWorkspace(t)
@@ -752,6 +759,7 @@ func TestACopyWhoseTakeCannotReadTheStoresClockAsksNoShimAndKeepsTheIssuesCopy(t
 // has since been pushed, and the next pod must never restore it over the branch it was pushed to.
 // It is the rule the release bundle's own save follows (outbox.bundleIssueWorkspace).
 func TestAWorkspaceThatBundlesToNothingDropsTheIssuesRunningCopy(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	rig.copyWorkspace(t)
@@ -778,6 +786,7 @@ func TestAWorkspaceThatBundlesToNothingDropsTheIssuesRunningCopy(t *testing.T) {
 // what the copies hold. So the pass takes its copy with release off, which is what wiring it in
 // attach rather than attachIdleRelease buys.
 func TestTheWorkspaceCopyIsBundledWithIdleReleaseOff(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	rig.w.idlePeriod, rig.w.idleRuntime = 0, nil
 	rig.turnStart(t)
@@ -794,6 +803,7 @@ func TestTheWorkspaceCopyIsBundledWithIdleReleaseOff(t *testing.T) {
 // would otherwise cost every in-turn copy of such a deployment while the copy each turn's end
 // takes went on running.
 func TestTheWorkspaceCopyIsBundledWhileTheEnvoyListenerIsSilent(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	recordListenerReady(t, rig.pool, time.Now().UTC().Add(-listenerReadyWindow-time.Minute))
 	if rig.w.listenerLive(context.Background()) {
@@ -813,6 +823,7 @@ func TestTheWorkspaceCopyIsBundledWhileTheEnvoyListenerIsSilent(t *testing.T) {
 // entry whose last copy came to nothing is kept whatever its age: dropped, it would owe no retry,
 // and an issue between turns would never be copied again.
 func TestTheCadenceForgetsAnIssueWhoseWorkspaceCopyPeriodHasPassed(t *testing.T) {
+	t.Parallel()
 	clock := &heldClock{}
 	clock.advance(0)
 	copies := runningCopies{now: clock.Now}
@@ -856,6 +867,7 @@ func TestTheCadenceForgetsAnIssueWhoseWorkspaceCopyPeriodHasPassed(t *testing.T)
 // that bundles no workspace, which is `runtime: tmux`, and a daemon with no store. Either leaves
 // the tick running no ticker at all, as release's own tick does where release is off.
 func TestTheWorkspaceCopyTickDoesNothingWithoutABundlerOrAStore(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		w    *workflowRuntime
@@ -883,6 +895,7 @@ func TestTheWorkspaceCopyTickDoesNothingWithoutABundlerOrAStore(t *testing.T) {
 // eviction of that idle pod then loses the end of the turn. One copy of an issue is still in
 // flight at a time; the turn's end is owed, not dropped.
 func TestATurnThatEndsWhileACopyIsInFlightIsCopiedAgainOnceThatCopyEnds(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	rig.copiesTurnEnds()
 	ctx := context.Background()
@@ -927,6 +940,7 @@ func TestATurnThatEndsWhileACopyIsInFlightIsCopiedAgainOnceThatCopyEnds(t *testi
 // seven minutes after its own. Here the first copy takes two minutes of the cadence's clock, and
 // the tick comes every minute, on the minute.
 func TestTheCadenceStartsTheCopiesOfOneTurnAtMostAPeriodApart(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	tick := rig.w.copyTick()

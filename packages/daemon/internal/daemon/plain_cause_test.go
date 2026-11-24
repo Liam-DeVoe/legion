@@ -40,6 +40,7 @@ type toldNotice struct {
 // twice, against a launch failure limit of two, and the daemon's own hook carries the failure to
 // the workflow, which writes the notices.
 func TestPlainCauseTheNoticesOfAClaimItsDeathsFailSayWhatKilledIt(t *testing.T) {
+	t.Parallel()
 	const detail = "pod legion-legion-legion-208 (uid uid-pod-1) Failed: container roles terminated (OOMKilled, exit code 137)"
 	const death = "the pod's roles container, which runs every role of this issue, was killed because it used more than its 19 GiB " +
 		"memory limit. The runtime's detail: gone: " + detail

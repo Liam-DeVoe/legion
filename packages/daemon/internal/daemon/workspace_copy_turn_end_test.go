@@ -26,6 +26,7 @@ import (
 // The control is the copy reading the claims itself again, as it did before it was handed the
 // claim: it then asks the architect, and the test fails at the role the bundle was asked of.
 func TestATurnsEndCopyAsksTheRoleWhoseTurnEndedAndTheStopHeldForThatEndWaitsForIt(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	rig.copiesTurnEnds()
 	rig.liveArchitect(t)
@@ -61,6 +62,7 @@ func TestATurnsEndCopyAsksTheRoleWhoseTurnEndedAndTheStopHeldForThatEndWaitsForI
 // role it was owed with: it then asks the architect a second time, and the test fails at the role
 // the owed copy was asked of.
 func TestTheCopyOwedToATurnsEndAsksTheRoleWhoseTurnEndedAndItsHeldStopWaitsForIt(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	rig.copiesTurnEnds()
 	rig.liveArchitect(t)
@@ -99,6 +101,7 @@ func TestTheCopyOwedToATurnsEndAsksTheRoleWhoseTurnEndedAndItsHeldStopWaitsForIt
 // the owed copy asked, and the turn's end read from whether its ask brought a callback, as it was,
 // fails the second the same way.
 func TestTheCopyOwedBehindOneInFlightAsksTheTurnsEndsRoleWhicheverAskCameFirst(t *testing.T) {
+	t.Parallel()
 	const owedLine = "running copy: a copy of this issue's workspace is already being taken, so this one is owed and will be taken when that one ends"
 	for _, tc := range []struct {
 		name string

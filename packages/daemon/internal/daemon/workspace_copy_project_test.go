@@ -17,6 +17,7 @@ import (
 // under its own reason, with the issue, the role and the pod, writes no row and drops none, and
 // owes no retry, since a retry would be refused the same way.
 func TestACopyOfAnIssueTheProjectDoesNotRecordIsLoggedAndWritesNothing(t *testing.T) {
+	t.Parallel()
 	empty := copyRigBundle
 	empty.Bundle, empty.Head, empty.Tips = nil, "", nil
 	for _, tc := range []struct {

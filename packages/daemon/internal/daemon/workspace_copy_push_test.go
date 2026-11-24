@@ -44,6 +44,7 @@ func (c *concurrency) enter() func() {
 // issue has no pull request: a branch is pushed before its pull request opens, and the record is
 // the push's own.
 func TestAPushTheDaemonRecordsBundlesACopyAfterItsCommitThroughTheSingleFlight(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Pushes: rig.st, PushRecorded: rig.w.copyWorkspaceAtPush}, quietLogger())
@@ -123,6 +124,7 @@ func TestAPushTheDaemonRecordsBundlesACopyAfterItsCommitThroughTheSingleFlight(t
 // was owed can take two copy budgets, more than a short `idle_minutes`. The save waits for the
 // copy in flight, then bundles, and its stored bundle drops the copy that finished just before it.
 func TestAReleaseSaveWaitsForTheRunningCopyBundlerInFlightBeforeItBundles(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	release := rig.heldBundler()
@@ -174,6 +176,7 @@ func TestAReleaseSaveWaitsForTheRunningCopyBundlerInFlightBeforeItBundles(t *tes
 // and dropped with the save it would leave an eviction of that idle pod nothing newer than what
 // the issue held before.
 func TestAPushCopyOwedWhileAReleaseSaveHeldThePlaceIsTakenWhenTheSaveStoresNoBundle(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	apply := rig.pushEngine(t)
@@ -206,6 +209,7 @@ func TestAPushCopyOwedWhileAReleaseSaveHeldThePlaceIsTakenWhenTheSaveStoresNoBun
 // about it. Stored, the copy would be the later of the issue's two copies, offered to the next pod
 // in the bundle's place, and the bundle's row would hold the issue's pod.
 func TestAPushCopyOwedWhileAReleaseSaveHeldThePlaceIsRefusedWhenTheSaveStoresItsBundle(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	apply := rig.pushEngine(t)
@@ -241,6 +245,7 @@ func TestAPushCopyOwedWhileAReleaseSaveHeldThePlaceIsRefusedWhenTheSaveStoresIts
 // copy's budget, and the copy is not reported as a failed save against a store that is closing.
 // Once the run has ended, no copy is started at all.
 func TestTheWorkspaceCopyBundlerEndsWithTheDaemonsRun(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	run, stop := context.WithCancel(context.Background())
 	rig.w.copies.runUnder(run)
@@ -287,6 +292,7 @@ func TestTheWorkspaceCopyBundlerEndsWithTheDaemonsRun(t *testing.T) {
 // daemon's store as its record (openWorkflow), and the record is read back by the store's restore,
 // which is the one reader of it.
 func TestAPushAppliedAgainOrLateNeverMovesTheNewestRecordedPushBack(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Pushes: rig.st}, quietLogger())
@@ -358,6 +364,7 @@ func TestAPushAppliedAgainOrLateNeverMovesTheNewestRecordedPushBack(t *testing.T
 // and the owed copy asks the role it was owed with — so neither finds no role, and what each asks
 // is pinned by workspace_copy_turn_end_test.go.
 func TestAPushOfAnIssueWithNoLiveRoleLogsItsCopyAtInfoOnceAPeriodAndNeverAtWarn(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Pushes: rig.st, PushRecorded: rig.w.copyWorkspaceAtPush}, quietLogger())
@@ -451,6 +458,7 @@ func (r *copyRig) copiedAfterThePush(t *testing.T, stored heldCopy) {
 // stood, and an eviction of that pod would lose both. The first due tick with a live role takes
 // the copy instead, after the push, and the stored copy pays the retry.
 func TestAPushCopyThatFindsNoRoleBesideACopyInFlightLeavesTheOvertakenCopyOwingARetry(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	rig.clock.advance(0)
@@ -499,6 +507,7 @@ func TestAPushCopyThatFindsNoRoleBesideACopyInFlightLeavesTheOvertakenCopyOwingA
 // the give-back to leave the issue's retry as the save found it, nothing would copy the idle pod
 // again and its newest copy would stay older than the push.
 func TestACopyThatCameToNothingWhileAReleaseSaveHeldThePlaceIsRetriedOnceTheReleaseIsCancelled(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	rig.clock.advance(0)

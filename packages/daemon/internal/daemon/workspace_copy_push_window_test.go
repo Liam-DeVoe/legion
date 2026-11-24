@@ -21,6 +21,7 @@ import (
 // pod's workspace back behind the push, which is what the push rule refuses
 // (runtime.DecideWorkspaceRestore).
 func TestACopyReadBeforeAPushAndWrittenAfterItsRecordIsNotRestored(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	release := make(chan struct{})

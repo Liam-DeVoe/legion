@@ -26,6 +26,7 @@ import (
 // does: R2 holds that an issue holding a running copy is still released when it is idle, and that
 // a running copy never replaces a release bundle whose restore has not happened.
 func TestAPushRecordedWhileAReleaseRunsLeavesNoReleaseBundleHoldingTheNextPod(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	rig.bundler.answers(copyRigBundle, nil)
@@ -127,6 +128,7 @@ func copyOutcomes(t *testing.T, rig *copyRig) []map[string]any {
 // the restore's confirmation is the keep the launcher's report runs
 // (store.KeepRestoredWorkspaceCopy).
 func TestAReleaseBundleOlderThanARecordedPushIsRestoredAndItsIssueIsReleasedWhenIdle(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	bundle := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the release saved"), Head: "c1",

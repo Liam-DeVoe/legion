@@ -49,6 +49,7 @@ func (r *idleRig) copyWorkspace(t *testing.T) runtime.WorkspaceBundle {
 // issue whose only saved work is one is released when it goes idle, where an unrestored release
 // bundle would hold it (workflow.IdleHoldBundleUnrestored).
 func TestAnIdleReleaseWithNothingUnpushedLeavesNoSavedWorkOfEitherKind(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.copyWorkspace(t)
@@ -80,6 +81,7 @@ func TestAnIdleReleaseWithNothingUnpushedLeavesNoSavedWorkOfEitherKind(t *testin
 // it would be the newer-looking of the two for any pod after the one that restores the bundle,
 // and that pod's workspace holds the descendants of the bundle's own work.
 func TestAnIdleReleaseThatSavesABundleLeavesNoRunningCopy(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	taken := rig.copyWorkspace(t)
@@ -109,6 +111,7 @@ func TestAnIdleReleaseThatSavesABundleLeavesNoRunningCopy(t *testing.T) {
 // either kind: nothing will restore either copy and nothing should, since the next pod of that
 // issue, if any, is a pod of work that was reopened over whatever was pushed.
 func TestTheWorkOfAFinishedIssueLeavesNoReleaseBundleAndNoRunningCopy(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the release saved"), Head: "abc",
@@ -152,6 +155,7 @@ func TestTheWorkOfAFinishedIssueLeavesNoReleaseBundleAndNoRunningCopy(t *testing
 // from outside before any turn — an eviction, a node drain — brings a pod that is sent the work
 // and keeps it once its launcher confirms the restore.
 func TestAReleaseAWakeCancelsAfterItsSaveLeavesItsWorkForThePodAfterAnEndToRestore(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	saved := rig.rt.bundle
@@ -213,6 +217,7 @@ func TestAReleaseAWakeCancelsAfterItsSaveLeavesItsWorkForThePodAfterAnEndToResto
 // the daemon hands the runtime (sandboxRuntime) and what the sandbox runtime's own restore tests
 // drive their reports through.
 func TestALateRestoreReportKeepsOnlyTheSavedWorkItsIdNames(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	st := outboxTreeStore(t, pool, "LEGION-208")
