@@ -3435,15 +3435,15 @@
         "kind": "message-refused",
         "issue": "ALPHA-1100",
         "refused": "message",
-        "dispatch_answer": "CAP_EXCEEDED: sob ouyctqtil ylmul jrvocogeg fpmipbw ds",
-        "length": 775,
+        "dispatch_answer": "post Dispatch message for ALPHA-1100: CAP_EXCEEDED: body block 1 (text) is 175 characters over the 32000-character block limit (32175/32000)",
+        "length": 32175,
         "refused_move": "implementing-planning",
         "begins": "a: b ugbvknfz ropvkkw xhhy rzkbomr esspkyfv yxnuy txy yuwzndqo bgq wokldsgiq txazwfpp hzdwn hjdvwcpqj caoun vuwo yxrml llcqw aqc yfoqkbgnq yphklfftb ykfv dwfybk kgcpwh bmwnrn evdbd nnr dcnh cnmjqqpq f",
         "words": {
           "begins": {
             "by": "implementer",
             "at": "2026-11-18T10:29:00Z",
-            "rest": 486
+            "rest": 31886
           }
         }
       }
@@ -3461,15 +3461,15 @@
         "kind": "message-refused",
         "issue": "BRAVO-2100",
         "refused": "message",
-        "dispatch_answer": "CAP_EXCEEDED: rvzec dqblz fbx fjxwizftq cttlns lgxnur ",
-        "length": 768,
+        "dispatch_answer": "post Dispatch message for BRAVO-2100: CAP_EXCEEDED: body block 1 (text) is 168 characters over the 32000-character block limit (32168/32000)",
+        "length": 32168,
         "refused_move": "merging-retro",
         "begins": "back\\slash nwtefuuum qbtnacqrk zmtuevioj aeztekcpm pubak onvcazm kve onjovkp xgikj zxtmda ftfyufcw nbt fwjrdob xkgjrq bafeuo nishdpsq gpcgd crvyeq xdjd sllijzgrl uqqfyer eneiuv wifnwj pjgpoen zrh jov ",
         "words": {
           "begins": {
             "by": "merger",
             "at": "2027-04-07T17:44:00Z",
-            "rest": 492
+            "rest": 31892
           }
         }
       }
@@ -3487,8 +3487,8 @@
         "kind": "message-refused",
         "issue": "ALPHA-1100",
         "refused": "message",
-        "dispatch_answer": "CAP_EXCEEDED: pfsmqh geflozeg anf jeil pmolxr syzvjexq",
-        "length": 122,
+        "dispatch_answer": "post Dispatch message for ALPHA-1100: CAP_EXCEEDED: body block 1 (text) is 120 characters over the 32000-character block limit (32120/32000)",
+        "length": 32122,
         "first_line_empty": true
       }
     },
@@ -3505,8 +3505,8 @@
         "kind": "message-refused",
         "issue": "BRAVO-2100",
         "refused": "message",
-        "dispatch_answer": "CAP_EXCEEDED: jfns hnz tbh qrq paiee kpq idksa sqjvm x",
-        "length": 122,
+        "dispatch_answer": "post Dispatch message for BRAVO-2100: CAP_EXCEEDED: body block 1 (text) is 120 characters over the 32000-character block limit (32120/32000)",
+        "length": 32122,
         "first_line_empty": true
       }
     },
@@ -3523,14 +3523,14 @@
         "kind": "message-refused",
         "issue": "ALPHA-1100",
         "refused": "message",
-        "dispatch_answer": "CAP_EXCEEDED: ncbj gudd liyatt mltcv pmmra tztd wusaje",
-        "length": 381,
+        "dispatch_answer": "post Dispatch message for ALPHA-1100: CAP_EXCEEDED: body block 1 (text) is 81 characters over the 32000-character block limit (32081/32000)",
+        "length": 32081,
         "begins": "ltjppsrz qxtbds wyozgoi inqds qccmbxx ksockuwk njucfh aioet mwyrs allzxss ncy twrkran bpfo uom qaziwk rlpqfgir tjsao wbusdhryo eip mhq kzlnlr ocv fsqwrqim gkedxenbv qpv wuggxspm yfnfveh xpnkukini siwv",
         "words": {
           "begins": {
             "by": "daemon",
             "at": "2026-11-18T10:29:00Z",
-            "rest": 181
+            "rest": 31881
           }
         }
       }
@@ -3548,14 +3548,14 @@
         "kind": "message-refused",
         "issue": "BRAVO-2100",
         "refused": "message",
-        "dispatch_answer": "CAP_EXCEEDED: mykhtv sfrfyyurn hky tkd cjcwh eywwcqj q",
-        "length": 381,
+        "dispatch_answer": "post Dispatch message for BRAVO-2100: CAP_EXCEEDED: body block 1 (text) is 81 characters over the 32000-character block limit (32081/32000)",
+        "length": 32081,
         "begins": "teszjbfmb fob ponhh dihu hxvz funu znlo yob ggc hrsizw ddj acefuixo pvhj vko otgur ese umpfczu gvk bcbwhtdt myhh jvlhe mmwvaoq ufm pugxmc zxtbqsx hhcd okz emunigf huxp bvdmgo fzqjkjlk qebi frtw kkm zf",
         "words": {
           "begins": {
             "by": "daemon",
             "at": "2027-04-07T17:44:00Z",
-            "rest": 181
+            "rest": 31881
           }
         }
       }
@@ -3573,8 +3573,8 @@
         "kind": "message-refused",
         "issue": "ALPHA-1100",
         "refused": "status",
-        "dispatch_answer": "CAP_EXCEEDED: oigtxdzkw pyexhdsd awfwizvsq r",
-        "length": 348,
+        "dispatch_answer": "post Dispatch message for ALPHA-1100: CAP_EXCEEDED: body block 1 (text) is 48 characters over the 32000-character block limit (32048/32000)",
+        "length": 32048,
         "refused_close": "before_first_phase",
         "begins": "pafxjonr pyfvkow llbdkjzy gnmzg rrmie anpdytr gkywqk rzthsf rek yyamu qrxw pkla aqazkctlg sifowcbs wzkuvear lrllwscsj lyoivj jhibz ekvskdmxc pap mjdrws bcs jeunqrgc msjddbm dlopha oqmxwj clvlyrh axu w",
         "status": "done",
@@ -3584,7 +3584,7 @@
           "begins": {
             "by": "architect",
             "at": "2026-11-18T10:29:00Z",
-            "rest": 100
+            "rest": 31800
           }
         }
       }
@@ -3602,7 +3602,7 @@
         "kind": "message-refused",
         "issue": "BRAVO-2100",
         "refused": "status",
-        "dispatch_answer": "NOT_FOUND: uumwowuy twwhy qxaqlkdw hidm h",
+        "dispatch_answer": "read Dispatch issue BRAVO-2100 before status write: NOT_FOUND: not found",
         "length": 348,
         "refused_close": "before_first_phase",
         "begins": "ypzmfnrx iqpefaeev lki kinvjeniu hmblu ezuidt vpsk mlezzjjf tuwvpa tekpfnijt jesy irojhomr yuei lrfn sdwzb ocjal qvzsjzjjk zppzu hctgg rehshq vznaad kuzlef ttghcqxr pikatd myi xdxrzhx zwyifd btu syvz ",
@@ -3631,7 +3631,7 @@
         "kind": "message-refused",
         "issue": "ALPHA-1100",
         "refused": "status",
-        "dispatch_answer": "NOT_FOUND: xpczrs xouigbb iewi ajugegh qa",
+        "dispatch_answer": "read Dispatch issue ALPHA-1100 before status write: NOT_FOUND: not found",
         "length": 387,
         "refused_move": "reviewing-implementing",
         "begins": "bqoq advynl ylcqgvruz ztdwo hrkcqb zxg dwbvcszip hdsop vkw bqddyz jhxspinm jzzesqdg ouezkeuqk qvmq wmmbejv qucxay rmyein udozmkdr mxpayxl rdo svfihmis rxygfkfv rhgharip ogt ikcqd lpw aupm pqejuwg vvmz",
@@ -3660,8 +3660,8 @@
         "kind": "message-refused",
         "issue": "BRAVO-2100",
         "refused": "status",
-        "dispatch_answer": "CAP_EXCEEDED: iyhbqm puedxsfb hoznxbo niwfhz",
-        "length": 387,
+        "dispatch_answer": "post Dispatch message for BRAVO-2100: CAP_EXCEEDED: body block 1 (text) is 87 characters over the 32000-character block limit (32087/32000)",
+        "length": 32087,
         "refused_move": "reviewing-implementing",
         "begins": "dwctf krawfyfs lvrzljd bys tolnf zhzfxjydu kmd fvpvzhvb nrvr uca cvrpk ouemr gxyvxylw ezjgxiqfj rrgvfrlr rdp ibwsb phhkxtc boan dkhdizbrz uve xyqjuisck psfyy ldvnve hlmyqoew tmixu rkyniy ajqkumz shzkc",
         "status": "icebox",
@@ -3671,7 +3671,7 @@
           "begins": {
             "by": "reviewer",
             "at": "2027-04-07T17:44:00Z",
-            "rest": 100
+            "rest": 31800
           }
         }
       }

@@ -496,6 +496,13 @@ var goldenKept = []goldenKeptOf{
 		values: func(map[string]string) map[string]string {
 			return map[string]string{"dispatch_words": goldenDeclineDispatchWords}
 		}},
+	{kind: texts.MessageRefused, what: "Dispatch's own answer to the refused write, as the daemon stores it (storetext.FarSideError of the error the row's run ended with): " +
+		"the daemon's wrapper around Dispatch's code and message, the same words in every refusal of that kind but for the issue and the counts they name",
+		keptBy: "the architect's prompt (prompts/go/architect-common.md), which gives a message-refused notice's dispatch_answer as Dispatch's own answer",
+		keys:   []string{"dispatch_answer"},
+		values: func(want map[string]string) map[string]string {
+			return map[string]string{"dispatch_answer": want["dispatch_answer"]}
+		}},
 	{kind: texts.PodWake, variants: []string{"role-message"}, what: "the facts of the role-message wake: how long Envoy keeps a role message, the field a kept card shows, " +
 		"that a kept card can come before the task, that a kept card whose hour ended before the session came back does not reach it, that Envoy tells the sender of a drop, " +
 		"the setting of a message that is not kept, and that its sender sends it again",

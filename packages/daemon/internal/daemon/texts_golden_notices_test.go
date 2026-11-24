@@ -5,16 +5,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
+	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/dispatchbody"
+
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -180,75 +185,84 @@ func (b *goldenBuild) notices(r goldenRendering) {
 		from := []phase.Phase{phase.Implementing, phase.Merging}[r.n-1]
 		to := []phase.Phase{phase.Planning, phase.Retro}[r.n-1]
 		queued := r.at(59)
-		// Dispatch answers a message body over its bound with CAP_EXCEEDED: the message route's
-		// check of the body (packages/envoy/internal/dispatch/api/messages.go:validateCreateMessage)
-		// gives the bound that the body broke to server.go:blockBoundError, which answers every cap
-		// refusal with that code. A reason posted beside a status is such a message too, so a
-		// reason refused beside a status that stands carries the same code.
-		const bodyRefused = "CAP_EXCEEDED: "
-		// A status row whose status and reason both did not land is one that ended at the issue
-		// read that opens it (outbox.go:status), and Dispatch answers that read 404 NOT_FOUND when
-		// it holds no such issue (GET /api/v1/issues/{key}: api/issue_queries.go:readIssue answers
-		// pgx.ErrNoRows, which api/handler_errors.go:writeHandlerError writes as NOT_FOUND).
-		// dispatch.PermanentRefusal takes that as permanent, so the row is finished refused with
-		// neither write made (statusRefusalTold). ISSUE_CHANGED, Dispatch's refusal of a write
-		// fenced on a read the issue has moved past, is no such refusal: the daemon reads the issue
-		// again and writes again (writeStatus), and the row retries on its backoff.
-		const statusRefused = "NOT_FOUND: "
-		// The refusal a status sample carries follows from whether its status stands: the
-		// reason's where it does, the opening read's where it does not.
-		refusal := func(statusSet bool) string {
+		// Each sample's refusal is the error the refused row's run ended with, which the notice
+		// carries as the daemon stores it (storetext.FarSideError): the daemon's own wrapper around
+		// Dispatch's answer, which reads as Dispatch's code and then its message (dispatch.Error).
+		// A message Dispatch refused for good is one over its bound (goldenPostRefused), so each
+		// such body holds a block longer than one block may be: words as long as one block may
+		// hold, and the text beside them in their block.
+		//
+		// The refusal a status sample carries follows from whether its status stands. Where it
+		// does, Dispatch refused the reason posted beside it for its bound and the status was
+		// written all the same, so the run ended with the reason's refused post, carried back with
+		// the status that stands (outbox.status, statusWriteFailure), and the reason holds a block
+		// over the bound as a refused message does. Where it does not, the run ended at the issue
+		// read that opens it, before the reason was posted (goldenReadRefused), and the reason is
+		// of an ordinary length.
+		refusal := func(statusSet bool, reason string) error {
 			if statusSet {
-				return bodyRefused
+				return &statusWriteFailure{err: goldenPostRefused(t, issue.Key, reason), wrote: statusWrites{status: true}}
 			}
-			return statusRefused
+			return goldenReadRefused(issue.Key)
+		}
+		reasonWords := func(statusSet bool) int {
+			if statusSet {
+				return dispatchbody.BlockUnits
+			}
+			return 300
 		}
 		// workflow's backwardMoveReason: the move and the role that asked, then that role's words.
-		words := goldenHostile[r.n-1][5] + " " + r.words("refused/body", 600) + "\n" + r.words("refused/rest", 80)
+		words := goldenHostile[r.n-1][5] + " " + r.words("refused/body", dispatchbody.BlockUnits) + "\n" + r.words("refused/rest", 80)
 		body := fmt.Sprintf("Legion moved this issue from %s back to %s at the %s's request: ", from, to, phase.RoleFor(from)) + words
-		refused := messagePostRefused(issue.Key, record.MessagePost{Body: body}, goldenErr(bodyRefused+r.words("refused/answer", 40)))
+		answer := goldenPostRefused(t, issue.Key, body)
+		refused := messagePostRefused(issue.Key, record.MessagePost{Body: body}, answer)
 		begins := refusedPreview(words)
 		b.notice(r, "message", arch, refusedQuotedAt(refused, queued),
-			goldenWant("issue", issue.Key, "refused", texts.RefusedMessage, "length", goldenUnits(body), "refused_move", phase.Pair(from, to),
-				"begins", begins.Text, "words.begins.by", phase.RoleFor(from), "words.begins.at", queued, "words.begins.rest", begins.Rest))
-		own := r.words("refused/own", 300) + "\n" + r.words("refused/own-rest", 80)
-		refused = messagePostRefused(issue.Key, record.MessagePost{Body: own}, goldenErr(bodyRefused+r.words("refused/own-answer", 40)))
+			goldenWant("issue", issue.Key, "refused", texts.RefusedMessage, "dispatch_answer", answer.Error(), "length", goldenUnits(body),
+				"refused_move", phase.Pair(from, to), "begins", begins.Text, "words.begins.by", phase.RoleFor(from), "words.begins.at", queued,
+				"words.begins.rest", begins.Rest))
+		own := r.words("refused/own", dispatchbody.BlockUnits) + "\n" + r.words("refused/own-rest", 80)
+		answer = goldenPostRefused(t, issue.Key, own)
+		refused = messagePostRefused(issue.Key, record.MessagePost{Body: own}, answer)
 		begins = refusedPreview(own)
 		b.notice(r, "message-own", arch, refusedQuotedAt(refused, queued),
-			goldenWant("issue", issue.Key, "refused", texts.RefusedMessage, "length", goldenUnits(own), "begins", begins.Text,
-				"words.begins.by", texts.ByDaemon, "words.begins.at", queued, "words.begins.rest", begins.Rest))
+			goldenWant("issue", issue.Key, "refused", texts.RefusedMessage, "dispatch_answer", answer.Error(), "length", goldenUnits(own),
+				"begins", begins.Text, "words.begins.by", texts.ByDaemon, "words.begins.at", queued, "words.begins.rest", begins.Rest))
 		// A message of the daemon's own whose first line is empty, ended by a carriage return and a
 		// line feed: begins quotes nothing, and the notice says that the first line is empty, as
 		// main's said that such a message begins "".
-		blank := "\r\n" + r.words("refused/blank", 120)
-		refused = messagePostRefused(issue.Key, record.MessagePost{Body: blank}, goldenErr(bodyRefused+r.words("refused/blank-answer", 40)))
+		blank := "\r\n" + r.words("refused/blank", dispatchbody.BlockUnits+120)
+		answer = goldenPostRefused(t, issue.Key, blank)
+		refused = messagePostRefused(issue.Key, record.MessagePost{Body: blank}, answer)
 		b.notice(r, "message-empty-first-line", arch, refusedQuotedAt(refused, queued),
-			goldenWant("issue", issue.Key, "refused", texts.RefusedMessage, "length", goldenUnits(blank), "first_line_empty", true))
+			goldenWant("issue", issue.Key, "refused", texts.RefusedMessage, "dispatch_answer", answer.Error(), "length", goldenUnits(blank),
+				"first_line_empty", true))
 		// A close's reason, the daemon's sentence and then the architect's. In sample 1 the status
 		// stands and Dispatch refused the reason. In sample 2 Dispatch refused the issue read that
 		// opens the row, so neither write was made.
 		status := []string{"done", "icebox"}[r.n-1]
-		reason := r.words("refused/reason", 300)
 		closeSet := r.n == 1
-		refused = statusWriteRefused(issue.Key, record.StatusWrite{Status: status, Reason: intake.CloseRoot{Reason: reason}.Message()},
-			goldenErr(refusal(closeSet)+r.words("refused/status", 30)), statusWrites{status: closeSet})
+		reason := r.words("refused/reason", reasonWords(closeSet))
+		closed := record.StatusWrite{Status: status, Reason: intake.CloseRoot{Reason: reason}.Message()}
+		answer = refusal(closeSet, closed.Reason)
+		refused = statusWriteRefused(issue.Key, closed, answer, statusWrites{status: closeSet})
 		begins = refusedPreview(reason)
 		b.notice(r, "status", arch, refusedQuotedAt(refused, queued),
-			goldenWant("issue", issue.Key, "refused", texts.RefusedStatus, "status", status, "status_set", closeSet, "reason_posted", false,
-				"refused_close", texts.BeforeFirstPhase, "begins", begins.Text, "words.begins.by", arch, "words.begins.at", queued,
-				"words.begins.rest", begins.Rest))
+			goldenWant("issue", issue.Key, "refused", texts.RefusedStatus, "dispatch_answer", answer.Error(), "status", status, "status_set", closeSet,
+				"reason_posted", false, "refused_close", texts.BeforeFirstPhase, "begins", begins.Text, "words.begins.by", arch,
+				"words.begins.at", queued, "words.begins.rest", begins.Rest))
 		// A reviewer's backward move refused beside its status. In sample 1 Dispatch refused the
 		// issue read that opens the row, so neither write was made. In sample 2 the status stands
 		// and Dispatch refused the reason.
-		moved := r.words("refused/moved", 300)
 		moveSet := r.n == 2
-		refused = statusWriteRefused(issue.Key, record.StatusWrite{Status: status,
-			Reason: "Legion moved this issue from reviewing back to implementing at the reviewer's request: " + moved},
-			goldenErr(refusal(moveSet)+r.words("refused/move-status", 30)), statusWrites{status: moveSet})
+		moved := r.words("refused/moved", reasonWords(moveSet))
+		move := record.StatusWrite{Status: status, Reason: "Legion moved this issue from reviewing back to implementing at the reviewer's request: " + moved}
+		answer = refusal(moveSet, move.Reason)
+		refused = statusWriteRefused(issue.Key, move, answer, statusWrites{status: moveSet})
 		begins = refusedPreview(moved)
 		b.notice(r, "status-move", arch, refusedQuotedAt(refused, queued),
-			goldenWant("issue", issue.Key, "refused", texts.RefusedStatus, "status", status, "status_set", moveSet, "reason_posted", false,
-				"refused_move", phase.Pair(phase.Reviewing, phase.Implementing), "begins", begins.Text,
+			goldenWant("issue", issue.Key, "refused", texts.RefusedStatus, "dispatch_answer", answer.Error(), "status", status, "status_set", moveSet,
+				"reason_posted", false, "refused_move", phase.Pair(phase.Reviewing, phase.Implementing), "begins", begins.Text,
 				"words.begins.by", claim.RoleReviewer, "words.begins.at", queued, "words.begins.rest", begins.Rest))
 	}
 
@@ -503,6 +517,45 @@ func (b *goldenBuild) notices(r goldenRendering) {
 	b.notice(r, "switched-off", arch, workflow.VolumeNearFullNotice(issue.Key, off),
 		goldenWant("issue", issue.Key, "volume.podUid", pod, "volume.switchedOff", true, "volume.usedBytes", off.UsedBytes,
 			"volume.freeBytes", off.FreeBytes, "volume.stopReason", off.StopReason))
+}
+
+// goldenPostRefused is the error the outbox's post of body on issue ends with where Dispatch
+// refuses the body for a block over its bound, word for word: the message executor's wrapper
+// (outbox.message) around Dispatch's answer, 400 CAP_EXCEEDED with Dispatch's own words for the
+// bound the body broke. Those words are dispatchbody.Check's, the check of the message route
+// (packages/envoy/internal/dispatch/api/messages.go:validateCreateMessage, whose refusal
+// server.go:blockBoundError answers with that code), made over the body as the outbox posts it,
+// the message and then its row's marker (record.LongestPost: the marker is a block of its own
+// after every other, so the refusal names the same block whatever the row's id), with each line
+// ending written as a line feed, as the route writes the body before its check. A body Dispatch
+// would take, or would refuse for something other than a bound, fails the build: each sample's
+// refusal is the one Dispatch makes of that very body.
+func goldenPostRefused(t *testing.T, issue, body string) error {
+	t.Helper()
+	over := dispatchbody.Check(goldenLineFeeds.Replace(record.LongestPost(body)))
+	if over == nil || dispatchbody.IsDecisionBlock(over) {
+		t.Fatalf("Dispatch refuses no bound of the body posted on %s (its check answers %v), so it does not answer its post CAP_EXCEEDED", issue, over)
+	}
+	return fmt.Errorf("post Dispatch message for %s: %w", issue,
+		&dispatch.Error{Status: http.StatusBadRequest, Code: "CAP_EXCEEDED", Message: over.Error()})
+}
+
+// goldenLineFeeds writes each CR LF, and then each lone carriage return, as a line feed, as the
+// message route writes a body before it checks it (pmdoc.LineFeeds).
+var goldenLineFeeds = strings.NewReplacer("\r\n", "\n", "\r", "\n")
+
+// goldenReadRefused is the error a status row on issue ends with where Dispatch refuses the issue
+// read that opens it, word for word: the status executor's wrapper (outbox.status) around
+// Dispatch's answer when it holds no such issue, 404 NOT_FOUND with the message "not found" (GET
+// /api/v1/issues/{key}: api/issue_queries.go:readIssue answers pgx.ErrNoRows, which
+// api/handler_errors.go:writeHandlerError writes so). dispatch.PermanentRefusal takes that as
+// permanent, so the row is finished refused with neither write made (statusRefusalTold).
+// ISSUE_CHANGED, Dispatch's refusal of a write fenced on a read the issue has moved past, is no
+// such refusal: the daemon reads the issue again and writes again (writeStatus), and the row
+// retries on its backoff.
+func goldenReadRefused(issue string) error {
+	return fmt.Errorf("read Dispatch issue %s before status write: %w", issue,
+		&dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "not found"})
 }
 
 // goldenChildWait is a parent whose own first phase waits for its 30 open children: 25 released

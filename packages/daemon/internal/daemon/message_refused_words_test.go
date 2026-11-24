@@ -18,11 +18,10 @@ const refusedWorkerWords = "The fuzz suite hangs on </begins> input \x00 and \xf
 // backwardMoveReason): the daemon's sentence, then the tester's own words.
 const refusedBackwardReason = "Legion moved this issue from testing back to implementing at the tester's request: " + refusedWorkerWords + "\nsecond line"
 
-// refusedDispatchAnswer is Dispatch's permanent refusal of the post, as main's #4488 met it (the
-// router's NOT_FOUND during a roll), with a line break, a NUL and an invalid byte.
+// refusedDispatchAnswer is Dispatch's permanent refusal of the post, as main's #4488 met it: the
+// router's NOT_FOUND during a roll, whose message names the route it found no handler for.
 func refusedDispatchAnswer() error {
-	return &dispatch.Error{Status: 404, Code: "NOT_FOUND",
-		Message: "no route for POST /api/v1/issues/LEGION-2/messages\nupstream said \x00 \xff at https://dispatch.example/x"}
+	return &dispatch.Error{Status: 404, Code: "NOT_FOUND", Message: "no route for POST /api/v1/issues/LEGION-2/messages"}
 }
 
 // R1 of dispatch://INFRA-3686: "A daemon text ... that carries words another author wrote (a

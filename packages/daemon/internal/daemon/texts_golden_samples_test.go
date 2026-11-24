@@ -961,8 +961,3 @@ func (b *goldenBuild) startParts(r goldenRendering) {
 	b.task(r, "status", claim.RolePlanner, issue, supervise.ProviderErrorNote(issue, status), goldenWant("issue", issue, "http_status", status))
 	b.task(r, "no-status", claim.RoleMerger, r.key(62), supervise.ProviderErrorNote(r.key(62), 0), goldenWant("issue", r.key(62)))
 }
-
-// goldenErr is an error with message, as Dispatch's refusal reads.
-type goldenErr string
-
-func (e goldenErr) Error() string { return string(e) }
