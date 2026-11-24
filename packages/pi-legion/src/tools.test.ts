@@ -176,7 +176,6 @@ function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
   return { posted, daemon: () => client };
 }
 
-
 /** Every session kind the tool answers for: a root architect, a sub-architect, each phase worker,
  * and the controller. */
 const EVERY_SESSION: readonly LegionToolSession[] = [
