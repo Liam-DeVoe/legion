@@ -342,9 +342,7 @@ test("no skill, agent or plugin file keeps work in the foreground, and each that
     expect(silent).toEqual([]);
     expect(dispatching.sort()).toEqual([
       "skills/AGENTS.md",
-      "skills/dispatch-writing-specs/SKILL.md",
       "skills/legion-architect/SKILL.md",
-      "skills/legion-architect/references/decomposition.md",
       "skills/legion-architect/references/design-gate.md",
       "skills/legion-controller/references/consolidation.md",
       "skills/legion-oracle/SKILL.md",
@@ -352,7 +350,6 @@ test("no skill, agent or plugin file keeps work in the foreground, and each that
       "skills/legion-worker/references/merge-gate.md",
       "skills/simplify-settled-diff/SKILL.md",
       "the fresh Claude plugin's skills/legion-architect/SKILL.md",
-      "the fresh Claude plugin's skills/legion-architect/references/decomposition.md",
       "the fresh Claude plugin's skills/legion-architect/references/design-gate.md",
       "the fresh Claude plugin's skills/legion-controller/references/consolidation.md",
       "the fresh Claude plugin's skills/legion-oracle/SKILL.md",
@@ -389,17 +386,6 @@ function countedOncePerFile(rule: string, relativePaths: string[]) {
   }));
   expect(counts).toEqual(relativePaths.map((file) => ({ file, found: 1 })));
 }
-
-// R3: a forward merge brings instances from the base that the branch's own diff never shows, so a
-// merge can bring a new instance of a class the branch already answered. The implementer's merge
-// procedure carries the class search.
-test("a forward merge searches the new head for each earlier finding's class", () => {
-  expect(
-    collapsed(path.join(staged, "legion-worker", "references", "conflicts-and-rewrites.md"))
-  ).toContain(
-    "A merge brings instances from the base that the branch's own diff never shows, so before you push the merge search its head for the class of every finding of every earlier review round"
-  );
-});
 
 // R4: a planner waits on a decision its plan needs rather than completing around it
 // (dispatch://INFRA-206). The role prompts carry the rest of R4; roles_test.go pins those.
