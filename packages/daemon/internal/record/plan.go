@@ -434,12 +434,18 @@ func (p *StoredPlan) OnlyTaskThatMerges() (string, bool) {
 // needs, its part_of and its merges. A left task, whose issue left the workflow before the task
 // was done, neither merges nor needs: a need that only it names keeps no task from merging. It
 // answers which tasks will merge under the plan p is, so a version that changes a task's needs or
-// its merges changes it; whether a task's work merged already is WorkMerged's. plan.Merging has
-// this one caller.
+// its merges changes it; whether a task's work merged already is WorkMerged's.
 func (p StoredPlan) Merging() []string {
+	return p.mergeRule(false)
+}
+
+// mergeRule is the rule of the plan (plan.Merging), its one caller, over each task of p as its row
+// gives its id, its needs, its part_of and its merges: over each task that is not left (Merging), or
+// over every task where withLeft says so (TasksThatMerge).
+func (p StoredPlan) mergeRule(withLeft bool) []string {
 	tasks := make([]plan.Task, 0, len(p.Tasks))
 	for _, row := range p.Tasks {
-		if row.State == TaskLeft {
+		if row.State == TaskLeft && !withLeft {
 			continue
 		}
 		tasks = append(tasks, plan.Task{ID: row.Task, Needs: row.Needs, PartOf: row.PartOf, Merges: row.Merges})
@@ -468,17 +474,19 @@ func (t PlanTask) workMerged() bool {
 }
 
 // TasksThatMerge is the ids of the tasks of p that have a merge, done or to come, in id order: each
-// task that will merge (Merging), each task whose work merged (WorkMerged), and each task that a
-// leave of its issue wrote left at its merge. Such a task's issue was parked while its merge waited
-// for the issues beneath it or stood in a merge queue, and that merge can land, or have landed,
-// before a later leave sets the issue done. It is the one set of the merges of a run: the merge
-// pull requests of an issue (Store.MergePullRequests), its merge (Store.MergePullRequest) and the
-// one task that merges (OnlyTaskThatMerges) read it.
+// task that the rule of the plan merges over every task of p, a left task as its row stood before
+// its leave, and each task whose work merged (WorkMerged). A running generation holds no left task,
+// so there it is each task that will merge (Merging) and each whose work merged. A generation whose
+// issue left the workflow keeps each task its leave wrote left where it stood, with its needs and
+// its merges, since one leave writes every task of the generation at once and no later leave
+// writes them again: such a task's merge can still land, or have landed, as a person's merge of its
+// pull request or a merge queue's, before a later leave sets the issue done. It is the one set of
+// the merges of a run: the merge pull requests of an issue (Store.MergePullRequests), its merge
+// (Store.MergePullRequest) and the one task that merges (OnlyTaskThatMerges) read it.
 func (p StoredPlan) TasksThatMerge() []string {
-	tasks := p.Merging()
+	tasks := p.mergeRule(true)
 	for _, row := range p.Tasks {
-		leftAtMerge := row.State == TaskLeft && row.Place == TaskPlace{Kind: PlaceMerge}
-		if (row.workMerged() || leftAtMerge) && !slices.Contains(tasks, row.Task) {
+		if row.workMerged() && !slices.Contains(tasks, row.Task) {
 			tasks = append(tasks, row.Task)
 		}
 	}
