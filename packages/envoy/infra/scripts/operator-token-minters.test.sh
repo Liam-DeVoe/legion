@@ -233,7 +233,8 @@ jq --argjson digests "$fence_example_digests" '.objects |= map(if .digest then .
 # Dispatch's own, which does not; the example fence (fence_objects) in the render and on the cluster
 # as GKE returns it (each policy with GKE's selector skipping its own namespaces, and the API
 # server's matchPolicy, objectSelector and scope, which the check must read as left out); and the
-# grants the fence answers.
+# grants the fence answers: comment-delivery's exec, dispatch-measure's exec and legion/worker's
+# port forward in dispatch (row fk plants dispatch-measure's pod patch, which is no credit).
 fence_world() {
   base_world
   edit "$world/clusters/operator-cluster/serviceaccounts.json" '. + [{namespace: "dispatch", name: "envoy-broker", gsa: $b}, {namespace: "dispatch", name: "dispatch"},
@@ -265,7 +266,6 @@ fence_world() {
   subject_grant operator-cluster "$(user_subject "$comment_delivery")" create "" pods exec dispatch ""
   subject_grant operator-cluster "$(user_subject "$comment_delivery")" get "" pods exec dispatch ""
   subject_grant operator-cluster "$(sa_subject legion dispatch-measure)" create "" pods exec dispatch ""
-  subject_grant operator-cluster "$(sa_subject legion dispatch-measure)" patch "" pods "" dispatch ""
   subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods portforward dispatch ""
 }
 # fence_edit WHERE PROGRAM [ARGS...]: rewrites each fence object of the render (WHERE declared), of

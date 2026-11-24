@@ -80,6 +80,17 @@ found_sa() {
   [[ "${1#seed:}" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] || return 0
   keep_least FOUND_SAS "${BASH_REMATCH[1]}:${BASH_REMATCH[2]}" "$2"
 }
+# RESIDUAL_SAS: each ServiceAccount (<namespace>:<name>, a seed's too) on the cluster read last whose
+# grant reaches the broker's pod fence's residual and no more: a credited grant that carries it
+# (judge_grant), or a chain to such an account (judge_chain); and the right follow_becomes names it
+# by. Who can become it reaches the residual too, so follow_becomes follows it and names each such
+# chain by an ALLOWANCE (broker-fence.sh's residual_allowance), never silence.
+declare -A RESIDUAL_SAS=()
+# residual_sa PRINCIPAL LABEL: found_sa for RESIDUAL_SAS.
+residual_sa() {
+  [[ "${1#seed:}" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] || return 0
+  keep_least RESIDUAL_SAS "${BASH_REMATCH[1]}:${BASH_REMATCH[2]}" "$2"
+}
 # The certificate signing chain's parts, by principal, which csr_part gathers from a cluster's
 # reviews, its named rights and a render, and csr_chains judges once they are all read. Each list of
 # parts is a line a part, which csr_chains sorts, and CSR_WHY_OF keeps the reason that sorts first
@@ -130,17 +141,44 @@ csr_chains() {
 # judge_grant PRINCIPAL LABEL SUFFIX RESOURCE REASON POLICY RESIDUAL: the verdict on one grant a
 # review allowed, or a live role allows by name. POLICY is the broker's pod fence's policy that
 # refuses the right's use on the broker's pods (fence_fields, broker-fence.jq), or "": the grant is
-# a credit, carrying RESIDUAL when it is not "" (broker-fence.sh's credit), and finds no
-# ServiceAccount. Any other grant is a finding on RESOURCE, its right followed by SUFFIX, granted
-# where REASON says, and records a ServiceAccount it is (found_sa). A seed (seed: before its name)
-# is never a credit or a finding: it only seeds FOUND_SAS.
+# a credit (broker-fence.sh's credit), which finds no ServiceAccount; RESIDUAL `residual` says its
+# use on the fence's namespace's other pods carries the fence's residual, which credit names by an
+# ALLOWANCE and which keeps a ServiceAccount it is in RESIDUAL_SAS, so who can become it is named
+# too. Any other grant is a finding on RESOURCE, its right followed by SUFFIX, granted where REASON
+# says, and records a ServiceAccount it is (found_sa). A seed (seed: before its name) is never a
+# credit, an allowance or a finding: it only seeds FOUND_SAS or RESIDUAL_SAS.
 judge_grant() {
   if [ -n "$6" ]; then
+    [ -z "$7" ] || residual_sa "$1" "$2"
     [[ "$1" == seed:* ]] || credit "$1" "$2$3" "$4" "$5" "$6" "$7"
     return 0
   fi
   found_sa "$1" "$2"
   [[ "$1" == seed:* ]] || finding "$1" "$2$3" "$2" "$4" "$2" "$5"
+}
+# chain_residual POLICY TARGETS: whether a grant follow_becomes asks, by which its holder becomes
+# TARGETS (namespace:name, space-separated), reaches the fence's residual and no more: the fence
+# refuses no use of it (POLICY is "") and each target, of one at least, is in RESIDUAL_SAS and not
+# in FOUND_SAS.
+chain_residual() {
+  local target
+  [ -z "$1" ] && [ -n "$2" ] || return 1
+  for target in $2; do
+    [ -z "${FOUND_SAS[$target]:-}" ] && [ -n "${RESIDUAL_SAS[$target]:-}" ] || return 1
+  done
+}
+# judge_chain PRINCIPAL LABEL SUFFIX RESOURCE REASON POLICY RESIDUAL TARGETS: the verdict on a grant
+# follow_becomes asks. One that reaches the residual alone (chain_residual) is an ALLOWANCE naming
+# the chain and the residual (residual_allowance, broker-fence.sh), and keeps its holder, a
+# ServiceAccount, in RESIDUAL_SAS, to be followed in turn; a seed only seeds it. Any other is
+# judged as judge_grant judges a grant.
+judge_chain() {
+  if chain_residual "$6" "$8"; then
+    residual_sa "$1" "$2"
+    [[ "$1" == seed:* ]] || residual_allowance "$1" "$2$3" "$4" "$5"
+  else
+    judge_grant "$1" "$2" "$3" "$4" "$5" "$6" "$7"
+  fi
 }
 # judge_reviews STEP SUFFIX RESOURCE: each review of $WORK/review.rec. The witness's must all be
 # allowed; each other allowed review is judged (judge_grant), but the certificate signing chain's
@@ -148,7 +186,7 @@ judge_grant() {
 # approvals join the chain). Returns 1 when the witness was refused.
 judge_reviews() {
   local principal label verdict error reason policy residual witness_refused=false
-  FOUND_SAS=()
+  FOUND_SAS=() RESIDUAL_SAS=()
   csr_reset
   while IFS="$US" read -r -u 4 principal label verdict error reason policy residual; do
     if [ "$principal" = witness ]; then
@@ -168,36 +206,46 @@ judge_reviews() {
     return 1
   fi
 }
-# seed_named KIND NAMESPACE NAME DETAIL: a system namespace's ServiceAccount a live role allows a right
-# by name (DETAIL) is never a finding itself, but who can become it holds that right, so it seeds
-# FOUND_SAS, as judge_reviews seeds one allowed a right outright; returns 0 when it did. RBAC takes
-# the account as a ServiceAccount subject or as the User system:serviceaccount:<namespace>:<name>
-# (k8s_subject allows both), so both forms seed it.
-seed_named() {
+# named_principal KIND NAMESPACE NAME: sets NAMED_PRINCIPAL to the principal a binding subject a live
+# role names is judged as. A system namespace's ServiceAccount, as a ServiceAccount subject or as
+# the User system:serviceaccount:<namespace>:<name> (k8s_subject allows both), is the seed
+# seed:system:serviceaccount:<namespace>:<name>: never a finding itself, but who can become it holds
+# what the role allows it, so judge_grant and judge_chain seed FOUND_SAS or RESIDUAL_SAS from it, as
+# judge_reviews seeds one allowed a right outright. A subject k8s_subject does not allow is itself;
+# any other (a person, a component, the operator's own account) is "", which is not judged.
+named_principal() {
   local ns="$2" name="$3"
+  NAMED_PRINCIPAL=""
   case "$1:$name" in
     ServiceAccount:*) ;;
     User:system:serviceaccount:*:*)
       name="${name#system:serviceaccount:}"
       ns="${name%%:*}" name="${name#*:}"
       ;;
-    *) return 1 ;;
+    *) ns="" ;;
   esac
-  system_namespace "$ns" || return 1
-  found_sa "system:serviceaccount:$ns:$name" "$4"
+  if [ -n "$ns" ] && system_namespace "$ns"; then
+    NAMED_PRINCIPAL="seed:system:serviceaccount:$ns:$name"
+    return 0
+  fi
+  k8s_subject "$1" "$2" "$3"
+  [ "$SUBJECT_OK" = true ] || NAMED_PRINCIPAL="$SUBJECT"
 }
 # follow_becomes KUBECONFIG STEP SUFFIX RESOURCE [FENCE]: who can become a ServiceAccount of
-# FOUND_SAS holds what it holds. In the ServiceAccount's namespace a principal becomes it by any
-# namespaced right of RIGHTS_TABLE (a pod or a workload controller runs as any ServiceAccount of its
-# namespace; exec, attach, an ephemeral container or a pod patch enters one; a rolebinding, bind or
-# escalate grants itself those; a token Secret is read) or by create, update or patch of a custom
-# resource there, and, by its name, by create serviceaccounts/token or impersonate
-# (become-rights.jq). Each principal of $WORK/principals.rec allowed one of these is judged
-# (judge_grant), and so is a binding subject whose live role limits one of them by name (a patch of
-# one Deployment sets its serviceAccountName), read as live_named reads the others when it read the
-# cluster's roles; FENCE is the cluster's credited fence, as review takes it. Each ServiceAccount so
-# found is followed in turn, up to 5 steps; one found in the fifth and not followed is UNKNOWN. A
-# ServiceAccount that becomes only itself is no finding.
+# FOUND_SAS holds what it holds, and who can become one of RESIDUAL_SAS reaches the fence's residual
+# as it does. In the ServiceAccount's namespace a principal becomes it by any namespaced right of
+# RIGHTS_TABLE (a pod or a workload controller runs as any ServiceAccount of its namespace; exec,
+# attach, an ephemeral container or a pod patch enters one; a rolebinding, bind or escalate grants
+# itself those; a token Secret is read) or by create, update or patch of a custom resource there,
+# and, by its name, by create serviceaccounts/token or impersonate (become-rights.jq). Each
+# principal of $WORK/principals.rec allowed one of these is judged (judge_chain: a finding, or an
+# ALLOWANCE when each account it becomes reaches the residual alone), and so is a binding subject
+# whose live role limits one of them by name (a patch of one Deployment sets its
+# serviceAccountName), read as live_named reads the others when it read the cluster's roles; FENCE
+# is the cluster's credited fence, as review takes it. Each ServiceAccount so found is followed in
+# turn, up to 5 steps, and one followed for the residual alone is followed again once it has a
+# finding; one found in the fifth and not followed is UNKNOWN. A ServiceAccount that becomes only
+# itself is no finding.
 follow_becomes() {
   local kube="$1" step="$2" suffix="$3" resource="$4" fence="${5:-}" round sa rights label targets principal verdict error reason who why
   local what id detail kind ns name policy residual
@@ -205,10 +253,15 @@ follow_becomes() {
   for ((round = 0; round < 5; round++)); do
     : >"$WORK/become.tsv"
     while IFS= read -r sa; do
-      [ -z "${followed[$sa]:-}" ] || continue
-      followed[$sa]=1
+      [ "${followed[$sa]:-}" != found ] || continue
+      followed[$sa]=found
       printf '%s\t%s\t%s\n' "${sa%%:*}" "${sa#*:}" "${FOUND_SAS[$sa]}" >>"$WORK/become.tsv"
     done < <(printf '%s\n' ${FOUND_SAS[@]+"${!FOUND_SAS[@]}"} | sed '/^$/d' | sort)
+    while IFS= read -r sa; do
+      [ -z "${followed[$sa]:-}" ] && [ -z "${FOUND_SAS[$sa]:-}" ] || continue
+      followed[$sa]=residual
+      printf '%s\t%s\t%s\n' "${sa%%:*}" "${sa#*:}" "${RESIDUAL_SAS[$sa]}" >>"$WORK/become.tsv"
+    done < <(printf '%s\n' ${RESIDUAL_SAS[@]+"${!RESIDUAL_SAS[@]}"} | sed '/^$/d' | sort)
     [ -s "$WORK/become.tsv" ] || return 0
     rights="$(jq -R -s -c -L "$LIB" --argjson table "$TABLE_JSON" --rawfile names "$WORK/api-resources" -f "$LIB/become-rights.jq" "$WORK/become.tsv")"
     targets_of=() targets_why=()
@@ -225,7 +278,7 @@ follow_becomes() {
           who="${principal#seed:}"
           who="${who#system:serviceaccount:}"
           [ "${targets_of[$label]:-}" != "$who" ] || continue
-          judge_grant "$principal" "$label" "$suffix" "$resource" "$reason" "$policy" "$residual"
+          judge_chain "$principal" "$label" "$suffix" "$resource" "$reason" "$policy" "$residual" "${targets_of[$label]:-}"
           ;;
         error) unknown "$step" "the review of $principal for $label ended in an evaluation error, so its refusal proves nothing: $error" ;;
       esac
@@ -238,20 +291,24 @@ follow_becomes() {
     fi
     while IFS="$US" read -r -u 6 what id detail kind ns name policy residual; do
       [ "$what" = grant ] || continue
-      k8s_subject "$kind" "$ns" "$name"
-      [ -n "$policy" ] || ! seed_named "$kind" "$ns" "$name" "$detail" || continue
-      [ "$SUBJECT_OK" != true ] || continue
+      named_principal "$kind" "$ns" "$name"
+      [ -n "$NAMED_PRINCIPAL" ] || continue
       targets=""
       for why in "${!targets_why[@]}"; do
         [[ "$detail" != *", $why" ]] || { targets="${targets_why[$why]}"; break; }
       done
-      [ "$targets" != "${SUBJECT#system:serviceaccount:}" ] || continue
-      judge_grant "$SUBJECT" "$detail" "$suffix" "$resource" "RBAC: $id limits it by name" "$policy" "$residual"
+      who="${NAMED_PRINCIPAL#seed:}"
+      [ "$targets" != "${who#system:serviceaccount:}" ] || continue
+      judge_chain "$NAMED_PRINCIPAL" "$detail" "$suffix" "$resource" "RBAC: $id limits it by name" "$policy" "$residual" "$targets"
     done 6<"$WORK/become-named.rec"
   done
   for sa in ${FOUND_SAS[@]+"${!FOUND_SAS[@]}"}; do
-    [ -n "${followed[$sa]:-}" ] ||
+    [ "${followed[$sa]:-}" = found ] ||
       unknown "$step" "who can become a ServiceAccount with a finding is followed 5 steps; system:serviceaccount:$sa, found in the fifth, is not followed further"
+  done
+  for sa in ${RESIDUAL_SAS[@]+"${!RESIDUAL_SAS[@]}"}; do
+    [ -n "${followed[$sa]:-}" ] || [ -n "${FOUND_SAS[$sa]:-}" ] ||
+      unknown "$step" "who can become a ServiceAccount that reaches the broker's pod fence's residual is followed 5 steps; system:serviceaccount:$sa, found in the fifth, is not followed further"
   done
 }
 # remember_cluster KUBECONFIG STEP SUFFIX RESOURCE [FENCE]: keeps what follow_becomes needs of the
@@ -267,18 +324,25 @@ remember_cluster() {
   done
   REMEMBERED+=("$1$US$2$US$3$US$4$US${ROLES_OK:-false}$US${5:-}")
 }
-# follow_members MEMBERS: on every cluster remember_cluster kept, who can become a ServiceAccount of
-# MEMBERS (a JSON object of namespace:name to the Google account it acts as through Workload
-# Identity) holds what that account holds, so it is followed as follow_becomes follows a found one.
+# follow_members MEMBERS [residual]: on every cluster remember_cluster kept, who can become a
+# ServiceAccount of MEMBERS (a JSON object of namespace:name to the Google account it acts as
+# through Workload Identity) holds what that account holds, so it is followed as follow_becomes
+# follows a found one; with `residual`, the account's grant reaches the broker's pod fence's residual
+# alone (MEMBERS then maps each to `<email> (which can <right>)`), and the members are followed as
+# RESIDUAL_SAS are.
 follow_members() {
-  local n kube step suffix resource fence member file
+  local n kube step suffix resource fence member account file
   for ((n = 0; n < ${#REMEMBERED[@]}; n++)); do
     IFS="$US" read -r kube step suffix resource ROLES_OK fence <<<"${REMEMBERED[$n]}"
     cp "$WORK/remembered-$n.principals" "$WORK/principals.rec"
     for file in api-resources bindings.json roles.json; do cp "$WORK/remembered-$n.$file" "$WORK/$file"; done
-    FOUND_SAS=()
+    FOUND_SAS=() RESIDUAL_SAS=()
     while IFS=$'\t' read -r member account; do
-      FOUND_SAS[$member]="acts as $account through Workload Identity"
+      if [ "${2:-}" = residual ]; then
+        RESIDUAL_SAS[$member]="acts as $account through Workload Identity"
+      else
+        FOUND_SAS[$member]="acts as $account through Workload Identity"
+      fi
     done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"$1")
     follow_becomes "$kube" "$step" "$suffix" "$resource" "$fence"
   done
@@ -357,13 +421,13 @@ named_grants() {
 # a pods/exec of one pod by name. The cluster's Roles and ClusterRoles (`kubectl get
 # roles,clusterroles -A`) are read against $WORK/bindings.json as the code step reads a render
 # (code-rbac.jq, by name alone): each rule whose resourceNames limit a right of RIGHTS (the JSON
-# array the cluster's reviews asked) is judged for a binding subject k8s_subject does not allow
-# (judge_grant), its right followed by SUFFIX, on RESOURCE, under FENCE (the cluster's credited
-# fence, as review takes it). A part of the certificate chain so limited (an approval by name, whose
-# name the requester picks) goes to csr_part, so it joins the signers judge_reviews' reviews allowed;
-# the caller runs csr_chains after this. Runs after judge_reviews; a refused list is UNKNOWN naming
-# the permission, and an answer that is not a list (is_list) or that code-rbac.jq cannot read is
-# UNKNOWN naming the roles' list.
+# array the cluster's reviews asked) is judged for a binding subject k8s_subject does not allow, and
+# seeded for a system namespace's ServiceAccount (named_principal, judge_grant), its right followed
+# by SUFFIX, on RESOURCE, under FENCE (the cluster's credited fence, as review takes it). A part of
+# the certificate chain so limited (an approval by name, whose name the requester picks) goes to
+# csr_part, so it joins the signers judge_reviews' reviews allowed; the caller runs csr_chains after
+# this. Runs after judge_reviews; a refused list is UNKNOWN naming the permission, and an answer that
+# is not a list (is_list) or that code-rbac.jq cannot read is UNKNOWN naming the roles' list.
 live_named() {
   local what id detail kind ns name policy residual
   # ROLES_OK: whether $WORK/roles.json holds this cluster's roles, for follow_becomes's named read.
@@ -380,11 +444,10 @@ live_named() {
   ROLES_OK=true
   while IFS="$US" read -r -u 6 what id detail kind ns name policy residual; do
     [ "$what" = grant ] || continue
-    k8s_subject "$kind" "$ns" "$name"
-    [ -n "$policy" ] || ! seed_named "$kind" "$ns" "$name" "$detail" || continue
-    [ "$SUBJECT_OK" != true ] || continue
-    ! csr_part "$SUBJECT" "$detail" "RBAC: $id limits it by name" || continue
-    judge_grant "$SUBJECT" "$detail" "$3" "$4" "RBAC: $id limits it by name" "$policy" "$residual"
+    named_principal "$kind" "$ns" "$name"
+    [ -n "$NAMED_PRINCIPAL" ] || continue
+    [[ "$NAMED_PRINCIPAL" == seed:* ]] || ! csr_part "$NAMED_PRINCIPAL" "$detail" "RBAC: $id limits it by name" || continue
+    judge_grant "$NAMED_PRINCIPAL" "$detail" "$3" "$4" "RBAC: $id limits it by name" "$policy" "$residual"
   done 6<"$WORK/named.rec"
 }
 # bound_subjects KUBECONFIG: the cluster's binding subjects (the header's "Binding subjects"), added

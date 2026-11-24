@@ -18,7 +18,8 @@
 # (--slurpfile), and must hold one JSON array (one_array): a cluster's rights are more than a command
 # line's argument may hold. A grant's last two fields are broker-fence.jq's fence_fields for the
 # right under $fence (the credited fence, or null): the policy that refuses its use on the broker's
-# pods, and the residual its use on the namespace's other pods carries, each "" when there is none.
+# pods, and `residual` when its use on the namespace's other pods carries the fence's residual,
+# each "" when there is none.
 include "rec";
 include "broker-fence";
         def has_($list; $x): any(($list // [])[]; . == $x);

@@ -47,6 +47,42 @@ for entry in ${FINDINGS[@]+"${FINDINGS[@]}"}; do
 done
 [ "$members_json" = '{}' ] || follow_members "$members_json"
 
+# --- live: minters of each Google service account whose credited grant reaches the broker's pod
+# fence's residual (an ALLOWANCE, broker-fence.sh) and which no RBAC finding names. Who can mint its
+# token, sign as it or act as it reaches the residual as the account does, so each holder the
+# account's own check would find is an ALLOWANCE naming the chain and the residual (CHECK_RESIDUAL,
+# live_iam), and each Workload Identity member of the operator's pool it lists is followed on every
+# cluster as follow_members follows a found one, each chain to it an ALLOWANCE too. ---
+declare -A RESIDUAL_ACCOUNTS=()
+for entry in ${RESIDUALS[@]+"${RESIDUALS[@]}"}; do
+  IFS=$'\t' read -r principal right resource _ <<<"$entry"
+  case "$principal:$resource" in serviceAccount:*:cluster:* | serviceAccount:*:membership:*) ;; *) continue ;; esac
+  [ -z "${RBAC_ACCOUNTS[${principal#serviceAccount:}]:-}" ] || continue
+  keep_least RESIDUAL_ACCOUNTS "${principal#serviceAccount:}" "$right"
+done
+for email in $(printf '%s\n' ${RESIDUAL_ACCOUNTS[@]+"${!RESIDUAL_ACCOUNTS[@]}"} | sort); do
+  account_project "$email"
+  check="residual-account:$email"
+  CHECK_STEP[$check]="live: minters of $email, whose credited grant reaches the broker's pod fence's residual"
+  CHECK_RESOURCE[$check]="//iam.googleapis.com/projects/$ACCOUNT_PROJECT/serviceAccounts/$email"
+  CHECK_PERMS[$check]="${GSA_PERMISSIONS[*]} iam.serviceAccounts.setIamPolicy"
+  CHECK_RESIDUAL[$check]="serviceAccount:$email, which can ${RESIDUAL_ACCOUNTS[$email]}"
+  scope_of "$ACCOUNT_PROJECT"
+  CHECK_SCOPE[$check]="$SCOPE_OF" CHECK_SCOPE_FLAG[$check]="$SCOPE_OF_FLAG" CHECK_SCOPE_ERROR[$check]="$SCOPE_OF_ERROR"
+  live_iam "$check"
+done
+residual_members='{}'
+for entry in ${RESIDUALS[@]+"${RESIDUALS[@]}"}; do
+  IFS=$'\t' read -r principal _ resource _ <<<"$entry"
+  [[ "$principal" =~ ^serviceAccount:([^[]+)\.svc\.id\.goog\[([^/]+)/([^]]+)\]$ ]] || continue
+  [ "${BASH_REMATCH[1]}" = "$POOL_PROJECT" ] || continue
+  [[ "$resource" == //iam.googleapis.com/projects/*/serviceAccounts/* ]] || continue
+  [ -n "${RESIDUAL_ACCOUNTS[${resource##*/}]:-}" ] || continue
+  residual_members="$(jq -c --arg k "${BASH_REMATCH[2]}:${BASH_REMATCH[3]}" --arg v "${resource##*/} (which can ${RESIDUAL_ACCOUNTS[${resource##*/}]})" \
+    '. + {($k): $v}' <<<"$residual_members")"
+done
+[ "$residual_members" = '{}' ] || follow_members "$residual_members" residual
+
 # --- live: who can set IAM on the projects' ancestors: --project's, the pool project's and each
 # fleet member's. A holder of a folder's or the organization's setIamPolicy can grant itself any role
 # below it, container.admin on the project included, and a holder of the organization's

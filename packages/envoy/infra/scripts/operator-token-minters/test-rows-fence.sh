@@ -6,29 +6,32 @@
 # puts the broker in dispatch, guarded as --broker-workload dispatch/envoy-broker with --db-secret
 # dispatch/envoy-broker-db, with the fence of fence_objects (the reviewed rules broker-fence.json
 # holds, and example workload policies), and gives the three grants the fence answers:
-# comment-delivery's exec (create and get) and dispatch-measure's exec and pod patch in dispatch,
-# and legion/worker's port forward there, live, and comment-delivery's exec declared by the render.
-# The rows run fence_check, the check whose contract holds the example workload policies' digests,
-# but (fg). The rows:
+# comment-delivery's exec (create and get) and dispatch-measure's exec in dispatch, and
+# legion/worker's port forward there, live, and comment-delivery's exec declared by the render. The
+# rows run fence_check, the check whose contract holds the example workload policies' digests, but
+# (fg). The rows:
 #
 #   (fa) the fence the renders declare and the cluster holds as reviewed, its live objects carrying
 #        what GKE and the API server fill in, credits each of those grants, live and declared: exit
 #        0, a CREDIT line each naming the use it refuses, an ALLOWANCE line each naming the residual
-#        of broker-fence.json, the code step's PASS, and --report's `credited` (the policy and the
-#        declared and live versions) and `residuals` (the residual and INFRA-4604);
+#        of broker-fence.json, the code step's PASS, the PASS of comment-delivery's minters' step,
+#        and --report's `credited` (the policy and the declared and live versions) and `residuals`
+#        (the residual and INFRA-4604); each spec broker-fence.json holds is in the fence's shape;
 #   (fb) each way the fence fails credits nothing, each grant a finding again, and says why: the
 #        fence removed, a binding of Warn, a policy of failurePolicy Ignore, a binding whose
 #        selector misses dispatch, a policy whose own selector does, an exception added to the
 #        connect rule, the cluster's fence differing from the renders', a list of admission
-#        policies or of pods that cannot be read (UNKNOWN), a pod outside the fence's names running
-#        as envoy-broker or taking --db-secret, a pod outside them taking another Secret a broker
-#        pod takes (its NATS issuer seed), a list with no broker pod, a webhook backed by a Service
-#        in dispatch, a list of webhooks that cannot be read, and another guarded pair in dispatch;
+#        policies or of pods that cannot be read or is answered empty (UNKNOWN), a pod outside the
+#        fence's names running as envoy-broker or taking --db-secret, a pod outside them taking
+#        another Secret a broker pod takes (its NATS issuer seed), a list with no broker pod, a
+#        webhook backed by a Service in dispatch, one whose selector misses the guarded namespaces
+#        but whose rule matches a cluster-scoped object, a list of webhooks that cannot be read or
+#        is answered empty or as `{}`, and another guarded pair in dispatch;
 #   (fc) a principal that can write the fence stays a finding: patch of the binding, delete of a
 #        policy, and delete of broker-pod-connect by name;
-#   (fd) a ServiceAccount that becomes legion/dispatch-measure, whose exec and pod patch in dispatch
-#        are credited and which can patch admission policies, is a finding naming the chain;
-#        without the policy patch, nothing is found;
+#   (fd) legion/worker, which can become legion/dispatch-measure, whose exec in dispatch is credited
+#        and carries the residual, is an ALLOWANCE naming the chain and the residual; once
+#        dispatch-measure can patch admission policies, the chain is a finding;
 #   (fe) who can enter a pod of dispatch is credited for becoming envoy-broker, which has a finding,
 #        with no ALLOWANCE of its own, and found once dispatch/dispatch has one too;
 #   (ff) a Google IAM minter of the broker's account stays a finding beside the credits;
@@ -37,13 +40,25 @@
 #   (fh) patch, or update, of pods/ephemeralcontainers in dispatch stays a finding beside the
 #        credits: on a pod not the broker's an ephemeral container takes any Secret of the
 #        namespace, --db-secret among them;
-#   (fr) each right fence_refuses credits is one the reviewed rules in broker-fence.json admit as
-#        CONNECT or UPDATE on pods and refuse by the envoy-broker- prefix; the same reading of a
-#        contract whose connect policy lacks port forward fails.
+#   (fj) who can become a credited grant's holder is an ALLOWANCE naming the chain and the residual:
+#        an agent that can mint dispatch-measure's token, a Google account that can mint
+#        comment-delivery's, and an agent that can become comment-delivery's Workload Identity
+#        member (which is an ALLOWANCE too);
+#   (fk) patch, or update, of pods in dispatch stays a finding: a label-only patch puts a pod that
+#        is not the broker's behind the broker's Services, which select app=envoy-broker alone;
+#   (fs) each of the five binding specs broker-fence.json holds decides: widened in the contract and
+#        on the cluster alike, the fence is credited; in the contract alone, it is not;
+#   (fp) review-answer.jq gives an allowed credited right the policy and the flag `residual`, never
+#        the residual's text, and a refused review no fence field;
+#   (fq) code-rbac.jq gives a declared credited grant the policy and the flag `residual`;
+#   (fr) each right fence_refuses credits is one the reviewed broker-pod-connect rules admit as
+#        CONNECT on pods, every rule naming the envoy-broker- prefix; the same reading of a contract
+#        whose connect policy lacks port forward, or names no prefix, fails that column.
 #
-# Each control is the row's own other half: (fa) against (fb), (fc), (fd), (ff), (fg) and (fh) the
-# same world with one fault, one grant more or the reviewed digests, (fd) and (fe) a half without
-# it, and (fr) a contract with one rule taken out.
+# Each control is the row's own other half: (fa) against (fb), (fc), (fd), (ff), (fg), (fh), (fj)
+# and (fk) the same world with one fault, one grant more or the reviewed digests, (fd), (fe) and
+# (fs) a half without it, and (fr) a contract with one rule or one prefix taken out. The check as
+# at b14c08df3df is the other control of (fd), (fj), (fk), (fs), (fp) and (fq), which it fails.
 
 # The CREDIT and ALLOWANCE lines (fa) wants, and the FINDING lines the same grants are once the fence
 # is not credited. A credit's sentence names the use the policy refuses; the allowance's, the
@@ -56,7 +71,6 @@ fence_credits_want=(
   "serviceAccount:$comment_delivery|create pods/exec in dispatch|broker-pod-connect"
   "serviceAccount:$comment_delivery|get pods/exec in dispatch|broker-pod-connect"
   "system:serviceaccount:legion:dispatch-measure|create pods/exec in dispatch|broker-pod-connect"
-  "system:serviceaccount:legion:dispatch-measure|patch pods in dispatch|broker-pod-update"
   "system:serviceaccount:legion:worker|create pods/portforward in dispatch|broker-pod-connect"
   "serviceAccount:$comment_delivery|create pods/exec in dispatch, declared by RoleBinding dispatch/comment-delivery|broker-pod-connect"
   "serviceAccount:$comment_delivery|get pods/exec in dispatch, declared by RoleBinding dispatch/comment-delivery|broker-pod-connect"
@@ -89,6 +103,11 @@ if row fa; then
     and all(.objects[] | select(.digest | not); .spec != null)
     and .residual.tracked_by == "INFRA-4604" and (.residual.text | test("INFRA-4604"))' "$fence_contract" >/dev/null ||
     fail "broker-fence.json does not hold the broker's fence in dispatch, each object by its spec but the workload policies by a sha256, and its residual"
+  # Each spec the contract holds decides alone (fence_read), so the committed ones are held here to
+  # the fence's shape: every binding Deny to dispatch alone, every policy failing closed.
+  jq -e -n -L "$(dirname "$check")/operator-token-minters" --slurpfile c "$fence_contract" 'include "rec"; include "broker-fence";
+    $c[0] as $c | all($c.objects[] | select(.spec != null); . as $o | ($o.spec | fence_shape($o.kind; $c.namespace; $o.name)) == "")' >/dev/null ||
+    fail "a spec broker-fence.json holds is not in the fence's shape"
   fence_world
   report="$temporary_dir/fence-report.json"
   fence_run --report "$report"
@@ -98,7 +117,9 @@ if row fa; then
   want_text "PASS code: RBAC: the renders give the rights" "the fence as reviewed"
   want_text ", beside 2 grants whose use on the broker's pods its pod fence refuses, declared and live alike" "the fence as reviewed"
   want_text "PASS live: RBAC on operator-cluster: " "the fence as reviewed"
-  jq -e --arg cd "serviceAccount:$comment_delivery" --arg residual "$fence_residual" '.findings == [] and (.credited | length) == 7
+  # comment-delivery's credited grant carries the residual, so its minters are read; none is planted.
+  want_text "PASS live: minters of $comment_delivery, whose credited grant reaches the broker's pod fence's residual: " "the fence as reviewed"
+  jq -e --arg cd "serviceAccount:$comment_delivery" --arg residual "$fence_residual" '.findings == [] and (.credited | length) == 6
       and all(.credited[]; . as $c | keys == ["declared", "granted_at", "live", "policy", "principal", "resource", "right"]
               and ($c.declared | test("^sha256:[0-9a-f]{64}$")) and ($c.live | startswith($c.declared + "; "))
               and ($c.live | endswith("; ValidatingAdmissionPolicy \($c.policy) generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding \($c.policy) generation 1 resourceVersion 7001")))
@@ -108,8 +129,8 @@ if row fa; then
       and ([.residuals[] | {principal, right, resource, granted_at}] == [.credited[] | {principal, right, resource, granted_at}])
       and all(.residuals[]; keys == ["granted_at", "principal", "residual", "resource", "right", "tracked_by"]
               and .residual == $residual and .tracked_by == "INFRA-4604")' "$report" >/dev/null ||
-    fail "the fence as reviewed: --report's credited and residuals are not the seven credits and their residuals: $(jq -c '{credited, residuals}' "$report")"
-  passed "(fa) the fence as reviewed, declared and live, credits comment-delivery's exec, dispatch-measure's exec and pod patch and legion/worker's port forward on the broker's pods, allows their use on dispatch's other pods as INFRA-4604's residual, and reports each with its evidence"
+    fail "the fence as reviewed: --report's credited and residuals are not the six credits and their residuals: $(jq -c '{credited, residuals}' "$report")"
+  passed "(fa) the fence as reviewed, declared and live, credits comment-delivery's exec, dispatch-measure's exec and legion/worker's port forward on the broker's pods, allows their use on dispatch's other pods as INFRA-4604's residual, and reports each with its evidence"
 fi
 
 # --- (fb) A fence that fails any part of its credit credits nothing. ---
@@ -177,11 +198,42 @@ fence_fail_row() {
       jq -n '[{apiVersion: "admissionregistration.k8s.io/v1", kind: "MutatingWebhookConfiguration", metadata: {name: "hooks"},
         webhooks: [{name: "inject.example.com", clientConfig: {service: {namespace: "dispatch", name: "hook"}}}]}]' \
         >"$world/clusters/operator-cluster/webhooks.json"
-      want="a webhook that can match a guarded namespace calls a Service in dispatch, whose pods the fence does not keep anyone from entering: MutatingWebhookConfiguration hooks/inject.example.com calls the Service dispatch/hook"
+      want="a webhook this check reads calls a Service in dispatch, whose pods the fence does not keep anyone from entering: MutatingWebhookConfiguration hooks/inject.example.com calls the Service dispatch/hook"
+      ;;
+    webhook-cluster)
+      # A validating webhook backed in dispatch whose selector names legion alone, but whose rule
+      # matches ClusterRoleBindings, which have no namespace for a selector to hold back.
+      jq -n '[{apiVersion: "admissionregistration.k8s.io/v1", kind: "ValidatingWebhookConfiguration", metadata: {name: "hooks"},
+        webhooks: [{name: "rbac.example.com", clientConfig: {service: {namespace: "dispatch", name: "hook"}},
+          namespaceSelector: {matchExpressions: [{key: "kubernetes.io/metadata.name", operator: "In", values: ["legion"]}]},
+          rules: [{apiGroups: ["rbac.authorization.k8s.io"], apiVersions: ["v1"], operations: ["CREATE"], resources: ["clusterrolebindings"]}]}]}]' \
+        >"$world/clusters/operator-cluster/webhooks.json"
+      want="a webhook this check reads calls a Service in dispatch, whose pods the fence does not keep anyone from entering: ValidatingWebhookConfiguration hooks/rbac.example.com calls the Service dispatch/hook"
       ;;
     webhooks-unread)
       : >"$world/clusters/operator-cluster/refuse-webhooks"
       want="the webhook configurations were not read (above), so whether a webhook's backend is in dispatch, where the fence does not refuse entry into it, is unknown"
+      ;;
+    webhooks-empty | webhooks-object)
+      # The list answered with exit 0 and an empty body, or with `{}`: is_list reads neither as no
+      # webhook, so the credit cannot stand on it.
+      if [ "$1" = webhooks-empty ]; then : >"$world/clusters/operator-cluster/empty-webhooks"; else : >"$world/clusters/operator-cluster/object-webhooks"; fi
+      want="the webhook configurations were not read (above), so whether a webhook's backend is in dispatch, where the fence does not refuse entry into it, is unknown"
+      fence_run
+      want_status 1 "the fence $1"
+      want_fence_findings "the fence $1"
+      want_text "$want" "the fence $1"
+      want_text "UNKNOWN live: RBAC on operator-cluster: the API server's list of webhook configurations could not be read, so no webhook's backend is reviewed: the answer " "the fence $1"
+      return
+      ;;
+    policies-empty | pods-empty)
+      # The fence's list, or the pods', answered with exit 0 and an empty body: UNKNOWN naming it.
+      : >"$world/clusters/operator-cluster/empty-${1%-empty}"
+      if [ "$1" = pods-empty ]; then
+        want="UNKNOWN live: RBAC on operator-cluster: the API server's list of pods in dispatch is not one JSON list, so nothing the broker's pod fence refuses is credited: the answer was empty"
+      else
+        want="UNKNOWN live: RBAC on operator-cluster: the API server's list of admission policies is not one JSON list, so the broker's pod fence is unread and nothing it refuses is credited: the answer was empty"
+      fi
       ;;
     shared)
       fence_run --guarded dispatch/dispatch
@@ -197,8 +249,8 @@ fence_fail_row() {
 }
 if row fb; then
   each fence_fail_row removed warn ignore selector policy-selector exception drift unread pods-unread rogue-pod other-secret no-pod \
-    webhook webhooks-unread shared
-  passed "(fb) the fence removed, bound Warn, failing open, missing dispatch in a binding's or a policy's selector, with an exception, differing live from declared, unread, beside a pod outside its names that runs as the broker or takes its database login or another of its Secrets, with no broker pod, beside a webhook backed in dispatch or webhooks unread, or beside another guarded pair in dispatch, credits nothing"
+    webhook webhook-cluster webhooks-unread webhooks-empty webhooks-object policies-empty pods-empty shared
+  passed "(fb) the fence removed, bound Warn, failing open, missing dispatch in a binding's or a policy's selector, with an exception, differing live from declared, unread or answered empty, beside a pod outside its names that runs as the broker or takes its database login or another of its Secrets, with no broker pod, beside a webhook backed in dispatch or webhooks unread, answered empty or as {}, or beside another guarded pair in dispatch, credits nothing"
 fi
 
 # --- (fc) Whoever can write the fence stays a finding while it is credited. ---
@@ -229,23 +281,168 @@ if row fc; then
   passed "(fc) a principal that can patch the fence's binding or delete its policy, outright or by name, stays a finding beside the credits"
 fi
 
-# --- (fd) A chain through dispatch-measure to a writer of the admission policies. ---
+# --- (fd) A chain through dispatch-measure, whose credited exec carries the residual, to a writer of
+# the admission policies. ---
 if row fd; then
-  chain="FINDING system:serviceaccount:legion:worker: create serviceaccounts/token dispatch-measure in legion, so it can become system:serviceaccount:legion:dispatch-measure, which can patch validatingadmissionpolicies.admissionregistration.k8s.io cluster-wide"
+  chain="create serviceaccounts/token dispatch-measure in legion, so it can become system:serviceaccount:legion:dispatch-measure, which can"
   fence_world
   subject_grant operator-cluster "$(sa_subject legion worker)" create "" serviceaccounts token legion dispatch-measure
   fence_run
   want_status 0 "dispatch-measure with its credited rights alone"
   want_fence_credits "dispatch-measure with its credited rights alone"
-  ! has_line "$chain" || fail "dispatch-measure with its credited rights alone: who can become it is a finding"
+  want_line "$(allowance_line system:serviceaccount:legion:worker "$chain create pods/exec in dispatch")" "dispatch-measure with its credited rights alone"
+  ! has_prefix "FINDING system:serviceaccount:legion:worker: $chain" || fail "dispatch-measure with its credited rights alone: who can become it is a finding"
   subject_grant operator-cluster "$(sa_subject legion dispatch-measure)" patch admissionregistration.k8s.io validatingadmissionpolicies "" "" ""
   fence_run
   want_status 1 "dispatch-measure that can patch admission policies"
   want_line "FINDING system:serviceaccount:legion:dispatch-measure: patch validatingadmissionpolicies.admissionregistration.k8s.io cluster-wide" \
     "dispatch-measure that can patch admission policies"
-  want_line "$chain" "dispatch-measure that can patch admission policies"
+  want_line "FINDING system:serviceaccount:legion:worker: $chain patch validatingadmissionpolicies.admissionregistration.k8s.io cluster-wide" \
+    "dispatch-measure that can patch admission policies"
   want_fence_credits "dispatch-measure that can patch admission policies"
-  passed "(fd) who can become dispatch-measure is a finding once dispatch-measure can patch the admission policies, and not for its credited exec and pod patch alone"
+  passed "(fd) who can become dispatch-measure is an ALLOWANCE naming the chain and the residual while dispatch-measure holds its credited exec alone, and a finding once dispatch-measure can patch the admission policies"
+fi
+
+# --- (fj) Who can become a credited grant's holder reaches the residual too, and is named. ---
+# The comment-delivery account's resource, whose minters the check reads once its credited exec
+# carries the residual.
+readonly comment_delivery_res="//iam.googleapis.com/projects/$project/serviceAccounts/$comment_delivery"
+residual_chain_row() {
+  local want
+  fence_world
+  edit "$world/clusters/operator-cluster/serviceaccounts.json" '. + [{namespace: "agent-sessions", name: "runner-x"}, {namespace: "agent-sessions", name: "runner-w"}]'
+  case "$1" in
+    token)
+      # An agent's ServiceAccount that can mint dispatch-measure's token.
+      subject_grant operator-cluster "$(sa_subject agent-sessions runner-x)" create "" serviceaccounts token legion dispatch-measure
+      want="$(allowance_line system:serviceaccount:agent-sessions:runner-x "create serviceaccounts/token dispatch-measure in legion, so it can become system:serviceaccount:legion:dispatch-measure, which can create pods/exec in dispatch")"
+      ;;
+    minter)
+      # A Google service account that can mint comment-delivery's token.
+      iam "$comment_delivery_res" roles/iam.serviceAccountTokenCreator "serviceAccount:minter@$project.iam.gserviceaccount.com"
+      want="ALLOWANCE serviceAccount:minter@$project.iam.gserviceaccount.com: iam.serviceAccounts.getAccessToken"
+      ;;
+    member)
+      # A Workload Identity member that acts as comment-delivery, and an agent that can become it.
+      iam "$comment_delivery_res" roles/iam.workloadIdentityUser "serviceAccount:$project.svc.id.goog[agent-sessions/runner-w]"
+      subject_grant operator-cluster "$(sa_subject agent-sessions runner-x)" create "" serviceaccounts token agent-sessions runner-w
+      want="$(allowance_line system:serviceaccount:agent-sessions:runner-x "create serviceaccounts/token runner-w in agent-sessions, so it can become system:serviceaccount:agent-sessions:runner-w, which can acts as $comment_delivery (which can create pods/exec in dispatch) through Workload Identity")"
+      ;;
+  esac
+  fence_run
+  want_status 0 "the residual reached through $1"
+  want_fence_credits "the residual reached through $1"
+  [ "$(count_prefix "FINDING ")" -eq 0 ] || fail "the residual reached through $1: a FINDING line"
+  case "$1" in
+    minter)
+      want_text "$want" "the residual reached through $1"
+      want_text ", so it can act as serviceAccount:$comment_delivery, which can create pods/exec in dispatch, $fence_residual" "the residual reached through $1"
+      ;;
+    member)
+      want_text "ALLOWANCE serviceAccount:$project.svc.id.goog[agent-sessions/runner-w]: " "the residual reached through $1"
+      want_line "$want" "the residual reached through $1"
+      ;;
+    *) want_line "$want" "the residual reached through $1" ;;
+  esac
+}
+if row fj; then
+  each residual_chain_row token minter member
+  passed "(fj) an agent that can mint dispatch-measure's token, a Google account that can mint comment-delivery's, and an agent that can become comment-delivery's Workload Identity member each print an ALLOWANCE naming the chain and the residual"
+fi
+
+# --- (fk) A change of a pod in dispatch is no credit: broker-pod-update admits a change of any
+# pod's metadata, and a pod given the broker's label app=envoy-broker takes its Services' traffic. ---
+pod_change_row() {
+  fence_world
+  subject_grant operator-cluster "$(sa_subject legion dispatch-measure)" "$1" "" pods "" dispatch ""
+  fence_run
+  want_status 1 "dispatch-measure with $1 pods in dispatch"
+  want_line "FINDING system:serviceaccount:legion:dispatch-measure: $1 pods in dispatch" "dispatch-measure with $1 pods in dispatch"
+  ! has_prefix "CREDIT system:serviceaccount:legion:dispatch-measure: $1 pods in dispatch" ||
+    fail "dispatch-measure with $1 pods in dispatch: the grant is credited"
+  want_fence_credits "dispatch-measure with $1 pods in dispatch"
+}
+if row fk; then
+  each pod_change_row patch update
+  passed "(fk) patch or update of pods in dispatch, by which a label-only patch puts another pod behind the broker's Services, stays a finding beside the fence's credits"
+fi
+
+# --- (fs) Each binding spec the contract holds decides alone. ---
+# fence_variant NAME PROGRAM [ARGS...]: a copy of fence_check whose broker-fence.json is PROGRAM's
+# rewrite of fence_check's (jq, with ARGS); prints the copy's script.
+fence_variant() {
+  local dir="$temporary_dir/fence-variant-$1" program="$2"
+  shift 2
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  cp "$fence_check" "$dir/operator-token-minters.sh"
+  cp -r "$(dirname "$fence_check")/operator-token-minters" "$dir/"
+  jq "$program" "$@" "$(dirname "$fence_check")/operator-token-minters/broker-fence.json" >"$dir/operator-token-minters/broker-fence.json"
+  echo "$dir/operator-token-minters.sh"
+}
+# The binding $b's selector widened to dispatch-canary too, which still holds dispatch: a contract
+# object ({kind, name, spec}) or a render's or a cluster's.
+readonly fence_widen='if .kind == "ValidatingAdmissionPolicyBinding" and (.name // .metadata.name) == $b
+  then .spec.matchResources.namespaceSelector.matchExpressions[0].values = ["dispatch", "dispatch-canary"] else . end'
+binding_spec_row() {
+  local variant
+  variant="$(fence_variant "binding-$1" ".objects |= map($fence_widen)" --arg b "$1")"
+  # The contract, the renders and the cluster agree on the widened binding: credited.
+  fence_world
+  fence_edit both "$fence_widen" --arg b "$1"
+  run_script="$variant" run --broker-workload dispatch/envoy-broker --db-secret dispatch/envoy-broker-db
+  want_status 0 "the binding $1 widened in the contract and on the cluster alike"
+  want_fence_credits "the binding $1 widened in the contract and on the cluster alike"
+  # The contract's widened binding against the fence as fence_objects writes it: no credit.
+  fence_world
+  run_script="$variant" run --broker-workload dispatch/envoy-broker --db-secret dispatch/envoy-broker-db
+  want_status 1 "the binding $1 widened in the contract alone"
+  want_fence_findings "the binding $1 widened in the contract alone"
+  want_text "in the renders, the ValidatingAdmissionPolicyBinding $1 differs from the reviewed fence in matchResources" \
+    "the binding $1 widened in the contract alone"
+}
+if row fs; then
+  each binding_spec_row broker-pod-connect broker-pod-update broker-pod-create broker-workload-create broker-workload-update
+  passed "(fs) each binding spec broker-fence.json holds decides: one widened to dispatch-canary in the contract and on the cluster is credited, and in the contract alone credits nothing"
+fi
+
+# --- (fp) and (fq): the fence's verdict on a right travels as a policy and a flag, never as the
+# residual's text, which credit and residual_allowance read from the credited fence alone. ---
+# The fence as fence_refuses reads it, with the contract's residual beside it, as the check before
+# this round passed it.
+fence_with_residual="$(jq -c '{namespace, account, direct: true, residual}' "$fence_contract")"
+readonly fence_with_residual
+fence_right() {
+  jq -n -c --arg v "$1" --arg s "$2" --argjson t "${3:-null}" '{verb: $v, group: "", resource: "pods", sub: $s, ns: "dispatch", name: "",
+    label: "\($v) pods/\($s) in dispatch"} + (if $t then {targets: $t} else {} end) | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}'
+}
+if row fp; then
+  # Two principals, the first allowed and the second refused both rights: an exec without targets,
+  # and a port forward that becomes envoy-broker.
+  jq -n -c --argjson r1 "$(fence_right create exec)" --argjson r2 "$(fence_right create portforward '["dispatch:envoy-broker"]')" '[$r1, $r2]' \
+    >"$temporary_dir/fp-rights.json"
+  jq -n -c '[{principal: "p1", user: "u1", groups: []}, {principal: "p2", user: "u2", groups: []}]' >"$temporary_dir/fp-principals.json"
+  jq -n --slurpfile r "$temporary_dir/fp-rights.json" '{kind: "List", items: [("u1", "u2") as $u | $r[0][]
+    | {spec: {user: $u, groups: [], resourceAttributes: {verb, group, resource, subresource: .sub, namespace: .ns, name}},
+       status: {allowed: ($u == "u1")}}]}' >"$temporary_dir/fp-answer.json"
+  got="$(jq -r --slurpfile principals "$temporary_dir/fp-principals.json" --slurpfile rights "$temporary_dir/fp-rights.json" \
+    --argjson fence "$fence_with_residual" -L "$(dirname "$check")/operator-token-minters" -f "$(dirname "$check")/operator-token-minters/review-answer.jq" \
+    "$temporary_dir/fp-answer.json" | awk -F'\x1f' '{ print $1 "|" $3 "|" $6 "|" $7 }' | sort)"
+  want="$(printf '%s\n' "p1|allowed|broker-pod-connect|residual" "p1|allowed|broker-pod-connect|" "p2|refused||" "p2|refused||" | sort)"
+  [ "$got" = "$want" ] || fail "review-answer.jq's fence fields are not a policy and a flag, and none for a refused review: $got"
+  passed "(fp) review-answer.jq gives an allowed credited right the policy and the flag residual (none for one with targets), and a refused review no fence field"
+fi
+if row fq; then
+  jq -n -c "[$(fence_right create exec)]" >"$temporary_dir/fq-rights.json"
+  got="$(jq -n '{kind: "List", items: [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "Role", metadata: {name: "r", namespace: "dispatch"},
+      rules: [{apiGroups: [""], resources: ["pods/exec"], verbs: ["create"]}]},
+    {apiVersion: "rbac.authorization.k8s.io/v1", kind: "RoleBinding", metadata: {name: "r", namespace: "dispatch"},
+      roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "Role", name: "r"}, subjects: [{kind: "User", name: "u1"}]}]}' |
+    jq -r -n --slurpfile rights "$temporary_dir/fq-rights.json" --slurpfile named_rights "$temporary_dir/fq-rights.json" --argjson live false \
+      --argjson fence "$fence_with_residual" -L "$(dirname "$check")/operator-token-minters" -f "$(dirname "$check")/operator-token-minters/code-rbac.jq" |
+    awk -F'\x1f' '$1 == "grant" { print $(NF - 1) "|" $NF }')"
+  [ "$got" = "broker-pod-connect|residual" ] || fail "code-rbac.jq's fence fields of a declared credited grant are not the policy and the flag: $got"
+  passed "(fq) code-rbac.jq gives a declared credited grant, which the code step holds for fence_settle, the policy and the flag residual"
 fi
 
 # --- (fe) Becoming envoy-broker by entering a pod of dispatch, which the fence refuses. ---
@@ -318,15 +515,20 @@ if row fr; then
   cover="$(fence_rule_cover "$fence_contract")"
   want="$(printf '%s\n' "create	exec	broker-pod-connect	true	true" "create	attach	broker-pod-connect	true	true" \
     "create	portforward	broker-pod-connect	true	true" "get	exec	broker-pod-connect	true	true" "get	attach	broker-pod-connect	true	true" \
-    "get	portforward	broker-pod-connect	true	true" "patch		broker-pod-update	true	true" "update		broker-pod-update	true	true" | sort)"
+    "get	portforward	broker-pod-connect	true	true" | sort)"
   [ "$(sort <<<"$cover")" = "$want" ] ||
     fail "fence_refuses credits other rights than the reviewed rules refuse on the broker's pods: $cover"
-  # The control: the same reading of a contract whose connect policy lacks port forward fails.
+  # The controls: the same reading of a contract whose connect policy lacks port forward, and of
+  # one whose connect policy's rule no longer names the prefix, each fails its column.
   jq '(.objects[] | select(.kind == "ValidatingAdmissionPolicy" and .name == "broker-pod-connect") | .spec.matchConstraints.resourceRules)
     |= map(select(.resources != ["pods/portforward"]))' "$fence_contract" >"$temporary_dir/fence-contract-no-portforward.json"
   grep -qxF "create	portforward	broker-pod-connect	false	true" <<<"$(fence_rule_cover "$temporary_dir/fence-contract-no-portforward.json")" ||
     fail "the reading of a contract whose connect policy lacks port forward still finds port forward covered"
-  passed "(fr) each right fence_refuses credits is one the reviewed broker-pod-connect or broker-pod-update rules admit as CONNECT or UPDATE on pods and refuse by the envoy-broker- prefix, and a contract without the port forward rule shows it"
+  jq '(.objects[] | select(.kind == "ValidatingAdmissionPolicy" and .name == "broker-pod-connect") | .spec.validations[0].expression) = "true"' \
+    "$fence_contract" >"$temporary_dir/fence-contract-no-prefix.json"
+  grep -qxF "create	exec	broker-pod-connect	true	false" <<<"$(fence_rule_cover "$temporary_dir/fence-contract-no-prefix.json")" ||
+    fail "the reading of a contract whose connect rule names no prefix still finds the prefix named"
+  passed "(fr) each right fence_refuses credits is one the reviewed broker-pod-connect rules admit as CONNECT on pods, every rule naming the envoy-broker- prefix; a contract without the port forward rule, or without the prefix, shows it"
 fi
 
 # --- (fh) An ephemeral container in dispatch is no credit: on a pod not the broker's it takes any

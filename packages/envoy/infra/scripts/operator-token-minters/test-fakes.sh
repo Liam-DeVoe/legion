@@ -237,6 +237,7 @@ case "${args[*]}" in
   "get clusterrolebindings,rolebindings --all-namespaces -o json") answered_list=bindings ;;
   "get roles,clusterroles --all-namespaces -o json") answered_list=roles ;;
   "get service -n "*" -o json") answered_list=service ;;
+  "get pods -n "*" -o json") answered_list=pods ;;
 esac
 if [ -n "$answered_list" ]; then
   [ ! -e "$dir/garbage-$answered_list" ] || { echo "<html>502 Bad Gateway</html>"; exit 0; }

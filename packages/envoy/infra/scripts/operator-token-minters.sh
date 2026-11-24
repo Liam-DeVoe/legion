@@ -23,9 +23,10 @@
 # names; a list kubectl prints without the Table's columns is UNKNOWN. The two cases that still bring
 # a token into kubectl's memory are in operator-token-minters/step-rbac.sh.
 #
-# The steps, in order; each prints PASS, a FINDING per principal and right, or UNKNOWN naming why,
-# and the RBAC steps a CREDIT and an ALLOWANCE per grant whose use on the broker's pods its pod fence
-# refuses, or NO CREDIT naming why not (below, "The broker's pod fence"):
+# The steps, in order; each prints PASS, a FINDING per principal and right, or UNKNOWN naming why;
+# the RBAC steps print a CREDIT per grant whose use on the broker's pods its pod fence refuses, or
+# NO CREDIT naming why not, and an ALLOWANCE per grant or chain that reaches the fence's residual
+# (below, "The broker's pod fence"):
 #
 #   permission names  Each permission name the IAM steps ask about is in the predefined role that
 #                     grants it (`gcloud iam roles describe`): every container.* name in
@@ -153,7 +154,8 @@
 #                     a right asked, outright or by name in a live role, who can become it is
 #                     followed the same way. A grant whose use on the broker's pods its pod fence
 #                     refuses, here and in the code step, is a credit instead of a finding when the
-#                     fence is credited (below, "The broker's pod fence").
+#                     fence is credited, and who can become its holder is followed for the residual
+#                     its use elsewhere reaches (below, "The broker's pod fence").
 #   live: Workload    The Workload Identity member names the workload pool (<pool>.svc.id.goog,
 #     Identity        --pool-project, by default --project), the namespace and the ServiceAccount,
 #                     never the cluster, so every cluster that uses the pool can act as the Google
@@ -211,6 +213,11 @@
 #     finding's       step's permissions, judged as that step judges --gsa's: who can mint its token,
 #     account         sign as it or act as it holds what the finding gives it, so once the finding is
 #                     accepted, an agent that can become the account is still reported.
+#   live: minters of  For each Google service account whose credited grant reaches the broker's pod
+#     a credited      fence's residual and which no RBAC finding names, the same holders, each an
+#     grant's         ALLOWANCE naming the chain to the account and the residual where the step above
+#     account         would find it; each Workload Identity member of the operator's pool it lists is
+#                     followed on every cluster read, each chain to it an ALLOWANCE too.
 #   live: fleet       Policy Analyzer's holders on the pool project of gkehub.memberships.create and
 #     registration    update, of gkehub.namespaces, rbacrolebindings and membershipbindings create
 #                     and update, of the scopes' create, update and setIamPolicy, and of the
@@ -357,24 +364,28 @@
 # the two workload policies, its sha256): the code step reads it in the renders, and the RBAC step
 # reads the operator's cluster's ValidatingAdmissionPolicies and bindings (less what the API server
 # and GKE fill in), its pods in dispatch and its webhooks. Only when the renders and the cluster each
-# hold the five policies and bindings bound so, with the reviewed rules; no pod there named otherwise
-# than envoy-broker-* runs as envoy-broker or takes --db-secret, a token Secret of the namespace or a
-# Secret a broker pod takes; at least one envoy-broker-* pod runs as envoy-broker; and no webhook that
-# can match a guarded namespace calls a Service in dispatch, does a grant of create or get on
-# pods/exec, pods/attach or pods/portforward, or of patch or update on pods, in dispatch, outright or
-# by name, declared or live, or as a way to become envoy-broker, print a CREDIT line naming its use
-# on the broker's pods instead of a finding; in the guarded rights, only while dispatch/envoy-broker
-# is the one guarded pair in dispatch, since entry into another pod there reaches the other pair.
-# Its use on dispatch's other pods, Dispatch's own, whose database login can write the writer hold's
+# hold the five policies and bindings with the reviewed specs; no pod there named otherwise than
+# envoy-broker-* runs as envoy-broker or takes --db-secret, a token Secret of the namespace or a
+# Secret a broker pod takes; at least one envoy-broker-* pod runs as envoy-broker; and no webhook
+# that can match a guarded namespace or a cluster-scoped object calls a Service in dispatch, does a
+# grant of create or get on pods/exec, pods/attach or pods/portforward in dispatch, outright or by
+# name, declared or live, or as a way to become envoy-broker, print a CREDIT line naming its use on
+# the broker's pods instead of a finding; in the guarded rights, only while dispatch/envoy-broker is
+# the one guarded pair in dispatch, since entry into another pod there reaches the other pair. Its
+# use on dispatch's other pods, Dispatch's own, whose database login can write the writer hold's
 # tables, the fence does not refuse: that is broker-fence.json's residual, tracked by INFRA-4604, and
-# each such grant (not a way to become envoy-broker) prints an ALLOWANCE line naming it. Every other
-# right stays a finding: patch and update of pods/ephemeralcontainers (on a pod not the broker's an
-# ephemeral container takes any Secret of the namespace), create pods in dispatch (so does a new
-# pod), every Google IAM right and every hold writer; so does whoever can write the fence: its
-# create, update and patch are admission rights, and its delete and deletecollection are asked while
-# it is credited. A fence missing, held otherwise, or beside a pod or a webhook backend as above
-# credits nothing and prints NO CREDIT naming why; one whose policies or pods cannot be read is
-# UNKNOWN.
+# each such grant (not a way to become envoy-broker) prints an ALLOWANCE line naming it, and so does
+# each chain to its holder: who can become a ServiceAccount, or mint, sign as or act as a Google
+# service account, whose credited grant carries the residual, and so on along the chain, where it
+# reaches nothing more. Every other right stays a finding: patch and update of pods in dispatch
+# (broker-pod-update admits a change of any pod's metadata, and a pod given the broker's label
+# app=envoy-broker takes the broker's Services' traffic) and of pods/ephemeralcontainers (on a pod
+# not the broker's an ephemeral container takes any Secret of the namespace), create pods in
+# dispatch (so does a new pod), every Google IAM right and every hold writer; so does whoever can
+# write the fence: its create, update and patch are admission rights, and its delete and
+# deletecollection are asked while it is credited. A fence missing, held otherwise, or beside a pod
+# or a webhook backend as above credits nothing and prints NO CREDIT naming why; one whose policies,
+# pods or webhooks cannot be read, or are answered as no list, credits nothing and is UNKNOWN.
 #
 # Exit 0: no finding and no UNKNOWN (a CREDIT or ALLOWANCE line is neither). Exit 1: at least one
 # finding, each line naming the principal and the right (UNKNOWN lines may stand beside them). Exit
@@ -392,8 +403,9 @@
 # resource and granted_at as a finding's (the grant, kept as evidence), the policy that refuses that
 # use (its binding has its name), declared the sha256 of the renders' fence and live the same of the
 # cluster's with the generation and resourceVersion of that policy and binding, so a reader sees what
-# was trusted. `residuals` holds the same grant's use on the namespace's other pods, as its ALLOWANCE
-# line prints it, with the residual's text and the issue that tracks it. Each is [] when nothing is
+# was trusted. `residuals` holds each ALLOWANCE line, a credited grant's use on the namespace's other
+# pods or a chain to its holder, with the residual's text and the issue that tracks it: the fence's
+# residual alone, never the run's flags, which `allowances` names. Each is [] when nothing is
 # credited. `allowances` names each allowance the run was given (each --service-agent, each
 # --rbac-only-member, and --fleet none), each of which lets a principal or a reading pass, so a
 # reader holds each one to what was accepted; it is [] when there is none. `right` is the sentence

@@ -4741,26 +4741,30 @@ port forward to every `envoy-broker-*` pod and whose `broker-pod-update` refuses
 metadata to a broker pod, each bound `Deny` with `failurePolicy: Fail` in `dispatch` and with no
 exception. When `dispatch/envoy-broker` is a guarded pair (`--broker-workload` or a `--guarded`),
 and only when the renders and the operator's cluster each hold the five `broker-*` policies and
-their bindings, bound so to `dispatch` alone, with the reviewed rules
-`scripts/operator-token-minters/broker-fence.json` holds (each spec, or the sha256 of the two
-workload policies', less what the API server and GKE fill in); at least one `envoy-broker-*` pod
-runs as `envoy-broker`; no pod of `dispatch` named otherwise runs as `envoy-broker` or takes
-`--db-secret`, a token Secret there or a Secret a broker pod takes; and no webhook that can match a
-guarded namespace calls a Service in `dispatch`, a grant of exec, attach or port forward, or of a
-pod patch or update, in `dispatch` prints a `CREDIT` line naming its use on the broker's pods
-instead of a finding, and goes into `--report`'s `credited` with the policy and the declared and
-live versions. Its use on the other pods of `dispatch` the fence does not refuse: Dispatch's own
-database login there can write the writer hold's tables, the residual `broker-fence.json` states
-and INFRA-4604 tracks, so each such grant also prints an `ALLOWANCE` line naming it and goes into
-`--report`'s `residuals`. Everything else stays a finding: an ephemeral container in `dispatch`,
-`create pods` there, every workload write, the token, impersonation, Secrets, every Google IAM
-right, the hold writers, and whoever can write or delete the fence. A fence missing or held
-otherwise prints `NO CREDIT` naming why and credits nothing; one that cannot be read is UNKNOWN. It
-reads code first (`--rbac-render`, `--iam-preview`), then the live grants, and exits 0 with nothing
-found, 1 naming each principal and right, or 2 naming each step it could not read, a run that
-stopped mid-way included. `--report <file>` writes the same as JSON, with each credit under
-`credited`, its residual under `residuals`, and each allowance the run was given
-(`--service-agent`, `--rbac-only-member`, `--fleet none`, `--credentials-arg`) under `allowances`,
+their bindings with the reviewed specs `scripts/operator-token-minters/broker-fence.json` holds
+(each spec, or the sha256 of the two workload policies', less what the API server and GKE fill in);
+at least one `envoy-broker-*` pod runs as `envoy-broker`; no pod of `dispatch` named otherwise runs
+as `envoy-broker` or takes `--db-secret`, a token Secret there or a Secret a broker pod takes; and
+no webhook that can match a guarded namespace or a cluster-scoped object calls a Service in
+`dispatch`, a grant of exec, attach or port forward in `dispatch` prints a `CREDIT` line naming its
+use on the broker's pods instead of a finding, and goes into `--report`'s `credited` with the
+policy and the declared and live versions. Its use on the other pods of `dispatch` the fence does
+not refuse: Dispatch's own database login there can write the writer hold's tables, the residual
+`broker-fence.json` states and INFRA-4604 tracks, so each such grant also prints an `ALLOWANCE`
+line naming it and goes into `--report`'s `residuals`, and so does each chain to its holder: who can
+become such a ServiceAccount, or mint, sign as or act as such a Google service account (its
+minters' step), and so on along the chain. Everything else stays a finding: a pod patch or update
+in `dispatch` (`broker-pod-update` admits a change of any pod's metadata, and a pod given the
+broker's label `app: envoy-broker` takes the broker's Services' traffic), an ephemeral container
+there, `create pods` there, every workload write, the token, impersonation, Secrets, every Google
+IAM right, the hold writers, and whoever can write or delete the fence. A fence missing or held
+otherwise prints `NO CREDIT` naming why and credits nothing; one whose policies, pods or webhooks
+cannot be read, or are answered as no list, is UNKNOWN. It reads code first (`--rbac-render`,
+`--iam-preview`), then the live grants, and exits 0 with nothing found, 1 naming each principal
+and right, or 2 naming each step it could not read, a run that stopped mid-way included.
+`--report <file>` writes the same as JSON, with each credit under `credited`, each `ALLOWANCE`
+line under `residuals`, and each allowance flag the run was given (`--service-agent`,
+`--rbac-only-member`, `--fleet none`, `--credentials-arg`) under `allowances`,
 and is deleted when a run starts, so a report is that run's or none. Each flag that names a thing
 (a project, a cluster, a namespace, an account, a secret) is checked for that thing's form before
 any step runs, and a value of another form is a usage error naming the flag, never the value, as is

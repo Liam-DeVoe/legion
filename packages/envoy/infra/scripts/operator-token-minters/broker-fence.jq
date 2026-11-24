@@ -4,12 +4,13 @@
 #
 # fence_read($contract) reads an array of objects (a render's, or a cluster's admission policies and
 # their bindings) against broker-fence.json ($contract): each of its policies and bindings must be
-# there once, each binding binding its own policy Deny to the contract's namespace alone and each
-# policy failing closed, and their specs, less what the API server fills in by default (fence_canon),
-# must equal the contract's, or, for one the contract holds by its digest alone, hash to it, which
-# broker-fence.sh checks. fence_pods reads the namespace's pods for the account's shape.
-# fence_fields($fence; $r) gives a right's verdict: the policy of a credited fence that refuses its
-# use on the broker's pods, and the residual its use on the namespace's other pods carries.
+# there once, and its spec, less what the API server fills in by default (fence_canon), must equal
+# the contract's or, for one the contract holds by its digest alone, be in the fence's shape (each
+# binding binding its own policy Deny to the contract's namespace alone, each policy failing
+# closed) and hash to the digest, which broker-fence.sh checks. fence_pods reads the namespace's
+# pods for the account's shape. fence_fields($fence; $r) gives a right's verdict: the policy of a
+# credited fence that refuses its use on the broker's pods, and whether its use on the namespace's
+# other pods carries the fence's residual.
 include "rec";
 
 # A field the API server fills in by default reads as one left out: null, [] and {} alike.
@@ -46,7 +47,9 @@ def fence_canon($ns):
 # fence_shape($kind; $ns; $name): what keeps a canonical policy or binding spec of kind $kind named
 # $name from refusing what its rules say, to every request in $ns alone, or "": a policy must fail
 # closed and be narrowed by nothing beside its rules (no selector, match condition or parameter); a
-# binding must name its policy, deny, select $ns alone by its name, and take no parameter.
+# binding must name its policy, deny, select $ns alone by its name, and take no parameter. It
+# decides only an object broker-fence.json holds by its digest, whose spec this repository does not
+# hold; for every other object it says why a spec that differs from the contract's does.
 def fence_shape($kind; $ns; $name):
   if $kind == "ValidatingAdmissionPolicy" then
     ([((.matchConstraints // {}) | keys - ["resourceRules"])[], (keys - ["failurePolicy", "matchConstraints", "validations"])[]]) as $beside
@@ -64,8 +67,10 @@ def fence_shape($kind; $ns; $name):
   end;
 # fence_read($contract): {state: read, absent or mismatch, objects: [{kind, name, state, why, spec,
 # digest, generation, resourceVersion}]}, each object of the contract in its order; absent when none
-# of them is there, read when each is there once in its shape with the contract's spec or, for one
-# the contract holds by its digest (`digest`, which broker-fence.sh compares), any spec.
+# of them is there, read when each is there once with the contract's spec (fence_shape, or the keys
+# that differ, saying why one is not) or, for one the contract holds by its digest (`digest`, which
+# broker-fence.sh compares), with any spec in the fence's shape. Each spec the contract holds
+# decides alone: the shape only explains a spec that differs from it.
 def fence_read($contract):
   . as $objects
   | [$contract.objects[] as $want
@@ -75,9 +80,11 @@ def fence_read($contract):
          elif ($found | length) > 1 then {state: "mismatch", why: "is there \($found | length) times"}
          else ($found[0] | fence_canon($contract.namespace)) as $spec
            | ($spec | fence_shape($want.kind; $contract.namespace; $want.name)) as $shape
-           | (if $shape != "" or $want.digest then $shape
+           | (if $want.spec == null then $shape
+              elif $spec == $want.spec then ""
+              elif $shape != "" then $shape
               else [$spec, $want.spec | keys[]] | unique | map(select(. as $k | $spec[$k] != $want.spec[$k]))
-                | if . == [] then "" else "differs from the reviewed fence in \(join(", "))" end end) as $why
+                | "differs from the reviewed fence in \(join(", "))" end) as $why
            | {state: (if $why == "" then "read" else "mismatch" end), why: $why, spec: $spec, digest: ($want.digest // ""),
               generation: ($found[0].metadata.generation // ""), resourceVersion: ($found[0].metadata.resourceVersion // "")}
          end]
@@ -109,25 +116,26 @@ def fence_pods($prefix; $account; $secrets):
      | "\(.name) (runs as \(.account)\(if (.takes | length) > 0 then ", takes \(.takes | join(", "))" else "" end))"] as $outside
   | [($outside | join("; ")), ($witness | length)] | rec;
 # fence_refuses($fence; $r): the policy that refuses $r's use on the broker's pods, $r a right as
-# rights_json writes it, while $fence ({namespace, account, direct, residual}) is credited; nothing
-# for any other right. Only entry into a pod (exec, attach and port forward, by create or get, which
-# the API server admits as CONNECT) and a change of a pod (patch and update of pods) in the fence's
-# namespace, which the fence refuses on every pod of the broker's with no exception. An ephemeral
-# container is never credited: the fence refuses it on the broker's pods alone, and on any other pod
-# of the namespace it can take any Secret there by an env or envFrom. A right with `targets` (a
-# become right, become-rights.jq) is credited only when each target is the fence's account; one
-# without, only when the fence's account is the one guarded pair in its namespace ($fence.direct).
+# rights_json writes it, while $fence ({namespace, account, direct}) is credited; nothing for any
+# other right. Only entry into a pod (exec, attach and port forward, by create or get, which the API
+# server admits as CONNECT) in the fence's namespace, which broker-pod-connect refuses on every pod
+# named $prefix* with no exception. A change of a pod (patch or update) is never credited:
+# broker-pod-update admits a change of any pod's metadata, and a pod not the broker's that is given
+# the broker's label app=envoy-broker takes the broker's Services' traffic; nor is an ephemeral
+# container: on a pod not the broker's it can take any Secret of the namespace by an env or
+# envFrom. A right with `targets` (a become right, become-rights.jq) is credited only when each
+# target is the fence's account; one without, only when the fence's account is the one guarded pair
+# in its namespace ($fence.direct).
 def fence_refuses($fence; $r):
   if $fence == null or ($r.group // "") != "" or $r.resource != "pods" or ($r.ns // "") != $fence.namespace then empty
   elif (if $r.targets then ($r.targets | length) > 0 and all($r.targets[]; . == "\($fence.namespace):\($fence.account)")
         else $fence.direct end) | not then empty
   elif ($r.verb == "create" or $r.verb == "get") and ($r.sub == "exec" or $r.sub == "attach" or $r.sub == "portforward") then "broker-pod-connect"
-  elif ($r.verb == "patch" or $r.verb == "update") and $r.sub == "" then "broker-pod-update"
   else empty end;
 # fence_fields($fence; $r): a record's two last fields for the right $r: the policy fence_refuses
-# names, or ""; and the residual of broker-fence.json for a credited right without `targets`, whose
-# use on the namespace's other pods the fence does not refuse, or "". A become right's use there is
-# the same grant's as the right without targets, which carries it.
+# names, or ""; and `residual` for a credited right without `targets`, whose use on the namespace's
+# other pods the fence does not refuse (broker-fence.json's residual, which credit reads), or "". A
+# become right's use there is the same grant's as the right without targets, which carries it.
 def fence_fields($fence; $r):
   ([fence_refuses($fence; $r)] | first // "") as $policy
-  | [$policy, (if $policy != "" and ($r.targets | not) then ($fence.residual.text // "") else "" end)];
+  | [$policy, (if $policy != "" and ($r.targets | not) then "residual" else "" end)];

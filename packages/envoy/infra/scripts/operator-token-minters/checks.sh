@@ -4,7 +4,10 @@
 # Sourced by operator-token-minters.sh, whose header says what each step checks.
 # --- The IAM checks: each a step, a resource, the permissions asked and a witness. ---
 
-declare -A CHECK_STEP=() CHECK_RESOURCE=() CHECK_PERMS=() CHECK_WITNESS=() CHECK_MISSING=()
+# CHECK_RESIDUAL, for a check of the minters of a Google service account whose credited grant reaches
+# the broker's pod fence's residual (step-live-iam.sh): the account and that grant, which each
+# holder's ALLOWANCE names in place of a finding (live_iam).
+declare -A CHECK_STEP=() CHECK_RESOURCE=() CHECK_PERMS=() CHECK_WITNESS=() CHECK_MISSING=() CHECK_RESIDUAL=()
 CHECKS=(gke dm gsa broker sql dbsecret state signing fleet)
 PROJECT_RES="//cloudresourcemanager.googleapis.com/projects/$PROJECT"
 BUCKET=""
