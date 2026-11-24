@@ -1373,19 +1373,21 @@ k6_azure() {
 	# What each run does once it is logged in: `az group list`, the admin command,
 	# and then `az account get-access-token`, which prints the access token az itself holds -
 	# the one the broker's exchange handed it, which has to be a placeholder and never the real
-	# token the Resource Manager is sent.
+	# token the Resource Manager is sent. Each run writes its own access file, named by the run's
+	# number, so each of the five is judged and not only the last.
 	cat >"$d/az-steps.sh" <<EOF
 set -u
 az group list -o json
-az account get-access-token -o json >$d/access.json
+az account get-access-token -o json >$d/access-\$1.json
 EOF
 	local run
 	: >"$d/runs.log"
+	rm -f "$d"/access-*.json
 	for run in 1 2 3 4 5; do
 		echo "=== run $run ===" >>"$d/runs.log"
 		PATH="$d/bin:$K6_AZ_PATH" agent-secrets AIRLOCK_AZURE_LOGIN --ttl 1h --wait 5m \
 			--reason "airlock check k6 run $run: az logs in and calls the Resource Manager" -- \
-			sh -c "$(k6_azure_login_steps)" sh bash "$d/az-steps.sh" >>"$d/runs.log" 2>>"$d/cli.err"
+			sh -c "$(k6_azure_login_steps)" sh bash "$d/az-steps.sh" "$run" >>"$d/runs.log" 2>>"$d/cli.err"
 		echo "exit $?" >>"$d/runs.log"
 	done
 	kill "$watcher" 2>/dev/null || true
@@ -1400,7 +1402,16 @@ EOF
 	# The form's own percent-encoding: a JWT holds none of the characters a form escapes but
 	# the "=" of its padding, and the comparison is against the stack's own token.
 	K6_AZ_ASSERTION="${K6_AZ_ASSERTION//%3D/=}"
-	K6_AZ_ACCESS="$(jq -r '.accessToken // ""' "$d/access.json" 2>/dev/null)"
+	# The access token az held after each run, and how many of the five open with the
+	# placeholder prefix: a run whose file is missing or holds no token counts as none.
+	K6_AZ_ACCESS="$(jq -r '.accessToken // ""' "$d/access-1.json" 2>/dev/null)"
+	K6_AZ_ACCESS_SHAPES="" K6_AZ_ACCESS_PLACEHOLDERS=0
+	local token
+	for run in 1 2 3 4 5; do
+		token="$(jq -r '.accessToken // ""' "$d/access-$run.json" 2>/dev/null)"
+		K6_AZ_ACCESS_SHAPES+="run $run: $(shape "$token"); "
+		contains agent-secrets-placeholder "$token" && K6_AZ_ACCESS_PLACEHOLDERS=$((K6_AZ_ACCESS_PLACEHOLDERS + 1))
+	done
 	mapfile -t K6_AZ_ARM_HEADERS < <(printf '%s' "$recs" | jq -r '.[] | select(.path == "/subscriptions") | .header.Authorization // [] | .[]')
 	K6_AZ_ARM_STATUS="$(grep '^exit ' "$d/runs.log" | tr '\n' ' ')"
 	K6_AZ_EXCHANGES="$(printf '%s' "$recs" | jq '[.[] | select(.path | endswith("/token"))] | length')"
@@ -1527,7 +1538,7 @@ check_k6() {
 	access_shape="$(shape "$K6_AZ_ACCESS")"
 	observe "the five az runs: $K6_AZ_RUNS runs, $K6_AZ_FAILED of them non-zero ($K6_AZ_ARM_STATUS); what they reached on the Microsoft stand-in was $K6_AZ_REACHED, and the first ERROR line az wrote, if any, was: ${K6_AZ_ERROR:-none}"
 	observe "the exchange: the token endpoint was asked $K6_AZ_EXCHANGES times and its client_assertion was $(shape "$K6_AZ_ASSERTION") against the stack's own federated token $(shape "$federated") (compared by SHA-256 and length)"
-	observe "the access token az itself holds after its login (az account get-access-token) is $access_shape, which opens 'agent-secrets-placeholder': $(contains agent-secrets-placeholder "$K6_AZ_ACCESS" && echo yes || echo no)"
+	observe "the access token az itself holds after its login (az account get-access-token), for each run: ${K6_AZ_ACCESS_SHAPES}$K6_AZ_ACCESS_PLACEHOLDERS of the five open 'agent-secrets-placeholder'"
 	observe "the Resource Manager calls az made, one per run, and their Authorization headers: $(for h in "${K6_AZ_ARM_HEADERS[@]+"${K6_AZ_ARM_HEADERS[@]}"}"; do printf '%s; ' "$(shape "$h")"; done)"
 	observe "the brokers' own logs of calls to a bound host, which is how many each process served: $K6_AZ_SERVED"
 
@@ -1535,9 +1546,9 @@ check_k6() {
 		"the stand-in token endpoint gets the real federated token" \
 		"its client_assertion is the stack's own federated token by SHA-256 and length ($(shape "$K6_AZ_ASSERTION")), over $K6_AZ_EXCHANGES exchanges"
 
-	judge "$([ "$K6_AZ_RUNS" = 5 ] && [ "$K6_AZ_FAILED" = 0 ] && contains agent-secrets-placeholder "$K6_AZ_ACCESS" && echo 0 || echo 1)" \
+	judge "$([ "$K6_AZ_RUNS" = 5 ] && [ "$K6_AZ_FAILED" = 0 ] && [ "$K6_AZ_ACCESS_PLACEHOLDERS" = 5 ] && echo 0 || echo 1)" \
 		"az gets a placeholder access token" \
-		"all five az runs logged in against the stand-in cloud and listed resource groups ($K6_AZ_FAILED of $K6_AZ_RUNS exited non-zero), and the token az holds is $access_shape, which opens 'agent-secrets-placeholder': $(contains agent-secrets-placeholder "$K6_AZ_ACCESS" && echo yes || echo no)"
+		"all five az runs logged in against the stand-in cloud and listed resource groups ($K6_AZ_FAILED of $K6_AZ_RUNS exited non-zero), and the token az held after each run opens 'agent-secrets-placeholder' on $K6_AZ_ACCESS_PLACEHOLDERS of the five ($K6_AZ_ACCESS_SHAPES)"
 
 	local arm_calls=0 arm_real=0 header
 	for header in "${K6_AZ_ARM_HEADERS[@]+"${K6_AZ_ARM_HEADERS[@]}"}"; do
