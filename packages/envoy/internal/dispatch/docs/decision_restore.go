@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -2525,7 +2526,7 @@ func movedAskBlock(node *pmdoc.Node, restore *restoredBlock) (*pmdoc.Node, error
 
 // writeVersion writes the version of document the pass's live write left (SnapshotVersion), under
 // the step's mark naming what the pass added to document (stepCasesFor), and its artifact.version
-// event, under which the version's block index states its facts (graphstore.Caused) and its
+// event, under which the version's block index states its facts (graphstore.QueueCaused) and its
 // references are stamped, as every version a route writes is. It records the version's number in
 // *number and answers the event, NoEvent where no version was written.
 //
@@ -2553,10 +2554,11 @@ func (r *issueRestore) writeVersion(ctx context.Context, document issueDocument,
 	if err := refs.Stamp(ctx, r.tx, "artifact", document.id, event.ID); err != nil {
 		return graphstore.NoEvent, err
 	}
-	if err := graphstore.Caused(ctx, r.tx, written.Blocks, event.ID); err != nil {
-		return graphstore.NoEvent, err
-	}
-	if err := graphstore.WriteHeads(ctx, r.tx, graphstore.HeldHeads(written.Blocks)); err != nil {
+	if err := store.RunWrite(ctx, r.tx, func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, written.Blocks, event.ID)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(written.Blocks))
+		return nil
+	}); err != nil {
 		return graphstore.NoEvent, err
 	}
 	eventSink(ctx)(event)
@@ -2702,9 +2704,6 @@ func (r *issueRestore) writeFacts(ctx context.Context, cause int64) error {
 		if _, err := r.tx.Exec(ctx, "with "+arms+"\nselect 1", params...); err != nil {
 			return fmt.Errorf("state the moves, the removals and the Keeps of the restore of %s: %w", r.issue, err)
 		}
-		if err := graphstore.WriteHeads(ctx, r.tx, append(graphstore.HeadsOf(nodes, tuples), graphstore.HeadsOfClaims(claims)...)); err != nil {
-			return err
-		}
 	}
 	for _, keep := range keepRows {
 		if _, err := r.tx.Exec(ctx, `
@@ -2717,7 +2716,8 @@ func (r *issueRestore) writeFacts(ctx context.Context, cause int64) error {
 			return fmt.Errorf("project the Keep of a converted decision of %s: %w", r.issue, err)
 		}
 	}
-	return nil
+	// The head rows of what the facts name, the last rows the write takes.
+	return graphstore.WriteHeads(ctx, r.tx, append(graphstore.HeadsOf(nodes, tuples), graphstore.HeadsOfClaims(claims)...))
 }
 
 // sumOr is the sum the Keep's projection row holds once its decision is a node: the decision's own

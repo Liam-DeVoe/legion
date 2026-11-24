@@ -299,7 +299,7 @@ func backfillResults(ctx context.Context, database *store.Store) (KindBackfill, 
 // writeResultBatch writes one batch's result nodes in one transaction, in the store's lock order
 // (api/inbox_read.go's markInboxReadThreads): the owner rows of the issues whose checks the batch's
 // results record first (lockResultOwners), then the batch's rows read again under them, then every
-// node and every tuple in one graphstore.Write, which takes the node rows in ascending (kind, id).
+// node and every tuple in one graphstore.QueueWrite, which takes the node rows in ascending (kind, id).
 // The record route writes a result's row and its node in one transaction under that same row, so
 // a row read again here with no node is one no route will give one, and a row the route wrote
 // meanwhile names its node and is not written again. A result's row is no projection row naming its
@@ -378,10 +378,11 @@ func writeResultBatch(ctx context.Context, database *store.Store, batch []result
 		if len(batchNodes) == 0 {
 			return nil
 		}
-		if err := graphstore.Write(ctx, tx, batchNodes, stated); err != nil {
-			return err
-		}
-		if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(batchNodes, stated)); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, batchNodes, stated)
+			graphstore.QueueHeads(b, graphstore.HeadsOf(batchNodes, stated))
+			return nil
+		}); err != nil {
 			return err
 		}
 		nodes, tuples = int64(len(batchNodes)), statedOf(batchNodes)+int64(len(stated))
@@ -446,7 +447,7 @@ func backfillResultRetractions(ctx context.Context, database *store.Store) (Kind
 // writeResultRetractionBatch states one batch's retracted values in one transaction, in the
 // store's lock order: the owner rows of the issues whose checks the batch's results record first
 // (lockResultOwners), then the batch's retractions read again under them, then their values
-// through graphstore.Write, which writes no node: each result's node is its writer's or
+// through graphstore.QueueWrite, which writes no node: each result's node is its writer's or
 // backfillResults'. The retract route takes that same row, through its event, before it writes the
 // retraction's row and its value in one transaction, so a retraction read again here owing its
 // value is one no route will state, and one the route stated meanwhile is not read again. It
@@ -489,10 +490,11 @@ func writeResultRetractionBatch(ctx context.Context, database *store.Store, batc
 		if len(tuples) == 0 {
 			return nil
 		}
-		if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
-			return err
-		}
-		if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, tuples)); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nil, tuples)
+			graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
+			return nil
+		}); err != nil {
 			return err
 		}
 		written = int64(len(tuples))

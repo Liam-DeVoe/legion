@@ -380,18 +380,18 @@ func stateFiledFromNode(ctx context.Context, tx pgx.Tx, item *filedFromItem) err
 	if item == nil || item.node == nil {
 		return nil
 	}
-	if err := graphstore.Write(ctx, tx, item.node.nodes, item.node.tuples); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, item.node.nodes, item.node.tuples)
+		if item.kind == graphstore.KindComment {
+			b.Queue("", `update comments set node_kind = $2, node_address = $1 where id = $1::uuid and node_kind is null`,
+				item.id, graphstore.KindComment)
+		}
+		graphstore.QueueHeads(b, graphstore.HeadsOf(item.node.nodes, item.node.tuples))
+		return nil
+	}); err != nil {
 		return fmt.Errorf("state the node of the %s filed_from names: %w", item.kind, err)
 	}
-	if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(item.node.nodes, item.node.tuples)); err != nil {
-		return err
-	}
-	if item.kind != graphstore.KindComment {
-		return nil
-	}
-	_, err := tx.Exec(ctx, `update comments set node_kind = $2, node_address = $1 where id = $1::uuid and node_kind is null`,
-		item.id, graphstore.KindComment)
-	return err
+	return nil
 }
 
 // issueRelationFacts is what one create or PATCH states of an issue's relations, held until the

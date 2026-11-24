@@ -474,7 +474,7 @@ func scanIssueComponentMemberRow(row pgx.CollectableRow) (issueComponentMemberRo
 // markInboxReadThreads): the issue rows the batch's rows stand under first, each once, in
 // ascending key (events.LockOwnerRows), which an issue's components write takes first too (its
 // create's and its PATCH's lock of the issue's row), then the batch's rows read again under them,
-// then the tuples (graphstore.Write, which writes no node: each issue's node is the object
+// then the tuples (graphstore.QueueWrite, which writes no node: each issue's node is the object
 // pass's), then the rows that name the node. A row the issue's own write replaced meanwhile is not
 // read again and states nothing; nor is one of an issue whose own row names no node yet, which the
 // object pass reaches first on its next run. It answers how many rows it named, one tuple each.
@@ -519,17 +519,16 @@ func writeIssueComponentMemberBatch(ctx context.Context, database *store.Store, 
 				graphstore.ComponentAddress(member.project, member.component), true, backfillActor, member.updatedAt)
 			heldIssues[index], heldComponents[index] = member.issue, member.component
 		}
-		if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
-			return err
-		}
-		if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, tuples)); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `
-			update issue_component_members m set node_kind = $3, node_address = m.issue_key
-			from unnest($1::text[], $2::text[]) as batch (issue_key, component_id)
-			where m.issue_key = batch.issue_key and m.component_id = batch.component_id
-		`, heldIssues, heldComponents, graphstore.KindIssue); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nil, tuples)
+			b.Queue("", `
+				update issue_component_members m set node_kind = $3, node_address = m.issue_key
+				from unnest($1::text[], $2::text[]) as batch (issue_key, component_id)
+				where m.issue_key = batch.issue_key and m.component_id = batch.component_id
+			`, heldIssues, heldComponents, graphstore.KindIssue)
+			graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
+			return nil
+		}); err != nil {
 			return err
 		}
 		written = int64(len(held))

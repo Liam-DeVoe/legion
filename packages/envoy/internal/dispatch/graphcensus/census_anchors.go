@@ -148,7 +148,7 @@ var owedAnchorRowsStatement = `
 // writeAnchorBatch levels one batch's anchored_in in one transaction, in the store's lock order
 // (api/inbox_read.go's markInboxReadThreads): the owner rows the batch's comments stand under
 // first, each once, in ascending key (events.LockOwnerRows), then the batch's moves read again under
-// them, then the tuples (graphstore.Write, which writes no node: each comment's node is the comment
+// them, then the tuples (graphstore.QueueWrite, which writes no node: each comment's node is the comment
 // pass's). Every writer that moves an anchor's block or its orphan flag on this build holds the
 // comment's owner row (the refresh, an accept or a reject) or writes its tuple in the transaction
 // that pins the block (docs' BackfillAnchorBlocks), so the moves read under the owner rows are the
@@ -200,10 +200,11 @@ func writeAnchorBatch(ctx context.Context, database *store.Store, batch []anchor
 		if len(tuples) == 0 {
 			return nil
 		}
-		if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
-			return err
-		}
-		if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, tuples)); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nil, tuples)
+			graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
+			return nil
+		}); err != nil {
 			return err
 		}
 		levelled, stated = int64(len(comments)), int64(len(tuples))

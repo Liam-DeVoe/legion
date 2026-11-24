@@ -1153,10 +1153,11 @@ func (st *settlement) reviseQueries(ctx context.Context, issueKey string) error 
 	if err != nil {
 		return err
 	}
-	if err := graphstore.Caused(ctx, st.tx, revised, lastVersionEvent(st.published)); err != nil {
-		return err
-	}
-	return graphstore.WriteHeads(ctx, st.tx, graphstore.HeldHeads(revised))
+	return store.RunWrite(ctx, st.tx, func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, revised, lastVersionEvent(st.published))
+		graphstore.QueueHeads(b, graphstore.HeldHeads(revised))
+		return nil
+	})
 }
 
 // lastVersionEvent is the id of the last artifact.version of events, the events a settlement's

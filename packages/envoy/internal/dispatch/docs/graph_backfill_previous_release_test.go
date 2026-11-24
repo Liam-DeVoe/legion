@@ -415,7 +415,7 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // Rule 2's digest moved twice by changes of words that keep every statement's rows, from
 // 58b60662b0ca419685451c8ed20174f7a39235aec9f59e5e889ec071642a03d4. The head projection
 // (graphstore.QueueHeads) moved the statements refs.CommentWrite.Queue sends: the node insert, the
-// node update and the tuple append each carry graphstore's keptHeadRows,
+// node update and the tuple append each carry graphstore's KeptHeadRows,
 // `(select set_config('dispatch.head_rows', 'kept', true)) is not null`, in the WHERE of the rows
 // they write, which is true of every row, since set_config answers the value it sets, so each
 // writes the rows it wrote before; and the write sends one statement more, the head rows of the

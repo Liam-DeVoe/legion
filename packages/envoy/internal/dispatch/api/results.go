@@ -1488,7 +1488,8 @@ func writeRecordedResult(ctx context.Context, tx pgx.Tx, result *model.CheckResu
 // record the route's write, which has run in tx, moved (docs.Service.ReviseQueries): a result
 // recorded or retracted moves the record of the Verification query of the check's issue, and a
 // version of that document holds it where the issue has converted. It causes what those versions
-// state under event, the event the route appended for its write (graphstore.Caused). The route
+// state under event, the event the route appended for its write (graphstore.QueueCaused), and their
+// head rows after them in the same batch (graphstore.QueueHeads). The route
 // holds the issue's owner lock and took the issue room's lock right after it, before its event
 // and its first write (docs.LockQueryRooms), so the room lock ReviseQueries takes waits on nothing.
 func (s *server) reviseQueriesUnder(ctx context.Context, tx pgx.Tx, issueKey string, writer model.Actor, event int64) error {
@@ -1496,10 +1497,11 @@ func (s *server) reviseQueriesUnder(ctx context.Context, tx pgx.Tx, issueKey str
 	if err != nil {
 		return err
 	}
-	if err := graphstore.Caused(ctx, tx, revised, event); err != nil {
-		return err
-	}
-	return graphstore.WriteHeads(ctx, tx, graphstore.HeldHeads(revised))
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, revised, event)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(revised))
+		return nil
+	})
 }
 
 // loadCheckResults is every result recorded against the checks of one Verification document,

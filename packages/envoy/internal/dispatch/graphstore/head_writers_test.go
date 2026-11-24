@@ -24,9 +24,9 @@ var headWriteFunctions = []string{"QueueHeads", "WriteHeads"}
 // each beside why: every node they write, and the near end of every tuple they append, is a node no
 // issue's tree holds - a person, a session, a role and its page, a run of the command bar and its
 // frames, a component, a node of the lens catalogue. headWrappers are this package's own writers
-// that run another writer for their caller, which names the head write itself. Both lists are
-// exact: an entry the source no longer holds as a store writer fails, and so does an entry that
-// names a head write after all.
+// that run another writer for their caller, which writes the head rows (Write) or whose caller names
+// the head write itself (QueueAuthored). Both lists are exact: an entry the source no longer holds
+// as a store writer fails, and so does an entry that names a head write after all.
 var headNoTree = map[string]string{
 	"graphstore/people.go#QueueReached":                           "writes a session's node alone",
 	"graphstore/people.go#QueueSessionRecorded":                   "writes a session's node alone",
@@ -52,12 +52,14 @@ var headNoTree = map[string]string{
 	"asks/followers.go#queueFollow":                               "writes the following session's node alone; its callers state the ask's followed_by and write the ask's heads",
 }
 
+// Write and Caused are on none of the lists: each queues the head rows of what it wrote in its own
+// batch, after its statements (QueueHeads), since each statement of the write claims those rows
+// kept (KeptHeadRows), so the batch that makes the claim writes them and the scan reads each as a
+// writer that names a head write. WriteState and Retarget write through Write.
 var headWrappers = map[string]string{
-	"graphstore/write.go#Write":          "runs QueueWrite as a batch of its own for its caller, which names the head write",
-	"graphstore/write.go#Caused":         "runs QueueCaused as a batch of its own for its caller, which names the head write",
-	"graphstore/write.go#WriteState":     "states its caller's nodes through Write, and its caller names the head write",
+	"graphstore/write.go#WriteState":     "states its caller's nodes through Write, which writes their head rows",
 	"graphstore/people.go#QueueAuthored": "queues the authored_by of its caller's node, and its caller names the head write",
-	"graphstore/reasoning.go#Retarget":   "moves its caller's pointer through Write, and its caller names the head write",
+	"graphstore/reasoning.go#Retarget":   "moves its caller's pointer through Write, which writes its head row",
 }
 
 // headLeftTo are the store writers that write a node of an issue's tree, or hold its facts, and

@@ -88,11 +88,12 @@ func Follow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.A
 		followed.Uncaused.Tuples = append(followed.Uncaused.Tuples, graphstore.UncausedTuple{Tuple: relation})
 		return followed, nil
 	}
-	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{relation}); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nil, []graphstore.Tuple{relation})
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{relation}))
+		return nil
+	}); err != nil {
 		return Followed{}, fmt.Errorf("state that %q follows ask %q: %w", sessionID, askID, err)
-	}
-	if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, []graphstore.Tuple{relation})); err != nil {
-		return Followed{}, err
 	}
 	return followed, nil
 }
@@ -388,11 +389,12 @@ func CatchUpFollower(ctx context.Context, tx pgx.Tx, askID, sessionID string, ad
 		}
 		nodes := []graphstore.Node{graphstore.SessionNode(sessionID, who, since, event)}
 		relation := followedBy(askID, sessionID, true, who, since, event)
-		if err := graphstore.Write(ctx, tx, nodes, []graphstore.Tuple{relation}); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nodes, []graphstore.Tuple{relation})
+			graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{relation}))
+			return nil
+		}); err != nil {
 			return false, fmt.Errorf("state that %q follows ask %q: %w", sessionID, askID, err)
-		}
-		if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, []graphstore.Tuple{relation})); err != nil {
-			return false, err
 		}
 		return true, nil
 	}
@@ -410,11 +412,12 @@ func CatchUpFollower(ctx context.Context, tx pgx.Tx, askID, sessionID string, ad
 		return false, nil
 	}
 	retraction := followedBy(askID, sessionID, false, who, at, event)
-	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{retraction}); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nil, []graphstore.Tuple{retraction})
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{retraction}))
+		return nil
+	}); err != nil {
 		return false, fmt.Errorf("state that %q no longer follows ask %q: %w", sessionID, askID, err)
-	}
-	if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, []graphstore.Tuple{retraction})); err != nil {
-		return false, err
 	}
 	return true, nil
 }

@@ -25,7 +25,7 @@ type reviewedGraphNodesTrigger struct{ definition, function string }
 var reviewedGraphNodesTriggers = map[string]reviewedGraphNodesTrigger{
 	"graph_nodes_block_schema_written": {"CREATE TRIGGER graph_nodes_block_schema_written AFTER INSERT OR UPDATE ON public.graph_nodes FOR EACH ROW WHEN ((new.kind = ANY (ARRAY['supertag'::text, 'attribute'::text]))) EXECUTE FUNCTION block_schema_changed()", "block_schema_changed"},
 	"graph_nodes_block_schema_removed": {"CREATE TRIGGER graph_nodes_block_schema_removed AFTER DELETE ON public.graph_nodes FOR EACH ROW WHEN ((old.kind = ANY (ARRAY['supertag'::text, 'attribute'::text]))) EXECUTE FUNCTION block_schema_changed()", "block_schema_changed"},
-	"graph_nodes_head_marks":           {"CREATE TRIGGER graph_nodes_head_marks AFTER INSERT OR UPDATE ON public.graph_nodes FOR EACH ROW WHEN ((current_setting('dispatch.head_rows'::text, true) IS DISTINCT FROM 'kept'::text)) EXECUTE FUNCTION issue_head_marks_drop()", "issue_head_marks_drop"},
+	"graph_nodes_head_marks":           {"CREATE TRIGGER graph_nodes_head_marks AFTER INSERT OR DELETE OR UPDATE ON public.graph_nodes FOR EACH ROW WHEN ((current_setting('dispatch.head_rows'::text, true) IS DISTINCT FROM 'kept'::text)) EXECUTE FUNCTION issue_head_marks_drop()", "issue_head_marks_drop"},
 }
 
 var reviewedTriggerFunctions = map[string]string{
@@ -39,54 +39,69 @@ var reviewedTriggerFunctions = map[string]string{
 const reviewedBlockSchemaChanged = "\nbegin\n  perform pg_notify('dispatch_block_schema', '');\n  return null;\nend "
 
 // reviewedIssueHeadMarksDrop is issue_head_marks_drop's source as 20261123180100_issue_tree_head
-// created it, the body graph_nodes_head_marks runs: for each row, a probe of issue_head_nodes_node
-// for the node, then, for each issue that probe and the node's address name, the issue's head fill
-// lock in share mode and a delete of its issue_head_marks row by its primary key.
+// created it, the body graph_nodes_head_marks runs (and graph_tuples' and document_blocks' head
+// mark triggers): for each row, the nodes whose head rows the row's write moves - a node row's
+// node, inserted, updated or deleted (OLD on delete) - a probe of issue_head_nodes_node for each,
+// then, for each issue those probes and the nodes' addresses name, the issue's head fill lock in
+// share mode and a delete of its issue_head_marks row by its primary key.
 const reviewedIssueHeadMarksDrop = `
 declare
   held text;
+  fact graph_tuples;
+  node graph_nodes;
+  named_kinds text[] := '{}';
+  named_ids text[] := '{}';
 begin
   if tg_table_name = 'graph_tuples' then
-    for held in
-      select found.issue_key from (
-        select head.issue_key from issue_head_nodes head
-        where head.node_kind = new.from_kind and head.node_address = new.from_id
-        union
-        select head.issue_key from issue_head_nodes head
-        where new.kind = 'part_of' and new.to_kind <> 'value'
-          and head.node_kind = new.to_kind and head.node_address = new.to_id
-        union
-        select named.issue_key from (values
-          (case when new.from_kind = 'issue' then new.from_id
-                when new.from_kind in ('artifact', 'version', 'block') and new.from_id not like 'lens/%'
-                  then split_part(new.from_id, '/', 1) end),
-          (case when new.kind <> 'part_of' or new.to_kind = 'value' then null
-                when new.to_kind = 'issue' then new.to_id
-                when new.to_kind in ('artifact', 'version', 'block') and new.to_id not like 'lens/%'
-                  then split_part(new.to_id, '/', 1) end)
-        ) named (issue_key)
-        where named.issue_key is not null
-      ) found
-      order by hashtext('issue:' || found.issue_key), found.issue_key
-    loop
-      perform pg_advisory_xact_lock_shared(1212498244, hashtext('issue:' || held));
-      delete from issue_head_marks mark where mark.issue_key = held;
-    end loop;
+    if tg_op = 'DELETE' then
+      fact := old;
+    else
+      fact := new;
+    end if;
+    named_kinds := array[fact.from_kind];
+    named_ids := array[fact.from_id];
+    if fact.kind = 'part_of' and fact.to_kind <> 'value' then
+      named_kinds := named_kinds || fact.to_kind;
+      named_ids := named_ids || fact.to_id;
+    end if;
+  elsif tg_table_name = 'graph_nodes' then
+    if tg_op = 'DELETE' then
+      node := old;
+    else
+      node := new;
+    end if;
+    named_kinds := array[node.kind];
+    named_ids := array[node.id];
   else
-    for held in
-      select found.issue_key from (
-        select head.issue_key from issue_head_nodes head
-        where head.node_kind = new.kind and head.node_address = new.id
-        union
-        select case when new.kind = 'issue' then new.id else split_part(new.id, '/', 1) end
-        where new.kind = 'issue' or (new.kind in ('artifact', 'version', 'block') and new.id not like 'lens/%')
-      ) found
-      order by hashtext('issue:' || found.issue_key), found.issue_key
-    loop
-      perform pg_advisory_xact_lock_shared(1212498244, hashtext('issue:' || held));
-      delete from issue_head_marks mark where mark.issue_key = held;
-    end loop;
+    if tg_op <> 'INSERT' then
+      if old.node_id is not null then
+        named_kinds := named_kinds || 'block'::text;
+        named_ids := named_ids || old.node_id;
+      end if;
+    end if;
+    if tg_op <> 'DELETE' then
+      if new.node_id is not null then
+        named_kinds := named_kinds || 'block'::text;
+        named_ids := named_ids || new.node_id;
+      end if;
+    end if;
   end if;
+  for held in
+    select found.issue_key from (
+      select head.issue_key
+      from unnest(named_kinds, named_ids) named (kind, id)
+      join issue_head_nodes head on head.node_kind = named.kind collate "C" and head.node_address = named.id collate "C"
+      union
+      select case when named.kind = 'issue' then named.id else split_part(named.id, '/', 1) end
+      from unnest(named_kinds, named_ids) named (kind, id)
+      where named.kind = 'issue' or (named.kind in ('artifact', 'version', 'block') and named.id not like 'lens/%')
+    ) found
+    where found.issue_key is not null
+    order by hashtext('issue:' || found.issue_key), found.issue_key
+  loop
+    perform pg_advisory_xact_lock_shared(1212498244, hashtext('issue:' || held));
+    delete from issue_head_marks mark where mark.issue_key = held;
+  end loop;
   return null;
 end
 `

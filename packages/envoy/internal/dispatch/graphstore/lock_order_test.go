@@ -685,7 +685,7 @@ const lockOrderComment = "../api/inbox_read.go"
 // lockOrderFunction is the declaration the comment sits on.
 const lockOrderFunction = "func (s *server) markInboxReadThreads("
 
-// storeLockOrderClauses are this store's five invariants as that comment has to state them, plus
+// storeLockOrderClauses are this store's six invariants as that comment has to state them, plus
 // the three things it has to say beside them. A phrase missing is the order being written in two
 // places, or in none: a writer that reads the comment would not find this store's steps in it.
 // The revision fence's step is two phrases, the step named and its two locks in their order,
@@ -701,6 +701,7 @@ var storeLockOrderClauses = []string{
 	"a graph_nodes write touching several nodes takes them in ascending (kind, id)",
 	"a writer under the revision fence",
 	"takes the document's owner lock, through lockartifactowner or events.lockownerrows, then the document's document_block_versions row `for no key update`",
+	"the head rows of the nodes a write names (issue_head_nodes, migration 20261123180100_issue_tree_head) are the last rows it takes",
 	"appending a tuple locks no row of another table",
 	"takes no owner lock at all",
 	"a frame of a run takes the run's interaction graph_nodes row `for no key update` first",

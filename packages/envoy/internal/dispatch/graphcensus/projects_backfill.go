@@ -621,7 +621,7 @@ func derefText(value *string) string {
 // this run to paper over. Each node and what it states carry its row's own create event where the
 // read found one (readObjectNodes), and the sentinel otherwise: the batch writes its nodes in
 // ascending id, in runs of consecutive nodes of one cause, each run's nodes queued as one write
-// (graphstore.PlanUncaused and graphstore.QueueNodes) and then stated through graphstore.Caused
+// (graphstore.PlanUncaused and graphstore.QueueNodes) and then stated through graphstore.QueueCaused
 // under that cause, and the report counts the tuples the store appended for those runs
 // (graphstore.Counting).
 //
@@ -646,9 +646,10 @@ func derefText(value *string) string {
 // (nameArtifactNodes); an issue's child_of to the parent its row names, as a claim
 // (issueParentClaims), so graph_edges answers that parent from the store once the row names its
 // node, and a parent the release before moved in place on a marked row replaces the one the node
-// held. Last it names each node on its issue's or document's row (node_kind and node_address),
+// held. Then it names each node on its issue's or document's row (node_kind and node_address),
 // after the node rows, as the lock order on api/inbox_read.go's markInboxReadThreads has a
-// projection row follow its node. A document retired since the batch was read is owed no live
+// projection row follow its node, and last it writes the head rows of every node it named, once
+// (graphstore.WriteHeads), the last rows a write takes. A document retired since the batch was read is owed no live
 // node, since its retirement stated it gone (retiredDocument): no node of it is written, and its
 // row, where it names no node yet, is named with the rest.
 //
@@ -761,6 +762,8 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 			write = append(write, node)
 		}
 		written.Rows, written.Nodes = int64(len(write))-named, int64(len(write))-named
+		// heads is every node the batch's writes name, whose head rows it writes once, last.
+		var heads []graphstore.NodeKey
 		for start := 0; start < len(write); {
 			end := start + 1
 			for end < len(write) && write[end].SourceEvent == write[start].SourceEvent {
@@ -792,12 +795,13 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 				return err
 			}
 			var appended int64
-			if err := graphstore.Caused(ctx, tx, graphstore.Counting(made, &appended), cause); err != nil {
+			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+				graphstore.QueueCaused(b, graphstore.Counting(made, &appended), cause)
+				return nil
+			}); err != nil {
 				return err
 			}
-			if err := graphstore.WriteHeads(ctx, tx, graphstore.HeldHeads(made)); err != nil {
-				return err
-			}
+			heads = append(heads, graphstore.HeldHeads(made)...)
 			written.Tuples += appended
 			start = end
 		}
@@ -818,9 +822,7 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 			if _, err := tx.Exec(ctx, "with "+arms+"\nselect 1", params...); err != nil {
 				return fmt.Errorf("state the parents of a batch of issues: %w", err)
 			}
-			if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOfClaims(claims)); err != nil {
-				return err
-			}
+			heads = append(heads, graphstore.HeadsOfClaims(claims)...)
 			written.Tuples += parents
 			if _, err := tx.Exec(ctx, `
 				update issues set node_kind = $2, node_address = key
@@ -830,16 +832,23 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 			}
 		case graphstore.KindArtifact:
 			values, err := nameArtifactNodes(ctx, tx, append(writtenIDs, retired...))
-			if err != nil || len(values) == 0 {
+			if err != nil {
 				return err
 			}
-			written.Tuples += int64(len(values))
-			if err := graphstore.Write(ctx, tx, nil, values); err != nil {
-				return err
+			if len(values) > 0 {
+				written.Tuples += int64(len(values))
+				if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+					graphstore.QueueWrite(b, nil, values)
+					return nil
+				}); err != nil {
+					return err
+				}
+				heads = append(heads, graphstore.HeadsOf(nil, values)...)
 			}
-			return graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, values))
 		}
-		return nil
+		// The head rows of every node the batch named, the last rows it takes: after its node
+		// rows, its tuples and the rows that name its nodes.
+		return graphstore.WriteHeads(ctx, tx, heads)
 	}); err != nil {
 		return KindBackfill{}, fmt.Errorf("write a batch of %s nodes: %w", kind.kind, err)
 	}

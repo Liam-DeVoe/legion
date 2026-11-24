@@ -201,20 +201,26 @@ type reviewedTrigger struct {
 // block_schema_changed, as 20261109051232_graph_supertags created it and no later migration
 // replaced it.
 //
-// graph_tuples and graph_nodes each hold the head projection's trigger (migration
+// graph_tuples, graph_nodes and document_blocks each hold the head projection's trigger (migration
 // 20261123180100_issue_tree_head, function issue_head_marks_drop), which a type migration's bounded
-// insert of its supertag and attribute nodes fires, since no migration sets dispatch.head_rows.
+// insert of its supertag and attribute nodes fires, since no migration sets dispatch.head_rows. On
+// document_blocks it runs for an insert, a delete and an update of the columns a head row reads.
 var reviewedTriggers = []reviewedTrigger{
 	{table: "graph_nodes", trigger: "graph_nodes_block_schema_written",
 		bounded: "it runs, after an insert or update of a supertag or attribute node alone (its when clause), block_schema_changed, which reads no table and calls pg_notify('dispatch_block_schema', ''); Postgres folds the notifications of one channel and payload into one per transaction"},
 	{table: "graph_nodes", trigger: "graph_nodes_block_schema_removed",
 		bounded: "it runs, after a delete of a supertag or attribute node alone (its when clause), block_schema_changed, which reads no table and calls pg_notify('dispatch_block_schema', ''); Postgres folds the notifications of one channel and payload into one per transaction"},
-	{table: "graph_tuples", trigger: "graph_tuples_head_marks", bounded: "for each row, one probe of issue_head_nodes_node " +
-		"(node_kind, node_address) for the tuple's near end, and for a part_of one more for its far end, then, for each issue " +
-		"those probes and the two ends' addresses name, the issue's head fill advisory lock in share mode and a delete of issue_head_marks " +
-		"by its primary key; it reads and writes nothing else"},
-	{table: "graph_nodes", trigger: "graph_nodes_head_marks", bounded: "for each row, one probe of issue_head_nodes_node " +
-		"(node_kind, node_address) for the node, then, for each issue the probe and the node's address name, the issue's " +
+	{table: "graph_tuples", trigger: "graph_tuples_head_marks", bounded: "for each row inserted or deleted (the deleted row on a delete), " +
+		"one probe of issue_head_nodes_node (node_kind, node_address) for the tuple's near end, and for a part_of one more for its far end, " +
+		"then, for each issue those probes and the two ends' addresses name, the issue's head fill advisory lock in share mode and a delete " +
+		"of issue_head_marks by its primary key; it reads and writes nothing else"},
+	{table: "graph_nodes", trigger: "graph_nodes_head_marks", bounded: "for each row inserted, updated or deleted (the deleted row on a " +
+		"delete), one probe of issue_head_nodes_node (node_kind, node_address) for the node, then, for each issue the probe and the node's " +
+		"address name, the issue's head fill advisory lock in share mode and a delete of issue_head_marks by its primary key; it reads and " +
+		"writes nothing else"},
+	{table: "document_blocks", trigger: "document_blocks_head_marks", bounded: "for each row inserted or deleted, or updated in node_id, " +
+		"artifact_id, block_id, type, text_sha256 or changed_version, one probe of issue_head_nodes_node (node_kind, node_address) for the " +
+		"block's node (node_id), before and after an update, then, for each issue those probes and the node's address name, the issue's " +
 		"head fill advisory lock in share mode and a delete of issue_head_marks by its primary key; it reads and writes nothing else"},
 }
 

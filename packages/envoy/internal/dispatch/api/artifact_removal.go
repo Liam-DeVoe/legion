@@ -67,11 +67,11 @@ import (
 // that stands under it at every depth, as gone at once. In the transaction that deletes the row,
 // after the delete, the removal states each of them gone as the block-index tick's sweep states
 // every stale lens gone (graphcensus's StateStaleLensesGone): it reads the stale lenses on the
-// document's node (refs.StaleLensesOn) and states them gone through graphstore.WriteState, which
-// takes what stands beneath each with it, its findings, its risks and the lenses on those, those
+// document's node (refs.StaleLensesOn) and states them gone as graphstore.PlanState answers them,
+// which takes what stands beneath each with it, its findings, its risks and the lenses on those, those
 // the person may not see among them, each written again as the store holds it but for its state,
 // keeping its cause, with one state tuple at the sentinel signed by the person at the removal's
-// time, in one graphstore.Write (spec requirement r-proposed). The removal takes no person check
+// time, in one batch with their head rows (spec requirement r-proposed). The removal takes no person check
 // of its own for them: it is the person's already (routeScopes), and the cascade is part of the
 // delete. It reads, with the rest of what it reads before its first write, whether any lens stands
 // on the document's node, and reads the stale lenses only where one does, so a document nothing
@@ -173,15 +173,19 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	// Every lens on the document is stale from the delete on, since the row it recorded no longer
 	// stands at the address; each goes gone with all that stands under it, by the person who removed
 	// the document at the same time, in this transaction (spec requirement r-proposed), and the head
-	// rows of each node it stated move with it.
+	// rows of each node it stated move with it, in the same batch.
 	if removed.lensed {
 		lenses, err := refs.StaleLensesOn(r.Context(), tx, artifact.RefKey)
 		var gone []graphstore.Node
 		if err == nil {
-			gone, err = graphstore.WriteState(r.Context(), tx, lenses, graphstore.StateGone, removed.at.UTC(), actor)
+			gone, err = graphstore.PlanState(r.Context(), tx, lenses, graphstore.StateGone, removed.at.UTC(), actor)
 		}
-		if err == nil {
-			err = graphstore.WriteHeads(r.Context(), tx, graphstore.HeadsOf(gone, nil))
+		if err == nil && len(gone) > 0 {
+			err = store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
+				graphstore.QueueWrite(b, gone, nil)
+				graphstore.QueueHeads(b, graphstore.HeadsOf(gone, nil))
+				return nil
+			})
 		}
 		if err != nil {
 			s.writeHandlerError(w, fmt.Errorf("state the lenses on the removed document %s gone: %w", artifact.ID, err))
@@ -242,7 +246,7 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 //
 // It reads, too, whether a lens stands on the document's node, so removeArtifact states each lens
 // on it gone, with all that stands under it at every depth, once the delete of the row leaves it
-// stale (refs.StaleLensesOn, graphstore.WriteState), and only where one does; a version's node,
+// stale (refs.StaleLensesOn, graphstore.PlanState), and only where one does; a version's node,
 // which stands beneath the document's too, is no lens, and is stated gone here, once.
 //
 // Everything it reads - whether the store holds the node, the time, the changed_by_run tuples,
@@ -316,11 +320,12 @@ func removedDocumentNodes(ctx context.Context, tx pgx.Tx, artifact model.Artifac
 		if artifact.IssueKey != nil {
 			partOf = []graphstore.Tuple{graphstore.ArtifactPartOf(artifact.RefKey, *artifact.IssueKey, artifact.CreatedBy, artifact.CreatedAt)}
 		}
-		if err := graphstore.Write(ctx, tx, []graphstore.Node{made}, partOf); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, []graphstore.Node{made}, partOf)
+			graphstore.QueueHeads(b, graphstore.HeadsOf([]graphstore.Node{made}, partOf))
+			return nil
+		}); err != nil {
 			return removedNodes{}, fmt.Errorf("write the node of the removed document %s: %w", artifact.ID, err)
-		}
-		if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf([]graphstore.Node{made}, partOf)); err != nil {
-			return removedNodes{}, err
 		}
 	}
 	written := graphstore.PlanUncaused(nodes, retractions)

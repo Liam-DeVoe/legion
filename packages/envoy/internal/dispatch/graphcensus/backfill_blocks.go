@@ -203,7 +203,7 @@ var BlockRowsStatement = `
 // again. Their document_block_versions rows are the ones lockBlockDocuments already holds, so the
 // mark takes no lock out of the store's order.
 //
-// The count is this batch's own tuples and the base attributes graphstore.Write states for each
+// The count is this batch's own tuples and the base attributes graphstore.QueueWrite states for each
 // node its insert makes, which this batch does not state itself - its visibility and its state,
 // and its project or its parties where its document has one (statedOf): every node here is new,
 // since a row that already names one is never written.
@@ -247,19 +247,18 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 		blockIDs = append(blockIDs, row.blockID)
 		artifacts = append(artifacts, row.artifactID)
 	}
-	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nodes, tuples)
+		b.Queue("name the nodes of a block batch on their rows", `
+			update document_blocks d
+			set node_kind = $4, node_address = b.address
+			from unnest($1::text[], $2::text[], $3::text[]) as b (artifact_id, block_id, address)
+			where d.artifact_id = b.artifact_id::uuid and d.block_id = b.block_id
+		`, artifacts, blockIDs, addresses, refs.BlockNodeKind)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nodes, tuples))
+		return nil
+	}); err != nil {
 		return nil, 0, fmt.Errorf("write the nodes of a block batch: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
-		update document_blocks d
-		set node_kind = $4, node_address = b.address
-		from unnest($1::text[], $2::text[], $3::text[]) as b (artifact_id, block_id, address)
-		where d.artifact_id = b.artifact_id::uuid and d.block_id = b.block_id
-	`, artifacts, blockIDs, addresses, refs.BlockNodeKind); err != nil {
-		return nil, 0, fmt.Errorf("name the nodes of a block batch on their rows: %w", err)
-	}
-	if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nodes, tuples)); err != nil {
-		return nil, 0, err
 	}
 	// In id order and each once, the order lockBlockDocuments took these rows in.
 	owed := slices.Clone(artifacts)

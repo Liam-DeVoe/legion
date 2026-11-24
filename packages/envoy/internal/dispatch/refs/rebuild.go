@@ -203,7 +203,7 @@ func loadSourceIDs(ctx context.Context, pool Pool, query string) ([]string, erro
 // mentions tuple to each target it inserts and a retraction to each it deletes, dated at its rows'
 // own created_at, the transaction's now(), and signed by the first author of the document's newest
 // version (DocumentMentioning). The rebuild appends no event, so each is appended at the sentinel
-// and an assertion keeps its row's source_seq, none, as its legacy_source_seq (graphstore.Caused
+// and an assertion keeps its row's source_seq, none, as its legacy_source_seq (graphstore.QueueCaused
 // with NoEvent).
 func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL string) (bool, error) {
 	read, err := sourceRead(fromKind, fromID)
@@ -248,11 +248,13 @@ func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL str
 	}); err != nil {
 		return false, err
 	}
-	if err := graphstore.Caused(ctx, tx, graphstore.Uncaused{Tuples: mentions}, graphstore.NoEvent); err != nil {
+	stated := graphstore.Uncaused{Tuples: mentions}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, stated, graphstore.NoEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(stated))
+		return nil
+	}); err != nil {
 		return false, fmt.Errorf("state the references of document %s: %w", fromID, err)
-	}
-	if err := graphstore.WriteHeads(ctx, tx, graphstore.HeldHeads(graphstore.Uncaused{Tuples: mentions})); err != nil {
-		return false, err
 	}
 	return true, tx.Commit(ctx)
 }

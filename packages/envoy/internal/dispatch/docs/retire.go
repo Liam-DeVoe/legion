@@ -115,7 +115,7 @@ var retirementEvents = events.NewBroker()
 // It takes the document's owner lock (store.LockOwner, through lockArtifactOwner) first, then
 // writes the store's lock order as a create writes it: the node, its projection row, the event,
 // and the node's facts under that event, the retractions among them (graphstore.PlanUncaused and
-// QueueNodes, then graphstore.Caused). A document already retired is refused with
+// QueueNodes, then graphstore.QueueCaused). A document already retired is refused with
 // ErrDocumentRetired, and a reason that is blank with errRetirementReason.
 func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor model.Actor, reason string) (Retirement, error) {
 	reason = strings.TrimSpace(reason)
@@ -170,11 +170,12 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 	if err != nil {
 		return Retirement{}, fmt.Errorf("append %s: %w", model.DocumentRetiredEventType, err)
 	}
-	if err := graphstore.Caused(ctx, tx, node, event.ID); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, node, event.ID)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(node))
+		return nil
+	}); err != nil {
 		return Retirement{}, fmt.Errorf("state the retired document's node gone: %w", err)
-	}
-	if err := graphstore.WriteHeads(ctx, tx, graphstore.HeldHeads(node)); err != nil {
-		return Retirement{}, err
 	}
 	if err := AnnounceDocumentRemoved(ctx, tx, artifactID); err != nil {
 		return Retirement{}, err
@@ -204,7 +205,7 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 // with it then. A constrained_by out of a requirement of the document stays: what the requirement
 // was held to is the record of the document, which stays readable. Each retraction is dated at and
 // signed by actor, the retirement's own time and writer, and rides with the facts the retirement
-// states under its document.retired event (writeRetiredNode, graphstore.Caused), in the
+// states under its document.retired event (writeRetiredNode, graphstore.QueueCaused), in the
 // retirement's transaction.
 //
 // It logs how many it retracts, with the document's address, and answers the number to no reader:

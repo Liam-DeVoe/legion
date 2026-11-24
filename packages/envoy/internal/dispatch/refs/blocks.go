@@ -1237,12 +1237,15 @@ func (b BlockIndexing) Queue(batch *store.WriteBatch) {
 // recorded in document_block_texts, a deleted block's as no text. A block index queues them inside
 // its revision fence (Queue), and the typed-node pass of a deferred version queues the rows of the
 // typed blocks it removes and of the requirements, checks and plan tasks it writes
-// (DecisionIndexing.Queue).
+// (DecisionIndexing.Queue). The delete and the insert of document_blocks claim the head rows kept
+// (graphstore.KeptHeadRows), as every write of the store's own does: document_blocks' trigger
+// (issue_head_marks_drop) takes away the mark of each issue whose head rows a write of those rows
+// leaves behind, and the pass's cause site writes the blocks' head rows last in the write phase.
 func (b BlockIndexing) queueRows(batch *store.WriteBatch) {
 	artifactID, version := b.artifactID, b.version
 	if len(b.deleted) > 0 {
 		batch.Queue(fmt.Sprintf("delete the blocks version %d of %s no longer holds", version, artifactID), `
-			delete from document_blocks where artifact_id = $1 and block_id = any($2)
+			delete from document_blocks where artifact_id = $1 and block_id = any($2) and `+graphstore.KeptHeadRows+`
 		`, artifactID, b.deleted)
 	}
 	if len(b.ids) > 0 {
@@ -1255,6 +1258,7 @@ func (b BlockIndexing) queueRows(batch *store.WriteBatch) {
 			from unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::int[], $7::timestamptz[])
 			     as b (id, type, sum, excerpt, since, since_at)
 			cross join (select ref_key from artifacts where id = $1::uuid) a
+			where `+graphstore.KeptHeadRows+`
 			on conflict (artifact_id, block_id) do update set
 				type = excluded.type,
 				text_sha256 = excluded.text_sha256,

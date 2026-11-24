@@ -206,7 +206,7 @@ var (
 // writeReferenceBatch makes one batch's moves in one transaction, in the store's lock order
 // (api/inbox_read.go's markInboxReadThreads): the owner rows the batch's documents stand under
 // first, each once, in ascending key (events.LockOwnerRows), then the batch's moves read again
-// under them, then the tuples (graphstore.Write, which writes no node: each document's node is the
+// under them, then the tuples (graphstore.QueueWrite, which writes no node: each document's node is the
 // object pass's or its writer's). Every writer of a document's refs rows on this build holds the
 // document's owner row - its version index (docs' lockArtifactOwner) and rebuild-refs (refs'
 // lockDocumentOwner) - and states the tuple of each row it inserts and the retraction of each it
@@ -244,10 +244,11 @@ func writeReferenceBatch(ctx context.Context, database *store.Store, batch []ref
 		if len(tuples) == 0 {
 			return nil
 		}
-		if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
-			return err
-		}
-		if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, tuples)); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nil, tuples)
+			graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
+			return nil
+		}); err != nil {
 			return err
 		}
 		written = int64(len(tuples))

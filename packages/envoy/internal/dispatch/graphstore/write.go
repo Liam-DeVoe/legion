@@ -63,29 +63,47 @@ func causeOf(column string) string {
 
 // Write writes every node and appends every tuple inside the caller's transaction, at once: its
 // statements as one batch of their own (QueueWrite), built for ctx, so a write on a context that
-// carries a run of the command bar (store.WithRun) is made for that run. It is for a writer with
-// no write phase to queue them on: a backfill, a seed, a delivery's settle, a request's write of
-// the reasoning nodes.
+// carries a run of the command bar (store.WithRun) is made for that run, and after them, in the same
+// batch, the head rows of every node the write names (QueueHeads, HeadsOf). Each statement of the
+// write claims those rows kept (KeptHeadRows), so the batch that makes the claim writes them: a
+// caller of Write writes no head write of its own for what it wrote. It is for a writer with no
+// write phase to queue them on: a backfill, a seed, a delivery's settle, a request's write of the
+// reasoning nodes.
 func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		QueueWrite(b, nodes, tuples)
+		QueueHeads(b, HeadsOf(nodes, tuples))
 		return nil
 	})
 }
 
 // WriteState writes each of roots again at state, dated at and signed by who, in one Write in the
-// caller's transaction, and answers the nodes it wrote. A write into gone takes everything beneath
-// each root with it: where state is StateGone, each root is followed by every node that stands
-// beneath it and is not gone yet (withBeneath), at every depth and whatever its kind, whoever may
-// see it, so no read by its own address answers a node under a gone one live with nothing to stand
-// on (spec requirement r-proposed); at any other state it writes the roots alone. Each node is
-// written as the store holds it but for its state, which the write moves (Restates false), keeping
-// the cause the store holds of it (KeepsCause), marked changed, and at the sentinel (NoEvent), so
-// the write moves the row's state and appends one state tuple at the sentinel, dated at and signed
-// by who. It answers the nodes in the order it read them, each root followed by what stands
-// beneath it, so the first is the first root as written. With no node to write it writes nothing
-// and answers none.
+// caller's transaction, which writes their head rows too, and answers the nodes it wrote
+// (PlanState). With no node to write it writes nothing and answers none.
 func WriteState(ctx context.Context, tx pgx.Tx, roots []Node, state string, at time.Time, who model.Actor) ([]Node, error) {
+	nodes, err := PlanState(ctx, tx, roots, state, at, who)
+	if err != nil || len(nodes) == 0 {
+		return nil, err
+	}
+	if err := Write(ctx, tx, nodes, nil); err != nil {
+		return nil, err
+	}
+	return nodes, nil
+}
+
+// PlanState is the read phase of WriteState, which writes nothing: the nodes a write of roots at
+// state, dated at and signed by who, writes, for a caller that queues that write on a batch of its
+// own with its head rows (QueueWrite, QueueHeads). A write into gone takes everything beneath each
+// root with it: where state is StateGone, each root is followed by every node that stands beneath
+// it and is not gone yet (withBeneath), at every depth and whatever its kind, whoever may see it,
+// so no read by its own address answers a node under a gone one live with nothing to stand on (spec
+// requirement r-proposed); at any other state it answers the roots alone. Each node is answered as
+// the store holds it but for its state, which the write moves (Restates false), keeping the cause
+// the store holds of it (KeepsCause), marked changed, and at the sentinel (NoEvent), so the write
+// moves the row's state and appends one state tuple at the sentinel, dated at and signed by who. It
+// answers the nodes in the order it read them, each root followed by what stands beneath it, so the
+// first is the first root as written, and none where there is no node to write.
+func PlanState(ctx context.Context, tx pgx.Tx, roots []Node, state string, at time.Time, who model.Actor) ([]Node, error) {
 	var nodes []Node
 	if state == StateGone {
 		var err error
@@ -102,9 +120,6 @@ func WriteState(ctx context.Context, tx pgx.Tx, roots []Node, state string, at t
 		each := &nodes[index]
 		each.State, each.Restates, each.KeepsCause, each.Changed = state, false, true, true
 		each.MadeAt, each.MadeBy, each.SourceEvent = at, who, NoEvent
-	}
-	if err := Write(ctx, tx, nodes, nil); err != nil {
-		return nil, err
 	}
 	return nodes, nil
 }
@@ -378,11 +393,13 @@ func heldTuplesRead(held []UncausedTuple) bool {
 }
 
 // Caused is QueueCaused run at once, as a batch of its own built for ctx, for a writer with no
-// write phase. Its error is the batch's: a statement that fails, a tuple that cannot be encoded,
-// or a refusal of a rule fails Send.
+// write phase, with the head rows of every node the write names (QueueHeads, HeldHeads) after it in
+// the same batch, as Write writes them. Its error is the batch's: a statement that fails, a tuple
+// that cannot be encoded, or a refusal of a rule fails Send.
 func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		QueueCaused(b, write, event)
+		QueueHeads(b, HeldHeads(write))
 		return nil
 	})
 }
@@ -681,7 +698,7 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated int, tuple
 		select kind, id, supertag, visibility, state, attributes, made_at, made_by, `+markSQL(markParam, markMade)+`,
 		       project_key, string_to_array(parties, ' ')
 		from unnest(`+nodeArrays(1)+`) as node(`+nodeColumns+`)
-		where `+keptHeadRows+`
+		where `+KeptHeadRows+`
 		order by kind, id
 		on conflict (kind, id) do update set source_event = graph_nodes.source_event
 		where false
@@ -826,7 +843,7 @@ var nodeMove, keptCauseNodeMove = func() (string, string) {
 			parties = coalesce(incoming.parties, graph_nodes.parties),
 			source_event = %s
 		from %s
-		where graph_nodes.kind = incoming.kind and graph_nodes.id = incoming.id and ` + keptHeadRows + `
+		where graph_nodes.kind = incoming.kind and graph_nodes.id = incoming.id and ` + KeptHeadRows + `
 		  and (graph_nodes.supertag is distinct from incoming.supertag
 		       or graph_nodes.visibility is distinct from ` + writtenVisibility + `
 		       or graph_nodes.state is distinct from ` + writtenState + `

@@ -19,29 +19,32 @@ import (
 // holds every such writer to it.
 //
 // A write the head rows are not kept for takes the marks of the issues whose trees hold the node it
-// writes away, in its own transaction: graph_tuples' and graph_nodes' trigger
-// (issue_head_marks_drop) does, for every row a statement writes unless the transaction has set
-// headRowsSetting, which every statement of this package that writes either table sets as it runs
-// (keptHeadRows). A build that keeps no head rows - the release before, during a roll or after a
-// rollback - sets no such thing, so the head read walks the tuples of every issue such a build
+// writes away, in its own transaction: the trigger of graph_tuples, graph_nodes and document_blocks
+// (issue_head_marks_drop) does, for every row a statement inserts, deletes or updates (on
+// document_blocks only the columns the head rows read) unless the transaction has set
+// headRowsSetting, which every statement of this build that writes one of those tables sets as it
+// runs (KeptHeadRows). A build that keeps no head rows - the release before, during a roll or after
+// a rollback - sets no such thing, so the head read walks the tuples of every issue such a build
 // wrote, until the backfill fills the issue again (graphcensus' backfillIssueHeadNodes).
 
-// headRowsSetting is the transaction's run-time setting that says its writes of graph_tuples and
-// graph_nodes are a build's that keeps the head rows, and headRowsKept its value. The triggers of
-// both tables read it (current_setting with missing_ok), and a transaction that never set it reads
-// null.
+// headRowsSetting is the transaction's run-time setting that says its writes of graph_tuples,
+// graph_nodes and document_blocks are a build's that keeps the head rows, and headRowsKept its
+// value. The triggers of those tables read it (current_setting with missing_ok), and a transaction
+// that never set it reads null.
 const (
 	headRowsSetting = "dispatch.head_rows"
 	headRowsKept    = "kept"
 )
 
-// keptHeadRows is a condition true of every row, which sets headRowsSetting for the rest of the
+// KeptHeadRows is a condition true of every row, which sets headRowsSetting for the rest of the
 // transaction before the statement it is a part of writes its first row: an uncorrelated scalar
 // subquery is an InitPlan, which Postgres runs once, as the first row is read, and an AFTER ROW
 // trigger reads its WHEN as each row goes in, so the setting stands before the first trigger
 // reads it. Every statement of this package that inserts into or updates graph_tuples or
-// graph_nodes carries it in the WHERE of the rows it writes.
-const keptHeadRows = `(select set_config('` + headRowsSetting + `', '` + headRowsKept + `', true)) is not null`
+// graph_nodes carries it in the WHERE of the rows it writes, and so does every statement of this
+// build that inserts or deletes document_blocks rows or updates a column of them the head rows read
+// (refs' queueRows), whose writer writes the head rows of the blocks it wrote last in its write phase.
+const KeptHeadRows = `(select set_config('` + headRowsSetting + `', '` + headRowsKept + `', true)) is not null`
 
 // NodeKey is one node of the store, by its kind and its id.
 type NodeKey struct{ Kind, ID string }

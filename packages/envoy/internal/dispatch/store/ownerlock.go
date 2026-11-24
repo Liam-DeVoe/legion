@@ -29,8 +29,8 @@ const OwnerLockNamespace int32 = 0x4F574E52
 // hashtext of the issue's owner lock key, `issue:<key>`, as the owner lock hashes it (LockKey). Two
 // takers take it and nothing else does: the fill of an issue's head rows (graphcensus'
 // FillIssueHeads), in exclusive mode right after the issue's owner lock and before it reads the
-// issue's rows, holding it until it commits the issue's mark; and the trigger of graph_tuples and
-// graph_nodes (issue_head_marks_drop, migration 20261123180100_issue_tree_head), in share mode, for
+// issue's rows, holding it until it commits the issue's mark; and the trigger of graph_tuples,
+// graph_nodes and document_blocks (issue_head_marks_drop, migration 20261123180100_issue_tree_head), in share mode, for
 // a write of a build that keeps no head rows, before it deletes the issue's mark. So such a write
 // that holds no owner lock of the issue - an issue's create - waits for a fill of the issue that
 // runs and then deletes the mark the fill committed, while the fill waits for nothing that write, or
@@ -40,8 +40,8 @@ const OwnerLockNamespace int32 = 0x4F574E52
 const HeadFillLockNamespace int32 = 0x48454144
 
 // LockHeadFill takes the head fill's lock of the issue key (HeadFillLockNamespace) in exclusive
-// mode in q's transaction, until it ends. The fill takes it right after the issue's owner lock
-// (LockOwner).
+// mode in q's transaction, until it ends. The fill takes it right after the issue's owner lock,
+// which it tries rather than waits for (TryLockOwners).
 func LockHeadFill(ctx context.Context, q OwnerLocker, key string) error {
 	rows, err := q.Query(ctx, `select pg_advisory_xact_lock($1, hashtext($2::text))`, HeadFillLockNamespace, IssueOwner(key).LockKey())
 	if err != nil {

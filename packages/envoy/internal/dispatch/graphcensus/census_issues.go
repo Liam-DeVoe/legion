@@ -121,7 +121,7 @@ const issueLinkRowsStatement = `
 // in one transaction and in the store's lock order (api/inbox_read.go's markInboxReadThreads):
 // the issue rows the batch's links stand under first, each once, in ascending key
 // (events.LockOwnerRows), then the batch's rows read again under them, then the tuples
-// (graphstore.Write, which writes no node: each issue's node is the object pass's), then the rows
+// (graphstore.QueueWrite, which writes no node: each issue's node is the object pass's), then the rows
 // that name the node. The batch was read outside this transaction, so a link the issue's own
 // write deleted or named meanwhile, under the issue's row, is not read again and states nothing;
 // nor is a link of an issue whose own row names no node yet, which the object pass reaches first
@@ -169,17 +169,16 @@ func writeIssueLinkBatch(ctx context.Context, database *store.Store, batch []iss
 			tuples[index] = graphstore.IssueNeeds(link.issue, link.target, true, backfillActor, link.createdAt)
 			heldIssues[index], heldTargets[index] = link.issue, link.target
 		}
-		if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
-			return err
-		}
-		if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, tuples)); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `
-			update issue_links l set node_kind = $3, node_address = l.issue_key
-			from unnest($1::text[], $2::text[]) as batch (issue_key, target_key)
-			where l.issue_key = batch.issue_key and l.target_key = batch.target_key and l.kind = 'blocked_by'
-		`, heldIssues, heldTargets, graphstore.KindIssue); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nil, tuples)
+			b.Queue("", `
+				update issue_links l set node_kind = $3, node_address = l.issue_key
+				from unnest($1::text[], $2::text[]) as batch (issue_key, target_key)
+				where l.issue_key = batch.issue_key and l.target_key = batch.target_key and l.kind = 'blocked_by'
+			`, heldIssues, heldTargets, graphstore.KindIssue)
+			graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
+			return nil
+		}); err != nil {
 			return err
 		}
 		written = int64(len(held))

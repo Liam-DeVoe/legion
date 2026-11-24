@@ -145,10 +145,11 @@ func StateOrphanedGone(ctx context.Context, database *store.Store, ref string) e
 		}); err != nil {
 			return fmt.Errorf("state the orphaned node of %s gone: %w", ref, err)
 		}
-		if err := graphstore.Caused(ctx, tx, uncaused, removal); err != nil {
-			return err
-		}
-		return graphstore.WriteHeads(ctx, tx, graphstore.HeldHeads(uncaused))
+		return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueCaused(b, uncaused, removal)
+			graphstore.QueueHeads(b, graphstore.HeldHeads(uncaused))
+			return nil
+		})
 	})
 }
 
@@ -158,7 +159,7 @@ func StateOrphanedGone(ctx context.Context, database *store.Store, ref string) e
 // stands on, with the key of the issue that address names, `<issue key>/<slug>`, whose owner lock
 // every writer under the lens takes (api's lockIssueOwner). Only a lens that records a row can be
 // stale itself, so the read keeps those before it walks; every node under one is stale with it and
-// is taken with it as graphstore.WriteState takes what stands beneath a node it takes gone. It
+// is taken with it as graphstore.PlanState takes what stands beneath a node it takes gone. It
 // reads the lenses of the store, through the primary key of graph_nodes.
 var staleLenses = `
 	select ` + graphstore.NodeColumnsOf(`stale`) + `, split_part(split_part(placed.to_id, '#', 1), '/', 1)
@@ -200,7 +201,7 @@ func readStaleLenses(ctx context.Context, tx pgx.Tx) (lenses []graphstore.Node, 
 // findings, its risks and the lenses on those, whoever may see each node, each written again as
 // the store holds it but for its state, keeping its cause, with one state tuple at the sentinel
 // signed by the block-index tick (SweepActor) at the database's clock, all in one write
-// (graphstore.WriteState). It reads a lens stale whatever the state of the node at its document's
+// (graphstore.PlanState). It reads a lens stale whatever the state of the node at its document's
 // address - live behind no row, gone behind no row, or live for the row a later create made
 // there - since the recorded row, and not the node, is what tells which document the lens was
 // written on. The block-index tick runs it after its orphan sweep (docs'
@@ -214,7 +215,7 @@ func readStaleLenses(ctx context.Context, tx pgx.Tx) (lenses []graphstore.Node, 
 // the issue takes first (api's lockIssueOwner), and reads the stale lenses again under them,
 // keeping those of an issue it locked. Each read answers the row of each stale lens, so no lens is
 // read again. It then reads the database's clock, reads what stands beneath each lens it kept, and
-// writes the nodes, in ascending (kind, id), and their state tuples, in one graphstore.Write.
+// writes the nodes, in ascending (kind, id), and their state tuples, in one graphstore.QueueWrite.
 func StateStaleLensesGone(ctx context.Context, database *store.Store) (int, error) {
 	var stated int
 	err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
@@ -244,12 +245,19 @@ func StateStaleLensesGone(ctx context.Context, database *store.Store) (int, erro
 				kept = append(kept, lens)
 			}
 		}
-		gone, err := graphstore.WriteState(ctx, tx, kept, graphstore.StateGone, at.UTC(), SweepActor)
+		gone, err := graphstore.PlanState(ctx, tx, kept, graphstore.StateGone, at.UTC(), SweepActor)
 		if err != nil {
 			return fmt.Errorf("state the nodes of %d stale lenses gone: %w", len(kept), err)
 		}
 		stated = len(gone)
-		return graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(gone, nil))
+		if len(gone) == 0 {
+			return nil
+		}
+		return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, gone, nil)
+			graphstore.QueueHeads(b, graphstore.HeadsOf(gone, nil))
+			return nil
+		})
 	})
 	if err != nil {
 		return 0, err

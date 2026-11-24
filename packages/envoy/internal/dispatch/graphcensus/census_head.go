@@ -61,23 +61,47 @@ const unmarkedIssuesAfterStatement = `
 
 // headFillNodesStatement is every node the tree of the issue $1 can hold, whose rows its fill writes
 // (graphstore.QueueHeads also writes the rows of each under another issue): the issue's own node;
-// each node whose address begins with its key, a document's, a version's and a block's of its
-// documents, and each block that ever stood in a document of the issue (in_document), whatever its
-// address; its asks, comments and messages and the blocks of each; each node the issue's rows hold
-// already; and under each of those that its walk enters - one of the issue's own, or one whose
-// issue its parent gives - every node a part_of into it asserts, down to the leaves. A node of
-// another issue placed under one of them is taken, as one the issue's walk answers and does not
-// enter, and nothing under it is. The issue's rows sort their kinds and addresses byte by byte
-// (collate "C"); the statement reads them at the default collation, as every other seed reads its
-// own, so that each step's lookup of graph_tuples by the node it reached is a probe of that
-// table's index (graph_tuples_as_of_in) rather than a scan of the table.
+// each node whose address begins with its key ($2, its LIKE pattern), a document's, a version's and
+// a block's of its documents, and each block that ever stood in a document of the issue
+// (in_document), whatever its address; its asks, comments and messages and the blocks of each; each
+// node the issue's rows hold already; and under each of those that its walk enters - one of the
+// issue's own, or one whose issue its parent gives - every node a part_of into it asserts, down to
+// the leaves. A node of another issue placed under one of them is taken, as one the issue's walk
+// answers and does not enter, and nothing under it is. The issue's rows sort their kinds and
+// addresses byte by byte (collate "C"); the statement reads them at the default collation, as every
+// other seed reads its own, so that each step's lookup of graph_tuples by the node it reached is a
+// probe of that table's index (graph_tuples_as_of_in) rather than a scan of the table.
+//
+// The nodes whose address begins with the key are found from the issue's own rows and tuples, each
+// held to the pattern: each document an artifacts row of the issue names, or a part_of into the
+// issue's node from a document names, which every writer of a document's node states and which
+// stays in the log of a document whose row a removal deleted, and each version and block a part_of
+// or an in_document into one of those documents names, each a probe of an index. A LIKE of graph_nodes'
+// ids would be no index range: the database's collation is not C (en_US in production), and a
+// btree on it serves no LIKE prefix, so it read every document, version and block node the store
+// holds for each issue it filled.
 var headFillNodesStatement = `
 	with recursive head_seeds (kind, id) as (
 		select '` + graphstore.KindIssue + `', $1::text
 		union
-		select n.kind, n.id from graph_nodes n
-		where n.kind in ('` + graphstore.KindArtifact + `', '` + graphstore.KindVersion + `', 'block')
-		  and n.id like $2 escape '\'
+		select n.kind, n.id
+		from (
+			select a.ref_key from artifacts a where a.issue_key = $1
+			union
+			select t.from_id from graph_tuples t
+			where t.to_kind = '` + graphstore.KindIssue + `' and t.to_id = $1 and t.kind = '` + graphstore.TuplePartOf + `'
+			  and t.from_kind = '` + graphstore.KindArtifact + `'
+		) document (ref_key)
+		cross join lateral (
+			select '` + graphstore.KindArtifact + `', document.ref_key
+			union all
+			select t.from_kind, t.from_id from graph_tuples t
+			where t.to_kind = '` + graphstore.KindArtifact + `' and t.to_id = document.ref_key
+			  and t.kind in ('` + graphstore.TuplePartOf + `', 'in_document')
+			  and t.from_kind in ('` + graphstore.KindVersion + `', 'block')
+		) named (kind, id)
+		join graph_nodes n on n.kind = named.kind and n.id = named.id
+		where n.id like $2 escape '\'
 		union
 		select t.from_kind, t.from_id
 		from artifacts a
@@ -127,7 +151,8 @@ func likePrefix(prefix string) string {
 
 // FillIssueHeads fills up to limit issues no mark names (fillIssueHeads), in key order, each in a
 // transaction of its own, and answers how many it filled and whether more stood unmarked when it
-// listed them. An issue a fill finds marked once it holds the issue's locks is left as it is.
+// listed them. An issue a fill finds marked once it holds the issue's locks is left as it is, and so
+// is one whose owner lock a writer holds, which a later tick fills.
 func FillIssueHeads(ctx context.Context, database *store.Store, limit int) (filled int, more bool, err error) {
 	rows, err := database.Pool.Query(ctx, unmarkedIssuesStatement, limit+1)
 	if err != nil {
@@ -149,56 +174,68 @@ func FillIssueHeads(ctx context.Context, database *store.Store, limit int) (fill
 func fillEachIssueHeads(ctx context.Context, database *store.Store, keys []string) (int, error) {
 	filled := 0
 	for _, key := range keys {
-		if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error { return fillIssueHeads(ctx, tx, key) }); err != nil {
+		var wrote bool
+		if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+			var err error
+			wrote, err = fillIssueHeads(ctx, tx, key)
+			return err
+		}); err != nil {
 			return filled, fmt.Errorf("fill the head rows of %s: %w", key, err)
 		}
-		filled++
+		if wrote {
+			filled++
+		}
 	}
 	return filled, nil
 }
 
 // fillIssueHeads writes in tx every row of the issue key's tree from what the store holds there
-// (headFillNodesStatement, graphstore.WriteHeads) and marks the issue whole (issue_head_marks):
-// under the issue's owner lock, which every writer of the issue holds, and then its head fill lock
-// (store.LockHeadFill), which a write of a build that keeps no head rows takes before it takes the
-// mark away, so such a write waits for this one and takes away the mark it commits, while this one
-// waits for nothing such a write holds. The mark is read again under both locks: a fill that ran
-// meanwhile has written the rows and marked the issue already.
-func fillIssueHeads(ctx context.Context, tx pgx.Tx, key string) error {
-	if err := store.LockOwner(ctx, tx, store.IssueOwner(key)); err != nil {
-		return err
+// (headFillNodesStatement, graphstore.WriteHeads) and marks the issue whole (issue_head_marks), and
+// answers whether it did: under the issue's owner lock, which every writer of the issue holds, and
+// then its head fill lock (store.LockHeadFill), which a write of a build that keeps no head rows
+// takes before it takes the mark away, so such a write waits for this one and takes away the mark
+// it commits, while this one waits for nothing such a write holds. The owner lock is tried, not
+// waited for (store.TryLockOwners), as a background pass takes the owners nobody is writing: the
+// fill waits for no writer of the issue either, and an issue a writer holds is left unmarked, its
+// head read walking the tuples, until a later tick of the block index fills it. The mark is read
+// again under both locks: a fill that ran meanwhile has written the rows and marked the issue
+// already.
+func fillIssueHeads(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
+	taken, err := store.TryLockOwners(ctx, tx, store.IssueOwner(key))
+	if err != nil || len(taken) == 0 {
+		return false, err
 	}
 	if err := store.LockHeadFill(ctx, tx, key); err != nil {
-		return err
+		return false, err
 	}
 	if headFillLocked != nil {
 		headFillLocked(key)
 	}
 	var marked bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from issue_head_marks where issue_key = $1)`, key).Scan(&marked); err != nil {
-		return fmt.Errorf("read the head mark of %s: %w", key, err)
+		return false, fmt.Errorf("read the head mark of %s: %w", key, err)
 	}
 	if marked {
-		return nil
+		return false, nil
 	}
 	rows, err := tx.Query(ctx, headFillNodesStatement, key, likePrefix(key+"/"))
 	if err != nil {
-		return fmt.Errorf("read the nodes of the tree of %s: %w", key, err)
+		return false, fmt.Errorf("read the nodes of the tree of %s: %w", key, err)
 	}
 	nodes, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.NodeKey, error) {
 		var node graphstore.NodeKey
 		return node, row.Scan(&node.Kind, &node.ID)
 	})
 	if err != nil {
-		return fmt.Errorf("read the nodes of the tree of %s: %w", key, err)
+		return false, fmt.Errorf("read the nodes of the tree of %s: %w", key, err)
 	}
 	if err := graphstore.WriteHeads(ctx, tx, nodes); err != nil {
-		return err
+		return false, err
 	}
 	if _, err := tx.Exec(ctx, `insert into issue_head_marks (issue_key, filled_at) values ($1, clock_timestamp())`, key); err != nil {
-		return fmt.Errorf("mark the head rows of %s whole: %w", key, err)
+		return false, fmt.Errorf("mark the head rows of %s whole: %w", key, err)
 	}
-	return nil
+	return true, nil
 }
 
 // backfillIssueHeadNodes fills every issue no mark names (fillEachIssueHeads), walking the issues a
@@ -206,7 +243,8 @@ func fillIssueHeads(ctx context.Context, tx pgx.Tx, key string) error {
 // of the release before holds, whose writers kept no head rows, and each issue a write of such a
 // release unmarked before the walk passed it. It reports the issues it filled as its rows, and as
 // remaining the issues no mark names once the walk has ended: one a write of such a release
-// unmarked behind the walk, which the block index's tick fills again (FillIssueHeads).
+// unmarked behind the walk, and one whose owner lock a writer held as the walk reached it
+// (fillIssueHeads), which the block index's tick fills again (FillIssueHeads).
 func backfillIssueHeadNodes(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: headKind}
 	after := ""
@@ -292,11 +330,12 @@ var headDifferences = headSides + `
 // held to the table, so a row a writer left behind the store, a row of a node no tree holds, and a
 // node of an issue's tree no row projects each read as a difference, named by its issue and its
 // node. No row of an unmarked issue is compared, since the head read reads none. A deployment that
-// holds no marked issue holds no row (MayBeEmpty). It reads zero once the backfill has filled every
-// issue and every writer since has kept the rows. The store census reads it as its last kind, and a
-// test reads it in its own transaction.
+// holds no marked issue holds no row and gives none (EmptyAgrees): no head row of it is written yet,
+// which is no refusal. It reads zero once the backfill has filled every issue and every writer since
+// has kept the rows. The store census reads it as its last kind, and a test reads it in its own
+// transaction.
 func CensusOfHeads(ctx context.Context, tx pgx.Tx) (KindReport, error) {
-	kind := KindReport{Kind: headKind, Table: "issue_head_nodes", MayBeEmpty: true,
+	kind := KindReport{Kind: headKind, Table: "issue_head_nodes", EmptyAgrees: true,
 		Note: "one row per node of a marked issue's tree, under each issue whose tree holds it; every column of each row" +
 			" against the row the store gives of the node (graphstore.HeadRowsSQL), in both directions"}
 	if err := tx.QueryRow(ctx, headSides+`

@@ -204,7 +204,7 @@ var missingVersionKeysStatement = `
 // (api/inbox_read.go's markInboxReadThreads): the owner locks the batch's documents stand under
 // first (lockObjectOwners), then it reads the batch's rows again under them, with what each one's node
 // needs of its document (owedVersionNodes), and writes the nodes and facts of the rows
-// still there and still with no present node, and no others (graphstore.Write takes their rows in
+// still there and still with no present node, and no others (graphstore.QueueWrite takes their rows in
 // ascending (kind, id)). A row the removal of its document deleted meanwhile is gone, since the
 // removal takes its issue's owner lock first (api's removeArtifact) and states the node gone in the
 // transaction that deletes the row, and a row a live write or another run gave its node meanwhile
@@ -248,10 +248,11 @@ func writeVersionBatch(ctx context.Context, database *store.Store, batch []versi
 		if len(nodes) == 0 {
 			return nil
 		}
-		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
-			return err
-		}
-		if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nodes, tuples)); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nodes, tuples)
+			graphstore.QueueHeads(b, graphstore.HeadsOf(nodes, tuples))
+			return nil
+		}); err != nil {
 			return err
 		}
 		written, stated = int64(len(nodes)), statedOf(nodes)+int64(len(tuples))

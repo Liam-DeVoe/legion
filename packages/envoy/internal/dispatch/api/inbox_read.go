@@ -480,7 +480,7 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // an anchor refresh, and so takes the project, before its own update moves those rows, and it
 // is ordered all the same.
 //
-// The node and tuple store (internal/dispatch/graphstore) adds five invariants rather than a
+// The node and tuple store (internal/dispatch/graphstore) adds six invariants rather than a
 // sequence of its own. Its writers do not all run their steps in one order - one learns its
 // event id before it has a node to write, another writes the node first and moves source_event
 // later - so a numbered step would be false for some of them, while each of these holds for
@@ -509,14 +509,21 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 //     lockBlockDocuments, and a document settlement's lockSettlementFence, which takes it before
 //     the asks the settlement opens are followed), before it writes a node, a tuple or a
 //     projection row, so two passes over one document queue at the fence and the one that loses
-//     it has written nothing.
+//     it has written nothing;
+//  6. the head rows of the nodes a write names (issue_head_nodes, migration
+//     20261123180100_issue_tree_head) are the last rows it takes: one head write
+//     (graphstore.QueueHeads, graphstore.WriteHeads, or graphstore.Write and graphstore.Caused,
+//     which queue it in their own batch) after every node row, tuple and projection row of the
+//     write, and no row of another step after it, so two writes of one node that both reach a
+//     head row have met at an earlier step first, and a write's head rows read every row of its
+//     own that they project.
 //
 // Appending a tuple locks no row of another table: graph_tuples has no foreign key and nothing
 // updates or deletes a tuple, so where the append falls in a writer's sequence moves no lock,
 // and invariant 3 is about which rows exist, not about which are held. A writer owning no
 // issue and no document - an operator's own write, a session-addressed event - takes no owner
 // lock at all, and invariant 1 says nothing about it. graphstore's
-// TestEveryStoreWriteTakesOneLockOrder reads this list and fails if these five are not in it.
+// TestEveryStoreWriteTakesOneLockOrder reads this list and fails if these six are not in it.
 //
 // The pointer type rules (graphstore's pointerRules) add one row lock to a write's node step. A
 // write that asserts or retracts a lens's has_kind tuple without writing that lens's node itself

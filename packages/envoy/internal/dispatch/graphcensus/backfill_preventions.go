@@ -92,11 +92,12 @@ func writeEndedPreventions(ctx context.Context, database *store.Store, documents
 	if len(retracted) == 0 {
 		return 0, nil
 	}
-	if err := graphstore.Write(ctx, tx, nil, retracted); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nil, retracted)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, retracted))
+		return nil
+	}); err != nil {
 		return 0, fmt.Errorf("retract the prevented_by tuples at checks nobody runs: %w", err)
-	}
-	if err := graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nil, retracted)); err != nil {
-		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit the retraction of the prevented_by tuples at checks nobody runs: %w", err)

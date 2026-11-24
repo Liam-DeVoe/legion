@@ -2,6 +2,7 @@ package graphcensus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -49,7 +50,8 @@ func seedHeadProject(t *testing.T, ctx context.Context, database *store.Store) {
 // seedReleaseBeforeIssue writes issue key as a store of the release before holds it, which has no
 // head projection: its row and its node, a document of it with two blocks, one under the other, a
 // comment on it, and a result under the document's check block, each node with the tuples that
-// place it, every value and relation stated through the store's writer and no row of
+// place it, every value and relation stated through a write phase of the store's writer with no
+// head write (graphstore.QueueWrite; graphstore.Write would queue one), and no row of
 // issue_head_nodes or issue_head_marks.
 func seedReleaseBeforeIssue(t *testing.T, ctx context.Context, database *store.Store, number int, key string) {
 	t.Helper()
@@ -99,7 +101,10 @@ func seedReleaseBeforeIssue(t *testing.T, ctx context.Context, database *store.S
 			tuple(graphstore.KindResult, result, graphstore.TupleResultOf, "block", check),
 			tuple(graphstore.KindResult, result, graphstore.AttributeVerdict, graphstore.KindValue, "pass"),
 		}
-		return graphstore.Write(ctx, tx, nodes, tuples)
+		return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nodes, tuples)
+			return nil
+		})
 	}); err != nil {
 		t.Fatalf("write %s as the release before stores it: %v", key, err)
 	}
@@ -193,6 +198,70 @@ func TestTheHeadProjectionBackfillReadsZero(t *testing.T) {
 		t.Fatalf("run the backfill again: %v", err)
 	}
 	requireHeadsMarkedAndEqual(t, ctx, database, headBackfillIssues)
+}
+
+// TestAWriteBehindTheStoresWritersTakesTheMarkAway holds the head projection's triggers to every
+// write of a row the head rows project that keeps no head row, as the release before writes them
+// and as a statement by hand would: on an issue the fill has filled and marked, by plain SQL with no
+// dispatch.head_rows setting, a delete of one of its tuples, an insert of a document_blocks row of
+// one of its blocks, an update of that row's type, a delete of that row, and a delete of one of its
+// node rows each take the issue's mark away (graph_tuples', document_blocks' and graph_nodes'
+// triggers), and the fill before each marks it again. Else the test prints `the mark of <key>
+// stands after <the write>`.
+func TestAWriteBehindTheStoresWritersTakesTheMarkAway(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seedHeadProject(t, ctx, database)
+	const key = "HBF-1"
+	seedReleaseBeforeIssue(t, ctx, database, 1, key)
+	heading := key + "/spec-md#h"
+	var document string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+		values ($1, 'HBF', 'spec-md', 'spec.md', 'doc', '{"kind":"user","id":"alice"}')
+		returning id::text
+	`, key).Scan(&document); err != nil {
+		t.Fatalf("write the row of %s's document: %v", key, err)
+	}
+	writes := []struct {
+		what, sql string
+		args      []any
+	}{
+		{"a delete of a tuple of its tree", `delete from graph_tuples where from_kind = 'block' and from_id = $1 and kind = 'text'`, []any{heading}},
+		{"an insert of a document_blocks row of one of its blocks", `
+			insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
+			values ($1::uuid, 'h', $2, 'heading', '', 'Heading.', 1, now())`, []any{document, heading}},
+		{"an update of that row's type", `update document_blocks set type = 'paragraph' where artifact_id = $1::uuid and block_id = 'h'`, []any{document}},
+		{"a delete of that row", `delete from document_blocks where artifact_id = $1::uuid and block_id = 'h'`, []any{document}},
+		{"a delete of a node row of its tree", `delete from graph_nodes where kind = 'block' and id = $1`, []any{heading}},
+	}
+	for _, write := range writes {
+		if _, _, err := FillIssueHeads(ctx, database, HeadFillBatch); err != nil {
+			t.Fatalf("fill %s before %s: %v", key, write.what, err)
+		}
+		if _, marked := headMark(t, ctx, database, key); !marked {
+			t.Fatalf("%s holds no mark after the fill before %s", key, write.what)
+		}
+		if tag, err := database.Pool.Exec(ctx, write.sql, write.args...); err != nil || tag.RowsAffected() == 0 {
+			t.Fatalf("%s of %s: %d rows, %v", write.what, key, tag.RowsAffected(), err)
+		}
+		if _, marked := headMark(t, ctx, database, key); marked {
+			t.Errorf("the mark of %s stands after %s", key, write.what)
+		}
+	}
+}
+
+// headMark is the time the mark of the issue key was filled at, and whether one stands.
+func headMark(t *testing.T, ctx context.Context, database *store.Store, key string) (time.Time, bool) {
+	t.Helper()
+	var filled time.Time
+	switch err := database.Pool.QueryRow(ctx, `select filled_at from issue_head_marks where issue_key = $1`, key).Scan(&filled); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return time.Time{}, false
+	case err != nil:
+		t.Fatalf("read the mark of %s: %v", key, err)
+	}
+	return filled, true
 }
 
 // TestTheFillHoldsTheHeadFillLockAgainstAWriteOfTheReleaseBefore runs the real fill of an issue's
