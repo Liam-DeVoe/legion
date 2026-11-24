@@ -102,16 +102,20 @@ func (s *server) v2MeRows() []routeRow {
 		{
 			Method: http.MethodGet, Pattern: "/me", Auth: authAny, Versions: onlyV2,
 			Description: "Who the server takes the caller for, one shape for every credential: {kind, person, session, " +
-				"service, project, scopes}. kind is user for a person at a browser and agent for every other credential, " +
-				"a personal token holding the person scope included, since the kind names the credential and not the act. " +
-				"person is the lowercase email of the person the credential acts for: the person at the browser, a " +
-				"personal token's owner, or a broker-issued token's person, null for the shared token and for a " +
-				"broker-issued token that names a service. session is the session the credential proved, null for every " +
-				"credential but an access token the secrets broker issued; service is a verified service-account " +
-				"token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for " +
-				"every other; project is the one project key the credential lets the caller write, null where it names " +
-				"none. scopes is the OAuth scopes the credential holds, [] for none: person acts as the person on every " +
-				"route the dashboard reaches, and approve settles what a person settles.",
+				"service, project, scopes, sign_in_required}. kind is user for a person at a browser and agent for every " +
+				"other credential, a personal token holding the person scope included, since the kind names the " +
+				"credential and not the act. person is the lowercase email of the person the credential acts for: the " +
+				"person at the browser, a personal token's owner, or a broker-issued token's person, null for the shared " +
+				"token and for a broker-issued token that names a service. session is the session the credential proved, " +
+				"null for every credential but an access token the secrets broker issued; service is a verified " +
+				"service-account token's Kubernetes subject, or, for a broker-issued token naming no person, the fleet " +
+				"its machine belongs to or the Kubernetes account an exchange entry lists, null for every other; project " +
+				"is the one project key the credential lets the caller write, null where it names none. scopes is the " +
+				"OAuth scopes the credential holds, [] for none: person acts as the person on every route the dashboard " +
+				"reaches, and approve settles what a person settles. sign_in_required is true where Dispatch refuses " +
+				"every write of the credential with 403 SIGN_IN_REQUIRED until a person signs in on its machine, which " +
+				"is a broker-issued token of a machine nobody has signed in on, and false for every other credential, " +
+				"an exchange entry's token naming its account among them.",
 			Handler:  s.getMeV2,
 			Resource: "me", Kind: kindSingleton,
 			Shape:    routeShape{Status: http.StatusOK, Response: meV2{}},
@@ -287,6 +291,10 @@ type meV2 struct {
 	Service *string  `json:"service"`
 	Project *string  `json:"project"`
 	Scopes  []string `json:"scopes"`
+	// SignInRequired is whether Dispatch refuses every write this credential makes until a person
+	// signs in on its machine (403 SIGN_IN_REQUIRED), the decision writeNeedsASignedInPerson acts
+	// on (signInRequired), as GET /api/v1/whoami answers it; false for a person at a browser.
+	SignInRequired bool `json:"sign_in_required"`
 }
 
 // getMeV2 answers GET /api/v2/me: what GET /api/v1/whoami tells the caller, in one shape.
@@ -306,6 +314,7 @@ func (s *server) getMeV2(w http.ResponseWriter, r *http.Request) {
 	if !human && actor.Kind == "session" && actor.ID != "" {
 		me.Session = new(actor.ID)
 	}
+	_, me.SignInRequired = s.signInRequired(r)
 	WriteJSON(w, http.StatusOK, me)
 }
 

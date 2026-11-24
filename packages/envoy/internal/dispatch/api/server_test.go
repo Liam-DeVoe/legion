@@ -223,6 +223,12 @@ type testServerOptions struct {
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
 	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
 	duplicateBound time.Duration
+	// mentionLookupBound is the server's bound on each listener lookup a comment's creation
+	// makes, by the target looked up (server.mentionLookupBound); nil keeps production's
+	// mentionLookupTimeout. A case whose verdict needs a lookup the listener answers to count as
+	// answered gives that lookup a bound no run reaches, so a loaded machine cannot turn the
+	// answer into an unanswered lookup.
+	mentionLookupBound func(target string) time.Duration
 	// relatedBound is the related-item check's meaning allowance and its wait for the
 	// cross-project leg, with the check's own allowance past them (server.withRelatedBound);
 	// zero keeps production's. A case whose verdict is what the check's meaning stage found
@@ -418,6 +424,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		served.agentWatchInterval = options.agentWatchInterval
 	}
 	served.duplicateBound = options.duplicateBound
+	served.mentionLookupBound = options.mentionLookupBound
 	served.withRelatedBound(options.relatedBound)
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'
