@@ -42,9 +42,12 @@
 -- (that migration set none), and deletes this migration's version row, so the roll forward runs
 -- this file again. The release before this one, contract 220 (the one whose
 -- internal/api/version.go carries the entry for cybermonklabs/legion#4930's assignment plans) as
--- main releases it with #4930 on contract 219, whose newest migration is #4930's
--- 20261123165139_experiment_assignment_plan, carries 20261119203047 and not the task numbers, and
--- then reads the function it wrote; a rollback to contract 219 or before crosses 220 and first
+-- main releases it with #4930 on contract 219 and #5278 after it, whose newest migration is
+-- #5278's 20261123212127_claim_start_failure_after_ready, carries 20261119203047 and not the task
+-- numbers, and then reads the function it wrote; a rollback to a release before #5278 also
+-- crosses 20261123212127, which needs nothing: it carries no way back, since an earlier release
+-- reads the start failures it emptied as none recorded; a rollback to contract 219 or before
+-- crosses 220 and first
 -- takes that release's one step, before this block, which takes `plan` out of legion.yaml and runs
 -- no statement (docs/kubernetes.md, "Rolling back the release whose experiment sets how each issue
 -- is done"), a rollback to contract 217 or before also crosses 219 and takes that release's own
