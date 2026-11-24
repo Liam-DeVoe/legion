@@ -44,11 +44,19 @@
       },
       {
         "issue": "LEGION-212",
-        "reason": "unclassified"
+        "reason": "fix_running",
+        "heldBy": [
+          "ci / test (ubuntu-24.04)",
+          "c0de0000000000000000000000000000000000ff"
+        ]
       },
       {
         "issue": "LEGION-213",
-        "reason": "unclassified"
+        "reason": "ci_at_head",
+        "heldBy": [
+          "ci / build",
+          "ci / test (ubuntu-24.04)"
+        ]
       }
     ]
   },
@@ -205,7 +213,7 @@
       },
       "why": {
         "state": "unlisted",
-        "reason": "The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, so no slot has been offered to it. No rule of the held list says what it waits for."
+        "reason": "It passed the last step of its task, so the daemon holds it before its retro while a fix of its task reads its failed job or runs, started for the check and the head ci / test (ubuntu-24.04) and c0de0000000000000000000000000000000000ff. Its retro does not start while the fix runs."
       }
     },
     "LEGION-213": {
@@ -219,6 +227,12 @@
       "holdReason": "ci",
       "heldFrom": "retro",
       "workers": {},
+      "pullRequest": {
+        "repo": "acme/widgets",
+        "number": 213,
+        "head": "c0de0000000000000000000000000000000000ff",
+        "state": "open"
+      },
       "designGate": {
         "artifactId": "artifact-LEGION-213",
         "currentVersion": 1,
@@ -226,7 +240,7 @@
       },
       "why": {
         "state": "unlisted",
-        "reason": "The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, so no slot has been offered to it. No rule of the held list says what it waits for."
+        "reason": "It passed the last step of its task, so the daemon holds it before its retro until each check a CI job runs passes at its task's head; these have not passed there yet: ci / build and ci / test (ubuntu-24.04). Its retro does not start while one of them has not passed."
       }
     }
   },

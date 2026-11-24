@@ -1964,19 +1964,27 @@ func stoppedSentence(issue, task, reason string) string {
 
 // RetryOfHeldParent is the 409 HELD_FOR_CHILDREN refusal of a release of issue's hold where issue,
 // a parent whose last step is not the owner's acceptance, waits before its retro for the issues beneath it,
-// beneath (record.HoldForChildren): the last of them to leave starts the retro.
+// beneath (record.HoldForChildren): the last of them to leave starts the retro, or the hold of the
+// task's end that follows it (HeldParentWaitsForChildren).
 func RetryOfHeldParent(issue string, beneath []string) *Refusal {
 	return &Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: HeldParentWaitsForChildren(issue, beneath) + " This retry changed nothing."}
 }
 
 // HeldParentWaitsForChildren says why issue, a parent held before its retro for the issues beneath
-// it (record.HoldForChildren), still waits: beneath, the issues beneath it still open, the last of
-// which to leave starts the retro. It says what is true of the issue for whoever reads it, a
-// person beside a set-back todo included, and carries none of the architect's rules for ending a
-// child, which the architect's own retro-held notice gives.
+// it (record.HoldForChildren), still waits: beneath, the issues beneath it still open. The last of
+// them to leave starts the retro, unless the task's end holds it before the retro still: for a fix
+// of its task that runs, or until each check a CI job runs passes at its head (workflow's
+// retroHold). It says what is true of the issue for whoever reads it, a person beside a set-back
+// todo included, and carries none of the architect's rules for ending a child, which the
+// architect's own retro-held notice gives.
 func HeldParentWaitsForChildren(issue string, beneath []string) string {
-	return fmt.Sprintf("%s waits before its retro for these issues beneath it: %s. Legion starts the retro when the last one leaves.", issue, strings.Join(beneath, ", "))
+	return fmt.Sprintf("%s waits before its retro for these issues beneath it: %s. When the last one leaves, Legion starts the retro, %s.",
+		issue, strings.Join(beneath, ", "), RetroUnlessEndHold)
 }
+
+// RetroUnlessEndHold is what a text that tells when Legion starts a retro adds: the hold of the
+// task's end, which can follow the wait that text names (workflow's retroHold, startHeldRetro).
+const RetroUnlessEndHold = "unless it holds the task before its retro still, while a fix of the task runs or until each check a CI job runs passes at the task's head"
 
 // RetryOfHeldParentUntilTreeRuns is the 409 HELD_FOR_CHILDREN refusal of a release of issue's hold
 // where issue, a parent held before its retro for the issues beneath it (record.HoldForChildren),
@@ -1986,16 +1994,16 @@ func RetryOfHeldParentUntilTreeRuns(issue, tree string, lingers bool) *Refusal {
 }
 
 // HeldParentWaitsForTree says why issue, a parent held before its retro for the issues beneath it
-// with none of them open, still waits: its retro waits only for its tree, tree, to run. The tree
+// with none of them open, still waits: its retro waits for its tree, tree, to run. The tree
 // lingers after its root left the workflow, where lingers says so, and otherwise its root waits in
 // the line for the tree to be opened. The reopen or the promotion that runs the tree starts the
-// retro.
+// retro, unless the task's end holds it before the retro still (RetroUnlessEndHold).
 func HeldParentWaitsForTree(issue, tree string, lingers bool) string {
 	waits := fmt.Sprintf("its tree %s waits in the line to be opened, and Legion starts the retro once the tree runs", tree)
 	if lingers {
 		waits = fmt.Sprintf("its tree %s lingers after its root left the workflow, and Legion starts the retro once the tree runs again", tree)
 	}
-	return fmt.Sprintf("%s waits before its retro, and nothing beneath it is open: %s.", issue, waits)
+	return fmt.Sprintf("%s waits before its retro, and nothing beneath it is open: %s, %s.", issue, waits, RetroUnlessEndHold)
 }
 
 // ChildInOtherTree is the 409 CHILD_IN_OTHER_TREE refusal of key, a child recorded in the tree of

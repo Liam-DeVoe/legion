@@ -69,12 +69,12 @@ func (e *Engine) retroHold(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 }
 
 // ciWaits is the head of the task of the issue key (taskHead) and what of its CI there has not
-// passed: each check of the head's set that a CI job may run and that has not passed there
-// (ciVerdict's ciUnknownKind, ciRunning or ciFailed), in the set's order, or the one word that no
-// set of checks is held at the head (record.HeadStates.Checks nil: Dispatch has published nothing
-// there yet), as the testing move waits on a set not held (judgeStates). A check that no CI job
-// runs waits for nothing here, whatever its state, and a set held empty waits for nothing. An
-// issue with no open pull request has no head, and nothing waits.
+// passed (record.CIWaits): each check of the head's set that a CI job may run and that has not
+// passed there, in the set's order, or the one word that no set of checks is held at the head
+// (record.HeadStates.Checks nil: Dispatch has published nothing there yet), as the testing move
+// waits on a set not held (judgeStates). A check that no CI job runs waits for nothing here,
+// whatever its state, and a set held empty waits for nothing. An issue with no open pull request
+// has no head, and nothing waits.
 func (e *Engine) ciWaits(ctx context.Context, tx pgx.Tx, key string) (head string, waits []string, err error) {
 	pr, err := e.store.PullRequest(ctx, tx, key)
 	if err != nil {
@@ -91,14 +91,7 @@ func (e *Engine) ciWaits(ctx context.Context, tx pgx.Tx, key string) (head strin
 	if held.Checks == nil {
 		return head, []string{"no check set held at " + head}, nil
 	}
-	for _, check := range held.Checks {
-		state, stated := held.States[check]
-		switch ciVerdict(state, stated) {
-		case ciUnknownKind, ciRunning, ciFailed:
-			waits = append(waits, check)
-		}
-	}
-	return head, waits, nil
+	return head, record.CIWaits(held), nil
 }
 
 // endHoldNotice is the retro-held notice of issue, on w, the walk of its run, held before its
@@ -141,14 +134,15 @@ func retroHeldFor(reason string) record.Notice {
 
 // retroHeldNotice tells the owner of parent that Legion holds it before its retro for beneath, the
 // issues beneath it still in the workflow, and what ends the hold: each of them run to done, or
-// ended by the owner's own status write in Dispatch. It carries that write's rules word for word
-// (record.EndChildRule) and the sentence on a write the daemon has not taken yet
+// ended by the owner's own status write in Dispatch, after which the retro starts unless the
+// task's end holds it still (intake.RetroUnlessEndHold). It carries that write's rules word for
+// word (record.EndChildRule) and the sentence on a write the daemon has not taken yet
 // (record.StatusNotTakenYet), as the pr-merged notice does (waitingForTree).
 func retroHeldNotice(parent string, beneath []string) record.Notice {
 	return retroHeldFor(fmt.Sprintf(
 		"%s passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: %s. "+
-			"A parent is accepted only once no issue beneath it is still in the workflow. Run each one to done, or end it; Legion starts the retro when the last one leaves.",
-		parent, strings.Join(beneath, ", ")) + " " + record.StatusNotTakenYet + " " + record.EndChildRule)
+			"A parent is accepted only once no issue beneath it is still in the workflow. Run each one to done, or end it; when the last one leaves, Legion starts the retro, %s.",
+		parent, strings.Join(beneath, ", "), intake.RetroUnlessEndHold) + " " + record.StatusNotTakenYet + " " + record.EndChildRule)
 }
 
 // heldParentWait is why parent, held before its retro for the issues beneath it

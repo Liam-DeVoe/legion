@@ -1094,12 +1094,20 @@
         "since": 98
       },
       {
+        "value": "ci_at_head",
+        "since": 236
+      },
+      {
         "value": "design_gate",
         "since": 98
       },
       {
         "value": "dispatch_blocker",
         "since": 98
+      },
+      {
+        "value": "fix_running",
+        "since": 236
       },
       {
         "value": "label_off",

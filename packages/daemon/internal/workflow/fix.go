@@ -31,12 +31,12 @@ func taskHead(pr *record.PullRequest) (repo, head string) {
 }
 
 // failedChecks is each check of head's set that fails there by the rule of a CI check
-// (ciVerdict's ciFailed), in the set's order, with its state. A set not held fails nothing.
+// (record.CIVerdict's CIFailed), in the set's order, with its state. A set not held fails nothing.
 func failedChecks(head record.HeadStates) []record.CheckState {
 	var failed []record.CheckState
 	for _, check := range head.Checks {
 		state, held := head.States[check]
-		if ciVerdict(state, held) == ciFailed {
+		if record.CIVerdict(state, held) == record.CIFailed {
 			failed = append(failed, state)
 		}
 	}
@@ -578,7 +578,11 @@ func jobOf(fix record.TaskFix) string {
 
 // tellStepsOfFix sends one role message of fix to the worker of each other step of w's task that
 // was handed work in this run (its phases row holds the task of an entry): the fix runs, the
-// failure is the fix's, and nothing is pushed to the task's branch until the fix ended. A step that
+// failure is the fix's, what that failure does to the step's own report, and that nothing is
+// pushed to the task's branch until the fix ended. The tester's testing step still judges each
+// check a CI job runs, this one among them, so its report can fail for it, and a step that fails
+// beside a fix moves nothing until the way after the fix (besideFix); no other step's report fails
+// for it. A step that
 // has not started is told by its start (task). The owner, whose acceptance step is no worker's,
 // is told nothing here.
 func (e *Engine) tellStepsOfFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, fix record.TaskFix) error {
@@ -597,17 +601,23 @@ func (e *Engine) tellStepsOfFix(ctx context.Context, tx pgx.Tx, issue record.Iss
 			recipients = append(recipients, roleRecipient{issue: issue.Key, role: role, row: issue.Key})
 		}
 	}
-	addressed, err := e.addressRoles(issue.Project, recipients, nil)
-	if err != nil {
-		return err
-	}
-	body := fmt.Sprintf("A fix of task %s of %s runs: check %s failed at %s (CI job %s). It is step %d (%s) again, in a working copy of its own. "+
-		"Leave that failure to the fix: your report does not fail for it, and you run its job no more. "+
-		"Push nothing to the branch of the task until the fix ended: name in your report each commit you would push, and the fix takes it.",
+	runs := fmt.Sprintf("A fix of task %s of %s runs: check %s failed at %s (CI job %s). It is step %d (%s) again, in a working copy of its own. ",
 		fix.Task, issue.Key, fix.Check, fix.Head, jobOf(fix), fix.Place, words[fix.Place-1])
-	for _, to := range addressed {
-		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
+	push := "Push nothing to the branch of the task until the fix ended: name in your report each commit you would push, and the fix takes it."
+	for _, recipient := range recipients {
+		addressed, err := e.addressRoles(issue.Project, []roleRecipient{recipient}, nil)
+		if err != nil {
 			return err
+		}
+		leave := "Leave that failure to the fix: your report does not fail for it, and you run its job no more. "
+		if recipient.role == claim.RoleTester {
+			leave = fmt.Sprintf("Leave the fixing of that failure to the fix, and run its job no more. Your testing still judges each check a CI job runs, %s among them, "+
+				"so your report can fail for it: a failed report moves nothing while the fix runs, and the way after the fix reads it. ", fix.Check)
+		}
+		for _, to := range addressed {
+			if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: runs + leave + push}); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -681,7 +691,7 @@ func (e *Engine) fixMovedBack(ctx context.Context, tx pgx.Tx, issue record.Issue
 		return refused("BACKWARD_REFUSED", fmt.Sprintf("the implementer's move of fix %d of %s to %s changed nothing: its pull request has merged; a merged change never moves back",
 			fix.Fix, issue.Key, fact.To)), nil
 	}
-	if code, why := backwardReasonRefusal(phase.Implementing, fact.To, fact.Reason); code != "" {
+	if code, why := backwardReasonRefusal(phase.Implementing, fact.To, mover{role: claim.RoleImplementer}, fact.Reason); code != "" {
 		return refused(code, why), nil
 	}
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
@@ -952,7 +962,7 @@ func (e *Engine) afterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 		}
 		return e.transition(context.WithValue(ctx, wayMoveKey{}, wayMove{}), tx, issue, pending.trigger, pending.target, pending.handoff, pending.pr, pending.reason)
 	}
-	ctx = context.WithValue(ctx, wayMoveKey{}, wayMove{moveTo: head})
+	ctx = context.WithValue(context.WithValue(ctx, wayMoveKey{}, wayMove{moveTo: head}), moverKey{}, mover{fix: fix.Fix})
 	handoff, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
 	if err != nil {
 		return err

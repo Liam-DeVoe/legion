@@ -6,30 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
-
-// fixStore is projectionStore with the fixes the store holds, by issue: what
-// record.Store.RunningFix answers for an issue's task, a fix that reads its job or runs, and none
-// for a fix that ended or one of another task or run.
-type fixStore struct {
-	projectionStore
-	fixes map[string]record.TaskFix
-}
-
-func (s fixStore) RunningFix(_ context.Context, _ pgx.Tx, issue string, generation uint64, task string) (*record.TaskFix, error) {
-	fix, held := s.fixes[issue]
-	if !held || fix.Generation != generation || fix.Task != task || fix.State == record.FixEnded {
-		return nil, nil
-	}
-	return &fix, nil
-}
 
 // fixHead is the head the fixes of these tests started at, where their check failed.
 const fixHead = "c0de0000000000000000000000000000000000ff"
@@ -67,17 +49,15 @@ func TestTheStateServesTheRunningFixWithItsEntries(t *testing.T) {
 		return record.TaskFix{Issue: key, Generation: 1, Task: "a", Fix: 1, State: state, Check: "unit", Head: fixHead, Place: 1,
 			Entry: entry, StartedAt: &started}
 	}
-	store := fixStore{
-		projectionStore: projectionStore{
-			issues: []record.Issue{issue("LEGION-40", 1), issue("LEGION-50", 1), issue("LEGION-60", 0), issue("LEGION-70", 0)},
-			phases: map[string][]record.PhaseRow{
-				"LEGION-40": rows("LEGION-40", 2), "LEGION-50": rows("LEGION-50", 2),
-				"LEGION-60": rows("LEGION-60", 1), "LEGION-70": rows("LEGION-70", 1),
-			},
-			planTasks: []record.PlanTask{
-				{Issue: "LEGION-40", Generation: 1, Task: "a"}, {Issue: "LEGION-50", Generation: 1, Task: "a"},
-				{Issue: "LEGION-60", Generation: 1, Task: "a"}, {Issue: "LEGION-70", Generation: 1, Task: "a"},
-			},
+	store := projectionStore{
+		issues: []record.Issue{issue("LEGION-40", 1), issue("LEGION-50", 1), issue("LEGION-60", 0), issue("LEGION-70", 0)},
+		phases: map[string][]record.PhaseRow{
+			"LEGION-40": rows("LEGION-40", 2), "LEGION-50": rows("LEGION-50", 2),
+			"LEGION-60": rows("LEGION-60", 1), "LEGION-70": rows("LEGION-70", 1),
+		},
+		planTasks: []record.PlanTask{
+			{Issue: "LEGION-40", Generation: 1, Task: "a"}, {Issue: "LEGION-50", Generation: 1, Task: "a"},
+			{Issue: "LEGION-60", Generation: 1, Task: "a"}, {Issue: "LEGION-70", Generation: 1, Task: "a"},
 		},
 		fixes: map[string]record.TaskFix{
 			// Its claim holds the fix's task.

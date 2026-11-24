@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -50,9 +51,10 @@ func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue rec
 // It goes once no checkout a comparison run can name predates dispatch://INFRA-2800: then
 // daemon-pane.go calls phase.RoleFor against every checkout it is built inside, and this module
 // holds one exported name for the rule again rather than two a new caller could pick between.
-// Until then this name has callers of its own inside this module, seven of them: readyWorkerTask
-// (catch_up.go), leftItsPhase and noticeFor's two reads (engine.go), tellGateMoved (gate.go),
-// tellChecks (review.go) and one test (checks_red_test.go). Each reads the same table as a
+// Until then this name has callers of its own inside this module: leftItsPhase and noticeFor's
+// two reads (engine.go), startFix, tellStepsOfFix and moveFromHold (fix.go), tellGateMoved
+// (gate.go), mergeForward and mergeForwardLanded (merge_forward.go), tellChecks (review.go) and
+// one test (checks_red_test.go). Each reads the same table as a
 // caller of phase.RoleFor, since that is the one definition and this forwards to it.
 func RoleFor(p phase.Phase) claim.Role {
 	return phase.RoleFor(p)
@@ -108,8 +110,8 @@ func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role clai
 }
 
 // unpromptedPhaseWorker is the half of SilentPhaseWorker that is not about a moment: a live claim
-// of the role that works issue's phase (OpenPhaseRole), on an issue at work in a tree that does
-// not linger, up and between turns, in no update round, holding no task it still works, with no
+// of a worker of issue's open phase (OpenRoles), on an issue at work in a tree that does not
+// linger, up and between turns, in no update round, holding no task it still works, with no
 // acting stop and no queued start and recorded in root's tree. Ready and idle are both a process
 // waiting to be prompted; the role, not the state, tells a fault from health. The last three
 // terms are StartFor's, read the other way, so no claim a start of the daemon's is already on
@@ -117,15 +119,18 @@ func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role clai
 // can name the same claim when it is behind the entry its phases row names, and both then send
 // that entry's work (repairSilence, SendOwedEntry); whichever writes first leaves a queued start
 // the other's rule reads and passes over. BackgroundStalledWorker stands on it too, so the two
-// rules agree on which claim they are about.
+// rules agree on which claim they are about. The work, the task and the start of a fix's
+// implementer are read where the fix's work stands (WorkStanding), in the phase of the step the
+// fix runs again, since a held issue's fix runs on.
 func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun) bool {
 	if run.Claim == nil {
 		return false
 	}
-	if working := OpenPhaseRole(issue.Phase); working == "" || working != role {
+	if !slices.Contains(OpenRoles(issue), role) {
 		return false
 	}
-	if !record.AtWork(issue, gate) || root.Lingers() {
+	stands := WorkStanding(issue, role)
+	if !record.AtWork(stands, gate) || root.Lingers() {
 		return false
 	}
 	c := run.Claim
@@ -135,23 +140,28 @@ func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role 
 	if c.UpdateRound != "" {
 		return false
 	}
-	if c.Pending != nil && c.Pending.StillWorked(issue.Generation, issue.Phase, c.State) {
+	if c.Pending != nil && c.Pending.StillWorked(stands.Generation, stands.Phase, c.State) {
 		return false
 	}
 	stop := actingStop(run, root)
-	return stop == 0 && c.Tree == root.Key && !queuedStartActs(run, stop, issue.Phase)
+	return stop == 0 && c.Tree == root.Key && !queuedStartActs(run, stop, stands.Phase)
 }
 
 // PhaseWorkerOwedTurn is whether role's worker of issue's phase is still owed a turn, the half of
 // a silence only the store can answer: false for a phase its terminating fact has met
 // (PhaseFinished) and for a role whose completion of this phase entry the workflow accepted (the
-// phase row's CompletedAt, which the next phase's start clears in clearHandoff). It answers the
-// role's phase row too, an empty row naming the issue and role where the record holds none, so
-// the silence repair reads it once.
+// phase row's CompletedAt, which the next phase's start clears in clearHandoff). The fix's
+// implementer (FixWork) is owed its turn while the fix runs: the fix's own end is what ends its
+// work, and it takes the fix off the record (record.Issue.RunningFix), while the row keeps the
+// completion of the step the fix runs again. It answers the role's phase row too, an empty row
+// naming the issue and role where the record holds none, so the silence repair reads it once.
 func PhaseWorkerOwedTurn(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue, role claim.Role) (record.PhaseRow, bool, error) {
-	finished, err := PhaseFinished(ctx, store, tx, issue)
-	if err != nil || finished {
-		return record.PhaseRow{}, false, err
+	fixing := FixWork(issue, role)
+	if !fixing {
+		finished, err := PhaseFinished(ctx, store, tx, issue)
+		if err != nil || finished {
+			return record.PhaseRow{}, false, err
+		}
 	}
 	rows, err := store.Phases(ctx, tx, issue.Key)
 	if err != nil {
@@ -164,7 +174,7 @@ func PhaseWorkerOwedTurn(ctx context.Context, store record.Store, tx pgx.Tx, iss
 			break
 		}
 	}
-	return row, row.CompletedAt.IsZero(), nil
+	return row, fixing || row.CompletedAt.IsZero(), nil
 }
 
 func (e *Engine) enqueue(ctx context.Context, tx pgx.Tx, issue string, payload record.OutboxPayload) error {
@@ -265,25 +275,59 @@ func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, stat
 }
 
 // moveReason is what a move's status write posts on the issue, for the one move nothing else on
-// Dispatch explains: a worker's backward move (TriggerBackward, request_backward_move). The request
-// reaches the daemon's API and no Dispatch record, so an architect's send-back from accepting
-// showed a bare status change, with its reason only in the notice and the next role's task over
-// Envoy. Every other move is recorded on Dispatch by the act that makes it, a tester's or a
-// reviewer's hand-off, so it posts nothing: transition also carries a review's whole body, which
-// does not go on the issue a second time. A person reads this text on the issue, so a backward
-// move's names the role that asked and gives its words.
-func moveReason(trigger TriggerKind, from, to phase.Phase, reason string) string {
+// Dispatch explains: a backward move (TriggerBackward), a worker's request_backward_move, the
+// owner's move out of a hold for CI, or the way after a fix. The request reaches the daemon's API
+// and no Dispatch record, so an architect's send-back from accepting showed a bare status change,
+// with its reason only in the notice and the next role's task over Envoy. Every other move is
+// recorded on Dispatch by the act that makes it, a tester's or a reviewer's hand-off, so it posts
+// nothing: transition also carries a review's whole body, which does not go on the issue a second
+// time. A person reads this text on the issue, so a backward move's names who moved it (by) and
+// gives the mover's words.
+func moveReason(trigger TriggerKind, from, to phase.Phase, by mover, reason string) string {
 	if trigger != TriggerBackward {
 		return ""
 	}
-	return backwardMoveReason(from, to, reason)
+	return backwardMoveReason(from, to, by, reason)
 }
 
-// backwardMoveReason is a worker's backward move as the issue shows it: the phase it left, the one
-// it went to, the role that asked (the role running the phase left, which backward holds the
-// requester to) and that role's own words, or that it gave none.
-func backwardMoveReason(from, to phase.Phase, reason string) string {
-	asked := fmt.Sprintf("Legion moved this issue from %s back to %s at the %s's request", from, to, phase.RoleFor(from))
+// mover is who made a backward move: the role whose request it was, or the end of fix number
+// fix of the task, whose way returns the task (afterFix). The zero mover is the role running the
+// phase the move leaves, which backward holds a worker's request to. The move's context carries
+// it (moverKey) from the act that makes the move to the texts that name the mover: the post on
+// the issue (moveReason) and the owner's notice (noticeFor).
+type mover struct {
+	role claim.Role
+	fix  int
+}
+
+// moverKey is the context key of a mover.
+type moverKey struct{}
+
+// moverOf is the mover ctx carries, the zero mover where it carries none.
+func moverOf(ctx context.Context) mover {
+	by, _ := ctx.Value(moverKey{}).(mover)
+	return by
+}
+
+// words is the mover as a notice names it, left being the role of the phase the move leaves.
+func (by mover) words(left claim.Role) string {
+	if by.fix > 0 {
+		return fmt.Sprintf("the end of fix %d", by.fix)
+	}
+	if by.role != "" {
+		return "the " + string(by.role)
+	}
+	return "the " + string(left)
+}
+
+// backwardMoveReason is a backward move as the issue shows it: the phase it left, the one it went
+// to, who moved it (by: the role that asked, the role running the phase left where by names none,
+// or the end of a fix) and the mover's own words, or that it gave none.
+func backwardMoveReason(from, to phase.Phase, by mover, reason string) string {
+	asked := fmt.Sprintf("Legion moved this issue from %s back to %s at %s's request", from, to, by.words(phase.RoleFor(from)))
+	if by.fix > 0 {
+		asked = fmt.Sprintf("Legion moved this issue from %s back to %s when fix %d of its task ended", from, to, by.fix)
+	}
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		return asked + ", which gave no reason."
@@ -302,8 +346,8 @@ func backwardMoveReason(from, to phase.Phase, reason string) string {
 // close's reason (api's closeRoot). The text measured is the post the outbox makes, this move's
 // sentence under its marker (record.LongestPost), read by the server's own reader
 // (dispatchbody.Check), so the daemon refuses exactly what Dispatch refuses.
-func backwardReasonRefusal(from, to phase.Phase, reason string) (string, string) {
-	over := dispatchbody.Check(record.LongestPost(backwardMoveReason(from, to, reason)))
+func backwardReasonRefusal(from, to phase.Phase, by mover, reason string) (string, string) {
+	over := dispatchbody.Check(record.LongestPost(backwardMoveReason(from, to, by, reason)))
 	if over == nil {
 		return "", ""
 	}
@@ -459,17 +503,10 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 	if role == claim.RoleArchitect {
 		return nil
 	}
-	at, err := e.standingPart(ctx, tx, issue, w)
+	at, err := e.stepStanding(ctx, tx, issue, w)
 	if err != nil {
 		return err
 	}
-	// A step's start beside a fix, and an implementation step's start while checks of a CI job
-	// fail at the head, say so in the daemon's lines (fixLines).
-	beside, err := e.fixLines(ctx, tx, issue, w)
-	if err != nil {
-		return err
-	}
-	at.lines += beside
 	// The task's working copy moves to the head a fix left it behind (copyMoveAfterFix), read
 	// before enter writes this start; the way after a fix names its own (moveToOf).
 	moveTo := moveToOf(ctx)
@@ -582,7 +619,7 @@ func childArchitectStart(issue record.Issue) record.SuperviseRequest {
 // whose turn then ended holds that entry as its given one and no pending delivery, so the entry
 // test alone would decline the retry's task and relaunch the worker with no prompt
 // (supervise.Machine.queue). Its task is told as start's is, from the standing it reads only for
-// a worker it starts.
+// a worker it starts (stepStanding).
 func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, told func(Standing) string, freshSession bool) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
@@ -591,7 +628,7 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if err != nil {
 		return err
 	}
-	at, err := e.standingPart(ctx, tx, issue, w)
+	at, err := e.stepStanding(ctx, tx, issue, w)
 	if err != nil {
 		return err
 	}
@@ -643,8 +680,14 @@ func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // sweep alone would otherwise reset a stuck tree's quiet time sixty times an hour, and the
 // measure would never reach the bound on the stop it most needs to see. It is set here, once,
 // rather than by each door, so no door can send an owed entry as news.
+//
+// The work of the fix that runs beside the issue's step is sent as the fix's (resumeFix), never as
+// the phase's: it is the row's stored task, the fix's own, at its entry.
 func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow,
 	marks startMarks) error {
+	if sent, err := e.resumeFix(ctx, tx, issue, role, row, row.Entry, marks); sent || err != nil {
+		return err
+	}
 	task := row.EntryTask
 	marks.stored = task != ""
 	if task == "" {
@@ -655,6 +698,32 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 	}
 	marks.reasserts = true
 	return e.started(ctx, tx, issue, role, task, row.Entry, marks)
+}
+
+// resumeFix sends role its work again where that work is the fix that runs beside issue's step
+// (FixWork), and answers whether it did; it writes nothing for every other role. The fix's
+// resume task is the fix's stored task, the one its start wrote on the implementer's row
+// (record.PhaseRow.EntryTask, startFix), as each resume sends a row's stored task, at entry: the
+// row's for a claim behind it, 0 for a claim level with it, whose start marks say it is a resume
+// task. The start stands where the fix's work does (WorkStanding) and carries the fix's number
+// and the head its working copy is made at (startMarks.fix, fixFrom), so started writes it beside
+// the line of starts that wait for a slot (record.Store.EnqueueFixStart) and never into it. It is a
+// re-assertion, as every resume is (startMarks.reasserts). A fix still reading its failed job has
+// raised no entry, and no path resumes it: the issue record names no running fix then.
+func (e *Engine) resumeFix(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow, entry int64,
+	marks startMarks) (bool, error) {
+	if !FixWork(issue, role) {
+		return false, nil
+	}
+	_, fix, err := e.fixNamed(ctx, tx, issue, issue.RunningFix)
+	if err != nil || fix == nil {
+		return false, err
+	}
+	if row.EntryTask == "" {
+		return false, fmt.Errorf("resume fix %d of %s: the %s's row holds no task of it", fix.Fix, issue.Key, role)
+	}
+	marks.fix, marks.fixFrom, marks.stored, marks.reasserts = fix.Fix, fix.Head, true, true
+	return true, e.started(ctx, tx, WorkStanding(issue, role), role, row.EntryTask, entry, marks)
 }
 
 // StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
@@ -793,7 +862,7 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 			start.Fix, start.FixFrom = 0, ""
 			return startOrOwe(ctx, tx, e.store, issue.Key, start, e.now(), move)
 		}
-		return enqueueFixStart(ctx, tx, e.store, issue.Key, start, e.now())
+		return enqueueFixStart(ctx, tx, e.store, issue.Key, start, e.now(), move)
 	}
 	return startOrOwe(ctx, tx, e.store, issue.Key, start, e.now(), move)
 }
@@ -801,10 +870,12 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // enqueueFixStart writes the start of a fix's task as one outbox row in the caller's own
 // transaction, beside the line of starts that wait for a slot (record.Store.EnqueueFixStart): it
 // carries no slot mark, so neither that line nor admission's repair of it reads it, and no start
-// of the phase the issue stands in takes it out, nor it that start. The fix's start puts a worker
-// to work on new work, so it is news of its issue and marks the issue moved, as startOrOwe marks a
-// transition's start.
-func enqueueFixStart(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, at time.Time) error {
+// of the phase the issue stands in takes it out, nor it that start. The fix's own start puts a
+// worker to work on new work, so it is news of its issue and marks the issue moved, as startOrOwe
+// marks a transition's start; a resume of the fix (resumeFix) sends work the record already owes,
+// and marks nothing (reassertion).
+func enqueueFixStart(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, at time.Time,
+	move movement) error {
 	if payload.Task == "" || payload.Phase == "" {
 		return fmt.Errorf("the start of fix %d of %s requires a task and a phase", payload.Fix, issue)
 	}
@@ -812,8 +883,10 @@ func enqueueFixStart(ctx context.Context, tx pgx.Tx, store record.Store, issue s
 	if err != nil {
 		return err
 	}
-	if err := store.MarkIssueMoved(ctx, tx, issue, at); err != nil {
-		return err
+	if move == newsOfTheIssue {
+		if err := store.MarkIssueMoved(ctx, tx, issue, at); err != nil {
+			return err
+		}
 	}
 	return store.EnqueueFixStart(ctx, tx, row)
 }
@@ -1250,11 +1323,30 @@ func (e *Engine) ResumeTask(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 
 // resumeTaskOn is ResumeTask on w, the walk of issue's run as its caller read it.
 func (e *Engine) resumeTaskOn(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (string, error) {
-	at, err := e.standingPart(ctx, tx, issue, w)
+	at, err := e.stepStanding(ctx, tx, issue, w)
 	if err != nil {
 		return "", err
 	}
 	return resumeText(issue, at), nil
+}
+
+// stepStanding is where the work of the worker of issue's phase stands on w (standingPart), with
+// the daemon's lines of a fix and of the task's CI after the standing's own (fixLines): a step
+// beside a fix that reads its job or runs is told the fix's, and an implementation step of a task
+// that takes a fix the checks that fail at the head. Every task of a step's worker is composed
+// from it — a transition's start (start), a held phase's retry (restart) and every resume
+// (resumeTaskOn) — so each start of a step beside a fix carries the same lines.
+func (e *Engine) stepStanding(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (Standing, error) {
+	at, err := e.standingPart(ctx, tx, issue, w)
+	if err != nil {
+		return Standing{}, err
+	}
+	beside, err := e.fixLines(ctx, tx, issue, w)
+	if err != nil {
+		return Standing{}, err
+	}
+	at.lines += beside
+	return at, nil
 }
 
 // HeldNotice is the notice of issue's hold as its architect answers one, with a retry or an

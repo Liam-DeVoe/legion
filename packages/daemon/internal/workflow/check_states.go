@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -21,7 +20,7 @@ const (
 	// reasonNoResult is a check with no result at the head.
 	reasonNoResult = "no_result"
 	// ciNotCompleted is the case of a check CI proves whose run at the head has not concluded.
-	ciNotCompleted = "not_completed"
+	ciNotCompleted = record.CINotCompleted
 )
 
 // testingJudgement is what the states the daemon holds at the tested head say of each check of the
@@ -67,55 +66,6 @@ func judgeStates(head record.HeadStates) (testingJudgement, bool) {
 		}
 	}
 	return judgement, true
-}
-
-// ciState is what the one rule of a check that a CI job runs (ciVerdict) reads of its state at a
-// head: what fails there and what passes there.
-type ciState int
-
-const (
-	// ciUnknownKind is a check of which the daemon holds no state at the head, so whether a CI
-	// job runs it is not known yet.
-	ciUnknownKind ciState = iota
-	// ciNotCI is a check that no CI job runs: its state carries no ci_case.
-	ciNotCI
-	// ciRunning is a check whose CI job has not ended at the head.
-	ciRunning
-	// ciPassed is a check whose CI job ended at the head and that reads yes there.
-	ciPassed
-	// ciFailed is a check whose CI job ended at the head without a pass.
-	ciFailed
-)
-
-// ciWaitCases are the ci_case words of a job that has not ended at the head, as Dispatch writes
-// them: no run yet, a run not concluded, a run not started, no head to read at, and a read of
-// GitHub that failed.
-var ciWaitCases = []string{"absent", ciNotCompleted, "not_started", "no_head", "github_unreadable"}
-
-// ciVerdict is the one rule of a check that a CI job runs, on state, the state the daemon holds
-// of it at a head, held false for none: what fails at a head and what passes there. No state held
-// is ciUnknownKind, and a state with no ci_case is ciNotCI. A case of ciWaitCases is ciRunning,
-// whatever the state reads, since the job has not ended. Then yes is ciPassed, and every other
-// state is ciFailed: the job ended there without a pass, under any word Dispatch writes for its
-// end, a word the daemon does not know among them, so no such word waits without end.
-func ciVerdict(state record.CheckState, held bool) ciState {
-	return ciVerdictWaiting(state, held, ciWaitCases)
-}
-
-// ciVerdictWaiting is ciVerdict with waits as the cases of a job that has not ended.
-func ciVerdictWaiting(state record.CheckState, held bool, waits []string) ciState {
-	switch {
-	case !held:
-		return ciUnknownKind
-	case state.CICase == "":
-		return ciNotCI
-	case slices.Contains(waits, state.CICase):
-		return ciRunning
-	case state.State == stateYes:
-		return ciPassed
-	default:
-		return ciFailed
-	}
 }
 
 // testedHead is where the testing move reads the states: the commit the tester's completion

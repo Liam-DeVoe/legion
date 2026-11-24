@@ -55,19 +55,21 @@ func planChild(key, tree, parent, status string, stands phase.Phase) Issue {
 	return issue
 }
 
-// The two holds an owner's plan makes each read a word of their own in the held list, in place
-// of unclassified, which C2 calls a gap in the words (HeldUnclassified). A parent held before
-// its retro for the issues beneath it (HoldForChildren) reads children_before_retro and names
-// each of them still in the workflow (OpenBeneath, over the chain the pass walks, so a grandchild
-// under a child already done is named and an issue beside the parent is not). A task its owner
-// stopped (HoldTaskStopped) reads task_stopped where it keeps no slot where it stands, and names
-// nobody.
+// The holds an owner's plan makes, and the two holds of a task's end, each read a word of their
+// own in the held list, in place of unclassified, which C2 calls a gap in the words
+// (HeldUnclassified). A parent held before its retro for the issues beneath it (HoldForChildren)
+// reads children_before_retro and names each of them still in the workflow (OpenBeneath, over
+// the chain the pass walks, so a grandchild under a child already done is named and an issue
+// beside the parent is not). A task its owner stopped (HoldTaskStopped) reads task_stopped where
+// it keeps no slot where it stands, and names nobody. A task held before its retro for its fix
+// (HoldForFix) reads fix_running and one held there for its CI (HoldForCI) reads ci_at_head, each
+// naming what the caller read of its hold (LineFacts.EndHolds), and nothing where it read nothing.
 //
 // The controls read unclassified, as each reads it today: a hold of any other reason — a failed
 // claim, which is the only hold an issue with no plan rows has, and an escalation — and a
-// stopped task that keeps its slot but has no slot row, since such an issue should stand in the
-// active set and its absence from it is the gap unclassified reports. A word above the two new
-// ones that is true of the issue still answers first.
+// stopped task, or a task held for its fix, that keeps its slot but has no slot row, since such
+// an issue should stand in the active set and its absence from it is the gap unclassified
+// reports. A word above the new ones that is true of the issue still answers first.
 func TestEachHoldOfAPlanReadsItsOwnHeldWord(t *testing.T) {
 	parked := linePartIssue("LEGION-73", "LEGION-73", "backlog", phase.Admitted, "LEGION-73")
 	doneChild := planChild("LEGION-42", "LEGION-40", "LEGION-41", DoneStatus, phase.Done)
@@ -96,10 +98,23 @@ func TestEachHoldOfAPlanReadsItsOwnHeldWord(t *testing.T) {
 		planChild("LEGION-71", "LEGION-70", "LEGION-70", "in_progress", phase.Implementing),
 		parked,
 		planHeld("LEGION-72", "LEGION-73", new("LEGION-73"), phase.Merging, HoldTaskStopped),
+		// Tasks held at their end: for a fix and for CI, each with what holds it, and one held for
+		// CI of which the caller read nothing; and the control, held for a fix where its step keeps
+		// its slot.
+		planHeld("LEGION-80", "LEGION-80", nil, phase.Retro, HoldForFix),
+		planHeld("LEGION-81", "LEGION-81", nil, phase.Retro, HoldForCI),
+		planHeld("LEGION-82", "LEGION-82", nil, phase.Retro, HoldForCI),
+		planHeld("LEGION-83", "LEGION-83", nil, phase.Reviewing, HoldForFix),
 	}
 	facts := planHoldFacts([]string{"LEGION-30", "LEGION-40", "LEGION-50", "LEGION-51", "LEGION-52",
-		"LEGION-60", "LEGION-61", "LEGION-62", "LEGION-63", "LEGION-70", "LEGION-73"}, doneChild)
+		"LEGION-60", "LEGION-61", "LEGION-62", "LEGION-63", "LEGION-70", "LEGION-73",
+		"LEGION-80", "LEGION-81", "LEGION-82", "LEGION-83"}, doneChild)
 	facts.Held = map[string][]string{"LEGION-70": {"LEGION-900"}}
+	facts.EndHolds = map[string][]string{
+		"LEGION-80": {"ci / test", "c0de0000000000000000000000000000000000ff"},
+		"LEGION-81": {"ci / build", "ci / test"},
+		"LEGION-83": {"ci / test", "c0de0000000000000000000000000000000000ff"},
+	}
 	held := heldFactsOf(issues, facts)
 	byKey := held.ByKey
 
@@ -120,6 +135,12 @@ func TestEachHoldOfAPlanReadsItsOwnHeldWord(t *testing.T) {
 		{"control: a failed claim from implementing, the hold of an issue with no plan rows", "LEGION-63", HeldUnclassified, nil},
 		{"a Dispatch blocker answers before the hold for children", "LEGION-70", HeldDispatchBlocker, []string{"LEGION-900"}},
 		{"a parked tree answers before the stopped task", "LEGION-72", HeldTreeParked, []string{"LEGION-73"}},
+		{"a task held at its end for its fix names the fix's check and head", "LEGION-80", HeldFixRunning,
+			[]string{"ci / test", "c0de0000000000000000000000000000000000ff"}},
+		{"a task held at its end for its CI names the checks that have not passed", "LEGION-81", HeldCIAtHead,
+			[]string{"ci / build", "ci / test"}},
+		{"a task held at its end for its CI of which nothing was read names nothing", "LEGION-82", HeldCIAtHead, nil},
+		{"control: a task held for its fix where its step keeps its slot and holds none", "LEGION-83", HeldUnclassified, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			word, heldBy := HeldReasonOf(byKey[tc.issue], held)

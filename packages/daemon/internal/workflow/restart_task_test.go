@@ -159,7 +159,7 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 		// The write carries why the hold stands, written for the person who set the todo and read
 		// beside the board's move: the issues the retro waits for. The architect's rules for
 		// ending a child stay in the architect's retro-held notice, which this text is not.
-		why := root.Key + " waits before its retro for these issues beneath it: " + heldBeneath + ". Legion starts the retro when the last one leaves."
+		why := intake.HeldParentWaitsForChildren(root.Key, []string{heldBeneath})
 		if notice := retroHeldNotice(root.Key, []string{heldBeneath}).Reason; !strings.Contains(notice, record.EndChildRule) || !strings.Contains(notice, record.StatusNotTakenYet) {
 			t.Fatalf("the architect's retro-held notice = %q, want it carrying the rules for ending a child and the sentence on a status not taken yet", notice)
 		}
