@@ -25,7 +25,7 @@ Search first (`skill://dispatch-first`). An open issue that tracks the problem g
 A publish to a role answers with its live `holder`. When no live session holds the controller role, the answer says Envoy kept the message for one hour (`kept_until`); a keep is not a delivery. An `unresponsive` holder is not a stopped one: release nothing, take nothing from it, and publish no second copy. Treat a kept answer as a controller not taking it, and make the finding an ask on the first of these that holds:
 
 1. **The report issue is open:** ask there, the question opening `Clear defect from <your role token>` and `--ref` naming your evidence comment, then reply `Asked dispatch://<REPORT KEY>/ask/<id>` under that comment.
-2. **The report issue is missing or closed:** post the evidence on your own issue and ask there, then publish the ask's reference to the architect that owns your issue. It holds your issue's acceptance until a controller takes the ask, since an open ask on a closed issue drops out of the controller's listing.
+2. **The report issue is missing or closed:** post the evidence on your own issue and ask there, then publish the ask's reference to the architect that owns your issue. Where your task has an `acceptance:owner` step, it holds your issue's acceptance until a controller takes the ask. That hold keeps your issue open: an open ask on a closed issue drops out of the controller's listing.
 3. **Your own issue is closed too** (`409 ISSUE_CLOSED`): put the report issue back in reach, then post and ask there, and say in your summary that you did. This is the one lifecycle status you write, and never through the `legion` tool's `set_status`.
    - It exists and is closed: `dispatch issue-update --issue <REPORT KEY> --status icebox`, the status alone (a closed issue refuses a reopening status beside any other field).
    - None exists: `dispatch issue --project <PROJECT> --title 'Legion daily report' --spec-file -`, with the Summary `skill://legion-controller/references/daily-report.md` gives, then `dispatch issue-update --issue <NEW KEY> --status icebox`. It carries no `legion` label.
@@ -42,7 +42,7 @@ The question stands alone in at most 2,000 characters, the `Ref:` line `--ref` a
 dispatch comment --issue '<ASK KEY>' --body-file - <<'EOF'
 <the evidence: commands, output with its time, file:line, links>
 EOF
-# Keep `File it for Legion` only when the repository where the fix belongs is one the project maps (GET $DISPATCH_URL/api/v1/settings/repo-projects).
+# Keep `File it for Legion` only when your Legion addressing line lists the repository where the fix belongs.
 dispatch ask --issue '<ASK KEY>' --ref 'dispatch://<ASK KEY>/comment/<id>' --question-file - \
   --option 'File an issue: <what it would track, and who would own it>' \
   --option 'File it for Legion: Legion works it once it is filed' \

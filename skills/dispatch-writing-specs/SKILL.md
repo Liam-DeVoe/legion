@@ -28,7 +28,7 @@ Part | Content
 `Design` | How it meets them; a value and its reason for each limit, size and time
 `Decisions` | The choices the spec rests on (Decisions below)
 
-`serves` and `needs` name a block of this issue or an ancestor. A view follows `skill://legion-architect/references/design-gate.md#a-root-under-an-approved-ancestor`. Another agent can build and check the work from these alone. A small change gets a few sentences per part, no matrix; split a large design into children.
+`serves` and `needs` name a block of this issue or an ancestor. A view follows `skill://legion-architect/references/view.md`. Another agent can build and check the work from these alone. A small change gets a few sentences per part, no matrix; split a large design into children.
 
 ## Rules for the text
 

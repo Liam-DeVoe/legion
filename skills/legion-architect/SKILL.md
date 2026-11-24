@@ -1,138 +1,116 @@
 ---
 name: legion-architect
-description: "Use when you are a Legion root or child architect, before any lifecycle action: decomposing or adopting children, the design gate, releasing children, a delivered wake, a worker's escalation, or accepting a reviewed head."
+description: "Use when you are a Legion root or child architect, before any lifecycle action: decomposing or adopting children, the design gate, an issue's plan, releasing children, a delivered wake, a worker's escalation, or accepting an issue's head."
 ---
 
 # Legion architect
 
-You own one issue and every issue under it until the merge that closes it. The daemon starts every
-worker and moves every phase; you write no code. Your role prompt holds the lifecycle rules, this
-skill the procedures. Where it disagrees with the code or a `--help`, follow those and say so.
+You own one issue and every issue under it until the merge that closes it.
+The daemon starts every worker and moves every phase; you write no code.
+Your role prompt holds the lifecycle rules, this skill the procedures.
 
 ## Every turn
 
-- Act on delivered wakes by the [wake routing](#wake-routing); build no wait loop.
-- Check each claim against the code as fetched now (the default branch your addressing line names,
-  or the head under review), and tell every reader you dispatch to do the same.
-- Before you end a turn that waits on a person, make sure their question is open: a decision
-  block, a `dispatch ask` or `dispatch request-approval`. A root's questions go on the root: one on
-  a child starts no wait, and the tree stands still. A child's own architect opens none; it sends
-  each question to the architect above it with `envoy_publish`.
-- Message a role with `envoy_publish` to `notifications.role.<token>`, with a token from your
-  addressing line or from `roleToken` in `@legion/contracts`: a typed token may reach nobody.
+- Act on each delivered wake by its row in `skill://legion-architect/references/wake-routing.md`; build no wait loop.
+
+- Check each claim against the code as fetched now (the default branch your addressing line names, or the head under review), and tell every reader you dispatch to do the same.
+
+- Before you end a turn that waits on a person, make sure their question is open: a decision block, a `dispatch ask` or `dispatch request-approval`.
+  A root's questions go on the root: one on a child starts no wait, and the tree stands still.
+  A child's own architect opens none; it sends each question to the architect above it with `envoy_publish`.
+
+- Message a role with `envoy_publish` to `notifications.role.<token>`, with a token from your addressing line or from `roleToken` in `@legion/contracts`: a typed token may reach nobody.
+
 - The deployment instructions override this skill where they conflict.
 
 ## 1. Decompose or adopt
 
 1. Read `STRATEGY.md` where the repository has one, and its design principles (`AGENTS.md` here).
-   Find the standard solution (a web search, and how two or three well-regarded projects solve it)
-   and cite it in the spec's `Design`. Ask a person only what neither settles, with a recommendation.
-2. Before you write a design, state the problem and the design principles, with no design of
-   yours, to `task(agent="design-outsider")`, and read its answer with `wait`. Record it on the
-   issue or in `plan.md`, with your reason wherever you do not follow it. Run it again when a
-   push-back or a review changes what the design is for.
-3. A root, a view on an approved ancestor included: write and edit the spec as
-   `skill://legion-architect/references/design-gate.md` says, since any new version closes the
-   gate. A child: as `skill://legion-architect/references/decomposition.md`, "Creating children",
-   says.
-4. Decompose, adopt, split across repositories or record a wait on outside work as
-   `skill://legion-architect/references/decomposition.md` says, red-team check first. A review fix
-   of the issue's own code gets no child.
-5. File every child before `dispatch request-approval` (or `register_gate` where your line gates no
-   step): the gate's opening starts the root's own first phase, and an open child holds every phase
-   start of its parent.
+   Find the standard solution (a web search, and how two or three well-regarded projects solve it) and cite it in the spec's `Design`.
+   Ask a person only what neither settles, with a recommendation.
 
-- Mark each requirement as a `requirement` block and write `verification.md` beside the spec: one
-  `check` block per thing to prove, with `serves`, `surface` (`browser`, `cli` or `api`), `run`,
-  `when` (`before_merge`, `after_merge` or `default_branch`) and `negative_control`. A check
-  carrying `ci_check` is CI's and takes no `run`
-  (`skill://legion-architect/references/design-gate.md#a-check-ci-proves`).
-- Every child names the running system its criteria are proven on (the command, service or page
-  the tester drives) and the repository skill that drives it; building a missing path is this
-  tree's work.
-- **Show the surface before you ask.** Where this tree builds or changes a page, screen or
-  dashboard a person opens, that person sees it and answers before you request approval
-  (`skill://legion-architect/references/design-gate.md`, "Show the surface before you ask"). A
-  child's own architect sends such a surface up to the root's architect.
+2. Before you write a design, state the problem and the design principles, with no design of yours, to `task(agent="design-outsider")`, and read its answer with `wait`.
+   Record it on the issue or in `plan.md`, with your reason wherever you do not follow it.
+   Run it again when a push-back or a review changes what the design is for.
+
+3. A root, a view on an approved ancestor included: write and edit the spec as `skill://legion-architect/references/design-gate.md` says, since a new version closes the gate, except two kinds it names.
+   A child: as `skill://legion-architect/references/decomposition.md`, "Creating children", says.
+
+4. Decompose, adopt, split across repositories or record a wait on outside work as `skill://legion-architect/references/decomposition.md` says, red-team check first.
+   A review fix of the issue's own code gets no child.
+
+5. Before you write or give an issue's plan, read `skill://legion-architect/references/plan.md`:
+   a root's plan comes before `register_gate`, a child's before `release_children`, and an issue with none runs the default steps.
+   Before you stop a task or change a plan Legion runs, read `skill://legion-architect/references/plan-changes.md`.
+
+6. File every child before `dispatch request-approval` (or `register_gate` where your line gates no step):
+   the gate's opening starts the root's own first phase, and an open child holds every phase start of its parent.
+
+- Mark each requirement as a `requirement` block and write `verification.md` beside the spec:
+  one `check` block per thing to prove, with `serves`, `surface` (`browser`, `cli` or `api`), `run`, `when` (`before_merge`, `after_merge` or `default_branch`) and `negative_control`.
+  A check carrying `ci_check` is CI's and takes no `run` (`skill://legion-architect/references/design-gate.md#a-check-ci-proves`).
+
+- Where this tree builds or changes a page, screen or dashboard a person opens, that person sees it and answers before you request approval (`skill://legion-architect/references/surface.md`).
+  A child's own architect sends such a surface up to the root's architect.
 
 ## 2. Children in flight
 
-- A root releases no child until every gated step is open: `design-approved`, and under more than
-  one step `gatedSteps` in `read_record` showing each `approved` or `open_on_basis`.
-- Set a child's dependencies in one call: `dispatch issue-update --issue <child> --blocked-by <a>
-  --blocked-by <b>`. It replaces the whole list, so read the existing links first (`dispatch read`).
-- Release each child once it is filed:
-  `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`. Legion holds a child
-  whose blockers are not `done`. Never hold a release back for a close: a child released after the
-  root's merge runs as an orphan root. Never block a child on its own parent, which merges last.
+- A root releases no child until every gated step is open:
+  `design-approved`, and under more than one step `gatedSteps` in `read_record` showing each `approved` or `open_on_basis`.
+
+- Set a child's dependencies as `skill://legion-architect/references/decomposition.md`, "Recording a wait on other work", says.
+
+- Release each child once it is filed: `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`.
+  Legion holds a child whose blockers are not `done`.
+  Never hold a release back for a close: a child released after the root's merge runs as an orphan root.
+  Never block a child on its own parent, which merges last.
+
 - On each `child-closed`, read the child's handoff, edit the specs of open children it changes.
 
 ## 3. Children complete
 
-While a parent is in `awaiting_children`, act only on its children (release them, write `done`,
-`icebox` or `backlog` on them in Dispatch under the rule for each move, or move an unreleased one
-out of the tree), and start nothing for its return. Move an unreleased child that should not run
-now to no parent, never under another
-issue of the tree, since an open child holds every phase start of its parent. When the person says
-to run that child, move it back under its parent and release it; until they answer, sign off
-neither that parent nor any issue above it.
+While a parent is in `awaiting_children`, act as "While the children run" in `skill://legion-architect/references/parent.md` says.
 
 ## 4. Integration verification
 
-- Prove every criterion of your issue in its own pull request, by its own tester evidence, never in
-  a child; never downgrade one. A parent signs off on its head once each check a role runs has a
-  pass whose observed line names a base commit carrying the merge of every child the check needs;
-  send the tester no message, wait in `accepting` for no child, move nothing back for a child's
-  merge, a park, the last close or a conflict during the wait, and ask for no forward merge
-  (`skill://legion-architect/references/acceptance.md`, "A parent's head").
-- On an issue with children, the fix of a code defect, a red check's included, goes to a new child
-  that you file and release, never to the issue's implementer. After a tester fail or a review's
-  changes request there, file that child and tell the implementer to change no code until the
-  daemon stops its phase.
-- While the work is built, a role runs the application from the issue's branch and uses it as its
-  user would: a passing check does not show that a person can do their job with it.
-- Where the work is a page or a tool a person uses, offer that person a running build before the
-  review; the deployment instructions say how a pod runs one.
+- Prove every criterion of your issue in its own pull request, from the evidence its task's steps give (`skill://legion-architect/references/acceptance.md`, "Accepting"), never in a child; never downgrade one.
+  Accept a parent, and send a code defect of an issue with children to a new child, as `skill://legion-architect/references/parent.md` says.
+
+- While the work is built, a role runs the application from the issue's branch and uses it as its user would:
+  a passing check does not show that a person can do their job with it.
+
+- For a page or a tool a person uses, offer a running build before the reviewer step, or the last if none. The deployment instructions say how a pod runs one.
 
 ## 5. Retro
 
-Your `sign_off` starts retro; never message the implementer to start it. A retro that reports a
-defect holds its completion until you say whether it moves the issue back, which only retro can do
-while it holds the phase. A retro that cannot write the body:
-`skill://legion-architect/references/acceptance.md`, "Retro's result".
+Where your acceptance is the task's last step, your `sign_off` starts retro; otherwise the pass of the task's last step starts it, or holds a parent before it.
+Never message the implementer to start retro.
+A retro that reports a defect holds its completion until you say whether it moves the issue back, which only retro can do while it holds the phase.
+A retro that cannot write the body: `skill://legion-architect/references/acceptance.md`, "Retro's result".
 
 ## 6. Acceptance and the merge
 
-In `accepting` no worker runs; the issue's own architect accepts it. Read, against the goal, every
-check and every requirement, in the five sources that
-`skill://legion-architect/references/acceptance.md`, "Accepting", lists.
+In `accepting`, which only a task naming `acceptance:owner` enters, no worker holds the phase:
+read, against the goal, every check and requirement in `skill://legion-architect/references/acceptance.md`, "Accepting".
 
-Run the `goal-red-team` read your role prompt names. For a view, read the requirements as "A root
-under an approved ancestor" in `skill://legion-architect/references/design-gate.md` says. Accept
-only when a pass stands for every `before_merge` check at the approved head, every requirement has
-a check, and none is unmet or read narrower than written: post a `dispatch comment` naming each
-check and its result, then
-`legion({ op: "sign_off", issue: "<KEY>" })`. Otherwise `request_backward_move` with `to`
-(`implementing` or `testing`) and a `reason` naming the check's block id. Wait for a `ci_check` run
-still going; a name no run answers is yours to correct in the check. Finding asks, refusals and
-what follows: `skill://legion-architect/references/acceptance.md`.
+Run `task(agent="goal-red-team")` as your role prompt says, then `wait` for its report.
+For a view, read the requirements as `skill://legion-architect/references/view.md` says.
+Accept only when a pass stands for every `before_merge` check at the head the step before your acceptance passed, every requirement has a check (with no `before_merge` check, your comment says how each is proven), and none is unmet or read narrower than written:
+post a `dispatch comment` naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`.
+Wait for a `ci_check` run still going; a name no run answers is yours to correct in the check.
+Finding asks, refusals and what follows: `skill://legion-architect/references/acceptance.md`.
 
 ## 7. Close
 
-The merge closes the issue once every issue beneath it has left the workflow; nothing after it is
-yours (`skill://legion-architect/references/acceptance.md`, "The close").
-
-## Wake routing
-
-Handle each delivered wake by its row in `skill://legion-architect/references/wake-routing.md`.
+The merge closes the issue once every issue beneath it has left the workflow;
+nothing after it is yours (`skill://legion-architect/references/acceptance.md`, "The close").
 
 ## Escalation judgment
 
-- Send the controller (its topic is on your addressing line) a child that serves no criterion of
-  the root, a need for admission slots, and two trees changing the same code.
-- A clear defect the controller gives you is this tree's work: an open pull request, or a child
-  after the red-team check; reply under its evidence comment with the issue that carries it. It
-  changes the root spec only where it changes the Summary, a requirement, a check or the scope
-  (`skill://legion-architect/references/design-gate.md`, "After approval").
-- A tool a worker cannot get is a pull request to the worker image
-  (`skill://legion-worker/references/tools.md`).
+- Send the controller (its topic is on your addressing line) a child that serves no criterion of the root, a need for admission slots, and two trees changing the same code.
+
+- Carry a clear defect the controller gives you in this tree:
+  in an open pull request, or in a child after the red-team check; reply under its evidence comment with the issue that carries it.
+  It changes the root spec only where it changes the Summary, a requirement, a check or the scope (`skill://legion-architect/references/design-gate.md`, "After approval").
+
+- A tool a worker cannot get is a pull request to the worker image (`skill://legion-worker/references/tools.md`).

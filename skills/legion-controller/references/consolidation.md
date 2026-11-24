@@ -17,7 +17,7 @@ dispatch related --project <PROJECT> --title '<its title>' --text-file - \
   --exclude-issue <KEY> --exclude-issue <each ancestor> --exclude-issue <each descendant>
 ```
 
-Skip a pair the issues already settle: one closed as a duplicate of the other, one reopened after such a close (both in `dispatch read --issue <KEY> --all-events`), or one a child of the other (`Links:`, `Referenced by:`). An issue and its approved root are no duplicate pair: check it, link it (`skill://legion-controller/references/finding-asks.md#an-issues-approved-root`), and list it with its root in the record. Check each finding against its records, then fold each pair that is the same work by the duplicate rule of `skill://dispatch-first`. An issue with the `legion` label, or another holder's claim, gets a comment naming the kept issue instead of a close; a pair inside a Legion tree goes to that tree's architect with `envoy_publish`.
+Skip a pair the issues already settle: one closed as a duplicate of the other, one reopened after such a close (both in `dispatch read --issue <KEY> --all-events`), or one a child of the other (`Links:`, `Referenced by:`). An issue and its approved root are no duplicate pair: check it, link it (`skill://legion-controller/references/filing.md#an-issues-approved-root`), and list it with its root in the record. Check each finding against its records, then fold each pair that is the same work by the duplicate rule of `skill://dispatch-first`. An issue with the `legion` label, or another holder's claim, gets a comment naming the kept issue instead of a close; a pair inside a Legion tree goes to that tree's architect with `envoy_publish`.
 
 ## 2. Recurring causes
 
@@ -27,4 +27,4 @@ Root each cause once, as `skill://legion-controller/references/finding-asks.md#h
 
 ## The record
 
-Add at the top of the record a section `## Consolidation pass <block start>` with three counts and their keys: issues read, pairs folded, causes rooted; then every pair and group you skipped, with what settles it, and each issue you linked, with its root. Drop sections older than eight days, and upload the whole record: `dispatch artifact --issue <REPORT KEY> --name consolidation.md --path <the record file>`. Never post the pass as a message: that reaches a person's Inbox.
+Add at the top of the record a section `## Consolidation pass <block start>` with three counts and their keys: issues read, pairs folded, causes rooted; then every pair and group you skipped, with what settles it, and each issue you linked, with its root. Drop sections older than eight days, and upload the whole record: `dispatch artifact --issue <REPORT KEY> --name consolidation.md --path <the record file> --force`. Never post the pass as a message: that reaches a person's Inbox.

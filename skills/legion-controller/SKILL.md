@@ -17,7 +17,6 @@ Your system prompt holds the rules on registration, one wake per turn, reading s
 - An agent's directive that cites no person's request is no reason to park an issue.
 - Never edit a repository, push, merge, or call `handoff_complete`.
 - Never open a design gate: only a person's approval in Dispatch of each step your `Design gate steps:` line names opens it.
-- Read a `gatedSteps` entry `open_on_basis` as open, as `approved` is, so a tree whose entries are all one of the two runs again; a root at `pending_on_basis` needs nothing from you.
 - When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide and name its first line in your summary (the turn's last message).
 - Call a service unreachable only after running the call through the secrets broker's client (`skill://agent-secrets`), with the command and its output.
 - Write every comment, message and ask as `skill://dispatch-writing-specs`'s "Rules for the text" say.
@@ -69,7 +68,7 @@ The daemon works only issues labelled `legion` (any case), and a labelled root i
 
 ## Free slots
 
-A free slot or a full cap is no reason to take, label, admit or park an issue: a labelled root in `todo` takes the next slot by itself. A parent's wait on its children, in its first phase or in `awaiting_children`, is no reason to move it to `backlog` or `icebox`.
+A free slot or a full cap is no reason to take, label, admit or park an issue: a labelled root in `todo` takes the next slot by itself.
 
 A slot is one issue the daemon started, a root or a child. Free slots are `admission.cap`, less every issue in `admission.active`, less each issue of `admission.waiting` in neither `admission.active` nor `admission.blocked`. A returned issue goes before an unstarted one whatever their ranks, by design ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)). The lists and `admission.held` words: `skill://legion-controller/references/admission.md`.
 
@@ -79,12 +78,12 @@ Every move to `todo` you make is one of these:
 - an issue a person asks you to start, a parked one included;
 - a root in the workflow whose architect failed, once you found no cause or checked that its cause is gone; one that is held, once you checked that its cause is gone; one whose architect retired, once a person's decision gives its work a next step and you found no cause or checked that its cause is gone;
 - a tree you parked with the mark `Parked by Legion while it waits on:`, once its cause is gone or its event happened (comment the mark and what you checked), or a person's later decision gives it a next step;
-- a root you moved to `backlog` while it waited on its children or a slot for one (your comment within 10 minutes of that move says so), once an open child stands under it, at each walk, with the comment of step 6 of `skill://legion-controller/references/parked-decisions.md#the-walk`;
+- a root you moved to `backlog` while it waited on its children, as step 6 of `skill://legion-controller/references/parked-decisions.md#the-walk` says;
 - stopped-session work a person's directive in the weekly plan moves to Legion.
 
 ## Findings, and the issues you file
 
-File an issue only when a person asks you to, for a clear defect no running tree owns, and the report issue. Each issue you file (a clear defect no tree owns, or on a finding ask's answer) goes under its approved root with `--parent` and no label where it has one (`skill://legion-controller/references/finding-asks.md`). Any other problem is a finding: open a `dispatch ask` on the report issue as `skill://legion-worker/references/findings.md` says, and file nothing until a person answers. Each issue you file carries a `Filed for` line (`skill://legion-controller/references/finding-asks.md#the-filed-for-line`).
+File an issue only when a person asks you to, for a clear defect no running tree owns, and the report issue. Each issue you file (a clear defect no tree owns, or on a finding ask's answer) goes under its approved root with `--parent` and no label where it has one, and carries a `Filed for` line (`skill://legion-controller/references/filing.md`). Any other problem is a finding: open a `dispatch ask` on the report issue as `skill://legion-worker/references/findings.md` says, and file nothing until a person answers.
 
 ## Daily report
 

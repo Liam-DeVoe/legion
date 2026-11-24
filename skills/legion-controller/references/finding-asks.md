@@ -1,44 +1,18 @@
 # Finding asks
 
-Read this when a clear defect or a finding ask's reference reaches you, when an ask you follow is answered, when you file or link an issue, when a session tells you of an issue under a root on the backlog, and at every start. What a finding ask is: `skill://legion-worker/references/findings.md`.
-
-## The `Filed for` line
-
-Every issue you file carries one line in its spec, which triage reads to tell your filing from another's label:
-
-- for a person: `Filed for <person> at their request: <request>`. The request is `dispatch://<REPORT KEY>/ask/<id>` for who answered it; `Slack <channel_id> message <ts>` for the mention's `<@user_id>` (`…, adopting message <earlier ts>` when the mention asks for an earlier message's request); or `direct message <id>`, the id its frame's `reply_with` names after `--in-reply-to` (for a message that came as your own user turn, `direct message to session <your session id>`).
-- for a clear defect no running tree owns: `Filed for Legion from <role> on <issue>: <evidence reference>`.
+Read this when a clear defect or a finding ask's reference reaches you, when an ask you follow is answered, when you file or link an issue, and at every start. What a finding ask is: `skill://legion-worker/references/findings.md`. The `Filed for` line and an issue's approved root: `skill://legion-controller/references/filing.md`.
 
 ## Hand over a clear defect
 
 A role sends a clear defect with its role token, the defect, its issue, where the fix belongs, the fix, and its evidence comment on the report issue, whose first line is `Clear defect from <role>`. When the message carries the evidence itself, create or reopen the report issue (`skill://legion-controller/references/daily-report.md`) and post it there with that first line. One you find yourself gets the same comment, with `controller` as the role. A clear-defect ask needs no answer: take it as below, and resolve it (`dispatch resolve-ask --kind resolved`) only once it carries your reply.
 
-1. Check it is clear: the fix needs no choice a person must make, in a repository the project maps (`GET $DISPATCH_URL/api/v1/settings/repo-projects`). Otherwise open a decision ask as `findings.md` says, and reply `Moved dispatch://<REPORT KEY>/ask/<new id>`.
-2. Search first (`skill://dispatch-first`). When an open issue tracks it, comment the evidence there and reply `Filed dispatch://<that KEY>`. When that issue belongs to an approved root and has no `child_of` link to it, link it ([An issue's approved root](#an-issues-approved-root)).
+1. Check it is clear: the fix needs no choice a person must make, in a repository of an owner your addressing line names. Otherwise open a decision ask as `findings.md` says, and reply `Moved dispatch://<REPORT KEY>/ask/<new id>`.
+2. Search first (`skill://dispatch-first`). When an open issue tracks it, comment the evidence there and reply `Filed dispatch://<that KEY>`. When that issue belongs to an approved root and has no `child_of` link to it, link it ([An issue's approved root](skill://legion-controller/references/filing.md#an-issues-approved-root)).
 3. When a root in `admission.trees` matches its repository and component, or its approved class or unfinished work holds the fix, `envoy_publish` the defect, its evidence reference and the fix to `notifications.role.<issues.<KEY>.architect.locator.claim>`. Reply `Handed dispatch://<that KEY>` only when a live holder took the publish; when Envoy kept it, or the root has no locator, reply nothing and publish again at your next wake. File nothing while a tree owns the code.
-4. When no running tree owns it, file it where the fix belongs, under its approved root with `--parent <ROOT>` and no label where [An issue's approved root](#an-issues-approved-root) puts it there, else:
+4. When no running tree owns it, file it where the fix belongs, under its approved root with `--parent <ROOT>` and no label where [An issue's approved root](skill://legion-controller/references/filing.md#an-issues-approved-root) puts it there, else:
    `dispatch issue --project <KEY> --repo <owner/name> --title '<the defect>' --label legion --spec-file -`
    The spec states the defect, where the fix belongs and the fix, and ends with the `Filed for Legion from` line.
 5. Reply under the evidence comment (`--reply-to '<comment id>'`) or the ask (`--reply-to-ask '<ask id>'`), its first line exactly `Filed dispatch://<NEW KEY>` or `Handed dispatch://<KEY>`.
-
-## An issue's approved root
-
-Before you file an issue or give one to a tree, find its approved root: a class root whose class holds it, or the root of a running tree whose unfinished work holds it. A mention of a class in prose is no link: only a Dispatch `child_of` link (`--parent`) is one, and a root counts only once a person approved its spec.
-
-- The root's tree runs: give the issue to the tree (step 3 above).
-- It is a Legion root whose tree does not run: file the issue with `--parent <ROOT>` and no `legion` label.
-- A fix of what a `done` issue delivered is new work: file it with no parent, and it asks for its own approval.
-- An issue that belongs under any other unfinished issue is filed as a root of its own with no parent, and it asks for its own approval.
-- Link an issue already filed that belongs to an approved root's class or unfinished work: `dispatch issue-update --issue <KEY> --parent <ROOT>`. After linking a root of its own, `envoy_publish` to its architect's role topic the ancestor's key and that "A root under an approved ancestor" in `skill://legion-architect/references/design-gate.md` now applies to it.
-- Where you report a link, and in your message to the linked issue's architect, name all three parts of the link's cost (an open child holds the parent's first phase, holds each later phase start, and stops a phase under way at the next admission pass), and say that a root whose branch carries code puts that code in a child.
-
-A class root that must take new members is a Legion root with no code of its own, never an issue that holds only a design. File it with `--label legion` and a spec line that says it has no code of its own, also when a request asks for a design-only issue (say why); if the request says to start nothing yet, move it to `backlog` at once.
-
-### A member under a root on the backlog
-
-A member filed under a root on the backlog moves nothing: the session that files it tells you the member and the root, even when the person who moved the root works with that session. A root's architect also tells you when its root rests on an ancestor on the backlog. Decide whether that root runs under "Free slots" (`skill://legion-controller/SKILL.md#free-slots`): with no request naming it, follow the deployment's instructions, leave it on the backlog where they let no session ask, and otherwise ask a person. That ask is one `dispatch ask` per root on the report issue, with the options `Run it now` and `Leave it on the backlog` and a recommendation, followed; a later member goes under the open ask.
-
-On `Run it now`, set the root to `todo` and cite the answer in a comment on it; on `Leave it on the backlog`, move nothing; then reply `Started dispatch://<ROOT>` or `Left on the backlog dispatch://<ROOT>`. Until the root runs, its member waits; a fix that must run now is filed with no parent, asks for its own approval, and its spec names the class root and why it is not linked.
 
 ## Follow it
 
@@ -46,7 +20,7 @@ A finding ask another role opened reaches you as `dispatch://<KEY>/ask/<id>`. Fo
 
 ## Act on its answer
 
-A park ask's answer goes to `skill://legion-controller/references/park-asks.md` step 4, a deferral ask's to `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` step 4, and a run ask's to [A member under a root on the backlog](#a-member-under-a-root-on-the-backlog). For any other, `dispatch read --ref` it and act on the newest answer; when its typed text asks for another of these four than the option selected, do what the text asks, and when it asks for none of them, reply with your question and file nothing:
+A park ask's answer goes to `skill://legion-controller/references/park-asks.md` step 4, a deferral ask's to `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` step 4, and a run ask's to [A member under a root on the backlog](skill://legion-controller/references/filing.md#a-member-under-a-root-on-the-backlog). For any other, `dispatch read --ref` it and act on the newest answer; when its typed text asks for another of these four than the option selected, do what the text asks, and when it asks for none of them, reply with your question and file nothing:
 
 - `Hand it to the owning tree`: [Hand over a clear defect](#hand-over-a-clear-defect) from step 3.
 - `Do not file`: file nothing.
@@ -55,7 +29,7 @@ A park ask's answer goes to `skill://legion-controller/references/park-asks.md` 
 
 An ask that re-files an escalated child also takes the steps of `skill://legion-controller/references/escalation.md#a-child-that-looks-independent`.
 
-Then reply under the ask, first line exactly `Filed dispatch://<NEW KEY>`, `Handed dispatch://<KEY>` or `Not filed: <reason>`: `dispatch comment --issue <the ask's issue> --reply-to-ask '<ask id>' --body-file -`. Dispatch cannot resolve an answered ask, so that reply is its record. Close an open finding ask that turned moot with `dispatch resolve-ask --kind resolved`, naming why.
+Then reply under the ask, first line exactly `Filed dispatch://<NEW KEY>`, `Handed dispatch://<KEY>` or `Not filed: <reason>`: `dispatch comment --issue <the ask's issue> --reply-to-ask '<ask id>' --body-file -`. Dispatch cannot resolve an answered ask, so that reply is its record. Close an open finding ask that turned moot with `dispatch resolve-ask --kind retracted`, naming why.
 
 ## Catch up at every start
 
