@@ -176,9 +176,20 @@ func azureInputType(inputType InputType) (string, error) {
 // Azure answers with, not by its position in the response. It sends whatever bytes it is given:
 // embedqueue keeps each background call within Limits().MaxBatchBytes, which is what lets the call
 // finish inside azureRequestTimeout, and a search query is one short text. A 429 or 503 comes back
-// marked for IsThrottled, a 408 or any other 5xx for IsOutage, and every failure names the HTTP
-// status and Azure's error code, never the texts or the credential.
+// marked for IsThrottled, and a 408 or any other 5xx for IsOutage, as does a call that ran out of
+// time while ctx was live (timedOut: azureRequestTimeout, or the HTTP client's own timeout, its
+// sign-in included). A failed status names the HTTP status and Azure's error code, and no failure
+// names the texts or the credential.
 func (c *AzureClient) Embed(ctx context.Context, texts []string, inputType InputType) ([][]float32, error) {
+	vectors, err := c.embed(ctx, texts, inputType)
+	if timedOut(ctx, err) {
+		return nil, &outageError{err: err}
+	}
+	return vectors, err
+}
+
+// embed is Embed but for marking a call that ran out of time.
+func (c *AzureClient) embed(ctx context.Context, texts []string, inputType InputType) ([][]float32, error) {
 	bounded, err := boundBatch(texts, azureMaxBatchTexts)
 	if err != nil || bounded == nil {
 		return nil, err

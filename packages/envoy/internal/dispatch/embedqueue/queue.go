@@ -354,9 +354,10 @@ type pendingRow struct {
 // own pacing wait ending early - is never evidence about any row either, whatever error text
 // came back: handleGroupFailure checks for it before confirmSoloFailure or bisectSplit ever run,
 // and retries the whole group instead. An outage that is no throttle (embed.IsOutage: Azure's
-// 408, or a 5xx but its 503) is a non-throttled failure like any other here: it may be one text
-// the service fails on every time, which the canary confirms, or the service failing, whose
-// canary fails too, so nothing is counted against any row while it lasts.
+// 408, or a 5xx but its 503, Bedrock's outage codes, or a call that ran out of time while this
+// call's ctx was live) is a non-throttled failure like any other here: it may be one text the
+// service fails on every time, which the canary confirms, or the service failing, whose canary
+// fails too, so nothing is counted against any row while it lasts.
 func ProcessBatch(ctx context.Context, deps Deps) (succeeded, failed int, blocked, throttled bool, err error) {
 	if active, _, err := deps.embedderActive(ctx); err != nil || !active {
 		return 0, 0, false, false, err

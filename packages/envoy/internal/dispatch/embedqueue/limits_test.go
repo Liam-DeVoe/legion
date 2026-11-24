@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -24,14 +25,16 @@ import (
 // azureFake stands in for an Azure AI Foundry deployment's embeddings route: it answers 429 while
 // throttling is set, 404 DeploymentNotFound while missing is set (the deployment name is not one
 // the resource has), the status outage names while it is set (to every request, the canary's
-// included: Azure itself failing), 500 to any request holding a text that contains poison while
-// it is set (one text Azure fails on every time), and vectors otherwise, recording each request's
-// inputs.
+// included: Azure itself failing), nothing at all while hang is set (every request waits until its
+// client gives up: Azure not answering in time), 500 to any request holding a text that contains
+// poison while it is set (one text Azure fails on every time), and vectors otherwise, recording
+// each request's inputs.
 type azureFake struct {
 	mu         sync.Mutex
 	throttling bool
 	missing    bool
 	outage     int
+	hang       bool
 	poison     string
 	requests   [][]string
 }
@@ -46,8 +49,15 @@ func (f *azureFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	f.requests = append(f.requests, request.Input)
-	throttling, missing, outage, poison := f.throttling, f.missing, f.outage, f.poison
+	throttling, missing, outage, hang, poison := f.throttling, f.missing, f.outage, f.hang, f.poison
 	f.mu.Unlock()
+	if hang {
+		// Read to the body's end, so net/http watches the connection and ends r's context once
+		// the client gives up on the request.
+		_, _ = io.Copy(io.Discard, r.Body)
+		<-r.Context().Done()
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if throttling {
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -346,23 +356,37 @@ func TestATextAzureFailsOnEveryTimeHoldsUpNoOtherText(t *testing.T) {
 	}
 }
 
-// Azure itself failing - a 408, a 500, a 502 or a 504 to every request, the canary's included -
-// through the real AzureClient, is counted against no row however long it lasts: each row's
-// failure is met by a canary that fails too, so nothing is confirmed and nothing dead-letters.
-// Each such canary backs the shared pace off (RateLimitedEmbedder.BackOff, wrapped here for one
-// last cycle), so a cycle that bisects two rows and sends two canaries leaves it four times
-// slower.
+// Azure itself failing - a 408, a 500, a 502 or a 504 to every request, the canary's included, or
+// no answer to any of them in the call's time - through the real AzureClient, is counted against
+// no row however long it lasts: each row's failure is met by a canary that fails too, so nothing
+// is confirmed and nothing dead-letters. Each such canary backs the shared pace off
+// (RateLimitedEmbedder.BackOff, wrapped here for one last cycle), so a cycle that bisects two rows
+// and sends two canaries leaves it four times slower. Read as untroubled, as they once were, the
+// calls that ran out of time raised the rate, and their canaries did not back it off.
 func TestAnAzureWideOutageCountsAgainstNoRow(t *testing.T) {
-	for _, status := range []int{http.StatusRequestTimeout, http.StatusInternalServerError, http.StatusBadGateway, http.StatusGatewayTimeout} {
-		t.Run(http.StatusText(status), func(t *testing.T) {
+	for i, tc := range []struct {
+		name   string
+		outage int
+		hang   bool
+	}{
+		{http.StatusText(http.StatusRequestTimeout), http.StatusRequestTimeout, false},
+		{http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError, false},
+		{http.StatusText(http.StatusBadGateway), http.StatusBadGateway, false},
+		{http.StatusText(http.StatusGatewayTimeout), http.StatusGatewayTimeout, false},
+		{"no answer in the call's time", 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			database := storetest.Open(t)
-			ids := []string{fmt.Sprintf("AZOU-%d1", status), fmt.Sprintf("AZOU-%d2", status)}
+			ids := []string{fmt.Sprintf("AZOU-%d1", i+1), fmt.Sprintf("AZOU-%d2", i+1)}
 			for _, id := range ids {
 				seedIssue(t, database, "AZOU", id, "Title of "+id)
 			}
-			fake := &azureFake{outage: status}
+			fake := &azureFake{outage: tc.outage, hang: tc.hang}
 			server := httptest.NewServer(fake)
 			defer server.Close()
+			if tc.hang {
+				server.Client().Timeout = 100 * time.Millisecond
+			}
 			client := azureClientFor(t, server)
 			deps := Deps{Store: database, Embedder: client}
 			for cycle := range retry.DeadLetterAttempts + 2 {
@@ -390,7 +414,7 @@ func TestAnAzureWideOutageCountsAgainstNoRow(t *testing.T) {
 			}
 			for id, state := range states {
 				if state != "embedded=false confirmed=0 dead=false" {
-					t.Fatalf("%s after a sustained %d: %s, want nothing confirmed and nothing dead", id, status, state)
+					t.Fatalf("%s after a sustained %s: %s, want nothing confirmed and nothing dead", id, tc.name, state)
 				}
 			}
 			paced := embed.NewRateLimitedEmbedder(client)

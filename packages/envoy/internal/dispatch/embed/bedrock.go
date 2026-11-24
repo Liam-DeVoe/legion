@@ -120,7 +120,9 @@ type bedrockEmbedResponse struct {
 }
 
 // Embed calls Bedrock once for up to BedrockMaxBatchTexts texts; a caller with more batches it
-// itself (embedqueue does, one batch at a time). A throttle comes back marked for IsThrottled.
+// itself (embedqueue does, one batch at a time). A throttle comes back marked for IsThrottled, and
+// an outage code (bedrockOutageErrorCodes) or a call that ran out of time while ctx was live
+// (timedOut: the AWS SDK's HTTP client's own timeout) for IsOutage.
 func (c *BedrockClient) Embed(ctx context.Context, texts []string, inputType InputType) ([][]float32, error) {
 	bounded, err := boundBatch(texts, BedrockMaxBatchTexts)
 	if err != nil || bounded == nil {
@@ -147,7 +149,7 @@ func (c *BedrockClient) Embed(ctx context.Context, texts []string, inputType Inp
 		switch {
 		case bedrockThrottled(err):
 			return nil, &throttleError{err: err}
-		case bedrockOutage(err):
+		case bedrockOutage(err), timedOut(ctx, err):
 			return nil, &outageError{err: err}
 		}
 		return nil, err

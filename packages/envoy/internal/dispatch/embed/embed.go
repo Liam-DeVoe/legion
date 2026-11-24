@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -175,12 +176,13 @@ func IsThrottled(err error) bool {
 
 // IsOutage reports whether err is the model service failing to answer now in a way that is no
 // throttle (azureStatusError: a 408, or a 5xx but the 503 that is Azure's capacity throttle;
-// Bedrock's bedrockOutageErrorCodes). Such an answer is either the service failing or one text it
-// fails on every time, and only embedqueue can tell them apart: it still bisects the batch and
-// confirms a row's own failure with its canary, which fails too while the whole service does. Only
-// then does it back RateLimitedEmbedder off (BackOff): a failing half of a bisection moves the pace
-// not at all. It reads only the marker the client puts on its own outages - an error in err's
-// chain with an Outage() bool method answering true.
+// Bedrock's bedrockOutageErrorCodes; and a call of either client that ran out of time, timedOut).
+// Such an answer is either the service failing or one text it fails on every time (one too slow
+// to embed in the call's time among them), and only embedqueue can tell them apart: it still
+// bisects the batch and confirms a row's own failure with its canary, which fails too while the
+// whole service does. Only then does it back RateLimitedEmbedder off (BackOff): a failing half of
+// a bisection moves the pace not at all. It reads only the marker the client puts on its own
+// outages - an error in err's chain with an Outage() bool method answering true.
 func IsOutage(err error) bool {
 	var marked interface{ Outage() bool }
 	return errors.As(err, &marked) && marked.Outage()
@@ -200,6 +202,21 @@ type outageError struct{ err error }
 func (e *outageError) Error() string { return e.err.Error() }
 func (e *outageError) Unwrap() error { return e.err }
 func (e *outageError) Outage() bool  { return true }
+
+// timedOut reports whether err ended a call that ran out of time - a deadline that ended it
+// (context.DeadlineExceeded, such as AzureClient's azureRequestTimeout) or a network timeout (a
+// net.Error whose Timeout is true, such as an HTTP client's own Timeout) - while ctx, the
+// caller's own context, is still live. A call whose caller's context ended says nothing about the
+// service, so it is no outage. Each client marks such a failure for IsOutage, so a call that ran
+// out of time does not speed RateLimitedEmbedder up as an untroubled call does, and a canary that
+// ran out of time backs it off.
+func timedOut(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil {
+		return false
+	}
+	var timeout net.Error
+	return errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout()
+}
 
 // Literal renders a vector as pgvector's text input form ("[0.1,0.2,...]"), the form a query
 // parameter cast with ::vector accepts. Dispatch never scans a vector value back out of

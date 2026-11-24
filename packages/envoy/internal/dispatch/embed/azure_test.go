@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -476,5 +479,81 @@ func TestNewAzureLeavesTheCallersClientAlone(t *testing.T) {
 	}
 	if caller.CheckRedirect != nil {
 		t.Error("NewAzure wrote CheckRedirect onto the caller's own client, want it set on a copy")
+	}
+}
+
+// hangingServer answers no request: each handler reads the request whole, so net/http watches its
+// connection and ends the request's context when the client gives up, and waits for that or for
+// the test's end, which releases it before the server closes.
+func hangingServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	ended := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		select {
+		case <-r.Context().Done():
+		case <-ended:
+		}
+	}))
+	t.Cleanup(func() {
+		close(ended)
+		server.Close()
+	})
+	return server
+}
+
+// A call to Azure that runs out of time while its caller still waits - here the HTTP client's own
+// timeout - is an outage (IsOutage) and no throttle: Azure did not answer in time. A call whose
+// caller's own context ended first is neither: the caller left, which says nothing of Azure.
+func TestAzureEmbedMarksACallThatRanOutOfTimeAnOutage(t *testing.T) {
+	t.Run("the client's timeout", func(t *testing.T) {
+		server := hangingServer(t)
+		server.Client().Timeout = 100 * time.Millisecond
+		_, err := testAzureClient(t, server, AzureConfig{}).Embed(context.Background(), []string{"x"}, InputDocument)
+		if err == nil || !IsOutage(err) || IsThrottled(err) {
+			t.Fatalf("Embed error = %v (outage %v, throttled %v), want an outage and no throttle", err, IsOutage(err), IsThrottled(err))
+		}
+	})
+	t.Run("the caller's own deadline", func(t *testing.T) {
+		server := hangingServer(t)
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		_, err := testAzureClient(t, server, AzureConfig{}).Embed(ctx, []string{"x"}, InputDocument)
+		if !errors.Is(err, context.DeadlineExceeded) || IsOutage(err) {
+			t.Fatalf("Embed error = %v (outage %v), want the caller's context.DeadlineExceeded and no outage", err, IsOutage(err))
+		}
+	})
+}
+
+// timedOutError is a network error that names itself a timeout, as net/http's client timeout does.
+type timedOutError struct{}
+
+func (timedOutError) Error() string   { return "simulated: i/o timeout" }
+func (timedOutError) Timeout() bool   { return true }
+func (timedOutError) Temporary() bool { return true }
+
+// timedOut reads a deadline or a network timeout, wrapped or not, as a call that ran out of time,
+// and nothing else; and nothing at all once the caller's own context has ended.
+func TestTimedOutIsADeadlineOrATimeoutWhileTheCallerWaits(t *testing.T) {
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		err  error
+		want bool
+	}{
+		{"a deadline", context.Background(), fmt.Errorf("embed: azure embeddings: %w", context.DeadlineExceeded), true},
+		{"a network timeout", context.Background(), fmt.Errorf("embed: bedrock invoke model: %w", timedOutError{}), true},
+		{"another failure", context.Background(), errors.New("embed: azure embeddings: connection refused"), false},
+		{"a cancellation", context.Background(), context.Canceled, false},
+		{"no failure", context.Background(), nil, false},
+		{"a deadline after the caller left", ended, context.DeadlineExceeded, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := timedOut(tc.ctx, tc.err); got != tc.want {
+				t.Errorf("timedOut(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }

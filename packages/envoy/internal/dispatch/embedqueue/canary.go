@@ -27,7 +27,7 @@ const embedCanary = "dispatch embedqueue confirmation canary"
 // condition is systemic, not this row's fault: nothing is confirmed, the row goes back to retry,
 // and if the canary itself was throttled, throttled is reported too, so the caller backs off
 // exactly as an outright-throttled call would. A canary that meets an outage (embed.IsOutage: the
-// service failing, since it fails on the known-good text too) backs the shared pace off
+// service failing, or not answering in time, on the known-good text too) backs the shared pace off
 // (embed.RateLimitedEmbedder.BackOff, when the embedder is one, as cmd/dispatch makes it), the one
 // place an outage does: the failing halves of a bisection before it say nothing of the service,
 // since one text the service fails on every time gives them as well. The confirmation is

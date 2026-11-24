@@ -184,6 +184,23 @@ func TestRateLimitedEmbedderReadsAzuresThrottleOutageAndAnswer(t *testing.T) {
 	}
 }
 
+// A call that ran out of time, through a real AzureClient whose HTTP client times out, leaves the
+// pace where it was, as an outage does: Azure did not answer in time, which is no sign it is well.
+// Counted as untroubled, it raised the rate.
+func TestRateLimitedEmbedderLeavesThePaceAfterACallThatRanOutOfTime(t *testing.T) {
+	const start = 2 * time.Second
+	server := hangingServer(t)
+	server.Client().Timeout = 100 * time.Millisecond
+	limiter := NewRateLimitedEmbedder(testAzureClient(t, server, AzureConfig{}))
+	limiter.setInterval(start)
+	if _, err := limiter.Embed(context.Background(), []string{"x"}, InputDocument); err == nil {
+		t.Fatal("Embed: want the call's timeout, got nil")
+	}
+	if got := limiter.Interval(); got != start {
+		t.Errorf("Interval() after a call that ran out of time = %v from %v, want it unchanged", got, start)
+	}
+}
+
 // TestRateLimitedEmbedderBackOffHalvesTheRate: BackOff doubles the interval as a throttle does,
 // capped at the ceiling.
 func TestRateLimitedEmbedderBackOffHalvesTheRate(t *testing.T) {

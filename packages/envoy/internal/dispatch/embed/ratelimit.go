@@ -54,10 +54,11 @@ const (
 // shared-resource pressure or of a failing service), and adds rateLimitRecoveryStep to the rate
 // on every call that was neither a throttle nor an outage (slow, incremental recovery, so a
 // provider that is only barely keeping up is not immediately hit with a burst back at full rate,
-// and bounded: 32 calls from the slowest pace back to the fastest). An outage on any other call
-// moves the pace not at all: a text the service fails on every time gives one on every failing
-// half of its bisection, about eight calls a cycle for a batch of 96 texts, which would take the
-// pace to its ceiling within two cycles though the service is well.
+// and bounded: 32 calls from the slowest pace back to the fastest). A call that ran out of time is
+// an outage (IsOutage, timedOut), so it does not count as untroubled. An outage on a call other
+// than embedqueue's canary moves the pace not at all: a text the service fails on every time
+// gives one on every failing half of its bisection, about eight calls a cycle for a batch of 96
+// texts, which would take the pace to its ceiling within two cycles though the service is well.
 // rateLimitFloor is deliberately below the model service's sustainable rate, which is what
 // "leaves headroom" means in practice: background work's own steady-state ceiling stops short of
 // the full quota, leaving room for a live query's call - never gated by this limiter at all - to
@@ -84,10 +85,10 @@ func NewRateLimitedEmbedder(inner Embedder) *RateLimitedEmbedder {
 // reservation bookkeeping (burst 1, so every call waits out the full interval since the last
 // one) rather than a hand-rolled elapsed-time computation, then calls the inner Embedder and
 // adjusts that interval from the result: longer (the rate halved) on a throttled error
-// (IsThrottled), unchanged on an outage (IsOutage, which only BackOff acts on), and shorter (the
-// rate raised by rateLimitRecoveryStep, the interval floored at rateLimitFloor) on anything else -
-// an ordinary success or any other failure both count as "the model service was not signalling
-// capacity pressure or failing this time." It
+// (IsThrottled), unchanged on an outage (IsOutage, a call that ran out of time among them, which
+// only BackOff acts on), and shorter (the rate raised by rateLimitRecoveryStep, the interval
+// floored at rateLimitFloor) on anything else - an ordinary success or any other failure both
+// count as "the model service was not signalling capacity pressure or failing this time." It
 // reserves with Reserve rather than calling the package's own ctx-aware Wait, because Wait fails
 // fast with its own error the moment it can tell the reservation's delay would outlast ctx's
 // deadline, without ever waiting for ctx to actually end - and embedqueue's callers depend on

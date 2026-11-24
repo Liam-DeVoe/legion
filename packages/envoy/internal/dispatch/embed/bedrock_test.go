@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -153,6 +154,22 @@ func TestBedrockEmbedMarksItsOwnThrottles(t *testing.T) {
 				t.Errorf("Embed error = %v, want it to unwrap to Bedrock's %s", err, tc.code)
 			}
 		})
+	}
+}
+
+// A Bedrock call that runs out of time while its caller still waits - here the AWS SDK's HTTP
+// client's own timeout - is an outage (IsOutage) and no throttle, as Azure's is.
+func TestBedrockEmbedMarksACallThatRanOutOfTimeAnOutage(t *testing.T) {
+	server := hangingServer(t)
+	client := NewBedrockWithConfig(aws.Config{
+		Region:      "us-west-2",
+		Credentials: credentials.NewStaticCredentialsProvider("test-access-key", "test-secret-key", ""),
+		Retryer:     func() aws.Retryer { return aws.NopRetryer{} },
+		HTTPClient:  &http.Client{Timeout: 100 * time.Millisecond},
+	}, WithBaseEndpoint(server.URL))
+	_, err := client.Embed(context.Background(), []string{"x"}, InputDocument)
+	if err == nil || !IsOutage(err) || IsThrottled(err) {
+		t.Fatalf("Embed error = %v (outage %v, throttled %v), want an outage and no throttle", err, IsOutage(err), IsThrottled(err))
 	}
 }
 
