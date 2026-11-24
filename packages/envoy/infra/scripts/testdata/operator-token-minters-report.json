@@ -2222,9 +2222,8 @@
       "resource": "cluster:operator-cluster",
       "granted_at": "RBAC: allowed by a planted binding",
       "policy": "broker-pod-connect",
-      "binding": "broker-pod-connect",
-      "declared": "sha256:c84558525fc1bda01e259b95d517869d675123b7a4caf3119c62a489f4d04ca9",
-      "live": "sha256:c84558525fc1bda01e259b95d517869d675123b7a4caf3119c62a489f4d04ca9; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
+      "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
+      "live": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
     },
     {
       "principal": "system:serviceaccount:legion:dispatch-measure",
@@ -2232,9 +2231,8 @@
       "resource": "cluster:operator-cluster",
       "granted_at": "RBAC: allowed by a planted binding",
       "policy": "broker-pod-connect",
-      "binding": "broker-pod-connect",
-      "declared": "sha256:c84558525fc1bda01e259b95d517869d675123b7a4caf3119c62a489f4d04ca9",
-      "live": "sha256:c84558525fc1bda01e259b95d517869d675123b7a4caf3119c62a489f4d04ca9; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
+      "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
+      "live": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
     },
     {
       "principal": "system:serviceaccount:legion:dispatch-measure",
@@ -2242,9 +2240,8 @@
       "resource": "cluster:operator-cluster",
       "granted_at": "RBAC: allowed by a planted binding",
       "policy": "broker-pod-update",
-      "binding": "broker-pod-update",
-      "declared": "sha256:c84558525fc1bda01e259b95d517869d675123b7a4caf3119c62a489f4d04ca9",
-      "live": "sha256:c84558525fc1bda01e259b95d517869d675123b7a4caf3119c62a489f4d04ca9; ValidatingAdmissionPolicy broker-pod-update generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-update generation 1 resourceVersion 7001"
+      "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
+      "live": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50; ValidatingAdmissionPolicy broker-pod-update generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-update generation 1 resourceVersion 7001"
     },
     {
       "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
@@ -2252,9 +2249,8 @@
       "resource": "cluster:operator-cluster",
       "granted_at": "RBAC: allowed by a planted binding",
       "policy": "broker-pod-connect",
-      "binding": "broker-pod-connect",
-      "declared": "sha256:c84558525fc1bda01e259b95d517869d675123b7a4caf3119c62a489f4d04ca9",
-      "live": "sha256:c84558525fc1bda01e259b95d517869d675123b7a4caf3119c62a489f4d04ca9; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
+      "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
+      "live": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
     },
     {
       "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
@@ -2262,9 +2258,8 @@
       "resource": "cluster:operator-cluster",
       "granted_at": "RBAC: allowed by a planted binding",
       "policy": "broker-pod-connect",
-      "binding": "broker-pod-connect",
-      "declared": "sha256:c84558525fc1bda01e259b95d517869d675123b7a4caf3119c62a489f4d04ca9",
-      "live": "sha256:c84558525fc1bda01e259b95d517869d675123b7a4caf3119c62a489f4d04ca9; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
+      "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
+      "live": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
     },
     {
       "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
@@ -2272,9 +2267,8 @@
       "resource": "cluster:operator-cluster",
       "granted_at": "RoleBinding dispatch/comment-delivery",
       "policy": "broker-pod-connect",
-      "binding": "broker-pod-connect",
-      "declared": "sha256:c84558525fc1bda01e259b95d517869d675123b7a4caf3119c62a489f4d04ca9",
-      "live": "sha256:c84558525fc1bda01e259b95d517869d675123b7a4caf3119c62a489f4d04ca9; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
+      "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
+      "live": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
     },
     {
       "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
@@ -2282,9 +2276,66 @@
       "resource": "cluster:operator-cluster",
       "granted_at": "RoleBinding dispatch/comment-delivery",
       "policy": "broker-pod-connect",
-      "binding": "broker-pod-connect",
-      "declared": "sha256:c84558525fc1bda01e259b95d517869d675123b7a4caf3119c62a489f4d04ca9",
-      "live": "sha256:c84558525fc1bda01e259b95d517869d675123b7a4caf3119c62a489f4d04ca9; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
+      "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
+      "live": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50; ValidatingAdmissionPolicy broker-pod-connect generation 3 resourceVersion 7001; ValidatingAdmissionPolicyBinding broker-pod-connect generation 1 resourceVersion 7001"
+    }
+  ],
+  "residuals": [
+    {
+      "principal": "system:serviceaccount:legion:worker",
+      "right": "create pods/portforward in dispatch",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RBAC: allowed by a planted binding",
+      "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
+      "tracked_by": "INFRA-4604"
+    },
+    {
+      "principal": "system:serviceaccount:legion:dispatch-measure",
+      "right": "create pods/exec in dispatch",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RBAC: allowed by a planted binding",
+      "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
+      "tracked_by": "INFRA-4604"
+    },
+    {
+      "principal": "system:serviceaccount:legion:dispatch-measure",
+      "right": "patch pods in dispatch",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RBAC: allowed by a planted binding",
+      "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
+      "tracked_by": "INFRA-4604"
+    },
+    {
+      "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
+      "right": "create pods/exec in dispatch",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RBAC: allowed by a planted binding",
+      "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
+      "tracked_by": "INFRA-4604"
+    },
+    {
+      "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
+      "right": "get pods/exec in dispatch",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RBAC: allowed by a planted binding",
+      "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
+      "tracked_by": "INFRA-4604"
+    },
+    {
+      "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
+      "right": "create pods/exec in dispatch, declared by RoleBinding dispatch/comment-delivery",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RoleBinding dispatch/comment-delivery",
+      "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
+      "tracked_by": "INFRA-4604"
+    },
+    {
+      "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
+      "right": "get pods/exec in dispatch, declared by RoleBinding dispatch/comment-delivery",
+      "resource": "cluster:operator-cluster",
+      "granted_at": "RoleBinding dispatch/comment-delivery",
+      "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
+      "tracked_by": "INFRA-4604"
     }
   ],
   "unknown": [

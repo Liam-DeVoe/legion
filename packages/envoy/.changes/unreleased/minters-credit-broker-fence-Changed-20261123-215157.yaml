@@ -1,17 +1,20 @@
 kind: Changed
 body: |-
   `infra/scripts/operator-token-minters.sh` credits the broker's pod fence: when
-  `--broker-workload` is `dispatch/envoy-broker`, and the renders and the operator's cluster each
-  hold its five `broker-*` ValidatingAdmissionPolicies and bindings bound `Deny` with
-  `failurePolicy: Fail` to `dispatch` alone, their rules hashing to the reviewed fence's digest
-  (`infra/scripts/operator-token-minters/broker-fence.json`), and every pod there that runs as
-  `envoy-broker` or takes its Secrets is named `envoy-broker-*`, a grant of exec, attach or port
-  forward, or of a pod's spec or ephemeral containers, in `dispatch` is a `CREDIT` line instead of a
-  finding, declared or live, and in who can become `envoy-broker`. `--report` gains `credited`, each
-  entry naming the principal, the right, the grant, the policy and its binding, and their declared
-  and live versions. Every other right stays a finding, and so does whoever can write or delete the
-  fence; a fence missing or held otherwise prints `NO CREDIT`, and one that cannot be read is
-  UNKNOWN.
+  `dispatch/envoy-broker` is a guarded pair (`--broker-workload` or a `--guarded`), and the renders
+  and the operator's cluster each hold its five `broker-*` ValidatingAdmissionPolicies and bindings
+  bound `Deny` with `failurePolicy: Fail` to `dispatch` alone, with the reviewed rules
+  `infra/scripts/operator-token-minters/broker-fence.json` holds (each canonical spec, or the sha256
+  of the two workload policies'), no pod there named otherwise than `envoy-broker-*` runs as
+  `envoy-broker` or takes a Secret of the broker's, and no webhook that can match a guarded
+  namespace calls a Service there, a grant of exec, attach or port forward, or of a pod patch or
+  update, in `dispatch` is a `CREDIT` line naming its use on the broker's pods instead of a finding,
+  declared or live, and in who can become `envoy-broker`. Its use on Dispatch's own pods, whose
+  database login can write the writer hold's tables, is an `ALLOWANCE` line naming the residual
+  INFRA-4604 tracks. `--report` gains `credited` (the principal, the right, the grant, the policy,
+  and the declared and live versions) and `residuals`. An ephemeral container in `dispatch` and
+  every other right stay findings, and so does whoever can write or delete the fence; a fence
+  missing or held otherwise prints `NO CREDIT`, and one that cannot be read is UNKNOWN.
 time: 2026-11-23T21:51:57Z
 custom:
     Issue: minters-credit-broker-fence

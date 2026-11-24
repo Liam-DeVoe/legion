@@ -24,8 +24,8 @@
 # a token into kubectl's memory are in operator-token-minters/step-rbac.sh.
 #
 # The steps, in order; each prints PASS, a FINDING per principal and right, or UNKNOWN naming why,
-# and the RBAC steps a CREDIT per grant the broker's pod fence refuses, or NO CREDIT naming why not
-# (below, "The broker's pod fence"):
+# and the RBAC steps a CREDIT and an ALLOWANCE per grant whose use on the broker's pods its pod fence
+# refuses, or NO CREDIT naming why not (below, "The broker's pod fence"):
 #
 #   permission names  Each permission name the IAM steps ask about is in the predefined role that
 #                     grants it (`gcloud iam roles describe`): every container.* name in
@@ -151,9 +151,9 @@
 #                     the chain; a read of them that fails is UNKNOWN. A system namespace's
 #                     ServiceAccount is reviewed too, never a finding itself, but when it is allowed
 #                     a right asked, outright or by name in a live role, who can become it is
-#                     followed the same way. A grant the broker's pod fence refuses, here and in
-#                     the code step, is a credit instead of a finding when the fence is credited
-#                     (below, "The broker's pod fence").
+#                     followed the same way. A grant whose use on the broker's pods its pod fence
+#                     refuses, here and in the code step, is a credit instead of a finding when the
+#                     fence is credited (below, "The broker's pod fence").
 #   live: Workload    The Workload Identity member names the workload pool (<pool>.svc.id.goog,
 #     Identity        --pool-project, by default --project), the namespace and the ServiceAccount,
 #                     never the cluster, so every cluster that uses the pool can act as the Google
@@ -348,46 +348,55 @@
 # The broker's pod fence (operator-token-minters/broker-fence.sh). RBAC allows a request that
 # admission can still refuse, and the program the renders come from refuses, on every pod of the
 # broker's in dispatch and to everyone, exec, attach and port forward (broker-pod-connect) and any
-# change but metadata, ephemeral containers included (broker-pod-update), beside broker-pod-create
-# and the two workload policies, each bound Deny with failurePolicy Fail in dispatch alone. When
-# --broker-workload (or a --guarded) names dispatch/envoy-broker, the check credits that fence as
-# reviewed and nothing else (operator-token-minters/broker-fence.json pins its rules by a sha256
-# digest): the code step reads it in the renders, and the RBAC step reads the operator's cluster's
-# ValidatingAdmissionPolicies and bindings (less what the API server and GKE fill in) and its pods
-# in dispatch. Only when the renders and the cluster each hold the five policies and bindings bound
-# so, their rules hashing to the pin, and every pod there that runs as envoy-broker or takes
-# --db-secret or a token Secret of the namespace is named envoy-broker-*, does a grant of create or
-# get on pods/exec, pods/attach or pods/portforward, or of patch or update on pods or
-# pods/ephemeralcontainers, in dispatch, outright or by name, declared or live, or as a way to
-# become envoy-broker, print a CREDIT line instead of a finding; in the guarded rights, only while
-# dispatch/envoy-broker is the one guarded pair in dispatch, since entry into another pod there
-# reaches what that pod runs as. Every other right stays a finding, create pods in dispatch among
-# them (a pod there takes any Secret of the namespace), every Google IAM right and every hold
-# writer; so does whoever can write the fence:
-# its create, update and patch are admission rights, and its delete and deletecollection are asked
-# while it is credited. A fence missing, held otherwise, or beside a pod outside its names credits
-# nothing and prints NO CREDIT naming why; one whose policies or pods cannot be read is UNKNOWN.
+# change but metadata (broker-pod-update), beside broker-pod-create and the two workload policies,
+# each bound Deny with failurePolicy Fail in dispatch alone. When dispatch/envoy-broker is a guarded
+# pair (--broker-workload or a --guarded), the check credits that fence as reviewed and nothing else
+# (operator-token-minters/broker-fence.json holds each policy's and binding's canonical spec, or, for
+# the two workload policies, its sha256): the code step reads it in the renders, and the RBAC step
+# reads the operator's cluster's ValidatingAdmissionPolicies and bindings (less what the API server
+# and GKE fill in), its pods in dispatch and its webhooks. Only when the renders and the cluster each
+# hold the five policies and bindings bound so, with the reviewed rules; no pod there named otherwise
+# than envoy-broker-* runs as envoy-broker or takes --db-secret, a token Secret of the namespace or a
+# Secret a broker pod takes; at least one envoy-broker-* pod runs as envoy-broker; and no webhook that
+# can match a guarded namespace calls a Service in dispatch, does a grant of create or get on
+# pods/exec, pods/attach or pods/portforward, or of patch or update on pods, in dispatch, outright or
+# by name, declared or live, or as a way to become envoy-broker, print a CREDIT line naming its use
+# on the broker's pods instead of a finding; in the guarded rights, only while dispatch/envoy-broker
+# is the one guarded pair in dispatch, since entry into another pod there reaches the other pair.
+# Its use on dispatch's other pods, Dispatch's own, whose database login can write the writer hold's
+# tables, the fence does not refuse: that is broker-fence.json's residual, tracked by INFRA-4604, and
+# each such grant (not a way to become envoy-broker) prints an ALLOWANCE line naming it. Every other
+# right stays a finding: patch and update of pods/ephemeralcontainers (on a pod not the broker's an
+# ephemeral container takes any Secret of the namespace), create pods in dispatch (so does a new
+# pod), every Google IAM right and every hold writer; so does whoever can write the fence: its
+# create, update and patch are admission rights, and its delete and deletecollection are asked while
+# it is credited. A fence missing, held otherwise, or beside a pod or a webhook backend as above
+# credits nothing and prints NO CREDIT naming why; one whose policies or pods cannot be read is
+# UNKNOWN.
 #
-# Exit 0: no finding and no UNKNOWN (a CREDIT line is neither). Exit 1: at least one finding, each
-# line naming the principal and the right (UNKNOWN lines may stand beside them). Exit 2: no finding,
-# and at least one UNKNOWN, each naming its step and why, such as the permission the running
-# identity lacks; also a usage error, a copy of the script missing a part or a jq file of
+# Exit 0: no finding and no UNKNOWN (a CREDIT or ALLOWANCE line is neither). Exit 1: at least one
+# finding, each line naming the principal and the right (UNKNOWN lines may stand beside them). Exit
+# 2: no finding, and at least one UNKNOWN, each naming its step and why, such as the permission the
+# running identity lacks; also a usage error, a copy of the script missing a part or a jq file of
 # operator-token-minters/ (checked before any is sourced), and a run that stops before its end (a
 # command failing under set -e), each of which prints the UNKNOWN `run` and writes it to --report (a
 # usage error writes none). --report is deleted when the run starts, so a report is this run's or
 # none. --report <file> writes {"run_at": "<RFC 3339>", "findings": [{"principal", "right", "role",
 # "resource", "permissions", "granted_at"}], "credited": [{"principal", "right", "resource",
-# "granted_at", "policy", "binding", "declared", "live"}], "unknown": [{"step", "reason"}],
-# "allowances": [{"flag", "value"}]} beside the text, run_at being when the run began. `credited`
-# holds each grant the broker's pod fence refuses: principal and right as its CREDIT line prints
-# them, resource and granted_at as a finding's (the grant, kept as evidence), the policy that
-# refuses it and its binding, declared the sha256 of the renders' fence and live the same of the
+# "granted_at", "policy", "declared", "live"}], "residuals": [{"principal", "right", "resource",
+# "granted_at", "residual", "tracked_by"}], "unknown": [{"step", "reason"}], "allowances": [{"flag",
+# "value"}]} beside the text, run_at being when the run began. `credited` holds each grant whose use
+# on the broker's pods its pod fence refuses: principal and right as its CREDIT line prints them,
+# resource and granted_at as a finding's (the grant, kept as evidence), the policy that refuses that
+# use (its binding has its name), declared the sha256 of the renders' fence and live the same of the
 # cluster's with the generation and resourceVersion of that policy and binding, so a reader sees what
-# was trusted; it is [] when nothing is credited. `allowances` names each allowance the run was given
-# (each --service-agent, each --rbac-only-member, and --fleet none), each of which lets a principal or
-# a reading pass, so a reader holds each one to what was accepted; it is [] when there is none.
-# `right` is the sentence the text prints; the rest are its parts, for a reader that matches a
-# finding against an accepted entry by principal and role:
+# was trusted. `residuals` holds the same grant's use on the namespace's other pods, as its ALLOWANCE
+# line prints it, with the residual's text and the issue that tracks it. Each is [] when nothing is
+# credited. `allowances` names each allowance the run was given (each --service-agent, each
+# --rbac-only-member, and --fleet none), each of which lets a principal or a reading pass, so a
+# reader holds each one to what was accepted; it is [] when there is none. `right` is the sentence
+# the text prints; the rest are its parts, for a reader that matches a finding against an accepted
+# entry by principal and role:
 #   role         the IAM role (roles/container.admin), for an impersonation chain the role of its
 #                outermost link; for an RBAC finding the right's label (create
 #                serviceaccounts/token envoy-operator in envoy-operator); for the namespace and the
@@ -401,12 +410,14 @@
 #                RBAC finding the API server's reason (`RBAC: allowed by ClusterRoleBinding "x" of
 #                ...`) or, from code, the binding; empty where there is none.
 #
-# The fixture testdata/operator-token-minters-report.json, beside this script, is this script's own
-# --report from a world of operator-token-minters.test.sh's, the broker's pod fence's, with run_at
-# fixed: an IAM finding, RBAC findings of a Google service account bound on a fleet member for each
-# of three guarded pairs (the operator's, the broker's and a --guarded one), the fence's credits, and
-# an UNKNOWN. The writer hold's preflight, which reads --report, tests its reader against it, and the
-# test fails when the file differs from a fresh run (OPERATOR_MINTERS_WRITE_FIXTURE=1 rewrites it).
+# The fixture testdata/operator-token-minters-report.json, beside this script, is the --report of a
+# copy of this script whose broker-fence.json holds operator-token-minters.test.sh's example workload
+# policies by their digests, run in that test's broker pod fence's world, with run_at fixed: an IAM
+# finding, RBAC findings of a Google service account bound on a fleet member for each of three
+# guarded pairs (the operator's, the broker's and a --guarded one), the fence's credits and
+# residuals, and an UNKNOWN. The writer hold's preflight, which reads --report, tests its reader
+# against it, and the test fails when the file differs from a fresh run
+# (OPERATOR_MINTERS_WRITE_FIXTURE=1 rewrites it).
 #
 #   bash packages/envoy/infra/scripts/operator-token-minters.sh --project <id> --cluster <name> \
 #     --gsa <email> --agent-namespace <ns|glob>... --broker-account <email> \
@@ -672,7 +683,7 @@ if [ -n "$missing" ]; then
   echo "UNKNOWN run: $reason"
   [ -z "$REPORT" ] ||
     { jq -n --arg run_at "$RUN_AT" --arg reason "$reason" --argjson allowances "$(allowances_json)" \
-      '{run_at: $run_at, findings: [], credited: [], unknown: [{step: "run", reason: $reason}], allowances: $allowances}' >"$REPORT"; } 2>/dev/null ||
+      '{run_at: $run_at, findings: [], credited: [], residuals: [], unknown: [{step: "run", reason: $reason}], allowances: $allowances}' >"$REPORT"; } 2>/dev/null ||
     echo "operator-token-minters: --report cannot be written" >&2
   echo "operator-token-minters: no step ran, 1 unknown: exit 2"
   FINISHED=true

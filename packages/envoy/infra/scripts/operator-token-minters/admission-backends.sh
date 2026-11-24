@@ -36,6 +36,9 @@
 admission_power() {
   local kube="$1" step="$2" guarded id url policies allowlist sns sname why engines
   POWER_RIGHTS='[]'
+  # WEBHOOK_SERVICES: the Services the cluster's webhooks that can match a guarded namespace call
+  # (webhook-backends.jq's services), "" when the list was not read; broker-fence.sh reads it.
+  WEBHOOK_SERVICES=""
   guarded="$(printf '%s\n' "${GUARDED[@]%%/*}" | jq -R -s -c 'split("\n") | map(select(length > 0)) | unique')"
   if ! kubectl --kubeconfig "$kube" get mutatingwebhookconfigurations,validatingwebhookconfigurations -o json >"$WORK/webhooks.json" 2>"$WORK/webhooks.err"; then
     unknown "$step" "the API server refused the list of webhook configurations (it needs list on mutatingwebhookconfigurations and validatingwebhookconfigurations, container.mutatingWebhookConfigurations.list and container.validatingWebhookConfigurations.list on GKE), so no webhook's backend is reviewed: $(first_line "$WORK/webhooks.err")"
@@ -44,6 +47,7 @@ admission_power() {
     unknown "$step" "the API server's list of webhook configurations is not JSON: $(first_line "$WORK/webhooks.err")"
   else
     POWER_RIGHTS="$(jq -c .rights "$WORK/webhooks.out")"
+    WEBHOOK_SERVICES="$(jq -c .services "$WORK/webhooks.out")"
     while IFS=$'\t' read -r id url; do
       unknown "$step" "the webhook $id can match a guarded namespace and calls $url, outside the cluster, whose holders this check cannot read"
     done < <(jq -r '.urls[] | [.id, .url] | @tsv' "$WORK/webhooks.out")

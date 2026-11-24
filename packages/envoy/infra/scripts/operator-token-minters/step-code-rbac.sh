@@ -3,6 +3,9 @@
 # operator-token-minters/step-code-rbac.sh: the step "code: RBAC". Sourced by
 # operator-token-minters.sh, whose header says what each step checks.
 # --- code: RBAC ---
+# declared_finding PRINCIPAL DETAIL ID: one grant the renders declare (ID, the binding) is a finding;
+# fence_settle (broker-fence.sh) finds the grants the fence would have credited the same way.
+declared_finding() { finding "$1" "$2, declared by $3" "$2" "cluster:$cluster_name" "$2" "$3"; }
 step="code: RBAC"
 if [ "${#RBAC_RENDERS[@]}" -eq 0 ]; then
   unknown "$step" "no --rbac-render: what the cluster's RBAC program declares is not read"
@@ -32,21 +35,20 @@ else
       unknown "$step" "a render is not JSON: $(first_line "$WORK/render.err")"
     else
       declared=0
-      while IFS="$US" read -r -u 3 what id detail kind ns name; do
+      while IFS="$US" read -r -u 3 what id detail kind ns name policy residual; do
         case "$what" in
           empty) unknown "$step" "the renders declare no RoleBinding or ClusterRoleBinding (they hold $id objects), so they show nothing" ;;
           grant)
             declared=$((declared + 1))
             k8s_subject "$kind" "$ns" "$name"
             [ "$SUBJECT_OK" != true ] || continue
-            csr_part "$SUBJECT" "$detail" "$id" || finding "$SUBJECT" "$detail, declared by $id" "$detail" "cluster:$cluster_name" "$detail" "$id"
-            ;;
-          # A grant the declared fence refuses waits on the live step's read of the cluster's fence,
-          # which credits it or finds it (fence_settle).
-          credit:*)
-            declared=$((declared + 1))
-            k8s_subject "$kind" "$ns" "$name"
-            [ "$SUBJECT_OK" = true ] || CODE_PENDING+=("$SUBJECT$US$detail$US$id$US${what#credit:}")
+            # A grant whose use on the broker's pods the declared fence refuses waits on the live
+            # step's read of the cluster's fence, which credits it or finds it (fence_settle).
+            if [ -n "$policy" ]; then
+              CODE_PENDING+=("$SUBJECT$US$detail$US$id$US$policy$US$residual")
+            else
+              csr_part "$SUBJECT" "$detail" "$id" || declared_finding "$SUBJECT" "$detail" "$id"
+            fi
             ;;
           role)
             k8s_subject "$kind" "$ns" "$name"

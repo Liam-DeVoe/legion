@@ -193,49 +193,40 @@ readonly comment_delivery=comment-delivery@example-project.iam.gserviceaccount.c
 readonly fence_wi_member="serviceAccount:example-project.svc.id.goog[dispatch/envoy-broker]"
 fence_contract="$(dirname "$check")/operator-token-minters/broker-fence.json"
 readonly fence_contract
-# fence_objects: this test's own example of the fence: its five policies and their bindings, in the
-# shape the check reads (bound Deny with failurePolicy Fail to dispatch alone), with rules written
-# here. The reviewed fence's rules are pinned by their digest alone (broker-fence.json), so no world
-# here can hash to that pin, and the rows run fence_check, a copy pinned to this example; (fg) holds
-# the check itself to refusing the example.
+# fence_objects: the fence the rows' worlds hold: each policy and binding broker-fence.json holds by
+# its spec, as reviewed, and, for the two it holds by a digest alone (the workload policies, whose
+# rules name a private account), this test's own example policy of that name. No world here can hash
+# to those digests, so the rows run fence_check, a copy whose contract holds the example's digests;
+# (fg) holds the check itself to refusing the example.
 fence_objects() {
-  jq -n '
-    def rules($op; $res): [$res[] | {apiGroups: [.[0]], apiVersions: ["v1"], operations: [$op], resources: [.[1]]}];
-    def policy($name; $op; $res; $expression; $message): {apiVersion: "admissionregistration.k8s.io/v1", kind: "ValidatingAdmissionPolicy",
-      metadata: {name: $name}, spec: {failurePolicy: "Fail", matchConstraints: {resourceRules: rules($op; $res)},
-        validations: [{expression: $expression, message: $message}]}};
-    def binding($name): {apiVersion: "admissionregistration.k8s.io/v1", kind: "ValidatingAdmissionPolicyBinding", metadata: {name: $name},
-      spec: {matchResources: {namespaceSelector: {matchExpressions: [{key: "kubernetes.io/metadata.name", operator: "In", values: ["dispatch"]}]}},
-        policyName: $name, validationActions: ["Deny"]}};
+  jq '
     [["apps", "deployments"], ["apps", "replicasets"], ["apps", "statefulsets"], ["apps", "daemonsets"], ["batch", "jobs"], ["batch", "cronjobs"]] as $workloads
     | "request.userInfo.username == \u0027broker-ci@example-project.iam.gserviceaccount.com\u0027 || !(has(object.spec.template.spec.serviceAccountName) && object.spec.template.spec.serviceAccountName == \u0027envoy-broker\u0027)" as $workload
-    | [policy("broker-pod-connect"; "CONNECT"; [["", "pods/exec"], ["", "pods/attach"], ["", "pods/portforward"]];
-         "!request.name.startsWith(\u0027envoy-broker-\u0027)"; "no exec, attach or port forward to a broker pod"),
-       binding("broker-pod-connect"),
-       policy("broker-pod-update"; "UPDATE"; [["", "pods"], ["", "pods/ephemeralcontainers"]];
-         "!(oldObject.metadata.name.startsWith(\u0027envoy-broker-\u0027) || oldObject.spec.serviceAccountName == \u0027envoy-broker\u0027) || ((!has(request.subResource) || request.subResource == \u0027\u0027) && object.spec == oldObject.spec)";
-         "a broker pod takes metadata changes alone"),
-       binding("broker-pod-update"),
-       policy("broker-pod-create"; "CREATE"; [["", "pods"]];
-         "!has(object.spec.serviceAccountName) || object.spec.serviceAccountName != \u0027envoy-broker\u0027 || (request.userInfo.username == \u0027system:serviceaccount:kube-system:replicaset-controller\u0027 && object.metadata.name.startsWith(\u0027envoy-broker-\u0027))";
-         "only the broker'"'"'s ReplicaSets make its pods"),
-       binding("broker-pod-create"),
-       policy("broker-workload-create"; "CREATE"; $workloads; $workload; "only broker CI names the broker'"'"'s account in a workload"),
-       binding("broker-workload-create"),
-       policy("broker-workload-update"; "UPDATE"; $workloads; $workload; "only broker CI names the broker'"'"'s account in a workload"),
-       binding("broker-workload-update")]'
+    | [.objects[] | {apiVersion: "admissionregistration.k8s.io/v1", kind, metadata: {name}}
+       + if .digest then
+           (if .name == "broker-workload-create" then "CREATE" else "UPDATE" end) as $op
+           | {spec: {failurePolicy: "Fail",
+               matchConstraints: {resourceRules: [$workloads[] | {apiGroups: [.[0]], apiVersions: ["v1"], operations: [$op], resources: [.[1]]}]},
+               validations: [{expression: $workload, message: "only broker CI names the broker'"'"'s account in a workload"}]}}
+         else {spec} end]' "$fence_contract"
 }
-# fence_check: the copy of the check under test whose broker-fence.json pins fence_objects, by the
-# digest the check's own broker-fence.jq gives it.
+# fence_check: the copy of the check under test whose broker-fence.json holds fence_objects' example
+# policies by their digests, as the check's own broker-fence.jq and broker-fence.sh compute them;
+# fence_example_digests: those digests by policy name.
 readonly fence_check="$temporary_dir/fence-check/operator-token-minters.sh"
 mkdir -p "$temporary_dir/fence-check"
 cp "$check" "$fence_check"
 cp -r "$(dirname "$check")/operator-token-minters" "$temporary_dir/fence-check/"
-fence_pin="sha256:$(fence_objects | jq -c -L "$(dirname "$check")/operator-token-minters" --slurpfile contract "$fence_contract" \
-  'include "broker-fence"; [objs] | fence_read($contract[0]) | if .state == "read" then fence_digest else error("the example fence is \(.state)") end' |
-  jq -S -c . | sha256sum | cut -d' ' -f1)"
-readonly fence_pin
-jq --arg pin "$fence_pin" '.digest = $pin' "$fence_contract" >"$temporary_dir/fence-check/operator-token-minters/broker-fence.json"
+fence_objects | jq -c -L "$(dirname "$check")/operator-token-minters" --slurpfile contract "$fence_contract" \
+  'include "rec"; include "broker-fence"; [objs] | fence_read($contract[0]) | if .state == "read" then . else error("the example fence is \(.state)") end' \
+  >"$temporary_dir/fence-example-read.json"
+fence_example_digests="$(jq -c '.objects[] | select(.digest != "") | {name, spec}' "$temporary_dir/fence-example-read.json" |
+  while IFS= read -r object; do
+    jq -n --arg name "$(jq -r .name <<<"$object")" --arg digest "sha256:$(jq -S -c .spec <<<"$object" | sha256sum | cut -d' ' -f1)" '{($name): $digest}'
+  done | jq -s -c add)"
+readonly fence_example_digests
+jq --argjson digests "$fence_example_digests" '.objects |= map(if .digest then .digest = $digests[.name] else . end)' "$fence_contract" \
+  >"$temporary_dir/fence-check/operator-token-minters/broker-fence.json"
 
 # fence_world: the base world with the broker in dispatch: its ServiceAccount, bound to the broker's
 # Google account through Workload Identity; its pod, which takes the broker's database login, and
@@ -287,13 +278,7 @@ fence_edit() {
 }
 # fence_run ARGS...: fence_check with the full flags, the broker as dispatch/envoy-broker with its
 # database login there, then ARGS, against the current world; sets output and status as run does.
-fence_run() {
-  local args
-  mapfile -t args < <(full_args)
-  status=0
-  output="$(env PATH="$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$temporary_dir" bash "$fence_check" "${args[@]}" \
-    --broker-workload dispatch/envoy-broker --db-secret dispatch/envoy-broker-db "$@" 2>&1)" || status=$?
-}
+fence_run() { run_script="$fence_check" run --broker-workload dispatch/envoy-broker --db-secret dispatch/envoy-broker-db "$@"; }
 
 # The checked permissions of roles/container.admin, as `gcloud iam roles describe` lists them, with
 # a few beside them it also holds.

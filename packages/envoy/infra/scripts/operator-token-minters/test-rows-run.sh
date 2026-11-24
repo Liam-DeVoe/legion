@@ -17,16 +17,17 @@
 #   (l)  the admin tag: ENVOY_OPERATOR shown without "admin": "true", no such secret, and the scratch
 #        secret ENVOY_OPERATOR_CONTROL at human tier without --admin each exit 1 naming the field;
 #        a session that cannot show it reads UNKNOWN;
-#   (m)  --report writes run_at, findings, credited ([] for a run that credits nothing; row fa
-#        holds its entries), unknown and allowances ([] for a run given none), with a stubbed
-#        UNKNOWN step listed under unknown;
+#   (m)  --report writes run_at, findings, credited and residuals ([] each for a run that credits
+#        nothing; row fa holds their entries), unknown and allowances ([] for a run given none), with
+#        a stubbed UNKNOWN step listed under unknown;
 #   (v)  the report's findings carry role, resource, permissions and granted_at beside principal
 #        and right, on an IAM finding and on an RBAC finding;
-#   (z)  the fixture testdata/operator-token-minters-report.json is this script's --report from the
-#        broker's pod fence's world (fence_world) with an IAM finding, grade-ci's RBAC findings, the
-#        fence's credits and an UNKNOWN, run_at fixed; the row fails when the committed file differs
-#        (OPERATOR_MINTERS_WRITE_FIXTURE=1 rewrites it, and OPERATOR_MINTERS_FIXTURE names another
-#        file to compare, as the row's control does);
+#   (z)  the fixture testdata/operator-token-minters-report.json is the --report of fence_check (the
+#        script whose contract holds the test's example workload policies) in the broker's pod
+#        fence's world (fence_world) with an IAM finding, grade-ci's RBAC findings, the fence's
+#        credits and residuals and an UNKNOWN, run_at fixed; the row fails when the committed file
+#        differs (OPERATOR_MINTERS_WRITE_FIXTURE=1 rewrites it, and OPERATOR_MINTERS_FIXTURE names
+#        another file to compare, as the row's control does);
 #   (al) a run that stops mid-way leaves an UNKNOWN report, never the old one, and a usage error
 #        leaves none;
 #   (ba) a get-ancestors answer of [] reads UNKNOWN, and so does another cluster that lists no
@@ -207,11 +208,11 @@ if row m; then
     fail "the report's findings do not name serviceAccount:$ci_gsa: $(jq -c .findings "$report")"
   jq -e 'any(.unknown[]?; .step == "admin tag of ENVOY_OPERATOR" and (.reason | contains("PermissionDenied")))' "$report" >/dev/null ||
     fail "the report's unknown does not list the step 'admin tag of ENVOY_OPERATOR': $(jq -c '.unknown // "absent"' "$report")"
-  jq -e 'keys == ["allowances", "credited", "findings", "run_at", "unknown"] and .allowances == [] and .credited == []
-    and all(.findings[]; keys == ["granted_at", "permissions", "principal", "resource", "right", "role"])
+  jq -e 'keys == ["allowances", "credited", "findings", "residuals", "run_at", "unknown"] and .allowances == [] and .credited == []
+    and .residuals == [] and all(.findings[]; keys == ["granted_at", "permissions", "principal", "resource", "right", "role"])
     and all(.unknown[]; keys == ["reason", "step"])' "$report" >/dev/null ||
-    fail "the report holds other fields than run_at, findings (principal, right, role, resource, permissions, granted_at), an empty credited, unknown and an empty allowances: $(jq -c . "$report")"
-  passed "(m) --report writes run_at, findings, credited, unknown and allowances, with the stubbed UNKNOWN step under unknown"
+    fail "the report holds other fields than run_at, findings (principal, right, role, resource, permissions, granted_at), an empty credited and residuals, unknown and an empty allowances: $(jq -c . "$report")"
+  passed "(m) --report writes run_at, findings, credited, residuals, unknown and allowances, with the stubbed UNKNOWN step under unknown"
 fi
 
 # --- (v) The report's parts of each finding, for a reader matching principal and role. ---
@@ -251,8 +252,9 @@ if row z; then
   # takes it for a time something happened.
   jq '.run_at = "1970-01-01T00:00:00Z"' "$temporary_dir/fixture-run.json" >"$temporary_dir/fixture-fresh.json"
   jq -e 'any(.findings[]; .role | startswith("roles/")) and any(.findings[]; (.principal | startswith("serviceAccount:grade-ci@")) and (.granted_at | startswith("RBAC: ")))
-      and any(.credited[]; .policy == "broker-pod-connect") and (.unknown | length) > 0' "$temporary_dir/fixture-fresh.json" >/dev/null ||
-    fail "the fixture's world gave no IAM finding, no RBAC finding of grade-ci, no credit or no UNKNOWN: $(jq -c . "$temporary_dir/fixture-fresh.json")"
+      and any(.credited[]; .policy == "broker-pod-connect") and any(.residuals[]; .tracked_by == "INFRA-4604")
+      and (.unknown | length) > 0' "$temporary_dir/fixture-fresh.json" >/dev/null ||
+    fail "the fixture's world gave no IAM finding, no RBAC finding of grade-ci, no credit, no residual or no UNKNOWN: $(jq -c . "$temporary_dir/fixture-fresh.json")"
   # An RBAC finding's permissions are its one label, whole, though a guarded label holds a comma.
   split="$(jq -r '.findings[] | select(.granted_at | startswith("RBAC: ")) | select(.permissions != [.role]) | "\(.role): \(.permissions)"' "$temporary_dir/fixture-fresh.json")"
   [ -z "$split" ] || fail "an RBAC finding's permissions are not its label, whole: $split"

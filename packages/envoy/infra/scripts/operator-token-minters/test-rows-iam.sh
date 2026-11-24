@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# shellcheck disable=SC2016,SC2034,SC2154 # the world, its names, its helpers and the output and status a run sets are the test's; each single-quoted $name is a jq variable, not the shell's
+# shellcheck disable=SC2016,SC2154 # the world, its names and its helpers are the test's; each single-quoted $name is a jq variable, not the shell's
 # operator-token-minters/test-rows-iam.sh: the rows of operator-token-minters.test.sh on Google
 # IAM: GKE IAM, the minters of the operator's and the broker's accounts, the hold writers, IAM
 # impersonation and IAM writers, and a GKE fleet member's project and the folders above it.
@@ -478,10 +478,7 @@ dm_row() {
       cp -r "$(dirname "$check")/operator-token-minters" "$copy/"
       sed -i '/^live_iam dm$/d' "$copy/operator-token-minters/step-gke-iam.sh"
       ! grep -qx 'live_iam dm' "$copy/operator-token-minters/step-gke-iam.sh" || fail "the test could not take the step out of its copy"
-      mapfile -t args < <(full_args)
-      status=0
-      output="$(env PATH="$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$temporary_dir" bash "$copy/operator-token-minters.sh" "${args[@]}" 2>&1)" ||
-        status=$?
+      run_script="$copy/operator-token-minters.sh" run
       want_status 0 "the holder of roles/deploymentmanager.editor, read by a copy without the step"
       ;;
     misspelt)

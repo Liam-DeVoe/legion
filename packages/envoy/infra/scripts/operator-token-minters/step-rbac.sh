@@ -79,11 +79,12 @@ else
   rights="$(with_rights "$rights" "$(jq -R -s -c '[split("\n")[] | select(length > 0) | split("\t") | {ns: .[0], n: .[1]}] | unique[]
       | {verb: "get", group: "", resource: "secrets", sub: "", ns: .ns, name: .n, label: "get secrets \(.n) in \(.ns)"}
       | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}' "$WORK/token-secrets.tsv" | jq -s -c .)")"
-  # The broker's pod fence (broker-fence.sh), read once the admission discovery and the guarded
-  # namespaces' token Secrets are: while it is credited, what it refuses is a credit, and who can
-  # delete it is asked beside who can write it.
+  # The broker's pod fence (broker-fence.sh), read once the admission discovery, the webhooks'
+  # backends and the guarded namespaces' token Secrets are: while it is credited (FENCE_CREDITED),
+  # this cluster's reviews judge what it refuses as credits, and who can delete it is asked beside
+  # who can write it.
   fence_live "$KUBE" "$step"
-  [ -z "$CREDIT_FENCE" ] || rights="$(with_rights "$rights" "$FENCE_WRITE_RIGHTS")"
+  [ -z "$FENCE_CREDITED" ] || rights="$(with_rights "$rights" "$FENCE_WRITE_RIGHTS")"
   jq -r "$JQ_REC"'.items[]? | [.metadata.namespace, .metadata.name, (.metadata.annotations["iam.gke.io/gcp-service-account"] // "")] | rec' \
     "$WORK/serviceaccounts.json" >"$WORK/serviceaccounts.rec"
   printf '%s\n%s\n' "$WITNESS_RECORD" "$ANONYMOUS_RECORD" >"$WORK/principals.rec"
@@ -139,28 +140,25 @@ else
   # name, and update or patch each role bound to a reviewed principal.
   named_rights || unknown "$step" "$NAMED_ERROR"
   rights="$(with_rights "$rights" "$NAMED_RIGHTS")"
-  fence_credits "$rights"
   # Every cluster has default/default, so a list that holds no ServiceAccount outside the system
   # namespaces is not the cluster's whole list.
   [ "$accounts" -gt 0 ] ||
     unknown "$step" "the cluster lists no ServiceAccount outside its system namespaces, though every cluster has default/default, so its list cannot be read as whole"
   if [ "$((accounts + ${#seen_accounts[@]} + BOUND))" -eq 0 ]; then
     unknown "$step" "the cluster lists no ServiceAccount outside its system namespaces and no binding subject, so there is no principal to review"
-  elif ! review "$KUBE" "$(principals_json "$WORK/principals.rec")" "$rights"; then
+  elif ! review "$KUBE" "$(principals_json "$WORK/principals.rec")" "$rights" "$FENCE_CREDITED"; then
     unknown "$step" "$REVIEW_ERROR"
   elif judge_reviews "$step" "" "cluster:$CLUSTER"; then
     RBAC_OK=true
-    live_named "$KUBE" "$step" "" "cluster:$CLUSTER" "$rights"
+    live_named "$KUBE" "$step" "" "cluster:$CLUSTER" "$rights" "$FENCE_CREDITED"
     csr_chains "" "cluster:$CLUSTER"
-    follow_becomes "$KUBE" "$step" "" "cluster:$CLUSTER"
-    remember_cluster "$KUBE" "$step" "" "cluster:$CLUSTER"
+    follow_becomes "$KUBE" "$step" "" "cluster:$CLUSTER" "$FENCE_CREDITED"
+    remember_cluster "$KUBE" "$step" "" "cluster:$CLUSTER" "$FENCE_CREDITED"
     if unchanged; then
       credits="$(credited)"
-      pass "$step" "$((accounts + ${#seen_accounts[@]} + GROUPS_ADDED + BOUND + 1)) principals ($accounts ServiceAccounts outside the system namespaces, $agents of them in the agent namespaces, ${#seen_accounts[@]} Google service accounts, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects, and anyone unauthenticated), $(jq length <<<"$rights") rights each: none allowed$([ "$credits" -eq 0 ] || echo " but $credits grants the broker's pod fence refuses")"
+      pass "$step" "$((accounts + ${#seen_accounts[@]} + GROUPS_ADDED + BOUND + 1)) principals ($accounts ServiceAccounts outside the system namespaces, $agents of them in the agent namespaces, ${#seen_accounts[@]} Google service accounts, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects, and anyone unauthenticated), $(jq length <<<"$rights") rights each: none allowed$([ "$credits" -eq 0 ] || echo " but $credits grants whose use on the broker's pods its pod fence refuses")"
     fi
   fi
 fi
-# The code step's grants the declared fence refuses, now that the cluster's fence was read or not;
-# then no other cluster's reviews read the fence.
+# The code step's grants the declared fence refuses, now that the cluster's fence was read or not.
 fence_settle
-CREDIT_FENCE="" CREDIT_OF=()

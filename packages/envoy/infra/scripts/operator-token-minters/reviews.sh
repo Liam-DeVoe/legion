@@ -3,12 +3,14 @@
 # operator-token-minters/reviews.sh: SubjectAccessReviews, how their answers are judged, who can
 # become a ServiceAccount with a finding, and the principals and rights a cluster adds. Sourced by
 # operator-token-minters.sh, whose header says what each step checks.
-# review KUBECONFIG PRINCIPALS RIGHTS: one SubjectAccessReview for each principal of the JSON array
-# PRINCIPALS ({principal, user, groups}) and each right of the JSON array RIGHTS, all sent as one
+# review KUBECONFIG PRINCIPALS RIGHTS [FENCE]: one SubjectAccessReview for each principal of the JSON
+# array PRINCIPALS ({principal, user, groups}) and each right of the JSON array RIGHTS, all sent as one
 # List, so a cluster is asked in one kubectl call. A review's answer is matched to its question by
 # the subject and the attributes the API server echoes in its spec. Writes a record of principal,
-# right label, allowed|refused|error and the evaluation error per review to $WORK/review.rec;
-# returns 1 with REVIEW_ERROR when the API server refused the call or did not answer every review.
+# right label, allowed|refused|error, the evaluation error, the API server's reason and the fence's
+# verdict on the right (review-answer.jq) per review to $WORK/review.rec; FENCE is the broker's pod
+# fence credited on this cluster (broker-fence.sh's FENCE_CREDITED), none on any other. Returns 1
+# with REVIEW_ERROR when the API server refused the call or did not answer every review.
 # PRINCIPALS and RIGHTS reach jq through files (--slurpfile), never its command line: a cluster's
 # principals and rights (3,183 and 508 on the operator's) are more than one argument may hold. Each
 # must be one JSON array (one_array), so an empty argument fails the reviews' build.
@@ -25,8 +27,8 @@ review() {
     REVIEW_ERROR="the API server refused the review (it needs create on subjectaccessreviews, container.subjectAccessReviews.create on GKE): $(first_line "$WORK/review.err")"
     return 1
   fi
-  if ! jq -r --slurpfile principals "$WORK/review-principals.json" --slurpfile rights "$WORK/review-rights.json" -L "$LIB" \
-    -f "$LIB/review-answer.jq" "$WORK/review.json" >"$WORK/review.rec" 2>"$WORK/review.err"; then
+  if ! jq -r --slurpfile principals "$WORK/review-principals.json" --slurpfile rights "$WORK/review-rights.json" \
+    --argjson fence "${4:-null}" -L "$LIB" -f "$LIB/review-answer.jq" "$WORK/review.json" >"$WORK/review.rec" 2>"$WORK/review.err"; then
     REVIEW_ERROR="the API server's answer to the reviews is not JSON: $(first_line "$WORK/review.err")"
     return 1
   fi
@@ -125,18 +127,30 @@ csr_chains() {
   done
   csr_reset
 }
+# judge_grant PRINCIPAL LABEL SUFFIX RESOURCE REASON POLICY RESIDUAL: the verdict on one grant a
+# review allowed, or a live role allows by name. POLICY is the broker's pod fence's policy that
+# refuses the right's use on the broker's pods (fence_fields, broker-fence.jq), or "": the grant is
+# a credit, carrying RESIDUAL when it is not "" (broker-fence.sh's credit), and finds no
+# ServiceAccount. Any other grant is a finding on RESOURCE, its right followed by SUFFIX, granted
+# where REASON says, and records a ServiceAccount it is (found_sa). A seed (seed: before its name)
+# is never a credit or a finding: it only seeds FOUND_SAS.
+judge_grant() {
+  if [ -n "$6" ]; then
+    [[ "$1" == seed:* ]] || credit "$1" "$2$3" "$4" "$5" "$6" "$7"
+    return 0
+  fi
+  found_sa "$1" "$2"
+  [[ "$1" == seed:* ]] || finding "$1" "$2$3" "$2" "$4" "$2" "$5"
+}
 # judge_reviews STEP SUFFIX RESOURCE: each review of $WORK/review.rec. The witness's must all be
-# allowed; every other allowed review is a finding on RESOURCE (the cluster), its right followed by
-# SUFFIX, granted where the API server's reason says, except a seed's, which only seeds FOUND_SAS,
-# the certificate signing chain's parts, which csr_part gathers for csr_chains (the caller runs it
-# after live_named, whose named approvals join the chain), and a right the broker's pod fence refuses
-# (CREDIT_OF, broker-fence.sh), a credit, which seeds nothing. Returns 1 when the witness was
-# refused.
+# allowed; each other allowed review is judged (judge_grant), but the certificate signing chain's
+# parts, which csr_part gathers for csr_chains (the caller runs it after live_named, whose named
+# approvals join the chain). Returns 1 when the witness was refused.
 judge_reviews() {
-  local principal label verdict error reason witness_refused=false
+  local principal label verdict error reason policy residual witness_refused=false
   FOUND_SAS=()
   csr_reset
-  while IFS="$US" read -r -u 4 principal label verdict error reason; do
+  while IFS="$US" read -r -u 4 principal label verdict error reason policy residual; do
     if [ "$principal" = witness ]; then
       [ "$verdict" = allowed ] || witness_refused=true
       continue
@@ -144,12 +158,7 @@ judge_reviews() {
     case "$verdict" in
       allowed)
         ! csr_part "$principal" "$label" "$reason" || continue
-        if [ -n "${CREDIT_OF[$label]:-}" ]; then
-          [[ "$principal" == seed:* ]] || fence_credit "$principal" "$label$2" "$3" "$reason" "${CREDIT_OF[$label]}"
-          continue
-        fi
-        found_sa "$principal" "$label"
-        [[ "$principal" == seed:* ]] || finding "$principal" "$label$2" "$label" "$3" "$label" "$reason"
+        judge_grant "$principal" "$label" "$2" "$3" "$reason" "$policy" "$residual"
         ;;
       error) unknown "$1" "the review of $principal for $label ended in an evaluation error, so its refusal proves nothing: $error" ;;
     esac
@@ -177,22 +186,21 @@ seed_named() {
   system_namespace "$ns" || return 1
   found_sa "system:serviceaccount:$ns:$name" "$4"
 }
-# follow_becomes KUBECONFIG STEP SUFFIX RESOURCE: who can become a ServiceAccount of FOUND_SAS holds
-# what it holds. In the ServiceAccount's namespace a principal becomes it by any namespaced right of
-# RIGHTS_TABLE (a pod or a workload controller runs as any ServiceAccount of its namespace; exec,
-# attach, an ephemeral container or a pod patch enters one; a rolebinding, bind or escalate grants
-# itself those; a token Secret is read) or by create, update or patch of a custom resource there,
-# and, by its name, by create serviceaccounts/token or impersonate (become-rights.jq). Each
-# principal of $WORK/principals.rec allowed one of these is a finding naming the chain, but a seed,
-# which is only followed; and so is a binding subject whose live role limits one of them by name (a
-# patch of one Deployment sets its serviceAccountName), read as live_named reads the others when it
-# read the cluster's roles. Each ServiceAccount so found is followed in turn, up to 5 steps; one
-# found in the fifth and not followed is UNKNOWN. A ServiceAccount that becomes only itself is no
-# finding, and a right the broker's pod fence refuses, while it is credited (broker-fence.sh), is a
-# credit, which finds no ServiceAccount.
+# follow_becomes KUBECONFIG STEP SUFFIX RESOURCE [FENCE]: who can become a ServiceAccount of
+# FOUND_SAS holds what it holds. In the ServiceAccount's namespace a principal becomes it by any
+# namespaced right of RIGHTS_TABLE (a pod or a workload controller runs as any ServiceAccount of its
+# namespace; exec, attach, an ephemeral container or a pod patch enters one; a rolebinding, bind or
+# escalate grants itself those; a token Secret is read) or by create, update or patch of a custom
+# resource there, and, by its name, by create serviceaccounts/token or impersonate
+# (become-rights.jq). Each principal of $WORK/principals.rec allowed one of these is judged
+# (judge_grant), and so is a binding subject whose live role limits one of them by name (a patch of
+# one Deployment sets its serviceAccountName), read as live_named reads the others when it read the
+# cluster's roles; FENCE is the cluster's credited fence, as review takes it. Each ServiceAccount so
+# found is followed in turn, up to 5 steps; one found in the fifth and not followed is UNKNOWN. A
+# ServiceAccount that becomes only itself is no finding.
 follow_becomes() {
-  local kube="$1" step="$2" suffix="$3" resource="$4" round sa rights label targets principal verdict error reason who why
-  local what id detail kind ns name
+  local kube="$1" step="$2" suffix="$3" resource="$4" fence="${5:-}" round sa rights label targets principal verdict error reason who why
+  local what id detail kind ns name policy residual
   local -A followed=() targets_of=() targets_why=()
   for ((round = 0; round < 5; round++)); do
     : >"$WORK/become.tsv"
@@ -203,53 +211,42 @@ follow_becomes() {
     done < <(printf '%s\n' ${FOUND_SAS[@]+"${!FOUND_SAS[@]}"} | sed '/^$/d' | sort)
     [ -s "$WORK/become.tsv" ] || return 0
     rights="$(jq -R -s -c -L "$LIB" --argjson table "$TABLE_JSON" --rawfile names "$WORK/api-resources" -f "$LIB/become-rights.jq" "$WORK/become.tsv")"
-    fence_credits "$rights"
     targets_of=() targets_why=()
     while IFS=$'\t' read -r label targets; do targets_of[$label]="$targets"; done < <(jq -r '.[] | [.label, (.targets | join(" "))] | @tsv' <<<"$rights")
     while IFS=$'\t' read -r why targets; do targets_why[$why]="$targets"; done < <(jq -r '.[] | [.why, (.targets | join(" "))] | @tsv' <<<"$rights")
-    if ! review "$kube" "$(principals_json "$WORK/principals.rec")" "$rights"; then
+    if ! review "$kube" "$(principals_json "$WORK/principals.rec")" "$rights" "$fence"; then
       unknown "$step" "$REVIEW_ERROR"
       return 0
     fi
-    while IFS="$US" read -r -u 4 principal label verdict error reason; do
+    while IFS="$US" read -r -u 4 principal label verdict error reason policy residual; do
       [ "$principal" != witness ] || continue
       case "$verdict" in
         allowed)
           who="${principal#seed:}"
           who="${who#system:serviceaccount:}"
           [ "${targets_of[$label]:-}" != "$who" ] || continue
-          if [ -n "${CREDIT_OF[$label]:-}" ]; then
-            [[ "$principal" == seed:* ]] || fence_credit "$principal" "$label$suffix" "$resource" "$reason" "${CREDIT_OF[$label]}"
-            continue
-          fi
-          found_sa "$principal" "$label"
-          [[ "$principal" == seed:* ]] || finding "$principal" "$label$suffix" "$label" "$resource" "$label" "$reason"
+          judge_grant "$principal" "$label" "$suffix" "$resource" "$reason" "$policy" "$residual"
           ;;
         error) unknown "$step" "the review of $principal for $label ended in an evaluation error, so its refusal proves nothing: $error" ;;
       esac
     done 4<"$WORK/review.rec"
     # The same rights limited by name in a live role, which a review naming nothing never finds.
     [ "${ROLES_OK:-false}" = true ] || continue
-    if ! named_grants "$rights" "$WORK/become-named.rec"; then
+    if ! named_grants "$rights" "$WORK/become-named.rec" "$fence"; then
       unknown "$step" "the live roles could not be read for who can become a found ServiceAccount by a right limited by name: $(first_line "$WORK/become-named.rec.err")"
       continue
     fi
-    while IFS="$US" read -r -u 6 what id detail kind ns name; do
-      case "$what" in grant | credit:*) ;; *) continue ;; esac
+    while IFS="$US" read -r -u 6 what id detail kind ns name policy residual; do
+      [ "$what" = grant ] || continue
       k8s_subject "$kind" "$ns" "$name"
-      [ "$what" != grant ] || ! seed_named "$kind" "$ns" "$name" "$detail" || continue
+      [ -n "$policy" ] || ! seed_named "$kind" "$ns" "$name" "$detail" || continue
       [ "$SUBJECT_OK" != true ] || continue
       targets=""
       for why in "${!targets_why[@]}"; do
         [[ "$detail" != *", $why" ]] || { targets="${targets_why[$why]}"; break; }
       done
       [ "$targets" != "${SUBJECT#system:serviceaccount:}" ] || continue
-      if [ "$what" != grant ]; then
-        fence_credit "$SUBJECT" "$detail$suffix" "$resource" "RBAC: $id limits it by name" "${what#credit:}"
-        continue
-      fi
-      finding "$SUBJECT" "$detail$suffix" "$detail" "$resource" "$detail" "RBAC: $id limits it by name"
-      found_sa "$SUBJECT" "$detail"
+      judge_grant "$SUBJECT" "$detail" "$suffix" "$resource" "RBAC: $id limits it by name" "$policy" "$residual"
     done 6<"$WORK/become-named.rec"
   done
   for sa in ${FOUND_SAS[@]+"${!FOUND_SAS[@]}"}; do
@@ -257,11 +254,10 @@ follow_becomes() {
       unknown "$step" "who can become a ServiceAccount with a finding is followed 5 steps; system:serviceaccount:$sa, found in the fifth, is not followed further"
   done
 }
-# remember_cluster KUBECONFIG STEP SUFFIX RESOURCE: keeps what follow_becomes needs of the cluster just
-# read (its principals, its discovery's custom resources, its bindings and roles with whether
-# live_named read them, and the broker's pod fence while it is credited there), for follow_members,
-# which runs after the IAM steps find the Workload Identity members of an RBAC finding's Google
-# account.
+# remember_cluster KUBECONFIG STEP SUFFIX RESOURCE [FENCE]: keeps what follow_becomes needs of the
+# cluster just read (its principals, its discovery's custom resources, its bindings and roles with
+# whether live_named read them, and its credited fence), for follow_members, which runs after the
+# IAM steps find the Workload Identity members of an RBAC finding's Google account.
 REMEMBERED=()
 remember_cluster() {
   local n="${#REMEMBERED[@]}" file
@@ -269,24 +265,23 @@ remember_cluster() {
   for file in api-resources bindings.json roles.json; do
     if [ -e "$WORK/$file" ]; then cp "$WORK/$file" "$WORK/remembered-$n.$file"; else : >"$WORK/remembered-$n.$file"; fi
   done
-  REMEMBERED+=("$1$US$2$US$3$US$4$US${ROLES_OK:-false}$US$CREDIT_FENCE")
+  REMEMBERED+=("$1$US$2$US$3$US$4$US${ROLES_OK:-false}$US${5:-}")
 }
 # follow_members MEMBERS: on every cluster remember_cluster kept, who can become a ServiceAccount of
 # MEMBERS (a JSON object of namespace:name to the Google account it acts as through Workload
 # Identity) holds what that account holds, so it is followed as follow_becomes follows a found one.
 follow_members() {
-  local n kube step suffix resource member file
+  local n kube step suffix resource fence member file
   for ((n = 0; n < ${#REMEMBERED[@]}; n++)); do
-    IFS="$US" read -r kube step suffix resource ROLES_OK CREDIT_FENCE <<<"${REMEMBERED[$n]}"
+    IFS="$US" read -r kube step suffix resource ROLES_OK fence <<<"${REMEMBERED[$n]}"
     cp "$WORK/remembered-$n.principals" "$WORK/principals.rec"
     for file in api-resources bindings.json roles.json; do cp "$WORK/remembered-$n.$file" "$WORK/$file"; done
     FOUND_SAS=()
     while IFS=$'\t' read -r member account; do
       FOUND_SAS[$member]="acts as $account through Workload Identity"
     done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"$1")
-    follow_becomes "$kube" "$step" "$suffix" "$resource"
+    follow_becomes "$kube" "$step" "$suffix" "$resource" "$fence"
   done
-  CREDIT_FENCE="" CREDIT_OF=()
 }
 # custom_rights KUBECONFIG STYLE: sets CUSTOM_RIGHTS, the JSON array, as rights_json writes rights,
 # of create, update and patch on each custom resource the API server's discovery lists as namespaced
@@ -345,32 +340,31 @@ admission_rights() {
   fi
   [ -z "$ADMISSION_ERROR" ]
 }
-# named_grants RIGHTS OUT: code-rbac.jq's read of the cluster's live bindings and roles
+# named_grants RIGHTS OUT [FENCE]: code-rbac.jq's read of the cluster's live bindings and roles
 # ($WORK/bindings.json and $WORK/roles.json) for the rules that limit a right of RIGHTS (a JSON array,
-# as rights_json writes rights) by name alone, its records to OUT and its errors to OUT.err; a right
-# the broker's pod fence refuses while it is credited (CREDIT_FENCE) is a credit record. RIGHTS
-# reaches jq through a file, never its command line, as review's do.
+# as rights_json writes rights) by name alone, its records to OUT and its errors to OUT.err, each
+# grant with the fence's verdict on its right under FENCE (the cluster's credited fence, as review
+# takes it). RIGHTS reaches jq through a file, never its command line, as review's do.
 named_grants() {
   printf '[]' >"$WORK/no-rights.json"
   printf '%s' "$1" >"$2.rights.json"
   jq -r -n --slurpfile rights "$WORK/no-rights.json" --slurpfile named_rights "$2.rights.json" --argjson live true \
-    --argjson fence "${CREDIT_FENCE:-null}" -L "$LIB" -f "$LIB/code-rbac.jq" "$WORK/bindings.json" "$WORK/roles.json" >"$2" 2>"$2.err"
+    --argjson fence "${3:-null}" -L "$LIB" -f "$LIB/code-rbac.jq" "$WORK/bindings.json" "$WORK/roles.json" >"$2" 2>"$2.err"
 }
-# live_named KUBECONFIG STEP SUFFIX RESOURCE RIGHTS: the rights a live role limits by name. RBAC
-# applies a rule with resourceNames only to a request that names one of them, so a review that names
-# nothing is refused for an update of one webhook configuration, a patch of one Deployment or a
-# pods/exec of one pod by name. The cluster's Roles and ClusterRoles (`kubectl get
+# live_named KUBECONFIG STEP SUFFIX RESOURCE RIGHTS [FENCE]: the rights a live role limits by name.
+# RBAC applies a rule with resourceNames only to a request that names one of them, so a review that
+# names nothing is refused for an update of one webhook configuration, a patch of one Deployment or
+# a pods/exec of one pod by name. The cluster's Roles and ClusterRoles (`kubectl get
 # roles,clusterroles -A`) are read against $WORK/bindings.json as the code step reads a render
 # (code-rbac.jq, by name alone): each rule whose resourceNames limit a right of RIGHTS (the JSON
-# array the cluster's reviews asked) is a finding for a binding subject k8s_subject does not allow,
-# its right followed by SUFFIX, on RESOURCE; a ServiceAccount so found is followed as judge_reviews'
-# are (FOUND_SAS). A part of the certificate chain so limited (an approval by name, whose name the
-# requester picks) goes to csr_part, so it joins the signers judge_reviews' reviews allowed; the
-# caller runs csr_chains after this. A right the broker's pod fence refuses, while it is credited
-# (broker-fence.sh), is a credit. Runs after judge_reviews; a refused list is UNKNOWN naming the
-# permission.
+# array the cluster's reviews asked) is judged for a binding subject k8s_subject does not allow
+# (judge_grant), its right followed by SUFFIX, on RESOURCE, under FENCE (the cluster's credited
+# fence, as review takes it). A part of the certificate chain so limited (an approval by name, whose
+# name the requester picks) goes to csr_part, so it joins the signers judge_reviews' reviews allowed;
+# the caller runs csr_chains after this. Runs after judge_reviews; a refused list is UNKNOWN naming
+# the permission.
 live_named() {
-  local what id detail kind ns name
+  local what id detail kind ns name policy residual
   # ROLES_OK: whether $WORK/roles.json holds this cluster's roles, for follow_becomes's named read.
   ROLES_OK=false
   [ "$BINDINGS_OK" = true ] || return 0
@@ -378,23 +372,18 @@ live_named() {
     unknown "$2" "the API server refused the roles' list (it needs list on roles and clusterroles, container.roles.list and container.clusterRoles.list on GKE), so a right a role limits by name is not read: $(first_line "$WORK/roles.err")"
     return 0
   fi
-  if ! named_grants "$5" "$WORK/named.rec"; then
+  if ! named_grants "$5" "$WORK/named.rec" "${6:-}"; then
     unknown "$2" "the API server's list of roles is not JSON: $(first_line "$WORK/named.rec.err")"
     return 0
   fi
   ROLES_OK=true
-  while IFS="$US" read -r -u 6 what id detail kind ns name; do
-    case "$what" in grant | credit:*) ;; *) continue ;; esac
+  while IFS="$US" read -r -u 6 what id detail kind ns name policy residual; do
+    [ "$what" = grant ] || continue
     k8s_subject "$kind" "$ns" "$name"
-    [ "$what" != grant ] || ! seed_named "$kind" "$ns" "$name" "$detail" || continue
+    [ -n "$policy" ] || ! seed_named "$kind" "$ns" "$name" "$detail" || continue
     [ "$SUBJECT_OK" != true ] || continue
-    if [ "$what" != grant ]; then
-      fence_credit "$SUBJECT" "$detail$3" "$4" "RBAC: $id limits it by name" "${what#credit:}"
-      continue
-    fi
     ! csr_part "$SUBJECT" "$detail" "RBAC: $id limits it by name" || continue
-    finding "$SUBJECT" "$detail$3" "$detail" "$4" "$detail" "RBAC: $id limits it by name"
-    found_sa "$SUBJECT" "$detail"
+    judge_grant "$SUBJECT" "$detail" "$3" "$4" "RBAC: $id limits it by name" "$policy" "$residual"
   done 6<"$WORK/named.rec"
 }
 # bound_subjects KUBECONFIG: the cluster's binding subjects (the header's "Binding subjects"), added
