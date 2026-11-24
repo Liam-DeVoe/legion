@@ -691,14 +691,17 @@ What each part is for:
   refused: the daemon's own wake to an architect is a notice); and the words, as `prompt` in the
   key or as `prompt_file`, a path, never both and never neither. On `work_back` a hook may also
   name `moves`, the moves it counts, each written `<from>-<to>` with two workflow phases, which
-  differ but in `step-step` (`testing-implementing`, `reviewing-implementing`,
-  `merging-implementing`, or any other of the 41 moves back a task's line can make, such as
-  `testing-reviewing` on a task whose reviewer step comes before its tester step, and
-  `implementing-step` or `step-step` on a task with a step of a role the deployment defines, which
-  runs as `step`), or the word `any`, which is also what a hook that leaves the key out takes. A
-  pair that no line makes as a move back is refused, since the hook would never fire: a move into
-  `retro` or `merging`, which end every line, and a move from `implementing` to `testing`,
-  `reviewing` or `accepting`, whose steps come after the implementer's. A hook fires
+  differ but in `step-step`, or the word `any`, which is also what a hook that leaves the key out
+  takes. A pair names a move back some task's line can make: from a step to any step before it in
+  the task's order (`testing-implementing`, `reviewing-implementing`, or `testing-reviewing` on a
+  task whose reviewer step comes before its tester step), and from the retro or the merge to any
+  step, or from the merge to the retro (`merging-implementing`, `merging-retro`). A step of a role
+  a deployment defines runs as `step` and may stand at any place of a task, so the pairs into and
+  out of `step`, and `step-step` from one such step back to another, are moves back too; the
+  loader takes them whatever roles this deployment defines. A pair that no line makes as a move
+  back is refused, since the hook would never fire: a move into `retro` or `merging`, which end
+  every line, and a move from `implementing` to `testing`, `reviewing` or `accepting`, whose steps
+  come after the implementer's. A hook fires
   when the move is one it counts and the counts of the moves it
   counts, added up, are then a whole multiple of its `every`
   ([what it writes](/legion/legion/concepts/#review-signalling)). Each refusal at load names the

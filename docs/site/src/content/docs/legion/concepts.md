@@ -538,11 +538,16 @@ Legion uses GitHub's own review mechanisms rather than labels:
   with a forward merge, which no reviewer asked for. The cap's message names both numbers, the
   rounds counted and the conflict rounds left out.
 - Each move back is counted by its kind, as the pair `<from>-<to>` of the phase it leaves
-  and the phase it goes to — `testing-implementing`, `reviewing-implementing`, `merging-implementing`,
-  or any other of the 41 moves back a task's line can make, such as `testing-reviewing` on a
-  task whose reviewer step comes before its tester step, or `step-step` from one step of a role
-  the deployment defines back to another —
-  beside the round count, and a move made while the head conflicts with its base raises no pair.
+  and the phase it goes to, beside the round count, and a move made while the head conflicts
+  with its base raises no pair. A move back goes to an earlier phase of the task's line: from a
+  step to any step before it in the task's order (`testing-implementing`,
+  `reviewing-implementing`, or `testing-reviewing` on a task whose reviewer step comes before its
+  tester step), and from the retro or the merge to any step, or from the merge to the retro
+  (`merging-implementing`). The tester's, the reviewer's and the acceptance step come after the
+  implementer's, and the retro and the merge end every line, so no move back goes from
+  `implementing` to one of those three or into the retro or the merge. A step of a role the
+  deployment defines runs as `step` at the place its task gives it, so it adds the moves into and
+  out of `step` from that place, and `step-step` from one such step back to another.
   `GET /legion/v1/state` serves the counts as `workers.implementer.backwardMoves`, left out for an
   issue that has had no move back.
 - **Hooks** put a deployment's own words in front of the workers on a move back. A hook is an
