@@ -1545,7 +1545,7 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 	// steps, a row for each step a role ran, each naming the claim of the step's agent its entry
 	// wrote, which every reader of the role's worker reads (WorkerClaim) and every start of that step
 	// names (workflow's stepReach). A row of no step would be read as the role's own token while
-	// the member's step is a keyed agent's or a second agent's of the role, so a retry of a held
+	// another claim of the role works the member's step, so a retry of a held
 	// member's phase would queue the step's work for its agent and every reader would send it to
 	// another.
 	//

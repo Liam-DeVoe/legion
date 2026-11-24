@@ -625,9 +625,8 @@ func (r *Runtime) slotsDrift(agents map[claim.Agent]claim.Role, u *unstructured.
 // asks name both as the slot of a claim (claim.Token.Slot, the agent its token ends in, which can
 // be a name no role has, such as the second implementer of a plan, `implementer-2`) and as the role
 // of a start's step, whose own resources (its role_config_files overlays among them) a pod built
-// before the deployment defined it lacks as it lacks a slot of that name: a claim's slot and its
-// step's role can be two names, a second agent's (`implementer-2` on a step of `implementer`) or a
-// keyed agent's on the step of another role, and the claim's token names the slot alone.
+// before the deployment defined it lacks as it lacks a slot of that name: a slot is named by its
+// agent, not by its step's role, and the claim's token names the slot alone.
 func (r *Runtime) PodLacksRole(issue string, name claim.Role) (string, bool) {
 	sandbox, err := issueSandboxName(r.project, issue)
 	if err != nil {

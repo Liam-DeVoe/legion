@@ -480,9 +480,8 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 // backstop's due time are stamped with (At, the caller's clock), the backstop the stop of the
 // issue's open phase's worker arms (the idle release's backstop_minutes; zero arms none, as
 // where the deployment releases no pod), and the claim that works an issue's open phase, read in
-// the cancel's transaction (OpenWorker, the workflow's workflow.OpenWorker: at step, the claim the
-// record gives the running step, which can be the claim of a second agent of the role in a task,
-// `…-implementer-2` beside `…-implementer`, or a keyed agent's beside the role's own claim), which
+// the cancel's transaction (OpenWorker, the workflow's workflow.OpenWorker: at step, the claim
+// record.WorkerClaim gives the running step), which
 // the store does not restate (nil arms no backstop). At is required of every cancel, since whether
 // the project is paused is read inside the cancel's own transaction; a cancel made while the
 // project runs reads nothing else of it.
@@ -514,9 +513,9 @@ type ReleaseCancelled struct {
 // past its bound or an idle rule would otherwise take a pod that holds the stopped roles'
 // unpushed work; and, for the worker of the issue's open phase serving the issue's generation, its
 // backstop, which the record arms only where the stop owes no launch. That worker is a claim
-// (ReleaseCancelPause.OpenWorker), read once for the cancel: at step the claim of a second agent
-// of the role in a task, `…-implementer-2` beside `…-implementer`, or of a keyed agent works the
-// step beside the role's own claim, which gets none. A wake taken since is left open: it is the
+// (ReleaseCancelPause.OpenWorker), read once for the cancel: at step, the claim record.WorkerClaim
+// gives the step. Two claims of one issue can hold one role, and the one that works no step gets
+// none. A wake taken since is left open: it is the
 // launch the role is owed, and its start row runs at the resume. The caller holds the issue's lock
 // and held's row for share.
 func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string, held Pause, roles []releasedRole,

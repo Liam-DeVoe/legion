@@ -1124,8 +1124,7 @@ var _ runtime.WorkspaceBundler = (*Runtime)(nil)
 // running pod: its shim builds the bundle in the workspace it already works in, so a claim with
 // no locator, one whose pod is not the recorded one, and one with no connection are each a
 // refusal rather than an empty bundle. The claim is named by its token rather than derived from a
-// role, since a second agent of a role works its step in a claim of its own (`…-implementer-2`),
-// and a keyed agent works a step of another role in the claim it started.
+// role, since two claims of one issue can hold one role (record.WorkerClaim).
 //
 // It is the claim's shim that answers, never its launcher, so a release has to ask before it
 // stops the claim's process: the idle release's save is a row of its own ahead of its stops

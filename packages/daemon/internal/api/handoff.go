@@ -508,7 +508,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 
 // completionWho is who completed, as a completion's key names it (answerCompletion): the grant's
 // role, and `@<agent>` after it where the grant's claim is an agent of another name than the role,
-// a second agent of the role in a task, `…-implementer-2`, or a keyed agent on that role's step.
+// so two claims of one issue that hold one role (record.WorkerClaim) read apart.
 func completionWho(grant credential.Grant) string {
 	who := string(grant.Role)
 	if _, agent, ok := grant.Claim.Cut(); ok && string(agent) != string(grant.Role) {

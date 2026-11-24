@@ -169,8 +169,8 @@ export async function setListsState(state: ListsState): Promise<void> {
 /** One Legion agent registry entry as the daemon writes it to the listener
  *  (`packages/envoy/internal/legionagents` `Entry`); `role_token` is the claim token of the
  *  session's agent, `legion-<legion_project>-<issue>-<agent>`, and `role` the role of the step that
- *  agent runs, which need not be its token's last part: a keyed agent can run a step of another
- *  role, and a second agent of a role has a name of its own (`implementer-2`). */
+ *  agent runs, which need not be its token's last part: a token names its agent, not the role of
+ *  its step. */
 export interface FakeLegionAgent {
   session_id: string;
   legion_project: string;

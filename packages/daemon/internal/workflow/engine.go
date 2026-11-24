@@ -1858,7 +1858,7 @@ func missingList(list []record.VolumeMissing) string {
 // agent's registration chose, quoted the same way.
 //
 // A claim is its agent's, so the claim that loses its session can be one whose agent is not named
-// for the step's role: a keyed agent's, or a second agent's of the role. The sentence then names
+// for the step's role. The sentence then names
 // the agent and the step's role, and says that each later step of that agent runs in the fresh
 // session. A claim named by its role, the claim of every step of an issue with no plan rows, keeps
 // the sentence it always had.
@@ -1870,9 +1870,8 @@ func (e *Engine) sessionLost(ctx context.Context, tx pgx.Tx, fact intake.Session
 	kind := record.NoticeKind("session-lost")
 	const fresh = "It is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives."
 	// subject names who lost the session and runner who runs the fresh agent: the step's role, or,
-	// for a claim whose agent is not named for the step's role (a keyed agent's, or a second
-	// agent's of the role), that agent on its step, whose later steps run in the fresh session too
-	// (later).
+	// for a claim whose agent is not named for the step's role, that agent on its step, whose later
+	// steps run in the fresh session too (later).
 	subject, runner, later := fmt.Sprintf("The %s of %s", fact.Role, issue.Key), "The "+string(fact.Role), ""
 	if _, agent, ok := fact.Claim.Cut(); ok && agent != claim.Agent(fact.Role) {
 		subject = fmt.Sprintf("The agent %s of %s, on its %s step,", agent, issue.Key, fact.Role)

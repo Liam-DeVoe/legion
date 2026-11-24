@@ -653,9 +653,8 @@ type phaseWorker struct {
 // token (claim.ProjectToken), and byKey is the project's live records by key, which the tree
 // roots are read from and which the slot repair walks its slots and its issues past review
 // through. entries is the caller's one batched read of the phases rows of its candidates
-// (record.Store.PhaseEntries), which the claim of the role's worker is read from
-// (record.WorkerClaimOf): a second agent of the role in a task, `…-implementer-2`, or a keyed agent
-// on a step of another role is that step's worker.
+// (record.Store.PhaseEntries), which the claim of the role's worker is read from: the claim
+// record.WorkerClaimOf gives the step.
 //
 // Its two callers are the repairs over phase workers: the tick's silent list (silentWorkers,
 // through phaseWorkers) and the selection of the roles behind the entry their phases row names
@@ -2676,10 +2675,9 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			}
 		}
 		standing := midPhaseMember{issue: member, owner: owner}
-		// The phase's owner is the claim the promotion's start reaches: the agent of the step the
-		// member stands in, which can be a second agent of the role in a task, `…-implementer-2`,
-		// or a keyed agent on a step of another role, read as every
-		// reader of a role's worker reads it (record.WorkerClaim), off the row the step's entry
+		// The phase's owner is the claim the promotion's start reaches: the claim
+		// record.WorkerClaim gives the step the member stands in, read as every reader of a role's
+		// worker reads it, off the row the step's entry
 		// wrote it on. The member keeps its generation and its rows keep their steps through the
 		// re-admission, so it is the claim the start names (workflow.Engine.StartPromotedWorker).
 		// Its token's refusal stays the fact's, as it was: the phase's own role is the member's
@@ -3048,8 +3046,7 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 	}
 	// The candidates are gathered first and their phases rows read in one statement before any is
 	// weighed, because the claim of each candidate's phase worker is read from its row
-	// (phaseWorkerOf): a second agent of the role in a task, `…-implementer-2`, or a keyed agent on
-	// a step of another role is that step's worker.
+	// (phaseWorkerOf): the claim record.WorkerClaimOf gives the step.
 	type candidate struct {
 		issue      record.Issue
 		admittedAt time.Time
@@ -3473,9 +3470,8 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 		return finished, nil
 	}
 	// The claim each kept row would start is the claim it names, and for a row that names none
-	// the claim of its role's worker (record.WorkerClaimOf), read from those rows' phases rows in
-	// one statement: a second agent of the role in a task, `…-implementer-2`, or a keyed agent on a
-	// step of another role is that step's worker. A row whose
+	// the claim record.WorkerClaimOf gives its role's step, read from those rows' phases rows in
+	// one statement. A row whose
 	// issue and role yield no claim token has no run to read, as the slot repair's holders have
 	// none (resumeSlottedWorkers): it stays owed and the rule passes over it rather than failing
 	// the whole fact.

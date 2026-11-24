@@ -1878,9 +1878,8 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 // (MergeForwardReview).
 //
 // Role is the recipient, and Step the message (mergeForwardRoles says which role each step goes
-// to). Claim is the claim the message reaches: the claim of the worker on Role's step when the
-// workflow wrote the row (the workflow's addressRoles), so a second agent of the role in a task,
-// `…-implementer-2`, or a keyed agent working that step is the
+// to). Claim is the claim the message reaches: the claim WorkerClaim gave Role's step when the
+// workflow wrote the row (the workflow's addressRoles), so the agent working that step is the
 // one told; "" for a row the release before wrote, which reaches the claim the record gives Role's
 // step when it runs. Head is the head that conflicted, Landed the head the merge left ("" before it
 // lands), Base the base branch, Phase the phase the issue stays in, PullRequest the pull request's

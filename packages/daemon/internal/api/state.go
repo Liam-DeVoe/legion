@@ -824,9 +824,8 @@ type Issue struct {
 	// (record.PhaseRow.Entry, the role phase.RoleFor names for that phase, and at step the role
 	// of the running step, StepRole), and GivenEntry the entry of the last task the claim of the
 	// worker on that role's step was queued (supervise.Claim.GivenEntry; the worker is the claim
-	// the record gives the step, record.WorkerClaim, which can be the claim of a second agent of
-	// the role in a task, `…-implementer-2` beside `…-implementer`, or a keyed agent's beside the
-	// role's own claim). The daemon sends the entry's own work to a worker whose given number is
+	// record.WorkerClaim gives the step). The daemon sends the entry's own work to a worker whose
+	// given number is
 	// below the entry its row names, on every admission pass and on a sweep of its own each minute
 	// (workflow.OwedEntry, admit's resumeSlottedWorkers), so a reader tells a role holding the
 	// work its row names from one the daemon has still to reach.
@@ -1823,10 +1822,9 @@ func StrandedByMove(stranded []StrandedClaim, suspended Suspenders) map[Stranded
 
 // Name is the claim as the boot's line and `legion state` name it: `<issue> <role>` for the claim
 // of an agent named for its role, whose token the issue and the role spell (and for an entry that
-// names no token), and `<issue> <role> (claim <token>)` for every other claim: an agent named for
-// another role, which holds the role for its step, or a second agent of one role, `implementer-2`.
-// Two claims of one role on one issue are then named apart, and the token is what `legion claims`
-// takes.
+// names no token), and `<issue> <role> (claim <token>)` for every other claim. Two claims of one
+// issue can hold one role (record.WorkerClaim), and they are then named apart; the token is what
+// `legion claims` takes.
 func (c StrandedClaim) Name() string {
 	named := c.Issue + " " + string(c.Role)
 	if _, agent, ok := c.Token.Cut(); ok && string(agent) != string(c.Role) {

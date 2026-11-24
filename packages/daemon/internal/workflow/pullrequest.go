@@ -695,8 +695,7 @@ func leftMergingAt(issue record.Issue, lingers bool, pr *record.PullRequest, num
 // nothing else tells anybody it is missing - the implementer's completion was applied with GitHub
 // unread, or the pull request it read was closed without merging since. The notice names the
 // issue, the repository, the branch and the handoff commit, and the topic of the implementer to
-// tell: the claim that works the implementer's step (workerClaim), which a second agent of the
-// role in a task, `…-implementer-2`, or a key's agent can be,
+// tell: the claim record.WorkerClaim gives the implementer's step (workerClaim),
 // not a topic spelled from the role. It says what to do. It tells nothing
 // when the issue has left implementing, its implementer's handoff is another commit, or an open or
 // merged pull request is recorded: the read asked GitHub before the record changed, or the merge

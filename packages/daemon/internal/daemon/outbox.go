@@ -2251,10 +2251,8 @@ func (r *outbox) updateAskLeftRound(row record.OutboxRow, payload record.UpdateA
 // the row is published to (publishToRole and publishKeptToRole, under notify.RoleTopicPrefix):
 // held, the claim the row's producer named, where it names one; otherwise the claim of the worker
 // on role's step over the issue's phases rows as the record holds them when the row runs, read in
-// a transaction of its own (record.ReadWorkerClaim). A step's agent can be a second agent of the
-// role in a task, which works the step in a claim of its own (`…-implementer-2` beside
-// `…-implementer`), or the agent of a key, which works the step in the claim it started on an
-// earlier step of another role, so the role's own token would reach no agent or the wrong one.
+// a transaction of its own (record.ReadWorkerClaim). Two claims of one issue can hold one role
+// (record.WorkerClaim), so the role's own token would reach no agent or the wrong one.
 // issue is the row's own (record.OutboxRow.Issue),
 // or for a pause's stop keyed by the project the issue its payload names (pauseStop).
 func (r *outbox) workerToken(ctx context.Context, issue string, role claim.Role, held claim.Token) (claim.Token, error) {
@@ -2466,9 +2464,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	}
 	// The claim the row acts on is the one it names: the claim a phase worker's start was queued
 	// for, or the one stored claim a row of another op stands for. A row that names none, one the
-	// release before wrote, acts on the claim of the worker on its role's step (record.WorkerClaim),
-	// which can be the claim of a second agent of the role in a task, `…-implementer-2`, or of a
-	// key's agent that started on an earlier step of another role.
+	// release before wrote, acts on the claim record.WorkerClaim gives its role's step.
 	token := payload.Claim
 	if token == "" {
 		if token, err = record.WorkerClaim(r.project, row.Issue, payload.Role, rows); err != nil {
@@ -2561,10 +2557,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// A start whose claim's slot or step's role the issue's live pod was built before waits on
 		// this row, before it creates, retrees or hands anything to a claim: a launch into that pod
 		// would replace it with the issue's disk, and only the pod's update round or its release
-		// may. The claim runs in the slot of its agent (claim.Token.Slot): the role's own for a claim
-		// named by its role, a keyed agent's first role's for a step of another role, whose own
-		// resources the launch needs too, and a name of its own for a second agent of one role
-		// (`implementer-2`). A token that names no slot runs in no pod, and the start is refused. A
+		// may. The claim runs in the slot of its agent (claim.Token.Slot), which need not be its
+		// step's role, whose own resources the launch needs too. A token that names no slot runs in
+		// no pod, and the start is refused. A
 		// start with no task of an agent the plan in force no longer names finishes without a wait
 		// (agentLeftItsPlan).
 		slot, ok := token.Slot()
@@ -3997,8 +3992,8 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 // both, since the pod's launcher of a name serves the slot of that name). A launch needs the
 // slot's launcher, Secret and volumes and the role's own pod resources, its role_config_files
 // overlays among them, and a launch into a pod that lacks either would replace it, ending every
-// agent in it and taking the issue's disk with everything they did not push. A keyed agent's slot
-// and its step's role can be two names, as can a second agent's. It answers a wait, whose text
+// agent in it and taking the issue's disk with everything they did not push. A slot is named by
+// its agent, not by its step's role, so the two can differ. It answers a wait, whose text
 // begins with pods.StartWaitsForPodPrefix, names what the pod lacks (runtime.PodLacks), and is
 // runtime.ErrAwaitsPodUpdate too, and the row tries again on its own backoff; once the pod is gone
 // — released, or replaced by its update round, which a pod without a slot of its plan opens by its
@@ -4051,8 +4046,8 @@ func (r *outbox) roleWaitsForItsPod(ctx context.Context, row record.OutboxRow, i
 // stays where it stood, and the start of a step a later version gives that agent carries its task,
 // and waits for the round that version's drift opens.
 //
-// Only an agent whose slot is a name of its own rather than the step's role can be such an agent:
-// the second agent of a role, `implementer-2`, or a keyed agent named for another role. The plan's
+// Only an agent whose slot, named by its agent (claim.Token.Slot), is not its step's role can be
+// such an agent. The plan's
 // agents are read as the runtime's drift reads its slots, by the one reader of them
 // (store.Store.PlanAgents); an issue with no plan rows names no agent. A runtime with no pods
 // answers false.
