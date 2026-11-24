@@ -63,6 +63,7 @@ from typing import NamedTuple
 from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, calls, exact, repo_files, run
 from ci_filter_coverage import at as at_in, gate as gate_in
 from go_build_tags import go_skips_dir, tag_sets
+from legion_targets import legion_targets
 
 ENVOY = "packages/envoy"
 DAEMON = "packages/daemon"
@@ -1105,7 +1106,7 @@ def go_notices_runs():
     script, and ci-caches.yaml's notices job runs the same one to fill the cache lint restores."""
     started_by = at("lint", NOTICES_STEP)
     out = []
-    for target in targets(GO_TARGETS, "legion"):
+    for target in legion_targets(GO_TARGETS):
         goos, goarch = target.split("/")
         out.append(script_run(NOTICES_LOOPS, '../../scripts/go-third-party-notices.sh "$notices/legion-${target%/*}-${target#*/}" ./cmd/legion',
                               started_by, DAEMON, ["./cmd/legion"], mode="build",
@@ -1140,7 +1141,7 @@ def legion_release_paths_runs():
     the environment that script's build gives the target."""
     started_by = at("lint", RELEASE_PATHS_STEP)
     out = []
-    for target in targets(GO_TARGETS, "legion"):
+    for target in legion_targets(GO_TARGETS):
         goos, goarch = target.split("/")
         out.append(script_run(RELEASE_BUILD_LEGION, 'for_target "$target" go -C packages/daemon list "$@" ./cmd/legion',
                               started_by, DAEMON, ["./cmd/legion"], mode="build",
@@ -2516,6 +2517,7 @@ SCRIPT_TEST_GATES = [
                                   "release-section's gh calls, which the stub gh answers"),
         (f"{SCRIPTS}/release-bump.sh", "release-push.sh:995 runs it for `version`, and the version cases read its refusals"),
         (NOTICES_LOOPS, "release-push.test.sh's go-release-notices.sh case symlinks it into a fixture and runs it over an empty list"),
+        (f"{SCRIPTS}/legion_targets.py", "release-push.test.sh's two-readers case gives it each file it gives legion-targets"),
         (".github/workflows/release.yaml", "release-push.test.sh's worker_image_release and legion archive check cases read "
                                            "those steps out of it and run them"),
         (".github/workflows/release-envoy-listener.yaml",
@@ -2767,6 +2769,7 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
         (f"{SCRIPTS}/go_build_tags.py", "the build-tag reader rule 20 imports, linked in beside it"),
         (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh's derived function imports this table to derive the plain step's -run lists"),
+        (f"{SCRIPTS}/legion_targets.py", "ci_job_reads.py, which the derived function imports, reads the legion list through it"),
         (".github/workflows/ci-job-typecheck.yaml", "check-ci-filters.test.sh runs its darwin vet step's own run text "
                                                     "over a module with a negated tag"),
         (FORCED_ORDER, "check-ci-filters.test.sh reads its go flags, which must pass -tags odatrace, the one name "
@@ -2796,6 +2799,7 @@ SCRIPT_TEST_GATES = [
         ("packages/envoy/scripts/database-skips.sh", "its last case hashes this script, the one AUDITED_SCRIPTS reads"),
         ("packages/envoy/scripts/backend-count.sh", "its last case hashes this script, which AUDITED_SCRIPTS reads too"),
         (f"{SCRIPTS}/ci_job_reads.py", "its last case imports this file for the reads this gate declares"),
+        (f"{SCRIPTS}/legion_targets.py", "ci_job_reads.py, which its last case imports, reads the legion list through it"),
     ]),
 ]
 
@@ -4118,6 +4122,7 @@ GATES = [
                                "local action a step's `uses:` names, for the inputs it checks"),
         (".github/scripts/ci_filter_coverage.py", "check-ci-filters.sh's engine"),
         (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
+        (".github/scripts/legion_targets.py", "ci_job_reads.py reads the legion list through it"),
         (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and "
                                                  "ci-caches.yaml, which ci_filter_coverage.main() runs"),
         (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it, and "
