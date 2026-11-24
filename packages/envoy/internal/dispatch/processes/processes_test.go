@@ -505,6 +505,13 @@ func TestARefusalBesideARowThatStopsHeartbeatingIsAdmittedOnceTheRowLapses(t *te
 		answered <- registerAnswer{registration: registration, err: err}
 	}()
 	fake.AwaitArmed(t, "Register's retry gap", 1)
+	// A newcomer admitted at once would arm its heartbeat's gap (Registration.heartbeat) here
+	// instead, for the same deadline, so the timer alone does not tell the two apart. Admission
+	// commits the newcomer's row (tryRegister) before RegisterOn starts that heartbeat, so the
+	// dead row alone is live while the newcomer is refused and waits.
+	if got := liveIDs(t, database); !slices.Equal(got, []string{dead}) {
+		t.Fatalf("live = %v once a timer was armed on the newcomer's clock, want the dead row %s alone: the newcomer was admitted beside it at once rather than refused and left waiting for it to lapse", got, dead)
+	}
 	ageHeartbeat(t, database, dead, LiveWindow+time.Second)
 	fake.Advance(HeartbeatInterval)
 	got := testwait.Receive(t, "the newcomer's answer once the dead row lapsed", answered)

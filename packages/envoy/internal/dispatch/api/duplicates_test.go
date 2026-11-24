@@ -170,7 +170,7 @@ func TestASpentGateBoundEndsTheGatesContextBeforeItIsReturned(t *testing.T) {
 
 func TestCreateIssueDuplicateRefusesANearCopyOfAnOpenIssue(t *testing.T) {
 	t.Parallel()
-	handler, _ := newTestHandlerWithStore(t)
+	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
 	first := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -210,7 +210,7 @@ func TestCreateIssueDuplicateRefusesANearCopyOfAnOpenIssue(t *testing.T) {
 
 func TestCreateIssueDuplicateCreatesACopyOfADoneIssue(t *testing.T) {
 	t.Parallel()
-	handler, _ := newTestHandlerWithStore(t)
+	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
 	first := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -234,7 +234,7 @@ func TestCreateIssueDuplicateCreatesACopyOfADoneIssue(t *testing.T) {
 
 func TestCreateIssueDuplicateCreatesACopyOfAnAncestor(t *testing.T) {
 	t.Parallel()
-	handler, _ := newTestHandlerWithStore(t)
+	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
 	// The grandparent is the only near copy in the project, so a gate that leaves out the parent
@@ -267,7 +267,7 @@ func TestCreateIssueDuplicateCreatesACopyOfAnAncestor(t *testing.T) {
 
 func TestCreateIssueDuplicateCreatesATextSharingOnlyCommonWords(t *testing.T) {
 	t.Parallel()
-	handler, _ := newTestHandlerWithStore(t)
+	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -287,7 +287,7 @@ func TestCreateIssueDuplicateCreatesATextSharingOnlyCommonWords(t *testing.T) {
 
 func TestCreateIssueDuplicateForcePassesTheGate(t *testing.T) {
 	t.Parallel()
-	handler, _ := newTestHandlerWithStore(t)
+	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -305,7 +305,7 @@ func TestCreateIssueDuplicateForcePassesTheGate(t *testing.T) {
 
 func TestCreateIssueDuplicateIgnoresACitedIssueKey(t *testing.T) {
 	t.Parallel()
-	handler, _ := newTestHandlerWithStore(t)
+	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
 	cited := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -436,7 +436,7 @@ func TestCreateIssueDuplicateKeepsACopyThatTemplateIssuesWouldCrowdOut(t *testin
 
 func TestCreateIssueDuplicateScopesTheGateToTheProjectAndSkipsExternal(t *testing.T) {
 	t.Parallel()
-	handler, _ := newTestHandlerWithStore(t)
+	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 	createDuplicateTestProject(t, handler, "OTHER")
 
@@ -462,7 +462,7 @@ func TestCreateIssueDuplicateScopesTheGateToTheProjectAndSkipsExternal(t *testin
 
 func TestCreateIssueDuplicateOrdersCandidatesByScore(t *testing.T) {
 	t.Parallel()
-	handler, _ := newTestHandlerWithStore(t)
+	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "ORDER")
 
 	// Three open issues holding progressively more of the new text's words. Each is forced in,
@@ -561,7 +561,7 @@ func TestCreateIssueDuplicateRefusesACopiedTitleWhoseWordsAreCommon(t *testing.T
 // tests fail at this head with `POST /api/v1/issues failed: 409` on the second create.
 func TestCreateIssueDuplicateCreatesTwoTitlesThatDifferInTheirOneMeaningWord(t *testing.T) {
 	t.Parallel()
-	handler, _ := newTestHandlerWithStore(t)
+	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "AGT")
 
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -582,7 +582,7 @@ func TestCreateIssueDuplicateCreatesTwoTitlesThatDifferInTheirOneMeaningWord(t *
 // created.
 func TestCreateIssueDuplicateRefusesACopiedSpecWhoseListIsRenumbered(t *testing.T) {
 	t.Parallel()
-	handler, _ := newTestHandlerWithStore(t)
+	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "LIST")
 
 	first := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{

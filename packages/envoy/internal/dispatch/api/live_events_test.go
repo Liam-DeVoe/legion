@@ -604,7 +604,19 @@ func TestAnEventsViewNamesOnlyItsKindAndItsSinceIsAnEventID(t *testing.T) {
 	}
 	testwait.Span(t, 300*time.Millisecond, refusedViewWhy)
 	client.sentNothing(t, "after every refused events view")
-	if subscribers := relaySubscribers(rig.served.eventRelay); subscribers != 0 {
+	// The relay counts a subscription only once its generation runs, and a subscription that
+	// starts a generation first waits for the event horizon (firstRelayCursor), which an open write
+	// anywhere on the instance holds back. subscribe marks starting before that wait, so a refused
+	// view's subscription still inside it shows there. It is read before the count: a subscription
+	// past that wait by the count's read is counted.
+	relay := rig.served.eventRelay
+	relay.mu.Lock()
+	starting := relay.starting != nil
+	relay.mu.Unlock()
+	if starting {
+		t.Fatal("the relay is starting a generation after every events view was refused: a refused view's subscription is waiting for the event horizon")
+	}
+	if subscribers := relaySubscribers(relay); subscribers != 0 {
 		t.Fatalf("the relay holds %d subscriptions after every events view was refused", subscribers)
 	}
 	// The view and the resume each kind takes, which the refusals above differ from: these start.

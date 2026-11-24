@@ -411,8 +411,11 @@ func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 	// A send the window had held until the connection came back would be written now, by the
 	// window's own goroutine: the client keeps no reconnect buffer (ReconnectBufSize -1), so no
 	// state the client or the server reports shows such a send, and a message sent after the
-	// reconnect is not ordered after it.
-	testwait.Span(t, 500*time.Millisecond, "a send the window held until the reconnect would be written by the window's own goroutine once the connection is back: the client keeps no reconnect buffer, so no state the client or the server reports shows it and a message sent after the reconnect is not ordered after it")
+	// reconnect is not ordered after it. Such a send waits for the connection in the client's wait
+	// for a reconnect, which the reconnect's event wakes, or, with that event queued behind a
+	// slower callback, its re-read of the connection's status every bus.ReconnectRecheck; the span
+	// runs past the latest such re-read, with half a second beyond it for the woken send's write.
+	testwait.Span(t, bus.ReconnectRecheck+500*time.Millisecond, "a send the window held until the reconnect would be written by the window's own goroutine once the connection is back, woken by the reconnect's event or, at the latest, by the wait's re-read of the connection every bus.ReconnectRecheck: the client keeps no reconnect buffer, so no state the client or the server reports shows it and a message sent after the reconnect is not ordered after it")
 	info, err := client.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: subject})
 	if err != nil {
 		t.Fatalf("read the stream: %v", err)

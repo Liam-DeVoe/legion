@@ -551,7 +551,9 @@ func (p *stallingPublisher) Probe(time.Duration) error { return nil }
 // A graceful stop of the process that holds the publisher hold waits for its outbox before it
 // closes the pool: the outbox, still inside a send when the process context ends, records its
 // batch and releases the hold through that pool, so the hold's row is gone when Dispatch exits and
-// a standby takes the hold at once rather than when it lapses.
+// a standby takes the hold at once rather than when it lapses. The shutdown runs on a fake clock
+// the row never moves, so its wait for the outbox, armed for outboxStopBudget after it began,
+// ends only when the outbox stops.
 func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	database := storetest.Open(t)
 	observer := storetest.SecondProcess(t, database)
@@ -610,15 +612,23 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	testwait.Receive(t, "the outbox to send the event", publisher.entered)
 
 	stop()
+	// A fixed moment: nothing the shutdown arms on the fake is compared with the wall clock.
+	began := time.Date(2026, time.November, 17, 9, 0, 0, 0, time.UTC)
+	fake := clocktest.New(began)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		shutdown(clock.Real(), server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped)
+		shutdown(fake, server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped)
 	}()
-	testwait.Quiet(t, "shutdown's return while the outbox is still inside its batch", done, time.Second,
-		"a shutdown that has not returned writes nothing a test can read, the outbox's batch is held in this "+
-			"process behind a real socket so synctest does not reach it, and the later action this row takes - "+
-			"releasing the send - is what lets the shutdown return")
+	// The fake stands at the shutdown's start, so the wait for the outbox, once armed for its
+	// budget (waitForOutbox), is where the shutdown stands: no other timer on the fake is due then,
+	// and only the outbox's stop ends that wait while the fake is not moved.
+	fake.AwaitArmedAt(t, "shutdown's wait for the outbox, outboxStopBudget after it began", began.Add(outboxStopBudget))
+	select {
+	case <-done:
+		t.Fatal("shutdown returned with the outbox still inside its batch")
+	default:
+	}
 	if _, err := database.Pool.Exec(ctx, "select 1"); err != nil {
 		t.Fatalf("the pool closed while the outbox was still stopping: %v", err)
 	}
@@ -633,6 +643,45 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	}
 	if _, err := database.Pool.Exec(ctx, "select 1"); err == nil {
 		t.Fatal("shutdown left the pool open")
+	}
+}
+
+// A graceful stop waits for the events outbox until outboxStopBudget after it began and no longer:
+// an outbox that never stops, its database having stopped answering inside its batch, would
+// otherwise hold the pool open and Dispatch running until the runtime's kill. Shutdown reads the
+// outbox only through outboxStopped, so one that never closes is an outbox that never stops. The
+// shutdown runs on a fake clock the row moves to the budget's end once the wait is armed for it:
+// the shutdown then closes the pool, returns, and says it closed the pool with the outbox still
+// stopping.
+func TestShutdownGivesUpOnAnOutboxThatNeverStopsAtItsBudget(t *testing.T) {
+	database := storetest.Open(t)
+	documentService := docs.New(docs.Deps{Store: database, Events: events.NewBroker()})
+	server := httptest.NewServer(http.NotFoundHandler())
+	defer server.Close()
+	logged := capturedLog(t)
+	// A fixed moment: nothing the shutdown arms on the fake is compared with the wall clock.
+	began := time.Date(2026, time.November, 17, 9, 0, 0, 0, time.UTC)
+	fake := clocktest.New(began)
+	budget := began.Add(outboxStopBudget)
+	outboxStopped := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		shutdown(fake, server.Config, documentService, database.Pool, func() {}, func() {}, func() {}, outboxStopped)
+	}()
+	fake.AwaitArmedAt(t, "shutdown's wait for the outbox, outboxStopBudget after it began", budget)
+	select {
+	case <-done:
+		t.Fatal("shutdown returned before its wait for the outbox reached its budget, with the outbox not stopped")
+	default:
+	}
+	fake.Set(budget)
+	testwait.Receive(t, "shutdown to return once its wait for the outbox reached outboxStopBudget", done)
+	if !strings.Contains(logged.String(), `msg="dispatch: close the pool with the events outbox still stopping"`) {
+		t.Errorf("the shutdown did not say it closed the pool with the outbox still stopping:\n%s", logged)
+	}
+	if _, err := database.Pool.Exec(context.Background(), "select 1"); err == nil {
+		t.Fatal("shutdown left the pool open once its wait for the outbox was over")
 	}
 }
 

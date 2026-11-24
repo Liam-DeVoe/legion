@@ -495,10 +495,11 @@ func TestAKeyedClaimFinishesWhenItsClientGivesUpDuringIt(t *testing.T) {
 	}()
 	waitForDatabaseLocks(t, hold, 1)
 	giveUp()
-	testwait.Span(t, 300*time.Millisecond, "a claim bound to the client's context is cancelled by a cancel request "+
-		"pgx sends PostgreSQL on a goroutine and a connection of its own: no state the test reads records it "+
-		"before the server acts on it, the statement is real PostgreSQL I/O (no synctest), and no later action "+
-		"of the test is ordered after that cancel")
+	testwait.Span(t, 300*time.Millisecond, "a claim bound to the client's context is cut when pgx, at that context's cancel, "+
+		"sets a deadline of now on the statement's own connection from a goroutine of its own (pgconn's default "+
+		"BuildContextWatcherHandler, a DeadlineContextWatcherHandler run by context.AfterFunc): no state the test "+
+		"reads records it before the statement's read fails on it, the statement is real PostgreSQL I/O (no "+
+		"synctest), and no later action of the test is ordered after that deadline")
 	if err := hold.Rollback(ctx); err != nil {
 		t.Fatalf("release the hold: %v", err)
 	}
