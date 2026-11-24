@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/daemon/docker/gh TestTheRuntimesGhWrappersAreOnesLegionGhAccepts ../../docker/gh
+
 import (
 	"bytes"
 	"cmp"

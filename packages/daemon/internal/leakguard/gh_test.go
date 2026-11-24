@@ -1,5 +1,8 @@
 package leakguard
 
+//ci:reads packages/daemon/cmd/legion/testdata/gh-help/api.txt TestGhLeafOptionTablesAreTheirHelps reads ../../cmd/legion/testdata/gh-help/<help>, api.txt for gh api
+//ci:reads packages/daemon/cmd/legion/testdata/gh-help/workflow_run.txt TestGhLeafOptionTablesAreTheirHelps reads ../../cmd/legion/testdata/gh-help/<help>, workflow_run.txt for gh workflow run
+
 import (
 	"bytes"
 	"context"
