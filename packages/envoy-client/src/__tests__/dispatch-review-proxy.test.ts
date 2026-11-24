@@ -312,6 +312,71 @@ test("after an answer that may have reached Dispatch, the proxy's refusal on the
   expect(message).toContain("read the write back");
 });
 
+/** A fetch that takes each step in turn (the last one from then on): a step that answers is the
+ *  answer, one that names no answer rejects as a fetch that reached no server does. */
+function stepFetch(steps: readonly ((() => Response) | "unreachable")[]): typeof fetch & {
+  readonly sent: Sent[];
+} {
+  const sent: Sent[] = [];
+  const impl = async (
+    input: Parameters<typeof fetch>[0],
+    init?: RequestInit
+  ): Promise<Response> => {
+    sent.push({ url: String(input), init: (init ?? {}) as Sent["init"] });
+    const step = steps[Math.min(sent.length, steps.length) - 1];
+    if (step === undefined) throw new Error("stepFetch was given no step");
+    if (step === "unreachable") {
+      throw new TypeError("Unable to connect. Is the computer able to access the url?");
+    }
+    return step();
+  };
+  return Object.assign(impl, { sent, preconnect: () => {} }) as typeof fetch & {
+    readonly sent: Sent[];
+  };
+}
+
+test("after an answer that may have reached Dispatch, an unreachable proxy on the retries leaves the review unsettled with no advice to send it again", async () => {
+  const fetchImpl = stepFetch([() => proxyAnswer(407, "GRANT_NOT_LIVE", "unknown"), "unreachable"]);
+  const client = new DispatchClient("https://dispatch.example", credential(ROUTE), fetchImpl, {
+    writeRetry: NO_WAIT,
+  });
+  const ended = await client.reviewArtifact("artifact-1", 3, { state: "approved" }).then(
+    () => null,
+    (error: unknown) => error
+  );
+  expect(fetchImpl.sent).toHaveLength(DISPATCH_WRITE_RETRY.pausesMs.length + 1);
+  expect(ended).toBeInstanceOf(DispatchWriteUnsettledError);
+  const message = (ended as DispatchWriteUnsettledError).message;
+  expect(message).toContain("Cipher's proxy");
+  expect(message).not.toContain("sent again");
+  expect(message).not.toContain("a new `dispatch review`");
+  expect(message).toContain("read the write back");
+});
+
+test("when only the last attempt may have reached Dispatch, the proxy's refusal names that attempt, not an earlier one", async () => {
+  const fetchImpl = scriptedFetch([
+    () => proxyAnswer(503, "GRANT_UNREADABLE", "false"),
+    () => proxyAnswer(503, "GRANT_UNREADABLE", "false"),
+    () => proxyAnswer(503, "GRANT_UNREADABLE", "false"),
+    () => proxyAnswer(503, "GRANT_UNREADABLE", "false"),
+    () => proxyAnswer(503, "GRANT_UNREADABLE", "unknown"),
+  ]);
+  const client = new DispatchClient("https://dispatch.example", credential(ROUTE), fetchImpl, {
+    writeRetry: NO_WAIT,
+  });
+  const ended = await client.reviewArtifact("artifact-1", 3, { state: "approved" }).then(
+    () => null,
+    (error: unknown) => error
+  );
+  expect(fetchImpl.sent).toHaveLength(DISPATCH_WRITE_RETRY.pausesMs.length + 1);
+  expect(ended).toBeInstanceOf(DispatchWriteUnsettledError);
+  const message = (ended as DispatchWriteUnsettledError).message;
+  expect(message).toContain("GRANT_UNREADABLE");
+  expect(message).not.toContain("earlier attempt");
+  expect(message).toContain("this attempt may have reached Dispatch");
+  expect(message).not.toContain("a new `dispatch review`");
+});
+
 /**
  * A proxy that refuses every CONNECT itself, as Cipher's proxy does when a placeholder's grant is
  * not live (`proxy.go`, `refuseCredential`, 407) or its store cannot be read (`fail`, 503): its own
