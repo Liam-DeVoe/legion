@@ -205,7 +205,7 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    // The entry - the one `assets/index-*.js` that dist/index.html names - is 499,485 bytes,
+    // The entry - the one `assets/index-*.js` that dist/index.html names - read 499,485 bytes,
     // measured with `bun run build:web` and a 39-character `DISPATCH_BUILD` at `4935c4af` (the
     // same at the merges 4548096d and e15ee5e4) on 2026-11-23; the build id is in the entry, so
     // CI's 40-character commit writes one byte more. On that day the default branch's own build
@@ -232,8 +232,8 @@ export default defineConfig({
     // (`features/shell/asked-surface.tsx`, review 6034817973) then took the entry to 500,530
     // bytes, over the budget again. The rail's pinned agents answered it: they draw a session
     // from `AgentName.tsx`'s session half alone (`features/refs/SessionName.tsx`), so the rest of
-    // that module is a chunk the pages' chunks share, and the entry read 497,401 bytes with the
-    // 40-character `DISPATCH_BUILD` on 2026-11-24. After the changes since, Details' one Escape
+    // that module is a chunk the pages' chunks share, and the entry read 497,401 bytes with a
+    // 39-character `DISPATCH_BUILD` on 2026-11-24. After the changes since, Details' one Escape
     // rule among them (`escapeClosesDrawer`, `features/shell/useDialog.ts`), the entry reads
     // 497,933 bytes with a 39-character `DISPATCH_BUILD`, the same day.
     // `web/src/asset-sizes-in-build.ts` holds the entry to 500,000 bytes and keeps its history,
