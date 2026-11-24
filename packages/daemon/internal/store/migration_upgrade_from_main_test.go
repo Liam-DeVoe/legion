@@ -171,12 +171,17 @@ import (
 // 20261029121000 adds and the upgrade applies before it, so it needs no row of its own here
 // (migration_20261123212127_test.go reads it).
 // dispatch://INFRA-5471's mark of a re-admission that still owes its tree's members their return
-// (20261123224717) is applied after all of these and touches no outbox_kind_check either: it adds
-// issues.members_owed and marks the roots whose re-admitted generation no promotion has opened.
-// The parent of a plan task (20261124022547) is applied after every migration this comment names,
-// so each list above of the versions applied after one of them leaves it out. It adds
-// `plan_tasks.parent_ref` at its default, which every row it finds reads as no parent
-// (migration_20261124022547_test.go), and touches no outbox_kind_check.
+// (20261123224717) is applied after all of these but the waiting line's issue priority
+// (20261124060500) and touches no outbox_kind_check either: it adds issues.members_owed and marks
+// the roots whose re-admitted generation no promotion has opened.
+// The waiting line's issue priority (20261124060500) is applied after all of these and
+// touches no outbox_kind_check: it adds issues.priority, null on every row it finds, which reads
+// as an issue with no priority.
+// The parent of a plan task (20261124022547) is applied after every migration this comment names
+// but the waiting line's issue priority (20261124060500), so each list above of the versions
+// applied after one of them leaves it out. It adds `plan_tasks.parent_ref` at its default, which
+// every row it finds reads as no parent (migration_20261124022547_test.go), and touches no
+// outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -188,8 +193,8 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717, 20261120144241,
-	20261121170714, 20261123050533, 20261123165139, 20261123212127, 20261123224717,
-	20261124022547,
+	20261121170714, 20261123050533, 20261123165139, 20261123212127, 20261123224717, 20261124022547,
+	20261124060500,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -212,6 +217,7 @@ var thisBranchsMigrations = []int{
 // the plan of an experiment's draw (20261123165139), 20261123212127 and #5303's 20261123224717.
 // That is why the loop below holds the list rather than
 // counting it, so that a version added above any of them is named here rather than read as main's.
+// The waiting line's issue priority, 20261124060500, stands above them too.
 // The parent of a plan task (20261124022547) stands above main's newest as well.
 const mainsNewestMigration = 20261111212544
 

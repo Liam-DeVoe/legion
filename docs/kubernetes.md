@@ -3592,6 +3592,7 @@ The migrations recorded above this one are these.
 So the block holds over it and leaves the column standing, which the earlier release names in no statement.
 A rollback past 20261117034837_issue_plans drops the column with its table.
 That migration's way back deletes this migration's version row too ([Rolling back the release whose owner's plan picks the steps](#rolling-back-the-release-whose-owners-plan-picks-the-steps)).
+20261124060500_issue_priority adds `issues.priority`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; it carries no way back, since an earlier release reads none of it, a row that release updates keeps the priority it held, and only a row it inserts gets null.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
