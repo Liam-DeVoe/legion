@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -135,17 +136,12 @@ func TestInstallServedRemovesNothingALinkInTheOldInstallNames(t *testing.T) {
 // the test there, and before it does, the fifo gets both ends (bothEnds), the run ends, and it is
 // joined; each later run gets its own two minutes. A run that a loaded host makes slow, unpacking
 // and running the check, still returns in time.
-//
-// bothEnds opens the fifo for reading and writing rather than for reading alone: an open for
-// reading alone, made before the blocked open has returned, can read the fifo's end at once and
-// stop reading while the write is still to come, and it does not release a run that opened the
-// fifo for reading and waits for a writer.
 func returnsWithoutAWriter(t *testing.T, fifo func() string, what string, run func() error) error {
 	t.Helper()
 	done := make(chan error, 1)
 	go func() { done <- run() }()
-	bound := testwait.Bounded(t, 2*time.Minute, time.Minute)
-	timer := time.NewTimer(bound)
+	limit := testwait.Bounded(t, 2*time.Minute, time.Minute)
+	timer := time.NewTimer(limit)
 	defer timer.Stop()
 	select {
 	case err := <-done:
@@ -158,10 +154,10 @@ func returnsWithoutAWriter(t *testing.T, fifo func() string, what string, run fu
 	default:
 	}
 	path := fifo()
-	closeEnds := bothEnds(t, path)
+	// Deferred, so the fifo is closed and its drain ends when the join below gives up too.
+	defer bothEnds(t, path)()
 	err := testwait.Receive(t, what+" once the fifo "+path+" had both ends", done)
-	closeEnds()
-	t.Fatalf("%s did not return within %s while the fifo %s had no other end; given both, it returned %v", what, bound, path, err)
+	t.Fatalf("%s did not return within %s while the fifo %s had no other end; given both, it returned %v", what, limit, path, err)
 	return nil
 }
 
@@ -173,6 +169,10 @@ func bothEnds(t *testing.T, path string) func() {
 		t.Errorf("give %s both ends: it is no fifo (%v, %v)", path, info, err)
 		return func() {}
 	}
+	// For reading and writing rather than for reading alone: an open for reading alone, made
+	// before the blocked open has returned, can read the fifo's end at once and stop reading while
+	// the write is still to come, and it does not release a run that opened the fifo for reading
+	// and waits for a writer.
 	fifo, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		t.Errorf("give the fifo %s both ends: %v", path, err)
@@ -207,17 +207,11 @@ func beforeTheFirstWrite(t *testing.T, pattern string, plant func(dir string) (s
 		}
 		planted <- planting{err: errors.New("nothing matched " + pattern + " within 10s")}
 	}()
-	var got *planting
-	at := func() string {
-		if got == nil {
-			p := <-planted
-			got = &p
-		}
-		return got.path
-	}
-	err := returnsWithoutAWriter(t, at, what, write)
-	if at(); got.err != nil {
-		t.Fatalf("the plant: %v", got.err)
+	// The planter answers within its own 10s poll whatever it finds, so the wait here ends.
+	plantingOnce := sync.OnceValue(func() planting { return <-planted })
+	err := returnsWithoutAWriter(t, func() string { return plantingOnce().path }, what, write)
+	if p := plantingOnce(); p.err != nil {
+		t.Fatalf("the plant: %v", p.err)
 	}
 	return err
 }
