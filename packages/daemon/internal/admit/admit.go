@@ -1578,11 +1578,13 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 		}
 	}
 	if orphan {
-		// Each carried pull request, of each task, starts the generation's fence; its head run goes,
-		// as with a new generation (record.ClearGeneration), since its replay would put the old
-		// fence back.
+		// Each carried pull request, of each task, keeps its CI settlement fence: its Generation is
+		// the listener's generation of the settlement that stands, not the issue's, so a settlement
+		// of its head from before the carry, delivered late or replayed, is as stale after it as it
+		// was before. Its head run goes, as with a new generation (record.ClearGeneration), since
+		// its replay would put the old fence back; the write deletes the run's own memory.
 		for _, pr := range prs {
-			pr.Generation, pr.Run = int64(stored.Generation), nil
+			pr.Run = nil
 			if err := a.store.PutPullRequest(ctx, tx, pr); err != nil {
 				return fmt.Errorf("carry pull request #%d to re-admitted orphan %s: %w", pr.Number, stored.Key, err)
 			}

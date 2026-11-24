@@ -381,6 +381,8 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     readonly compact: (body: object) => Promise<unknown>;
     readonly projectPause: (body: object) => Promise<unknown>;
     readonly projectResume: (body: object) => Promise<unknown>;
+    readonly intakeReplay: (body: object) => Promise<unknown>;
+    readonly intakeDiscard: (body: object) => Promise<unknown>;
     readonly gateRegister: (body: object) => Promise<unknown>;
     readonly waveRelease: (body: object) => Promise<unknown>;
     readonly phaseBackward: (body: object) => Promise<unknown>;
@@ -457,6 +459,26 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       "project-pause.json",
     ],
     ["projectResume", "/legion/v1/project/resume", { grantId: "grant-208" }, "project-resume.json"],
+    // The controller's replay and discard of the intake's give-ups: one record by its id, or a
+    // consumer's open records through a stream sequence. Each answers as the daemon's golden
+    // wrote it, the replay with each record's outcome and the discard with the ids it closed.
+    [
+      "intakeReplay",
+      "/legion/v1/intake/replay",
+      { grantId: "grant-208", giveUp: 41 },
+      "intake-replay.json",
+    ],
+    [
+      "intakeDiscard",
+      "/legion/v1/intake/discard",
+      {
+        grantId: "grant-208",
+        consumer: "legion-go-LEGION-dispatch",
+        throughSeq: 6044896,
+        reason: "the listener published a non-JSON body",
+      },
+      "intake-discard.json",
+    ],
     [
       "gateRegister",
       "/legion/v1/gates/register",
@@ -604,50 +626,6 @@ test("a refused plan surfaces its code and every reason in its sentence", async 
   expect(requests).toHaveLength(1);
 });
 
-// register_plan's request can end while the daemon reads or checks the plan (contract 242), and
-// the daemon then answers 503 PLAN_CHECK_STOPPED, the golden its route test writes: it decided
-// nothing and recorded nothing, and the same call can be sent again. The code makes the answer the
-// daemon's own, so the restart retry hands it back after one attempt, with the daemon's sentence
-// and no word of an attempt that may have been applied. The fault is the 503 with no code that
-// contracts 219 and 220 answered, which daemonUnreachable reads as a proxy's dropped attempt:
-// retried for ten minutes, then reported as one that may have been applied.
-test("register_plan's 503 PLAN_CHECK_STOPPED is the daemon's answer, handed back once and never read as a dropped attempt", async () => {
-  const stopped = daemonFixture("plan-check-stopped.json");
-  const { fetch, requests } = daemon(() => Response.json(stopped, { status: 503 }));
-  const client = createLegionDaemonClient("http://daemon.test", {
-    pluginContract: CONTRACT,
-    fetch,
-  });
-  let clock = 0;
-  const waits: number[] = [];
-  const refused = await retryWhileDaemonRestarts(
-    "register_plan",
-    () =>
-      client.planRegister({
-        grantId: "grant-208",
-        issue: "LEGION-209",
-        artifactId: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
-        version: 5,
-      }),
-    {
-      now: () => clock,
-      sleep: async (ms: number) => {
-        waits.push(ms);
-        clock += ms;
-      },
-    }
-  ).catch((caught: unknown) => caught);
-
-  expect(refused).toBeInstanceOf(LegionDaemonApiError);
-  expect(refused).toMatchObject({ status: 503, code: "PLAN_CHECK_STOPPED", detail: stopped.error });
-  expect(daemonUnreachable(refused)).toBeUndefined();
-  expect((refused as Error).message).toBe(
-    `POST /legion/v1/plans/register failed with 503 PLAN_CHECK_STOPPED: ${String(stopped.error)}`
-  );
-  expect(requests).toHaveLength(1);
-  expect(waits).toEqual([]);
-});
-
 // The daemon refuses a returnTo on a completion that fails no step (RETURN_TO_NEEDS_FAIL); the
 // request's schema refuses it the same, so it never leaves the pane.
 test("a completion naming returnTo without the verdict fail is refused before it goes", async () => {
@@ -697,6 +675,27 @@ test("a refused pause and a refused resume surface the daemon's code and sentenc
     fetch,
   });
   expect(() => client.projectPause({ grantId: "grant-208", reason: "" })).toThrow();
+  expect(requests).toEqual([]);
+});
+
+// A replay or a discard that names both forms of selection, or neither, and a discard with no
+// reason, are refused before they leave the pane, as every request the schema does not describe
+// is; the daemon would refuse each (`GIVE_UP_REQUEST_INVALID`).
+test("a give-up selection of both forms or neither, and a discard with no reason, are refused before any request", () => {
+  const { fetch, requests } = daemon(() => Response.json(daemonFixture("intake-replay.json")));
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch,
+  });
+  const both = {
+    grantId: "grant-208",
+    giveUp: 41,
+    consumer: "legion-go-LEGION-dispatch",
+    throughSeq: 6044896,
+  };
+  expect(() => client.intakeReplay(both as never)).toThrow();
+  expect(() => client.intakeReplay({ grantId: "grant-208" } as never)).toThrow();
+  expect(() => client.intakeDiscard({ grantId: "grant-208", giveUp: 41, reason: "" })).toThrow();
   expect(requests).toEqual([]);
 });
 

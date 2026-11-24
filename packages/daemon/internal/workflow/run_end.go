@@ -593,12 +593,14 @@ func (e *Engine) generationStarted(ctx context.Context, tx pgx.Tx, issue record.
 // mergeCanLand says whether member's merge, which awaits its landing in the tree root lingers, can
 // still land there: while the linger runs and no fact has closed it, while its pull request is open,
 // or where the close of root's linger handed it over, whose re-admission ends the merge's run
-// instead.
+// instead. The pull request's state is all it reads, so it reads the row alone
+// (record.Store.MergePullRequestRow), with none of what the pull request remembers of its settled
+// heads.
 func (e *Engine) mergeCanLand(ctx context.Context, tx pgx.Tx, runs *factRuns, member, root record.Issue) (bool, error) {
 	if record.Lingering(root, e.now()) && !runs.closed[root.Tree] {
 		return true, nil
 	}
-	pr, err := e.store.MergePullRequest(ctx, tx, member.Key)
+	pr, err := e.store.MergePullRequestRow(ctx, tx, member.Key)
 	if err != nil {
 		return false, err
 	}

@@ -15,7 +15,8 @@
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
 // ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, and the runtime's client, so a
 // configuration loads on a machine that has none of the files it names; `legion config check`
-// then reads them as boot does (daemon.CheckStart).
+// then reads them as boot does (daemon.CheckStart). The daemon reads an instructions file again
+// at each launch, so an edit of one needs no restart.
 // A role's `prompt_file` (`roles.<name>.prompt_file`) is resolved and kept as a path too, and Load
 // also reads it, refusing one the daemon cannot read; `legion config check` reads it as Load does
 // (CheckRolePrompts), and LoadForValidation, which the commands that only name the daemon run,

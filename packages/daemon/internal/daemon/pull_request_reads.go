@@ -88,12 +88,13 @@ func (w *workflowRuntime) followHead(ctx context.Context, github githubrest.Clie
 }
 
 // openRecord is the pull request record of pr's task (record.PullRequest.Task) as it stands now,
-// which must still be pr's and open.
+// which must still be pr's and open. It is the row alone (record.Store.PullRequestRowOfTask): the
+// per-issue read builds facts from it and writes nothing of it.
 func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest) (record.PullRequest, error) {
 	var current *record.PullRequest
 	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		current, err = w.records.PullRequestOfTask(ctx, tx, pr.Issue, pr.Task)
+		current, err = w.records.PullRequestRowOfTask(ctx, tx, pr.Issue, pr.Task)
 		return err
 	}); err != nil {
 		return pr, fmt.Errorf("read the pull request record of %s: %w", pr.Issue, err)

@@ -284,6 +284,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [],
       "issues.*.architect.pendingCause": [],
       "issues.*.architect.pendingTask.phase": [],
@@ -733,6 +734,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [],
       "issues.*.architect.pendingCause": [],
       "issues.*.architect.pendingTask.phase": [],
@@ -1185,6 +1187,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [],
       "issues.*.architect.pendingCause": [],
       "issues.*.architect.pendingTask.phase": [],
@@ -1647,6 +1650,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [],
       "issues.*.architect.pendingCause": [],
       "issues.*.architect.pendingTask.phase": [],
@@ -2109,6 +2113,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [],
       "issues.*.architect.pendingCause": [],
       "issues.*.architect.pendingTask.phase": [],
@@ -2578,6 +2583,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [],
       "issues.*.architect.pendingCause": [],
       "issues.*.architect.pendingTask.phase": [],
@@ -3055,6 +3061,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [],
       "issues.*.architect.pendingCause": [],
       "issues.*.architect.pendingTask.phase": [],
@@ -3540,6 +3547,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [],
       "issues.*.architect.pendingCause": [],
       "issues.*.architect.pendingTask.phase": [],
@@ -4034,6 +4042,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [],
       "issues.*.architect.pendingCause": [],
       "issues.*.architect.pendingTask.phase": [],
@@ -4546,6 +4555,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [],
       "issues.*.architect.pendingCause": [],
       "issues.*.architect.pendingTask.phase": [],
@@ -5061,6 +5071,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [],
       "issues.*.architect.pendingCause": [],
       "issues.*.architect.pendingTask.phase": [],
@@ -5593,6 +5604,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [],
       "issues.*.architect.pendingCause": [],
       "issues.*.architect.pendingTask.phase": [],
@@ -6127,6 +6139,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [],
       "issues.*.architect.pendingCause": [],
       "issues.*.architect.pendingTask.phase": [],
@@ -6661,6 +6674,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [],
       "issues.*.architect.pendingCause": [],
       "issues.*.architect.pendingTask.phase": [],
@@ -7195,6 +7209,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [],
       "issues.*.architect.pendingCause": [],
       "issues.*.architect.pendingTask.phase": [],
@@ -7731,6 +7746,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [],
       "issues.*.architect.pendingCause": [],
       "issues.*.architect.pendingTask.phase": [],
@@ -8307,6 +8323,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -8967,6 +8984,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -9648,6 +9666,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -10349,6 +10368,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -11052,6 +11072,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -11773,6 +11794,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -12494,6 +12516,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -13217,6 +13240,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -13940,6 +13964,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -14663,6 +14688,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -15395,6 +15421,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -16145,6 +16172,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -16901,6 +16929,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -17657,6 +17686,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -18417,6 +18447,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -19181,6 +19212,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -19951,6 +19983,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -20721,6 +20754,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -21491,6 +21525,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -22347,6 +22382,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -23210,6 +23246,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -24073,6 +24110,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -25393,6 +25431,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -26723,6 +26762,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -28045,6 +28085,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -29373,6 +29414,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -30702,6 +30744,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -32031,6 +32074,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -33383,6 +33427,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -34739,6 +34784,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -36096,6 +36142,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -37434,6 +37481,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -38845,6 +38893,7 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -39129,7 +39178,7 @@
     "domains": {}
   },
   {
-    "contract": 242,
+    "contract": 228,
     "answer": "compact",
     "noBody": false,
     "keyPaths": [
@@ -39139,14 +39188,14 @@
     "domains": {}
   },
   {
-    "contract": 242,
+    "contract": 228,
     "answer": "empty-object",
     "noBody": false,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 242,
+    "contract": 228,
     "answer": "fresh-session",
     "noBody": false,
     "keyPaths": [
@@ -39155,7 +39204,7 @@
     "domains": {}
   },
   {
-    "contract": 242,
+    "contract": 228,
     "answer": "grant",
     "noBody": false,
     "keyPaths": [
@@ -39165,14 +39214,14 @@
     "domains": {}
   },
   {
-    "contract": 242,
+    "contract": 228,
     "answer": "handoff-complete",
     "noBody": false,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 242,
+    "contract": 228,
     "answer": "health",
     "noBody": false,
     "keyPaths": [
@@ -39182,7 +39231,40 @@
     "domains": {}
   },
   {
-    "contract": 242,
+    "contract": 228,
+    "answer": "intake-discard",
+    "noBody": false,
+    "keyPaths": [
+      "discarded",
+      "discarded.*"
+    ],
+    "domains": {}
+  },
+  {
+    "contract": 228,
+    "answer": "intake-replay",
+    "noBody": false,
+    "keyPaths": [
+      "remaining",
+      "replayed",
+      "replayed.*",
+      "replayed.*.consumer",
+      "replayed.*.error",
+      "replayed.*.id",
+      "replayed.*.outcome",
+      "replayed.*.streamSeq"
+    ],
+    "domains": {
+      "replayed.*.outcome": [
+        "already applied",
+        "applied",
+        "failed",
+        "no fact"
+      ]
+    }
+  },
+  {
+    "contract": 228,
     "answer": "issue-record",
     "noBody": false,
     "keyPaths": [
@@ -39665,14 +39747,14 @@
     }
   },
   {
-    "contract": 242,
+    "contract": 228,
     "answer": "no-content",
     "noBody": true,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 242,
+    "contract": 228,
     "answer": "plan-register",
     "noBody": false,
     "keyPaths": [
@@ -39690,7 +39772,7 @@
     "domains": {}
   },
   {
-    "contract": 242,
+    "contract": 228,
     "answer": "project-pause",
     "noBody": false,
     "keyPaths": [
@@ -39705,7 +39787,7 @@
     "domains": {}
   },
   {
-    "contract": 242,
+    "contract": 228,
     "answer": "project-resume",
     "noBody": false,
     "keyPaths": [
@@ -39725,7 +39807,7 @@
     "domains": {}
   },
   {
-    "contract": 242,
+    "contract": 228,
     "answer": "refusal",
     "noBody": false,
     "keyPaths": [
@@ -39758,7 +39840,7 @@
     "domains": {}
   },
   {
-    "contract": 242,
+    "contract": 228,
     "answer": "register",
     "noBody": false,
     "keyPaths": [
@@ -39774,7 +39856,7 @@
     "domains": {}
   },
   {
-    "contract": 242,
+    "contract": 228,
     "answer": "register-controller",
     "noBody": false,
     "keyPaths": [
@@ -39786,7 +39868,7 @@
     "domains": {}
   },
   {
-    "contract": 242,
+    "contract": 228,
     "answer": "release-records",
     "noBody": false,
     "keyPaths": [
@@ -39824,7 +39906,7 @@
     "domains": {}
   },
   {
-    "contract": 242,
+    "contract": 228,
     "answer": "state",
     "noBody": false,
     "keyPaths": [
@@ -39889,6 +39971,24 @@
       "heldOutboxRows.*.kind",
       "heldOutboxRows.*.waitedSeconds",
       "heldOutboxRows.*.waitsOn",
+      "intakeGiveUps",
+      "intakeGiveUps.consumers",
+      "intakeGiveUps.consumers.*",
+      "intakeGiveUps.consumers.*.name",
+      "intakeGiveUps.consumers.*.newestSeq",
+      "intakeGiveUps.consumers.*.open",
+      "intakeGiveUps.newest",
+      "intakeGiveUps.newest.*",
+      "intakeGiveUps.newest.*.consumer",
+      "intakeGiveUps.newest.*.deliveries",
+      "intakeGiveUps.newest.*.eventId",
+      "intakeGiveUps.newest.*.gaveUpAt",
+      "intakeGiveUps.newest.*.id",
+      "intakeGiveUps.newest.*.lastError",
+      "intakeGiveUps.newest.*.reason",
+      "intakeGiveUps.newest.*.storedAt",
+      "intakeGiveUps.newest.*.streamSeq",
+      "intakeGiveUps.newest.*.subject",
       "issues",
       "issues.*",
       "issues.*.ancestry",
@@ -40256,6 +40356,13 @@
         "kubernetes",
         "tmux"
       ],
+      "intakeGiveUps.newest.*.reason": [
+        "bound",
+        "consumer moved past",
+        "did not end",
+        "retention",
+        "undecodable"
+      ],
       "issues.*.architect.failure.cause": [
         "died",
         "launch_refused",
@@ -40513,7 +40620,7 @@
     }
   },
   {
-    "contract": 242,
+    "contract": 228,
     "answer": "turn-outcome",
     "noBody": false,
     "keyPaths": [
@@ -40523,7 +40630,7 @@
     "domains": {}
   },
   {
-    "contract": 242,
+    "contract": 228,
     "answer": "wave-release",
     "noBody": false,
     "keyPaths": [

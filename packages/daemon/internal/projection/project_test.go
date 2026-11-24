@@ -112,16 +112,29 @@ func (s projectionStore) HeldRows(context.Context, pgx.Tx, string, string, time.
 func (s projectionStore) StartsWaitingForPod(context.Context, pgx.Tx, string) (map[string][]claim.Role, error) {
 	return s.waitingForPod, nil
 }
+
+// OpenIntakeGiveUps answers no give-up open: the projection's reading of real records is
+// intake_giveups_test.go's, on PostgreSQL.
+func (projectionStore) OpenIntakeGiveUps(context.Context, pgx.Tx, string, int) (record.IntakeGiveUps, error) {
+	return record.IntakeGiveUps{}, nil
+}
 func (s projectionStore) Phases(_ context.Context, _ pgx.Tx, issue string) ([]record.PhaseRow, error) {
 	return s.phases[issue], nil
 }
 
-// MergePullRequest is each issue's one pull request the fake holds, which is its merge's, and
-// TaskPullRequests that same row as the issue's only one.
-func (s projectionStore) MergePullRequest(_ context.Context, _ pgx.Tx, issue string) (*record.PullRequest, error) {
-	return s.pullRequests[issue], nil
+// PullRequestsOf answers each issue's one pull request the fake holds, which is its merge's, by
+// key, as the real store reads them in two statements: an issue it holds none for has no entry.
+// TaskPullRequestRows answers that same row as the issue's only one.
+func (s projectionStore) PullRequestsOf(_ context.Context, _ pgx.Tx, issues []string) (map[string]record.PullRequest, error) {
+	of := make(map[string]record.PullRequest, len(issues))
+	for _, issue := range issues {
+		if pr := s.pullRequests[issue]; pr != nil {
+			of[issue] = *pr
+		}
+	}
+	return of, nil
 }
-func (s projectionStore) TaskPullRequests(_ context.Context, _ pgx.Tx, issue string) ([]record.PullRequest, error) {
+func (s projectionStore) TaskPullRequestRows(_ context.Context, _ pgx.Tx, issue string) ([]record.PullRequest, error) {
 	if pr := s.pullRequests[issue]; pr != nil {
 		return []record.PullRequest{*pr}, nil
 	}

@@ -56,12 +56,13 @@ type RegisteredTask struct {
 }
 
 // PlanRefusal is the answer to a plan whose content Legion does not take, 409 PLAN_REFUSED: the
-// code and the sentence every refusal carries (Failure), and one reason for each cause
-// (intake.PlanRefused). A plan of an issue whose experiment's group takes no plan from its owner
-// is no such answer: it is the workflow's 409 PLAN_NOT_TAKEN (intake.PlanNotTaken), a Failure
-// with no reasons. `reasons` arrived with register_plan at OwnerPlanContract, and a caller below
-// it is served the Failure alone (shaping.go's refusal row), as a PauseFailure is below
-// pauseContract.
+// code and the sentence every refusal carries (Failure), and one reason for each cause, the first
+// plan.MostReasons of each kind of cause and one more that counts the rest of that kind
+// (plan.Refusals, intake.PlanRefused). A plan of an issue whose experiment's group takes no plan
+// from its owner is no such answer: it is the workflow's 409 PLAN_NOT_TAKEN (intake.PlanNotTaken),
+// a Failure with no reasons. `reasons` arrived with register_plan at OwnerPlanContract, and a
+// caller below it is served the Failure alone (shaping.go's refusal row), as a PauseFailure is
+// below pauseContract.
 type PlanRefusal struct {
 	Failure
 	Reasons []PlanReason `json:"reasons"`
@@ -115,10 +116,11 @@ func (s *server) writeRefusal(w http.ResponseWriter, r *http.Request, refusal *i
 // document's approval for the version Dispatch has and the issue carrying it (documentOfIssue),
 // reads the plan's blocks at the version given, each need as the task it names (planAt, through
 // plan.FromBlocks), and refuses with one reason for each cause of a plan this release does not
-// carry out (plan.Supported) or no release can (plan.Validate); each of those answers records
-// nothing. A plan both take is recorded as intake.PlanGiven, its needs as task ids, whose rules of
-// a later version are the workflow's, and is answered with the tasks the workflow's apply says the
-// version added (registeredPlan).
+// carry out (plan.Supported) or no release can (plan.Validate), the first plan.MostReasons of each
+// kind named and the rest of it counted (plan.Refusals); each of those answers records nothing. A
+// plan both take is recorded as intake.PlanGiven, its needs as task ids, whose rules of a later
+// version are the workflow's, and is answered with the tasks the workflow's apply says the version
+// added (registeredPlan).
 //
 // The fact's id is the issue, the generation the plan is given at, the document and the version.
 // Whether the registration is one already taken is the record's to say (intake.ApplyFact): a
@@ -167,16 +169,10 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	// FromBlocks read each need as the task it names, so a need that names no task is Validate's,
 	// and the plan recorded and answered holds task ids, which every reader of a need reads. Both
 	// checks run, so a plan with two causes gets two reasons: what this release does not carry out
-	// yet, then what no release can. Each judges the plan against the deployment the daemon's
-	// settings define (Options.Deployment), so a role of `roles` is a role a step names. Validate
-	// checks a plan its owner wrote, before the fact lock, so it runs on the request's context and
-	// stops when the request ends, recording nothing.
-	invalid, err := plan.Validate(r.Context(), given, s.deployment)
-	if err != nil {
-		s.planCheckStopped(w, r, err, req.Issue, artifactID, req.Version)
-		return
-	}
-	refusals := append(plan.Supported(given, s.deployment), invalid...)
+	// yet, then what no release can, as one refusal that names at most plan.MostReasons causes of
+	// each kind. Each judges the plan against the deployment the daemon's settings define
+	// (Options.Deployment), so a role of `roles` is a role a step names.
+	refusals := plan.Refusals(given, s.deployment)
 	if len(refusals) > 0 {
 		s.writeRefusal(w, r, intake.PlanRefused(refusals))
 		return
@@ -265,25 +261,12 @@ func (s *server) stopTask(w http.ResponseWriter, r *http.Request) {
 	s.applyFact(w, r, requestFactID("tasks/stop"), intake.TaskStopped{Issue: req.Issue, Task: req.Task, By: grant.Claim, Generation: recorded.Generation}, EmptyResponse{})
 }
 
-// planCheckStopped answers a register_plan whose request ended while the plan was read
-// (plan.FromBlocks) or checked (plan.Validate), each before the fact lock and on the request's
-// context: 503 PLAN_CHECK_STOPPED (version.go's 242). The request ended before the check of the
-// plan was done, Legion decided nothing and recorded nothing, and the same call can be sent
-// again. The code is what tells a client this is the daemon's answer and not a proxy's dropped
-// attempt, which pi-shared's daemonUnreachable reads a 503 with no code as.
-func (s *server) planCheckStopped(w http.ResponseWriter, r *http.Request, err error, issue, artifactID string, version int) {
-	s.logRequestFailure(r, err, "api: the check of a plan stopped", "issue", issue, "artifact", artifactID, "version", version)
-	s.writeFailure(w, r, http.StatusServiceUnavailable, "PLAN_CHECK_STOPPED",
-		"register_plan stopped before it finished reading and checking the plan, because its request ended: Legion decided nothing and recorded nothing, and the same call can be sent again")
-}
-
 // planAt is the plan in version of the document artifactID, which documentOfIssue already held
 // to issue: its blocks as Dispatch gives them for that version (dispatch.Client.PlanDocument),
-// read as the plan of issue on the request's context (plan.FromBlocks), so a need that is a
-// reference into another issue is no need of a task of this plan. A block the plan's grammar cannot
-// read is a refused plan whose one reason names the block; a Dispatch that gives no blocks cannot
-// show Legion a plan at all; a request that ends during the read is answered as one that ends
-// during the check (planCheckStopped). Every refusal records nothing.
+// read as the plan of issue (plan.FromBlocks), so a need that is a reference into another issue is
+// no need of a task of this plan. A block the plan's grammar cannot read is a refused plan whose
+// one reason names the block; a Dispatch that gives no blocks cannot show Legion a plan at all.
+// Every refusal records nothing.
 func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID string, version int, issue string) (plan.Plan, bool) {
 	document, err := s.dispatch.PlanDocument(r.Context(), artifactID, version)
 	switch {
@@ -303,11 +286,7 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID strin
 	for i, block := range document.Blocks {
 		blocks[i] = plan.Block{ID: block.ID, Type: block.Type, Attributes: block.Attributes, Text: block.Text}
 	}
-	given, err := plan.FromBlocks(r.Context(), issue, artifactID, version, blocks)
-	if ended := r.Context().Err(); ended != nil && errors.Is(err, ended) {
-		s.planCheckStopped(w, r, err, issue, artifactID, version)
-		return plan.Plan{}, false
-	}
+	given, err := plan.FromBlocks(issue, artifactID, version, blocks)
 	if err != nil {
 		s.writeRefusal(w, r, intake.PlanRefused([]plan.Refusal{{Reason: err.Error() + "."}}))
 		return plan.Plan{}, false

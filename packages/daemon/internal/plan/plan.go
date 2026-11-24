@@ -11,7 +11,6 @@
 package plan
 
 import (
-	"context"
 	"fmt"
 	"regexp"
 	"slices"
@@ -280,9 +279,7 @@ var movesBackPairs = sync.OnceValue(func() []string {
 	var choose func(steps []Step)
 	choose = func(steps []Step) {
 		p := Plan{Tasks: []Task{{ID: DefaultTask, Steps: steps}}}
-		// Validate answers an error only once its context ends, and this one never does.
-		refused, _ := Validate(context.Background(), p, d)
-		if len(steps) > 0 && len(Supported(p, d)) == 0 && len(refused) == 0 {
+		if len(steps) > 0 && len(Supported(p, d)) == 0 && len(Validate(p, d)) == 0 {
 			// The plan's one task is the one no task needs, so it merges, and its line ends with
 			// the retro and the merge; a task another task needs walks the same line without them.
 			line := Line(steps, true)

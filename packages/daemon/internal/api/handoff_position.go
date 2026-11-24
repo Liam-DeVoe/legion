@@ -27,7 +27,7 @@ import (
 //
 // Of a plan of any count of tasks, one among them, the task is named in ofTask, and the position is
 // that task's: issue stands where the issue stands for that task alone (standingOfTask), the pass
-// is that task's, the pull request is that task's own row (record.Store.PullRequestOfTask), which
+// is that task's, the pull request is that task's own row (record.Store.PullRequestRowOfTask), which
 // for the one task of a plan of one is the issue's merge pull request, branch its branch
 // (record.PlanTask.BranchOf) and base the branch its pull request is against
 // (record.StoredPlan.BaseOf), the default branch for the task that merges. noStep says the
@@ -53,7 +53,9 @@ type completionPosition struct {
 
 // handoffPosition reads key's position (completionPosition) for the completing role and the claim
 // that completes, whose phases row names the entry it was last raised to; an issue the workflow
-// does not record is a position with no issue and no error.
+// does not record is a position with no issue and no error. The pull request is its row alone
+// (record.Store.PullRequestRowOfTask): the route reads its head and its state and writes nothing
+// of it.
 func (s *server) handoffPosition(ctx context.Context, key string, role claim.Role, completing claim.Token) (completionPosition, error) {
 	var position completionPosition
 	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead}, func(ctx context.Context, tx pgx.Tx) error {
@@ -101,7 +103,7 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 		}
 		position.pass = counts.Pass
 		if !position.noStep {
-			if position.pullRequest, err = s.records.PullRequestOfTask(ctx, tx, key, position.task); err != nil {
+			if position.pullRequest, err = s.records.PullRequestRowOfTask(ctx, tx, key, position.task); err != nil {
 				return err
 			}
 		}

@@ -181,8 +181,8 @@ func (w *workflowRuntime) tellMissing(ctx context.Context, recorded issueRecords
 // transaction (issueRecord): the issue, nil where it is not recorded; the task of its plan at its
 // generation whose pull request the per-issue read judges, its branch (record.PlanTask.BranchOf)
 // and whether it has one (judgedTask); whether the issue has plan rows at its generation; its
-// implementer's handoff commit; and each pull request of the issue, by task
-// (record.Store.TaskPullRequests).
+// implementer's handoff commit; and each pull request of the issue, by task, as its row alone
+// (record.Store.TaskPullRequestRows).
 type issueRecords struct {
 	issue   *record.Issue
 	task    string
@@ -253,7 +253,10 @@ func judgedTask(stored *record.StoredPlan, implementer record.PhaseRow, named st
 // transaction, for the task named (judgedTask; "" for the task the record judges): what the
 // per-issue read and the merge-state ladder read before they read GitHub (issuePullRequest,
 // readMergeState), and what the second read of a conflict reads before it acts (outbox's
-// conflictConfirm).
+// conflictConfirm). The pull requests are their rows alone (record.Store.TaskPullRequestRows),
+// with none of what they remember of their settled heads: each caller reads their columns to
+// decide what to read of GitHub and builds the facts it applies from them, and none writes the
+// record back.
 func issueRecord(ctx context.Context, pool *store.Pool, records record.Store, key, named string) (issueRecords, error) {
 	var read issueRecords
 	if err := store.TransactWith(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -272,7 +275,7 @@ func issueRecord(ctx context.Context, pool *store.Pool, records record.Store, ke
 		implementer := record.PhaseRowOf(rows, claim.RoleImplementer)
 		task, judged := judgedTask(stored, implementer, named)
 		read.task, read.branch, read.judged, read.planned, read.handoff = task.Task, task.BranchOf(key), judged, stored != nil, implementer.HandoffCommit
-		read.prs, err = records.TaskPullRequests(ctx, tx, key)
+		read.prs, err = records.TaskPullRequestRows(ctx, tx, key)
 		return err
 	}); err != nil {
 		return issueRecords{}, fmt.Errorf("read the record of %s: %w", key, err)

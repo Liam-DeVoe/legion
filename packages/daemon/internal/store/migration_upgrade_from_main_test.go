@@ -71,11 +71,11 @@ import (
 // dispatch://INFRA-1997's commit statuses of the checked head (20261117112334) are named here too:
 // that version stands above every other of this list but dispatch://INFRA-4109's 20261117200337,
 // each version this comment names after that one, from the name of each step's agent
-// (20261117213545) to the removal of a removed task's working copy (20261123072431),
-// dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's design news (20261119203047) and
-// the copy's applied sequence (20261121170714) among them, so an upgrade of a database main
-// migrated applies it just before them. It adds pull_requests.statuses at its default, the empty
-// list, and it touches no outbox_kind_check.
+// (20261117213545) to dispatch://INFRA-5463's 20261123212127, dispatch://INFRA-4374's
+// 20261119003157, dispatch://INFRA-175's design news (20261119203047), dispatch://INFRA-1575's
+// 20261120144241 and the copy's applied sequence (20261121170714) among them, so an upgrade of a
+// database main migrated applies it just before them. It adds pull_requests.statuses at its
+// default, the empty list, and it touches no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
 // (migration_20261116234034_test.go), it stands below the design news too, and it touches no
@@ -118,8 +118,8 @@ import (
 // at a default that every row it finds reads as no plan (migration_20261117034837_test.go).
 // The plan of an experiment's draw (20261123165139) adds `experiment_assignments.plan` at its
 // default, which every row it finds reads as no group (migration_20261123165139_test.go), stands
-// above every version of this list but the tasks each version of a plan added (20261123200630),
-// and touches no outbox_kind_check.
+// above every version of this list but the tasks each version of a plan added (20261123200630)
+// and dispatch://INFRA-5463's 20261123212127, and touches no outbox_kind_check.
 // dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued.
@@ -144,13 +144,18 @@ import (
 // outbox_kind_check.
 // dispatch://INFRA-4108's mark of a launch that had Oh My Pi resume a claim's session by its id
 // (20261120042902) stands above every other version of this list, the design news among them, but
-// dispatch://INFRA-4729's 20261120055717 and every version from 20261121165047 on; it adds
-// claims.agent_resume_generation at its default, 0, on every row it finds, and touches no
-// outbox_kind_check, so it needs no row of its own here.
+// dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241 and every version
+// from 20261121165047 on; it adds claims.agent_resume_generation at its default, 0, on every row
+// it finds, and touches no outbox_kind_check, so it needs no row of its own here.
 // dispatch://INFRA-4729's sequence of each value of the copy of Dispatch's issues (20261120055717)
-// is applied after all of these, the design news among them, and before every version from
-// 20261121165047 on, and touches no outbox_kind_check: it adds columns to dispatch_issues at their
-// defaults, an index on its parent, and a refill mark for each project the copy holds rows of.
+// is applied after all of these, the design news among them, and before dispatch://INFRA-1575's
+// 20261120144241 and every version from 20261121165047 on, and touches no outbox_kind_check: it
+// adds columns to dispatch_issues at their defaults, an index on its parent, and a refill mark for
+// each project the copy holds rows of.
+// dispatch://INFRA-1575's intake failures (20261120144241) stand above dispatch://INFRA-4729's
+// 20261120055717 and below the copies of a plan's tasks (20261121165047): they create
+// intake_failures, cleared_pull_requests and pull_request_settled_heads, all three empty, and
+// touch no dispatch_issues column and no outbox_kind_check.
 // The applied sequence of the copy of Dispatch's issues (20261121170714) stands above the copies of
 // a plan's tasks (20261121165047) and below the claim of each resume (20261121183336), and touches
 // no outbox_kind_check: it adds dispatch_issues.applied_seq at its default, 0, on every row it
@@ -176,7 +181,8 @@ import (
 // with task_branch (migration_20261121165047_test.go).
 // The pull requests by task (20261122122826) stand above every other version of this list but the
 // removal of a removed task's working copy: they key the table by the issue and the branch, which
-// every row the upgrade finds holds, store no task (the record reads a row's task from the plan's
+// every row the upgrade finds holds, and pull_request_settled_heads, which 20261120144241 creates
+// below them, by the branch too, store no task (the record reads a row's task from the plan's
 // tables at each read), and restate 20261121165047's kinds with task_pull_requests_close
 // (migration_20261122122826_test.go).
 // The removal of a removed task's working copy (20261123072431) stands above every other version
@@ -200,6 +206,11 @@ import (
 // The tasks each version of a plan added (20261123200630) are applied after all of these and touch
 // no outbox_kind_check: they add issue_plans.added at its default, the empty list, on every row they
 // find, so they need no row of their own here (migration_20261123200630_test.go).
+// dispatch://INFRA-5463's clear of the start failure of a claim whose agent is up
+// (20261123212127) is applied after all of these and touches no outbox_kind_check: it empties
+// claims.last_start_failure on every claim stored ready, working or idle, a column this list's
+// 20261029121000 adds and the upgrade applies before it, so it needs no row of its own here
+// (migration_20261123212127_test.go reads it).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -211,9 +222,9 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261117204629, 20261117213545, 20261117223524, 20261117224125, 20261119003157, 20261119203047,
-	20261120012547, 20261120042902, 20261120055717, 20261121165047, 20261121170714, 20261121183336,
-	20261122072945, 20261122074350, 20261122122826, 20261122131321, 20261123072431, 20261123165139,
-	20261123200630,
+	20261120012547, 20261120042902, 20261120055717, 20261120144241, 20261121165047, 20261121170714,
+	20261121183336, 20261122072945, 20261122074350, 20261122122826, 20261122131321, 20261123072431,
+	20261123165139, 20261123200630, 20261123212127,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -232,10 +243,11 @@ var thisBranchsMigrations = []int{
 // 20261117200337, the name of each step's agent's 20261117213545, the roles of a deployment's
 // 20261117223524, dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's 20261119203047,
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, the claim
-// of each resume's 20261121183336, the claim of each backstop's 20261122072945, one open resume per
-// claim's 20261122074350, the branch of a pending delivery's 20261122131321, the plan of an
-// experiment's draw (20261123165139), and the six the task copies add, the working copies of a
+// dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241, the copy's
+// applied sequence, 20261121170714, the claim of each resume's 20261121183336, the claim of each
+// backstop's 20261122072945, one open resume per claim's 20261122074350, the branch of a pending
+// delivery's 20261122131321, the plan of an experiment's draw (20261123165139),
+// dispatch://INFRA-5463's 20261123212127, and the six the task copies add, the working copies of a
 // saved bundle (20261117204629), the held task (20261117224125), the copies of a plan's tasks
 // (20261121165047), the pull requests by task (20261122122826), the removal of a removed task's
 // working copy (20261123072431) and the tasks each version of a plan added (20261123200630). That

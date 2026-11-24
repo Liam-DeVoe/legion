@@ -121,11 +121,9 @@ type statusRecorder struct {
 	readFails map[string]error
 	listFails error
 	// plans is each version of a plan document this fake knows, by planVersion(id, version), and
-	// planErr, when set, every such read's answer instead. onPlanRead, when set, runs at each such
-	// read, as Dispatch answers it.
-	plans      map[string]dispatch.DocumentVersion
-	planErr    error
-	onPlanRead func()
+	// planErr, when set, every such read's answer instead.
+	plans   map[string]dispatch.DocumentVersion
+	planErr error
 	// reads is every issue and document read, in order: `issue:<key>`, `approval:<id>` and
 	// `plan:<id>@<version>`.
 	reads []string
@@ -140,9 +138,6 @@ func planVersion(artifactID string, version int) string {
 // the case gave, or Dispatch's 404 for one it did not.
 func (r *statusRecorder) PlanDocument(_ context.Context, artifactID string, version int) (dispatch.DocumentVersion, error) {
 	r.reads = append(r.reads, "plan:"+planVersion(artifactID, version))
-	if r.onPlanRead != nil {
-		r.onPlanRead()
-	}
 	if r.planErr != nil {
 		return dispatch.DocumentVersion{}, r.planErr
 	}

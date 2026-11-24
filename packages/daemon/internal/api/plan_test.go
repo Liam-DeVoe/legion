@@ -660,59 +660,100 @@ func TestRegisterPlanRefusesACycleOfNeedsNamingIt(t *testing.T) {
 	}
 }
 
-// register_plan reads and checks the plan on the request's own context, before the fact lock:
-// once the request has ended, the read of the needs (plan.FromBlocks) or the check (plan.Validate)
-// stops, the route answers 503 PLAN_CHECK_STOPPED and records nothing. Here the request ends as
-// Dispatch answers the read of the plan: a cycle of two tasks, which the check's first read of
-// the context stops, and a task whose block writes 2,048 needs, which the read of the needs stops
-// at its read of the context after 1,024 words. Both answers are the one the golden
-// plan-check-stopped.json holds, which the clients read (pi-legion's tools-daemon-restart.test.ts).
-// The fault is a read or a check that runs on after its request has gone, or a stop answered
-// with no code, which a client reads as a proxy's dropped attempt; the control is the route
-// calling both on the daemon's own context (s.stopping), under which each plan is refused 409
-// PLAN_REFUSED, the route answering the read's stop as a block it cannot read, under which the
-// second is refused 409 PLAN_REFUSED naming the context's end, and the stop written with no code
-// (s.refuse), whose answer carries no code.
-func TestRegisterPlanStopsItsCheckWhenTheRequestEnds(t *testing.T) {
-	words := make([]string, 2_048)
-	for i := range words {
-		words[i] = fmt.Sprintf("x%04d", i)
+// A refused plan's answer names the first plan.MostReasons reasons of each kind of cause and
+// counts the rest of the kind in one more, so its size does not grow with the plan's items. Three
+// versions below are one `plan_task` block whose one attribute holds 1 MiB of words, the most a
+// Dispatch document holds as its server writes it, each word a cause of its own: 262,144 `needs`
+// words that name no task, 209,712 roles nobody defines, and 80,659 steps `acceptance:k`, each
+// with a key but owner on acceptance and with no implementer before it. Each answer is within
+// perKind bytes for each kind it holds, and counts the rest of each kind past the bound, in its
+// sentence too. The fourth is a ring of 40,000 tasks, each needing a word that names no task too,
+// whose reason of the cycle through them is as long as the ids it names: its answer is within
+// ringBound, so a change that copies that list into each reason fails it. The fault is an answer
+// with a reason for each cause; the control is plan's reasons with its bound taken out, under
+// which the first two versions are answered in 34 and 44 MB. It holds the counts and the size,
+// and no sentence.
+func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
+	// perKind is plan.MostReasons reasons of one kind and its count, each written twice (in
+	// `error` and in `reasons`) at under 200 bytes with its JSON.
+	const perKind = (plan.MostReasons + 1) * 2 * 200
+	const mib = 1 << 20
+	// digits is i written in n digits of the base len(alphabet), the first digit the largest.
+	digits := func(i int, alphabet string, n int) string {
+		word := make([]byte, n)
+		for at := n - 1; at >= 0; at-- {
+			word[at] = alphabet[i%len(alphabet)]
+			i /= len(alphabet)
+		}
+		return string(word)
 	}
+	// Each three-character word over 64 characters, each a need that names no task.
+	words := make([]string, 64*64*64)
+	for i := range words {
+		words[i] = digits(i, "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_", 3)
+	}
+	// The implementer, then roles of four characters, a letter and three of [a-z0-9-], each once.
+	const letters, rest = "abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz0123456789-"
+	roles := []string{"implementer"}
+	for i := range (mib - len("implementer ")) / len("abcd ") {
+		roles = append(roles, string(letters[i/(37*37*37)])+digits(i, rest, 3))
+	}
+	steps := mib / len("acceptance:k ")
+	keyed := strings.TrimSuffix(strings.Repeat("acceptance:k ", steps), " ")
+	// The ring: t00000 to t39999, each needing the next and the last the first, and each needing
+	// a word that names no task, x00000 to x39999.
+	const ringSize = 40_000
+	ring := make([]dispatch.DocumentBlock, ringSize)
+	for i := range ring {
+		ring[i] = needing(taskBlock(fmt.Sprintf("t%05d", i), "implementer reviewer"), fmt.Sprintf("t%05d x%05d", (i+1)%ringSize, i))
+	}
+	// ringBound is the cycle through the plan's tasks, 21 bytes a task (`t00000 needs t00001, `),
+	// written twice, and its two kinds of reasons.
+	const ringBound = 2*ringSize*len("t00000 needs t00001, ") + 2*perKind
 	for _, tc := range []struct {
-		name   string
-		blocks []dispatch.DocumentBlock
+		name    string
+		blocks  []dispatch.DocumentBlock
+		bound   int
+		reasons int   // the reasons the answer holds
+		counts  []int // what the reasons that count the rest of a kind count
 	}{
-		{"during the check, on a cycle of two tasks", []dispatch.DocumentBlock{
-			needing(taskBlock("a", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-b"),
-			needing(taskBlock("b", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-a")}},
-		{"during the read of the needs, on a block of 2,048 needs", []dispatch.DocumentBlock{
-			needing(taskBlock("a", "implementer reviewer"), strings.Join(words, " "))}},
+		{"262,144 needs words that name no task", []dispatch.DocumentBlock{needing(taskBlock("a", "implementer reviewer"), strings.Join(words, " "))},
+			perKind, plan.MostReasons + 1, []int{len(words) - plan.MostReasons}},
+		{"209,712 roles nobody defines", []dispatch.DocumentBlock{taskBlock("a", strings.Join(roles, " "))},
+			perKind, plan.MostReasons + 1, []int{len(roles) - 1 - plan.MostReasons}},
+		// Four kinds: a key at each step, the role acceptance at two steps, no implementer, and
+		// no implementer before each step.
+		{"80,659 steps acceptance:k", []dispatch.DocumentBlock{taskBlock("a", keyed)},
+			4 * perKind, 2*(plan.MostReasons+1) + 2, []int{steps - plan.MostReasons, steps - plan.MostReasons}},
+		// Two kinds: the word of each task that names no task, and the one cycle.
+		{"a ring of 40,000 tasks", ring, ringBound, plan.MostReasons + 1 + 1, []int{ringSize - plan.MostReasons}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, facts, statuses := planHarness(t)
 			architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 			statuses.givePlan(planDoc, 1, tc.blocks...)
-			ctx, end := context.WithCancel(t.Context())
-			statuses.onPlanRead = end
-			body, err := json.Marshal(map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208", "artifactId": planDoc, "version": 1})
-			if err != nil {
-				t.Fatalf("encode the request body: %v", err)
+
+			answer := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1)
+			size := answer.Body.Len()
+			t.Logf("%s: answered %d in %d bytes, the bound %d", tc.name, answer.Code, size, tc.bound)
+			if answer.Code != http.StatusConflict || size > tc.bound {
+				t.Fatalf("%s is answered %d in %d bytes, want 409 in at most %d", tc.name, answer.Code, size, tc.bound)
 			}
-			answer := httptest.NewRecorder()
-			h.handler.ServeHTTP(answer, httptest.NewRequestWithContext(ctx, http.MethodPost, "/legion/v1/plans/register", strings.NewReader(string(body))))
-			if answer.Code != http.StatusServiceUnavailable {
-				t.Fatalf("register_plan whose request ended = %d %s, want 503", answer.Code, answer.Body)
+			var refusal PlanRefusal
+			decodeInto(t, answer, &refusal)
+			if refusal.Code != "PLAN_REFUSED" || len(refusal.Reasons) != tc.reasons {
+				t.Fatalf("refusal %s of %d reasons, want PLAN_REFUSED of %d", refusal.Code, len(refusal.Reasons), tc.reasons)
 			}
-			var stopped Failure
-			decodeInto(t, answer, &stopped)
-			want := Failure{Code: "PLAN_CHECK_STOPPED", Error: "register_plan stopped before it finished reading and checking the plan, because its request ended: " +
-				"Legion decided nothing and recorded nothing, and the same call can be sent again"}
-			if stopped != want {
-				t.Fatalf("register_plan whose request ended answered %+v, want %+v", stopped, want)
+			for _, left := range tc.counts {
+				count := fmt.Sprintf(" %d ", left)
+				if !strings.Contains(refusal.Error, count) || !slices.ContainsFunc(refusal.Reasons, func(reason PlanReason) bool {
+					return reason.Task == "" && strings.Contains(reason.Reason, count)
+				}) {
+					t.Errorf("no reason of the whole plan counts %d more, in `reasons` and in the sentence: %.3000s", left, refusal.Error)
+				}
 			}
-			golden(t, "plan-check-stopped.json", stopped)
 			if got := facts.recorded(); len(got) != 0 {
-				t.Fatalf("a registration whose request ended recorded %#v, want nothing", got)
+				t.Fatalf("a refused registration recorded %#v, want nothing", got)
 			}
 		})
 	}

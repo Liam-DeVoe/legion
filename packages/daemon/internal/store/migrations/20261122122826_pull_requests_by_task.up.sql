@@ -12,6 +12,12 @@
 -- that branch: the one task of a plan of one, which the release before ran (plan.Supported refused
 -- more).
 --
+-- What a pull request remembers of its settled heads (pull_request_settled_heads, 20261120144241)
+-- is that pull request's, so it is keyed by the issue and the branch too, and its foreign key
+-- follows pull_requests' new key: each task's pull request keeps its own, and a write of one
+-- task's never deletes another's. The upgrade gives each row the branch of its issue's one row.
+-- The old foreign key is on pull_requests_pkey, so it goes before that key does.
+--
 -- The outbox check is one list, so this migration names every kind, as 20261121165047 did: its
 -- thirty-one kinds and task_pull_requests_close. Its version stands above 20261121165047 on purpose:
 -- Migrate applies every unrecorded migration in version order, so the list with the higher version
@@ -26,10 +32,12 @@
 -- again without the kind refuses a row that holds it; then keeps, of each issue, the row on the
 -- branch of the task that merges (the one task of its plan at its generation that no task needs,
 -- on the branch its row holds or on legion/<KEY> where it holds none) or on legion/<KEY> where the
--- issue has no plan rows there, and deletes the others; keys the table by the issue again; and
--- deletes its version row, which is owed to the roll-forward, so that it runs this file again. What
--- the way back costs is the row of each task's pull request but the one that merges: the record
--- holds it no longer, so a later event of that pull request names no row.
+-- issue has no plan rows there, and deletes the others, which deletes their settled heads with
+-- them; keys the settled heads by the issue again, with their foreign key on pull_requests (issue);
+-- keys the table by the issue again; and deletes its version row, which is owed to the
+-- roll-forward, so that it runs this file again. What the way back costs is the row of each task's
+-- pull request but the one that merges, and its settled heads: the record holds them no longer, so
+-- a later event of that pull request names no row.
 --
 -- begin;
 -- delete from outbox where kind = 'task_pull_requests_close';
@@ -42,11 +50,23 @@
 --   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
 --   'conflict_confirm', 'merge_forward', 'design_changes', 'task_branch'));
 -- delete from pull_requests pr where pr.branch <> coalesce((select coalesce(nullif(t.branch, ''), 'legion/' || t.issue) from plan_tasks t join issues i on i.key = t.issue and i.generation = t.generation where t.issue = pr.issue and not exists (select 1 from plan_tasks u where u.issue = t.issue and u.generation = t.generation and t.task = any(u.needs)) order by t.task limit 1), 'legion/' || pr.issue);
+-- alter table pull_request_settled_heads drop constraint pull_request_settled_heads_pull_request_fkey, drop constraint pull_request_settled_heads_pkey, drop column branch, add constraint pull_request_settled_heads_pkey primary key (issue, kind, head);
 -- alter table pull_requests drop constraint pull_requests_pkey, add constraint pull_requests_pkey primary key (issue);
+-- alter table pull_request_settled_heads add constraint pull_request_settled_heads_issue_fkey foreign key (issue) references pull_requests (issue) on delete cascade;
 -- delete from schema_version where version = 20261122122826;
 -- commit;
+alter table pull_request_settled_heads drop constraint pull_request_settled_heads_issue_fkey,
+  add column branch text;
+update pull_request_settled_heads s set branch = p.branch from pull_requests p where p.issue = s.issue;
+alter table pull_request_settled_heads alter column branch set not null,
+  drop constraint pull_request_settled_heads_pkey,
+  add constraint pull_request_settled_heads_pkey primary key (issue, branch, kind, head);
+
 alter table pull_requests drop constraint pull_requests_pkey,
   add constraint pull_requests_pkey primary key (issue, branch);
+
+alter table pull_request_settled_heads add constraint pull_request_settled_heads_pull_request_fkey
+  foreign key (issue, branch) references pull_requests (issue, branch) on delete cascade;
 
 alter table outbox drop constraint if exists outbox_kind_check;
 alter table outbox add constraint outbox_kind_check check (kind in (

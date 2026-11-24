@@ -1,7 +1,6 @@
 package config
 
 import (
-	"context"
 	"fmt"
 	"maps"
 	"os"
@@ -260,13 +259,7 @@ func checkDefaultSteps(cfg Config) error {
 			continue
 		}
 		task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
-		// The loader serves no request whose end could stop the check, and a plan of one task with
-		// no need has no cycle to look for, so the check runs to its end.
-		invalid, err := plan.Validate(context.Background(), task, deployment)
-		if err != nil {
-			return fmt.Errorf("projects.%s.default_steps: %w", key, err)
-		}
-		refusals := append(plan.Supported(task, deployment), invalid...)
+		refusals := append(plan.Supported(task, deployment), plan.Validate(task, deployment)...)
 		if len(refusals) == 0 {
 			continue
 		}

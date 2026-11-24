@@ -1,10 +1,7 @@
 package plan
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -80,7 +77,7 @@ func TestANeedThatNamesNoTaskIsRefused(t *testing.T) {
 		{name: "the plan of tasks a to e", plan: planOfTasksAToE(t)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := validated(t, tc.plan, d); !reflect.DeepEqual(got, tc.want) {
+			if got := Validate(tc.plan, d); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("Validate =\n%+v\nwant\n%+v", got, tc.want)
 			}
 		})
@@ -125,7 +122,7 @@ func TestANeedIntoAnotherIssueIsRefused(t *testing.T) {
 			if got := p.Tasks[1].Needs; !reflect.DeepEqual(got, tc.needs) {
 				t.Fatalf("d needs %q, want %q", got, tc.needs)
 			}
-			if got := validated(t, p, d); !reflect.DeepEqual(got, tc.want) {
+			if got := Validate(p, d); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("Validate =\n%+v\nwant\n%+v", got, tc.want)
 			}
 		})
@@ -170,7 +167,7 @@ func TestANeedOfNoIssueIsRefused(t *testing.T) {
 			if got := p.Tasks[1].Needs; !reflect.DeepEqual(got, tc.needs) {
 				t.Fatalf("d needs %q, want %q", got, tc.needs)
 			}
-			if got := validated(t, p, d); !reflect.DeepEqual(got, tc.want) {
+			if got := Validate(p, d); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("Validate =\n%+v\nwant\n%+v", got, tc.want)
 			}
 		})
@@ -214,139 +211,92 @@ func TestATaskThatNeedsItselfIsRefused(t *testing.T) {
 		{name: "the plan of tasks a to e", plan: planOfTasksAToE(t)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := validated(t, tc.plan, d); !reflect.DeepEqual(got, tc.want) {
+			if got := Validate(tc.plan, d); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("Validate =\n%+v\nwant\n%+v", got, tc.want)
 			}
 		})
 	}
 }
 
-// ringOf is a plan of size tasks t00000, t00001, … in which each task needs the next and the last
-// needs the first: one set of tasks that need each other, whose one cycle passes through every
-// task. Its tasks name no steps, so Validate's only cause in it is the cycle.
-func ringOf(size int) Plan {
-	tasks := make([]Task, size)
-	for i := range tasks {
-		tasks[i] = Task{ID: fmt.Sprintf("t%05d", i), Needs: []string{fmt.Sprintf("t%05d", (i+1)%size)}}
+// Dispatch takes an owner's plan of 10,000 tasks in a ring, or of 300 tasks each needing all the
+// others, and a search from every need of a set, which named the shortest cycle through each one,
+// followed about 10⁸ needs on that ring. So the check of cycles takes time linear in the plan: one
+// pass finds the sets of tasks that need each other (components), and one breadth-first search
+// from the first task of each set that holds a cycle names it (cycleFrom). Each plan below gives
+// its cycles: the ring's one cycle through every task, the complete graph's shortest cycle from
+// its first task, and one cycle for each task that needs itself. And its searches follow at most
+// the plan's needs, as cycles counts them: a task joins at most one search, so each need is
+// followed at most once. The ring's one search follows each of its 10,000 needs, the bound
+// itself, so a search from a second task of a set fails the bound there. The fault is a search
+// from every task of a set; planted, the ring follows 100,000,000 needs and the complete graph
+// 134,551 of its 89,700. The count sees only the needs cycleFrom follows: not components' loop,
+// not cycles' own loops over the tasks, and not work done inside one follow or once for each set,
+// such as a reset of every mark in parent before each search. It counts work and reads no clock.
+func TestTheCheckOfCyclesFollowsEachNeedAtMostOnce(t *testing.T) {
+	ring := make([]Task, 10_000)
+	ringCycle := make([]string, len(ring))
+	for i := range ring {
+		ring[i] = Task{ID: fmt.Sprintf("t%05d", i), Needs: []string{fmt.Sprintf("t%05d", (i+1)%len(ring))}}
+		ringCycle[i] = ring[i].ID
 	}
-	return Plan{Tasks: tasks}
-}
-
-// register_plan checks a plan its owner wrote before the fact lock, so the check of cycles runs on
-// the request's context: once the context has ended, Validate stops and answers the context's
-// error and no refusal. The fault is a check that runs to its end after its request has gone; the
-// control is a check of cycles that never reads its context, under which the ring of 1,000 tasks
-// answers its refusal and no error.
-func TestAnEndedContextStopsTheCheckOfCycles(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	refusals, err := Validate(ctx, ringOf(1_000), Deployment{Roles: BuiltinRoles()})
-	if !errors.Is(err, context.Canceled) || refusals != nil {
-		t.Fatalf("Validate under an ended context = %d refusals and error %v, want none and %v", len(refusals), err, context.Canceled)
-	}
-}
-
-// endsAt is a context that ends at its read number end: its Err answers nil before that read and
-// context.Canceled from it on, and reads counts every read, so a test ends a check at the read
-// it names and sees where the check stopped.
-type endsAt struct {
-	context.Context
-	end, reads int
-}
-
-func (c *endsAt) Err() error {
-	if c.reads++; c.reads >= c.end {
-		return context.Canceled
-	}
-	return nil
-}
-
-// endedAt is an ended, as the check of cycles passes one to components and cycleFrom, that
-// answers stop from its call number end on, with the count of its calls.
-func endedAt(end int, stop error) (ended func() error, calls *int) {
-	calls = new(int)
-	return func() error {
-		if *calls++; *calls >= end {
-			return stop
-		}
-		return nil
-	}, calls
-}
-
-// A request can end while its check of cycles runs, not only before it starts. The check stops at
-// the first read of its context that finds it ended, and answers its error and no refusal:
-// components, the pass over the tasks and their needs, and cycleFrom, the search of a set's
-// cycle, each read ended once for each step, and Validate reads its context at every
-// contextSteps-th step of the two. Each case ends the check in the middle of one of them, on a ring
-// of 4,096 tasks, whose pass takes 8,192 steps and whose search follows 4,096 needs. The fault is a
-// check that reads its context only before it starts; the control is each of the two without its
-// read of ended, under which its case answers the ring whole and no error, and Validate without
-// its reads at the steps, under which its case answers the ring's refusal.
-func TestARequestThatEndsDuringTheCheckOfCyclesStopsIt(t *testing.T) {
-	const size = 4_096
-	stop := errors.New("the request ended")
-	needs := make([][]int, size)
-	for i := range needs {
-		needs[i] = []int{(i + 1) % size}
-	}
-	t.Run("in the pass over the tasks and their needs", func(t *testing.T) {
-		ended, calls := endedAt(size, stop)
-		if _, _, err := components(needs, ended); !errors.Is(err, stop) || *calls != size {
-			t.Fatalf("components with ended ending at its call %d = error %v after %d calls, want %v at that call", size, err, *calls, stop)
-		}
-	})
-	t.Run("in the search of the set's cycle", func(t *testing.T) {
-		component, parent := make([]int, size), make([]int, size)
-		for i := range parent {
-			parent[i] = -1
-		}
-		ended, calls := endedAt(size/2, stop)
-		if path, err := cycleFrom(needs, component, parent, 0, ended); !errors.Is(err, stop) || path != nil || *calls != size/2 {
-			t.Fatalf("cycleFrom with ended ending at its call %d = %d tasks and error %v after %d calls, want none and %v at that call", size/2, len(path), err, *calls, stop)
-		}
-	})
-	t.Run("in Validate, at the request's context", func(t *testing.T) {
-		// The first read is the one before the check starts; the second is at its step
-		// contextSteps, inside its pass over the tasks.
-		ctx := &endsAt{Context: t.Context(), end: 2}
-		refusals, err := Validate(ctx, ringOf(size), Deployment{Roles: BuiltinRoles()})
-		if !errors.Is(err, context.Canceled) || refusals != nil || ctx.reads != 2 {
-			t.Fatalf("Validate with a context ending at its read 2 = %d refusals and error %v after %d reads, want none and %v at that read", len(refusals), err, ctx.reads, context.Canceled)
-		}
-	})
-}
-
-// register_plan reads each need before the fact lock, where only the request's own end can stop
-// the read, so FromBlocks reads a task's `needs` at one step for each word and reads its context
-// at every contextSteps-th step: its work is one step for each word, and once the request has
-// ended it stops within contextSteps words. A block of 50,000 words that name no task, each
-// written twice, is read in 100,000 steps, at which it reads its context 100,000/contextSteps
-// times and keeps each word once; a context that ends at its second read stops the read at that
-// read, with the context's error. The fault is a read of the needs that never reads its context;
-// the control is resolveNeeds without its read of ended, under which FromBlocks reads the context
-// no time and answers the plan under the ended one.
-func TestFromBlocksReadsItsContextOnceForEveryContextStepsWords(t *testing.T) {
-	const distinct = 50_000
-	words := make([]string, 0, 2*distinct)
-	for range 2 {
-		for i := range distinct {
-			words = append(words, fmt.Sprintf("x%05d", i))
+	complete := make([]Task, 300)
+	for i := range complete {
+		complete[i].ID = fmt.Sprintf("t%03d", i)
+		for j := range complete {
+			if j != i {
+				complete[i].Needs = append(complete[i].Needs, fmt.Sprintf("t%03d", j))
+			}
 		}
 	}
-	blocks := []Block{taskNeeding("a", words...)}
-
-	live := &endsAt{Context: t.Context(), end: math.MaxInt}
-	p, err := FromBlocks(live, "ACME-1", "plan-md", 1, blocks)
-	if err != nil || len(p.Tasks[0].Unresolved) != distinct || live.reads != len(words)/contextSteps {
-		t.Fatalf("FromBlocks(%d words) = %d words left and error %v after %d reads of its context, want %d words, no error and %d reads",
-			len(words), len(p.Tasks[0].Unresolved), err, live.reads, distinct, len(words)/contextSteps)
+	itself := make([]Task, 10_000)
+	itselfCycles := make([][]string, len(itself))
+	for i := range itself {
+		itself[i] = Task{ID: fmt.Sprintf("t%05d", i), Needs: []string{fmt.Sprintf("t%05d", i)}}
+		itselfCycles[i] = []string{itself[i].ID}
 	}
-
-	ended := &endsAt{Context: t.Context(), end: 2}
-	if p, err := FromBlocks(ended, "ACME-1", "plan-md", 1, blocks); !errors.Is(err, context.Canceled) || p.Tasks != nil || ended.reads != 2 {
-		t.Fatalf("FromBlocks(%d words) under a context ending at its read 2 = %d tasks and error %v after %d reads, want none and %v at that read",
-			len(words), len(p.Tasks), err, ended.reads, context.Canceled)
+	for _, tc := range []struct {
+		name  string
+		tasks []Task
+		want  [][]string
+	}{
+		{"a ring of 10,000 tasks", ring, [][]string{ringCycle}},
+		{"300 tasks each needing all the others", complete, [][]string{{"t000", "t001"}}},
+		{"10,000 tasks each needing itself", itself, itselfCycles},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			needs := 0
+			for _, task := range tc.tasks {
+				needs += len(task.Needs)
+			}
+			found, followed := cycles(tc.tasks)
+			if !reflect.DeepEqual(found, tc.want) {
+				t.Fatalf("cycles(%s) found %d cycles, want %d: %s", tc.name, len(found), len(tc.want), firstOther(found, tc.want))
+			}
+			if followed > needs {
+				t.Fatalf("cycles(%s) followed %d needs, want at most the plan's %d", tc.name, followed, needs)
+			}
+			t.Logf("cycles(%s) followed %d needs of the plan's %d", tc.name, followed, needs)
+		})
 	}
+}
+
+// firstOther names the first cycle found that differs from the one wanted at its place, each by
+// its first five tasks and its length, so a failure of a 10,000-task ring stays readable.
+func firstOther(found, want [][]string) string {
+	short := func(cycle []string) string {
+		return fmt.Sprintf("%v (%d tasks)", cycle[:min(len(cycle), 5)], len(cycle))
+	}
+	for i := range max(len(found), len(want)) {
+		switch {
+		case i >= len(found):
+			return fmt.Sprintf("cycle %d is missing, want %s", i, short(want[i]))
+		case i >= len(want):
+			return fmt.Sprintf("cycle %d is %s, want none", i, short(found[i]))
+		case !reflect.DeepEqual(found[i], want[i]):
+			return fmt.Sprintf("cycle %d is %s, want %s", i, short(found[i]), short(want[i]))
+		}
+	}
+	return "every cycle as wanted"
 }
 
 // The work of an issue merges as one change, at the end of the one task that no task needs, so
