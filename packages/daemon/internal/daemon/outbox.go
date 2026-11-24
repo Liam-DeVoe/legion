@@ -3605,65 +3605,52 @@ func (r *outbox) checkLeftPodWorkspace(ctx context.Context, row record.OutboxRow
 }
 
 // declineFor is the decline a workspace check records for what its read found (work, failed nil)
-// or for a read that failed (failed), and the hold and the sentence it is recorded under. The
-// decline's reason is its hold's name (workflow's idleHoldNames spells the two by the reasons), and
-// its pod is the one the runtime holds for the issue now, so a later pass can tell a decline taken
-// in a pod a relaunch since replaced (pods.IdleDecline.Stands). The role the workspace was read
-// through is told that the release waits for its push (declineMessage), and the store queues that
-// message only where the decline names other work than the decline on record
-// (store's recordDecline). A read that failed tells nobody, since there is nothing the role can push
-// on its word; it is a log line and a hold record, and the decline lets the pass ask again after
-// an hour (pods.DeclineUnreadRetry). The decline is stamped with readAt, the moment the read began,
-// so a turn that started while the read ran — one that may have pushed the work the read found —
-// is a turn after the decline, which ends it (pods.IdleDecline.Stands).
-//
-// A check the pod's launcher read (payload.Launcher, R6 of dispatch://INFRA-3271) has no live role
-// to tell: its decline is Kept, names the issue's architect (payload.Role), and its message is the
-// architect's workspace-kept notice (keptMessage), which names each claim's state and what the
-// read found, a failed read's error included, and which the store queues once for each pod
-// (store's recordDecline). Its hold is recorded under the unowned_ names, so a reader of the
-// records can tell a pod no role runs in from one whose live role holds the work.
+// or for a read that failed (failed), and the hold and the sentence it is recorded under: the
+// pod's launcher's (keptDecline) where payload.Launcher, else the role's (roleDecline).
 func (r *outbox) declineFor(ctx context.Context, issue string, payload record.IssueWorkspaceCheck, readAt time.Time, work runtime.WorkspaceWork, failed error) (store.IdleReleaseDecline, workflow.IdleHold, string, error) {
-	// A launcher's read names the pod it read, which is the pod its decline names: a pod that took
-	// its place since holds another disk (runtime.WorkspaceWork.PodUID). A role's read names the
-	// pod the runtime holds now.
-	pod := work.PodUID
-	if podRuntime, ok := r.supervisor.deps.Runtime.(issuePods); ok && !payload.Launcher {
+	if payload.Launcher {
+		return r.keptDecline(ctx, issue, readAt, work, failed)
+	}
+	return r.roleDecline(issue, payload.Role, readAt, work, failed)
+}
+
+// declineOf is what every decline records of its read: its moment, readAt, the moment the read
+// began, so a turn that started while the read ran — one that may have pushed the work the read
+// found — is a turn after the decline, which ends it (pods.IdleDecline.Stands); the role told;
+// the reason, which is its hold's name (workflow's idleHoldNames spells the two by the reasons);
+// the pod; and for a read that could read, the work it found. It answers the hold of a pod a live
+// role runs in and the sentence the hold record and the log line carry.
+func declineOf(role claim.Role, pod string, readAt time.Time, work runtime.WorkspaceWork, failed error) (store.IdleReleaseDecline, workflow.IdleHold, string) {
+	hold, why := workflow.IdleHoldUnpushedWork, declineReason(work)
+	if failed != nil {
+		hold, why = workflow.IdleHoldWorkspaceUnread, "the workspace could not be read: "+storetext.FarSideError(failed.Error())
+	}
+	decline := store.IdleReleaseDecline{At: readAt, Role: role, Reason: hold.String(), PodUID: pod}
+	if failed == nil {
+		decline.Head, decline.Commits, decline.Changed = work.Head, work.Count, work.Changed
+	}
+	return decline, hold, why
+}
+
+// roleDecline is the decline of a check read through a live role's shim. Its pod is the one the
+// runtime holds for the issue now, so a later pass can tell a decline taken in a pod a relaunch
+// since replaced (pods.IdleDecline.Stands). The role is told that the release waits for its push
+// (declineMessage), and the store queues that message only where the decline names other work than
+// the decline on record (store's recordDecline). A read that failed tells nobody, since there is
+// nothing the role can push on its word; it is a log line and a hold record, and the decline lets
+// the pass ask again after an hour (pods.DeclineUnreadRetry).
+func (r *outbox) roleDecline(issue string, role claim.Role, readAt time.Time, work runtime.WorkspaceWork, failed error) (store.IdleReleaseDecline, workflow.IdleHold, string, error) {
+	pod := ""
+	if podRuntime, ok := r.supervisor.deps.Runtime.(issuePods); ok {
 		if uid, read := podRuntime.IssuePod(issue); read {
 			pod = uid
 		}
 	}
-	reason, hold := workflow.IdleHoldUnpushedWork, workflow.IdleHoldUnpushedWork
-	why := declineReason(work)
-	if failed != nil {
-		reason, hold = workflow.IdleHoldWorkspaceUnread, workflow.IdleHoldWorkspaceUnread
-		why = "the workspace could not be read: " + storetext.FarSideError(failed.Error())
-	}
-	decline := store.IdleReleaseDecline{At: readAt, Role: payload.Role, Reason: reason.String(), PodUID: pod}
-	if failed == nil {
-		decline.Head, decline.Commits, decline.Changed = work.Head, work.Count, work.Changed
-	}
-	if payload.Launcher {
-		claims, err := r.trees.ClaimStatesIn(ctx, r.project, issue)
-		if err != nil {
-			return store.IdleReleaseDecline{}, hold, "", err
-		}
-		notice := record.Notice{Kind: record.WorkspaceKeptNotice, Role: claim.RoleArchitect,
-			Reason: keptMessage(issue, pod, claims, work, failed)}
-		message, err := record.NewOutboxRow(issue, notice, readAt)
-		if err != nil {
-			return store.IdleReleaseDecline{}, hold, "", fmt.Errorf("encode the notice of %s's kept pod: %w", issue, err)
-		}
-		decline.Kept, decline.Message = true, &store.IdleReleaseRow{Kind: string(message.Kind), Payload: message.Payload}
-		if failed != nil {
-			return decline, workflow.IdleHoldUnownedWorkspaceUnread, why, nil
-		}
-		return decline, workflow.IdleHoldUnownedUnpushedWork, why, nil
-	}
+	decline, hold, why := declineOf(role, pod, readAt, work, failed)
 	if failed != nil {
 		return decline, hold, why, nil
 	}
-	token, err := claim.NewToken(r.project, issue, payload.Role)
+	token, err := claim.NewToken(r.project, issue, role)
 	if err != nil {
 		return store.IdleReleaseDecline{}, hold, "", fmt.Errorf("name the role told of %s's declined release: %w", issue, err)
 	}
@@ -3672,6 +3659,34 @@ func (r *outbox) declineFor(ctx context.Context, issue string, payload record.Is
 		return store.IdleReleaseDecline{}, hold, "", fmt.Errorf("encode the message of %s's declined release: %w", issue, err)
 	}
 	decline.Message = &store.IdleReleaseRow{Kind: string(message.Kind), Payload: message.Payload}
+	return decline, hold, why, nil
+}
+
+// keptDecline is the decline of a check the pod's launcher read (R6 of dispatch://INFRA-3271): no
+// role process runs in the pod, so no live role is there to tell. The decline is Kept and names the
+// pod the launcher read (runtime.WorkspaceWork.PodUID), since a pod that took its place since holds
+// another disk. Its role is the issue's architect, whose workspace-kept notice (keptMessage) is its
+// message: it names each claim's state and what the read found, a failed read's error included, and
+// the store queues it once for each pod (store's recordDecline), whether the read found work or
+// failed. Its hold is recorded under the unowned_ names, so a reader of the records can tell a pod
+// no role runs in from one whose live role holds the work.
+func (r *outbox) keptDecline(ctx context.Context, issue string, readAt time.Time, work runtime.WorkspaceWork, failed error) (store.IdleReleaseDecline, workflow.IdleHold, string, error) {
+	decline, _, why := declineOf(claim.RoleArchitect, work.PodUID, readAt, work, failed)
+	hold := workflow.IdleHoldUnownedUnpushedWork
+	if failed != nil {
+		hold = workflow.IdleHoldUnownedWorkspaceUnread
+	}
+	claims, err := r.trees.ClaimStatesIn(ctx, r.project, issue)
+	if err != nil {
+		return store.IdleReleaseDecline{}, hold, "", err
+	}
+	notice := record.Notice{Kind: record.WorkspaceKeptNotice, Role: claim.RoleArchitect,
+		Reason: keptMessage(issue, work.PodUID, claims, work, failed)}
+	message, err := record.NewOutboxRow(issue, notice, readAt)
+	if err != nil {
+		return store.IdleReleaseDecline{}, hold, "", fmt.Errorf("encode the notice of %s's kept pod: %w", issue, err)
+	}
+	decline.Kept, decline.Message = true, &store.IdleReleaseRow{Kind: string(message.Kind), Payload: message.Payload}
 	return decline, hold, why, nil
 }
 
