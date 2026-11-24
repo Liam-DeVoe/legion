@@ -291,7 +291,10 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 	// orphan sweep's goroutine does in production (store.ForConcurrentWorker(s.supervisor.ctx)),
 	// while the supervisor keeps the unmarked base context production gives it. On an unmarked
 	// context the pool refuses nothing, so a sweep that asked it for a second connection under a
-	// held one would pass every test of this rig (INFRA-3169).
+	// held one would pass every test of this rig (INFRA-3169). The mark is one flag, so a
+	// goroutine a test starts beside its own calls takes a mark of its own,
+	// store.ForConcurrentWorker(rig.ctx): on the rig's, a connection that goroutine holds marks
+	// the test as holding it, and the test's next read is refused as a second connection.
 	rig := &podUpdateRig{t: t, ctx: store.ForConcurrentWorker(ctx), s: s, sup: sup, rt: rt, pool: pool, records: records, clock: clock, conns: conns,
 		workers: map[claim.Role]*fake.Conn{}, tokens: tokens, st: st, logs: logs, log: log, engine: w.engine,
 		listener: &holderPublisher{}, asked: map[int64]record.UpdateAsk{}}
@@ -2601,7 +2604,7 @@ func TestPodUpdateReadsAClaimMidRelaunchWithoutWaitingAndCountsItUnanswered(t *t
 	relaunching := rig.tokens[claim.RoleTester]
 	go func() {
 		m, _ := rig.sup.Machine(relaunching)
-		_ = m.Handle(rig.ctx, supervise.RuntimeObservation{
+		_ = m.Handle(store.ForConcurrentWorker(rig.ctx), supervise.RuntimeObservation{
 			Observation: runtime.Observation{Locator: *rig.claimOf(claim.RoleTester).Locator, Kind: runtime.Gone, Detail: "the process ended"},
 		})
 	}()
