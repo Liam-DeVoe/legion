@@ -21,16 +21,45 @@
 package daemon
 
 import (
+	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+)
+
+// plansAnswerEnv names the file a run keeps the answer of the person's plans read in, for a run
+// that later serves a recorded answer of Dispatch's plans route in its place. With it set,
+// readByProject reads `dispatch plans --project <PROJECT>` through plansKept, writes the body
+// Dispatch answered that read with to the file once every check of the step has held, and prints
+// the body in the driver's output (plansAnswerBlock), which a reader of the run's log decodes.
+// Unset, the read is plans', and nothing is written or printed.
+const plansAnswerEnv = "PLAN_RATINGS_PLANS_ANSWER"
+
+// The lines that print the kept answer, each a whole line of the driver's output with no prefix:
+// plansAnswerBegin, the body in standard base64 with padding in lines of plansAnswerWidth
+// characters (the last one shorter or equal), plansAnswerEnd, then plansAnswerSum followed by the
+// body's sha256 in lower-case hex.
+const (
+	plansAnswerBegin = "plans answer begin"
+	plansAnswerEnd   = "plans answer end"
+	plansAnswerSum   = "plans answer sha256 "
+	plansAnswerWidth = 76
 )
 
 // planRatingsLive is one run of the proof: the walk's rig over four issues of one project, and the
@@ -64,7 +93,10 @@ func TestPlanRatingsLive(t *testing.T) {
 // passes, naming its rating and reason; its control names the fourth issue, which is not
 // finished, and the script must fail on it. The control of the read deletes the failed review's
 // record from Dispatch's own store, its node and every tuple that names it, and the same parse of
-// the same command must then report the first issue's failed steps 0 where 1 is wanted.
+// the same command must then report the first issue's failed steps 0 where 1 is wanted. With
+// plansAnswerEnv set, the first `dispatch plans` goes through plansKept, and the body Dispatch
+// answered it with is kept (keepPlansAnswer) once the step's every check, the controls among them,
+// has held.
 func (l *planRatingsLive) readByProject() {
 	t := l.t
 	want := l.walkThreeRated()
@@ -75,7 +107,15 @@ func (l *planRatingsLive) readByProject() {
 	// list before the CLI reads it once.
 	l.waitPlans("the three finished issues, each rated", want)
 
-	out, code := l.plans()
+	keep := os.Getenv(plansAnswerEnv)
+	var answer []byte
+	var out string
+	var code int
+	if keep == "" {
+		out, code = l.plans()
+	} else {
+		out, code, answer = l.plansKept()
+	}
 	if code != 0 {
 		t.Fatalf("`dispatch plans --project %s` exited %d: %s", l.cfg.Project, code, out)
 	}
@@ -117,6 +157,9 @@ func (l *planRatingsLive) readByProject() {
 		t.Fatalf("control: the parse with the failed review's record deleted reports %q, want it to say %q", err, wanted)
 	}
 	l.note("control: the same parse now fails: %v", err)
+	if keep != "" {
+		l.keepPlansAnswer(keep, answer)
+	}
 }
 
 // ratingRequired is the rule of the rating for a plugin at the new contract: the rig's fourth issue
@@ -148,6 +191,129 @@ func (l *planRatingsLive) ratingRequired() {
 func (l *planRatingsLive) plans() (string, int) {
 	l.t.Helper()
 	return l.cli("plans", "--project", l.cfg.Project)
+}
+
+// plansKept runs `dispatch plans --project <PROJECT>` as the person, as plans does, with the CLI's
+// Dispatch a proxy of the test's own: it passes each request to the run's Dispatch as it came and
+// each answer back as it went, and keeps the answer Dispatch gave the CLI's
+// GET /api/v1/projects/<PROJECT>/plans. It returns both streams, the exit code and the body of that
+// answer, decoded from the gzip Dispatch writes for a caller that takes it. It fails the test
+// unless the CLI made that read once and Dispatch answered it 200 with a body.
+func (l *planRatingsLive) plansKept() (string, int, []byte) {
+	t := l.t
+	t.Helper()
+	target, err := url.Parse(l.dispatch.base)
+	if err != nil {
+		t.Fatalf("parse Dispatch's address %s: %v", l.dispatch.base, err)
+	}
+	route := "/api/v1/projects/" + l.cfg.Project + "/plans"
+	var mu sync.Mutex
+	var reads []keptPlansRead
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(r *httputil.ProxyRequest) { r.SetURL(target) },
+		ModifyResponse: func(response *http.Response) error {
+			if response.Request.Method != http.MethodGet || response.Request.URL.Path != route {
+				return nil
+			}
+			read := keptPlansRead{status: response.StatusCode}
+			raw, err := io.ReadAll(response.Body)
+			if closed := response.Body.Close(); err == nil {
+				err = closed
+			}
+			if err == nil {
+				response.Body = io.NopCloser(bytes.NewReader(raw))
+				read.body, read.err = decodedPlansAnswer(response.Header.Get("Content-Encoding"), raw)
+			} else {
+				read.err = fmt.Errorf("read the answer: %w", err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			reads = append(reads, read)
+			return err
+		},
+	}
+	server := httptest.NewServer(proxy)
+	shell := l.personsShell()
+	shell.base = server.URL
+	output, code := shell.bun(nil, dispatchCLI(l.root), "plans", "--project", l.cfg.Project)
+	server.Close()
+	out := string(output.stdout) + string(output.stderr)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(reads) != 1 {
+		t.Fatalf("`dispatch plans --project %s` made %d reads of GET %s, want 1 (exit %d): %s", l.cfg.Project, len(reads), route, code, out)
+	}
+	read := reads[0]
+	switch {
+	case read.err != nil:
+		t.Fatalf("the answer of GET %s to `dispatch plans --project %s`: %v", route, l.cfg.Project, read.err)
+	case read.status != http.StatusOK:
+		t.Fatalf("GET %s answered `dispatch plans --project %s` %d, want 200: %s", route, l.cfg.Project, read.status, read.body)
+	case len(read.body) == 0:
+		t.Fatalf("GET %s answered `dispatch plans --project %s` 200 with no body", route, l.cfg.Project)
+	}
+	return out, code, read.body
+}
+
+// keptPlansRead is one answer of GET /api/v1/projects/<PROJECT>/plans as plansKept's proxy passed
+// it to the CLI: its status, and its body decoded from its content coding, or the error that the
+// reading or the decoding met.
+type keptPlansRead struct {
+	status int
+	body   []byte
+	err    error
+}
+
+// decodedPlansAnswer is raw, an answer's body as it came over the wire, decoded from coding, its
+// Content-Encoding: none, or the gzip Dispatch writes for a caller that takes it.
+func decodedPlansAnswer(coding string, raw []byte) ([]byte, error) {
+	switch coding {
+	case "":
+		return raw, nil
+	case "gzip":
+		reader, err := gzip.NewReader(bytes.NewReader(raw))
+		if err != nil {
+			return nil, fmt.Errorf("read the gzip header of %d bytes: %w", len(raw), err)
+		}
+		defer reader.Close()
+		body, err := io.ReadAll(reader)
+		if err != nil {
+			return nil, fmt.Errorf("decode %d gzip bytes: %w", len(raw), err)
+		}
+		return body, nil
+	default:
+		return nil, fmt.Errorf("the answer's coding is %q, which only none or gzip is read as", coding)
+	}
+}
+
+// keepPlansAnswer writes answer, the body of the person's plans read, to file, which plansAnswerEnv
+// names, and prints plansAnswerBlock of it in one write.
+func (l *planRatingsLive) keepPlansAnswer(file string, answer []byte) {
+	t := l.t
+	t.Helper()
+	if err := os.WriteFile(file, answer, 0o644); err != nil {
+		t.Fatalf("write the answer of the person's plans read to %s, which %s names: %v", file, plansAnswerEnv, err)
+	}
+	fmt.Print(plansAnswerBlock(answer))
+	l.note("kept the answer of the person's plans read, %d bytes, in %s, which %s names, and printed it above", len(answer), file, plansAnswerEnv)
+}
+
+// plansAnswerBlock is the lines that print answer, each ended by a newline: plansAnswerBegin,
+// answer in standard base64 with padding, plansAnswerWidth characters a line, plansAnswerEnd, and
+// plansAnswerSum followed by answer's sha256 in lower-case hex.
+func plansAnswerBlock(answer []byte) string {
+	encoded := base64.StdEncoding.EncodeToString(answer)
+	sum := sha256.Sum256(answer)
+	var block strings.Builder
+	block.WriteString(plansAnswerBegin + "\n")
+	for len(encoded) > 0 {
+		n := min(len(encoded), plansAnswerWidth)
+		block.WriteString(encoded[:n] + "\n")
+		encoded = encoded[n:]
+	}
+	block.WriteString(plansAnswerEnd + "\n")
+	block.WriteString(plansAnswerSum + hex.EncodeToString(sum[:]) + "\n")
+	return block.String()
 }
 
 // readScript runs scripts/e2e/plan-ratings-read.sh <PROJECT> issue in the person's shell, as the
