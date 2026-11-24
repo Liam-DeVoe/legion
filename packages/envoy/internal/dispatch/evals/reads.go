@@ -397,7 +397,11 @@ func (s *Store) DayWindow(ctx context.Context, projects []string, entries []Entr
 // project's eval id of its slug and its via_repository as the project reads it (viaAsRead): a
 // selection at read time too, which a move of a default repository rewrites no row for. A project
 // and an owner key can each hold a row of one series and day, and the folds add the two as they
-// add two days' (WindowRow is a part, not a day).
+// add two days' (WindowRow is a part, not a day). A row stored under the Legion default
+// (legionfactsDefault) is read under the projects named as well as under o's project: the
+// planner joins o by a hash and cannot carry d.project_key = o.project_key into one arm of the
+// repository's OR, so without the named projects that arm's index range reads every project's
+// default rows (13,417 heap rows for 9,070 kept, on the pod at a tenth of INFRA's size).
 //
 // A row answers what the folds and the answer read and nothing more (WindowRow), since what the
 // read costs is the bytes it sends: no project, repository, listing or build, and a sample list
@@ -437,7 +441,7 @@ func DayWindowIn(ctx context.Context, q delivery.Querier, projects []string, ent
 					` + viaAsRead("d.via_repository") + ` as via_repository, d.updated_at
 				from eval_project_owners o join eval_days d on d.project_key = o.owner
 				where o.project_key = any($1::text[]) and d.listed
-				  and (d.repo = any($2) or (d.repo = '` + legionfactsDefault + `' and d.project_key = o.project_key and exists (
+				  and (d.repo = any($2) or (d.repo = '` + legionfactsDefault + `' and d.project_key = any($1::text[]) and d.project_key = o.project_key and exists (
 					select 1 from eval_project_repos p where p.project_key = o.project_key and p.repo = any($2))))
 				  and d.day >= $` + strconv.Itoa(from) + `::date and d.day < $` + strconv.Itoa(to) + `::date
 			) owned
