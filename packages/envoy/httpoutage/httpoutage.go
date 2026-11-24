@@ -29,8 +29,8 @@ import "net/http"
 // says, which asking again repeats. A 501 and a 505 are in it though RFC 9110 lets a server send
 // them as its lasting answer: on the routes this repository's clients call, only a hop in front
 // of the server sends either, and each reader's retry is bounded. A reader whose own contract
-// says otherwise for one of them says so where it reads it (the Envoy listener's own 500,
-// listenerwire.FaultStatus).
+// says otherwise for one of them says so where it reads it (the Envoy listener's own 500, which
+// listenerwire.Outage excepts).
 func Is(status int) bool {
 	return status >= http.StatusInternalServerError || status == http.StatusRequestTimeout ||
 		status == http.StatusTooManyRequests

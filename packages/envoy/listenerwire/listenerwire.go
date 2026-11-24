@@ -9,11 +9,12 @@
 // the refill rig (internal/testnats/cmd/refillrig), and the Legion daemon's publisher and
 // controller probe, which is another module and so needs this package public.
 //
-// It imports the standard library alone (deps_test.go), so a client links nothing of the server
-// by reading its bodies, and clients_test.go holds each of those clients to these types: one that
-// encodes or decodes a body of its own, even one field of one, fails it. The load-test harness's
-// main package also calls Dispatch, NATS and Cloud SQL, so the test reads its listener client
-// instead, and holds the main package to naming no listener route of its own.
+// It imports the standard library and httpoutage, which imports nothing else (deps_test.go), so a
+// client links nothing of the server by reading its bodies, and clients_test.go holds each of those
+// clients to these types: one that encodes or decodes a body of its own, even one field of one,
+// fails it. The load-test harness's main package also calls Dispatch, NATS and Cloud SQL, so the
+// test reads its listener client instead, and holds the main package to naming no listener route
+// of its own.
 //
 // A request's fields are omitempty but where the listener reads an absent field differently from
 // an empty one: the listener only decodes a request, so each client sends the fields it sets. A
@@ -27,6 +28,8 @@ package listenerwire
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/sjawhar/envoy/httpoutage"
 )
 
 // FaultStatus is the one outage status the listener answers its API routes with for its own
@@ -40,13 +43,23 @@ import (
 // key, a conditional write another writer beat, a record it cannot decode), and on the listings of
 // GET /v1/sessions and GET /v1/interests/ a failure of the copy they serve from other than a
 // refill, which is their 503.
-// Its bus failing, which asking again can clear, it answers 503 with Retry-After: 1
-// (writeBusUnavailable), never this. Every other outage status (httpoutage.Is) - a 408 or a 429
-// from something in front of the listener, which answers neither to a Bearer caller itself, or any
-// other 5xx - is the listener not answering now. The listener writes it through this constant and
-// both readers except it by it: the daemon's role lookup (packages/daemon/internal/notify,
-// RoleHolder) and Dispatch's client (internal/dispatch/envoy, outageStatus).
+// Its bus failing, which asking again can clear, it answers 503 with Retry-After: 1, never this.
+// The listener writes it through this constant, and Outage excepts it.
 const FaultStatus = http.StatusInternalServerError
+
+// Outage reports whether status, the answer of a route of the listener's API to a caller that
+// presents the listener's bearer token, is the listener not answering now, which asking again a
+// little later can clear: an outage (httpoutage.Is) but FaultStatus, the listener's own lasting
+// answer. The listener's bus failing is its 503, which clears; a 502, 503 or 504 also comes from a
+// gateway in front of a listener that is gone; and a 408, a 429, a 501 or a 505 comes only from
+// something in front of the listener, since the listener, a Go server, answers no 408 and neither
+// 501 nor 505 on the routes its Go clients call, and its 429s reach no caller that presents its
+// bearer token (they answer a DPoP token presented too often, an agent's sending and the relay
+// socket). The daemon's role lookup and Dispatch's client are such callers, and read a listener
+// status by this rule.
+func Outage(status int) bool {
+	return httpoutage.Is(status) && status != FaultStatus
+}
 
 // SessionState is what a session's last registration says about it: live, unresponsive or gone.
 // The listener's internal/session declares its values (session.Live, session.Unresponsive and

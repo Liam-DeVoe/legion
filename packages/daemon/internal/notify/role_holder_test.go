@@ -18,10 +18,11 @@ import (
 // field. A 200 is read within answerBodyLimit, since its title, dir and capabilities are not
 // bounded: a holder with many capabilities is named as any other. Only a 404 naming no holder
 // under reason `unclaimed`, a role no claim names, is no holder; one naming no holder under any
-// other reason, and every other answer, is an error, which the forget refuses on too. An outage
-// (httpoutage.Is: a 408, a 429, a 5xx) is a plain error the caller waits on and asks again about,
-// but for the listener's own 500 (listenerwire.FaultStatus), which it answers the same way each
-// time it is asked. The lookup is one GET of the role with the listener's bearer.
+// other reason, and every other answer, is an error, which the forget refuses on too. A listener
+// outage (listenerwire.Outage: a 408, a 429, a 5xx but the listener's own 500,
+// listenerwire.FaultStatus, which it answers the same way each time it is asked) is a plain error
+// the caller waits on and asks again about. The lookup is one GET of the role with the listener's
+// bearer.
 //
 // The controls (the pull request records each run): RoleHolder answering a lapsed holder with no
 // state as no holder, as round 17 first did, fails the older listener's row; the 200 read within

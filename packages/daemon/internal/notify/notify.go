@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/roleholder"
 
@@ -421,13 +420,9 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 // decode, a 404 naming no holder under any reason but unclaimed, its own 500
 // (listenerwire.FaultStatus, a claim record it cannot decode on this route), and any status but
 // 200, 404 and an outage — is a *RoleLookupRefused, a fault an operator fixes. A listener it
-// cannot reach, an answer whose body could not be read to its end (unreadAnswer), and every other
-// outage (httpoutage.Is) are plain errors the caller waits on and asks again about: the listener's
-// bus failing is its 503 (writeBusUnavailable), which clears; a 502, 503 or 504 also comes from a
-// gateway in front of a listener that is gone; and a 408, a 429, a 501 or a 505 comes only from
-// something in front of the listener, since the listener, a Go server, answers no 408, its 429s
-// reach no Bearer caller such as this one, and it answers neither 501 nor 505 on this route; the
-// wait is bounded by the caller's own (httpoutage.Is says why those two are in the set). The
+// cannot reach, an answer whose body could not be read to its end (unreadAnswer), and every
+// listener outage status (listenerwire.Outage, which says where each comes from) are plain errors
+// the caller waits on and asks again about; the wait is bounded by the caller's own. The
 // listener answers from a direct get of its role-claim bucket, which a lagging copy of the bucket
 // can answer for the milliseconds after a claim write: the race any read of the bucket has, and a
 // forget made on such an answer is no worse than one made a moment earlier (review round 16 of
@@ -477,7 +472,7 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		}
 		return "", "", refused(fmt.Sprintf("the listener's 404 names no holder and gives reason %q, not %q: %s", refusal.Reason, roleholder.Unclaimed, excerpt(body, cut)))
 	}
-	if httpoutage.Is(response.StatusCode) && response.StatusCode != listenerwire.FaultStatus {
+	if listenerwire.Outage(response.StatusCode) {
 		return "", "", fmt.Errorf("look up the holder of role %s: listener returned %s: %s", role, response.Status, excerpt(body, cut))
 	}
 	return "", "", refused(fmt.Sprintf("listener returned %s: %s", response.Status, excerpt(body, cut)))
