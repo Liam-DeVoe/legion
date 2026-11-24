@@ -282,7 +282,7 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:1846adf22496bd711036aae8be147e57bdeb
 # such layer waited for the workspace install and the packs before BuildKit could reuse it.
 FROM bun AS plugin-deps
 WORKDIR /repo
-# jq: the same version and omp.extensions rewrites release.yaml's pi_envoy_build and pi_legion_build jobs run.
+# jq: the same version, contract number and omp.extensions rewrites release.yaml's pi_envoy_build and pi_legion_build jobs run.
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends jq \
     && rm -rf /var/lib/apt/lists/*
@@ -374,15 +374,20 @@ COPY skills skills
 # skills/ into dist/skills, and writes its dist/THIRD_PARTY_NOTICES with scripts/third-party-notices.ts.
 COPY scripts/pi-plugin-prepack.sh scripts/pi-plugin-prepack.sh
 COPY scripts/third-party-notices.ts scripts/third-party-notices.ts
+# The contract number pi-legion's manifest declares, which its committed manifest does not:
+# scripts/daemon-contract.sh counts it from packages/contracts' fixtures, as release.yaml's
+# pi_legion_build does, and reads no history, which this context has not got (.dockerignore
+# leaves out .git).
+COPY scripts/daemon-contract.sh scripts/daemon-contract.sh
 
 # Each plugin ships from this checkout with the steps release.yaml's pi_envoy_build and
 # pi_legion_build jobs run before `bun pm pack`: the release version set (PI_ENVOY_VERSION and
 # PI_LEGION_VERSION, the pair a release resolved for this commit and links into `legion`; empty
-# outside a release, which keeps the manifest's own version) and the manifest pointed at the one
-# packed bundle (the prepack refuses to pack with the source manifest). So an image built from a
-# commit carries that commit's plugin code, labelled with the version its release links into
-# `legion`, never a registry's build. Each tarball is unpacked into a directory: `omp plugin
-# install` links a directory and rejects a tarball path (ENOTDIR).
+# outside a release, which keeps the manifest's own version), pi-legion's contract number written,
+# and the manifest pointed at the one packed bundle (the prepack refuses to pack with the source
+# manifest). So an image built from a commit carries that commit's plugin code, labelled with the
+# version its release links into `legion`, never a registry's build. Each tarball is unpacked into
+# a directory: `omp plugin install` links a directory and rejects a tarball path (ENOTDIR).
 ARG PI_ENVOY_VERSION
 WORKDIR /repo/packages/pi-envoy
 RUN jq --arg v "$PI_ENVOY_VERSION" '(if $v != "" then .version = $v else . end) | .omp.extensions = ["dist/envoy.js"]' package.json > tmp.json \
@@ -392,7 +397,8 @@ RUN jq --arg v "$PI_ENVOY_VERSION" '(if $v != "" then .version = $v else . end) 
     && tar xzf ./*.tgz -C /out/pi-envoy --strip-components=1
 WORKDIR /repo/packages/pi-legion
 ARG PI_LEGION_VERSION
-RUN jq --arg v "$PI_LEGION_VERSION" '(if $v != "" then .version = $v else . end) | .omp.extensions = ["dist/legion.js"]' package.json > tmp.json \
+RUN contract="$(bash /repo/scripts/daemon-contract.sh)" \
+    && jq --arg v "$PI_LEGION_VERSION" --argjson c "$contract" '(if $v != "" then .version = $v else . end) | .legion.daemonApiVersion = $c | .omp.extensions = ["dist/legion.js"]' package.json > tmp.json \
     && mv tmp.json package.json \
     && rm -f ./*.tgz && bun pm pack \
     && mkdir -p /out/pi-legion \
@@ -621,14 +627,21 @@ RUN mkdir -p /out && CGO_ENABLED=0 go-third-party-notices.sh /out/go-notices \
 # packages/daemon under go.work, whose other module (packages/envoy) contributes its go.mod and go.sum
 # to dependency selection and its listenfd package to `legion start` — static, so it runs on any
 # base. LEGION_REVISION is the commit the workflow builds; it is linked in so `legion version` names
-# it, and the build refuses without it.
+# it, and the build refuses without it. LEGION_CONTRACT_ORDER is that commit's contract entries in
+# main's merge order, the stamp worker-image.yaml reads with scripts/daemon-contract-order.sh from
+# the history this context leaves out; it is linked in as api.contractOrder, from which the daemon
+# numbers each entry by its rank, and the build refuses without it too: an unstamped `legion`
+# numbers its entries by id instead, and the stamp of a commit of no entry is `v1:`, never an empty
+# value.
 FROM go-source AS go
 # Declared here, after the dependency layers, so a new commit re-runs only the compile.
 ARG LEGION_REVISION
+ARG LEGION_CONTRACT_ORDER
 ARG PI_LEGION_VERSION
 ARG PI_ENVOY_VERSION
 RUN test -n "$LEGION_REVISION" \
-    && ldflags="-X main.revision=${LEGION_REVISION}" \
+    && test -n "$LEGION_CONTRACT_ORDER" \
+    && ldflags="-X main.revision=${LEGION_REVISION} -X github.com/sjawhar/legion/daemon/internal/api.contractOrder=${LEGION_CONTRACT_ORDER}" \
     && if [ -n "$PI_LEGION_VERSION" ] && [ -n "$PI_ENVOY_VERSION" ]; then ldflags="$ldflags -X main.piLegionVersion=${PI_LEGION_VERSION} -X main.piEnvoyVersion=${PI_ENVOY_VERSION}"; fi \
     && CGO_ENABLED=0 go build -ldflags "$ldflags" -o /out/legion ./cmd/legion \
     && CGO_ENABLED=0 go -C /src/packages/envoy build -o /out/agent-secrets ./cmd/cipher
