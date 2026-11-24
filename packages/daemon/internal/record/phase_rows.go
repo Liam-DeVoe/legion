@@ -103,10 +103,10 @@ func rowOnEntry(rows []PhaseRow, role claim.Role, entry int64) (PhaseRow, bool) 
 // that way is named "", though a review of its own read a commit before. agent "" (an issue whose
 // key names no claims) has no row the reviews write onto, and is named "".
 func AgentsReviewedHead(rows []PhaseRow, role claim.Role, task string, place int, agent claim.Token) string {
-	step := PhaseRow{Role: role, StepTask: task, StepPlace: place, Claim: agent}
-	for _, other := range rows {
-		if AgentsOtherRow(step, other) && other.ReviewedHead != "" {
-			return other.ReviewedHead
+	for _, row := range rows {
+		if task != "" && row.Role == role && row.StepTask == task && row.StepPlace > 0 && row.StepPlace != place &&
+			(agent == "" || row.Claim == agent) && row.ReviewedHead != "" {
+			return row.ReviewedHead
 		}
 	}
 	return ""
