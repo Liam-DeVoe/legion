@@ -60,7 +60,9 @@
 --   - embeddings, after insert, after update and after delete, for each statement: one delta row
 --     per window class the statement moved, its old rows minus and its new rows plus, so an update
 --     that leaves each row in its class writes none; then the refresh of each issue a row of kind
---     issue names.
+--     issue names, on update only where the row's embedding is null, embedded_hash, model, dead
+--     or pending_since changed between its old row and its new one, so a claim, which moves
+--     next_attempt_at alone (embedqueue's scanPending and claimRenewal), refreshes nothing.
 --   - components, artifact_versions, check_results and handoffs, after insert and after delete,
 --     for each statement: one delta row of the rows added or removed, under the table's kind.
 --   - issues (after insert, update of title or created_at, and delete), artifacts (after insert,
@@ -87,33 +89,59 @@
 -- refreshes several issues refreshes them in key order. inputs is search_coverage_issue_inputs over
 -- issueSource's value, the issue's created_at and its embeddings row's id and xmin, the one
 -- rendering the recount compares too; a write to any of them, with or without triggers, changes a
--- value or a row's xmin. A later migration that changes issue_embedding_text or
--- issue_embedding_spec must refresh every issue's row in the same release, as it must empty
--- embedding_issue_sources: inputs names the inputs, not the function that turns them into text.
+-- value or a row's xmin. A claim changes its row's xmin and refreshes nothing, the issue's class
+-- being as it was, so the recount finds that issue's inputs changed and writes them again.
+-- content_hash is not among the columns an update of embeddings is refreshed for: each write that
+-- changes it sets pending_since = now() beside it (embeddings_enqueue, embedqueue's
+-- repairStaleIssues), and where now() repeats, inside one transaction, the write of the title or
+-- the spec that made the new text refreshes the issue itself after its enqueue, since Postgres
+-- fires one table's row triggers in the order of their names. A later migration that changes
+-- issue_embedding_text or issue_embedding_spec must refresh every issue's row in the same release,
+-- as it must empty embedding_issue_sources: inputs names the inputs, not the function that turns
+-- them into text.
 --
 -- Every name is written with its schema and every function the bodies call with pg_catalog, as
 -- 20261115200014 writes its own: these functions run under the caller's search_path.
 --
--- What it locks. Each create trigger takes SHARE ROW EXCLUSIVE on its table until the commit:
--- embeddings, components, artifact_versions, check_results, handoffs, issues and artifacts. A write
--- to one of them waits for the migration to commit; a read waits for nothing. The runner's
--- lock_timeout bounds each wait for a lock. The four new tables no other session can reach before
--- the commit. Once applied, a write that refreshes an issue holds that issue's state row until
--- it commits, so two writers of one issue's inputs take that row in turn; the writes of Dispatch
--- that change an issue's text take its embeddings row first (embeddings_enqueue), as the embed
--- commit does, so each takes the two rows in one order.
+-- What it locks. Each create trigger takes SHARE ROW EXCLUSIVE on its table and holds it to the
+-- commit: a read of the table waits for nothing, and a write of it waits for the migration to
+-- commit. The migration reads no row, so it holds those locks for as long as its catalog writes
+-- take. The functions come first, since creating one writes pg_proc and locks no table, and the
+-- triggers after them, table by table in one fixed order: issues, artifacts, artifact_versions,
+-- embeddings, components, check_results, handoffs, then search_coverage_issues, the order the
+-- server's own writes take them in (an issue's write, then its document's, then 0140's enqueue
+-- into embeddings), as 20261101182522_search_term_queue_triggers takes its five in one order. The
+-- migration still holds each table's lock while it waits for the next, so a writer that takes two
+-- of these tables in another order closes a cycle with it. The lock_timeout below, 500 ms, is
+-- shorter than deadlock_timeout (1 s by default), so against any such writer the migration gives
+-- up first, before either deadlock check runs: it fails with 55P03 having applied nothing, the
+-- writer finishes, and pgmigrate applies it again, up to pgmigrate.LockTimeoutAttempts times in
+-- the same boot, then at the next boot. Production runs one replica under Recreate, so no writer
+-- of this server's own runs during the migration there; the rule holds for two builds at once,
+-- for several processes and for a writer outside the server. It carries 20261101182522's cost
+-- too: Postgres cancels an autovacuum that holds a lock only after the waiter has waited
+-- deadlock_timeout, so an autovacuum of one of the seven tables outlasts the migration's wait, and
+-- the census refuses the migration while one holds a lock on them (internal/pgmigrate/census.go,
+-- cancelsAutovacuum). The four new tables no other session can reach before the commit. Once
+-- applied, a write that refreshes an issue holds that issue's state row until it commits, so two
+-- writers of one issue's inputs take that row in turn; the writes of Dispatch that change an
+-- issue's text take its embeddings row first (embeddings_enqueue), as the embed commit does, so
+-- each takes the two rows in one order.
 --
 -- Why the census admits it. Each statement is a catalog-only kind (pgmigrate's
--- catalogOnlyStatements): create table, with no INHERITS or PARTITION OF, the storage parameters of
--- the delta table included, since a new table holds no row; create index on a table this migration
--- creates; create function in plpgsql or sql; and create trigger, which runs only on later writes,
--- never on the rows already there. So it applies whatever the size of embeddings and the six other
--- tables, and the census answers 0.
+-- catalogOnlyStatements): a set of lock_timeout, which bounds the migration's own wait and keeps
+-- the exemption the rest earn; create table, with no INHERITS or PARTITION OF, the storage
+-- parameters of the delta table included, since a new table holds no row; create index on a table
+-- this migration creates; create function in plpgsql or sql; and create trigger, which runs only
+-- on later writes, never on the rows already there. So it applies whatever the size of embeddings
+-- and the six other tables, and the census answers 0.
 --
 -- During a roll and after one. The release before this one neither reads nor writes the new
 -- tables, and the triggers are the database's, so its writes keep the counts as well. Rolled back
 -- past this release, the triggers stay and keep writing delta rows that no process folds, a few
 -- for each write statement, until a release with the counts loop runs again.
+set local lock_timeout = '500ms';
+
 create table public.search_coverage_counts (
   kind text not null,
   model text not null,
@@ -252,9 +280,12 @@ begin
   return null;
 end $$;
 
--- A statement's rows of embeddings: the window classes it moved, and the issues it wrote rows of.
--- Each branch reads the transition tables its trigger names; plpgsql plans a statement only when
--- it first runs it, so a branch another trigger takes is never planned against tables it lacks.
+-- A statement's rows of embeddings: the window classes it moved, and the issues whose rows it
+-- inserted or deleted, or, for an update, whose rows it changed in a column an issue's class or
+-- wait is read from (embedding is null, embedded_hash, model, dead, pending_since), each paired
+-- with its old row by id. Each branch reads the transition tables its trigger names; plpgsql plans
+-- a statement only when it first runs it, so a branch another trigger takes is never planned
+-- against tables it lacks.
 create function public.search_coverage_count_embeddings() returns trigger
 language plpgsql as $$
 begin
@@ -281,7 +312,13 @@ begin
     group by 1, 2, 3, 4
     having pg_catalog.sum(w.items) <> 0;
     perform public.search_coverage_issue_refresh(k.id)
-    from (select r.id from old_rows r where r.kind = 'issue' union select r.id from new_rows r where r.kind = 'issue') k
+    from (select coalesce(o.id, n.id) as id
+          from (select r.id, r.embedding is null as unembedded, r.embedded_hash, r.model, r.dead, r.pending_since
+                from old_rows r where r.kind = 'issue') o
+          full join (select r.id, r.embedding is null as unembedded, r.embedded_hash, r.model, r.dead, r.pending_since
+                     from new_rows r where r.kind = 'issue') n on n.id = o.id
+          where (o.id, o.unembedded, o.embedded_hash, o.model, o.dead, o.pending_since)
+            is distinct from (n.id, n.unembedded, n.embedded_hash, n.model, n.dead, n.pending_since)) k
     order by k.id;
   else
     insert into public.search_coverage_deltas (kind, model, matched, dead, items)
@@ -396,6 +433,28 @@ begin
   return null;
 end $$;
 
+-- The triggers, table by table in the order "What it locks" names.
+create trigger search_coverage_issues_rows after insert or update of title, created_at or delete on public.issues
+  for each row execute function public.search_coverage_issues_refresh();
+create trigger search_coverage_issues_truncate after truncate on public.issues
+  for each statement execute function public.search_coverage_truncated();
+
+create trigger search_coverage_artifacts_rows after insert or update of issue_key, is_primary or delete on public.artifacts
+  for each row execute function public.search_coverage_artifacts_refresh();
+create trigger search_coverage_artifacts_truncate after truncate on public.artifacts
+  for each statement execute function public.search_coverage_truncated();
+
+create trigger search_coverage_artifact_versions_insert after insert on public.artifact_versions
+  referencing new table as new_rows
+  for each statement execute function public.search_coverage_count_rows('document_version');
+create trigger search_coverage_artifact_versions_delete after delete on public.artifact_versions
+  referencing old table as old_rows
+  for each statement execute function public.search_coverage_count_rows('document_version');
+create trigger search_coverage_artifact_versions_rows after insert or update of markdown or delete on public.artifact_versions
+  for each row execute function public.search_coverage_artifact_versions_refresh();
+create trigger search_coverage_artifact_versions_truncate after truncate on public.artifact_versions
+  for each statement execute function public.search_coverage_truncated('document_version');
+
 create trigger search_coverage_embeddings_insert after insert on public.embeddings
   referencing new table as new_rows
   for each statement execute function public.search_coverage_count_embeddings();
@@ -417,17 +476,6 @@ create trigger search_coverage_components_delete after delete on public.componen
 create trigger search_coverage_components_truncate after truncate on public.components
   for each statement execute function public.search_coverage_truncated('component');
 
-create trigger search_coverage_artifact_versions_insert after insert on public.artifact_versions
-  referencing new table as new_rows
-  for each statement execute function public.search_coverage_count_rows('document_version');
-create trigger search_coverage_artifact_versions_delete after delete on public.artifact_versions
-  referencing old table as old_rows
-  for each statement execute function public.search_coverage_count_rows('document_version');
-create trigger search_coverage_artifact_versions_rows after insert or update of markdown or delete on public.artifact_versions
-  for each row execute function public.search_coverage_artifact_versions_refresh();
-create trigger search_coverage_artifact_versions_truncate after truncate on public.artifact_versions
-  for each statement execute function public.search_coverage_truncated('document_version');
-
 create trigger search_coverage_check_results_insert after insert on public.check_results
   referencing new table as new_rows
   for each statement execute function public.search_coverage_count_rows('result');
@@ -445,16 +493,6 @@ create trigger search_coverage_handoffs_delete after delete on public.handoffs
   for each statement execute function public.search_coverage_count_rows('handoff');
 create trigger search_coverage_handoffs_truncate after truncate on public.handoffs
   for each statement execute function public.search_coverage_truncated('handoff');
-
-create trigger search_coverage_issues_rows after insert or update of title, created_at or delete on public.issues
-  for each row execute function public.search_coverage_issues_refresh();
-create trigger search_coverage_issues_truncate after truncate on public.issues
-  for each statement execute function public.search_coverage_truncated();
-
-create trigger search_coverage_artifacts_rows after insert or update of issue_key, is_primary or delete on public.artifacts
-  for each row execute function public.search_coverage_artifacts_refresh();
-create trigger search_coverage_artifacts_truncate after truncate on public.artifacts
-  for each statement execute function public.search_coverage_truncated();
 
 create trigger search_coverage_issue_classes after insert or update or delete on public.search_coverage_issues
   for each row execute function public.search_coverage_issue_classes();

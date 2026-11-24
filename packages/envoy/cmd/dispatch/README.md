@@ -2992,6 +2992,47 @@ Where the parser reads the joined run as words, as it reads `a_a_…`, both text
 While the release before this one still serves, its related-item check and duplicate check build that text in the old order, so for such a text they compare with a vector built in the other order.
 Its census answers `0`.
 
+Migration `20261124011834_search_coverage_counts` creates the counts `GET /api/v1/search/coverage` reads and the triggers that keep them in each write's own transaction ([Search](#search)).
+`search_coverage_counts` is the folded base, one row per class (`kind`, `model`, `matched`, `dead`) with how many items it holds;
+`search_coverage_deltas` holds one row per class a write statement moved, which the counts loop folds into the base, with `autovacuum_vacuum_scale_factor = 0` and `autovacuum_vacuum_threshold = 10000`, since each fold leaves every row it folds dead while the table's live rows stay near zero;
+`search_coverage_issues` holds each issue's row of the report, with two partial indexes the route reads the oldest lacking issue from;
+and `search_coverage_filled` holds the one row a fill inserts when it ends, which the migration does not insert, so the counts are not filled until a fill of this release has ended.
+The triggers are ordinary ones, since the census admits no `enable always trigger`, so a write under `session_replication_role = replica` fires none of them and the next recount follows it.
+On `embeddings` three statement triggers, after insert, update and delete, write one delta row per window class a statement moved and refresh the state row of each issue whose row the statement wrote, an update only where it changed `embedding is null`, `embedded_hash`, `model`, `dead` or `pending_since`, so the queue's claims, which move `next_attempt_at` alone, refresh nothing;
+`components`, `artifact_versions`, `check_results` and `handoffs` each carry two statement triggers, after insert and after delete;
+row triggers on `issues`, `artifacts` and `artifact_versions` refresh the state row of the issue a write concerns, and one on `search_coverage_issues` writes the delta rows of an issue's class;
+and each of the seven counted tables carries one trigger after truncate.
+`create trigger` takes `SHARE ROW EXCLUSIVE` on its table, and the migration holds each lock to its commit
+— reads are not held, writes of that table wait for the commit
+— for as long as its catalog writes take, since it reads no row.
+The functions, which lock no table, are created first, and the triggers then table by table in one fixed order, `issues`, `artifacts`, `artifact_versions`, `embeddings`, `components`, `check_results`, `handoffs`, then `search_coverage_issues`:
+the order the server's own writes take them in (an issue's write, then its document's, then `0140`'s enqueue into `embeddings`), as `20261101182522` takes its five in one order.
+The migration still holds each table's lock while it waits for the next, and a writer that takes two of these tables in another order closes a cycle with it.
+So it sets its own `lock_timeout` of 500 ms, shorter than `deadlock_timeout` (1 s by default):
+against such a writer it gives up first (`55P03`, nothing applied), the writer finishes, and the runner applies it again, `pgmigrate.LockTimeoutAttempts` times, three, two seconds apart, then at the next boot.
+Production runs one replica under `Recreate` (`packages/envoy/infra/README.md`), so no writer of this server's own runs during the migration there;
+the rule holds where two builds serve at once, where several processes run, and against a writer outside the server.
+The cost is `20261101182522`'s: a holder that outlasts half a second on every attempt fails that boot, an autovacuum of one of the seven tables among them where `deadlock_timeout` is not shorter, which the census refuses (below), and a retry is safe because the failed attempt's transaction rolled back.
+Every statement is a `set`, a `create table` of a table that holds no row, a `create index` on such a table, a `create function` or a `create trigger`, which is what exempts the migration from the census's table-size limit (`internal/pgmigrate/exempt.go`) whatever the size of `embeddings` and `artifact_versions`;
+its census answers `0`.
+The release before it neither reads nor writes the new tables, and the triggers are the database's, so its writes keep the counts as well;
+rolled back past it, the triggers stay and write delta rows that no process folds, a few for each write statement, until a release with the counts loop runs again.
+
+Migrations `20261124011835_embeddings_window_unembedded_since` and `20261124011836_embeddings_window_embedded_since` create `embeddings_window_unembedded_since` on `embeddings (kind, dead, pending_since)` and `embeddings_window_embedded_since` on `embeddings (kind, dead, model, pending_since)`, and `20261124011837_drop_embeddings_window_embedded` and `20261124011838_drop_embeddings_window_unembedded` drop `20261118011208`'s `embeddings_window_embedded` and `20261118011258`'s `embeddings_window_unembedded` behind them.
+The coverage route reads kept counts (`20261124011834`), and its oldest lacking age is no count:
+it is the earliest `pending_since` of a window item neither current nor dead, which the route reads for each window kind as the first entry of `kind = k and not dead` in the unembedded half, and in the embedded half of `kind = k and not dead and model is null` and of `kind = k and not dead and model = m` for each model other than the identity's that the kind's counts name, one probe each, whatever the corpus holds.
+Each new index's predicate is the old one's word for word, so the release before this one, whose coverage statement ORs the two predicates, reads the window rows through a BitmapOr of the two new indexes, and the drops land in the same release.
+Each build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`), and so is exempt from the census's size limit:
+it takes `SHARE UPDATE EXCLUSIVE` on `embeddings`, which no read or write of the table waits on, for two passes over the table and a wait for every older snapshot between them.
+On a synthetic corpus of production's size, on the builds Job `scripts/coverage-scale.sh` runs (2026-11-18), the old indexes took 7.5 to 10.6 s (unembedded) and 3.9 to 5.8 s (embedded) to build, and the new ones store more in each entry, so their builds write more;
+under `Recreate` the old pod has stopped before the boot that builds them, so that time is downtime.
+Each drop takes `ACCESS EXCLUSIVE` on `embeddings` for the instant it unlinks its index, inside the runner's transaction, and reads no row of the table, so the census admits it whatever the size of `embeddings` (`catalogOnlyDrop`).
+Each sets `lock_timeout` to `120s` for its own transaction, for `20261120222733`'s reasons: a read of `embeddings` the stopped pod left can still run when the drop asks for its lock, and under the runner's 5 s bound a read that outlasts about 19 s would make the boot exit and start again.
+So each drop waits up to 120 s on each of `store.Migrate`'s 3 tries, and where two builds serve at once its queued lock holds off the earlier build's reads and writes of `embeddings` for as long as it waits.
+The four censuses answer `0`: an index build and an index drop each refuse and rewrite no row.
+A failed concurrent build leaves an INVALID index of the new name on `embeddings`, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot;
+while it is invalid, the probe reads that half's rows another way and answers the same age, more slowly.
+
 Migration `0009_project_artifacts` deletes malformed derived artifact references, reports their count, and re-derives them from source text on the next write.
 It aborts server boot before a migration record or schema change only when an existing artifact has no owning issue.
 On success it backfills each artifact's project and generated `ref_key`.
@@ -3386,7 +3427,7 @@ It refuses:
 - an autovacuum worker holding a lock on a touched table, only when Postgres will not cancel it for the migration.
   Postgres cancels an autovacuum that holds a lock another session waits for once that session has waited `deadlock_timeout`, so an autovacuum passes at any age, with the grant or without (to a role without it, autovacuum is the holder that runs as no role), except an anti-wraparound vacuum, which Postgres does not cancel, or one on a server whose `deadlock_timeout` is not shorter than a lock timeout the migration waits under:
   the runner's five seconds, or the one its own `SET LOCAL lock_timeout` sets, which Postgres reads in a savepoint of the census's (a value it refuses there refuses the migration).
-  `0066` sets 500 ms, so an autovacuum on `asks` or `comments` refuses it at the default one second, and `20261101182522_search_term_queue_triggers` sets the same, so an autovacuum on `asks`, `comments`, `issues` or `messages` refuses it.
+  `0066` sets 500 ms, so an autovacuum on `asks` or `comments` refuses it at the default one second, `20261101182522_search_term_queue_triggers` sets the same, so an autovacuum on `asks`, `comments`, `issues` or `messages` refuses it, and `20261124011834_search_coverage_counts` sets the same, so an autovacuum on any of the seven tables it counts refuses it.
   Postgres marks a vacuum anti-wraparound when it launches it, in its activity, which only a role with `pg_read_all_stats` can read, and which Postgres records only with `track_activities` on;
   where the census cannot read it, it refuses every vacuum of a table past its freeze age (`age(relfrozenxid)` or the multixact age at its `autovacuum_freeze_max_age`), one launched before the table passed it included;
 

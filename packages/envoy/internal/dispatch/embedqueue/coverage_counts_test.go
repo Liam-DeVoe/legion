@@ -276,6 +276,71 @@ func TestTwoWritesToOneIssuesInputsLeaveItsStateRowCurrent(t *testing.T) {
 	requireMainsAnswer(t, database, "after A and B committed")
 }
 
+// TestAClaimOfAnIssuesRowRefreshesNothing holds plan D7's "Triggers, ordinary ones": an update of
+// an issue's embeddings row refreshes the issue's state row only where it changed the row's
+// embedding is null, embedded_hash, model, dead or pending_since. The issue's row holds a vector
+// of an older title, so the queue claims it. Each of the queue's two claims, scanPending's and
+// claimRenewal's, writes the row (its xmin moves) and changes next_attempt_at alone, and each
+// leaves the issue's state row as it was, its xmin unchanged, and writes no delta row. An update of
+// embedded_hash alone, to the row's content_hash, refreshes it: the state row is written again and
+// the issue moves from lacking to current, one delta row minus and one plus. After each write the
+// counts equal main's statement's.
+func TestAClaimOfAnIssuesRowRefreshesNothing(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	const key = "CLM-1"
+	seedIssue(t, database, "CLM", key, "The title the vector is of")
+	embedRowAs(t, database.Pool, "issue", key, configuredIdentity)
+	mustExec(t, database.Pool, `update issues set title = 'The title the queue claims' where key = $1`, key)
+	fillCounts(t, database)
+	requireMainsAnswer(t, database, "before the claims")
+
+	// rows reads the xmin of the issue's embeddings row and of its state row, and how many delta
+	// rows there are.
+	rows := func() (embeddingXmin, stateXmin string, deltas int64) {
+		t.Helper()
+		if err := database.Pool.QueryRow(ctx, `
+			select e.xmin::text, s.xmin::text, (select count(*) from search_coverage_deltas)
+			from embeddings e, search_coverage_issues s
+			where e.kind = 'issue' and e.id = $1 and s.key = $1`, key).Scan(&embeddingXmin, &stateXmin, &deltas); err != nil {
+			t.Fatalf("read the issue's rows: %v", err)
+		}
+		return embeddingXmin, stateXmin, deltas
+	}
+	embeddingXmin, stateXmin, deltas := rows()
+	requireUnrefreshed := func(claim string) {
+		t.Helper()
+		claimedXmin, gotStateXmin, gotDeltas := rows()
+		if claimedXmin == embeddingXmin {
+			t.Fatalf("%s did not write the issue's embeddings row (xmin %s before and after)", claim, claimedXmin)
+		}
+		embeddingXmin = claimedXmin
+		if gotStateXmin != stateXmin || gotDeltas != deltas {
+			t.Fatalf("after %s the issue's state row has xmin %s and there are %d delta rows, want xmin %s and %d: the claim refreshed the issue",
+				claim, gotStateXmin, gotDeltas, stateXmin, deltas)
+		}
+		requireMainsAnswer(t, database, "after "+claim)
+	}
+
+	deps := Deps{Store: database, Embedder: &fakeEmbedder{}}
+	claimed, settled, err := scanPending(ctx, deps)
+	if err != nil || len(claimed) != 1 || claimed[0].id != key || settled != 0 {
+		t.Fatalf("scanPending = %v, %d settled, %v, want %s claimed", claimed, settled, err, key)
+	}
+	requireUnrefreshed("scanPending's claim")
+	renewal := newClaimRenewal(deps, claimed)
+	renewal.last = time.Now().Add(-renewClaimInterval - time.Second)
+	renewal.renew(ctx)
+	requireUnrefreshed("claimRenewal's renewal")
+
+	updateRow(t, database.Pool, "issue", key, `embedded_hash = content_hash`)
+	if _, gotStateXmin, gotDeltas := rows(); gotStateXmin == stateXmin || gotDeltas != deltas+2 {
+		t.Fatalf("after the update of embedded_hash the issue's state row has xmin %s and there are %d delta rows, want a new xmin and %d: the update did not refresh the issue",
+			gotStateXmin, gotDeltas, deltas+2)
+	}
+	requireMainsAnswer(t, database, "after the update of embedded_hash")
+}
+
 // ───── the counts loop: the fold, the recount, the fill (R7e to R7i, R7o, R7x) ─────
 
 // setForTest sets variable to value until the test ends, as shortenIdentityRecheck sets the
