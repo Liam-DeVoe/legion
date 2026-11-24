@@ -591,11 +591,8 @@ type PodKeep struct {
 // PodKeepOf reads issue's PodKeep.
 func (s *Store) PodKeepOf(ctx context.Context, project, issue string) (PodKeep, error) {
 	var keep PodKeep
-	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, `select declined_at, checked_at, reason, started_row, pod_uid, commits > 0 or changed
-			from idle_release_declines where project = $1 and issue = $2`, project, issue).Scan(&keep.Decline.At,
-			&keep.Decline.CheckedAt, &keep.Decline.Reason, &keep.Decline.StartedRow, &keep.Decline.PodUID, &keep.Decline.Work)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) (err error) {
+		if keep.Decline, err = readIdleDecline(ctx, tx, project, issue); err != nil {
 			return err
 		}
 		var issuePhase string
@@ -610,6 +607,20 @@ func (s *Store) PodKeepOf(ctx context.Context, project, issue string) (PodKeep, 
 		return PodKeep{}, fmt.Errorf("read the kept pod of %s: %w", issue, err)
 	}
 	return keep, nil
+}
+
+// readIdleDecline is the release the daemon last declined for issue (idle_release_declines), read
+// through tx, and the zero pods.IdleDecline where none stands: the one read of that row both of its
+// readers make, the idle view (readIdleView) and an update round's read of a kept pod (PodKeepOf).
+func readIdleDecline(ctx context.Context, tx pgx.Tx, project, issue string) (pods.IdleDecline, error) {
+	var declined pods.IdleDecline
+	err := tx.QueryRow(ctx, `select declined_at, checked_at, reason, started_row, pod_uid, commits > 0 or changed
+		from idle_release_declines where project = $1 and issue = $2`, project, issue).Scan(&declined.At,
+		&declined.CheckedAt, &declined.Reason, &declined.StartedRow, &declined.PodUID, &declined.Work)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return pods.IdleDecline{}, err
+	}
+	return declined, nil
 }
 
 // LeftPodTurned is whether a claim of issue went on working after turnStart, the newest turn start
@@ -1105,10 +1116,8 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	// The release the daemon last declined for the issue, which holds the pod while it stands
 	// (pods.IdleDecline). A view with no such row reads the zero decline. The pod the runtime holds
 	// now is no fact of this store's: the daemon's pass sets it (pods.IdleView.PodUID).
-	err = tx.QueryRow(ctx, `select declined_at, checked_at, reason, started_row, pod_uid, commits > 0 or changed
-		from idle_release_declines where project = $1 and issue = $2`, project, issue).Scan(&view.Declined.At,
-		&view.Declined.CheckedAt, &view.Declined.Reason, &view.Declined.StartedRow, &view.Declined.PodUID, &view.Declined.Work)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	view.Declined, err = readIdleDecline(ctx, tx, project, issue)
+	if err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the declined release of %s: %w", issue, err)
 	}
 	// The pause's two facts, read by the view's project token as readOpenPauseByToken reads a
