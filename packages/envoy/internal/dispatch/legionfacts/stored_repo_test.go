@@ -51,7 +51,7 @@ func TestEachStoredRowNamesTheRepositoryItOwns(t *testing.T) {
 		got := stored[key].Repo
 		// A row that owns no repository stores ':default', which the issue page resolves to the
 		// project's default repository; every other row stores what the page resolves.
-		want := shown
+		want := got
 		if got == DefaultRepo {
 			want = "acme/widgets"
 		}

@@ -200,7 +200,7 @@ var reposStatement = `
 // walk could not finish names no answer either: the issue page refuses
 // such an issue rather than answer its project's default, which would be a wrong one, and a
 // refusal here would stop every pass of the project's facts for good. The row holds no repository
-// for it, which is the answer a chain that names none got before the default stood for it.
+// for it.
 func ReadRepos(ctx context.Context, q Querier, keys []string) (map[string]string, error) {
 	repos := map[string]string{}
 	if len(keys) == 0 {
@@ -212,14 +212,13 @@ func ReadRepos(ctx context.Context, q Querier, keys []string) (map[string]string
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var key string
-		var repo *string
+		var key, repo string
 		var tooDeep bool
 		if err := rows.Scan(&key, &repo, &tooDeep); err != nil {
 			return nil, fmt.Errorf("resolve the repositories of %d issues: %w", len(keys), err)
 		}
-		if repo != nil && !tooDeep {
-			repos[key] = *repo
+		if !tooDeep {
+			repos[key] = repo
 		}
 	}
 	if err := rows.Err(); err != nil {

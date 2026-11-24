@@ -556,13 +556,12 @@ func readByIndex(ctx context.Context, pool *store.Pool, read func(tx pgx.Tx) err
 // and the closed rows of the keys given whose root is none of those trees, each a probe of the
 // primary key (project_key, issue_key). Both indexes are migration 20261117100000's. The three
 // answer the open rows, the trees' rows and the cards' rows, each once, and only the last tests a
-// list on the rows it reads, the roots on each closed card's, which the cards bound. An earlier
-// shape left the rows of the cards and the trees out of the open rows, which tested both lists on
-// every open row: under the generic plan a statement pgx caches can settle on, `<> all($n)` scans
-// the list for each row rather than hashing it, and over 15,803 rows of one project, 4,300 of them
-// open, with 200 cards in 60 trees, that read took 119 to 168 ms against 13 to 14 ms with its
-// values, and 417 to 482 ms with 1,000 cards in 300 trees; this one takes 7 to 9 ms and 11 to 16
-// ms under either plan (dispatch://INFRA-2916, round 15).
+// list on the rows it reads, the roots on each closed card's, which the cards bound. No arm tests
+// a list on every open row: under the generic plan a statement pgx caches can settle on, `<>
+// all($n)` scans the list for each row rather than hashing it, and over 15,803 rows of one
+// project, 4,300 of them open, a read that tested the cards and the trees on every open row took
+// 119 to 168 ms with 200 cards in 60 trees and 417 to 482 ms with 1,000 cards in 300 trees, where
+// this one takes 7 to 9 ms and 11 to 16 ms under either plan.
 // TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget holds it to 20 ms.
 //
 // The planner keeps the open arm on the index only because Read runs the statement with
