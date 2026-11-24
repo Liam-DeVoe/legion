@@ -5149,7 +5149,8 @@ Each item below names a path with its method and identity, then its purpose.
   With `dry_run` the call writes no issue, event or comment, and answers the same shape: each entry holds the status and the parent that the call would leave and the issue's `last_seq` now, and no `issue`.
   A keyed call keeps its progress in its request key's recovery point, so a repeat finishes what its first attempt left (Keyed writes, above).
   A refused write stops the call, and no later write runs.
-  Each refusal carries `changed` beside its `code` and `error`: the entries of the writes that committed before it, `[]` when none did.
+  Each refusal that the route answers carries `changed` beside its `code` and `error`: the entries of the writes that committed before it, `[]` when none did.
+  Two refusals of the router come before the route and carry no `changed`: the `421 HOST_MISMATCH` of a server with the dev sign-in on, and the `403` of an unsafe request that carries a session cookie or an IAP assertion and no `Authorization`, from another origin (`enforceCookieOrigin`).
   With the setting off, the options, `dry_run` and the `403`s below work as they do with it on.
   The refusals are these:
 

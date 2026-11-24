@@ -44,20 +44,21 @@ import (
 //     it; a first request still running (its lease, IdempotencyLease, renewed every
 //     keyedLeaseRenewal while it runs) is 409 KEY_IN_FLIGHT with Retry-After: 1; a finished one is
 //     answered with Idempotency-Replayed: ?1, and the handler does not run again. A route that
-//     commits a recovery point answers what it made, read now (keyedReplays); a route whose answer
-//     is one comment or issue message answers that post, read now (keyedRereads); any other
-//     answers its stored status and body - unless that answer is a success holding a comment or
-//     a message that is deleted now, or a document version a delete renamed
-//     (answerEndedByDelete), whenever the delete began, and is then never replayed: a delete is
-//     timed from before it waited for the lock a keyed write may hold, so no time says which of
-//     the two read the post first. A repeat that arrives while its first request still runs is
-//     never spooled (requestKeyInFlight): its body is read off the connection and discarded, and
-//     the repeat is judged by its digest once that body has arrived, by what the key holds then
-//     (answerDrainedRepeat). A refusal the layer answers itself takes its route's shape
-//     (keyedRoute.refuse): the status change's carries changed, the entries of the request's
-//     recovery point for a KEY_IN_FLIGHT - the holder's, answered while it runs, and an abandoned
-//     run's for a freed key - and for an ANSWER_NOT_KEPT, and [] for every other
-//     (refuseStatusChangeKey).
+//     commits a recovery point answers what it made, read now (keyedReplays), except the status
+//     change, which answers what its steps stored, each issue as its step's write answered it
+//     (replayStatusChange); a route whose answer is one comment or issue message answers that
+//     post, read now (keyedRereads); any other answers its stored status and body - unless that
+//     answer is a success holding a comment or a message that is deleted now, or a document
+//     version a delete renamed (answerEndedByDelete), whenever the delete began, and is then
+//     never replayed: a delete is timed from before it waited for the lock a keyed write may
+//     hold, so no time says which of the two read the post first. A repeat that arrives while its
+//     first request still runs is never spooled (requestKeyInFlight): its body is read off the
+//     connection and discarded, and the repeat is judged by its digest once that body has
+//     arrived, by what the key holds then (answerDrainedRepeat). A refusal the layer answers
+//     itself takes its route's shape (keyedRoute.refuse): the status change's carries changed,
+//     the entries of the request's recovery point for a KEY_IN_FLIGHT - the holder's, answered
+//     while it runs, and an abandoned run's for a freed key - and for an ANSWER_NOT_KEPT, and []
+//     for every other (refuseStatusChangeKey).
 //   - The handler finishes whatever its client does: it runs on the request's context with the
 //     client's cancellation taken off, bounded by keyedHandlerLimit and counted in the server's
 //     background wait, so a client that gives up and asks again waits on the first run rather than
@@ -1071,7 +1072,9 @@ func (s *server) readHeldRequestKey(ctx context.Context, login, key string) (hel
 // A recovery replay answers what the write made as it stands now and keeps beside it the
 // replayKeptMembers of the stored answer (writeRefreshed). An answer a delete ended
 // (answerEndedByDelete) lends it none of them: the replay is handed no stored answer, as when
-// the first request never answered.
+// the first request never answered. The status change's replay, on the one route that resumes,
+// answers what its steps stored instead, each issue as its step's write answered it
+// (replayStatusChange), and is handed no stored answer.
 func (s *server) answerHeldKey(
 	w http.ResponseWriter, r *http.Request, key string, held heldRequestKey, state keyState, route keyedRoute,
 ) bool {
