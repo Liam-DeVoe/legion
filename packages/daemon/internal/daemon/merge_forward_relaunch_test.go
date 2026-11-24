@@ -7,9 +7,15 @@ package daemon
 // the ready of the role's next launch, a launch later than the one it was last sent at
 // (record.MergeForward.SentLaunch). These tests end the implementer's claim by each cause through
 // its supervise machine, as the daemon does, and relaunch it through the operator's retry.
+//
+// The ready sends nothing while a row of the ask is still queued, and leaves the ask to that row.
+// The row's executor decides its end from reads made before the end lands, and the role can be
+// relaunched, and the new launch come ready, in between. The last tests drive each such order and
+// hold that the new launch is told the ask once all the same.
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"slices"
 	"testing"
@@ -25,6 +31,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -89,6 +96,15 @@ func wokenByTheAsk(t *testing.T) (*outbox, *store.Pool, *holderPublisher, *super
 // and its ready too where ready is set.
 func comesUp(t *testing.T, machine *supervise.Machine, ready bool) {
 	t.Helper()
+	if err := launchComesUp(machine, ready); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// launchComesUp is comesUp's body, which answers what failed rather than failing the test, for an
+// act that runs where the test may not stop: inside an executor's run, or on a goroutine of its
+// own.
+func launchComesUp(machine *supervise.Machine, ready bool) error {
 	c := machine.Claim()
 	events := []supervise.Event{
 		supervise.StreamHello{Claim: c.Token, Generation: c.Generation},
@@ -99,20 +115,37 @@ func comesUp(t *testing.T, machine *supervise.Machine, ready bool) {
 	}
 	for _, ev := range events {
 		if err := machine.Handle(context.Background(), ev); err != nil {
-			t.Fatalf("bring up the implementer's launch %d: handle %T: %v", c.Generation, ev, err)
+			return fmt.Errorf("bring up the %s's launch %d: handle %T: %w", c.Role, c.Generation, ev, err)
 		}
 	}
 	machine.Wait()
+	return nil
 }
 
-// askToldOnce fails the test unless the implementer was told the ask once in all, the outbox holds no
+// relaunched is the operator's retry of machine's claim, which failed or retired, and its new
+// launch brought up through its ready (launchComesUp), so the ready is applied as the daemon
+// applies it.
+func relaunched(machine *supervise.Machine) error {
+	ended := machine.Claim()
+	if err := machine.Handle(context.Background(), supervise.RequestOperatorRetry{Claim: ended.Token}); err != nil {
+		return fmt.Errorf("the operator's retry of the %s: %w", ended.Role, err)
+	}
+	machine.Wait()
+	if got := machine.Claim(); got.State != supervise.StateLaunching || got.Generation <= ended.Generation {
+		return fmt.Errorf("after the retry the %s is %s at launch %d, want it launching past launch %d", ended.Role, got.State,
+			got.Generation, ended.Generation)
+	}
+	return launchComesUp(machine, true)
+}
+
+// askToldOnce fails the test unless ask's role was told ask once in all, the outbox holds no
 // merge-forward row of LEGION-208 any more, and the record's ask keeps launch as the one it was
-// delivered to.
-func askToldOnce(t *testing.T, pool *store.Pool, publisher *holderPublisher, launch uint64) {
+// told to.
+func askToldOnce(t *testing.T, pool *store.Pool, publisher *holderPublisher, ask record.MergeForwardMessage, launch uint64) {
 	t.Helper()
 	_, delivered := publisher.snapshot()
-	if len(delivered) != 1 || delivered[0].message != owedAsk.Message("LEGION-208", record.PullRequest{Repo: "acme/widgets"}) {
-		t.Errorf("the implementer was told %d messages (%+v), want the ask once", len(delivered), delivered)
+	if len(delivered) != 1 || delivered[0].message != ask.Message("LEGION-208", record.PullRequest{Repo: "acme/widgets"}) {
+		t.Errorf("the %s was told %d messages (%+v), want the ask once, at its launch %d", ask.Role, len(delivered), delivered, launch)
 	}
 	if rows := outboxRowsOfKind(t, pool, "LEGION-208", record.OutboxKindMergeForward); rows != 0 {
 		t.Errorf("the outbox holds %d merge-forward rows of LEGION-208, want none: no second ask", rows)
@@ -123,7 +156,7 @@ func askToldOnce(t *testing.T, pool *store.Pool, publisher *holderPublisher, lau
 		t.Fatalf("read the record's ask: %v", err)
 	}
 	if sent != launch {
-		t.Errorf("the record's ask was sent at launch %d, want launch %d, the one its row reached", sent, launch)
+		t.Errorf("the record's ask was sent at launch %d, want launch %d, the one it was told to", sent, launch)
 	}
 }
 
@@ -137,7 +170,7 @@ func TestAnAskWhoseRowWakesItsRoleIsToldOnce(t *testing.T) {
 	publisher.setAbsent()
 	drainAt(t, runner, 10*time.Minute, "the attempt once the woken session holds the role")
 	drainAt(t, runner, 20*time.Minute, "a later attempt")
-	askToldOnce(t, pool, publisher, machine.Claim().Generation)
+	askToldOnce(t, pool, publisher, owedAsk, machine.Claim().Generation)
 }
 
 // The ask's row reaches the woken launch before that launch's ready: the delivery records the
@@ -155,7 +188,288 @@ func TestTheReadyOfTheLaunchAnAskWasDeliveredToSendsNothing(t *testing.T) {
 	}
 	machine.Wait()
 	drainAt(t, runner, 20*time.Minute, "a later attempt")
-	askToldOnce(t, pool, publisher, launch)
+	askToldOnce(t, pool, publisher, owedAsk, launch)
+}
+
+// implementersAsk is the record's ask of owedAskHead to the implementer, made in testing, as the
+// act writes it.
+func implementersAsk() record.MergeForward {
+	return record.MergeForward{Head: owedAskHead, Base: "main", Role: claim.RoleImplementer, Phase: phase.Testing,
+		Why: record.ConflictCheckNotGreen, AskedAt: time.Now()}
+}
+
+// failedWithTheAsk is mergeForwardRunnerAt's LEGION-208 standing in at, its pull request #86 open
+// at owedAskHead with asked as the record's merge forward, the claim of ask's role as a failure of
+// its first launch left it, the workflow behind the supervisor as wokenByTheAsk has it, and ask's
+// row queued. The listener takes every publish.
+func failedWithTheAsk(t *testing.T, at phase.Phase, asked record.MergeForward, ask record.MergeForwardMessage) (*outbox, *store.Pool, *holderPublisher, *supervise.Machine) {
+	t.Helper()
+	publisher := &holderPublisher{}
+	runner, sup, pool, _ := mergeForwardRunnerAt(t, publisher, at, workflow.PhaseStatus(at), record.PullRequestOpen, &asked)
+	engine := workflow.New(runner.records, workflow.Config{Project: "legion", Repositories: testRepositories}, quietLogger())
+	sup.OnDurableState((&workflowRuntime{pool: pool, records: runner.records, handlers: []intake.Handler{engine}, log: quietLogger()}).terminal)
+	token := mustClaimToken(t, "LEGION-208", ask.Role)
+	machine, _, err := sup.Create(context.Background(), supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208",
+		Issue: "LEGION-208", Role: ask.Role, Generation: 1, ServingGeneration: 1, State: supervise.StateFailed,
+		Failure: "launch failures ran out", Session: "ses-" + string(ask.Role), SessionFile: t.TempDir() + "/session.jsonl"}, "")
+	if err != nil {
+		t.Fatalf("create the failed %s's claim: %v", ask.Role, err)
+	}
+	sup.deps.Conns.(*fake.Conns).Register(token, fake.NewConn())
+	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", ask, time.Now().Add(-time.Minute)))
+	return runner, pool, publisher, machine
+}
+
+// relaunchBeforeTheEnd runs the row failedWithTheAsk queued with the operator's retry of the failed
+// claim, and the ready of its new launch, made between the executor's read that ends the row and
+// that end (beforeUndeliveredEnd), after between where it is set; then it runs what is still due.
+// It fails the test unless that came in between once, and the ready left the row queued and wrote
+// no second one: the ready left the ask to the row.
+func relaunchBeforeTheEnd(t *testing.T, runner *outbox, pool *store.Pool, machine *supervise.Machine, between func() error) {
+	t.Helper()
+	came := 0
+	runner.beforeUndeliveredEnd = func(record.OutboxRow) {
+		if came++; came > 1 {
+			return
+		}
+		if between != nil {
+			if err := between(); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+		if err := relaunched(machine); err != nil {
+			t.Error(err)
+			return
+		}
+		if rows := outboxRowsOfKind(t, pool, "LEGION-208", record.OutboxKindMergeForward); rows != 1 {
+			t.Errorf("after the ready of launch %d the outbox holds %d merge-forward rows of LEGION-208, want the one row still queued",
+				machine.Claim().Generation, rows)
+		}
+	}
+	drainAt(t, runner, 0, "the attempt that reads the row's end")
+	if came != 1 {
+		t.Fatalf("the executor read the row's end %d times, want once: the relaunch came between nothing", came)
+	}
+	drainAt(t, runner, 10*time.Minute, "a later attempt")
+}
+
+// The implementer, asked to merge the base forward while the issue stays in testing, has failed
+// when the ask's row runs: the executor reads the claim failed, and before the row ends the
+// operator's retry relaunches the implementer and the new launch comes ready while the row is
+// still queued, so that ready sends nothing. The end reads the claim again under the fact lock,
+// where it holds a live launch the ask was not told, so the ask is sent to that launch, which is
+// told it once. An end decided on the first read would leave the new launch told nothing.
+func TestAnAskWhoseFailedClaimIsRetriedBeforeItsRowEndsReachesTheNewLaunch(t *testing.T) {
+	t.Parallel()
+	runner, pool, publisher, machine := failedWithTheAsk(t, phase.Testing, implementersAsk(), owedAsk)
+	relaunchBeforeTheEnd(t, runner, pool, machine, nil)
+	askToldOnce(t, pool, publisher, owedAsk, machine.Claim().Generation)
+}
+
+// The merger was asked to merge the base forward in merging, and the architect moved the issue
+// back to accepting, where that ask is owed to nobody, before the ask's row ran; the merger's
+// claim has failed. The row's attempt reads that the workflow no longer delivers it. Before the
+// row ends, the issue moves into merging again, where the ask is owed once more and the move asks
+// nothing again (mergeForwardOnEntry), and the operator's retry relaunches the merger, whose new
+// launch comes ready while the row is still queued and sends nothing. The end reads the ask's
+// owing again under the fact lock, so the merger's new launch is told the ask once.
+func TestAMergersAskOwedAgainBeforeItsRowEndsReachesItsNewLaunch(t *testing.T) {
+	t.Parallel()
+	ask := record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: owedAskHead, Base: "main",
+		Phase: phase.Merging, PullRequest: 86, Why: record.ConflictMergeNext}
+	runner, pool, publisher, machine := failedWithTheAsk(t, phase.Accepting, record.MergeForward{Head: owedAskHead, Base: "main",
+		Role: claim.RoleMerger, Phase: phase.Merging, Why: record.ConflictMergeNext, AskedAt: time.Now()}, ask)
+	relaunchBeforeTheEnd(t, runner, pool, machine, func() error {
+		return store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+			issue, err := runner.records.Issue(ctx, tx, "LEGION-208")
+			if err != nil || issue == nil {
+				return fmt.Errorf("read LEGION-208 to move it into merging: %+v, %w", issue, err)
+			}
+			issue.Phase, issue.Status = phase.Merging, workflow.PhaseStatus(phase.Merging)
+			return runner.records.PutIssue(ctx, tx, *issue)
+		})
+	})
+	askToldOnce(t, pool, publisher, ask, machine.Claim().Generation)
+}
+
+// finishHeld is a record.Store whose next finish of an outbox row runs before first, on the
+// finishing transaction's own goroutine: the finish is the row's end, so the test acts between
+// everything the executor read and that end.
+type finishHeld struct {
+	record.Store
+	before func()
+}
+
+func (s *finishHeld) FinishOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error {
+	if before := s.before; before != nil {
+		s.before = nil
+		before()
+	}
+	return s.Store.FinishOutbox(ctx, tx, id, leaseToken)
+}
+
+func (s *finishHeld) FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error {
+	if before := s.before; before != nil {
+		s.before = nil
+		before()
+	}
+	return s.Store.FinishLeasedOutbox(ctx, tx, id, leaseToken)
+}
+
+// factLockWaitedOn is whether a backend of pool's database waits for an advisory lock now: the
+// fact lock is the one such lock the rig's facts and its outbox take.
+func factLockWaitedOn(pool *store.Pool) bool {
+	var waiting int
+	err := pool.QueryRow(context.Background(), `select count(*) from pg_locks
+		where locktype = 'advisory' and not granted
+		  and database = (select oid from pg_database where datname = current_database())`).Scan(&waiting)
+	return err == nil && waiting > 0
+}
+
+// The implementer's claim has failed when the ask's row runs, and is still failed at every read
+// of the executor's, the last of them under the fact lock that holds the row's end. The operator's
+// retry relaunches the implementer while the end holds that lock, and the new launch's ready waits
+// for it; applied once the end has committed, the ready finds no row of the ask queued and sends
+// the ask itself, so the new launch is told it once. A ready that read the row before its end
+// landed would leave the ask to a row that never reached the launch.
+func TestAReadyThatComesWhileAnAsksRowEndsAtAFailedClaimSendsTheAsk(t *testing.T) {
+	t.Parallel()
+	runner, pool, publisher, machine := failedWithTheAsk(t, phase.Testing, implementersAsk(), owedAsk)
+	held := &finishHeld{Store: runner.records}
+	runner.records = held
+	readied := make(chan error, 1)
+	bound := testwait.Bounded(t, 30*time.Second, time.Second)
+	held.before = func() {
+		go func() { readied <- relaunched(machine) }()
+		if !testwait.Holds(bound, 10*time.Millisecond, func() bool { return len(readied) > 0 || factLockWaitedOn(pool) }) {
+			t.Errorf("within %s of the relaunch its ready was neither applied nor waiting on the fact lock", bound)
+		}
+	}
+	drainAt(t, runner, 0, "the attempt that ends the row at the failed claim")
+	select {
+	case err := <-readied:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(bound):
+		t.Fatalf("the relaunch had not come ready %s after the row's end", bound)
+	}
+	drainAt(t, runner, 10*time.Minute, "the attempt after the new launch's ready")
+	askToldOnce(t, pool, publisher, owedAsk, machine.Claim().Generation)
+}
+
+// publishedThen is holderPublisher with then run once, inside the first publish the listener takes,
+// after it took it and before the publish returns: what the test makes come between a delivery and
+// what the executor reads after it.
+type publishedThen struct {
+	*holderPublisher
+	then func()
+}
+
+func (p *publishedThen) Publish(ctx context.Context, topic, message string, payload any, key string) error {
+	err := p.holderPublisher.Publish(ctx, topic, message, payload, key)
+	if then := p.then; err == nil && then != nil {
+		p.then = nil
+		then()
+	}
+	return err
+}
+
+// endedAndRetried is an operator's stop of machine's live claim, which retires it, and the
+// operator's retry, which relaunches it; with ready, the new launch is brought up through its
+// ready too.
+func endedAndRetried(machine *supervise.Machine, ready bool) error {
+	told := machine.Claim()
+	if err := machine.Handle(context.Background(), supervise.RequestStop{Claim: told.Token}); err != nil {
+		return fmt.Errorf("the operator's stop of the %s's launch %d: %w", told.Role, told.Generation, err)
+	}
+	machine.Wait()
+	if !ready {
+		if err := machine.Handle(context.Background(), supervise.RequestOperatorRetry{Claim: told.Token}); err != nil {
+			return fmt.Errorf("the operator's retry of the %s: %w", told.Role, err)
+		}
+		machine.Wait()
+		return nil
+	}
+	return relaunched(machine)
+}
+
+// toldAtTwoLaunches fails the test unless the implementer was told the ask twice in all, once at
+// each of its launches the publish of the ask's first row straddled, the outbox holds no
+// merge-forward row of LEGION-208 any more, and the record's ask keeps the later launch.
+func toldAtTwoLaunches(t *testing.T, pool *store.Pool, publisher *holderPublisher, first, second uint64) {
+	t.Helper()
+	_, delivered := publisher.snapshot()
+	want := owedAsk.Message("LEGION-208", record.PullRequest{Repo: "acme/widgets"})
+	if len(delivered) != 2 || delivered[0].message != want || delivered[1].message != want {
+		t.Errorf("the implementer was told %d messages (%+v), want the ask once at its launch %d and once at its launch %d",
+			len(delivered), delivered, first, second)
+	}
+	if rows := outboxRowsOfKind(t, pool, "LEGION-208", record.OutboxKindMergeForward); rows != 0 {
+		t.Errorf("the outbox holds %d merge-forward rows of LEGION-208, want none", rows)
+	}
+	var sent uint64
+	if err := pool.QueryRow(context.Background(), `select coalesce((merge_forward->>'sentLaunch')::bigint, 0) from pull_requests where issue = 'LEGION-208'`).
+		Scan(&sent); err != nil {
+		t.Fatalf("read the record's ask: %v", err)
+	}
+	if sent != second {
+		t.Errorf("the record's ask was told launch %d, want launch %d", sent, second)
+	}
+}
+
+// The ask's row reaches the woken implementer's launch 2, and that launch ends - an operator stops
+// it - and the operator's retry relaunches the claim into launch 3, all before the publish returns.
+// The launch the delivery records is the one read before the publish, launch 2, so launch 3, which
+// comes ready after the row's end, is sent the ask and told it once. A launch read after the
+// publish would be launch 3, told nothing.
+func TestAnAskDeliveredAsItsLaunchEndsIsSentToTheNextLaunch(t *testing.T) {
+	t.Parallel()
+	runner, pool, publisher, machine := wokenByTheAsk(t)
+	comesUp(t, machine, true)
+	first := machine.Claim().Generation
+	publisher.setAbsent()
+	var ended error
+	runner.notices = &publishedThen{holderPublisher: publisher, then: func() { ended = endedAndRetried(machine, false) }}
+	drainAt(t, runner, 10*time.Minute, "the attempt that delivers the ask to launch 2")
+	if ended != nil {
+		t.Fatal(ended)
+	}
+	comesUp(t, machine, true)
+	second := machine.Claim().Generation
+	drainAt(t, runner, 20*time.Minute, "the attempt after launch 3's ready")
+	toldAtTwoLaunches(t, pool, publisher, first, second)
+}
+
+// The ask's row reaches the woken implementer's launch 2, and before the publish returns, that
+// launch ends, the operator's retry relaunches the claim and launch 3 comes ready, while the row
+// is still queued, so launch 3's ready sends nothing. The row's end reads the claim again under
+// the fact lock, where it holds launch 3, later than the launch the row reached, so the ask is
+// sent to launch 3, which is told it once.
+func TestAnAskDeliveredWhileItsRoleIsRelaunchedIsSentToTheNewLaunch(t *testing.T) {
+	t.Parallel()
+	runner, pool, publisher, machine := wokenByTheAsk(t)
+	comesUp(t, machine, true)
+	first := machine.Claim().Generation
+	publisher.setAbsent()
+	var ended error
+	runner.notices = &publishedThen{holderPublisher: publisher, then: func() {
+		if ended = endedAndRetried(machine, true); ended != nil {
+			return
+		}
+		if rows := outboxRowsOfKind(t, pool, "LEGION-208", record.OutboxKindMergeForward); rows != 1 {
+			ended = fmt.Errorf("after the ready of launch %d the outbox holds %d merge-forward rows, want the one row still queued",
+				machine.Claim().Generation, rows)
+		}
+	}}
+	drainAt(t, runner, 10*time.Minute, "the attempt that delivers the ask to launch 2")
+	if ended != nil {
+		t.Fatal(ended)
+	}
+	second := machine.Claim().Generation
+	drainAt(t, runner, 20*time.Minute, "a later attempt")
+	toldAtTwoLaunches(t, pool, publisher, first, second)
 }
 
 // An operator's stop of the implementer, asked to merge the base forward while the issue stays in
