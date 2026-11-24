@@ -10,18 +10,26 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
+// writeCorpusFailures are the refusals of TestWriteCorpusReadsOnce's parse that fail it rather
+// than leave the spec out (corpustest.Rules.Failures), each matched with errors.Is: a rendering of
+// the spec that reads back as another document, and one no reader reads. pmdoc.ParseWritten reads
+// the rendering back, so it can answer either; the corpus tests that parse with pmdoc.Parse cannot,
+// and pass none.
+var writeCorpusFailures = []error{pmdoc.ErrMisreadRendering, pmdoc.ErrRenderingRefused}
+
 // On every spec of the write corpus (runWriteCorpus), warm and cold, each anchored MarkQuote reads
 // its fork twice, before and after its write, and each read joined to the write - every
 // SnapshotVersion after a write, and the suggestion's SuggestionKind - and each ProjectMark's
 // margin write take the write's rendering in place of reading the fork, and every rendering the
 // write hands on is a fresh read and render of its fork (checkRendering). The specs are the
 // documents of DISPATCH_TOKEN_CORPUS (the repository's markdown in CI) read through corpustest:
-// each is parsed as its seed parses it (pmdoc.ParseWritten), the step whose refusal leaves it out,
-// and the writes' three quotes are counted in its text (writeCorpusPicks, writeCorpusText), so a
-// spec with too few is left out and FindQuote's refusal of one fails the test, as every error of
-// the writes does. The test skips unless DISPATCH_TOKEN_CORPUS names the directory.
+// each is parsed as its seed parses it (pmdoc.ParseWritten), the step whose refusal leaves it out
+// but for writeCorpusFailures, which fail the test, and the writes' three quotes are counted in
+// its text (writeCorpusPicks, writeCorpusText), so a spec with too few is left out and FindQuote's
+// refusal of one fails the test, as every error of the writes does. The test skips unless
+// DISPATCH_TOKEN_CORPUS names the directory.
 func TestWriteCorpusReadsOnce(t *testing.T) {
-	corpus := corpustest.Open(t, "DISPATCH_TOKEN_CORPUS", corpustest.Rules{MaxBytes: pmdoc.MaxDocumentBytes, Failures: pmdoc.CorpusFailures})
+	corpus := corpustest.Open(t, "DISPATCH_TOKEN_CORPUS", corpustest.Rules{MaxBytes: pmdoc.MaxDocumentBytes, Failures: writeCorpusFailures})
 	markQuote := forkReads{read: 2}
 	reused := forkReads{renderingReused: 1}
 	want := map[string]forkReads{

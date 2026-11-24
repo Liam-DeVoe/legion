@@ -346,9 +346,10 @@ func corpusMarkdown(t testing.TB) []namedMarkdown {
 }
 
 // corpusRules are what a corpus test of pmdoc reads its corpus under (package corpustest): a
-// document of more bytes than MaxDocumentBytes, and one its parse refuses, are left out, but for a
-// refusal that is one of CorpusFailures, which fails the test.
-var corpusRules = corpustest.Rules{MaxBytes: MaxDocumentBytes, Failures: CorpusFailures}
+// document of more bytes than MaxDocumentBytes, and one its parse refuses, are left out. Each of
+// these tests parses with Parse, which never reads a rendering back, so none of its refusals is
+// one that fails a corpus test (Rules.Failures); a panic of the parse still fails it.
+var corpusRules = corpustest.Rules{MaxBytes: MaxDocumentBytes}
 
 // anchorCorpusMarkdown is every document of PMDOC_ANCHOR_CORPUS, the repository's markdown in
 // CI, that Parse takes, read through corpustest, which judges each refusal of the parse; every

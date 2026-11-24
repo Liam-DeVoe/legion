@@ -102,7 +102,7 @@ type equivalenceSource struct {
 // private: each refusal names its text's length and sha256 alone.
 func corpusSpecs(t *testing.T) []equivalenceSource {
 	t.Helper()
-	corpus := corpustest.Optional(t, "DISPATCH_TEST_SPEC_CORPUS", corpustest.Rules{MaxBytes: pmdoc.MaxDocumentBytes, Failures: pmdoc.CorpusFailures})
+	corpus := corpustest.Optional(t, "DISPATCH_TEST_SPEC_CORPUS", corpustest.Rules{MaxBytes: pmdoc.MaxDocumentBytes})
 	var sources []equivalenceSource
 	for _, document := range corpus.Documents() {
 		var tree *pmdoc.Node

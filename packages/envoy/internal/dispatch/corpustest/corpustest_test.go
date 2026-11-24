@@ -19,9 +19,10 @@ import (
 // run time, so no reader of the tree takes it for a gate of these tests.
 var corpusVariable = strings.Join([]string{"CORPUSTEST", "CASE", "DIRECTORY"}, "_")
 
-// rules are the rules every corpus test passes: pmdoc's size limit and the parse's refusals that
-// fail a test.
-var rules = corpustest.Rules{MaxBytes: pmdoc.MaxDocumentBytes, Failures: pmdoc.CorpusFailures}
+// rules are the rules of a corpus test whose parse reads the rendering back (docs'
+// TestWriteCorpusReadsOnce): pmdoc's size limit, and the two refusals of that parse that fail the
+// test, a rendering that reads back otherwise and one no reader reads.
+var rules = corpustest.Rules{MaxBytes: pmdoc.MaxDocumentBytes, Failures: []error{pmdoc.ErrMisreadRendering, pmdoc.ErrRenderingRefused}}
 
 // recorder is the testing.TB a case hands the helper: it keeps what the helper logs, reports and
 // registers, and ends the case's goroutine where FailNow or SkipNow would end a test's. A method

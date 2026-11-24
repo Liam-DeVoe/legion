@@ -7,9 +7,10 @@
 //  1. the document is larger than the size limit the test passes (pmdoc.MaxDocumentBytes), by its
 //     size alone;
 //  2. the test's parse of the markdown, the step Dispatch runs to accept an upload, refuses it -
-//     but for the refusals the test passes as failures (pmdoc.CorpusFailures: a rendering that reads
-//     back otherwise, or that no reader reads), matched with errors.Is, and a panic, each of which
-//     fails the test;
+//     but for the refusals the test passes as failures (Rules.Failures, matched with errors.Is:
+//     docs' TestWriteCorpusReadsOnce, whose parse reads the rendering back, passes a rendering
+//     that reads back otherwise and one no reader reads), and a panic, each of which fails the
+//     test;
 //  3. its text holds fewer candidates than the test needs, a candidate being a sentence or a phrase
 //     that occurs exactly once in the text, counted with strings.Count and never with the quote
 //     finder under test.
@@ -30,6 +31,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -306,12 +308,7 @@ func (c *Corpus) done() {
 		where += ", " + c.shard
 	}
 	c.t.Logf("corpus %s (%s): %d taken, %s, %d failed", c.variable, where, taken, leftOut, len(c.failed))
-	kinds := make([]string, 0, len(c.refused))
-	for kind := range c.refused {
-		kinds = append(kinds, kind)
-	}
-	slices.Sort(kinds)
-	for _, kind := range kinds {
+	for _, kind := range slices.Sorted(maps.Keys(c.refused)) {
 		c.t.Logf("corpus %s: refused by the parse with %q: %d", c.variable, kind, c.refused[kind])
 	}
 	if taken == 0 {
