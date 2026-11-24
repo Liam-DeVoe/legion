@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -66,10 +67,10 @@ func (w *workflowRuntime) observeWaitedOn(ctx context.Context) []intake.IssueSta
 // out in that judgement's own order, by the issue waiting on them. Then come the open children of
 // every other started parent (record.LineFacts.StartedParentWaits), which the admission pass moves
 // into awaiting_children or leaves where it stands from the same judgement, and of every parent
-// held before its retro (record.LineFacts.RetroHeldChildren), whose retro the admission pass
-// starts once none of them is open (admit's childrenWaits). Both kinds of parent are sorted
-// together by key, and each parent's open children are added in that order, a key already added
-// keeping the place it took first.
+// held before its retro (record.RetroHolds.Open, in record.LineFacts.RetroHolds), whose retro the
+// admission pass starts once none of them is open (admit's childrenWaits). Both kinds of parent
+// are sorted together by key, and each parent's open children are added in that order, a key
+// already added keeping the place it took first.
 //
 // An open child is in the set because the turn's re-read is what writes its row of the copy
 // again: a reading of all five values, each of which replaces the one an older reading wrote. A
@@ -80,8 +81,9 @@ func (w *workflowRuntime) observeWaitedOn(ctx context.Context) []intake.IssueSta
 //
 // parents is every issue whose phases have started (record.StartedParents): one in planning
 // through accepting, held from one of them, owing its worker a start, or waiting in
-// awaiting_children (dispatch://INFRA-3320 R13), and every parent held before its retro
-// (record.RetroHeldParents, R8), which an open Dispatch child holds as well. A child filed under
+// awaiting_children (dispatch://INFRA-3320 R13), and every parent held before its retro (R8), which
+// an open Dispatch child holds as well: the keys of record.LineFacts.RetroHolds, which holds an
+// entry for each such parent (record.RetroHeldParents) whatever holds it. A child filed under
 // such an issue is in no mirror row until a listing shows it, and the admission pass holds the
 // issue's next start, stops the phase under way, or holds its retro, the moment the mirror does,
 // so the turn reads the children of each of them whatever the number of keys (readObserved).
@@ -122,15 +124,15 @@ func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, []string, err
 				add(blocker)
 			}
 		}
-		parents = slices.Concat(record.StartedParents(issues, facts.Owed), record.RetroHeldParents(issues))
+		parents = slices.AppendSeq(record.StartedParents(issues, facts.Owed), maps.Keys(facts.RetroHolds))
 		slices.Sort(parents)
 		parents = slices.Compact(parents)
 		for _, parent := range parents {
 			for _, child := range facts.StartedParentWaits[parent].Open {
 				add(child.Key)
 			}
-			for _, child := range facts.RetroHeldChildren[parent].Open {
-				add(child.Key)
+			for _, child := range facts.RetroHolds[parent].Open {
+				add(child)
 			}
 		}
 		// Every chain the copy cannot read to its top is read again as well (R16 of

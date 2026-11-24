@@ -25,7 +25,7 @@ func TestAChildInBacklogInAnotherTreeHoldsNothing(t *testing.T) {
 	chains := chainsOf([]Issue{parentRecord, parked}, append(copyOf(parentRecord, parked),
 		DispatchIssueRow{Key: unrecorded, Project: "LEGION", Status: "backlog", Parent: parent}))
 
-	waits := ChildWaits(chains, []Issue{parentRecord})
+	waits := childWaits(chains, []Issue{parentRecord})
 	wait, waiting := waits[parent]
 	if !waiting {
 		t.Fatalf("the judgement of %s = %+v, want it waiting on the child the daemon does not record", parent, waits)

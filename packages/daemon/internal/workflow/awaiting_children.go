@@ -78,8 +78,9 @@ type childrenHold struct {
 
 // awaitChildren moves issue into awaiting_children in place of the start hold names, and is the
 // one move into that phase: the transition's guard, the release of a hold, the restart of a
-// stopped task at its first step (restartTask) and the admission pass all write it here. In one
-// transaction it
+// stopped task at its first step (restartTask) and the admission pass all write it here. w is the
+// walk of issue's run as the caller holds it, after any move of its task (moveTask): each door has
+// read it already, so the move reads it no second time. In one transaction it
 //
 //   - writes in_progress where the record shows another status (Engine.status): the parent's
 //     work is under way in its children (dispatch://INFRA-3320 R11);
@@ -87,10 +88,10 @@ type childrenHold struct {
 //     children, the moment the wait began and the keys of those children, which the return reads
 //     for the ones that merged (record.ChildrenWait) — and the moment of the move, which outlives
 //     the phase (record.Issue.ChildrenWaitedAt, leftItsPhase), through the one write of an issue
-//     on the walk this reads (writeIssueOn), which holds an issue with plan rows to its task
-//     standing at the place of the held start: the transition's guard (holdForChildren) and the
-//     restart of a stopped task (restartTask) move the task there, and the release of a hold and
-//     the admission pass hold the start of the phase the task already stands at;
+//     on w (writeIssueOn), which holds an issue with plan rows to its task standing at the place
+//     of the held start: the transition's guard (holdForChildren) and the restart of a stopped
+//     task (restartTask) move the task there, and the release of a hold and the admission pass
+//     hold the start of the phase the task already stands at;
 //   - marks the issue moved, since this is a phase write (the rule in dispatchIssue);
 //   - cancels every open backstop of the parent's pod, since no role of it has a phase for one to
 //     wake it into (R11), where the engine holds the pod tables (Config.Pods);
@@ -126,17 +127,13 @@ type childrenHold struct {
 // The admission pass (internal/admit) reaches it through StopForChildren, which moves a parent in
 // accepting, one whose start is written and not delivered, and one whose worker is in the middle
 // of a phase through this same function.
-func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issue, hold childrenHold) error {
+func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, hold childrenHold) error {
 	if issue.Phase == phase.AwaitingChildren {
 		return nil
 	}
 	if !record.OpenChildHolds(hold.Start) || hold.Task == "" || hold.Cause == "" || len(hold.Open) == 0 {
 		return fmt.Errorf("a move of %s into awaiting_children holds a start of planning through accepting with its task and its cause, for an open child; this one holds %q with a task of %d bytes, cause %q and %d open children",
 			issue.Key, hold.Start, len(hold.Task), hold.Cause, len(hold.Open))
-	}
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return err
 	}
 	hold.Back = record.ReturnStep(w.steps(), hold.Start)
 	from, now := issue.Phase, e.now()
@@ -256,7 +253,7 @@ func (e *Engine) holdForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err != nil {
 		return err
 	}
-	return e.awaitChildren(ctx, tx, issue, childrenHold{Start: to, Task: task(moved, at, handoff, pr, reason),
+	return e.awaitChildren(ctx, tx, issue, w, childrenHold{Start: to, Task: task(moved, at, handoff, pr, reason),
 		Cause: heldCause(trigger, issue.Phase, replaced, reason), Open: open,
 		Summary: replaced.Summary, Verdict: replaced.Verdict})
 }
@@ -426,7 +423,7 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 			return false, fmt.Errorf("finish the start of %s's %s before its wait on its children: %w", issue.Key, start.Role, err)
 		}
 	}
-	return true, e.awaitChildren(ctx, tx, issue, hold)
+	return true, e.awaitChildren(ctx, tx, issue, w, hold)
 }
 
 // undeliveredStart says whether owed holds a start of the phase issue stands in that it owes that
@@ -698,19 +695,16 @@ func (e *Engine) KeepWaitChildren(ctx context.Context, tx pgx.Tx, issue record.I
 // (WAITING_ON_CHILDREN, dispatch://INFRA-3320 R11): each acts on a phase or on the task standing
 // in one, and the parent stands in none, so none writes anything. The reason names the open
 // children as the daemon reads them now, the start the parent holds and where the return takes it
-// on the walk of its run (goesBack). To the architect, whose sign-off, move back and stop these
-// are, it ends with the architect's levers, which are the children, the sentence on a status not
-// taken yet and the rules for ending a child (record.StatusNotTakenYet, record.EndChildRule), as
-// every refusal over children still in the workflow does. A phase worker's move back is refused
-// here before the guard reads its role (backward), and a worker acts on no child, so its refusal
-// ends by naming the architect that does instead. A parent whose last open child has gone since
-// the last admission pass is told that the next pass brings it back.
-func (e *Engine) waitingRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue, act architectAct, requester claim.Role) (intake.Result, error) {
+// on w, the walk of its run, which the caller has read (goesBack). To the architect, whose
+// sign-off, move back and stop these are, it ends with the architect's levers, which are the
+// children, the sentence on a status not taken yet and the rules for ending a child
+// (record.StatusNotTakenYet, record.EndChildRule), as every refusal over children still in the
+// workflow does. A phase worker's move back is refused here before the guard reads its role
+// (backward), and a worker acts on no child, so its refusal ends by naming the architect that does
+// instead. A parent whose last open child has gone since the last admission pass is told that the
+// next pass brings it back.
+func (e *Engine) waitingRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, act architectAct, requester claim.Role) (intake.Result, error) {
 	open, err := e.childrenOpen(ctx, tx, issue)
-	if err != nil {
-		return intake.Result{}, err
-	}
-	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return intake.Result{}, err
 	}

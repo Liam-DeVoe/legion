@@ -37,18 +37,22 @@ func relaunchUnderGateRoot(m *Machine, ctx context.Context, ev Event) error {
 //
 // A claim whose launch already names tree is decided nothing, so the pass's re-posts at every
 // sweep are free. A claim with a launch already waiting its turn in the wake pacing has the tree
-// written for that launch, which reads it when it runs. A claim in a turn keeps its process
-// until the turn ends (afterTurn), because what that turn has not pushed would be lost with it,
-// and the relaunch runs then. A claim with no process of its own has nothing to replace: its next
-// start writes the gate root for its next launch (Machine.MarkLaunch). A relaunch the lifecycle
-// recheck refuses, or one that ends with no launch at all, leaves the launch tree as it found it,
-// so the next sweep finds the claim again.
+// written for that launch, which reads it when it runs. So does a claim whose record says its
+// process died (Claim.DeathCharged, over the process it records), whose death owes a relaunch a
+// restart forgets: the boot's replay of that death (RecordedDeath) or its next report raises it,
+// and nothing is replaced here, since a replacement would launch outside the boot's owed order
+// and charge the death nothing. A claim in a turn keeps its process until the turn ends
+// (afterTurn), because what that turn has not pushed would be lost with it, and the relaunch runs
+// then. A claim with no process of its own has nothing to replace: its next start writes the gate
+// root for its next launch (Machine.MarkLaunch). A relaunch the lifecycle recheck refuses, or one
+// that ends with no launch at all, leaves the launch tree as it found it, so the next sweep finds
+// the claim again.
 func (m *Machine) relaunchUnder(ctx context.Context, tree string) error {
 	if tree == "" || m.claim.LaunchedTree() == tree {
 		m.retree = ""
 		return nil
 	}
-	if m.wake != nil {
+	if m.wake != nil || m.claim.DeathCharged && m.claim.Locator != nil {
 		m.claim.LaunchTree = tree
 		return m.persist(ctx)
 	}

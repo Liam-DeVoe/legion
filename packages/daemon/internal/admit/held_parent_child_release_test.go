@@ -4,7 +4,9 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"maps"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -121,4 +124,40 @@ func TestAPassReadsAHeldParentOnlyWhenItsFactsChange(t *testing.T) {
 	spPass(t, pool, admission)
 
 	assertRetroStarted(t, pool, spParent, "once Dispatch closed both children")
+}
+
+// The memory of the reads of held parents (retroHeldReads) holds only the parents the last pass's
+// facts hold before their retro: a pass drops the read of a parent its facts no longer hold so, one
+// whose retro a settle started or one that left the workflow (forgetRetroHeldReads). A pass's hook
+// that runs once a later pass has begun, as the commit watcher runs one late after a lost commit
+// reply, writes nothing (rememberHeldRetro): it would put an older read over the later pass's.
+func TestTheHeldRetroMemoryHoldsOnlyHeldParentsAndNoLateRead(t *testing.T) {
+	const kept, released, late = "LEGION-310", "LEGION-311", "LEGION-312"
+	pool := migratedPool(t)
+	admission := quiet(t, 2)
+	read := retroHeldRead{moved: fixedNow, holds: record.RetroHolds{Open: []string{"LEGION-319"}}}
+	remember := func(pass uint64, key string) {
+		t.Helper()
+		if err := store.Transact(t.Context(), pool, func(ctx context.Context, _ pgx.Tx) error {
+			admission.rememberHeldRetro(ctx, pass, key, read)
+			return nil
+		}); err != nil {
+			t.Fatalf("commit the pass that read %s: %v", key, err)
+		}
+	}
+	remembered := func() []string { return slices.Sorted(maps.Keys(admission.retroHeldReads)) }
+
+	first := admission.forgetRetroHeldReads(map[string]record.RetroHolds{kept: read.holds, released: read.holds})
+	remember(first, kept)
+	remember(first, released)
+	if got := remembered(); !slices.Equal(got, []string{kept, released}) {
+		t.Fatalf("the first pass's commit left the reads of %v, want %s and %s", got, kept, released)
+	}
+
+	admission.forgetRetroHeldReads(map[string]record.RetroHolds{kept: read.holds, late: read.holds})
+	remember(first, late)
+	if got := remembered(); !slices.Equal(got, []string{kept}) {
+		t.Fatalf("after the second pass and the first pass's late hook the memory holds the reads of %v, want %s alone: %s is held no longer, and the hook of %s ran after a later pass began",
+			got, kept, released, late)
+	}
 }

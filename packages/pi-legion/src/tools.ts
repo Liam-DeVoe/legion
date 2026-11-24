@@ -1034,16 +1034,16 @@ export function createLegionTool(deps: {
               );
               await refuseOpenDecisionBlocks(board, own, OPEN_BLOCKS_UNDER_A_BASIS);
               artifactId = own.artifact.id;
-              // A reference names its own issue, the ancestor's, which is where it is looked up.
+              // A reference names its own issue, the ancestor's, which is where it is looked up, an
+              // artifact id it carries as well as a slug: a document of another issue is refused,
+              // naming the reference and the issue. A bare artifact id names no issue, and goes to
+              // the daemon as it is.
               const ancestor = basis.document;
               const basisArtifactId =
                 "id" in ancestor
                   ? ancestor.id
-                  : await documentIdOf(
-                      "register_gate",
-                      dispatch,
-                      ancestor.issue,
-                      ancestor.document
+                  : await lookUpDocument("register_gate", ancestor.issue, ancestor.document, () =>
+                      resolveIssueDocumentId(board, ancestor.issue, ancestor.document)
                     );
               basisFields = { basisArtifactId, basisVersion: basis.version, reason: basis.reason };
             }

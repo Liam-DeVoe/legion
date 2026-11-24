@@ -205,7 +205,7 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 		return intake.Result{}, nil
 	}
 	if issue.Phase == phase.AwaitingChildren {
-		return e.waitingRefusal(ctx, tx, *issue, actStopTask, claim.RoleArchitect)
+		return e.waitingRefusal(ctx, tx, *issue, w, actStopTask, claim.RoleArchitect)
 	}
 	if refusal := intake.FinishedTask(issue.Key, w.Task, w.State, intake.StopOfTask); refusal != nil {
 		return intake.Result{Refusal: refusal}, nil
@@ -305,7 +305,7 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 			"tree", issue.Tree, "task", w.Task, "act", "task_restarted", "from", from, "holds", first, "reason", reason)
 		waiting := issue
 		waiting.Phase = from
-		return e.awaitChildren(ctx, tx, waiting, childrenHold{Start: first, Task: told(at), Cause: reason, Open: open})
+		return e.awaitChildren(ctx, tx, waiting, w, childrenHold{Start: first, Task: told(at), Cause: reason, Open: open})
 	}
 	if err := e.WriteIssue(ctx, tx, issue); err != nil {
 		return err

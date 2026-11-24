@@ -16,6 +16,15 @@ func planHoldFacts(issues []Issue, copied []DispatchIssueRow) LineFacts {
 	return LineFacts{Chains: chainsOf(issues, copied)}
 }
 
+// withRetroHolds is facts with the three holds on the acceptance of each parent among issues held
+// before its retro put together as ReadLineFacts puts them (retroHoldsOf): over the pass's one
+// chain facts carries (LineFacts.Chains), with the open Dispatch children and the resting roots a
+// case gives each parent.
+func withRetroHolds(facts LineFacts, issues []Issue, children map[string]ChildWait, resting map[string][]RestingRoot) LineFacts {
+	facts.RetroHolds = retroHoldsOf(facts.Chains, RetroHeldParents(issues), children, resting)
+	return facts
+}
+
 // planHeld is the record of key held from from for reason, as the workflow writes a hold: at
 // the status of the last step it ran, since a hold writes no Dispatch status of its own.
 func planHeld(key, tree string, parent *string, from phase.Phase, reason HoldReason) Issue {
@@ -85,14 +94,13 @@ func TestEachHoldOfAPlanReadsItsOwnHeldWord(t *testing.T) {
 	}
 	facts := planHoldFacts(issues, copyOf(issues...))
 	facts.Held = map[string][]string{"LEGION-70": {"LEGION-900"}}
-	facts.RetroHeldResting = map[string][]RestingRoot{
-		"LEGION-80": {{Key: "LEGION-90", Phase: phase.Implementing, Steps: []DesignStep{DesignStepSpec}}},
-		"LEGION-82": {{Key: "LEGION-92", Phase: phase.Admitted, Steps: []DesignStep{DesignStepSpec}}},
-	}
-	facts.RetroHeldChildren = map[string]ChildWait{
+	facts = withRetroHolds(facts, issues, map[string]ChildWait{
 		"LEGION-81": {Parent: "LEGION-81", Open: []OpenChild{{Key: "LEGION-91", Status: "backlog"}}},
 		"LEGION-82": {Parent: "LEGION-82", Open: []OpenChild{{Key: "LEGION-93", Status: "todo"}}},
-	}
+	}, map[string][]RestingRoot{
+		"LEGION-80": {{Key: "LEGION-90", Phase: phase.Implementing, Steps: []DesignStep{DesignStepSpec}}},
+		"LEGION-82": {{Key: "LEGION-92", Phase: phase.Admitted, Steps: []DesignStep{DesignStepSpec}}},
+	})
 	byKey := make(map[string]Issue, len(issues))
 	for _, issue := range issues {
 		byKey[issue.Key] = issue
@@ -136,7 +144,8 @@ func TestEachHoldOfAPlanReadsItsOwnHeldWord(t *testing.T) {
 			copied = append(copied, row)
 		}
 	}
-	if word, heldBy := HeldReasonOf(byKey["LEGION-41"], false, planHoldFacts(issues, copied)); word != HeldChildrenBeforeRetro || heldBy != nil {
+	alone := withRetroHolds(planHoldFacts(issues, copied), issues, nil, nil)
+	if word, heldBy := HeldReasonOf(byKey["LEGION-41"], false, alone); word != HeldChildrenBeforeRetro || heldBy != nil {
 		t.Fatalf("HeldReasonOf(LEGION-41) with no copy row of LEGION-42 = %s %v, want children_before_retro naming nobody", word, heldBy)
 	}
 }
@@ -153,7 +162,7 @@ func TestTheHeldListGivesEachHoldOfAPlanItsWord(t *testing.T) {
 		planHeld("LEGION-52", "LEGION-52", nil, phase.Merging, HoldTaskStopped),
 		planHeld("LEGION-62", "LEGION-62", nil, phase.Retro, ""),
 	}
-	facts := planHoldFacts(issues, copyOf(issues...))
+	facts := withRetroHolds(planHoldFacts(issues, copyOf(issues...)), issues, nil, nil)
 	slots := []Slot{{Issue: "LEGION-31", Index: 0, AdmittedAt: admitted}}
 
 	line, dropped := Waiting(issues, slots, facts)

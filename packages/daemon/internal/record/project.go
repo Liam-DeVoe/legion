@@ -508,7 +508,13 @@ type LineFacts struct {
 	// Chains is the pass's one reading of the Dispatch chains of the project and of each issue
 	// the pass was read for (ReadChains): every question of above, under, root, top issue and
 	// gate root the line, the holds and the measures ask is asked of it, and nothing of the
-	// daemon's stored tree (R15 of dispatch://INFRA-3320).
+	// daemon's stored tree (R15 of dispatch://INFRA-3320). It is the pass's one chain: read once,
+	// with the daemon's record of every key it holds by key (Chains.Record), its walks kept as
+	// they are first asked, and handed to every walk of the pass — the cycle of each child
+	// (childWaits), the child left out of a parent's open children (withoutHeldUnderAccepted), the
+	// issues beneath each parent held before its retro (retroHoldsOf), the line (Waiting), the held
+	// list's ladder (HeldList, HeldReasonOf) and the controller's tick, which reads these facts
+	// (daemon's waitedOn) — so no walk of a pass reads a second copy of a chain or a record.
 	Chains *Chains
 	// Gates is the design gate of each issue the pass was read for and of each issue above one of
 	// them in Legion's work that holds its own gate, by key: one entry for every such issue,
@@ -558,16 +564,15 @@ type LineFacts struct {
 	// since the judgement reads the mirror against the daemon's records in the transaction the line
 	// is never given; it is never stored, and each read of the facts judges it again.
 	StartedParentWaits map[string]ChildWait
-	// RetroHeldChildren is the open Dispatch children of each parent held before its retro
-	// (HoldForChildren), by parent key, judged as StartedParentWaits is (readChildWaits over
-	// RetroHeldParents), and RetroHeldResting the roots still in the workflow that rest on each
-	// such parent's approval (RestingRootsOn): with the issues beneath it still in the workflow
-	// (OpenBeneath), the three holds on its acceptance that hold its retro (workflow's
-	// acceptanceHeld), which the held word children_before_retro names in R8's order
-	// (HeldReasonOf). A parent nothing holds so has no entry in either. ReadLineFacts fills both
-	// and reads nothing for them where no parent is held before its retro.
-	RetroHeldChildren map[string]ChildWait
-	RetroHeldResting  map[string][]RestingRoot
+	// RetroHolds is the three holds on the acceptance of each parent held before its retro
+	// (HoldForChildren, RetroHeldParents), by parent key (retroHoldsOf): the issues beneath it
+	// still in the workflow (OpenBeneath), the roots still in the workflow that rest on its
+	// approval (RestingRootsOn) and its open Dispatch children, judged as StartedParentWaits is
+	// (readChildWaits). They are the three that hold its retro (workflow's acceptanceHeld), which
+	// the held word children_before_retro names in R8's order (HeldReasonOf) and the admission
+	// pass compares from one pass to the next (admit's childrenWaits). ReadLineFacts fills it, and
+	// reads nothing for it where no parent is held before its retro.
+	RetroHolds map[string]RetroHolds
 	// childrenFirst is the children-first judgement ReadLineFacts made from the read of the
 	// children it judged StartedParentWaits from (readChildWaits), which ChildWaitsOf hands the
 	// caller to fill ChildWaits with; nil in facts ReadLineFacts did not read.
@@ -575,7 +580,7 @@ type LineFacts struct {
 }
 
 // ChildWait is why one parent's own first phase waits: the open Dispatch children under it, in
-// Dispatch key order. It is data alone — the rule that fills it is ChildWaits — so that the
+// Dispatch key order. It is data alone — the rule that fills it is childWaits — so that the
 // waiting line, the state's `blocked` and the architect's notice all read one judgement.
 type ChildWait struct {
 	Parent string
@@ -591,7 +596,7 @@ type OpenChild struct {
 	Status string
 	// Released says the daemon records the child and that record is in the workflow
 	// (InWorkflow): the child was released and the daemon runs it. An open child with no record
-	// of its own is work its architect filed and has not released. It is set by ChildWaits, from
+	// of its own is work its architect filed and has not released. It is set by childWaits, from
 	// the same record ChildOpen reads, so that one judgement of the child answers both.
 	Released bool
 	Cycle    string
@@ -661,13 +666,14 @@ func readChainFacts(ctx context.Context, tx pgx.Tx, store Store, project string,
 // ReadLineFacts reads the facts of one admission pass for issues: the pass's one reading of the
 // Dispatch chains and the gates on them (readChainFacts), one read of the starts the project
 // owes, the three judgements of a parent's open children — the started parents'
-// (LineFacts.StartedParentWaits), the parents' held before their retro (LineFacts.RetroHeldChildren)
-// and the children-first waits ChildWaitsOf hands on — from the children the chain read already
-// holds (readChildWaits), and the roots that rest on each parent held before its retro
-// (LineFacts.RetroHeldResting, RestingRootsOn: two reads, and none where no parent is held so),
-// whatever the number of chains, gates and issues involved (R16 of dispatch://INFRA-3320: one pass
-// reads the copy in a number of queries that does not grow with the number of issues or links).
-// project is the Dispatch project key and steps the design-gate steps the deployment gates.
+// (LineFacts.StartedParentWaits), the parents' held before their retro and the children-first
+// waits ChildWaitsOf hands on — from the children the chain read already holds (readChildWaits),
+// and the roots that rest on each parent held before its retro (RestingRootsOn: two reads, and
+// none where no parent is held so), with which it puts together the three holds on the
+// acceptance of each such parent once (LineFacts.RetroHolds, retroHoldsOf), whatever the number
+// of chains, gates and issues involved (R16 of dispatch://INFRA-3320: one pass reads the copy in a
+// number of queries that does not grow with the number of issues or links). project is the
+// Dispatch project key and steps the design-gate steps the deployment gates.
 func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, steps []DesignStep) (LineFacts, error) {
 	chains, gates, err := readChainFacts(ctx, tx, store, project, issues, steps)
 	if err != nil {
@@ -690,12 +696,16 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 	// candidates and an issue owing a start is a started parent (StartedParents). The parents held
 	// before their retro (RetroHeldParents) are found once, for that judgement and for the read of
 	// the roots that rest on them (RestingRootsOn) after it, which reads nothing where no parent is
-	// held so.
+	// held so, and the three holds of each are put together from the two once (retroHoldsOf).
+	// Their walks of the parent chain read the pass's one chain (LineFacts.Chains).
 	held := RetroHeldParents(issues)
-	facts.childrenFirst, facts.StartedParentWaits, facts.RetroHeldChildren = readChildWaits(issues, held, facts)
-	if facts.RetroHeldResting, err = RestingRootsOn(ctx, tx, store, held); err != nil {
+	var children map[string]ChildWait
+	facts.childrenFirst, facts.StartedParentWaits, children = readChildWaits(issues, held, facts)
+	resting, err := RestingRootsOn(ctx, tx, store, held)
+	if err != nil {
 		return LineFacts{}, err
 	}
+	facts.RetroHolds = retroHoldsOf(facts.Chains, held, children, resting)
 	return facts, nil
 }
 
@@ -1246,6 +1256,7 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 	for _, slot := range slots {
 		slotted[slot.Issue] = struct{}{}
 	}
+	// The line walks the pass's one chain (LineFacts.Chains), the one the pass's own walks read.
 	chains := facts.Chains
 	// Every drop site reports what it left behind through one ladder, read over the facts the
 	// line itself is judged on and the slot rows it is judged with, so that the word an issue

@@ -517,9 +517,10 @@ type IssueStatus struct {
 	ClaimKnown bool
 	// Parent is the key of the issue's Dispatch parent, empty for an issue Dispatch shows under
 	// none. The children-first rule reads the copy's parent column to find what hangs under an
-	// issue (record.ChildWaits), so every observation carries the parent it saw, and empty is
-	// the observation that the issue has no parent: it takes the child out from under the parent
-	// the copy holds wherever it is the newer reading of the parent (record.PutDispatchIssue).
+	// issue (record.Store.DispatchChildren), so every observation carries the parent it saw, and
+	// empty is the observation that the issue has no parent: it takes the child out from under
+	// the parent the copy holds wherever it is the newer reading of the parent
+	// (record.PutDispatchIssue).
 	Parent string
 	// Labels and Rank are the issue's labels, in Dispatch's order, and its board rank as the view
 	// showed them. The copy of Dispatch's issues is their one reader.

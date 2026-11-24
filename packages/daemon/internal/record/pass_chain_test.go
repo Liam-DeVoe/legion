@@ -3,6 +3,7 @@ package record
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -100,7 +101,7 @@ func putCopy(t *testing.T, ctx context.Context, tx pgx.Tx, issue Issue) {
 }
 
 // One pass walks one chain: the hold under an accepted ancestor (Waiting's HeldUnderAccepted) and
-// the children-first cycle (ChildWaits) are two readings of the same chains (Chains), so a row of
+// the children-first cycle (childWaits) are two readings of the same chains (Chains), so a row of
 // the copy one of them read is read by the other from what the first kept. The chain is the
 // copy's, so it crosses an issue already done that the pass's own records leave out: the issue
 // under a done parent is held by the merging issue above that parent, and its child's blocked_by
@@ -118,7 +119,7 @@ func TestOnePassWalksOneChain(t *testing.T) {
 		t.Fatalf("the accepted ancestor of %s = %q, want %s past the done parent %s", child.Key, ancestor, merging.Key, doneParent.Key)
 	}
 	read := chains.steps
-	waits := ChildWaits(chains, []Issue{child})
+	waits := childWaits(chains, []Issue{child})
 	if open := waits[child.Key].Open; len(open) != 1 || open[0].Key != grandchild.Key || open[0].Cycle != merging.Key {
 		t.Fatalf("the open children of %s = %+v, want %s naming %s as its cycle", child.Key, open, grandchild.Key, merging.Key)
 	}
@@ -305,4 +306,104 @@ func (tx *countedTx) Query(ctx context.Context, sql string, args ...any) (pgx.Ro
 func (tx *countedTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	tx.statements++
 	return tx.Tx.QueryRow(ctx, sql, args...)
+}
+
+// One pass reads its parent chain once (LineFacts.Chains, ReadChains), and every walk of the pass
+// reads that one read: ReadLineFacts' own walks — the cycle of each child (childWaits), the child
+// left out of each parent's open children (withoutHeldUnderAccepted) and the issues beneath the
+// root held before its retro (retroHoldsOf) — and the line (Waiting) and the held list (HeldList)
+// judged from its facts, as the admission pass, the state and the controller's tick read them
+// (blockers.JudgeLine, admit's tickRows, projection's Project). A started root and a root held
+// before its retro, each with a child filed under it that the daemon does not record, give
+// ReadLineFacts those walks. An admitted child under a done parent beneath an issue in merging
+// gives the line its walk past that parent, which is none of the pass's own records, where the
+// hold keeps the child out of the line (HeldUnderAccepted) and where the ladder names the hold
+// (HeldReasonOf). The held list takes the chain for its own ladder, which a pass gives no issue to
+// here: the line leaves a row for every issue it does not place, and the held list keeps that row.
+//
+// Nothing of a read shows outside the pass but its cost, so the reads are counted. The pass sends
+// six statements whatever its walks ask: the chain read's three (the rows of the copy its chains
+// reach, the children of each issue they start from, and the records of both), one for the gates,
+// one for the starts the project owes and one for the gates that rest on the held root
+// (RestingRootsOn), which names no root and so reads no record. A walk that read the chain again
+// would send three more. And no walk reads a row of the copy twice (Chains.steps): the pass's own
+// walks read each row once, and the line and the held list walk what those walks kept.
+func TestAPassBuildsItsParentChainOnce(t *testing.T) {
+	const (
+		started      = "LEGION-960" // a root in implementing, filed under a done issue
+		held         = "LEGION-961" // a root held before its retro
+		filedUnder   = "LEGION-962" // the done issue the started root was filed under
+		startedChild = "LEGION-963" // filed under the started root, never released
+		heldChild    = "LEGION-964" // filed under the held root, never released
+		acceptedRoot = "LEGION-965" // the root of a running tree, at admitted
+		merging      = "LEGION-966" // an issue under that root in merging, so accepted
+		doneParent   = "LEGION-967" // done under the merging issue: none of the pass's records
+		heldAtAdmit  = "LEGION-968" // admitted under the done parent, held under the merging issue
+	)
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	recorded := []Issue{
+		chainIssue(started, started, filedUnder, phase.Implementing, "in_progress"),
+		planHeld(held, held, nil, phase.Retro, HoldForChildren),
+		chainIssue(acceptedRoot, acceptedRoot, "", phase.Admitted, "in_progress"),
+		chainIssue(merging, acceptedRoot, acceptedRoot, phase.Merging, "needs_review"),
+		chainIssue(heldAtAdmit, acceptedRoot, doneParent, phase.Admitted, "todo"),
+		chainIssue(filedUnder, filedUnder, "", phase.Done, DoneStatus),
+		chainIssue(doneParent, acceptedRoot, merging, phase.Done, DoneStatus),
+	}
+	// The pass's own records are the live ones, as a pass reads them: neither done issue is among
+	// them.
+	issues := recorded[:5]
+	inTx(t, st, func(tx pgx.Tx) {
+		for _, issue := range recorded {
+			must(t, records.PutIssue(ctx, tx, issue))
+			putCopy(t, ctx, tx, issue)
+		}
+		for _, reading := range []DispatchReading{
+			{Key: startedChild, Project: "LEGION", Seq: 1, Status: Carry("backlog"), Parent: Carry(started), Blockers: Carry[[]string](nil)},
+			{Key: heldChild, Project: "LEGION", Seq: 1, Status: Carry("backlog"), Parent: Carry(held), Blockers: Carry[[]string](nil)},
+		} {
+			must(t, records.PutDispatchIssue(ctx, tx, reading))
+		}
+		// The accepted root's design is approved, so its admitted child reaches the hold.
+		approved := 1
+		must(t, records.PutGate(ctx, tx, DesignGate{Issue: acceptedRoot, ArtifactID: "spec", LatestVersion: 1, ApprovedVersion: &approved}))
+	})
+
+	inTx(t, st, func(tx pgx.Tx) {
+		counted := &countedTx{Tx: tx}
+		facts, err := ReadLineFacts(ctx, counted, records, "LEGION", issues, nil)
+		must(t, err)
+		walked := facts.Chains.steps
+		// The line is handed the children-first waits as blockers.JudgeLine hands them on.
+		facts.ChildWaits = ChildWaitsOf(facts)
+		line, dropped := Waiting(issues, nil, facts)
+		heldRows := HeldList(issues, nil, line, dropped, facts)
+		if len(facts.StartedParentWaits[started].Open) != 1 || len(facts.RetroHolds[held].Open) != 1 || len(line)+len(heldRows) != len(issues) {
+			t.Fatalf("the pass holds the open children %+v of %s and the holds %+v of %s, and its line and held list place %d of its %d issues; want %s and %s open, and every issue placed: without the pass's walks this test proves nothing",
+				facts.StartedParentWaits[started].Open, started, facts.RetroHolds[held], held, len(line)+len(heldRows), len(issues), startedChild, heldChild)
+		}
+		if links := facts.Chains.Chain(heldAtAdmit).Links; !slices.Equal(links, []string{doneParent, merging, acceptedRoot}) {
+			t.Fatalf("the chain of %s = %v, want %s, %s and %s: without the walk past the done parent this test proves nothing", heldAtAdmit, links, doneParent, merging, acceptedRoot)
+		}
+		want := HeldIssue{Issue: heldAtAdmit, Reason: HeldAcceptedAncestor, HeldBy: []string{merging}}
+		first := slices.IndexFunc(dropped, func(row HeldIssue) bool { return row.Issue == heldAtAdmit })
+		named := slices.IndexFunc(heldRows, func(row HeldIssue) bool { return row.Issue == heldAtAdmit })
+		if inLine(line, heldAtAdmit) || first < 0 || !reflect.DeepEqual(dropped[first], want) || named < 0 || !reflect.DeepEqual(heldRows[named], want) {
+			t.Fatalf("the line holds %s: in the line %v, its rows %+v, the held list %+v; want it out of the line and held as %+v in both: without the line's walk past %s this test proves nothing",
+				heldAtAdmit, inLine(line, heldAtAdmit), dropped, heldRows, want, doneParent)
+		}
+
+		if counted.statements != 6 {
+			t.Fatalf("the pass, its line and its held list sent %d statements, want 6: the chain read's three once, the gates, the owed starts and the gates resting on %s; every walk reads the pass's one chain (LineFacts.Chains)",
+				counted.statements, held)
+		}
+		if rows := len(facts.Chains.rows); walked > rows {
+			t.Fatalf("the pass's own walks read %d rows of the copy, of the %d its chain read holds: a walk read a row a walk before it kept", walked, rows)
+		}
+		if facts.Chains.steps != walked {
+			t.Fatalf("the line and the held list read %d rows of the copy again, want none: they walk the chain the pass's own walks kept", facts.Chains.steps-walked)
+		}
+	})
 }
