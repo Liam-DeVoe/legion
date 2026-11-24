@@ -936,7 +936,7 @@ func TestSenderLimitCost(t *testing.T) {
 	// 202 costs one, as a copy the keep stored does, and the wake's mark is not forgiven.
 	t.Run("role message kept after its own unanswered send stored the copy (202) costs one", func(t *testing.T) {
 		rig.limit(4, 1)
-		const sender, role = "ses_cost_kept_own_send", "cost-kept-own-send"
+		const sender, role = "ses_cost_kept_own_send", "legion-acme-cost-kept-own-send"
 		original := rig.deps.delivery
 		t.Cleanup(func() { rig.deps.delivery = original })
 		delivery := *original
