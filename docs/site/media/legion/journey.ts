@@ -300,8 +300,9 @@ export async function setStatus(issue: Tracked, status: string): Promise<void> {
  *  shows (`data-issue-status`), as the native select it replaced carried its value. */
 export const statusOf = (page: Page) => page.locator("[data-issue-status]");
 
-/** The reviewer approved, so the issue is in accepting: the architect posts its acceptance of the
- *  reviewed head and signs off, and the daemon moves the issue to retro. */
+/** The reviewer approved, so on the default steps the issue is in accepting: the architect posts
+ *  its acceptance of the reviewed head and signs off, and, the acceptance being the task's last
+ *  step, the daemon moves the issue to retro. */
 export async function accept(issue: Tracked, example: Example): Promise<void> {
   const api = await dispatchApi();
   await api.createComment(issue.key, { body: example.acceptance }, agent(issue.key, "architect"));
