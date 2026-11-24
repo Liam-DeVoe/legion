@@ -7,6 +7,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { wholeText } from "../../__tests__/whole-text";
 import { ApiError, api } from "../../api/client";
@@ -68,6 +69,7 @@ function broadcast(deliveries: MessageDelivery[]): BroadcastRead {
           broadcast_id: "broadcast-1",
           created_at: new Date().toISOString(),
           deliveries,
+          ...messageCorrectionFields(),
           id: "message-1",
           in_reply_to: null,
           issue_key: null,
@@ -130,6 +132,7 @@ function threadMessage(id: string, author: Message["author"], body: string): Mes
     broadcast_id: null,
     created_at: new Date().toISOString(),
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: "message-1",
     issue_key: null,

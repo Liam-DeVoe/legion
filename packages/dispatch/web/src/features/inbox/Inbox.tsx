@@ -144,7 +144,7 @@ import {
 } from "./sections";
 import { isSnoozed } from "./snooze";
 import { ThreadRowCard } from "./ThreadRowCard";
-import { ThreadTitle } from "./ThreadTitle";
+import { ThreadTitle, useThreadLine } from "./ThreadTitle";
 import { answerFailure, clarificationRefusal } from "./useAskAnswerForm";
 import { AskHandOnWritesContext, useAskHandOnWrites } from "./useAskHandOn";
 import { AskSnoozeContext, AskSnoozeWritesProvider, useAskSnooze } from "./useAskSnooze";
@@ -584,17 +584,11 @@ function ThreadShortRow({
   // row then says it is out, or why it failed; the Retry is the card's, once the column shows the
   // thread again.
   const reply = useInboxWrites(AskReplyWritesContext).of(thread.thread_id);
+  const line = useThreadLine(thread);
   return (
     <ShortRowFrame
       age={<Timestamp at={rowLastActivityAt(row)} />}
-      check={
-        <MarkCheckbox
-          id={rowId(row)}
-          marked={marked}
-          name={questionLine(thread.subject)}
-          onMark={onMark}
-        />
-      }
+      check={<MarkCheckbox id={rowId(row)} marked={marked} name={line} onMark={onMark} />}
       group={groupKey}
       onRelease={onRelease}
       onSelect={onSelect}
@@ -711,6 +705,7 @@ function ThreadCardRow({
   section,
   thread,
 }: InboxRowProps & { thread: MyReplyRow }): ReactNode {
+  const line = useThreadLine(thread);
   return (
     <InboxRowShell
       group={groupKey}
@@ -722,12 +717,7 @@ function ThreadCardRow({
     >
       {/* The mark sits where a question card's does, on a line of its own above the card. */}
       <div className="mb-1.5 flex items-center gap-2">
-        <MarkCheckbox
-          id={rowId(row)}
-          marked={marked}
-          name={questionLine(thread.subject)}
-          onMark={onMark}
-        />
+        <MarkCheckbox id={rowId(row)} marked={marked} name={line} onMark={onMark} />
       </div>
       <ThreadRowCard thread={thread} />
     </InboxRowShell>

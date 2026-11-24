@@ -29,6 +29,7 @@ const REASONS = {
   17: "17. A compose that ends - its Close, Escape or Discard, or its send landing (`closeComposer`) - hands the reader back to the words they commented on only while they are still at it, the focus in its composer or on nothing and no phone thread open (`sheetThreadKey`, `focusAtComposer`): the document takes the caret as the compose ends, at every width, and below 1280 px the panel over the document closes too. The compose has ended by then (`cancelCompose`), and the closed panel keeps every card, reply and editor mounted under it, as (9) says, so neither moves a draft.",
   18: "18. The keymap reads the keys of each binding a component registers (`useKeymap`): a catalogue action's are the reader's own keys for it, and a binding written out whole keeps the keys it is written with. Details on a phone registers its own `Shift+M` that way (`DetailsDrawer`), which closes Details as (15) says; reading a binding's keys draws, ends and moves no composer.",
   19: "19. In Details the page's fill draws the margin's own content - its tabs, the compose and every card - only while the editor of a document the page shows is bound (`DetailsFill`'s `documentUp`: the margin's `documentBridge`, which `ProofDocument`'s page editor registers as it binds and takes back as it unbinds), and hands `IssueMarginCards` no `conversation` otherwise: before that editor binds, once the reader leaves the document, and after the server refuses an editor's connection (`onOutsideSchema`), while it waits to be admitted again or, once it stops trying, until the page is loaded again. Each unmounts the compose and every card, reply and editor as leaving the document does, and each keeps what it holds and comes back on it when an editor binds again, as (16) says.",
+  20: "20. A thread whose root its author deleted takes no reply: Dispatch refuses one (409 POST_DELETED), so the card draws its reply only while the root stands (`ThreadCard`'s `rootDeleted`). A delete that lands while the reply is open unmounts it as opening another thread does, and what it held stays under the thread's reply send name, as the closed card says (`keptReply`). The delete is its author's, not a move of the margin's or the reader's, and Dispatch takes no reply to a deleted root, so no row makes it.",
 } as const;
 
 /** The rows that end a newer compose offering the earlier compose's draft beside its field. */
@@ -83,6 +84,12 @@ export const coverage: readonly CoverageEntry[] = [
     "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | conditional | (expanded) ? …",
     cells(`${HOST} · another thread opened, then back`),
     { reason: REASONS[2] }
+  ),
+  ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | conditional | (expanded && rootDeleted === null) ? …",
+    cells(`${HOST} · another thread opened, then back`),
+    { reason: REASONS[2] },
+    { reason: REASONS[20] }
   ),
   ...answers(
     "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | address prop | mutationKey={replyMutationKey}",

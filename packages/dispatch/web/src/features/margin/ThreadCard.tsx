@@ -1,10 +1,11 @@
 import { hashKey, type MutationKey } from "@tanstack/react-query";
-import { type ReactNode, useContext } from "react";
+import { type ReactNode, useContext, useRef } from "react";
 import { Link } from "react-router-dom";
 
 import type { Suggestion } from "../../api/types";
 import { Pill } from "../../components/Pill";
 import { QueryError } from "../../components/QueryError";
+import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import {
   borderDefault,
   calloutDangerBorder,
@@ -29,17 +30,19 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { useHeldSend, useHeldSendsUnder } from "../conversation/held-sends";
+import { useHeldSend, useHeldSends, useHeldSendsUnder } from "../conversation/held-sends";
+import { handFocusFrom, KeptReplyToDeleted } from "../conversation/KeptDraftOffers";
 import { KeptReply } from "../conversation/KeptReply";
 import { MentionComposer } from "../conversation/MentionComposer";
 import { passageItem, ReplyQuote } from "../conversation/ReplyQuote";
 import type { SaveCommentEdit } from "../conversation/send-request";
 import { ConversationTurns, turnFocusRing, turnMarks } from "../conversation/turn-keys";
 import { useUnsentDrafts } from "../conversation/unsent-drafts";
+import { composerNameOf } from "../conversation/useKeptDrafts";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { MarkdownBody } from "../refs/MarkdownBody";
-import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { EditedMark, PostBody, PostPreview } from "../refs/PostBody";
+import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { buildIssuePath, buildProjectPath, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
@@ -159,6 +162,40 @@ export interface ThreadCardProps {
   onEditingChange(id: string | undefined): void;
 }
 
+/** The collapsed card's preview of its root, and beside it the ` · edited` the expanded card's
+ *  byline carries: a collapsed card draws no byline, so the mark sits after the text it marks,
+ *  outside the clamp that would cut it. */
+function CollapsedRootPreview({
+  className = "",
+  comment,
+  deleted,
+  lines,
+}: {
+  className?: string;
+  comment: ThreadComment;
+  deleted: PostDeletion | null;
+  lines: 1 | 2;
+}): ReactNode {
+  return (
+    <span className={`flex min-w-0 items-baseline gap-1 ${className}`}>
+      <PostPreview
+        className="min-w-0 flex-1"
+        deleted={deleted}
+        lines={lines}
+        links="live"
+        markdown={comment.body}
+        source={textSourceOf("comment", comment.id)}
+        tree={comment.body_tree}
+      />
+      <EditedMark
+        at={comment.edited_at}
+        className={`shrink-0 text-xs ${textMutedOnSurfaceMuted}`}
+        deleted={deleted}
+      />
+    </span>
+  );
+}
+
 function CommentBody({
   artifactSlug,
   comment,
@@ -173,6 +210,7 @@ function CommentBody({
   showReference: boolean;
 }): ReactNode {
   const anchor = comment.anchor;
+  const deleted = postDeletion(comment);
   const suggestion = comment.suggestion;
   const reference = itemRoute("comment", comment, owner.kind === "document" ? owner : undefined);
   let orphanNotice: ReactNode = null;
@@ -214,7 +252,8 @@ function CommentBody({
       )}
       {orphanNotice}
       {suggestion === null ? (
-        <MarkdownBody
+        <PostBody
+          deleted={deleted}
           markdown={comment.body}
           source={textSourceOf("comment", comment.id)}
           tree={comment.body_tree}
@@ -225,7 +264,8 @@ function CommentBody({
           <SuggestionDiff clamp={false} quote={anchor.quote} suggestion={suggestion} />
           {comment.body === "Suggested replacement." ? null : (
             <div className={`font-sans ${textSecondaryOnSurface}`}>
-              <MarkdownBody
+              <PostBody
+                deleted={deleted}
                 markdown={comment.body}
                 source={textSourceOf("comment", comment.id)}
                 tree={comment.body_tree}
@@ -238,11 +278,79 @@ function CommentBody({
       <p className={`mt-2 flex flex-wrap items-center gap-x-1 text-xs ${textMutedOnSurfaceMuted}`}>
         <span>
           <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
-          {comment.edited_at === null ? null : " · edited"}
+          <EditedMark at={comment.edited_at} deleted={deleted} />
         </span>
         {showReference && reference !== undefined ? <CopyRefButton route={reference} /> : null}
       </p>
     </>
+  );
+}
+
+/**
+ * The edit the reader kept for a comment its author has since deleted. Dispatch saves no edit of
+ * a deleted post (`409 POST_DELETED`), so the card opens no editor over one (`editing`): the
+ * comment reads as deleted where its body was, never as an empty field or the words it had. The
+ * edit waits as the reader's own - a save Dispatch refused or the reader stopped, or what the
+ * editor held as the delete came, which it kept for the comment as it went (`useKeptDrafts`'
+ * `awayName`) - and the card says it is kept in this browser, drawing none of its words: an edit
+ * is mostly the words of the comment it was written over, and the delete took those off every
+ * surface (INFRA-1523, R3). Copy my edit puts the whole edit on the clipboard, and a copy the
+ * browser refuses says so and keeps the edit; Discard my edit drops it where it is kept, and hands
+ * the focus it leaves to the control nearest its place in the card (`handFocusFrom`). Nothing is
+ * saved meanwhile, and a save still out draws nothing until Dispatch answers it.
+ */
+function DeletedCommentEdit({ commentId }: { commentId: string }): ReactNode {
+  const offer = useRef<HTMLDivElement>(null);
+  const mutationKey = [...COMMENT_EDIT_SEND_KEY, commentId];
+  const store = useHeldSends();
+  const held = useHeldSend(mutationKey);
+  const unsent = useUnsentDrafts();
+  const { copy, status } = useCopyFeedback();
+  const name = composerNameOf(mutationKey);
+  // An edit's address is the comment its send name names, so its draft is kept for no reply and
+  // no words of a document.
+  const kept = unsent
+    .useAway(name)
+    .find((away) => away.replyTo === null && away.anchor === undefined);
+  const refused = held?.status === "refused" ? held : undefined;
+  const draft = refused?.draft.draft ?? (held === undefined ? kept?.draft : undefined);
+  if (draft === undefined) return null;
+  return (
+    <div className="mt-2 space-y-2" ref={offer}>
+      <div className={`space-y-1 text-sm ${textMutedOnSurfaceMuted}`} role="status">
+        <p>
+          This comment was deleted, and Dispatch saves no edit of a deleted comment. Your unsaved
+          edit is kept in this browser.
+        </p>
+        {status === "copied" ? <p>Your edit is copied.</p> : null}
+        {typeof status === "object" ? (
+          <p className={dangerText}>
+            Your edit was not copied: this browser refused the clipboard. It is still kept here.
+          </p>
+        ) : null}
+      </div>
+      <div className="flex flex-wrap gap-3">
+        <button
+          className={`text-sm font-medium ${linkText} ${linkHoverText}`}
+          onClick={() => copy(draft.body)}
+          type="button"
+        >
+          Copy my edit
+        </button>
+        <button
+          className={`text-sm font-medium underline ${dangerText}`}
+          onClick={() =>
+            handFocusFrom(() => {
+              if (refused !== undefined) store.discard(mutationKey);
+              else unsent.forgetAway(name, { anchor: undefined, replyTo: null });
+            }, offer.current)
+          }
+          type="button"
+        >
+          Discard my edit
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -286,6 +394,7 @@ export function ThreadCard({
   // The root's reference, which only the folded card's copy button reads.
   const rootReference =
     showRootReference && !expanded ? itemRoute("comment", root, documentOwner) : undefined;
+  const rootDeleted = postDeletion(root);
   const rootSuggestion = root.suggestion;
   const terminalSuggestion = rootSuggestion !== null && rootSuggestion.accepted !== null;
   // The server refuses accept and reject on an orphaned anchor (409 ANCHOR_ORPHANED), so the
@@ -318,11 +427,17 @@ export function ThreadCard({
     order: threadOrder,
     replies: thread.replies,
   });
+  // The thread's posts, root first: the post a reply quotes is looked up among them.
+  const threadItems = [root, ...thread.replies];
   // An edit whose save is out, or was refused, is the held-send store's: its editor stays open on
   // its comment until the save lands or the reader drops it, whatever closed the card meanwhile.
+  // A comment its author deleted takes no edit (`409 POST_DELETED`), so no editor opens over it,
+  // whatever held one open: the comment reads as deleted, and an edit kept for it waits under it
+  // (`DeletedCommentEdit`).
   const heldEdits = useHeldSendsUnder(COMMENT_EDIT_SEND_KEY);
   const editing = (comment: ThreadComment) =>
-    editingId === comment.id || heldEdits.some((held) => held.request.edit?.id === comment.id);
+    postDeletion(comment) === null &&
+    (editingId === comment.id || heldEdits.some((held) => held.request.edit?.id === comment.id));
   const renderEditor = (comment: ThreadComment) => (
     <MentionComposer
       edit={{ body: comment.body, id: comment.id }}
@@ -334,9 +449,12 @@ export function ThreadCard({
       saveEdit={onEdit}
     />
   );
+  /* A deleted post takes no new text: the server refuses an edit of one (409), so its author is
+     offered none and the editor never opens on an empty body. */
   const editButton = (comment: ThreadComment) =>
     savingCommentEditId === undefined &&
     !isClosed &&
+    postDeletion(comment) === null &&
     comment.author.kind === "user" &&
     comment.author.id === viewerLogin ? (
       <button
@@ -353,43 +471,50 @@ export function ThreadCard({
      and sends there too (`closed` only hides the kinds a closed issue refuses), while Resolve,
      Reopen, Edit, Accept and Reject stay hidden; on a decided suggestion's thread, which offers
      no reply, it shows only a reply of its own still out or its refusal, and still sends
-     (`finishing`). `contents`, so the composer's own box is the one laid out. It sits next to
-     the newest message: under the root in Newest first, at the foot of the thread in Oldest
-     first. Its Cancel reply, and Escape in its field, close the thread and keep the draft for
-     it, typed or refused or stopped, which the closed card says (`keptReply`); where the
-     Conversation tab's `r` put the reader in the box (`onReplyCancel`), they give the focus back
-     to the turn instead and the thread stays open. It answers the card's own comment alone,
-     which leaves the page with the card, so no line of it can outlive the comment it names, and
-     it is handed no `listed`. `data-thread-reply` tells its box from a comment's edit box, which
-     the Conversation tab's `r` leaves alone. */
-  const replyComposer = expanded ? (
-    <div className="contents" data-thread-reply="" hidden={hideReplyComposer}>
-      <MentionComposer
-        closed={isClosed}
-        finishing={terminalSuggestion}
-        frame={composerClassName}
-        inline
-        kind="comment"
-        mutationKey={replyMutationKey}
-        onCancelReply={onReplyCancel ?? onToggle}
-        onClose={onToggle}
-        onSent={() => {}}
-        owner={composerOwner(owner)}
-        replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
-        standing={replyStanding}
-      />
-    </div>
-  ) : null;
+     (`finishing`). A deleted root takes no reply either - the server refuses one (409) - so the
+     composer stays away from it. Its quote of the root marks the root edited as the root's own
+     byline does (`replyParent`). `contents`, so the composer's own box is the one laid out. It
+     sits next to the newest message: under the root in Newest first, at the foot of the thread
+     in Oldest first. Its Cancel reply, and Escape in its field, close the thread and keep the
+     draft for it, typed or refused or stopped, which the closed card says (`keptReply`); where
+     the Conversation tab's `r` put the reader in the box (`onReplyCancel`), they give the focus
+     back to the turn instead and the thread stays open. It answers the card's own comment
+     alone, which leaves the page with the card, so no line of it can outlive the comment it
+     names, and it is handed no `listed`. `data-thread-reply` tells its box from a comment's
+     edit box, which the Conversation tab's `r` leaves alone. */
+  const replyComposer =
+    expanded && rootDeleted === null ? (
+      <div className="contents" data-thread-reply="" hidden={hideReplyComposer}>
+        <MentionComposer
+          closed={isClosed}
+          finishing={terminalSuggestion}
+          frame={composerClassName}
+          inline
+          kind="comment"
+          mutationKey={replyMutationKey}
+          onCancelReply={onReplyCancel ?? onToggle}
+          onClose={onToggle}
+          onSent={() => {}}
+          owner={composerOwner(owner)}
+          replyParent={root}
+          replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
+          standing={replyStanding}
+        />
+      </div>
+    ) : null;
   // A reply the card keeps while it is closed - typed and never sent, or a send Dispatch refused
   // or the reader stopped - is out of sight with its composer, under the thread's reply send name
   // (`MentionComposer`'s `inline`). The card says so, whose comment it answers and how to go on
-  // with it, until the reader opens the thread again: nothing is sent until they press.
+  // with it, until the reader opens the thread again: nothing is sent until they press. Under a
+  // root its author deleted the card draws no reply composer, so no Reply goes on with the reply:
+  // its own words are drawn instead, open or closed, saying the comment was deleted and giving
+  // no word of it, with Discard my draft (`KeptReplyToDeleted`).
   const heldReply = useHeldSend(replyMutationKey);
   const unsentReply = useUnsentDrafts().useKept(
     replyMutationKey === undefined ? "" : hashKey(replyMutationKey)
   );
   const keptReply =
-    !expanded && (heldReply?.status === "refused" || unsentReply) ? (
+    rootDeleted === null && !expanded && (heldReply?.status === "refused" || unsentReply) ? (
       <div className="mt-2 flex flex-wrap items-center gap-3">
         <p className={`text-sm ${textMutedOnSurfaceMuted}`} role="status">
           <KeptReply actor={root.author} press={reopenControl ?? "Reply"} />
@@ -405,6 +530,10 @@ export function ThreadCard({
         ) : null}
       </div>
     ) : null;
+  const keptReplyToDeleted =
+    rootDeleted === null || replyMutationKey === undefined ? null : (
+      <KeptReplyToDeleted actor={root.author} mutationKey={replyMutationKey} parentKind="comment" />
+    );
 
   return (
     <>
@@ -485,6 +614,7 @@ export function ThreadCard({
                   showOrphan
                   showReference={showRootReference}
                 />
+                {rootDeleted === null ? null : <DeletedCommentEdit commentId={root.id} />}
                 {renderDeliveries?.(root)}
               </>
             )}
@@ -524,53 +654,66 @@ export function ThreadCard({
             {composerFirst ? replyComposer : null}
             {shown.length === 0 ? null : (
               <ol aria-label="Replies" className={`mt-3 space-y-2 border-t pt-3 ${borderDefault}`}>
-                {shown.map((reply) => (
-                  <li
-                    aria-current={reply.id === currentReplyId ? "true" : undefined}
-                    className={`rounded-lg p-2 ${card} ${inTab ? turnFocusRing : ""}`}
-                    data-reply=""
-                    key={reply.id}
-                    ref={reply === newestReply ? markRead : undefined}
-                    style={{ marginLeft: "0px" }}
-                    {...(inTab ? turnMarks(true, itemRoute("comment", reply, documentOwner)) : {})}
-                  >
-                    {editing(reply) ? (
-                      renderEditor(reply)
-                    ) : (
-                      <>
-                        {reply.reply_block == null ? null : (
-                          <ReplyQuote
-                            author={
-                              passageItem(reply.reply_block, [root, ...thread.replies])?.author
-                            }
-                            block={reply.reply_block}
-                            className="mb-2"
-                            excerpt=""
+                {shown.map((reply) => {
+                  // The quoted post, read once: its author names the quote, and its deletion and
+                  // its edit mark it.
+                  const quoted =
+                    reply.reply_block == null
+                      ? undefined
+                      : passageItem(reply.reply_block, threadItems);
+                  return (
+                    <li
+                      aria-current={reply.id === currentReplyId ? "true" : undefined}
+                      className={`rounded-lg p-2 ${card} ${inTab ? turnFocusRing : ""}`}
+                      data-reply=""
+                      key={reply.id}
+                      ref={reply === newestReply ? markRead : undefined}
+                      style={{ marginLeft: "0px" }}
+                      {...(inTab
+                        ? turnMarks(true, itemRoute("comment", reply, documentOwner))
+                        : {})}
+                    >
+                      {editing(reply) ? (
+                        renderEditor(reply)
+                      ) : (
+                        <>
+                          {reply.reply_block == null ? null : (
+                            <ReplyQuote
+                              author={quoted?.author}
+                              block={reply.reply_block}
+                              className="mb-2"
+                              deleted={postDeletion(quoted)}
+                              edited={quoted?.edited_at}
+                              excerpt=""
+                            />
+                          )}
+                          <CommentBody
+                            artifactSlug={artifactSlug}
+                            comment={reply}
+                            owner={owner}
+                            showOrphan={false}
+                            showReference
                           />
-                        )}
-                        <CommentBody
-                          artifactSlug={artifactSlug}
-                          comment={reply}
-                          owner={owner}
-                          showOrphan={false}
-                          showReference
-                        />
-                        {renderDeliveries?.(reply)}
-                      </>
-                    )}
-                    {editing(reply) ? null : (
-                      <div className="mt-2 flex gap-3 text-sm">{editButton(reply)}</div>
-                    )}
-                  </li>
-                ))}
+                          {postDeletion(reply) === null ? null : (
+                            <DeletedCommentEdit commentId={reply.id} />
+                          )}
+                          {renderDeliveries?.(reply)}
+                        </>
+                      )}
+                      {editing(reply) ? null : (
+                        <div className="mt-2 flex gap-3 text-sm">{editButton(reply)}</div>
+                      )}
+                    </li>
+                  );
+                })}
               </ol>
             )}
           </>
         ) : (
           // The root's Copy reference sits beside the preview, outside it. The preview is one
           // button that opens the thread on a press anywhere but on one of its links, which stay
-          // live (`MarkdownPreview`'s `links="live"`): a click or a Ctrl+click on a link opens the
-          // link and leaves the card folded, the link still in the page. A middle click is no
+          // live (`CollapsedRootPreview`'s `links="live"`): a click or a Ctrl+click on a link opens
+          // the link and leaves the card folded, the link still in the page. A middle click is no
           // `click`, so it never reaches this handler.
           <div className="flex items-start gap-1">
             <button
@@ -603,13 +746,11 @@ export function ThreadCard({
                       <SuggestionDiff clamp quote={root.anchor.quote} suggestion={rootSuggestion} />
                     </span>
                     {root.body === "Suggested replacement." ? null : (
-                      <MarkdownPreview
+                      <CollapsedRootPreview
                         className={`mt-2 text-xs ${textSecondaryOnSurface}`}
+                        comment={root}
+                        deleted={rootDeleted}
                         lines={1}
-                        links="live"
-                        markdown={root.body}
-                        source={textSourceOf("comment", root.id)}
-                        tree={root.body_tree}
                       />
                     )}
                   </>
@@ -622,13 +763,7 @@ export function ThreadCard({
                         {root.anchor.quote}
                       </blockquote>
                     )}
-                    <MarkdownPreview
-                      lines={2}
-                      links="live"
-                      markdown={root.body}
-                      source={textSourceOf("comment", root.id)}
-                      tree={root.body_tree}
-                    />
+                    <CollapsedRootPreview comment={root} deleted={rootDeleted} lines={2} />
                     <Unfurl body={root.body} source={textSourceOf("comment", root.id)} />
                   </>
                 )}
@@ -647,6 +782,7 @@ export function ThreadCard({
           </div>
         )}
         {keptReply}
+        {keptReplyToDeleted}
         {composerFirst ? null : replyComposer}
         {expanded ? null : renderDeliveries?.(root)}
         {actionFailure === undefined ? null : (

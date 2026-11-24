@@ -27,7 +27,8 @@ import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/A
 import { ConversationTurns, turnFocusRing, turnMarks } from "../conversation/turn-keys";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { MarkdownBody } from "../refs/MarkdownBody";
+import { EditedMark, PostBody } from "../refs/PostBody";
+import { postDeletion } from "../refs/post-marks";
 import { itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
@@ -80,7 +81,8 @@ function AskReply({
       {...turnMarks(inTab, reference)}
     >
       <div className={textPrimaryOnSurfaceMuted}>
-        <MarkdownBody
+        <PostBody
+          deleted={postDeletion(comment)}
           markdown={comment.body}
           source={textSourceOf("comment", comment.id)}
           tree={comment.body_tree}
@@ -90,6 +92,7 @@ function AskReply({
       <p className={`mt-1 flex flex-wrap items-center gap-x-1 text-xs ${textMutedOnSurfaceMuted}`}>
         <span>
           <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
+          <EditedMark at={comment.edited_at} deleted={postDeletion(comment)} />
         </span>
         {reference === undefined ? null : <CopyRefButton route={reference} />}
       </p>

@@ -21,6 +21,7 @@ const REASONS = {
   9: "9. The view's card is drawn only while a thread is open (`phoneThread`) and keyed by its thread (`key={phoneThread.id}`): another thread is opened after Back, and widening the page past the phone layout closes the view as Back does unless a send from it is out (`usePhoneThread`'s `outlived`), the first row's move either way.",
   10: "10. The read mark's ref on the newest card (`register`) moves to the view's copy of it while a thread is open; it marks the issue read and moves no reply. The margin's thread reply is the margin file's, and the app shell's forms are the sign-in file's.",
   11: "11. A key of the tab opens a comment's thread in one of two ways (`keyed`, `KeyedThread`): Enter or `o` with its reply standing (`replyStanding`, `MentionComposer`'s `standing`), which takes no focus as it mounts and draws no Cancel reply, its Escape ending the reply as the Escape row's does; and `r` with the reply taking the focus, whose Cancel reply and Escape give the focus back to the turn and leave the thread open, the reply mounted with its draft in the field (`onReplyCancel`, `giveBackFromThread`). Neither changes the reply's address, its thread's root under the thread's send name (1), and an inline reply keeps what the reader has not sent there whether it stands or not (`keptNames` in `useKeptDrafts`), so the rows above, on a thread a click opened, make its moves. The margin's `ThreadList` passes no `replyStanding`, so a margin thread's reply never stands.",
+  12: "12. A thread whose root its author deleted takes no reply: Dispatch refuses one (409 POST_DELETED), so the card draws its reply only while the root stands (`rootDeleted`). A delete that lands while the reply is open unmounts it as Collapse thread does, and what it held stays under the thread's reply send name, as the closed card says (`keptReply`). The delete is its author's, not a move of the host's or the reader's, and Dispatch takes no reply to a deleted root, so no row makes it.",
 } as const;
 
 export const coverage: readonly CoverageEntry[] = [
@@ -31,6 +32,11 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers(
     "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | conditional | (expanded) ? …",
     cells(`${HOST} · thread collapsed by the host, then opened`)
+  ),
+  ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | conditional | (expanded && rootDeleted === null) ? …",
+    cells(`${HOST} · thread collapsed by the host, then opened`),
+    { reason: REASONS[12] }
   ),
   ...answers(
     "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | address prop | mutationKey={replyMutationKey}",

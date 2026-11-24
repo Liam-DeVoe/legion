@@ -229,13 +229,15 @@ export function useTurnKeys({
    *  first, its box not standing, so the box takes the focus as it mounts - or an answered ask's
    *  box behind its "Write a reply". A message, and a comment on a phone, press their own Reply,
    *  which hands the docked composer, or the phone's thread, the reply. Null where nothing takes
-   *  a reply: an open ask waits on its answer, a handoff takes none, and a Reply is held while a
-   *  send is out. */
+   *  a reply: an open ask waits on its answer, a handoff takes none, a comment its author deleted
+   *  takes none (`409 POST_DELETED`) and so draws no Reply of its own and no reply box
+   *  (`CommentTurn`, `ThreadCard`), and a Reply is held while a send is out. */
   const replyOf = (turn: HTMLElement): (() => void) | null => {
     const root = turn.closest<HTMLElement>(ROOT_TURN);
     if (root === null) return null;
     const comment = commentOfTurn(root);
     if (comment !== undefined && !isPhoneViewport) {
+      if (ownControl(root, REPLY_BUTTON) === null) return null;
       const box = openThreads.has(comment)
         ? root.querySelector<HTMLElement>(`[data-thread-reply]:not([hidden]) ${REPLY_BOX}`)
         : undefined;

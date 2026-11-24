@@ -4,7 +4,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
-
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { ApiError, api } from "../../api/client";
 import type {
   Agent,
@@ -55,6 +55,7 @@ function message(id: string, body: string, overrides: Partial<Message> = {}): Me
     broadcast_id: null,
     created_at: "2026-10-12T00:00:00Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: null,
@@ -95,6 +96,8 @@ function comment(id: string, body: string, overrides: Partial<Comment> = {}): Co
     author: { id: "alice", kind: "user" },
     body,
     created_at: "2026-10-12T00:00:00Z",
+    deleted_at: null,
+    deleted_by: null,
     deliveries: [],
     edited_at: null,
     id,
@@ -339,6 +342,40 @@ test("a message to a session names no issue, so neither the card nor its message
   expect(document.querySelector("[data-copy-ref]")).toBeNull();
 });
 
+// Only a message on an issue takes an edit or a delete (409 NOT_AN_ISSUE_MESSAGE), so the thread
+// is an issue's message conversation: an Agent thread's messages are on no issue.
+test("an inbox thread marks an edited message and reads a deleted one as deleted", async () => {
+  spy("getIssue", { closed_at: null } as unknown as IssueDetails);
+  const onIssue = { issue_key: "CORE-1", target: null };
+  spy("listIssueMessages", [
+    {
+      message: message("message-1", "Have a look at the build", {
+        ...onIssue,
+        edited_at: "2026-10-12T00:30:00Z",
+      }),
+      replies: [
+        message("reply-1", "", {
+          ...onIssue,
+          author: { id: "bob", kind: "user" },
+          created_at: "2026-10-12T01:00:00Z",
+          deleted_at: "2026-10-12T01:05:00Z",
+          deleted_by: { id: "bob", kind: "user" },
+          in_reply_to: "message-1",
+        }),
+      ],
+    } satisfies MessageRead,
+  ]);
+  renderCard(
+    commentRow({ kind: "message", ref: "/issues/CORE-1?message=message-1", thread_id: "message-1" })
+  );
+
+  const body = await screen.findByTestId("inbox-thread-message");
+  await waitFor(() => expect(body.textContent).toContain("Have a look at the build"));
+  const turns = [...body.querySelectorAll("[data-inbox-thread-turn]")];
+  expect(turns[0]?.textContent).toContain("edited");
+  await waitFor(() => expect(turns[1]?.textContent).toContain("Deleted by"));
+});
+
 // A thread box in the Inbox stands for its thread: its reply is the box's own address, which
 // nothing ends, so it draws no Cancel reply. Pressed, that control would do nothing and leave the
 // draft in the field (MentionComposer's `standing`).
@@ -364,6 +401,108 @@ test("an Inbox thread box, comment or Agent, draws no Cancel reply", async () =>
   const agent = await screen.findByTestId("inbox-thread-agent");
   await waitFor(() => expect(agent.querySelector("[data-inbox-agent-composer]")).not.toBeNull());
   expect(within(agent).queryAllByRole("button", { name: "Cancel reply" }).length).toBe(0);
+});
+
+// A root its author deleted takes no reply (409 POST_DELETED), so the Inbox thread draws no box
+// under it, as the margin's card draws no reply composer there, and offers no Send. A reply the
+// reader typed in the box before the delete is not lost: it is drawn as the reader's own words,
+// saying the comment was deleted and giving no word of it, with Discard my draft, which drops it.
+test("a comment thread whose root is deleted draws no box, and keeps the reply typed there", async () => {
+  const user = userEvent.setup();
+  spy("getIssue", { closed_at: null } as unknown as IssueDetails);
+  const listComments = spyOn(api, "listComments").mockResolvedValue([
+    comment("comment-1", "The retry budget is too small."),
+  ]);
+  restores.push(listComments);
+  const client = renderCard(commentRow());
+  const thread = await screen.findByTestId("inbox-thread-comment");
+  const typed = "Raise it to five.";
+  await user.click(await within(thread).findByRole("textbox", { name: "Reply" }));
+  await user.paste(typed);
+
+  listComments.mockResolvedValue([
+    comment("comment-1", "", {
+      deleted_at: "2026-10-12T02:00:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+    }),
+  ]);
+  await act(() => client.invalidateQueries({ queryKey: ["comments", "CORE-1"] }));
+  await waitFor(() => expect(thread.textContent).toContain("Deleted by alice"));
+  const deleted = {
+    box: within(thread).queryByRole("form", { name: "Comment composer" }) !== null,
+    lines: within(thread)
+      .queryAllByRole("status")
+      .map((status) => status.textContent ?? "")
+      .filter((text) => text.includes(typed)),
+    send: within(thread).queryByRole("button", { name: "Send" }) !== null,
+  };
+  const discard = within(thread).queryByRole("button", { name: "Discard my draft" });
+  if (discard !== null) await user.click(discard);
+  expect({ deleted, discarded: thread.textContent?.includes(typed) }).toEqual({
+    deleted: {
+      box: false,
+      lines: [
+        `The comment by alice that your reply answered was deleted, so it takes no reply. Your reply is kept here:${typed}`,
+      ],
+      send: false,
+    },
+    discarded: false,
+  });
+});
+
+// Discard my draft takes the kept reply's offer away, and with it the button that held the focus.
+// The focus goes on, with no scroll, to the control now at the offer's place in the thread, else
+// to the nearest one before it (`handFocusFrom`): under Oldest first the offer ends the thread, so
+// the newest reply's Copy reference takes it.
+test("Discard my draft on a reply kept under a deleted root hands the focus to the newest reply's Copy reference, with no scroll", async () => {
+  const user = userEvent.setup();
+  spy("getIssue", { closed_at: null } as unknown as IssueDetails);
+  const reply = comment("comment-2", "Agreed.", {
+    author: { id: "bob", kind: "user" },
+    created_at: "2026-10-12T01:00:00Z",
+    reply_to: "comment-1",
+  });
+  const listComments = spyOn(api, "listComments").mockResolvedValue([
+    comment("comment-1", "The retry budget is too small."),
+    reply,
+  ]);
+  restores.push(listComments);
+  const client = renderCard(commentRow());
+  const thread = await screen.findByTestId("inbox-thread-comment");
+  await user.click(await within(thread).findByRole("textbox", { name: "Reply" }));
+  await user.paste("Raise it to five.");
+  listComments.mockResolvedValue([
+    comment("comment-1", "", {
+      deleted_at: "2026-10-12T02:00:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+    }),
+    reply,
+  ]);
+  await act(() => client.invalidateQueries({ queryKey: ["comments", "CORE-1"] }));
+  const discard = await within(thread).findByRole("button", { name: "Discard my draft" });
+  const target = within(thread).getByRole("button", {
+    name: "Copy reference dispatch://CORE-1/comment/comment-2",
+  });
+  const focuses = spyOn(target, "focus");
+
+  try {
+    await user.click(discard);
+    const focused = document.activeElement;
+    expect({
+      focused:
+        focused === target
+          ? "the newest reply's Copy reference"
+          : focused === document.body
+            ? "the page's body"
+            : focused?.outerHTML,
+      focuses: focuses.mock.calls,
+    }).toEqual({
+      focused: "the newest reply's Copy reference",
+      focuses: [[{ preventScroll: true }]],
+    });
+  } finally {
+    focuses.mockRestore();
+  }
 });
 
 /** A card for each of `threads`, as the Inbox lists them below 1280 px; the setter draws the list
