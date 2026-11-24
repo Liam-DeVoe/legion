@@ -628,7 +628,11 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 // clock is the daemon's one clock (the machines', overrides.clock), which the engine and this
 // runtime's idle, wake and stuck passes read (workflowRuntime.now); production passes the wall
 // clock.
-func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time) (opened *workflowRuntime, _ error) {
+//
+// source is the random source every `random` experiment is drawn with (overrides.experimentSource):
+// the engine holds it, and the admission draws with the engine's (workflow.Engine's
+// ExperimentSource). nil is the engine's own, experiment.CryptoSource.
+func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time, source func(uint64) (uint64, error)) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -711,6 +715,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// The engine stamps its deadlines on the daemon's one clock, which the machines and this
 	// runtime's passes read too (dispatch://INFRA-3759).
 	engineCfg.Clock = clock
+	engineCfg.ExperimentSource = source
 	w.engine = workflow.New(w.records, engineCfg, log)
 	w.admission = admit.New(w.records, w.engine, cfg.AdmissionCap, cfg.Project, log)
 	// The project's declared experiments decide what each unit admission records is drawn for.
@@ -1234,8 +1239,9 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 	// A pair a task of an earlier release kept of its `decisions` step names a document no step of
 	// this release records, so the rewrite names no approval, as the record's read of the pair
 	// leaves it (record.Store.UnclaimedKept).
+	// kept for one release: design-gate-rows
 	if stays.Step != "" && !stays.Step.Valid() {
-		stays.KeptApproval = record.KeptApproval{} // kept for one release: design-gate-rows
+		stays.KeptApproval = record.KeptApproval{}
 	}
 	// The record the rewrite reads where the task is of an entry and so carries the first-task
 	// instruction (workflow.NarrowRootTask): the tree's root as the record holds it at the

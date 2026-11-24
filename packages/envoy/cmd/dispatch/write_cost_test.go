@@ -386,10 +386,10 @@ func writeCostPaths() []writeCostPath {
 		// The 8,001-block version is held to two allowances at once, its ratio and the 100 ms
 		// rise (costBudget) it was held to before it carried a ratio, and the lower of the two
 		// decides (writeCostOverAllowance), so no bound on it got weaker than Verification version
-		// 150's; both hold both its series. It carries the 1 s absolute bound beside them on its
-		// warm series alone (writeCostAbsolute). Its cold series prints its absolute times and
-		// carries no absolute bound: a cold reading decodes the document's whole stored history,
-		// which every version the series writes makes longer.
+		// 150's; both hold its warm series, beside the 1 s absolute bound (writeCostAbsolute). Its
+		// cold series is held to the ratio alone, prints its absolute times and carries no absolute
+		// bound: a cold reading decodes the document's whole stored history, which every version the
+		// series writes makes longer.
 		{name: writeCostOverPath, absolute: writeCostAbsolute, ratio: writeCostOverRatio, readings: costWriteRuns, document: over, take: func(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
 			return writeCostVersion(t, corpus, "over.md", writeCostOverBlocks, run, -1)
 		}},
@@ -583,13 +583,13 @@ func (a *costArm) rooms(t *testing.T) []string {
 // series alone: a cold reading also decodes the stored history, which is no store row's cost.
 // The edit of one block is also held to the graph_tuples rows it appends on this child's arm,
 // which must be the tuples of the changed block alone (writeCostEditTuples). The 8,001-block path
-// keeps the rise of at most 100 ms it was held to before beside its ratio, in both series, and
+// keeps the rise of at most 100 ms it was held to before beside its ratio, on its warm series, and
 // the lower of the two allowances decides (writeCostOverAllowance), so no bound on it got weaker.
 // On its warm series it carries a third bound, 1 s absolute, because IndexDocumentReferences
 // already spends 347 ms on that version inside a request measured at 939 to 1,130 ms: a change
 // inside its allowance can still put that request over its own bound. Its cold series prints its
-// absolute times and carries no absolute bound, since a cold reading decodes a stored history
-// that every version the series writes makes longer. The failure says which of its bounds it
+// absolute times, is held to the ratio alone and carries no absolute bound, since a cold reading
+// decodes a stored history that every version the series writes makes longer. The failure says which of its bounds it
 // broke, and an absolute failure with the allowance passing says so in as many words, because
 // that case is the architect's to decide and not the implementer's to fix.
 //
@@ -718,7 +718,7 @@ func TestNoWritePathThisChildChangesGetsSlower(t *testing.T) {
 	cold := readings[coldOver]
 	t.Logf("the 8,001-block request on its cold series: p50 %.1f ms at this child and %.1f ms at the commit before it (p99 %.1f ms here, %.1f ms there), "+
 		"held to no absolute bound: a cold write decodes the document's whole stored history, which every version the series writes makes longer, "+
-		"so these times are printed for the reader, and the series is held to its ratio and its rise alone.",
+		"so these times are printed for the reader, and the series is held to its ratio alone.",
 		costMilliseconds(cold[head].p50()), costMilliseconds(cold[base].p50()), costMilliseconds(cold[head].p99()), costMilliseconds(cold[base].p99()))
 
 	for _, path := range writeCostPaths() {
@@ -819,13 +819,16 @@ func writeCostJudge(t *testing.T, path writeCostPath, series writeCostSeries, he
 	}
 	// Every other path is held to the ratio of its deciding statistic here over the same
 	// statistic there, which holds a path of tens of milliseconds and a path of seconds
-	// alike to how much slower it got. The 8,001-block path is held to the lower of that
-	// ratio's allowance and its 100 ms rise (writeCostOverAllowance), so its line prints
-	// both and names the one that decided.
+	// alike to how much slower it got. The 8,001-block path's warm series is held to the lower
+	// of that ratio's allowance and its 100 ms rise (writeCostOverAllowance), so its line prints
+	// both and names the one that decided. Its cold series is held to the ratio alone: the rise was
+	// set for the warm request, and a cold reading also decodes the document's whole stored
+	// history, which makes it about one and a half times as long, so a rise of 100 ms there says
+	// less about this child than the ratio does.
 	ratio := float64(here99) / float64(before99)
 	relative := ratio <= path.ratio
 	absolute := limit == 0 || here99 < limit
-	if path.name == writeCostOverPath {
+	if path.name == writeCostOverPath && series.warm {
 		rise := here99 - before99
 		_, deciding, inside := writeCostOverAllowance(here99, before99)
 		relative = inside

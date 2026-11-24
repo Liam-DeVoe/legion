@@ -386,13 +386,15 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
   -- column); the two must stay in sync. issue reuses r.issue_title, already carried from the
   -- same issues row by kinds, rather than re-reading it. ask reads the text its search vector is
   -- built from (asks_search: the question, then ask_search_suffix's option labels and
-  -- descriptions, answer text and selected labels), so its snippet shows what the query matched.
+  -- descriptions, answer text and selected labels), so its snippet shows what the query matched,
+  -- with the answer read from the ask's node (askSearchTextOf, which says why the vector is the
+  -- row's).
   left join lateral (
     select case r.kind
       when 'issue' then r.issue_title
       when 'document' then (select v.markdown from artifact_versions v where v.artifact_id = r.artifact_id order by v.number desc limit 1) -- re-resolves the latest version kinds already found once; accepted, bounded by the page size
       when 'comment' then (select c.body from comments c where c.id = r.id::uuid)
-      when 'ask' then (select k.question || ' ' || ask_search_suffix(k.options, k.answer) from asks k where k.id = r.id::uuid)
+      when 'ask' then (select %[3]s from asks k where k.id = r.id::uuid)
       when 'message' then (select m.body from messages m where m.id = r.id::uuid)
     end as text
   ) txt on true
@@ -424,7 +426,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
      limit 1
   ) hit on true
  order by r.score desc, case when r.own_lead then r.id end, r.updated_at desc, r.id
-`, legsSource, visibleBlock)
+`, legsSource, visibleBlock, askSearchTextOf("k"))
 }
 
 // searchQuery scores every kind of content on one list, so a page holds the query's best matches

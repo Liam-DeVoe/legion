@@ -1639,6 +1639,7 @@ docs/solutions/testing/pin-a-settle-from-state-loop-with-a-scripted-fake-that-co
 docs/solutions/testing/pin-generated-test-data-by-a-digest-of-the-whole-structure-in-the-generators-order-not-by-its-totals-pr2469.md	no
 docs/solutions/testing/pin-the-exact-command-list-never-exclude-a-subcommand.md	no
 docs/solutions/testing/pin-the-zero-of-a-time-since-signal-before-its-event-pr2504.md	no
+docs/solutions/testing/playwright-did-not-exit-after-stop-can-be-the-runner-removing-trace-files-of-a-worker-that-exited.md	no
 sha256:01522a20a6ff8037fe3843324da8b1d277a13cd129cac09026c314b84a79fa8c	no
 sha256:5678867cc0ee0bbe6dffeb76c9e2b0da96ad8ee185d05e003c36d73051af4795	no
 docs/solutions/testing/proof-rig-loads-the-production-plugin-tree.md	no

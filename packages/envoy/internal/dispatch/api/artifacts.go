@@ -796,7 +796,7 @@ func (s *server) storeArtifact(
 		s.writeHandlerError(w, err)
 		return
 	} else if artifact.Retired {
-		s.writeHandlerError(w, retiredDocumentRefusal(artifact, input.name))
+		s.writeHandlerError(w, readRetiredDocumentRefusal(r.Context(), tx, artifact, input.name))
 		return
 	} else if artifact.Kind != kind {
 		s.writeHandlerError(w, artifactKindMismatch(input.name, artifact, kind))
@@ -1715,7 +1715,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if artifact.Retired {
-		s.writeHandlerError(w, retiredDocumentRefusal(artifact, artifact.Name))
+		s.writeHandlerError(w, readRetiredDocumentRefusal(r.Context(), s.deps.Store.Pool, artifact, artifact.Name))
 		return
 	}
 	// release ends the conditional edit gate once: right after the commit, which is all a later
@@ -2658,15 +2658,30 @@ func decisionsAreNodes(target artifactTarget, name string) error {
 // name is the document's own. An issue's decisions document - one whose slug, or the name the
 // write gives, is a decisions document's - is refused as a new document of that name is
 // (decisionsAreNodes), since DOCUMENT_RETIRED's advice to write a document of another name would
-// lead its caller to decisions-2.md; any other is DOCUMENT_RETIRED (documentRetiredRefusal).
-func retiredDocumentRefusal(artifact model.Artifact, name string) error {
+// lead its caller to decisions-2.md; any other is DOCUMENT_RETIRED (documentRetiredRefusal),
+// which names the address of the document's latest saved version. latest reads that version's
+// number, and is called only for DOCUMENT_RETIRED.
+func retiredDocumentRefusal(artifact model.Artifact, name string, latest func() (int, error)) error {
 	target := artifactTarget{IssueKey: artifact.IssueKey}
 	for _, held := range []string{name, artifact.Slug} {
 		if refusal := decisionsAreNodes(target, held); refusal != nil {
 			return refusal
 		}
 	}
-	return documentRetiredRefusal(artifact)
+	number, err := latest()
+	if err != nil {
+		return err
+	}
+	return documentRetiredRefusal(artifact, number)
+}
+
+// readRetiredDocumentRefusal is retiredDocumentRefusal for artifact, a document its row reads
+// retired, named name by a write of new text, with the number of its latest saved version read in
+// q (settledVersionNumber).
+func readRetiredDocumentRefusal(ctx context.Context, q queryer, artifact model.Artifact, name string) error {
+	return retiredDocumentRefusal(artifact, name, func() (int, error) {
+		return settledVersionNumber(ctx, q, artifact.ID)
+	})
 }
 
 // refuseRetiredUnderOwnerLock is retiredDocumentRefusal's answer for artifact, named name by a
@@ -2684,17 +2699,19 @@ func refuseRetiredUnderOwnerLock(ctx context.Context, tx pgx.Tx, artifact model.
 	if !retired {
 		return nil
 	}
-	return retiredDocumentRefusal(artifact, name)
+	return readRetiredDocumentRefusal(ctx, tx, artifact, name)
 }
 
 // documentRetiredRefusal is the 409 refusing a write of new text to artifact, a retired document
 // that is no decisions document (retiredDocumentRefusal). The document is in no list of its
 // issue's or its project's documents, so text written into it would be stored where no reader
-// looks for it. Its versions stay readable.
-func documentRetiredRefusal(artifact model.Artifact) error {
+// looks for it. Its versions stay readable, each at GET /api/v1/artifacts/{id}/versions/{number},
+// and the refusal names that address for latest, its latest saved version: a retired document
+// takes no new version, and no read is served at the bare /versions.
+func documentRetiredRefusal(artifact model.Artifact, latest int) error {
 	return errorf(http.StatusConflict, "DOCUMENT_RETIRED",
-		"%s (%s, %s) was retired: it takes no new text and is in no list of its documents, though its versions stay readable at /api/v1/artifacts/%s/versions; write a document of another name",
-		artifact.Name, artifact.Slug, artifact.ID, artifact.ID)
+		"%s (%s, %s) was retired: it takes no new text and is in no list of its documents, though its versions stay readable, the latest at /api/v1/artifacts/%s/versions/%d; write a document of another name",
+		artifact.Name, artifact.Slug, artifact.ID, artifact.ID, latest)
 }
 
 // artifactKindMismatch is the 400 refusing an upload under name, of kind, as the next version of

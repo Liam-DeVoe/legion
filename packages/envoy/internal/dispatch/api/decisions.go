@@ -579,7 +579,9 @@ func (s *server) decisionEntries(ctx context.Context, who model.Actor, key strin
 	}
 	entries = read
 	sort.SliceStable(entries, func(i, j int) bool { return entries[i].before(entries[j]) })
+	// kept for one release: compat-objects
 	decisions := []model.Decision{}
+	// kept for one release: compat-objects
 	for _, entry := range entries {
 		if entry.Kind == "agent" || (entry.Kind == "person" && entry.AnswerState != nil && *entry.AnswerState == "answered") {
 			decisions = append(decisions, byNode[entry.Node])
@@ -589,6 +591,7 @@ func (s *server) decisionEntries(ctx context.Context, who model.Actor, key strin
 		reader.text(&entries[index].TextTree, entries[index].Text)
 		reader.textOf(&entries[index].AnswerTree, entries[index].Answer)
 	}
+	// kept for one release: compat-objects
 	for index := range decisions {
 		reader.text(&decisions[index].TextTree, decisions[index].Text)
 	}
