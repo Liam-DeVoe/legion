@@ -18,6 +18,7 @@ import {
   type DispatchToolSpec,
   dispatchToolSchema,
   dispatchToolSpecs,
+  ISSUE_STATUS_OPTIONS,
   ISSUE_STATUSES,
   ISSUE_UPDATE_PATCH_FIELDS,
   PROJECT_KEY_RULE,
@@ -1113,14 +1114,7 @@ describe("dispatchToolSpecs", () => {
   // labels_add is refused as an option beside any other such field is.
   test("dispatch_issue_update refuses an option beside each field the status change does not take", () => {
     const update = specFor("dispatch_issue_update").arguments(schemaApi) as Record<string, unknown>;
-    const taken = [
-      "issue",
-      "status",
-      "reason",
-      "include_children",
-      "unlink_children",
-      "include_parent",
-    ];
+    const taken: readonly string[] = ["issue", "status", "reason", ...ISSUE_STATUS_OPTIONS];
     expect(new Set<string>(ISSUE_UPDATE_PATCH_FIELDS)).toEqual(
       new Set(Object.keys(update).filter((field) => !taken.includes(field)))
     );

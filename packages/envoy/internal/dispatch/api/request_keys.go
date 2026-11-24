@@ -162,10 +162,9 @@ var errRequestKeyTakenOver = errorf(http.StatusConflict, contracts.IdempotencyKe
 // write made as it stands now, with the status the route's write answers - a stale success, in
 // Google AIP-155's words, never a second write. The status change's replay answers what its steps
 // stored instead, each issue as its step's write answered it (replayStatusChange). stored is the
-// first answer's body when the key kept one and it was a success. It is nil in five cases: when
-// the first request never answered, when it answered a refusal, when it answered more than a key
-// keeps (storedSuccess), when a delete ended the success it answered (answerEndedByDelete), and
-// on a route that resumes (answerHeldKey).
+// first answer's body, or nil in five cases: when the first request never answered, when it
+// answered a refusal, when it answered more than a key keeps (storedSuccess), when a delete ended
+// the success it answered (answerEndedByDelete), and on a route that resumes (answerHeldKey).
 type keyedReplay func(w http.ResponseWriter, r *http.Request, recovery json.RawMessage, stored []byte)
 
 // keyedRoute is what the keyed layer knows of a keyed route. For a route that commits a recovery
