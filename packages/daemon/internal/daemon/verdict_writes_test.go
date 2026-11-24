@@ -1325,7 +1325,9 @@ func TestLegionVerdictTellsTheAppsRunsByItsID(t *testing.T) {
 
 // R19: the writer tells the one App's runs by the id github_apps.implement.app_id names, and an id
 // that is no number tells no run as the App's. The writer says so where it is built, once, as an
-// ERROR that names the setting and the value it holds; a number says nothing.
+// ERROR that names the setting and the value it holds; a number says nothing. An id that is not set
+// says nothing either: a daemon with no App id (token mode, or a boot whose configuration names no
+// App) writes no legion-verdict as the App, and an ERROR at each boot would only be noise.
 func TestLegionVerdictAnAppIDThatIsNoNumberIsLoggedWhereTheWriterIsBuilt(t *testing.T) {
 	for _, tc := range []struct {
 		appID  string
@@ -1334,6 +1336,7 @@ func TestLegionVerdictAnAppIDThatIsNoNumberIsLoggedWhereTheWriterIsBuilt(t *test
 	}{
 		{appID: verdictAppID, id: verdictAppNumber},
 		{appID: "legion-app", errors: 1},
+		{appID: ""},
 	} {
 		t.Run(tc.appID, func(t *testing.T) {
 			logs := &syncBuffer{}

@@ -86,12 +86,18 @@ type verdictTarget struct {
 }
 
 // newVerdictWriter is the writer of entries, appID being the one App's id as the configuration
-// spells it. An id that is no number is logged on log, once, here (verdictAppIDNotANumber).
+// spells it. An id that is set and is no number is logged on log, once, here
+// (verdictAppIDNotANumber); an id that is not set holds 0 and says nothing, since a daemon with no
+// App id writes no legion-verdict as the App.
 func newVerdictWriter(entries []config.VerdictRepository, appID string, log *slog.Logger) *verdictWriter {
-	id, err := strconv.ParseInt(appID, 10, 64)
-	if err != nil {
-		log.Error(verdictAppIDNotANumber, "setting", "github_apps.implement.app_id", "app_id", appID, "error", err)
-		id = 0
+	var id int64
+	if appID != "" {
+		parsed, err := strconv.ParseInt(appID, 10, 64)
+		if err != nil {
+			log.Error(verdictAppIDNotANumber, "setting", "github_apps.implement.app_id", "app_id", appID, "error", err)
+		} else {
+			id = parsed
+		}
 	}
 	return &verdictWriter{entries: entries, appID: id, bound: issueRead, pending: map[string]int{}, ended: make(chan struct{}),
 		wake: make(chan struct{}, 1), foreign: map[string]string{}}
