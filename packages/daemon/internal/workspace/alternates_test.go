@@ -150,3 +150,51 @@ func TestAForeignFeedFailsTheFetchAndIsKept(t *testing.T) {
 	}
 	runSetup(t, working.Clone, "git", "-C", working.Clone, "fsck", "--connectivity-only", "--no-dangling", "--no-progress")
 }
+
+// The repository cache's own fetch shares Fetch, and no clone borrows objects from the cache's
+// clone: an issue pod takes a tar of it and keeps what it unpacks. So a clone of the cache's that
+// Fetch did not write is removed, logged naming why, and filled afresh from GitHub, as it always
+// was, where an issue pod's feed is kept and fails the fetch (TestAForeignFeedFailsTheFetchAndIsKept).
+// The request is the cache's own (the repository cache's fetch sets ReplaceForeign). Under the
+// never-replace rule applied to the cache's fetch as well as the pod's feed, this fetch fails and
+// the planted file stays.
+func TestTheCachesFetchStillReplacesAForeignClone(t *testing.T) {
+	run := newLocalRunner(t)
+	pushRemoteBranch(t, run.remote, "main", "history.txt")
+	fetch := fetchRequest(t)
+	fetch.ReplaceForeign = true
+	var logged []string
+	fetch.Log = func(line string) { logged = append(logged, line) }
+	first, err := Fetch(context.Background(), run, fetch)
+	if err != nil {
+		t.Fatalf("the cache's first Fetch: %v", err)
+	}
+	grafts := filepath.Join(first.Feed, "info", "grafts")
+	if err := os.WriteFile(grafts, []byte("planted\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	advanceRemote(t, run.remote)
+
+	again, err := Fetch(context.Background(), run, fetch)
+	if err != nil {
+		t.Fatalf("the cache's Fetch of a clone it did not write = %v, want the clone removed and filled afresh", err)
+	}
+	if !again.Cloned {
+		t.Error("the cache's Fetch kept a clone with grafts, want it cloned afresh")
+	}
+	if !slices.ContainsFunc(logged, func(line string) bool {
+		return strings.Contains(line, "is not one this fetch wrote") && strings.Contains(line, "removed")
+	}) {
+		t.Errorf("the cache's Fetch logged %q, want it to say it removed a clone it did not write", logged)
+	}
+	if _, err := os.Stat(grafts); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the planted info/grafts after the cache's Fetch: %v, want it gone with the clone", err)
+	}
+	if why, err := foreignFeed(again.Feed); err != nil || why != "" {
+		t.Errorf("the refilled clone reads as foreign: %q (%v)", why, err)
+	}
+	if got, want := strings.TrimSpace(runSetup(t, again.Feed, "git", "--git-dir="+again.Feed, "rev-parse", "refs/heads/main")),
+		strings.TrimSpace(runSetup(t, again.Feed, "git", "--git-dir="+run.remote, "rev-parse", "main")); got != want {
+		t.Errorf("the refilled clone's main is %s, want the remote's %s", got, want)
+	}
+}
