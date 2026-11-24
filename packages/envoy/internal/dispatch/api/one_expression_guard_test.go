@@ -83,9 +83,15 @@ func sqlCode(text string) string {
 	})
 }
 
-// sqlRuleNeedle is the Go count's needle below, `coalesce(a.asked_of`, in every spelling SQL
-// takes for it: any alias or none, any case, any space.
-var sqlRuleNeedle = regexp.MustCompile(`(?i)\bcoalesce\s*\(\s*(?:\w+\.)?asked_of\b`)
+// ruleNeedle is the rule's needle, `coalesce(a.asked_of`, in every spelling SQL takes for it: any
+// alias or none, any case, any space. The count of the module's Go and the count of its .sql files
+// both read it.
+var ruleNeedle = regexp.MustCompile(`(?i)\bcoalesce\s*\(\s*(?:\w+\.)?asked_of\b`)
+
+// goRuleCopies is the number of copies of the rule in the text of a Go source.
+func goRuleCopies(text string) int {
+	return strings.Count(text, "coalesce(a.asked_of")
+}
 
 // TestOneExpressionDecidesWhoWaitsInOneSpelling holds the six reads that name a person to the
 // one constant: each of the six names it, and the SQL it holds - the expression and the three
@@ -133,10 +139,11 @@ func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 	// Two spellings are each counted across the module, with _test.go files skipped by
 	// moduleSources, so the needles below are not found in this file's own literals.
 	//
-	// The rule's needle is the prefix `coalesce(a.asked_of` rather than the whole expression: a
-	// read that reintroduced the two-step `coalesce(a.asked_of, i.assignee)`, the spelling that
-	// sends a question standing on an issue nobody holds to nobody, is what this count exists to
-	// catch, and the whole expression would count it zero times and pass.
+	// The rule's needle is the prefix `coalesce(a.asked_of` in any of its spellings (ruleNeedle)
+	// rather than the whole expression: a read that reintroduced the two-step
+	// `coalesce(asked_of, assignee)`, under any alias, the spelling that sends a question standing
+	// on an issue nobody holds to nobody, is what this count exists to catch, and the whole
+	// expression would count it zero times and pass.
 	//
 	// The joins the rule needs are counted by the one that makes them its own, the project reached
 	// through either owner: the other two left joins are ordinary beside any ask.
@@ -147,7 +154,7 @@ func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", source.path, err)
 		}
-		if spelled := strings.Count(string(text), "coalesce(a.asked_of"); spelled > 0 {
+		if spelled := goRuleCopies(string(text)); spelled > 0 {
 			copies = append(copies, fmt.Sprintf("%s (%d)", filepath.ToSlash(source.path), spelled))
 		}
 		joined := strings.Count(string(text), "left join projects p on p.key = coalesce(i.project_key, ar.project_key)")
@@ -164,12 +171,24 @@ func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 		t.Fatalf("the joins the rule reads are spelled in %v, want them written once, in %v", joins, want)
 	}
 
-	// No .sql file of the module spells the rule at all. The counts above read Go alone, and a
-	// migration is SQL Postgres runs as it stands - a view, a function, a backfill - so a copy of
-	// the rule there, the two-step `coalesce(a.asked_of, i.assignee)` above all, answers a reader
-	// another person while both counts above pass. Comments are blanked first: an applied migration
-	// says what the rule was when it ran, and is never edited. The needle is first held to what it
-	// must and must not count, so a needle or a blanking that missed a copy fails here.
+	// No .sql file of the module spells the rule at all. The counts above read Go, and a migration
+	// is SQL Postgres runs as it stands - a view, a function, a backfill - so a copy of the rule
+	// there, the two-step `coalesce(a.asked_of, i.assignee)` above all, answers a reader another
+	// person while both counts above pass. Comments are blanked first (sqlCode): an applied
+	// migration says what the rule was when it ran, and is never edited. The needle and the
+	// blanking are first held to what they must and must not count, a Go spelling and a SQL one, so
+	// a needle or a blanking that missed a copy fails here.
+	for _, planted := range []struct {
+		source  string
+		spelled int
+	}{
+		{`const q = "select coalesce(asked_of, assignee) from asks"`, 1},
+		{`const q = "select coalesce( a.asked_of , i.assignee ) from asks a"`, 1},
+	} {
+		if got := goRuleCopies(planted.source); got != planted.spelled {
+			t.Errorf("the Go count finds %d copies of the rule in %q, want %d", got, planted.source, planted.spelled)
+		}
+	}
 	for _, planted := range []struct {
 		sql     string
 		spelled int
@@ -177,11 +196,28 @@ func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 		{"select coalesce(a.asked_of, i.assignee) from asks a", 1},
 		{"SELECT COALESCE( asks.asked_of , issues.assignee ) FROM asks", 1},
 		{"select '--', coalesce(asked_of, assignee) from asks", 1},
-		{"-- coalesce(a.asked_of, i.assignee)\n/* coalesce(a.asked_of, i.assignee) */ select 1", 0},
+		{"select coalesce(a.\"asked_of\", i.assignee) from asks a", 1},
+		{"select coalesce(public.asks.asked_of, i.assignee) from asks", 1},
+		// An escape string's backslash escapes the quote after it, so its `--` is text.
+		{`select E'it\'s -- text', coalesce(a.asked_of, i.assignee) from asks a`, 1},
+		// A quoted identifier is no comment either.
+		{`select "a--b", coalesce(asked_of, assignee) from asks`, 1},
+		{"-- coalesce(a.asked_of, i.assignee)\nselect 1", 0},
+		{"/* coalesce(a.asked_of, i.assignee) */ select 1", 0},
+		// A block comment nests, and ends at the `*/` of its outermost `/*`.
+		{"/* outer /* inner */ coalesce(a.asked_of, i.assignee) */ select 1", 0},
+		// A dollar-quoted body is SQL the function runs: its comments are blanked, its code read,
+		// and a comment in it ends at the body's end.
+		{"create function f() returns void language plpgsql as $$ begin -- coalesce(a.asked_of, i.assignee)\nend $$", 0},
+		{"create function f() returns text language sql as $body$ select coalesce(a.asked_of, i.assignee) from asks a $body$", 1},
+		{"select $q$ -- $q$, coalesce(a.asked_of, i.assignee) from asks a", 1},
 	} {
-		if got := len(sqlRuleNeedle.FindAllStringIndex(sqlCode(planted.sql), -1)); got != planted.spelled {
-			t.Fatalf("the needle counts %d copies of the rule in %q, want %d", got, planted.sql, planted.spelled)
+		if got := len(ruleNeedle.FindAllStringIndex(sqlCode(planted.sql), -1)); got != planted.spelled {
+			t.Errorf("the needle counts %d copies of the rule in %q, want %d", got, planted.sql, planted.spelled)
 		}
+	}
+	if t.Failed() {
+		return
 	}
 	sqlCopies := []string{}
 	read, migrations := 0, 0
@@ -198,7 +234,7 @@ func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 		if filepath.Dir(path) == migrationDir {
 			migrations++
 		}
-		if spelled := len(sqlRuleNeedle.FindAllStringIndex(sqlCode(string(text)), -1)); spelled > 0 {
+		if spelled := len(ruleNeedle.FindAllStringIndex(sqlCode(string(text)), -1)); spelled > 0 {
 			sqlCopies = append(sqlCopies, fmt.Sprintf("%s (%d)", filepath.ToSlash(path), spelled))
 		}
 		return nil
