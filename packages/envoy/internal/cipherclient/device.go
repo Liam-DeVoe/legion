@@ -161,16 +161,17 @@ func (d *DeviceFlow) Wait(ctx context.Context, authorization *oauth2.DeviceAuthR
 
 // The bounds a device grant's poll holds a server's device authorization to, whatever it names: the
 // poll starts at defaultDeviceInterval seconds where the server names no interval, RFC 8628 section
-// 3.2's 5 s, and at leastDeviceInterval seconds at least where it names one, so no poll goes out
+// 3.2's 5 s, and at LeastDeviceInterval seconds at least where it names one, so no poll goes out
 // with no wait; and a code is polled for mostDeviceLifetime at most, one that names no lifetime
 // included, so no poll goes on past any use (BoundDeviceAuth). The interval is held to that
-// lifetime too, mostDeviceInterval, so its seconds always hold in a time.Duration: RFC 8628 section
+// lifetime too, MostDeviceInterval, so its seconds always hold in a time.Duration: RFC 8628 section
 // 3.5 has a client wait at least the interval the server names, and an interval as long as the
 // code's life leaves no poll before the code lapses (the helper's Broker.Login refuses such a code
 // at once, and Wait times out on it). Both of this module's device grants keep these bounds: a
-// person's sign-in (DeviceFlow.Wait) and the broker helper's machine login. defaultDeviceInterval,
-// leastDeviceInterval and mostDeviceLifetime are the TypeScript device login's
-// DEFAULT_POLL_SECONDS, LEAST_POLL_SECONDS and MOST_LIFETIME_SECONDS
+// person's sign-in (DeviceFlow.Wait) and the broker helper's machine login, whose refusal of a
+// code no poll reaches words its cure from the least and the most interval, so those two are
+// exported. defaultDeviceInterval, LeastDeviceInterval and mostDeviceLifetime are the TypeScript
+// device login's DEFAULT_POLL_SECONDS, LEAST_POLL_SECONDS and MOST_LIFETIME_SECONDS
 // (packages/cipher-client/src/device-login.ts), which needs no most interval of its own. x/oauth2's
 // own DeviceAccessToken takes any lifetime, and a positive interval a time.Duration holds, as sent.
 // It reads any other interval as 5 s in v0.38.0, the version this repository's workspace builds;
@@ -178,9 +179,9 @@ func (d *DeviceFlow) Wait(ctx context.Context, authorization *oauth2.DeviceAuthR
 // negative interval, or on one whose seconds wrap negative as a time.Duration.
 const (
 	defaultDeviceInterval = 5
-	leastDeviceInterval   = 1
+	LeastDeviceInterval   = 1
 	mostDeviceLifetime    = time.Hour
-	mostDeviceInterval    = int64(mostDeviceLifetime / time.Second)
+	MostDeviceInterval    = int64(mostDeviceLifetime / time.Second)
 )
 
 // BoundDeviceAuth holds da's interval and lifetime to the device grant's bounds, its lifetime read
@@ -197,11 +198,14 @@ const (
 // The edge values of a device authorization, as x/oauth2 reads them (oauth2.DeviceAuthResponse,
 // whole seconds, 0 or null as none) and then the bounds: an interval of 0, none or null is 5 s,
 // and a negative one the least; a lifetime of 0 or none is the hour, a negative one lapses the code
-// before its first poll, and one past what a time.Duration holds (292 years) but inside an int64
-// wraps, to a time that has passed or that the hour bounds; a fraction of either, a count past an
-// int64, or a value sent as a string fails the device authorization.
+// before its first poll, and one past what a time.Duration holds (about 292 years) but inside an
+// int64 wraps, as x/oauth2 counts its nanoseconds modulo 2^64: one of about 292 to 584 years to a
+// time that has passed, and a longer one to a time that has passed, that the hour bounds, or that
+// the hour does not reach, which is polled as if the server had named it, as 18446744974 s wraps
+// to about 900 s; a fraction of either, a count past an int64, or a value sent as a string fails
+// the device authorization.
 func BoundDeviceAuth(da *oauth2.DeviceAuthResponse, now time.Time) (hourEnds bool) {
-	da.Interval = min(max(cmp.Or(da.Interval, defaultDeviceInterval), leastDeviceInterval), mostDeviceInterval)
+	da.Interval = min(max(cmp.Or(da.Interval, defaultDeviceInterval), LeastDeviceInterval), MostDeviceInterval)
 	hourEnds = da.Expiry.IsZero() || da.Expiry.Sub(now) > mostDeviceLifetime
 	left := mostDeviceLifetime
 	if !hourEnds {

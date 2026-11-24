@@ -412,9 +412,11 @@ func TestALoginWhoseCodeLapsesBeforeItsFirstPollIsRefused(t *testing.T) {
 		{"a negative interval and a code of 1 s", map[string]any{"interval": -3, "expires_in": 1}, 0, `a device code that lives 1 s, with a poll interval of -3 s, so one of 1 s` + lapses + `its codes live longer than 1 s, the least poll interval this machine keeps`},
 		// An interval of 1 s named is the least too: no shorter one the broker names is polled.
 		{"an interval of 1 s and a code of 1 s", map[string]any{"interval": 1, "expires_in": 1}, 0, `a device code that lives 1 s, with a poll interval of 1 s` + lapses + `its codes live longer than 1 s, the least poll interval this machine keeps`},
-		// The answer outlasted the code: it had lapsed, not "would lapse", and no cure works while
-		// the answers are that slow.
-		{"a round trip longer than the code", map[string]any{"interval": nil, "expires_in": 1}, 1500 * time.Millisecond, `a device code that lives 1 s, with no poll interval or one of 0 s, so one of 5 s, but its answer took \d+\.\d{3} s to arrive, so the code had lapsed; no machine login works at that broker until its codes live longer than 5 s, or than both 1 s and a poll interval it names, and none while its answers take longer than its codes live`},
+		// The answer outlasted the code: it had lapsed, not "would lapse", and a login works only
+		// once the codes outlive the interval by more than the answers take; codes that outlive only
+		// the answers are refused too, as 6 s codes answered in 1.5 s against 5 s are.
+		{"a round trip longer than the code", map[string]any{"interval": nil, "expires_in": 1}, 1500 * time.Millisecond, `a device code that lives 1 s, with no poll interval or one of 0 s, so one of 5 s, but its answer took \d+\.\d{3} s to arrive, so the code had lapsed; no machine login works at that broker until its codes live longer than 5 s, or than both 1 s and a poll interval it names, and then only once its codes outlive its poll interval by more than its answers take to arrive`},
+		{"codes that outlive only their answers", map[string]any{"interval": nil, "expires_in": 6}, 1500 * time.Millisecond, `a device code that lives 6 s, with no poll interval or one of 0 s, so one of 5 s, but its answer took \d+\.\d{3} s to arrive, which left \d\.\d{3} s of it: the code would lapse before its first poll; a machine login works at that broker where its answer arrives in less than 1 s, or once its codes outlive its poll interval by more than its answers take to arrive`},
 		{"a code of two hours and an interval past the hour", map[string]any{"interval": 5000, "expires_in": 7200}, 0, `a poll interval of 5000 s, so one of 3600 s` + hour},
 		{"no lifetime and an interval of an hour", map[string]any{"interval": 3600, "expires_in": nil}, 0, `a poll interval of 3600 s` + hour},
 		// x/oauth2 reads a lifetime of 0 as none, so the hour ends the code, where the TypeScript
