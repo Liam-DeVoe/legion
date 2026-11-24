@@ -1,17 +1,17 @@
 // packages/envoy/internal/cipher/netaddr/destination.go
-// The addresses the airlock's private destination (BROKER_AIRLOCK_PRIVATE_UPSTREAM) may be: the
-// one rule the proxy's dial of the destination (proxy.Server.upstreamAddresses), config's start
+// The addresses the airlock's private destinations (BROKER_PROXY_PRIVATE_UPSTREAM) may be: the
+// one rule the proxy's dial of each destination (proxy.Server.upstreamAddresses), config's start
 // check of a destination URL that names an address, and `profiles check --private-upstream` read,
 // so none of them can take an address another refuses.
 //
-// The rule is positive. An address is the destination's because it is in a range named here - a
+// The rule is positive. An address is a destination's because it is in a range named here - a
 // private range, 100.64.0.0/10, or the broker cluster's own ranges - and never because another
 // rule refuses it: the general rule of where the proxy may dial (DialRefusal) refuses more forms
-// of an address as it learns them, and each such form read as "private" would be one the
+// of an address as it learns them, and each such form read as "private" would be one a
 // destination takes. So every form an address can take is decided here, once: the IPv4-mapped
-// form and a zone (Canonical), each form that carries an IPv4 address (carriedIPv4) and the
-// local-use translation prefix, the unspecified and the broadcast addresses, 0.0.0.0/8, loopback,
-// link-local, multicast and the cloud metadata servers.
+// form and a zone (Canonical), each form that carries an IPv4 address (CarriedIPv4) and the
+// local-use translation prefix (LocalUseTranslation), the unspecified and the broadcast addresses,
+// 0.0.0.0/8, loopback, link-local, multicast and the cloud metadata servers.
 package netaddr
 
 import "net/netip"
@@ -46,11 +46,11 @@ const outsideTheRanges = "an address outside the private ranges and BROKER_AIRLO
 //   - an unspecified or multicast address, the IPv4 broadcast address and 0.0.0.0/8 ("this
 //     network", RFC 1122), which no one service has;
 //   - a cloud metadata server's IPv6 address (metadataServers), which is unique-local;
-//   - an IPv6 address that carries an IPv4 address (carriedIPv4: the NAT64, 6to4, Teredo,
+//   - an IPv6 address that carries an IPv4 address (CarriedIPv4: the NAT64, 6to4, Teredo,
 //     IPv4-compatible, IPv4-translated and ISATAP forms), whatever address it carries, and the
-//     local-use translation prefix 64:ff9b:1::/48, whose IPv4 address the address alone does not
-//     say: the network sends a packet for such an address to an IPv4 address that is no address
-//     of the destination's own, and no Service of a cluster has one.
+//     local-use translation prefix 64:ff9b:1::/48 (LocalUseTranslation), whose IPv4 address the
+//     address alone does not say: the network sends a packet for such an address to an IPv4
+//     address that is no address of the destination's own, and no Service of a cluster has one.
 func DestinationNever(addr netip.Addr) string {
 	addr = Canonical(addr)
 	switch {
@@ -64,7 +64,7 @@ func DestinationNever(addr netip.Addr) string {
 		return "the IPv4 broadcast address, which the airlock never dials"
 	case thisNetworkRange.Contains(addr):
 		return "an address of 0.0.0.0/8, which is reserved for this network and which the airlock never dials"
-	case localUseTranslationPrefix.Contains(addr):
+	case LocalUseTranslation.Contains(addr):
 		return "a local-use translation IPv6 address (64:ff9b:1::/48), which is never the private destination's"
 	}
 	for _, server := range metadataServers {
@@ -72,7 +72,7 @@ func DestinationNever(addr netip.Addr) string {
 			return "a cloud metadata server's address, which the airlock never dials"
 		}
 	}
-	if _, n := carriedIPv4(addr); n > 0 {
+	if _, n := CarriedIPv4(addr); n > 0 {
 		return "an IPv6 address that carries an IPv4 address (a NAT64, 6to4, Teredo, IPv4-compatible, IPv4-translated or ISATAP form), which is never the private destination's"
 	}
 	return ""

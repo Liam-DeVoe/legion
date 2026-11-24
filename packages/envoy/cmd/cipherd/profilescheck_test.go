@@ -410,25 +410,28 @@ func resultsProfileOf(name, hosts, headers, allow, kind string) string {
 
 // TestProfilesCheckRefusesWhatTheBootRefusesOfTheResultsProfile: `profiles check` holds the
 // results profile, DISPATCH_RESULTS_TOKEN, to the boot's own check of it. Every shape the file
-// alone decides (config.ResultsEntryRules) is refused, with --private-upstream and without it,
-// exit 1 with one line on stderr naming the file, the profile and the fault, and no report: a
-// "*." host, two hosts, no kind, kind aws, no allow list, an empty one, a header other than
-// Authorization, a second profile of kind dpop, another profile whose "*." host binds the results
-// host, and a lower-case dispatch_results_token of kind dpop. Given the destination the broker is
-// given (--private-upstream, as BROKER_AIRLOCK_PRIVATE_UPSTREAM), it makes the boot's whole check
-// (config.AirlockResultRules): the profile of another host than the destination's is refused, and
-// so are the profile beside a destination given empty and a destination beside a file with no
-// results profile. Without the flag, a file holding the right profile is valid and the report says
-// in one line that its tie to the destination was not checked; with it, that line is absent; and
-// a file with no results profile prints no such line. A destination the setting's parser refuses
-// is a usage error that quotes no credential of its URL.
+// alone decides (config.ResultsEntryRules, then config.MintedEntryRules, the rules of every dpop
+// block) is refused, with --private-upstream and without it, exit 1 with one line on stderr naming
+// the file, the profile and the fault, and no report: a "*." host, two hosts, no kind, kind aws, no
+// allow list, an empty one, a header other than Authorization, another profile, not of kind dpop,
+// whose "*." host binds the results host, and a lower-case dispatch_results_token of kind dpop.
+// Given the destinations the broker is given (--private-upstream, as BROKER_PROXY_PRIVATE_UPSTREAM),
+// it makes the boot's whole check (config.ProxyMintedRules): the profile of another host than the
+// destination's is refused, and so are a destination beside a file with no results profile and a
+// second dpop profile of a host no destination names, which is valid without the flag. A
+// --private-upstream given empty is not given, as the setting given blank names no destination.
+// Without the flag, a file holding the right profile is valid and the report says in one line that
+// its tie to the destination was not checked; with it, that line is absent; and a file with no
+// results profile prints no such line. A destination the setting's parser refuses is a usage
+// error that quotes no credential of its URL.
 func TestProfilesCheckRefusesWhatTheBootRefusesOfTheResultsProfile(t *testing.T) {
 	const (
 		name     = "DISPATCH_RESULTS_TOKEN"
 		headers  = `["Authorization"]`
 		allow    = `[{"method": "POST", "pathPrefix": "/api/v1/projects/"}]`
 		upstream = resultsBoundHost + "=http://10.0.0.5:8766"
-		notSeen  = "profiles check: DISPATCH_RESULTS_TOKEN binds " + resultsBoundHost + "; its tie to BROKER_AIRLOCK_PRIVATE_UPSTREAM was not checked (no --private-upstream)"
+		notSeen  = "profiles check: DISPATCH_RESULTS_TOKEN binds " + resultsBoundHost + "; its tie to BROKER_PROXY_PRIVATE_UPSTREAM was not checked (no --private-upstream)"
+		unnamed  = "which no entry of BROKER_PROXY_PRIVATE_UPSTREAM names"
 	)
 	bound := `"` + resultsBoundHost + `"`
 	file := func(profiles ...string) string { return `{"profiles": [` + strings.Join(profiles, ", ") + `]}` }
@@ -482,8 +485,7 @@ func TestProfilesCheckRefusesWhatTheBootRefusesOfTheResultsProfile(t *testing.T)
 		{"no allow list", file(resultsProfileOf(name, bound, headers, "", "dpop")), []string{name}, []string{"non-empty allow list"}},
 		{"an empty allow list", file(resultsProfileOf(name, bound, headers, "[]", "dpop")), []string{name}, []string{"non-empty allow list"}},
 		{"the header X-Token", file(resultsProfileOf(name, bound, `["X-Token"]`, allow, "dpop")), []string{name, "X-Token"}, []string{"Authorization header alone"}},
-		{"a second profile of kind dpop", file(right, resultsProfileOf("OTHER_TOKEN", `"`+otherResultsHost+`"`, headers, allow, "dpop")), []string{name}, []string{"OTHER_TOKEN of kind dpop"}},
-		{"another profile's *. host over the results host", file(right, `{"name": "WILDCARD_TOKEN", "proxy": {"hosts": ["*.ci-results.test"]}}`), []string{name, "WILDCARD_TOKEN"}, []string{"binds the host " + resultsBoundHost}},
+		{"another profile's *. host over the results host", file(right, `{"name": "WILDCARD_TOKEN", "proxy": {"hosts": ["*.ci-results.test"]}}`), []string{name, "WILDCARD_TOKEN"}, []string{"binds " + resultsBoundHost + ", the host of the profile " + name}},
 		// The policy reader refuses a lower-case name before the results check reads the file;
 		// either refusal names the profile as written.
 		{"dispatch_results_token of kind dpop", file(resultsProfileOf("dispatch_results_token", bound, headers, allow, "dpop")), []string{`dispatch_results_token`}, []string{"not an agent secret name", "dispatch_results_token of kind dpop"}},
@@ -498,13 +500,14 @@ func TestProfilesCheckRefusesWhatTheBootRefusesOfTheResultsProfile(t *testing.T)
 
 	t.Run("--private-upstream: the profile of another host than the destination's", func(t *testing.T) {
 		refused(t, file(resultsProfileOf(name, `"`+otherResultsHost+`"`, headers, allow, "dpop")), []string{"--private-upstream", upstream},
-			[]string{name, "binds " + otherResultsHost}, []string{"names the host " + resultsBoundHost})
+			[]string{name, "binds " + otherResultsHost}, []string{unnamed})
 	})
-	t.Run("--private-upstream given empty: the right profile", func(t *testing.T) {
-		refused(t, file(right), []string{"--private-upstream", ""}, []string{name}, []string{"BROKER_AIRLOCK_PRIVATE_UPSTREAM is unset"})
+	t.Run("--private-upstream: a second dpop profile of a host no destination names", func(t *testing.T) {
+		refused(t, file(right, resultsProfileOf("OTHER_TOKEN", `"`+otherResultsHost+`"`, headers, allow, "dpop")), []string{"--private-upstream", upstream},
+			[]string{"OTHER_TOKEN", "binds " + otherResultsHost}, []string{unnamed})
 	})
 	t.Run("--private-upstream: a file with no results profile", func(t *testing.T) {
-		refused(t, twoProfiles, []string{"--private-upstream", upstream}, []string{name, "names the host " + resultsBoundHost}, []string{"holds no profile " + name})
+		refused(t, twoProfiles, []string{"--private-upstream", upstream}, []string{"names the host " + resultsBoundHost}, []string{"no profile of BROKER_PROFILES_FILE of kind dpop binds it"})
 	})
 
 	// valid runs the subcommand and holds it to a file it would serve, answering the report.
@@ -530,6 +533,17 @@ func TestProfilesCheckRefusesWhatTheBootRefusesOfTheResultsProfile(t *testing.T)
 			t.Fatalf("the report does not say once, on a line of its own, %q: %q", notSeen, stdout)
 		}
 	})
+	t.Run("--private-upstream given empty: the right profile, with the not-checked line", func(t *testing.T) {
+		if stdout := valid(t, file(right), "--private-upstream", ""); strings.Count(stdout, notSeen+"\n") != 1 {
+			t.Fatalf("a --private-upstream given empty is not given, so the report says once, on a line of its own, %q: %q", notSeen, stdout)
+		}
+	})
+	t.Run("without --private-upstream: a second dpop profile, with a not-checked line of each", func(t *testing.T) {
+		stdout := valid(t, file(right, resultsProfileOf("OTHER_TOKEN", `"`+otherResultsHost+`"`, headers, allow, "dpop")))
+		if strings.Count(stdout, notSeen+"\n") != 1 || strings.Count(stdout, "OTHER_TOKEN binds "+otherResultsHost+"; its tie to BROKER_PROXY_PRIVATE_UPSTREAM was not checked") != 1 {
+			t.Fatalf("the report does not say once of each dpop block that its tie was not checked: %q", stdout)
+		}
+	})
 	t.Run("without --private-upstream: a file with no results profile, with no not-checked line", func(t *testing.T) {
 		if stdout := valid(t, twoProfiles); strings.Contains(stdout, "was not checked") {
 			t.Fatalf("a file with no results profile says a tie was not checked: %q", stdout)
@@ -541,7 +555,7 @@ func TestProfilesCheckRefusesWhatTheBootRefusesOfTheResultsProfile(t *testing.T)
 		if code != 2 || stdout != "" {
 			t.Fatalf("exit %d with stdout %q, want exit 2 and no report", code, stdout)
 		}
-		for _, want := range []string{"--private-upstream", "BROKER_AIRLOCK_PRIVATE_UPSTREAM", "carries a user", profilesCheckUsage} {
+		for _, want := range []string{"--private-upstream", "BROKER_PROXY_PRIVATE_UPSTREAM", "carries a user", profilesCheckUsage} {
 			if !strings.Contains(stderr, want) {
 				t.Fatalf("the usage error does not say %q: %q", want, stderr)
 			}
@@ -552,20 +566,22 @@ func TestProfilesCheckRefusesWhatTheBootRefusesOfTheResultsProfile(t *testing.T)
 	})
 }
 
-// TestProfilesCheckHoldsTheDestinationsAddressToTheBootsRule: --private-upstream holds the
+// TestProfilesCheckHoldsTheDestinationsAddressToTheBootsRule: --private-upstream holds each
 // destination to the address rule the boot holds it to (config.PrivateUpstreamAddressRules,
 // netaddr.DestinationRefusal), and --cluster-ranges, the value BROKER_AIRLOCK_CLUSTER_RANGES gives
-// the broker, makes it the boot's whole rule. Each destination below that the boot refuses whatever
-// its cluster ranges - loopback, localhost with and without the root's dot, the metadata servers,
-// the IPv4 broadcast and unspecified addresses, 0.0.0.0/8 and the NAT64 form of the metadata
-// server - exits 1 with one line on stderr naming BROKER_AIRLOCK_PRIVATE_UPSTREAM and the rule, and
-// no report, without --cluster-ranges and with every ranges given: none, the Service range, every
-// address. A public address, and a ClusterIP of a global Service range, are the destination only
-// inside a broker's BROKER_AIRLOCK_CLUSTER_RANGES: without --cluster-ranges each is valid with one
-// line that says it was not judged against the cluster ranges; given ranges that do not hold it, it
-// exits 1 naming both settings, as the boot refuses it; given ranges that hold it, it is valid with
-// no such line. A private address, one of 100.64.0.0/10, a unique-local one and a name are valid
-// with no such line, with any ranges; a name is the dial's to check, at the boot too. A
+// the broker, makes it the boot's whole rule. A destination the boot refuses is no value
+// BROKER_PROXY_PRIVATE_UPSTREAM takes, so its refusal is a usage error, as the setting's parser's
+// is: exit 2, no report, and on stderr one line naming BROKER_PROXY_PRIVATE_UPSTREAM and the rule,
+// then the usage line. Each destination below that the boot refuses whatever its cluster ranges -
+// loopback, localhost with and without the root's dot, the metadata servers, the IPv4 broadcast
+// and unspecified addresses, 0.0.0.0/8 and the NAT64 form of the metadata server - is refused so
+// without --cluster-ranges and with every ranges given: none, the Service range, every address. A
+// public address, and a ClusterIP of a global Service range, are a destination only inside a
+// broker's BROKER_AIRLOCK_CLUSTER_RANGES: without --cluster-ranges each is valid with one line
+// that says it was not judged against the cluster ranges; given ranges that do not hold it, it is
+// refused so naming both settings, as the boot refuses it; given ranges that hold it, it is valid
+// with no such line. A private address, one of 100.64.0.0/10, a unique-local one and a name are
+// valid with no such line, with any ranges; a name is the dial's to check, at the boot too. A
 // --cluster-ranges value the setting's parser refuses, and one given without --private-upstream,
 // are usage errors.
 func TestProfilesCheckHoldsTheDestinationsAddressToTheBootsRule(t *testing.T) {
@@ -577,6 +593,23 @@ func TestProfilesCheckHoldsTheDestinationsAddressToTheBootsRule(t *testing.T) {
 		serviceRange = "34.118.224.0/20"
 		everything   = "0.0.0.0/0, ::/0"
 	)
+	// addressRefused holds a run to the refusal of a destination's address: exit 2, no report, and
+	// two lines on stderr, the first saying each of wants, the second the usage line.
+	addressRefused := func(t *testing.T, code int, stdout, stderr string, wants ...string) {
+		t.Helper()
+		if code != 2 || stdout != "" {
+			t.Fatalf("exit %d with stdout %q; want exit 2 and no report, as the boot refuses the destination at start", code, stdout)
+		}
+		lines := strings.Split(strings.TrimRight(stderr, "\n"), "\n")
+		if len(lines) != 2 || lines[1] != profilesCheckUsage {
+			t.Fatalf("the refusal reads %q; want one line of the refusal and then the usage line", stderr)
+		}
+		for _, want := range wants {
+			if !strings.Contains(lines[0], want) {
+				t.Fatalf("the refusal reads %q; want it to say %q", lines[0], want)
+			}
+		}
+	}
 	// Each ranges a run can give: none (no flag), and the flag given empty, with the Service
 	// range, and with every address.
 	rangesRuns := []struct {
@@ -603,12 +636,7 @@ func TestProfilesCheckHoldsTheDestinationsAddressToTheBootsRule(t *testing.T) {
 		for _, ranges := range rangesRuns {
 			t.Run("refused "+row.url+", "+ranges.name, func(t *testing.T) {
 				code, stdout, stderr := runCheck(t, append([]string{path, "--private-upstream", resultsBoundHost + "=" + row.url}, ranges.args...)...)
-				if code != 1 || stdout != "" {
-					t.Fatalf("exit %d with stdout %q; want exit 1 and no report, as the boot refuses %s at start", code, stdout, row.url)
-				}
-				if !strings.Contains(stderr, "BROKER_AIRLOCK_PRIVATE_UPSTREAM") || !strings.Contains(stderr, row.rule) || strings.Count(strings.TrimRight(stderr, "\n"), "\n") != 0 {
-					t.Fatalf("the refusal reads %q; want one line naming BROKER_AIRLOCK_PRIVATE_UPSTREAM and %q", stderr, row.rule)
-				}
+				addressRefused(t, code, stdout, stderr, "--private-upstream", "BROKER_PROXY_PRIVATE_UPSTREAM", row.rule)
 			})
 		}
 	}
@@ -632,9 +660,7 @@ func TestProfilesCheckHoldsTheDestinationsAddressToTheBootsRule(t *testing.T) {
 			t.Run(row.url+", "+ranges.name, func(t *testing.T) {
 				code, stdout, stderr := runCheck(t, append([]string{path, "--private-upstream", resultsBoundHost + "=" + row.url}, ranges.args...)...)
 				if !held {
-					if code != 1 || stdout != "" || !strings.Contains(stderr, "BROKER_AIRLOCK_PRIVATE_UPSTREAM") || !strings.Contains(stderr, "outside the private ranges and BROKER_AIRLOCK_CLUSTER_RANGES") {
-						t.Fatalf("exit %d, stdout %q, stderr %q; want exit 1 and one line naming both settings, as a boot of these ranges refuses it", code, stdout, stderr)
-					}
+					addressRefused(t, code, stdout, stderr, "BROKER_PROXY_PRIVATE_UPSTREAM", "outside the private ranges and BROKER_AIRLOCK_CLUSTER_RANGES")
 					return
 				}
 				if code != 0 {
@@ -654,7 +680,7 @@ func TestProfilesCheckHoldsTheDestinationsAddressToTheBootsRule(t *testing.T) {
 		args  []string
 		wants []string
 	}{
-		{"--cluster-ranges without --private-upstream", []string{"--cluster-ranges", serviceRange}, []string{"--cluster-ranges judges the address of the destination --private-upstream gives"}},
+		{"--cluster-ranges without --private-upstream", []string{"--cluster-ranges", serviceRange}, []string{"--cluster-ranges judges the address of each destination --private-upstream gives, and was given without one"}},
 		{"--cluster-ranges not a prefix", []string{"--private-upstream", resultsBoundHost + "=http://10.0.0.5:8766", "--cluster-ranges", serviceRange + ", not-a-prefix"}, []string{"--cluster-ranges: BROKER_AIRLOCK_CLUSTER_RANGES: element 2 is not a CIDR prefix"}},
 		{"--cluster-ranges an IPv4-mapped prefix", []string{"--private-upstream", resultsBoundHost + "=http://10.0.0.5:8766", "--cluster-ranges", "::ffff:34.118.224.0/116"}, []string{"element 1 is an IPv4-mapped IPv6 prefix"}},
 	} {

@@ -27,7 +27,7 @@ var destinationRanges = []netip.Prefix{netip.MustParsePrefix("34.118.224.0/20"),
 // unspecified, multicast and IPv4 broadcast addresses; 0.0.0.0/8; the cloud metadata servers; each
 // IPv6 form that carries an IPv4 address, carrying a refused, a private and a public address, and
 // the local-use translation prefix; each in its IPv4-mapped and zoned spellings where it has them.
-// Every address SecurityAirlock6's probe found taken at round 6's head is among them.
+// Every address the round-6 security probe found taken at round 6's head is among them.
 var neverRows = []struct{ addr, want string }{
 	{"127.0.0.1", neverLoopback}, {"127.1.2.3", neverLoopback}, {"::1", neverLoopback}, {"::1%lo", neverLoopback},
 	{"::ffff:127.0.0.1", neverLoopback}, {"169.254.169.254", neverLoopback}, {"::ffff:169.254.169.254", neverLoopback},

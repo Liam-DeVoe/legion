@@ -539,7 +539,7 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 	case errors.Is(err, requests.ErrSecretNotInStore):
 		writeError(w, http.StatusNotFound, "SECRET_NOT_IN_STORE", err.Error())
 		return
-	case errors.Is(err, requests.ErrAirlockMintedOnly):
+	case errors.Is(err, requests.ErrMintedOnly):
 		// A stored secret under a proxy block of kind dpop: that name is a capability the broker
 		// mints and holds, and nothing of the stored value is released, to the session or to the
 		// proxy. The refusal is the policy's, never a fault of the broker's.

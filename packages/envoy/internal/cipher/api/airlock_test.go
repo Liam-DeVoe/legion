@@ -100,7 +100,7 @@ func TestTheValuesAnswerCarriesTheAirlock(t *testing.T) {
 
 // TestAStoredSecretUnderADPoPBlockIsRefusedItsRelease: a session's release of a stored secret
 // whose proxy block is of kind dpop - a capability the broker mints and holds, never a stored
-// secret's release (requests.ErrAirlockMintedOnly) - is answered 403 MINTED_ONLY naming the rule,
+// secret's release (requests.ErrMintedOnly) - is answered 403 MINTED_ONLY naming the rule,
 // with nothing of the value in it, and the broker writes no ERROR line of its own fault for it,
 // as it does for a 500. Control: the same grant under a proxy block of no kind is released as
 // the airlock, 200 (TestTheValuesAnswerCarriesTheAirlock).
