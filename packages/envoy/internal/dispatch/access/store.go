@@ -193,12 +193,6 @@ func readProjectWritten(ctx context.Context, q Querier, key string) (model.Proje
 	return readProject(ctx, q, key, `p.key = $1`, key)
 }
 
-// ReadProjectWritten is readProjectWritten for an owner's write of the api package that changes no
-// list (api.resetProjectAccessPerson): the project's access as tx left it, after the owner's check.
-func ReadProjectWritten(ctx context.Context, tx pgx.Tx, key string) (model.ProjectAccess, error) {
-	return readProjectWritten(ctx, tx, key)
-}
-
 // readProject reads the access of the one project where names, with args, or ErrProjectNotFound.
 func readProject(ctx context.Context, q Querier, key, where string, args ...any) (model.ProjectAccess, error) {
 	var access model.ProjectAccess
@@ -702,10 +696,10 @@ func TieSession(ctx context.Context, q Querier, session, login string) error {
 	return nil
 }
 
-// NamesPerson reports whether project key's access list names the person email directly, read in
-// tx: an owner's link and Reset ask it before they act on the person (api.namedPerson), since each
-// is for a person the list names. An email that names nobody is ErrPrincipalInput, as
-// RemovePrincipal answers it.
+// NamesPerson reports whether project key's access list names the person email, read in tx: a
+// removal asks it before RemovePrincipal to tell a removal that took a person off the list from one
+// that left it as it was. An email that names nobody is ErrPrincipalInput, as RemovePrincipal
+// answers it.
 func NamesPerson(ctx context.Context, tx pgx.Tx, key, email string) (bool, error) {
 	name, err := principalOf(PrincipalPerson, email)
 	if err != nil {
