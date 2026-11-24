@@ -717,9 +717,9 @@ type LegionAgentEntry struct {
 	// the entry again whenever that changes, in either direction. It is false by default, and a
 	// writer that never states it leaves every entry of its project unfinished.
 	//
-	// A message to a role nobody holds reads it (the listener's handOffToLegion): an unfinished
-	// role's message is kept on the role's kept lane for the next worker of that phase, while a
-	// finished role's is handed to the daemon, because no holder is coming for it.
+	// No hand-off reads it: a message to a role nobody holds goes to the role's newest session
+	// while that entry is not released and its project answers, whether its issue has left the
+	// workflow or not (the listener's answeringAgent, Dispatch's unheldRoleTarget).
 	Finished bool `json:"finished,omitempty"`
 	// Released is whether the session's claim is suspended by idle release: the daemon released
 	// its idle issue pod (dispatch://INFRA-945) and kept the session, its phase and its pending
@@ -760,9 +760,9 @@ type LegionAgent struct {
 // Answering is the flag the entry's project last stated in its answering record (LegionProject),
 // false while the project has stated none: the condition the listener's hand-off reads on the
 // project (its answeringAgent). A reader that sends a message to a stopped agent so that its
-// daemon answers it (Dispatch's registeredAgent) sends it only while this is true, since a send
-// the listener hands to no daemon is stored for a session that will not run again. A listener
-// that predates the field leaves it out, which decodes as false.
+// daemon answers it (Dispatch's registeredAgent and unheldRoleTarget) sends it only while this is
+// true, since a send the listener hands to no daemon is stored for a session that will not run
+// again. A listener that predates the field leaves it out, which decodes as false.
 type LegionAgentAnswer struct {
 	LegionAgent
 	Live      bool `json:"live"`
@@ -772,6 +772,19 @@ type LegionAgentAnswer struct {
 // LegionAgentList is a listing's answer, `[]` when the registry holds no entry.
 type LegionAgentList struct {
 	Entries []LegionAgentAnswer `json:"entries"`
+}
+
+// LegionRoleAgentList is the role read's answer (GET /v1/legion/agents/roles/<role_token>): the
+// role token's entries, newest first, the first being its current holder, and Answering, the flag
+// the role token's own project last stated in its answering record, false while the project has
+// stated none. It is written out whether the read holds entries or not, so a reader learns whether
+// a daemon answers for a role the registry holds no entry for: Dispatch keeps a message for such a
+// role for its first holder only while one does (unheldRoleTarget). An edge listener answers it
+// only for a role of one of its token's projects, and false for any other. A listener that
+// predates the field leaves it out, which decodes as false.
+type LegionRoleAgentList struct {
+	LegionAgentList
+	Answering bool `json:"answering"`
 }
 
 // LegionAgentBatch is the body of PUT /v1/legion/agents, a batch of at most 256 entries

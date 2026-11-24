@@ -98,11 +98,17 @@ func TestAPublishToAFinishedLegionRoleIsHandedToItsDaemonAndNotKept(t *testing.T
 	}
 }
 
-// An entry the daemon wrote before it stated any standing carries no `finished`, and the listener
-// reads that as a role whose issue still runs: the message is kept for the role's next holder.
-// The daemon writes the flag again whenever the standing changes, so the same role's messages are
-// handed off from the moment its issue leaves the workflow.
-func TestARoleEntryTurnsFromKeptToHandedOffWhenTheDaemonWritesItFinished(t *testing.T) {
+// An entry the daemon wrote with no `finished`, the shape of an issue still in the workflow and of
+// one written before the daemon stated any standing, is handed to its daemon at once, as it is once
+// the daemon writes it finished: `finished` decides nothing of
+// a role's hand-off, and a role with no live holder whose newest entry is not released, under a
+// project that answers, is answered by that entry's daemon. Each publish is answered 200 with that
+// session as recipient and nothing is kept.
+//
+// The control is the same entry written released, with no `finished`: the daemon resumes that
+// session on the role's next wake, so the publish is kept for it, 202 kept unclaimed, and nothing
+// more is handed off. Before D2 the first publish was kept too.
+func TestARoleEntryIsHandedOffWhetherOrNotTheDaemonWroteItFinished(t *testing.T) {
 	d, client := keptRoleDeps(t)
 	withFinishedHandoff(t, d)
 	agents := d.legionAgents.store()
@@ -116,29 +122,43 @@ func TestARoleEntryTurnsFromKeptToHandedOffWhenTheDaemonWritesItFinished(t *test
 	if _, err := agents.Put(ctx, running); err != nil {
 		t.Fatalf("write the entry again while its issue runs: %v", err)
 	}
+	handedOff := func(when, message string, count uint64) {
+		t.Helper()
+		recorder, _ := publishToRole(t, d, finishedLegionRole,
+			`{"topic":"`+contracts.RoleTopicPrefix+finishedLegionRole+`","source":"agent","source_session":"ses-architect","message":"`+message+`"}`)
+		var answer handedPublishAnswer
+		if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &answer) != nil || answer.Kept || answer.Recipient != finishedRoleSession {
+			t.Fatalf("publish %s: status %d, body %s; want 200 handed off to %s with nothing kept", when, recorder.Code, recorder.Body.String(), finishedRoleSession)
+		}
+		if got, _ := handoffs(t, client, finishedRoleSession); got != count {
+			t.Fatalf("publish %s: the stream holds %d hand-offs for %s, want %d", when, got, finishedRoleSession, count)
+		}
+	}
 
-	recorder, answer := publishToRole(t, d, finishedLegionRole,
-		`{"topic":"`+contracts.RoleTopicPrefix+finishedLegionRole+`","source":"agent","source_session":"ses-architect","message":"the next round starts at abc123"}`)
-	if recorder.Code != http.StatusAccepted || !answer.Kept || answer.KeptReason != "unclaimed" {
-		t.Fatalf("publish to a role whose issue runs again: status %d, kept %t, reason %q, body %s; want 202 kept unclaimed",
-			recorder.Code, answer.Kept, answer.KeptReason, recorder.Body.String())
-	}
-	waitForKeptRoleMessage(t, client, finishedLegionRole, answer.EventID)
-	if count, _ := handoffs(t, client, finishedRoleSession); count != 0 {
-		t.Fatalf("the stream holds %d hand-offs for %s, want none: its issue is in the workflow again", count, finishedRoleSession)
-	}
+	handedOff("while the role's issue runs", "the next round starts at abc123", 1)
+	assertNothingKept(t, client, finishedLegionRole)
 
 	finished := running
 	finished.Finished = true
 	if _, err := agents.Put(ctx, finished); err != nil {
 		t.Fatalf("write the entry again once its issue finished: %v", err)
 	}
-	recorder, _ = publishToRole(t, d, finishedLegionRole,
-		`{"topic":"`+contracts.RoleTopicPrefix+finishedLegionRole+`","source":"agent","source_session":"ses-architect","message":"what did the review find?"}`)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("publish once the entry is finished: status %d, body %s; want 200 delivered", recorder.Code, recorder.Body.String())
+	handedOff("once the entry is finished", "what did the review find?", 2)
+	assertNothingKept(t, client, finishedLegionRole)
+
+	released := running
+	released.Released = true
+	if _, err := agents.Put(ctx, released); err != nil {
+		t.Fatalf("write the entry again released: %v", err)
 	}
-	if count, _ := handoffs(t, client, finishedRoleSession); count != 1 {
-		t.Fatalf("the stream holds %d hand-offs for %s, want the one the finished entry took", count, finishedRoleSession)
+	recorder, answer := publishToRole(t, d, finishedLegionRole,
+		`{"topic":"`+contracts.RoleTopicPrefix+finishedLegionRole+`","source":"agent","source_session":"ses-architect","message":"are you back?"}`)
+	if recorder.Code != http.StatusAccepted || !answer.Kept || answer.KeptReason != "unclaimed" {
+		t.Fatalf("control: publish once the entry is released: status %d, kept %t, reason %q, body %s; want 202 kept unclaimed for the resumed worker",
+			recorder.Code, answer.Kept, answer.KeptReason, recorder.Body.String())
+	}
+	waitForKeptRoleMessage(t, client, finishedLegionRole, answer.EventID)
+	if count, _ := handoffs(t, client, finishedRoleSession); count != 2 {
+		t.Fatalf("control: the stream holds %d hand-offs for %s, want only the two before its release", count, finishedRoleSession)
 	}
 }

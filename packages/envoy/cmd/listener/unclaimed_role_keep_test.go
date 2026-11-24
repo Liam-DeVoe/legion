@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
@@ -42,18 +43,32 @@ func withAuditHandoff(t *testing.T, d *listenerDeps) {
 	d.delivery.handoff = d.handoff
 }
 
-// A publish to a Legion role nobody holds must still be kept for the role's next holder
-// (INFRA-514's 202), because the role is claimed again by the next worker of that phase. The
-// hand-off replaces the 404 writeRoleHolderError gives, not the keep (plan 2.2).
-func TestAuditAPublishToAnUnclaimedLegionRoleIsStillKeptForItsNextHolder(t *testing.T) {
+// A publish to a Legion role nobody holds and the registry holds no entry for must still be kept
+// for the role's next holder (INFRA-514's 202): no session of the role has run, so no daemon
+// answers for one, and the role's first worker claims it. The hand-off replaces the 404
+// writeRoleHolderError gives, not the keep (plan 2.2). The control is a publish to auditLegionRole,
+// a role of the same issue whose newest entry is a stopped agent that is not released, under the
+// same answering project: it is handed off, whether or not its issue has left the workflow (D2 of
+// cybermonklabs/legion#2230), so the rig reaches the hand-off and only the missing entry keeps the
+// first publish. Before D2 that control was kept too.
+func TestAuditAPublishToALegionRoleWithNoEntryIsStillKeptForItsNextHolder(t *testing.T) {
 	d, client := keptRoleDeps(t)
 	withAuditHandoff(t, d)
+	const noEntryRole = "legion-infra-infra-204-reviewer"
 
-	recorder, answer := publishToRole(t, d, auditLegionRole,
-		`{"topic":"`+contracts.RoleTopicPrefix+auditLegionRole+`","source":"agent","source_session":"ses-architect","message":"the tester's next round starts at abc123"}`)
+	recorder, answer := publishToRole(t, d, noEntryRole,
+		`{"topic":"`+contracts.RoleTopicPrefix+noEntryRole+`","source":"agent","source_session":"ses-architect","message":"the review's next round starts at abc123"}`)
 	if recorder.Code != http.StatusAccepted || !answer.Kept || answer.KeptReason != "unclaimed" {
-		t.Fatalf("publish to an unclaimed Legion role: status %d, kept %t, reason %q, body %s; want 202 kept unclaimed so the role's next holder is handed it",
+		t.Fatalf("publish to an unclaimed Legion role with no registry entry: status %d, kept %t, reason %q, body %s; want 202 kept unclaimed so the role's next holder is handed it",
 			recorder.Code, answer.Kept, answer.KeptReason, recorder.Body.String())
 	}
-	waitForKeptRoleMessage(t, client, auditLegionRole, answer.EventID)
+	waitForKeptRoleMessage(t, client, noEntryRole, answer.EventID)
+
+	recorder, _ = publishToRole(t, d, auditLegionRole,
+		`{"topic":"`+contracts.RoleTopicPrefix+auditLegionRole+`","source":"agent","source_session":"ses-architect","message":"what did the tests find?"}`)
+	var handed handedPublishAnswer
+	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &handed) != nil || handed.Kept || handed.Recipient != "ses-old-tester" {
+		t.Fatalf("control: publish to %s, whose newest entry is the stopped tester: status %d, body %s; want 200 handed off to ses-old-tester with nothing kept",
+			auditLegionRole, recorder.Code, recorder.Body.String())
+	}
 }

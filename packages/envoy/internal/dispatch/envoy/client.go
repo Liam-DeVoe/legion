@@ -717,10 +717,10 @@ func (c *Client) readSession(ctx context.Context, sessionID, include string) (Se
 }
 
 // Agent returns the Legion agent registry's entry for one session (listenerwire.LegionAgentAnswer,
-// whose Live is never read as "that agent has stopped", and whose Finished, Released and
-// Answering say whether the listener hands a message for it to its daemon), or ErrNotFound when
-// the registry holds none: a 404, or an id the listener refuses (a 400 or 413), under which no
-// entry can be recorded. Every other status, a body that does not decode and a transport failure
+// whose Live is never read as "that agent has stopped", and whose Released and Answering say
+// whether the listener hands a message for it to its daemon), or ErrNotFound when the registry
+// holds none: a 404, or an id the listener refuses (a 400 or 413), under which no entry can be
+// recorded. Every other status, a body that does not decode and a transport failure
 // are ErrUnavailable carrying the listener's reason: a read the registry did not answer says
 // nothing about whether the session was recorded.
 func (c *Client) Agent(ctx context.Context, sessionID string) (listenerwire.LegionAgentAnswer, error) {
@@ -744,37 +744,51 @@ func (c *Client) Agent(ctx context.Context, sessionID string) (listenerwire.Legi
 	return agent, nil
 }
 
-// RoleAgents returns every session the Legion agent registry holds for a role token, newest
-// first, the first being the role's current holder; none when it holds none. Any answer but a 200
-// is ErrUnavailable.
-func (c *Client) RoleAgents(ctx context.Context, roleToken string) ([]listenerwire.LegionAgentAnswer, error) {
-	return c.legionAgents(ctx, "/v1/legion/agents/roles/"+url.PathEscape(roleToken), "")
+// RoleAgents returns what the Legion agent registry holds for a role token
+// (listenerwire.LegionRoleAgentList): every session of it, newest first, the first being the
+// role's current holder, none when it holds none, and whether the role token's project last said
+// its daemon answers for its stopped agents, which a listener that predates the field leaves out
+// and so reads as false. Any answer but a 200 is ErrUnavailable.
+func (c *Client) RoleAgents(ctx context.Context, roleToken string) (listenerwire.LegionRoleAgentList, error) {
+	var role listenerwire.LegionRoleAgentList
+	if err := c.readLegionAgents(ctx, "/v1/legion/agents/roles/"+url.PathEscape(roleToken), "", &role); err != nil {
+		return listenerwire.LegionRoleAgentList{}, err
+	}
+	if role.Entries == nil {
+		role.Entries = []listenerwire.LegionAgentAnswer{}
+	}
+	return role, nil
 }
 
 // IssueAgents returns every session the Legion agent registry holds for an issue, by role in
 // workflow order (architect, planner, implementer, tester, reviewer, merger), then newest first;
 // none when it holds none. Any answer but a 200 is ErrUnavailable.
 func (c *Client) IssueAgents(ctx context.Context, issueKey string) ([]listenerwire.LegionAgentAnswer, error) {
-	return c.legionAgents(ctx, "/v1/legion/agents", "?issue="+url.QueryEscape(issueKey))
+	var issue listenerwire.LegionAgentList
+	if err := c.readLegionAgents(ctx, "/v1/legion/agents", "?issue="+url.QueryEscape(issueKey), &issue); err != nil {
+		return nil, err
+	}
+	if issue.Entries == nil {
+		issue.Entries = []listenerwire.LegionAgentAnswer{}
+	}
+	return issue.Entries, nil
 }
 
-func (c *Client) legionAgents(ctx context.Context, route, query string) ([]listenerwire.LegionAgentAnswer, error) {
+// readLegionAgents decodes one listing of the Legion agent registry into body. Any answer but a
+// 200, and a body that does not decode, is ErrUnavailable.
+func (c *Client) readLegionAgents(ctx context.Context, route, query string, body any) error {
 	response, err := c.get(ctx, route, query)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, unavailableGetStatus(response, route)
+		return unavailableGetStatus(response, route)
 	}
-	var body listenerwire.LegionAgentList
-	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
-		return nil, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
+	if err := json.NewDecoder(response.Body).Decode(body); err != nil {
+		return fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
-	if body.Entries == nil {
-		body.Entries = []listenerwire.LegionAgentAnswer{}
-	}
-	return body.Entries, nil
+	return nil
 }
 
 // get makes one authorized GET of route+query, the one shape every read of the listener takes.

@@ -83,9 +83,8 @@ type legionHandedOff struct {
 //   - the source is not envoy, whose messages (the broker's wake sends, the listener's own
 //     exceptions) are not questions, and the body did not opt out with "handoff": false;
 //   - the Legion agent registry names the session: the session addressed, or the role token's
-//     newest session, and for a role token that session's entry is finished - its issue has left
-//     the workflow, so no next holder of the role is coming (answeringAgent). A role whose issue
-//     still runs keeps its message for that next holder instead;
+//     newest session, whether that entry's issue has left the workflow or not (answeringAgent). A
+//     role the registry holds no entry for keeps its message for the role's first holder instead;
 //   - that session's entry is not released: a claim suspended by idle release is resumed by the
 //     wake its message raises, so the message stays the agent's (legionagents.Entry.Released);
 //   - that session's project last said it answers (project.<legion_project>, legionagents.Project).
@@ -221,20 +220,20 @@ func (r handoffCopies) NextStoredMessage(ctx context.Context, subject string, se
 // the registry's bucket is not open, which the routes answer 503 and this answers as it answers a
 // registry naming no session.
 //
-// A role token is answered for only while its newest entry is finished: the role's issue has left
-// the workflow, so no later holder of that role is coming (legionagents.Entry.Finished). A role
-// whose issue still runs is nobody's to answer for - the gap between two phase workers of one
-// issue, and a pod being replaced, both leave the role unclaimed while the registry still names
-// the worker that stopped - so its message is kept on the role's kept lane for the next holder
-// (INFRA-514's 202, roleSend.noHolder), which is what it was before the hand-off existed. A
-// session addressed by id is answered for whether its issue is finished or not: that session has
-// stopped, and the message is for it. A send that carries a role's mark (Dispatch's send to a
-// `role:` route) is held to that role's claim before it reaches this, and one whose claim does not
-// name its target is offered here on its role token only while no session holds the role live, so
-// it is answered for by this rule rather than the session's (handOffOrKeepRoleSend): a finished
-// role's message reaches its daemon, and a running role's is kept for its next holder (#4387's
-// keep). A role a session holds live is that holder's, finished or not - a session that took the
-// role over among them - so its message is kept for that holder and never offered here.
+// A role token is answered for by its newest entry, whether that entry's issue has left the
+// workflow or not (legionagents.Entry.Finished decides nothing here): a worker that failed, or
+// that the workflow or an operator suspended, has stopped with the role unclaimed, and its daemon
+// answers the role's message from that worker's conversation, as it does for a finished role's.
+// A role the registry holds no entry for is nobody's to answer
+// for, so its message is kept on the role's kept lane for the role's first holder (INFRA-514's
+// 202, roleSend.noHolder), which is what it was before the hand-off existed. A session addressed
+// by id is answered for whether its issue is finished or not: that session has stopped, and the
+// message is for it. A send that carries a role's mark (Dispatch's send to a `role:` route) is
+// held to that role's claim before it reaches this, and one whose claim does not name its target
+// is offered here on its role token only while no session holds the role live, so it is answered
+// for by this rule rather than the session's (handOffOrKeepRoleSend). A role a session holds live
+// is that holder's - a session that took the role over among them - so its message is kept for
+// that holder and never offered here.
 //
 // Neither path answers for an entry that is released (legionagents.Entry.Released): the daemon
 // released that session's idle issue pod and keeps its claim to resume, so the message is a wake
@@ -258,7 +257,7 @@ func (h *legionHandoff) answeringAgent(ctx context.Context, target legionHandoff
 		if err != nil {
 			return nil, err
 		}
-		if len(held) == 0 || !held[0].Finished {
+		if len(held) == 0 {
 			return nil, nil
 		}
 		entry = held[0].LegionAgentEntry

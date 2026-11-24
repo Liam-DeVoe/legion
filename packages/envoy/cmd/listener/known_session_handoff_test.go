@@ -264,17 +264,20 @@ func sendMarkedByDispatch(t *testing.T, rig *knownSessionRig, principal, target,
 // Dispatch marks a role's message with the role when it sends it to the session it pinned for the
 // role, and its recheck of that session before the send names no registry redirect once the
 // listener holds the session's known-session record, as it does for 30 days after the session
-// stopped. So a mention or a message for a finished Legion role reaches the send route marked,
-// aimed at the role's stopped newest session, with no claim of the role standing. The send route
-// offers it to the role's daemon on the role token (handOffOrKeepRoleSend): 200 with that session
-// as recipient and no state, one hand-off carrying the role token, nothing kept on the role's kept
-// lane, which no holder would drain, and nothing stored on the session's own subject.
+// stopped. So a mention or a message for a Legion role with no live holder reaches the send route
+// marked, aimed at the role's stopped newest session, with no claim of the role standing. The send
+// route offers it to the role's daemon on the role token (handOffOrKeepRoleSend): 200 with that
+// session as recipient and no state, one hand-off carrying the role token, nothing kept on the
+// role's kept lane, and nothing stored on the session's own subject. It does so whether the role's
+// issue has left the workflow or not: the same send once the entry is written again as an issue
+// that still runs is handed off too, which fails where the hand-off waits for `finished` and keeps
+// it on the role's kept lane, 202 kept.
 //
-// The control is the same send once the entry is written again as an issue that still runs: the
-// role's next holder is coming, so the message is kept on the role's kept lane for it, 202 kept,
-// as #4387 keeps a marked send whose role's claim does not name its target, and nothing more is
+// The control is the same send once the entry is written released: the daemon resumes that session
+// on the role's next wake, so the message is kept on the role's kept lane for it, 202 kept, as
+// #4387 keeps a marked send whose role's claim does not name its target, and nothing more is
 // handed off.
-func TestADispatchSendMarkedWithAFinishedRoleIsHandedToItsDaemonAndNotKept(t *testing.T) {
+func TestADispatchSendMarkedWithAStoppedRoleIsHandedToItsDaemonWhetherOrNotItsIssueFinished(t *testing.T) {
 	rig := newKnownSessionRig(t)
 	const principal = "system:serviceaccount:dispatch:example-dispatch"
 	useDispatchPrincipal(rig.deps, principal)
@@ -288,34 +291,43 @@ func TestADispatchSendMarkedWithAFinishedRoleIsHandedToItsDaemonAndNotKept(t *te
 	rig.record(t, agent)
 	client := rig.harness.client
 	subject := contracts.LegacyAgentSubject(agent)
+	handedOff := func(when, message string, count uint64) {
+		t.Helper()
+		handed := sendMarkedByDispatch(t, rig, principal, agent, role, message)
+		if handed.status != http.StatusOK || handed.Recipient != agent || handed.State != "" || handed.Kept {
+			t.Fatalf("a send marked with the role %s to its stopped newest session %s: status %d, body %s; want 200 handed off to %s with no state and nothing kept",
+				role, when, handed.status, handed.raw, agent)
+		}
+		stored, data := handoffs(t, client, agent)
+		if stored != count {
+			t.Fatalf("%s: the stream holds %d hand-offs for %s, want %d", when, stored, agent, count)
+		}
+		if wire := decodeHandoff(t, data); wire.TargetSession != agent || wire.RoleToken != role || wire.OriginalTopic != subject || wire.Project != "infra" {
+			t.Fatalf("%s: the stored hand-off is %+v, want the send to %s handed off on the role token %s under the project infra", when, wire, agent, role)
+		}
+		assertNothingKept(t, client, role)
+		if held := rig.storedOn(t, subject); held != 0 {
+			t.Fatalf("%s: the stream holds %d messages on %s, want none: the send was handed off", when, held, subject)
+		}
+	}
 
-	handed := sendMarkedByDispatch(t, rig, principal, agent, role, "what did the review find?")
-	if handed.status != http.StatusOK || handed.Recipient != agent || handed.State != "" || handed.Kept {
-		t.Fatalf("a send marked with the finished role %s to its stopped newest session: status %d, body %s; want 200 handed off to %s with no state and nothing kept",
-			role, handed.status, handed.raw, agent)
-	}
-	count, data := handoffs(t, client, agent)
-	if count != 1 {
-		t.Fatalf("the stream holds %d hand-offs for %s, want the one the marked send made", count, agent)
-	}
-	if wire := decodeHandoff(t, data); wire.TargetSession != agent || wire.RoleToken != role || wire.OriginalTopic != subject || wire.Project != "infra" {
-		t.Fatalf("the stored hand-off is %+v, want the send to %s handed off on the role token %s under the project infra", wire, agent, role)
-	}
-	assertNothingKept(t, client, role)
-	if held := rig.storedOn(t, subject); held != 0 {
-		t.Fatalf("the stream holds %d messages on %s, want none: the send was handed off", held, subject)
-	}
+	handedOff("once its issue finished", "what did the review find?", 1)
 
 	running := finished
 	running.Finished = false
 	putLegionAgent(t, agents, running)
-	kept := sendMarkedByDispatch(t, rig, principal, agent, role, "the next round starts at abc123")
+	handedOff("while its issue runs", "the next round starts at abc123", 2)
+
+	released := running
+	released.Released = true
+	putLegionAgent(t, agents, released)
+	kept := sendMarkedByDispatch(t, rig, principal, agent, role, "are you back?")
 	if kept.status != http.StatusAccepted || !kept.Kept || kept.KeptUntil == 0 || kept.Recipient != agent {
-		t.Fatalf("control: the same send once the role's issue runs: status %d, body %s; want 202 kept for the role's next holder",
+		t.Fatalf("control: the same send once the role's entry is released: status %d, body %s; want 202 kept for the resumed worker",
 			kept.status, kept.raw)
 	}
 	waitForKeptRoleMessage(t, client, role, kept.EventID)
-	if count, _ := handoffs(t, client, agent); count != 1 {
-		t.Fatalf("control: the stream holds %d hand-offs for %s, want only the first send's", count, agent)
+	if count, _ := handoffs(t, client, agent); count != 2 {
+		t.Fatalf("control: the stream holds %d hand-offs for %s, want only the two sends' before its release", count, agent)
 	}
 }

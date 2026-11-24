@@ -231,13 +231,14 @@ A Legion daemon that answers for its stopped agents
 `notifications.legion.<project>.agents.<session>`: where the registry names the target session,
 not released, and its project last said it answers, the listener hands the message off there in
 place of the `404`, the stored `stopped` answer, the `202` keep or the exception, and the caller
-reads the same `200` a delivered message gets. A role is handed off only once its issue has left
-the workflow; a role whose issue still runs, and a session whose idle pod the daemon released, keep
-the message for the next holder and wake it. An edge listener hands nothing off: its grant
+reads the same `200` a delivered message gets. A role is handed off to its newest session whether
+its issue has left the workflow or not; a session, or a role's newest session, whose idle pod the
+daemon released, and a role the registry holds no entry for, keep the message for the next holder
+and wake it. An edge listener hands nothing off: its grant
 (`natsgrant.Edge`) publishes the agent topics and its own projects' role topics
 (`notifications.agent.>`, `notifications.role.<project>.>`) but neither the hand-off subject
 `notifications.legion.<project>.agents.<session>` nor the kept lane `notifications.envoy.kept.>`, so
-a role publish through an edge listener to a finished role is answered as it was before the
+a role publish through an edge listener to a role nobody holds is answered as it was before the
 hand-off: `404`, with nothing kept.
 A role send the API refuses `404` also raises one exception on
 `notifications.envoy.exceptions.notifications.role.<role>`, naming the reason it refused:

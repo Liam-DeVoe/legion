@@ -1815,11 +1815,12 @@ That refusal closes the broker token's way in and no other: every launch also ca
 Each entry carries `finished`, whether its issue has left the workflow
 — closed or done, parked, or its tree retired or lingering past its close — so no next holder of that role is coming.
 The daemon reads the standing of every issue its history names each minute and writes that issue's entries again whenever it changes, in either direction, so an issue a person moves back into the workflow stops being finished within the minute.
-It decides what a message to a role **nobody holds** gets:
-a finished role's message is handed to the daemon and its sender answered `200` with the stopped agent as `recipient`, while an unfinished role's is kept on that role's kept lane for its next worker for one hour and answered `202` with `kept: true`, which is what the gap between two phase workers of one issue, and a pod being replaced, both need.
+It does not decide what a message to a role **nobody holds** gets; the role's newest entry does, whether its issue has left the workflow or not:
+an entry that is not `released` is a stopped agent its daemon answers for, a worker that failed or that the workflow or an operator suspended as much as a finished role's last worker, so the message is handed to that daemon and its sender answered `200` with the stopped agent as `recipient`;
+a `released` entry's message, and the message of a role the registry holds no entry for, is kept on that role's kept lane for its next worker for one hour and answered `202` with `kept: true`.
 A message addressed to a session id is handed off whether its issue is finished or not, ahead of the copy the listener would store for a session it still knows:
 that session has stopped, and the message is for it rather than for a role another session will take.
-An edge listener hands nothing off: its grant (`natsgrant.Edge`) publishes the agent topics and its own projects' role topics (`notifications.agent.>`, `notifications.role.<project>.>`) but neither the hand-off subject `notifications.legion.<project>.agents.<session>` nor the kept lane `notifications.envoy.kept.>`, so a role publish through an edge listener to a finished role is answered as it was before the hand-off: `404`, with nothing kept.
+An edge listener hands nothing off: its grant (`natsgrant.Edge`) publishes the agent topics and its own projects' role topics (`notifications.agent.>`, `notifications.role.<project>.>`) but neither the hand-off subject `notifications.legion.<project>.agents.<session>` nor the kept lane `notifications.envoy.kept.>`, so a role publish through an edge listener to a role nobody holds is answered as it was before the hand-off: `404`, with nothing kept.
 
 A hand-off arrives on `notifications.legion.<project>.agents.<session>` (`packages/contracts/src/legion-handoff.ts`), read by a durable consumer, so one published while the daemon was down is read when it returns.
 The daemon answers only for a session its own record holds, of its own project: any other hand-off is logged (`answers: hand-off dropped: the daemon's history holds no such conversation`) and dropped.
@@ -1871,9 +1872,9 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   A claim's start waits at most 10 seconds for an answer being appended to its conversation.
 
 - **Never a released claim.**
-  The loop answers for three stopped states alone:
-  a claim the workflow suspended (a parked child, or a tree whose root left the workflow during its linger), one retired, and one closed.
-  A claim the daemon suspended by idle release is none of them:
+  The loop answers for every stopped claim but one:
+  a claim that failed, one the workflow or an operator suspended (a parked child, or a tree whose root left the workflow during its linger), one retired, and one closed.
+  A claim the daemon suspended by idle release is the one it does not answer for:
   its idle issue pod was released with its session, phase and pending task kept, and the next message to it is the wake that brings the pod back and resumes that very session.
   So the mirror writes such a session's registry entry `released` as the release suspends the claim, and again without it once a wake resumes the claim, and the listener hands no message for a `released` session or role off.
   Each gets the listener's own answer instead:
@@ -3414,16 +3415,16 @@ The first of them restarts this release's daemon, so it comes before every step 
 **The project must stop saying it answers, while this release still runs.**
 This release's daemon writes its project's answering record into the Envoy listener's agent registry, the key `project.<legion_project>` of the `legion_agents` bucket, at its boot and every minute after.
 A listener of this release hands a message off to the project's daemon while that record last said `answering: true`, whatever the record's age:
-a message to a session the registry names, once that session is gone, and a message to a role nobody holds, once the role's newest entry is `finished`, in either case while that entry is not `released`.
+a message to a session the registry names, once that session is gone, and a message to a role nobody holds, to the role's newest session once that session is gone, whether the role's issue has left the workflow or not, in either case while that entry is not `released`.
 It publishes the message on `notifications.legion.<project>.agents.<session>` and answers its sender as delivered.
-An edge listener hands nothing off: its grant (`natsgrant.Edge`) publishes the agent topics and its own projects' role topics (`notifications.agent.>`, `notifications.role.<project>.>`) but neither the hand-off subject `notifications.legion.<project>.agents.<session>` nor the kept lane `notifications.envoy.kept.>`, so a role publish through an edge listener to a finished role is answered as it was before the hand-off: `404`, with nothing kept.
+An edge listener hands nothing off: its grant (`natsgrant.Edge`) publishes the agent topics and its own projects' role topics (`notifications.agent.>`, `notifications.role.<project>.>`) but neither the hand-off subject `notifications.legion.<project>.agents.<session>` nor the kept lane `notifications.envoy.kept.>`, so a role publish through an edge listener to a role nobody holds is answered as it was before the hand-off: `404`, with nothing kept.
 An earlier daemon writes no record and no entry, so the last `answering: true` stands, and it opens no consumer on that subject, so every message the listener hands off goes unanswered.
 Take `answers` out of `legion.yaml` and restart this release's daemon once:
 without `answers` it still writes the record with its own Envoy credential (`envoy_url` and `envoy_token_file`) as soon as it has booted, and the record then says `answering: false`.
 `GET /v1/legion/agents/sessions/<session>` of any session of the project, with the listener's bearer, answers `"answering": false` once that write has landed.
 From then on the listener answers the project's messages as it did before the hand-off existed, a send stored for a session it still knows or a `404`, and a role's message kept for the role's next holder.
-Dispatch reads the same flag before it delivers to a stopped agent, so its deliveries to a stopped agent go back to what they were too.
-One case reads no flag: a message to a role whose newest entry is `released` and not `finished`, which Dispatch keeps for the role's next holder whatever the project says.
+Dispatch reads the same flag before it delivers to a stopped agent, and before it keeps a message for a role the registry holds no entry for (the role read's own `answering`), so its deliveries to a stopped agent and to such a role go back to what they were too.
+One case reads no flag: a message to a role whose newest entry is `released`, which Dispatch keeps for the role's next holder whatever the project says.
 No earlier daemon writes to the bucket, so that `false` stands until this release runs again.
 A hand-off the listener published before the write waits on the stream for this release's durable consumer, which no earlier daemon opens.
 

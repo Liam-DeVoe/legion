@@ -11,15 +11,18 @@ import (
 )
 
 // sjawhar/legion#2230. A role whose holder is gone because the Legion daemon released the role's
-// idle issue pod - the registry's newest entry for the role token is `released` and not
-// `finished` - is coming back: the daemon resumes the same session on the next wake of the role.
-// A person's message to it is kept for that next holder rather than failed, whether or not the
-// project's daemon answers for its stopped agents, since no daemon answers this one: Dispatch
-// publishes it on the role's topic through the listener's publish route, which keeps it on the
-// role's kept lane and wakes the role, and records the attempt taken. Every other role keeps what
-// it did before: the finished role's newest session takes the message while its project answers,
-// and a role whose claim is not released, or is released with its issue finished, or is finished
-// with its project not answering, keeps the listener's no-holder answer.
+// idle issue pod - the registry's newest entry for the role token is `released`, finished or not -
+// is coming back: the daemon resumes the same session on the next wake of the role. A person's
+// message to it is kept for that next holder rather than failed, whether or not the project's
+// daemon answers for its stopped agents, since no daemon answers this one: Dispatch publishes it
+// on the role's topic through the listener's publish route, which keeps it on the role's kept lane
+// and wakes the role, and records the attempt taken. A role whose newest entry is not released
+// goes to that entry's session while its project answers, whether its issue has left the workflow
+// or not (D2), and keeps the listener's no-holder answer while its project does not answer.
+//
+// The controls of D2's rows are the code before it, which kept a released role only while its
+// entry was not finished and sent a role to its newest session only once that entry was finished:
+// there "not released" and "released and finished" both fail "no holder for role ...".
 func TestRoleMessageToAReleasedRoleIsKeptForItsNextHolder(t *testing.T) {
 	noHolder := "no holder for role " + registeredRole
 	roleTarget := "role:" + registeredRole
@@ -51,12 +54,22 @@ func TestRoleMessageToAReleasedRoleIsKeptForItsNextHolder(t *testing.T) {
 			name: "released, and the listener kept nothing", released: true, publishAnswer: http.StatusNotFound,
 			wantState: model.DeliveryStateFailed, wantFailure: noHolder, published: true,
 		},
-		{name: "not released", wantState: model.DeliveryStateFailed, wantFailure: noHolder},
+		{
+			name:      "not released",
+			wantState: model.DeliveryStateSent, wantSession: stoppedNewest, wantEnvelope: "handed-off-",
+		},
+		{
+			name: "not released, its project not answering", notAnswering: true,
+			wantState: model.DeliveryStateFailed, wantFailure: noHolder,
+		},
 		{
 			name: "finished", finished: true,
 			wantState: model.DeliveryStateSent, wantSession: stoppedNewest, wantEnvelope: "handed-off-",
 		},
-		{name: "released and finished", finished: true, released: true, wantState: model.DeliveryStateFailed, wantFailure: noHolder},
+		{
+			name: "released and finished", finished: true, released: true,
+			wantState: model.DeliveryStateQueued, wantEnvelope: "kept-", published: true,
+		},
 		{
 			name: "finished, its project not answering", finished: true, notAnswering: true,
 			wantState: model.DeliveryStateFailed, wantFailure: noHolder,

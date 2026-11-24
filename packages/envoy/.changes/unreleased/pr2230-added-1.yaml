@@ -2,7 +2,7 @@ kind: Added
 body: |-
   The listener hands a message for a stopped Legion agent to the agent's daemon instead of
   refusing it. A send to a session with no live registration, a role publish with no
-  live holder whose role is finished, and an agent-subject message on the bus that no session
+  live holder, and an agent-subject message on the bus that no session
   takes — whether the stopped agent left an interest row naming the delivering listener, which
   every agent that ran on one leaves and which outlives its session record, or left none — are
   published to
@@ -28,16 +28,17 @@ body: |-
   `PUT /v1/legion/projects/{legion_project}` `{answering, updated_at}`, stored as
   `project.<legion_project>` in the `legion_agents` bucket.
 
-  A role is handed off only while the registry's newest entry for its token says `finished`:
-  its issue has left the workflow - closed or done, parked, or its tree retired or lingering
-  after a close - so no next holder of that role is coming. A role whose issue still runs keeps
-  the 202 it had before (`kept: true`, `kept_reason: unclaimed`): the gap between two
-  phase workers of one issue and a pod being replaced both leave a role unclaimed for a while,
-  and the message is the next worker's. The new entry field `finished` is a boolean the registry
-  stores and the entry routes take, absent and false for every writer that does not state it;
-  the Legion daemon sets it from the issue's state it records and writes the entry again
-  whenever that state changes, in either direction. A send addressed to a session id is
-  unchanged: that session has stopped, and the message is for it, not for a role.
+  A role is handed off to the registry's newest entry for its token whether that entry's issue
+  has left the workflow or not: a worker that failed, or that the workflow or an operator
+  suspended, has stopped with the role unclaimed, and its daemon answers the role's message from
+  that worker's conversation, as it does for a finished role's last worker. A role the registry
+  holds no entry for keeps the 202 it had before (`kept: true`, `kept_reason: unclaimed`), for the
+  role's first holder. The new entry field `finished` (whether the issue has left the workflow -
+  closed or done, parked, or its tree retired or lingering after a close) is a boolean the
+  registry stores and the entry routes take, absent and false for every writer that does not
+  state it; the Legion daemon sets it from the issue's state it records and writes the entry again
+  whenever that state changes, in either direction, and no hand-off reads it. A send addressed to
+  a session id is unchanged: that session has stopped, and the message is for it, not for a role.
 time: 2026-11-08T10:00:00.000000000Z
 custom:
     Issue: pr2230

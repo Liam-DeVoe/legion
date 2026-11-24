@@ -106,16 +106,17 @@ func (g *answerGate) Running(token claim.Token, session string) bool {
 // it (a later generation) that runs nothing any more: the process the start began has ended.
 //
 // A claim suspended by idle release (supervise.Claim.Released) answers true though it runs
-// nothing. The loop answers for three states alone: a claim the workflow suspended (a parked
-// child, or a tree whose root left the workflow during its linger), one retired, and one closed.
-// A released claim is none of them: the daemon released its idle issue pod and keeps the session,
-// its phase and its pending task, and the next message for it is the wake that brings the pod
-// back and resumes that session (INFRA-945). The listener hands no message for a released session
-// off (the registry's `released`, which the mirror writes as the release suspends the claim), but
-// one can still race that write; answering it here would write into a conversation about to run
-// again and answer in the name of a worker that is coming back. So the loop forwards it to the
-// role topic instead, where a message nobody holds wakes the role's released claim, and offers it
-// again until the resumed worker holds the role.
+// nothing. The loop answers for every other claim that runs nothing: one that failed, one the
+// workflow or an operator suspended (a parked child, or a tree whose root left the workflow during
+// its linger), one retired, and one closed. A released claim is the one it does not answer for:
+// the daemon released its idle issue pod and keeps the session, its phase and its pending task,
+// and the next message for it is the wake that brings the pod back and resumes that session
+// (INFRA-945). The listener hands no message for a released session off (the registry's
+// `released`, which the mirror writes as the release suspends the claim), but one can still race
+// that write; answering it here would write into a conversation about to run again and answer in
+// the name of a worker that is coming back. So the loop forwards it to the role topic instead,
+// where a message nobody holds wakes the role's released claim, and offers it again until the
+// resumed worker holds the role.
 func (g *answerGate) runningLocked(token claim.Token, session string) bool {
 	view, ok := g.view(token)
 	if !ok || view.Session == "" || view.Session != session {

@@ -116,10 +116,11 @@ test("a mention of a role whose pod was released is kept for the role's next ses
   }
 });
 
-// The other half of the rule: a role whose newest entry is not released has no holder coming
-// back on a wake of Dispatch's making, and its message keeps the listener's own no-holder answer,
-// with nothing published and nothing sent.
-test("a message to a role whose entry is not released still fails with no holder", async ({
+// The other half of the rule: a role whose newest entry is not released goes to that entry's
+// session only while its project answers, and this listener's registry answers no `answering`,
+// which reads as a project that does not answer. So its message keeps the listener's own
+// no-holder answer, with nothing published and nothing sent.
+test("a message to a role whose entry is not released, of a project that does not answer, fails with no holder", async ({
   browser,
 }) => {
   const [issue, token] = await plannerRoleOf("Message to an unheld role", false);

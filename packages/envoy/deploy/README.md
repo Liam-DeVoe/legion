@@ -334,8 +334,9 @@ the role's holder, or the session the attempt recorded, which it checks again be
 only on its identity, marked, and with none it refuses the send: the attempt fails at once, and
 its recorded error names these settings. A role no live session holds needs no mark where
 Dispatch's resolution takes the target from the Legion agent registry: it publishes to a role
-whose holder's pod was released, which the listener keeps for that holder, and sends to a
-finished role's stopped agent, which the listener hands to that agent's daemon.
+whose holder's pod was released, or that has no registry entry while its project answers, which
+the listener keeps for that role's next holder, and sends to the role's stopped newest agent,
+whether its issue has left the workflow or not, which the listener hands to that agent's daemon.
 
 - **On Google Cloud:** set Dispatch's `ENVOY_ACCOUNT_GOOGLE_AUDIENCE` to the listener's
   `ENVOY_OIDC_GOOGLE_AUDIENCE`, put the address of Dispatch's VM service account in the listener's

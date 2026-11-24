@@ -226,10 +226,10 @@ func answerLegionAgent(sessions *session.SessionRegistry, agent legionagents.Age
 }
 
 // answerLegionAgents is a listing as a read answers it, reading each project's answering record
-// once however many of the listing's entries it holds.
-func answerLegionAgents(ctx context.Context, registry *legionagents.Store, sessions *session.SessionRegistry, agents []legionagents.Agent) (listenerwire.LegionAgentList, error) {
+// once however many of the listing's entries it holds. projects holds the flags the read has
+// already read, by project, and gains each one this reads.
+func answerLegionAgents(ctx context.Context, registry *legionagents.Store, sessions *session.SessionRegistry, agents []legionagents.Agent, projects map[string]bool) (listenerwire.LegionAgentList, error) {
 	entries := make([]listenerwire.LegionAgentAnswer, len(agents))
-	projects := map[string]bool{}
 	for i, agent := range agents {
 		answering, read := projects[agent.LegionProject]
 		if !read {
@@ -417,7 +417,11 @@ func legionAgentSessionHandler(d *listenerDeps, logger *logging.Logger) http.Han
 }
 
 // legionAgentRoleHandler serves GET /v1/legion/agents/roles/<role_token>: every session of the role
-// token, newest first, the first being its current holder, `[]` when none.
+// token, newest first, the first being its current holder, `[]` when none, and the flag the role
+// token's own project last stated in its answering record, entries or none
+// (listenerwire.LegionRoleAgentList). The edge answers that flag only for a role whose issue is of
+// one of its token's projects (edgeScope.showsIssue), the rule it shows the role's entries by, and
+// false for any other.
 func legionAgentRoleHandler(d *listenerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -440,17 +444,27 @@ func legionAgentRoleHandler(d *listenerDeps) http.HandlerFunc {
 			writeLegionAgentError(w, err)
 			return
 		}
-		agents, err = edgeScopeOf(r, nil).agentsConfirmed(ctx, d.sessions, agents)
+		scope := edgeScopeOf(r, nil)
+		agents, err = scope.agentsConfirmed(ctx, d.sessions, agents)
 		if err != nil {
 			writeLegionAgentError(w, err)
 			return
 		}
-		list, err := answerLegionAgents(ctx, registry, d.sessions, agents)
+		project, issue := legionagents.RoleTokenParts(token)
+		answering, projects := false, map[string]bool{}
+		if scope.showsIssue(issue) {
+			if answering, err = legionProjectAnswers(ctx, registry, project); err != nil {
+				writeLegionAgentError(w, err)
+				return
+			}
+			projects[project] = answering
+		}
+		list, err := answerLegionAgents(ctx, registry, d.sessions, agents, projects)
 		if err != nil {
 			writeLegionAgentError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, list)
+		writeJSON(w, http.StatusOK, listenerwire.LegionRoleAgentList{LegionAgentList: list, Answering: answering})
 	}
 }
 
@@ -486,7 +500,7 @@ func legionAgentsHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFu
 				writeLegionAgentError(w, err)
 				return
 			}
-			list, err := answerLegionAgents(ctx, registry, d.sessions, agents)
+			list, err := answerLegionAgents(ctx, registry, d.sessions, agents, map[string]bool{})
 			if err != nil {
 				writeLegionAgentError(w, err)
 				return

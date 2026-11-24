@@ -303,18 +303,17 @@ func (s *roleSend) deliveredHeld(ctx context.Context, recipient string, seq uint
 	s.delivered(outcome)
 }
 
-// noHolder answers a role with no live holder. A Legion role whose issue is finished - closed,
-// parked, or its tree retired, so no next holder of the role is coming - and whose daemon
-// answers for it takes the message through that daemon (handOffToLegion), answered 200 with the
-// stopped agent's session as recipient: nothing would ever drain a copy kept for that role,
-// while the daemon answers this one now from the stopped agent's own conversation. It raises no
-// refusal exception either, since nothing was refused. A hand-off whose publish failed is
-// answered as any publish the bus refused is.
+// noHolder answers a role with no live holder. A Legion role whose newest session is not released
+// and whose daemon answers for it takes the message through that daemon (handOffToLegion),
+// answered 200 with the stopped agent's session as recipient, whether the role's issue has left
+// the workflow or not: that agent has stopped, failed or been suspended with the role unclaimed,
+// and the daemon answers this message now from its own conversation. It raises no refusal
+// exception either, since nothing was refused. A hand-off whose publish failed is answered as any
+// publish the bus refused is.
 //
-// A role whose issue still runs hands off nothing, whatever the registry names: the gap between
-// two phase workers of one issue, and a pod being replaced, both leave the role unclaimed for a
-// while, and the message is the next holder's, so it is kept below as it was before the hand-off
-// existed (INFRA-514).
+// A role the registry holds no entry for, one whose newest session is released, and one whose
+// project does not answer hand off nothing, so the message is kept below as it was before the
+// hand-off existed (INFRA-514).
 //
 // For a state the listener keeps for (roleKeepable: a role nobody claims, and a claim whose
 // holder is not live), and while this send's own keep flag asks for it, it keeps the message for
@@ -598,16 +597,17 @@ func (s *roleSend) settledBeforeForward(ctx context.Context, entry session.Sessi
 // sendRequestBudget of arrived as GET /v1/roles/<role> reads it, and gives that route's answers:
 // a role with no live holder - no claim, or a claim whose holder is not live - is kept for the
 // role's next live holder and answered 202 while keep asks for it, the request's own keep field,
-// true when it set none (roleKeepable), else 404 unclaimed or holder_lapsed (noHolder), unless a
-// finished Legion role's daemon takes it first (handOffToLegion), which optedOutOfHandoff, the
-// body's "handoff": false, turns off; and for a resolution that failed the lookup's 503 or 500
-// (unresolved). The first attempt forwards to that holder without reading the claim again; every
-// other attempt resolves the holder again, so a holder that relaunched under a new session between
-// attempts gets the next one. On those attempts an unclaimed role is answered as the first
-// resolution answers it, since the claim itself is gone; a holder that stopped answering keeps its
-// claim and fails that attempt only, as a read that failed does, so a holder that comes back inside
-// the window still gets the message, and a send whose window ends on such attempts is a 504 that
-// kept nothing: the sender is told the send failed for the holder its first resolution read live.
+// true when it set none (roleKeepable), else 404 unclaimed or holder_lapsed (noHolder), unless the
+// daemon of the role's newest Legion session takes it first (handOffToLegion), which
+// optedOutOfHandoff, the body's "handoff": false, turns off; and for a resolution that failed the
+// lookup's 503 or 500 (unresolved). The first attempt forwards to that holder without reading the
+// claim again; every other attempt resolves the holder again, so a holder that relaunched under a
+// new session between attempts gets the next one. On those attempts an unclaimed role is answered
+// as the first resolution answers it, since the claim itself is gone; a holder that stopped
+// answering keeps its claim and fails that attempt only, as a read that failed does, so a holder
+// that comes back inside the window still gets the message, and a send whose window ends on such
+// attempts is a 504 that kept nothing: the sender is told the send failed for the holder its first
+// resolution read live.
 // Each attempt forwards the same envelope, under the role forward's dedupe key and under one
 // Nats-Msg-Id, the key and the holder's subject (bus.ForwardMsgID), and waits what is left of the
 // send, at most roleForwardTimeout, for the stream's acknowledgement that it stored it; that

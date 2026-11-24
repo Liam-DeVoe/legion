@@ -188,16 +188,17 @@ type sendOutcome struct {
 // queues itself for a targeted message to that session (mayQueueForUnknownSession). A send to
 // such a session that the listener only stores (dispatchenvoy.SendStateStopped) settles the same
 // way. Such a send carries no role mark, whatever its route: the registry names a role's session
-// only once the role's issue has finished (registeredAgent), so no next holder of the role is
-// coming, and the listener hands the send to the agent's daemon on its session id, which needs no
-// Dispatch identity. The send is marked whenever the target was not redirected, and that includes
-// a role's stopped session the registry named: a recheck of the session pinned on the attempt
-// (mentionResolutionFor, messageDeliveryRoute, renewMessageDeliveryClaim) that finds the
-// listener's own record of it, a known-session record among them, names no redirect. While no
+// only while no live session holds the role, that newest entry is not released and its project
+// answers (unheldRoleTarget), and the listener hands the send to the agent's daemon on its session
+// id, which needs no Dispatch identity. The send is marked whenever the target was not redirected,
+// and that includes a role's stopped session the registry named: a recheck of the session pinned
+// on the attempt (mentionResolutionFor, messageDeliveryRoute, renewMessageDeliveryClaim) that finds
+// the listener's own record of it, a known-session record among them, names no redirect. While no
 // session holds the role live, the listener then offers the marked send to the role's daemon on
-// the role token before it keeps anything (handOffOrKeepRoleSend in cmd/listener), so a finished
-// role's message reaches the daemon either way; a session that holds the role live, one that took
-// the role over among them, has the message kept for it instead.
+// the role token before it keeps anything (handOffOrKeepRoleSend in cmd/listener), so such a role's
+// message reaches the daemon either way, whether its issue has left the workflow or not; a session
+// that holds the role live, one that took the role over among them, has the message kept for it
+// instead.
 //
 // A role kept for its next holder (target.redirect.keepForRole) is published on the role's topic
 // rather than sent (publishForRole).
@@ -238,8 +239,8 @@ func (s *server) sendResolvedDelivery(
 	// none, which reads as connected. A kept send names no state and is sent (above).
 	queued := send.State == dispatchenvoy.SendStateStopped
 	// The registry named this session only so that its daemon would answer the message
-	// (registeredAgent), and a send the listener hands to that daemon answers no state, never
-	// stopped (listenerwire.SendResponse.State). Stopped is the listener storing the
+	// (registeredAgent, unheldRoleTarget), and a send the listener hands to that daemon answers no
+	// state, never stopped (listenerwire.SendResponse.State). Stopped is the listener storing the
 	// message for a session it still knows (#2643) because it handed it to no daemon - the
 	// project said it stopped answering after the registry was read, say. It settles as the 404
 	// above does, with the listener's own answer for the route, as with no registry: a mention

@@ -975,7 +975,8 @@ func TestRoleAndIssueAgentsDecodeTheListing(t *testing.T) {
 		call  func(*Client) ([]listenerwire.LegionAgentAnswer, error)
 	}{
 		{"by role token", "/v1/legion/agents/roles/legion-acme-acme-448-reviewer", "", func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
-			return c.RoleAgents(context.Background(), "legion-acme-acme-448-reviewer")
+			role, err := c.RoleAgents(context.Background(), "legion-acme-acme-448-reviewer")
+			return role.Entries, err
 		}},
 		{"by issue", "/v1/legion/agents", "issue=ACME-448", func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
 			return c.IssueAgents(context.Background(), "ACME-448")
@@ -1006,13 +1007,40 @@ func TestRoleAndIssueAgentsDecodeTheListing(t *testing.T) {
 	}
 }
 
+// RoleAgents reads the role read's own `answering` beside its entries: the flag the role token's
+// project last stated, which an empty list carries too, and false where the listener leaves it out,
+// as one that predates the field does. The control is the same listing answering true, which reads
+// true.
+func TestRoleAgentsReadTheRolesAnsweringFlag(t *testing.T) {
+	for _, tc := range []struct {
+		body    string
+		entries int
+		want    bool
+	}{
+		{`{"entries":[],"answering":true}`, 0, true},
+		{`{"entries":[` + legionAgentRow + `],"answering":true}`, 1, true},
+		{`{"entries":[],"answering":false}`, 0, false},
+		{`{"entries":[]}`, 0, false},
+	} {
+		listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		role, err := New(listener.URL).RoleAgents(context.Background(), "legion-acme-acme-448-reviewer")
+		listener.Close()
+		if err != nil || role.Entries == nil || len(role.Entries) != tc.entries || role.Answering != tc.want {
+			t.Fatalf("%s: role = %#v, %v; want %d entries and answering %t", tc.body, role, err, tc.entries, tc.want)
+		}
+	}
+}
+
 // A listing the listener does not answer with a 200, or answers with a body that does not decode,
 // or that cannot be reached, is ErrUnavailable: never an empty list a caller would take for no
 // agents.
 func TestRoleAndIssueAgentsReportAnyOtherAnswerAsUnavailable(t *testing.T) {
 	calls := map[string]func(*Client) ([]listenerwire.LegionAgentAnswer, error){
 		"RoleAgents": func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
-			return c.RoleAgents(context.Background(), "legion-acme-acme-448-reviewer")
+			role, err := c.RoleAgents(context.Background(), "legion-acme-acme-448-reviewer")
+			return role.Entries, err
 		},
 		"IssueAgents": func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
 			return c.IssueAgents(context.Background(), "ACME-448")

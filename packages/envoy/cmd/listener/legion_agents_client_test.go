@@ -16,8 +16,8 @@ import (
 // Dispatch's listener client (internal/dispatch/envoy) reads the Legion agent registry through the
 // real listener mux over real NATS, so the two sides' shapes are one: what the daemon's batch write
 // records, the client's Agent, RoleAgents and IssueAgents read back, with live, answering and the
-// replacement the listener derives, an unknown session as ErrNotFound and an issue with no agents
-// as none.
+// replacement the listener derives, the role read's own answering flag for a role with entries and
+// one with none, an unknown session as ErrNotFound and an issue with no agents as none.
 func TestDispatchClientReadsTheLegionAgentRegistry(t *testing.T) {
 	l := newLegionListener(t, setupPublishTestClient(t))
 	server := httptest.NewServer(l.mux)
@@ -48,15 +48,18 @@ func TestDispatchClientReadsTheLegionAgentRegistry(t *testing.T) {
 	}
 
 	reviewers, err := client.RoleAgents(ctx, "legion-infra-infra-448-reviewer")
-	if err != nil || len(reviewers) != 2 {
-		t.Fatalf("role agents = %#v, %v", reviewers, err)
+	if err != nil || len(reviewers.Entries) != 2 || !reviewers.Answering {
+		t.Fatalf("role agents = %#v, %v; want the two reviewers, their project answering", reviewers, err)
 	}
-	if current := reviewers[0]; current.SessionID != "ses-new-reviewer" || !current.Live || !current.Answering ||
+	if current := reviewers.Entries[0]; current.SessionID != "ses-new-reviewer" || !current.Live || !current.Answering ||
 		current.ReplacedBy != nil || current.ReplacedAt != nil {
 		t.Fatalf("the current reviewer = %#v, want the live new reviewer, not replaced", current)
 	}
-	if reviewers[1].SessionID != "ses-old-reviewer" || reviewers[1].Live {
-		t.Fatalf("the replaced reviewer = %#v", reviewers[1])
+	if reviewers.Entries[1].SessionID != "ses-old-reviewer" || reviewers.Entries[1].Live {
+		t.Fatalf("the replaced reviewer = %#v", reviewers.Entries[1])
+	}
+	if mergers, err := client.RoleAgents(ctx, "legion-infra-infra-448-merger"); err != nil || mergers.Entries == nil || len(mergers.Entries) != 0 || !mergers.Answering {
+		t.Fatalf("a role with no agents = %#v, %v; want none, its project answering", mergers, err)
 	}
 
 	agents, err := client.IssueAgents(ctx, "INFRA-448")

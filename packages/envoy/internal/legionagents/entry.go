@@ -156,6 +156,18 @@ func RoleToken(project, issue, role string) string {
 	return "legion-" + project + "-" + strings.ToLower(issue) + "-" + role
 }
 
+// RoleTokenParts reads a role token ValidateRoleToken accepts back to the Legion project token and
+// the issue key RoleToken built it from: legion-<legion_project>-<issue lower-cased>-<role>, where
+// neither the project token nor the issue's project holds a hyphen (roleTokenPattern). A token of
+// any other shape reads as neither.
+func RoleTokenParts(token string) (project, issue string) {
+	parts := strings.Split(strings.TrimPrefix(token, "legion-"), "-")
+	if len(parts) != 4 {
+		return "", ""
+	}
+	return parts[0], strings.ToUpper(parts[1]) + "-" + parts[2]
+}
+
 // Validate refuses an entry the registry does not store. Both writes, one entry and a batch, refuse
 // through it, so they refuse the same entries.
 func Validate(entry Entry) error {

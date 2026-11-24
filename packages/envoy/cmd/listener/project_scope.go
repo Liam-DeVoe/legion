@@ -267,6 +267,17 @@ func (s *edgeScope) topics(sessionID string, topics []string) []string {
 	return edgeShownTopics(s.repositories, s.projects, sessionID, topics)
 }
 
+// showsIssue reports whether the scope shows what a read says of issue: an issue of one of its
+// projects, the first rule showsAgentConfirmed holds an entry to. The role read answers its role
+// token's project's answering flag by it (legionAgentRoleHandler). A nil scope shows every issue.
+func (s *edgeScope) showsIssue(issue string) bool {
+	if s == nil {
+		return true
+	}
+	project, ok := contracts.IssueProject(issue)
+	return ok && slices.Contains(s.projects, project)
+}
+
 // showsAgentConfirmed reports whether the scope shows a Legion agent registry entry with the agent's session confirmed by its stored record: the
 // issue the entry works is of one of the scope's projects, and the entry's session is a session of
 // that issue's project, confirmed by its stored record (sessionInProject, through

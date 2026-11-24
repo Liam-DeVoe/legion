@@ -190,8 +190,9 @@ func TestAConnectedOnlySendToAReleasedRoleIsNotKept(t *testing.T) {
 // is queued as ever ("the listener stored the send for a stopped session" above).
 //
 // Each send is made on its own route, a role's included, and carries no role mark: the registry
-// names a role's session only once the role's issue has finished, and the listener hands a send to
-// that session to the agent's daemon on its session id, which needs no Dispatch identity. A client
+// names a role's session only while no live session holds the role, its newest entry is not
+// released and its project answers, and the listener hands a send to that session to the agent's
+// daemon on its session id, which needs no Dispatch identity. A client
 // that presents no identity, as this one, refuses a marked send outright
 // (envoy.ErrNoListenerIdentity). A recheck that finds the listener's record of that session names
 // no redirect, and its send is marked; the listener hands that one off on the role token

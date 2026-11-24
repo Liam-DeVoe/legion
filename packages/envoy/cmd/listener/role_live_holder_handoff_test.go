@@ -17,9 +17,9 @@ import (
 // holder's: a person's resumed or forked session that took the role over reads it. So the send
 // route keeps it on the role's kept lane for the live holder (keepRoleSend, #4387's keep, which
 // hands the lane to whoever holds the role now) and hands nothing to the stopped session's daemon:
-// 202 kept, and no hand-off. The hand-off is for a finished role that no one holds
-// (TestADispatchSendMarkedWithAFinishedRoleIsHandedToItsDaemonAndNotKept), whose next holder is
-// not coming; a live holder is.
+// 202 kept, and no hand-off. The hand-off is for a role that no one holds live
+// (TestADispatchSendMarkedWithAStoppedRoleIsHandedToItsDaemonWhetherOrNotItsIssueFinished), finished
+// or not; a live holder reads the message itself.
 func TestAMarkedSendToAFinishedRoleThatAnotherSessionHoldsLiveIsKeptForThatHolder(t *testing.T) {
 	rig := newKnownSessionRig(t)
 	const principal = "system:serviceaccount:dispatch:example-dispatch"

@@ -797,13 +797,13 @@ const senderStampReadTimeout = 1 * time.Second
 // 403 naming the field, before anything is read. Taken, the mark rides the envelope, and the
 // role's claim is read before the target (answerRoleSend): a claim naming the target sends as
 // above, and a claim naming another session, or none, keeps the message for a session that holds
-// the role live and answers 202 kept, and with no live holder hands it to a finished Legion
-// role's daemon and answers 200 with its newest session as recipient (handOffToLegion on the role
-// token), or else keeps it for the role's next live holder and answers 202 kept
-// (handOffOrKeepRoleSend), so the role's message never lands on the subject of a session that no
-// longer holds the role, unless the send asked connected_only, which is the 409 a stopped target
-// gives, with nothing kept. A claim read that did not answer is the bus-unavailable 503, and so is
-// a resolution of the holder it names that did not answer.
+// the role live and answers 202 kept, and with no live holder hands it to the daemon of the role's
+// newest Legion session, finished or not, and answers 200 with that session as recipient
+// (handOffToLegion on the role token), or else keeps it for the role's next live holder and
+// answers 202 kept (handOffOrKeepRoleSend), so the role's message never lands on the subject of a
+// session that no longer holds the role, unless the send asked connected_only, which is the 409 a
+// stopped target gives, with nothing kept. A claim read that did not answer is the bus-unavailable
+// 503, and so is a resolution of the holder it names that did not answer.
 func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		record := &requestRecord{logger: logger, line: "listener send", laneKey: "target_session"}

@@ -253,8 +253,8 @@ type DepsInput struct {
 	// send marked with a role (envoy.ErrNoListenerIdentity): a send for a role route to a session
 	// it resolved for the role, the role's holder or the session the attempt recorded. What it
 	// sends for a role no live session holds whose target the Legion agent registry named - a
-	// publish for a released holder, a send to a finished role's stopped agent - carries no mark
-	// (sendResolvedDelivery).
+	// publish for a released holder or a role's first holder, a send to the role's stopped newest
+	// agent - carries no mark (sendResolvedDelivery).
 	EnvoyGoogleAudience string
 	// EnvoyTimeout replaces the listener client's window. Zero keeps the client's own default;
 	// a test exercising a receipt timeout sets a short one rather than waiting that out.
