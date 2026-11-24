@@ -50,9 +50,11 @@ var typeMigrations = []string{
 // legion-envoy-v34.11.8, every release before legion-envoy-v34.12.0, which carries that migration,
 // holds 20261121060636_search_document_text as its newest migration and none after it, so a
 // deployment may have run the backfill over a store at this version. Those releases do not hold
-// every migration this tree numbers below it (unreleasedVersionsBelowTheBackfill). Every type
-// migration of typeMigrations is numbered below it; one numbered above it runs over graph_nodes
-// and graph_tuples the backfill may have filled.
+// every migration this tree numbers below it (unreleasedVersionsBelowTheBackfill), the backfill's
+// four indexes (20261119020700 to 20261119021000) among them, which came with a later release: the
+// runner applies every version it has not recorded, so this tree's MigrateThrough builds them here
+// too (openAtTheBackfill). Every type migration of typeMigrations is numbered below it; one
+// numbered above it runs over graph_nodes and graph_tuples the backfill may have filled.
 const backfillVersion = 20261121060636
 
 // unreleasedVersionsBelowTheBackfill is every version this tree numbers below backfillVersion that
@@ -74,7 +76,8 @@ const backfillVersion = 20261121060636
 // numbered above backfillVersion.
 var unreleasedVersionsBelowTheBackfill = []int{
 	20261116015042, 20261116015056, 20261116094058, 20261116094059, 20261116094100, 20261116094101,
-	20261117002006, 20261117002045, 20261117093337, 20261118161237, 20261121034242,
+	20261117002006, 20261117002045, 20261117093337, 20261118161237, 20261119020700, 20261119020800,
+	20261119020900, 20261119021000, 20261121034242,
 }
 
 // releasedThroughTheBackfill is how many migrations each v34.11.x release holds, all of them
@@ -83,7 +86,9 @@ const releasedThroughTheBackfill = 290
 
 // openAtTheBackfill is a store this tree's runner migrated through backfillVersion and no further:
 // the store a deployment of those releases holds before it runs the backfill, and the store the type
-// migrations before the backfill left.
+// migrations before the backfill left, with the backfill's four indexes beside it. Those are
+// indexes alone, so they change no row this test writes or reads, and the backfill this test runs
+// is this tree's (graphcensus.Backfill), which refuses to run without them.
 func openAtTheBackfill(t *testing.T) *store.Store {
 	t.Helper()
 	return storetest.OpenFrom(t, fmt.Sprintf("this tree's runner through %d (openAtTheBackfill)", backfillVersion), func(databaseURL string) error {
