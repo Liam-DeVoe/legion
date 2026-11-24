@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -23,8 +22,6 @@ type PodReplacement struct {
 	Issue  string
 	PodUID string
 	Record []byte
-	// Age is how long ago the row was written, by the database's clock.
-	Age time.Duration
 }
 
 // RecordPodReplacement writes the record of issue's replacement of podUID, or writes it again over
@@ -50,7 +47,7 @@ func (s *Store) RecordPodReplacement(ctx context.Context, project, issue, podUID
 func (s *Store) PodReplacements(ctx context.Context, project string) ([]PodReplacement, error) {
 	var standing []PodReplacement
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `select issue, pod_uid, record::text, extract(epoch from now() - written_at)::float8
+		rows, err := tx.Query(ctx, `select issue, pod_uid, record::text
 			from pod_replacements where project = $1 order by written_at, issue, pod_uid`, project)
 		if err != nil {
 			return err
@@ -58,14 +55,13 @@ func (s *Store) PodReplacements(ctx context.Context, project string) ([]PodRepla
 		defer rows.Close()
 		for rows.Next() {
 			var (
-				r       PodReplacement
-				record  string
-				seconds float64
+				r      PodReplacement
+				record string
 			)
-			if err := rows.Scan(&r.Issue, &r.PodUID, &record, &seconds); err != nil {
+			if err := rows.Scan(&r.Issue, &r.PodUID, &record); err != nil {
 				return err
 			}
-			r.Record, r.Age = []byte(record), time.Duration(seconds*float64(time.Second))
+			r.Record = []byte(record)
 			standing = append(standing, r)
 		}
 		return rows.Err()

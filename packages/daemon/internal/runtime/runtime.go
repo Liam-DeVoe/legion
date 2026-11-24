@@ -268,18 +268,6 @@ type LaunchTakes func(ctx context.Context, taken TakenPod) error
 // a notice the store does not take now stays on the daemon's record (LaunchTakes) until it does.
 type LaunchTook func(ctx context.Context, taken TakenPod)
 
-// PodTakenReader says whether a replacement of an issue's pod podUID has taken it, from the
-// runtime's own record and without waiting for the pod's launch turn: taken is true where the
-// runtime holds no Sandbox of the issue, where the Sandbox is suspended, and where it holds
-// another pod or none; it is false where the Sandbox runs podUID as its own pod. read is false
-// where the runtime cannot say. The daemon asks it of a replacement it recorded before the runtime
-// acted (internal/daemon's finishReplacements): a replacement whose call failed, or whose daemon
-// stopped, after the suspension landed is a replacement made, and one whose pod still runs is none.
-// A runtime whose processes run in no pod implements nothing here.
-type PodTakenReader interface {
-	PodTaken(issue, podUID string) (taken, read bool)
-}
-
 // Takes is what a destructive act on an issue's pod takes, which says what shows the act made
 // (ActReader): the pod (TakesPod), or the kept volume the issue's Sandbox owns (TakesVolume).
 type Takes string
@@ -314,11 +302,15 @@ const (
 )
 
 // ActReader reads whether a recorded act on issue's pod was made (GPT-6.1 Sol's point 2 on #5285
-// at fa9deb04). It takes the pod's launch turn without waiting for it, so no act on the pod runs
-// while it reads, and answers ErrTurnBusy, calling nothing, where another holds the turn. Under the
-// turn it reads the target from the cluster's API, never from a store that may be stale, and hands
-// decide what that says (ActState); decide runs under the turn, and its error is the answer. A
-// read that fails is the answer too, and decide is not called.
+// at fa9deb04, INFRA-341's reviewer's point A). It takes the pod's launch turn without waiting for
+// it, so no act on the pod runs while it reads, and answers ErrTurnBusy, calling nothing, where
+// another holds the turn. Under the turn it reads the target from the cluster's API, never from a
+// store that may be stale, and hands decide what that says (ActState); decide runs under the turn,
+// and its error is the answer. A read that fails is the answer too, and decide is not called. The
+// daemon asks it of a replacement it recorded before the runtime acted (internal/daemon's
+// finishReplacements): a replacement whose call failed, or whose daemon stopped, after its act
+// landed is a replacement made, and one whose pod still runs is none. A runtime whose processes run
+// in no pod implements nothing here.
 type ActReader interface {
 	ReadAct(ctx context.Context, issue string, act RecordedAct, decide func(context.Context, ActState) error) error
 }

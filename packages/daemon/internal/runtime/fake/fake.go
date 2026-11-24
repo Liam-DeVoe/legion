@@ -28,7 +28,6 @@ var (
 	_ runtime.WorkspaceWorkReader = (*Runtime)(nil)
 	_ runtime.PodWorkspaceReader  = (*Runtime)(nil)
 	_ runtime.IssueVolumeReader   = (*Runtime)(nil)
-	_ runtime.PodTakenReader      = (*Runtime)(nil)
 	_ runtime.ActReader           = (*Runtime)(nil)
 )
 
@@ -139,7 +138,7 @@ type Runtime struct {
 	// onRead runs at the start of every WorkspaceWork and PodWorkspaceWork, with no lock of the
 	// fake held (OnWorkspaceWork).
 	onRead func()
-	// took is every pod a ReplacePod replaced, which PodTaken answers taken from then on, as the
+	// took is every pod a ReplacePod replaced, which ReadAct answers taken from then on, as the
 	// Sandbox runtime answers a pod its replacement's suspension took. ReplacePod and
 	// ReplaceIssuePod read nothing of it, so a test that replaces the same pod again is answered
 	// as before.
@@ -889,31 +888,42 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 	return nil
 }
 
-// PodTaken is the Sandbox runtime's answer of whether a replacement took the issue's pod podUID:
-// taken where a ReplacePod replaced it (took), where its Sandbox stands suspended over it
-// (suspendedOver), where a replacement by issue or a launch replaced it (replaced), and where
-// IssuePod answers another pod or none for the issue (ScriptIssuePod); not taken otherwise, an
-// issue no ScriptIssuePod named included. It records no call.
-func (r *Runtime) PodTaken(issue, podUID string) (bool, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, gone := r.replaced[podUID]; gone || r.took[podUID] || r.suspendedOver[podUID] {
-		return true, true
-	}
-	if pod, read := r.issuePods[issue]; read {
-		now, live := r.podNow(pod)
-		return !live || now != podUID, true
-	}
-	return false, true
-}
-
-// ReadAct satisfies runtime.ActReader as PodTaken answers.
+// ReadAct is the Sandbox runtime's read of whether a recorded act on the issue's pod was made
+// (runtime.ActReader). It takes the pods' launch turn without waiting (turn), and answers
+// runtime.ErrTurnBusy, calling nothing, where a launch or a replacement by issue holds it, as the
+// Sandbox runtime answers a turn another holds. Under the turn, an act that takes the pod
+// (runtime.TakesPod) is made where a ReplacePod replaced the target (took), and where the issue's
+// Sandbox no longer holds it (podGone); it is not made otherwise. It records no call, and decide
+// runs with mu free.
 func (r *Runtime) ReadAct(ctx context.Context, issue string, act runtime.RecordedAct, decide func(context.Context, runtime.ActState) error) error {
+	if !r.turn.TryLock() {
+		return runtime.ErrTurnBusy
+	}
+	defer r.turn.Unlock()
+	if act.Takes != runtime.TakesPod {
+		return fmt.Errorf("fake runtime: no act takes %q", act.Takes)
+	}
+	r.mu.Lock()
 	state := runtime.ActNotMade
-	if taken, _ := r.PodTaken(issue, act.Target); taken {
+	if r.took[act.Target] || r.podGone(issue, act.Target) {
 		state = runtime.ActMade
 	}
+	r.mu.Unlock()
 	return decide(ctx, state)
+}
+
+// podGone is whether the issue's Sandbox no longer holds pod: the fake replaced it by issue or at a
+// launch (replaced), a replacement's suspension landed over it (suspendedOver), or IssuePod answers
+// another pod or none for the issue (ScriptIssuePod). An issue no ScriptIssuePod named is taken to
+// hold it. Called with mu held.
+func (r *Runtime) podGone(issue, pod string) bool {
+	_, gone := r.replaced[pod]
+	gone = gone || r.suspendedOver[pod]
+	if held, read := r.issuePods[issue]; read {
+		now, live := r.podNow(held)
+		gone = gone || !live || now != pod
+	}
+	return gone
 }
 
 // ReplaceIssuePod plays the Sandbox runtime's own order, as ReplacePod does: it waits where that
@@ -938,13 +948,7 @@ func (r *Runtime) ReplaceIssuePod(ctx context.Context, issue, podUID string, due
 	defer r.turn.Unlock()
 	call := Call{Issue: issue, PodUID: podUID}
 	r.mu.Lock()
-	_, gone := r.replaced[podUID]
-	gone = gone || r.suspendedOver[podUID]
-	if pod, read := r.issuePods[issue]; read {
-		now, live := r.podNow(pod)
-		gone = gone || !live || now != podUID
-	}
-	if gone {
+	if r.podGone(issue, podUID) {
 		call.Method = "ReplaceIssuePodNoPod"
 		r.calls = append(r.calls, call)
 		r.mu.Unlock()

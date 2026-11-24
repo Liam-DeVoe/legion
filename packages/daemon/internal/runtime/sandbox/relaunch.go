@@ -1580,19 +1580,37 @@ func (r *Runtime) lockPod(ctx context.Context, sandbox string) (func(), error) {
 // takeTurn waits for key's turn in turns, a map r.mu guards, until ctx ends; the returned func
 // gives the turn back.
 func (r *Runtime) takeTurn(ctx context.Context, turns map[string]chan struct{}, key string) (func(), error) {
-	r.mu.Lock()
-	turn, ok := turns[key]
-	if !ok {
-		turn = make(chan struct{}, 1)
-		turns[key] = turn
-	}
-	r.mu.Unlock()
+	turn := r.turnOf(turns, key)
 	select {
 	case turn <- struct{}{}:
 		return func() { <-turn }, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// tryTurn takes key's turn in turns where no one holds it now, without waiting: free is false,
+// and nothing is taken, where another holds it (ReadAct). The returned func gives the turn back.
+func (r *Runtime) tryTurn(turns map[string]chan struct{}, key string) (release func(), free bool) {
+	turn := r.turnOf(turns, key)
+	select {
+	case turn <- struct{}{}:
+		return func() { <-turn }, true
+	default:
+		return nil, false
+	}
+}
+
+// turnOf is key's turn in turns, a map r.mu guards, made where it is not there yet.
+func (r *Runtime) turnOf(turns map[string]chan struct{}, key string) chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	turn, ok := turns[key]
+	if !ok {
+		turn = make(chan struct{}, 1)
+		turns[key] = turn
+	}
+	return turn
 }
 
 // jsonPatchOp is one RFC 6902 operation.

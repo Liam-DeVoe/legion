@@ -1986,7 +1986,7 @@ func (s *supervision) roundPodEndsAtLaunch(ctx context.Context, token claim.Toke
 	if !ok {
 		return s.keepAtLaunch(issue, round, token, "the record of the replacement cannot be written")
 	}
-	s.replacedAtLaunch(issue, round, readRoundEnd(group, round, clock), read, recorded)
+	s.replacedAtLaunch(issue, round, replacedLaunch{ended: readRoundEnd(group, round, clock), read: read, record: recorded})
 	s.log.Info("supervise: no role process runs in the pod of this update round, and nothing holds the pod; the launch replaces the pod and starts its role in a new pod",
 		append([]any{"issue", issue, "round", round, "pod", podUID, "claim", token}, read.attrs()...)...)
 	return true, nil
@@ -2017,17 +2017,22 @@ func (s *supervision) keepAtLaunch(issue, round string, token claim.Token, why s
 }
 
 // launchRound is what the launches into one issue's pod decided of the update round open over that
-// pod (roundPodEndsAtLaunch), as podUpdateLaunchReplaced keeps it for the issue: the round, whether
-// a launch replaced its pod, what the launch read of the round's end, what the pod's launcher read
-// of the workspace when it did and the record of that replacement (roundRecordOf), and each claim
-// whose launch into the pod the hook kept the pod for.
+// pod (roundPodEndsAtLaunch), as podUpdateLaunchReplaced keeps it for the issue: the round, the
+// launch's replacement of its pod, nil where no launch replaced it, and each claim whose launch into
+// the pod the hook kept the pod for.
 type launchRound struct {
 	round    string
-	replaced bool
-	ended    roundEnd
-	read     workspaceRead
-	record   []byte
+	replaced *replacedLaunch
 	kept     map[claim.Token]bool
+}
+
+// replacedLaunch is a launch's replacement of a round's pod as the round's own
+// (roundPodEndsAtLaunch): what the launch read of the round's end, what the pod's launcher read of
+// the workspace before it, and the replacement's record (recordRoundReplacement).
+type replacedLaunch struct {
+	ended  roundEnd
+	read   workspaceRead
+	record []byte
 }
 
 // launchRecord runs write on the record podUpdateLaunchReplaced keeps of round for the issue, in
@@ -2046,13 +2051,10 @@ func (s *supervision) launchRecord(issue, round string, write func(*launchRound)
 	write(at)
 }
 
-// replacedAtLaunch keeps that a launch replaced round's pod as the round's own replacement, with
-// ended, what the launch read of the round's end, read, what the pod's launcher read of the
-// workspace before it, and recorded, the replacement's record (podUpdateLaunchReplaced).
-func (s *supervision) replacedAtLaunch(issue, round string, ended roundEnd, read workspaceRead, recorded []byte) {
-	s.launchRecord(issue, round, func(at *launchRound) {
-		at.replaced, at.ended, at.read, at.record = true, ended, read, recorded
-	})
+// replacedAtLaunch keeps that a launch replaced round's pod as the round's own replacement, launch
+// (podUpdateLaunchReplaced).
+func (s *supervision) replacedAtLaunch(issue, round string, launch replacedLaunch) {
+	s.launchRecord(issue, round, func(at *launchRound) { at.replaced = &launch })
 }
 
 // launchKept is whether roundPodEndsAtLaunch kept round's pod for token's launch into it.
@@ -2063,17 +2065,16 @@ func (s *supervision) launchKept(issue, round string, token claim.Token) bool {
 	return at != nil && at.round == round && at.kept[token]
 }
 
-// launchReplaced is whether a launch replaced round's pod as the round's own replacement, what
-// that launch read of the round's end, what the pod's launcher read of the workspace before it, and
-// the replacement's record (podUpdateLaunchReplaced).
-func (s *supervision) launchReplaced(issue, round string) (roundEnd, workspaceRead, []byte, bool) {
+// launchReplaced is the launch's replacement of round's pod as the round's own replacement, and
+// whether a launch made one (podUpdateLaunchReplaced).
+func (s *supervision) launchReplaced(issue, round string) (replacedLaunch, bool) {
 	s.podUpdateLaunchMu.Lock()
 	defer s.podUpdateLaunchMu.Unlock()
 	at := s.podUpdateLaunchReplaced[issue]
-	if at == nil || at.round != round || !at.replaced {
-		return roundEnd{}, workspaceRead{}, nil, false
+	if at == nil || at.round != round || at.replaced == nil {
+		return replacedLaunch{}, false
 	}
-	return at.ended, at.read, at.record, true
+	return *at.replaced, true
 }
 
 // forgetLaunchRound drops what podUpdateLaunchReplaced keeps of round for the issue: the sweep has
@@ -2118,10 +2119,10 @@ func (s *supervision) forgetLaunchRounds(byIssue map[string][]supervise.Claim) {
 // The read and the record are kept in memory, and the record in the store too: a daemon that
 // restarts between the launch and the sweep finishes the replacement from the store's record
 // (finishReplacements), as the round's own, from the read the launcher made before it.
-func (s *supervision) endRoundALaunchReplaced(ctx context.Context, issue string, group []supervise.Claim, round string, ended roundEnd, read workspaceRead, recorded []byte) {
+func (s *supervision) endRoundALaunchReplaced(ctx context.Context, issue string, group []supervise.Claim, round string, launch replacedLaunch) {
 	told := s.noticeGroup(group)
-	s.roundReplaced(ctx, issue, round, strings.TrimPrefix(round, supervise.PodRoundPrefix), roundReasons(told, round), ended,
-		lostClaims(told, round), read, told, recorded)
+	s.roundReplaced(ctx, issue, round, strings.TrimPrefix(round, supervise.PodRoundPrefix), roundReasons(told, round), launch.ended,
+		lostClaims(told, round), launch.read, told, launch.record)
 }
 
 // viewedGroup is every claim of the issue a round weighs, as the store names them and as each
@@ -2456,8 +2457,8 @@ func (s *supervision) podWentWithoutItsRound(ctx context.Context, issue string, 
 // of the last end, which each caller words for the reading that found the pod gone, with the
 // issue, the round and the pod.
 func (s *supervision) endRoundWhosePodWent(ctx context.Context, issue string, group []supervise.Claim, round, pod, over string) {
-	if ended, read, recorded, replaced := s.launchReplaced(issue, round); replaced {
-		s.endRoundALaunchReplaced(ctx, issue, group, round, ended, read, recorded)
+	if launch, replaced := s.launchReplaced(issue, round); replaced {
+		s.endRoundALaunchReplaced(ctx, issue, group, round, launch)
 		return
 	}
 	if len(lostClaims(group, round)) > 0 {

@@ -11,10 +11,11 @@ package daemon
 // workspace made before the act. Once the act is made the record goes, in the transaction that
 // queues the issue's architect's workspace-taken notice where the read found work or failed
 // (finishReplacement), so the notice is queued exactly once whatever fails or stops between. A
-// record still standing at a sweep is one whose call failed or whose daemon stopped: the sweep asks
-// the runtime whether the pod was taken (runtime.PodTakenReader), and finishes a replacement whose
-// suspension landed from the read made before it, never from a new read, and never as a keep, or
-// forgets one whose pod still runs (finishReplacements).
+// record still standing at a sweep is one whose call failed or whose daemon stopped: the sweep has
+// the runtime read whether the act was made, under the pod's launch turn and from the cluster's API
+// (runtime.ActReader), and finishes a replacement whose suspension landed from the read made
+// before it, never from a new read, and never as a keep, or forgets one whose pod still runs
+// (finishReplacements).
 
 import (
 	"context"
@@ -205,32 +206,34 @@ func (s *supervision) recordLaunchTakes(ctx context.Context, taken runtime.Taken
 	return s.supervisor.store.RecordPodReplacement(ctx, s.plan.project, taken.Issue, taken.PodUID, recorded)
 }
 
-// launchRecordGrace is how many launch bounds (runtime.Runtime.LaunchBound) a launch's record
-// stands before a sweep finishes it (finishReplacements): the launch that wrote it finishes it once
-// its act is made, well inside one bound, and a record older than two was left by a launch that
-// stopped, or whose finish the store refused.
-const launchRecordGrace = 2
-
 // finishReplacements finishes, at the start of a sweep, every record of a replacement that a call
-// or a daemon left standing (store.Store.PodReplacements), from the runtime's own record of the pod
-// (runtime.PodTakenReader), and answers the issues whose round's record still stands, which the
-// walk decides nothing of at this sweep: a round there must neither read a pod its replacement took
-// again, nor keep it, nor end as a pod that went without its round (GPT-6.1 Sol's point 1).
-// claims is the sweep's snapshot.
+// or a daemon left standing (store.Store.PodReplacements), from the runtime's read of the act
+// (runtime.ActReader), and answers the issues whose round's record still stands, which the walk
+// decides nothing of at this sweep: a round there must neither read a pod its replacement took
+// again, nor keep it, nor end as a pod that went without its round (GPT-6.1 Sol's point 1 at
+// 0259f8af). claims is the sweep's snapshot.
 //
-//   - A launch's own record stands for launchRecordGrace launch bounds: until then the launch that
-//     wrote it may still be running, and it finishes the record itself (tellLaunchTook).
+// The runtime reads each act under the pod's launch turn, from the cluster's API (GPT-6.1 Sol's
+// point 2 on #5285 at fa9deb04, INFRA-341's reviewer's point A). Every act a record names is made
+// under that turn: a launch's own replacement (recordLaunchTakes, then tellLaunchTook), a launch's
+// replacement as the round's own (roundPodEndsAtLaunch), and a round's replacement by the
+// runtime's call, whose last word comes under it (recordedDue). So a turn another holds is an act
+// that may be under way, and its record stands for a later sweep; a turn that is free is one under
+// which no act of the record's runs, and what the runtime reads then is how the act ended. A record
+// is forgotten under that turn, in a short write that waits for no turn.
+//
 //   - A round's record that a launch made as the round's own (viaLaunch) is the walk's to finish,
 //     while this daemon remembers that launch (launchReplaced, endRoundALaunchReplaced).
-//   - A pod the runtime cannot read the state of leaves the record standing.
-//   - A pod that is not taken — the issue's Sandbox runs it as its own — had no act made over it:
-//     the record is forgotten, and the round decides again in this sweep's walk, from a new read.
-//   - A pod that is taken was taken by the recorded replacement: its suspension landed, whether or
-//     not the call answered so. The round ends as that replacement, from the read made before it
+//   - A turn another holds, a read that fails, and an act the runtime cannot say was made leave
+//     the record standing.
+//   - An act not made — the issue's Sandbox runs the pod as its own — is forgotten, and the round
+//     decides again in this sweep's walk, from a new read.
+//   - An act made was made by the recorded replacement: its suspension landed, whether or not the
+//     call answered so. The round ends as that replacement, from the read made before it
 //     (roundReplaced), with the members that had not answered named, and the architect is told
 //     what it took. A launch's record tells the architect from the launch's own read.
 //
-// A runtime that answers no PodTaken leaves every record standing; such a runtime replaces no pod.
+// A runtime that reads no act leaves every record standing; such a runtime replaces no pod.
 func (s *supervision) finishReplacements(ctx context.Context, claims []supervise.Claim) (map[string]bool, error) {
 	standing, err := s.supervisor.store.PodReplacements(ctx, s.plan.project)
 	if err != nil {
@@ -248,40 +251,36 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 			continue
 		}
 		ofRound := rec.Round != ""
-		if !ofRound && r.Age < launchRecordGrace*s.runtime.LaunchBound() {
-			continue
-		}
 		if ofRound && rec.By == viaLaunch.String() {
-			if _, _, _, replaced := s.launchReplaced(r.Issue, rec.Round); replaced {
+			if _, replaced := s.launchReplaced(r.Issue, rec.Round); replaced {
 				continue
 			}
 		}
-		taken, read := s.podTaken(r.Issue, r.PodUID)
+		attrs := []any{"issue", r.Issue, "pod", r.PodUID, "round", rec.Round}
+		state, err := s.readAct(ctx, r)
 		switch {
-		case !read:
-			s.log.Info("supervise: the runtime cannot say whether a recorded replacement took the issue's pod; its record stands",
-				"issue", r.Issue, "pod", r.PodUID, "round", rec.Round)
+		case errors.Is(err, runtime.ErrTurnBusy):
+			s.log.Info("supervise: an act on the issue's pod holds its launch turn; the record of a replacement of the pod stands for a later sweep", attrs...)
 			held[r.Issue] = held[r.Issue] || ofRound
-		case !taken:
-			if _, err := s.supervisor.store.ForgetPodReplacement(ctx, s.plan.project, r.Issue, r.PodUID, r.Record); err != nil {
-				if ctx.Err() == nil {
-					s.log.Error("supervise: forget the record of a replacement whose pod still runs; it stands",
-						"issue", r.Issue, "pod", r.PodUID, "round", rec.Round, "error", err)
-				}
-				held[r.Issue] = held[r.Issue] || ofRound
-				continue
+		case err != nil:
+			if ctx.Err() == nil {
+				s.log.Error("supervise: read whether a recorded replacement took the issue's pod, or forget the record of one that took nothing; its record stands",
+					append(attrs, "error", err)...)
 			}
-			s.log.Info("supervise: a recorded replacement of the issue's pod took nothing: the pod still runs as the issue's own; its record is forgotten",
-				"issue", r.Issue, "pod", r.PodUID, "round", rec.Round)
+			held[r.Issue] = held[r.Issue] || ofRound
+		case state == runtime.ActUncertain:
+			s.log.Info("supervise: the runtime cannot say whether a recorded replacement took the issue's pod; its record stands", attrs...)
+			held[r.Issue] = held[r.Issue] || ofRound
+		case state == runtime.ActNotMade:
+			s.log.Info("supervise: a recorded replacement of the issue's pod took nothing: the pod still runs as the issue's own; its record is forgotten", attrs...)
 		case !ofRound:
 			taken := rec.taken(r.Issue, r.PodUID)
 			s.finishReplacement(ctx, r.Issue, r.PodUID, r.Record, launchTakenMessage(taken), "claim", taken.Claim, "why", taken.Why)
 		default:
 			told := s.noticeGroup(claimsOf(claims, r.Issue))
-			ended, _, _, _ := s.launchReplaced(r.Issue, rec.Round)
 			s.log.Info("supervise: a recorded replacement of the issue's pod took it, although its call did not answer so; the round ends as that replacement, from the read made before it",
-				"issue", r.Issue, "pod", r.PodUID, "round", rec.Round)
-			if !s.roundReplaced(ctx, r.Issue, rec.Round, r.PodUID, rec.Reasons, ended, lostClaims(told, rec.Round), rec.read(r.PodUID), told, r.Record) {
+				attrs...)
+			if !s.roundReplaced(ctx, r.Issue, rec.Round, r.PodUID, rec.Reasons, roundEnd{}, lostClaims(told, rec.Round), rec.read(r.PodUID), told, r.Record) {
 				held[r.Issue] = true
 			}
 		}
@@ -289,12 +288,22 @@ func (s *supervision) finishReplacements(ctx context.Context, claims []supervise
 	return held, nil
 }
 
-// podTaken is the runtime's answer of whether a replacement took issue's pod (PodTakenReader), and
-// read false where the runtime answers nothing of it.
-func (s *supervision) podTaken(issue, pod string) (taken, read bool) {
-	reader, ok := s.runtime.(runtime.PodTakenReader)
+// readAct is the runtime's read of the act that r records (runtime.ActReader), under the pod's
+// launch turn, where the record is forgotten in the same turn if the act was not made
+// (store.Store.ForgetPodReplacement). A runtime that reads no act answers runtime.ActUncertain.
+func (s *supervision) readAct(ctx context.Context, r store.PodReplacement) (runtime.ActState, error) {
+	reader, ok := s.runtime.(runtime.ActReader)
 	if !ok {
-		return false, false
+		return runtime.ActUncertain, nil
 	}
-	return reader.PodTaken(issue, pod)
+	state := runtime.ActUncertain
+	err := reader.ReadAct(ctx, r.Issue, runtime.RecordedAct{Takes: runtime.TakesPod, Target: r.PodUID}, func(ctx context.Context, read runtime.ActState) error {
+		state = read
+		if read != runtime.ActNotMade {
+			return nil
+		}
+		_, err := s.supervisor.store.ForgetPodReplacement(ctx, s.plan.project, r.Issue, r.PodUID, r.Record)
+		return err
+	})
+	return state, err
 }

@@ -8,7 +8,9 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -17,7 +19,6 @@ import (
 
 var (
 	_ runtime.IssuePodReplacer = (*Runtime)(nil)
-	_ runtime.PodTakenReader   = (*Runtime)(nil)
 	_ runtime.ActReader        = (*Runtime)(nil)
 )
 
@@ -551,44 +552,78 @@ func (r *Runtime) ReplaceIssuePod(ctx context.Context, issue, podUID string, due
 	return r.replaceRoundPod(ctx, name, podUID, due, "issue", issue)
 }
 
-// PodTaken satisfies runtime.PodTakenReader: whether issue's pod podUID has been taken, read from
-// the runtime's stores without the pod's launch turn. It is taken where the issue has no Sandbox,
-// where its Sandbox is Suspended — a replacement's suspension landed, whether or not the pod is
-// still there to see — and where the Sandbox's own pod is another or none; it is not taken where
-// the Sandbox runs podUID as its own pod. A Sandbox name no issue key builds, or a store that
-// cannot be read, answers nothing (read false). The daemon asks it of a replacement it recorded
-// before the runtime acted, whose call failed or whose daemon stopped (internal/daemon's
-// finishReplacements): ReplacePod writes its suspension before it waits for the pod to go
-// (replaceRoundPod), so a call whose wait ran out has taken the pod all the same.
-func (r *Runtime) PodTaken(issue, podUID string) (bool, bool) {
+// ReadAct satisfies runtime.ActReader: whether a recorded act on issue's pod was made, read from
+// the API server under the pod's launch turn (GPT-6.1 Sol's point 2 on #5285 at fa9deb04,
+// INFRA-341's reviewer's point A). The turn is taken without waiting (tryTurn): a launch, a
+// replacement or a release that holds it may be making the act now, so ReadAct answers
+// runtime.ErrTurnBusy and reads nothing. Under the turn no act of this daemon on the pod runs, and
+// the Sandbox and its pod are read from the API server, never from the stores: a store whose feed
+// fails holds what it last heard, a Sandbox Running over a pod whose suspension landed among it.
+// decide runs under the turn. A Sandbox name no issue key builds, and a read that fails, are
+// errors, and decide is not called.
+//
+// An act that takes the pod (runtime.TakesPod, the pod's uid its target) is made where the issue
+// has no Sandbox, where its Sandbox is Suspended — the suspension landed, whether or not the pod is
+// still there to see — and where the Sandbox's own pod is another or none; it is not made where the
+// Sandbox runs the target as its own pod. ReplacePod writes its suspension before it waits for the
+// pod to go (replaceRoundPod), so a call whose wait ran out has taken the pod all the same.
+func (r *Runtime) ReadAct(ctx context.Context, issue string, act runtime.RecordedAct, decide func(context.Context, runtime.ActState) error) error {
 	name, err := issueSandboxName(r.project, issue)
 	if err != nil {
-		return false, false
+		return fmt.Errorf("sandbox runtime: read an act on the pod of %s: %w", issue, err)
 	}
-	u, err := r.storedObject(name)
+	release, free := r.tryTurn(r.podTurns, name)
+	if !free {
+		return runtime.ErrTurnBusy
+	}
+	defer release()
+	state, err := r.actState(ctx, name, act)
 	if err != nil {
-		return false, false
-	}
-	if u == nil {
-		return true, true
-	}
-	if mode, _, _ := unstructured.NestedString(u.Object, "spec", "operatingMode"); mode == modeSuspended {
-		return true, true
-	}
-	pod := r.storedPod(name)
-	return !ownedBy(pod, u.GetUID()) || string(pod.UID) != podUID, true
-}
-
-// ReadAct satisfies runtime.ActReader as PodTaken answers, from the stores and without the pod's
-// launch turn.
-func (r *Runtime) ReadAct(ctx context.Context, issue string, act runtime.RecordedAct, decide func(context.Context, runtime.ActState) error) error {
-	state := runtime.ActUncertain
-	if taken, read := r.PodTaken(issue, act.Target); read && taken {
-		state = runtime.ActMade
-	} else if read {
-		state = runtime.ActNotMade
+		return fmt.Errorf("sandbox runtime: read an act on the pod of %s: %w", issue, err)
 	}
 	return decide(ctx, state)
+}
+
+// actState is what the API server holds now of act on the Sandbox named name (ReadAct).
+func (r *Runtime) actState(ctx context.Context, name string, act runtime.RecordedAct) (runtime.ActState, error) {
+	object, err := r.sandboxClient().Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return runtime.ActMade, nil
+	}
+	if err != nil {
+		return runtime.ActUncertain, fmt.Errorf("read sandbox %s: %w", name, err)
+	}
+	s, err := decodeSandbox(object)
+	if err != nil {
+		return runtime.ActUncertain, err
+	}
+	switch act.Takes {
+	case runtime.TakesPod:
+		if s.mode() == modeSuspended {
+			return runtime.ActMade, nil
+		}
+		pod, err := r.apiPod(ctx, name)
+		if err != nil {
+			return runtime.ActUncertain, err
+		}
+		if ownedBy(pod, s.UID) && string(pod.UID) == act.Target {
+			return runtime.ActNotMade, nil
+		}
+		return runtime.ActMade, nil
+	}
+	return runtime.ActUncertain, fmt.Errorf("no act takes %q", act.Takes)
+}
+
+// apiPod is the pod named name as the API server holds it now, nil where it holds none.
+func (r *Runtime) apiPod(ctx context.Context, name string) (*corev1.Pod, error) {
+	pod, err := r.kube.CoreV1().Pods(r.namespace).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read pod %s: %w", name, err)
+	}
+	return pod, nil
 }
 
 // replaceRoundPod is the act ReplacePod and ReplaceIssuePod share: under the launch turn of the
