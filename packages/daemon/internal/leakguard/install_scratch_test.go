@@ -131,20 +131,31 @@ func TestInstallServedRemovesNothingALinkInTheOldInstallNames(t *testing.T) {
 // fifo at fifo() plainly waits there for its other end, and one that waits so inside
 // programfile.Write holds syscall.ForkLock for reading, so every later fork of this test binary,
 // and every later beforeTheFirstWrite, would wait with it until the binary's deadline. So a run
-// that has not returned within five minutes, or two before the binary's deadline, fails the test
-// there, and before it does, the fifo gets both ends (bothEnds), the run ends, and it is joined. A
-// run that a loaded host makes slow, unpacking and running the check, still returns in time.
+// that has not returned within two minutes of its own, or one before the binary's deadline, fails
+// the test there, and before it does, the fifo gets both ends (bothEnds), the run ends, and it is
+// joined; each later run gets its own two minutes. A run that a loaded host makes slow, unpacking
+// and running the check, still returns in time.
+//
+// bothEnds opens the fifo for reading and writing rather than for reading alone: an open for
+// reading alone, made before the blocked open has returned, can read the fifo's end at once and
+// stop reading while the write is still to come, and it does not release a run that opened the
+// fifo for reading and waits for a writer.
 func returnsWithoutAWriter(t *testing.T, fifo func() string, what string, run func() error) error {
 	t.Helper()
 	done := make(chan error, 1)
 	go func() { done <- run() }()
-	bound := testwait.Bounded(t, 5*time.Minute, 2*time.Minute)
+	bound := testwait.Bounded(t, 2*time.Minute, time.Minute)
 	timer := time.NewTimer(bound)
 	defer timer.Stop()
 	select {
 	case err := <-done:
 		return err
 	case <-timer.C:
+	}
+	select {
+	case err := <-done:
+		return err
+	default:
 	}
 	path := fifo()
 	closeEnds := bothEnds(t, path)
