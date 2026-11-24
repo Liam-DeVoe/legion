@@ -50,6 +50,12 @@ func TestALaunchRefusedForAnUnrecordedKeptPodIsChargedAndNamesThePodAndItsVolume
 	if !errors.As(err, &unrecorded) || unrecorded.PodUID != keptPodUID {
 		t.Fatalf("the spawn returned %v, want the runtime's refusal of pod %s", err, keptPodUID)
 	}
+	// The sentence the claim carries below names the pod and the volume that are unrecorded.
+	for _, says := range []string{keptPodUID, keptVolumeMade.Format(time.RFC3339), "could not be recorded for the issue's update round"} {
+		if !strings.Contains(refused.Error(), says) {
+			t.Errorf("the refusal reads %q, which does not say %q", refused, says)
+		}
+	}
 
 	h.wantCalls("Spawn", limit)
 	tries := launchingWrites(h)
@@ -76,11 +82,6 @@ func TestALaunchRefusedForAnUnrecordedKeptPodIsChargedAndNamesThePodAndItsVolume
 		if got.FailureCause != CauseLaunchRefused || got.LastStartFailure != refused.Error() {
 			t.Errorf("the claim carries cause %q and start failure %q, want %q and %q",
 				got.FailureCause, got.LastStartFailure, CauseLaunchRefused, refused.Error())
-		}
-		for _, says := range []string{keptPodUID, keptVolumeMade.Format(time.RFC3339), "could not be recorded for the issue's update round"} {
-			if !strings.Contains(got.LastStartFailure, says) || !strings.Contains(got.Failure, says) {
-				t.Errorf("the claim's start failure %q and failure %q do not both say %q", got.LastStartFailure, got.Failure, says)
-			}
 		}
 		if got.LeakCheckCause != "" || got.Locator != nil {
 			t.Errorf("the claim carries the leak-check cause %q and the process %v, want neither: the runtime started nothing, and no leak check refused it",

@@ -96,17 +96,16 @@ func TestTheDisksOfAnIssuesPodsArriveWith20261123234016(t *testing.T) {
 	if err := exec(insert, "OTHER-8", "pod-of-this-release", true); err != nil {
 		t.Fatalf("the same pod of another issue: %v", err)
 	}
-	marked, unmarked := true, false
 	for _, refused := range []struct {
 		what  string
 		issue string
 		pod   string
 		mark  *bool
 	}{
-		{"the same issue and pod again", "INFRA-945", "pod-of-this-release", &marked},
-		{"a row with no pod", "INFRA-945", "", &marked},
+		{"the same issue and pod again", "INFRA-945", "pod-of-this-release", new(true)},
+		{"a row with no pod", "INFRA-945", "", new(true)},
 		{"a row with no mark", "INFRA-945", "pod-of-a-later-release", nil},
-		{"a row with neither a kept volume nor a mark", "INFRA-945", "pod-of-a-later-release", &unmarked},
+		{"a row with neither a kept volume nor a mark", "INFRA-945", "pod-of-a-later-release", new(false)},
 	} {
 		if err := exec(insert, refused.issue, refused.pod, refused.mark); err == nil {
 			t.Fatalf("%s was written, want it refused", refused.what)

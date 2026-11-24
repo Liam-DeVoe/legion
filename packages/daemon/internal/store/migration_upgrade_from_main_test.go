@@ -130,27 +130,24 @@ import (
 // dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241, the copy's
 // applied sequence, 20261121170714, the plan of an experiment's draw (20261123165139),
 // dispatch://INFRA-5463's 20261123212127 and dispatch://INFRA-4425's 20261123234016: it names every
-// kind the plan-record list names and its
-// own two, phase_ended among them. The same
-// migration deletes the queued phase_ended rows, the seeded one below among them, and adds
+// kind the plan-record list names and its own two, phase_ended among them. The same migration
+// deletes the queued phase_ended rows, the seeded one below among them, and adds
 // pull_requests.conflict_read and pull_requests.merge_forward, both null on every row it finds.
 // The design news's list, applied after it and after every other version of this list but
 // 20261120012547, 20261120042902, 20261120055717, 20261120144241, 20261121170714, 20261123165139,
 // 20261123212127 and 20261123234016, is the last of them to rewrite outbox_kind_check: it names
-// those kinds and
-// design_changes.
+// those kinds and design_changes.
 // dispatch://INFRA-3178's set-back sequence (20261120012547) is applied after all of these, the
 // design news among them, and before dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241, 20261121170714,
 // 20261123165139, 20261123212127 and 20261123234016. It runs no statement, so it changes nothing on
-// a database
-// main migrated, and it touches no outbox_kind_check.
+// a database main migrated, and it touches no outbox_kind_check.
 // dispatch://INFRA-4108's mark of a launch that had Oh My Pi resume a claim's session by its id
 // (20261120042902) stands above every other version of this list, the design news among them, but
 // dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241, 20261121170714,
 // 20261123165139, 20261123212127 and 20261123234016; it adds claims.agent_resume_generation at its
-// default, 0, on
-// every row it finds, and touches no outbox_kind_check, so it needs no row of its own here.
+// default, 0, on every row it finds, and touches no outbox_kind_check, so it needs no row of its
+// own here.
 // dispatch://INFRA-4729's sequence of each value of the copy of Dispatch's issues (20261120055717)
 // is applied after all of these but five, the design news among them, and touches no
 // outbox_kind_check: it adds columns to dispatch_issues at their defaults, an index on its parent,
@@ -161,14 +158,13 @@ import (
 // The applied sequence of the copy of Dispatch's issues (20261121170714) is applied after all of
 // these but the plan of an experiment's draw (20261123165139), dispatch://INFRA-5463's
 // 20261123212127 and dispatch://INFRA-4425's 20261123234016, and touches no outbox_kind_check: it
-// adds dispatch_issues.applied_seq at its
-// default, 0, on every row it finds. So the design news stays the last word of that check.
-// dispatch://INFRA-5463's clear of the start failure of a claim whose agent is up
-// (20261123212127) is applied after all of these but dispatch://INFRA-4425's 20261123234016 and
-// touches no outbox_kind_check: it empties
-// claims.last_start_failure on every claim stored ready, working or idle, a column this list's
-// 20261029121000 adds and the upgrade applies before it, so it needs no row of its own here
-// (migration_20261123212127_test.go reads it).
+// adds dispatch_issues.applied_seq at its default, 0, on every row it finds. So the design news
+// stays the last word of that check.
+// dispatch://INFRA-5463's clear of the start failure of a claim whose agent is up (20261123212127)
+// is applied after all of these but dispatch://INFRA-4425's 20261123234016 and touches no
+// outbox_kind_check: it empties claims.last_start_failure on every claim stored ready, working or
+// idle, a column this list's 20261029121000 adds and the upgrade applies before it, so it needs no
+// row of its own here (migration_20261123212127_test.go reads it).
 // dispatch://INFRA-4425's record of the disks of an issue's pods (20261123234016) is applied after
 // all of these; the migration creates issue_pod_disks and touches no outbox_kind_check.
 var thisBranchsMigrations = []int{

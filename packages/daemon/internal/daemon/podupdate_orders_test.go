@@ -685,12 +685,7 @@ func orderedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 		} else {
 			pod = rig.retriesInto(refusals, implementer, podUpdatePod)
 		}
-		if atLaunch := rig.rt.CallsOf("ReplaceRoundPodAtLaunch"); len(atLaunch) != 1 || atLaunch[0].Spec.Claim != rig.tokens[implementer] {
-			t.Fatalf("the round's pod was replaced at a launch %+v, want once, by the implementer's", atLaunch)
-		}
-		if pod == podUpdatePod {
-			t.Fatalf("the implementer's launch came up in the round's pod %s, want the pod the launch built in its place", pod)
-		}
+		rig.wantReplacedAtLaunch(implementer, pod)
 		if kind == registeredElsewhere {
 			rig.registerInto(implementer, pod)
 		}
@@ -725,23 +720,17 @@ func firstOfVolumeTo(t *testing.T, end roundPodEnd) *podUpdateRig {
 	rig.awaitRound(implementer, podUpdateRound)
 	rig.awaitAsked(tester, podUpdateRound)
 	rig.signal(tester, "c0ffee")
-	var pod string
 	switch end {
 	case endRecreated:
 		rig.displacedInto(tester, podUpdateReplacementPod)
 		rig.rt.ScriptPodDrift(rig.tokens[tester])
-		pod = rig.retriesInto(refusals, implementer, podUpdateReplacementPod)
+		pod := rig.retriesInto(refusals, implementer, podUpdateReplacementPod)
 		rig.registerInto(implementer, pod)
 		rig.rt.ScriptPodDrift(rig.tokens[implementer])
 	case endAtALaunch:
 		rig.suspendBy(tester, supervise.SuspendedByDaemon)
-		pod = rig.retriesInto(refusals, implementer, podUpdatePod)
-		if atLaunch := rig.rt.CallsOf("ReplaceRoundPodAtLaunch"); len(atLaunch) != 1 || atLaunch[0].Spec.Claim != rig.tokens[implementer] {
-			t.Fatalf("the round's pod was replaced at a launch %+v, want once, by the implementer's", atLaunch)
-		}
-		if pod == podUpdatePod {
-			t.Fatalf("the implementer's launch came up in the round's pod %s, want the pod the launch built in its place", pod)
-		}
+		pod := rig.retriesInto(refusals, implementer, podUpdatePod)
+		rig.wantReplacedAtLaunch(implementer, pod)
 		rig.registerInto(implementer, pod)
 	default:
 		t.Fatalf("end %s is not one this order brings about", end)
@@ -749,6 +738,19 @@ func firstOfVolumeTo(t *testing.T, end roundPodEnd) *podUpdateRig {
 	rig.awaitSwept(implementer, "its round to end", func(c supervise.Claim) bool { return c.UpdateRound == "" })
 	rig.settleAll()
 	return rig
+}
+
+// wantReplacedAtLaunch wants the round's pod replaced once at a launch, by role's (the runtime's
+// ReplaceRoundPodAtLaunch, roundPodEndsAtLaunch), and role's launch to have come up in pod, the
+// pod that launch built in P's place, not in P.
+func (r *podUpdateRig) wantReplacedAtLaunch(role claim.Role, pod string) {
+	r.t.Helper()
+	if pod == podUpdatePod {
+		r.t.Fatalf("the %s's launch came up in the round's pod %s, want the pod the launch built in its place", role, pod)
+	}
+	if atLaunch := r.rt.CallsOf("ReplaceRoundPodAtLaunch"); len(atLaunch) != 1 || atLaunch[0].Spec.Claim != r.tokens[role] {
+		r.t.Fatalf("the round's pod was replaced at a launch %+v, want once, by the %s's", atLaunch, role)
+	}
 }
 
 // wantRoundEnd holds the end of the round over podUpdatePod that orderedTo brought about to the
@@ -1321,12 +1323,7 @@ func suspendedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 		} else {
 			pod = rig.retriesInto(refusals, through, podUpdatePod)
 		}
-		if pod == podUpdatePod {
-			t.Fatalf("the %s's launch came up in the round's pod %s, want the pod the launch built in its place", through, pod)
-		}
-		if atLaunch := rig.rt.CallsOf("ReplaceRoundPodAtLaunch"); len(atLaunch) != 1 || atLaunch[0].Spec.Claim != rig.tokens[through] {
-			t.Fatalf("the round's pod was replaced at a launch %+v, want once, by the %s's", atLaunch, through)
-		}
+		rig.wantReplacedAtLaunch(through, pod)
 	case endPodGone:
 		rig.podGone()
 	case endRecreated:
@@ -1400,11 +1397,11 @@ func (r *podUpdateRig) releases(pod string, release int64, savedAt time.Time, ro
 
 // wakesInto is a wake of role's released claim (wakeFor) that brings the issue's pod back as pod,
 // made at madeAt, where role starts and its agent registers. Every start into a pod asks for the
-// last release's saved work first (sandbox's launchers.start): a pod made after the save takes the
-// bundle and restores it before the role starts, and its launcher reports the restore done
-// (store.TakeWorkspaceBundleForRestore, DeleteRestoredWorkspaceBundle); a pod whose Sandbox owns
-// the issue's kept volume (podUpdateRig.keptSince), made before the save, mounts the volume the
-// work was taken off, so the saved copy is dropped (launcherStarts).
+// last release's saved work first (sandbox's launchers.restoreWorkspace): a pod made after the
+// save takes the bundle and restores it before the role starts, and its launcher reports the
+// restore done (store.TakeWorkspaceBundleForRestore, DeleteRestoredWorkspaceBundle); a pod whose
+// Sandbox owns the issue's kept volume (podUpdateRig.keptSince), made before the save, mounts the
+// volume the work was taken off, so the saved copy is dropped (launcherStarts).
 func (r *podUpdateRig) wakesInto(role claim.Role, pod string, madeAt time.Time) {
 	r.t.Helper()
 	if !r.keptSince.IsZero() {

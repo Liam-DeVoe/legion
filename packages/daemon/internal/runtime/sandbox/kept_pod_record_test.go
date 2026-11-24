@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -16,27 +18,15 @@ import (
 // in the order of the pods' uids: kept_since in RFC 3339, "none" for a pod with none.
 func keptPodRows(t *testing.T, st *store.Store) []string {
 	t.Helper()
-	rows, err := st.Pool().Query(t.Context(), `select pod_uid, kept_since, holds_earlier_work from issue_pod_disks
-		where issue = $1 order by pod_uid`, testTree)
+	rows, err := st.Pool().Query(t.Context(), `select pod_uid || '/'
+		|| coalesce(to_char(kept_since at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'none') || '/'
+		|| case when holds_earlier_work then 'marked' else 'unmarked' end
+		from issue_pod_disks where issue = $1 order by pod_uid`, testTree)
 	if err != nil {
 		t.Fatalf("read the record of the disks of the pods of %s: %v", testTree, err)
 	}
-	defer rows.Close()
-	var got []string
-	for rows.Next() {
-		var pod string
-		var kept *time.Time
-		var marked bool
-		if err := rows.Scan(&pod, &kept, &marked); err != nil {
-			t.Fatalf("read a row of the record of the disks of the pods of %s: %v", testTree, err)
-		}
-		since := "none"
-		if kept != nil {
-			since = kept.UTC().Format(time.RFC3339)
-		}
-		got = append(got, pod+"/"+since+"/"+map[bool]string{true: "marked", false: "unmarked"}[marked])
-	}
-	if err := rows.Err(); err != nil {
+	got, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
 		t.Fatalf("read the record of the disks of the pods of %s: %v", testTree, err)
 	}
 	return got
@@ -148,10 +138,7 @@ func TestAKeptPodTheStoreCannotRecordStartsNoRoleUntilItCan(t *testing.T) {
 
 	fault.Refuse(false)
 	spec = nextGeneration(spec, spec.Generation+1)
-	loc, err := g.r.Spawn(g.ctx, spec)
-	if err != nil {
-		t.Fatalf("the launch once the store answers again = %v, want the role started", err)
-	}
+	loc := g.spawn(spec)
 	if frames := g.sent(spec.Claim); !slices.ContainsFunc(frames, func(f shimwire.Frame) bool {
 		start, ok := f.(shimwire.LauncherStart)
 		return ok && start.Generation == spec.Generation

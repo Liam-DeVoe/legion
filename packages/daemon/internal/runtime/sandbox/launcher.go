@@ -566,13 +566,14 @@ const bundleRestoreBound = 2 * time.Minute
 // run as for any pod.
 //
 // The store runs a write that failed for a reason that passes again, until a run commits or the
-// hop's bound ends (bundleRestoreBound). A call that still fails is logged and answered as a
-// refusal of the role's start (runtime.KeptPodUnrecorded), which relaunch returns before the Start
-// frame is sent and the supervisor charges as a launch failure; the pod is sent nothing, and the
-// next start asks again. That holds for a pod whose volume holds a bundle and for a pod of an issue
-// that has none: a role that ran in a pod the store does not record could leave work on the volume
-// that the round over a later pod of it would name no role for, and the record is in the store so
-// that a daemon restart keeps it too.
+// call's context ends: the hop's bound (bundleRestoreBound) or the start's own deadline, whichever
+// comes first. A call that still fails is answered as a refusal of the role's start
+// (runtime.KeptPodUnrecorded), which relaunch returns before the Start frame is sent and the
+// supervisor logs and charges as a launch failure; the pod is sent nothing, and the next start
+// asks again. That holds for a pod whose volume holds a bundle and for a pod of an issue that has
+// none: a role that ran in a pod the store does not record could leave work on the volume that the
+// round over a later pod of it would name no role for, and the record is in the store so that a
+// daemon restart keeps it too.
 //
 // The call runs at a role's start, after the pod's launcher connected, and that launcher runs after
 // both init containers of the pod. So a kept volume whose init failed never drops the bundle its
@@ -595,12 +596,6 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 	if !session.keptSince.IsZero() && d.keptStart != nil {
 		held, dropped, err := d.keptStart(restoring, issue, podUID, session.keptSince)
 		if err != nil {
-			// A start the daemon's stop or a suspension cut short is no fault of the store's, and
-			// the supervisor charges it nothing, so only a store that failed is logged.
-			if ctx.Err() == nil {
-				d.log.Warn("launcher bundle: the store could not record this pod with its kept volume for the issue's update round, so the role's start is refused before it is sent and the next start asks again; the pod is sent nothing, and a saved workspace bundle of the issue, where there is one, stays in the store",
-					"issue", issue, "launcher", token, "pod", podUID, "volume_created", session.keptSince, "error", err)
-			}
 			return runtime.KeptPodUnrecorded{PodUID: podUID, KeptSince: session.keptSince, Err: err}
 		}
 		if dropped {
