@@ -127,14 +127,14 @@ const (
 
 // projectAdmissionCap is the controller's set_admission_cap: a controller grant, the controller
 // session's or one the operator's bearer minted, sets the cap, and the cap is the operator's when
-// the operator's bearer minted the grant (pauseActor). Its answer is a plugin's
+// the operator's bearer minted the grant (controllerActor). Its answer is a plugin's
 // (AnswerAdmissionCap).
 func (s *server) projectAdmissionCap(w http.ResponseWriter, r *http.Request) {
 	var req ProjectAdmissionCapRequest
-	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r, field{"grantId", req.GrantID}) {
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) {
 		return
 	}
-	if by, ok := s.pauseActor(w, r, req.GrantID, "a change of the admission cap"); ok {
+	if by, ok := s.controllerActor(w, r, req.GrantID, "a change of the admission cap"); ok {
 		s.setAdmissionCap(w, r, AnswerAdmissionCap, admissionCapRoute,
 			intake.AdmissionCapSet{Cap: req.Cap, By: by, Reason: req.Reason, TickID: req.TickID})
 	}
@@ -144,10 +144,10 @@ func (s *server) projectAdmissionCap(w http.ResponseWriter, r *http.Request) {
 // the deployment's cap whoever set the cap it clears. Its answer is a plugin's, as a set's is.
 func (s *server) projectAdmissionCapClear(w http.ResponseWriter, r *http.Request) {
 	var req ProjectAdmissionCapClearRequest
-	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r, field{"grantId", req.GrantID}) {
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) {
 		return
 	}
-	if by, ok := s.pauseActor(w, r, req.GrantID, "a change of the admission cap"); ok {
+	if by, ok := s.controllerActor(w, r, req.GrantID, "a change of the admission cap"); ok {
 		s.changeAdmissionCap(w, r, AnswerAdmissionCap, admissionCapClearRoute,
 			intake.AdmissionCapSet{By: by, Reason: req.Reason, TickID: req.TickID})
 	}

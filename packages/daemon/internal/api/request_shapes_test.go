@@ -72,6 +72,8 @@ var pluginRequests = map[string]reflect.Type{
 	"POST /legion/v1/children/rerun":              reflect.TypeFor[ChildRequest](),
 	"POST /legion/v1/project/pause":               reflect.TypeFor[ProjectPauseRequest](),
 	"POST /legion/v1/project/resume":              reflect.TypeFor[ProjectResumeRequest](),
+	"POST /legion/v1/intake/replay":               reflect.TypeFor[IntakeReplayRequest](),
+	"POST /legion/v1/intake/discard":              reflect.TypeFor[IntakeDiscardRequest](),
 	"POST /legion/v1/project/admission-cap":       reflect.TypeFor[ProjectAdmissionCapRequest](),
 	"POST /legion/v1/project/admission-cap/clear": reflect.TypeFor[ProjectAdmissionCapClearRequest](),
 }
@@ -92,6 +94,8 @@ var routesWithNoPluginBody = map[string]string{
 	"POST /legion/v1/operator/claims/{token}/forget-session": sameBuild + " (`legion claims forget-session`)",
 	"POST /legion/v1/operator/project/pause":                 sameBuild + " (`legion project pause`)",
 	"POST /legion/v1/operator/project/resume":                sameBuild + " (`legion project resume`)",
+	"POST /legion/v1/operator/intake/replay":                 sameBuild + " (`legion intake replay`)",
+	"POST /legion/v1/operator/intake/discard":                sameBuild + " (`legion intake discard`)",
 	"POST /legion/v1/operator/project/admission-cap":         sameBuild + " (`legion project set-admission-cap`)",
 	"POST /legion/v1/operator/project/admission-cap/clear":   sameBuild + " (`legion project clear-admission-cap`)",
 }

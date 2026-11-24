@@ -313,18 +313,16 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 	})
 
-	// The newest narrowing is a row of the table like every other, so the caller below it is
-	// told what it lost: a caller one contract below the highest row, admissionCapContract,
-	// which states that contract in its header as every plugin from shapedAnswersContract on
-	// does, is served at the recorded contract at or below it (recordedContractAtOrBelow),
-	// assignmentPlanContract, so it stands below that row alone and the log holds that row's line
-	// and nothing else. This subtest does not catch a strip applied beside the loop, because it
-	// reads both its expectation and its answer from stateNarrowings; the subtests below, which
-	// name their lines as literals, are what catch that.
-	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
+	// The newest narrowing, the admission cap's, is a row of the table like every other, so the
+	// caller below it is told what it lost: a caller one contract below admissionCapContract,
+	// which states that contract in its header as every plugin from shapedAnswersContract on does,
+	// is served at the recorded contract at or below it (recordedContractAtOrBelow), which stands
+	// above every other row, so the log holds that row's line and nothing else, and the body keeps
+	// `admission.cap` and carries none of the three keys the contract added.
+	t.Run("the admission cap's narrowing writes its own line", func(t *testing.T) {
 		state := populatedState(t)
-		highest := stateNarrowings[len(stateNarrowings)-1].contract
-		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), highest-1)
+		below := admissionCapContract - 1
+		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), below)
 
 		var served struct {
 			Admission map[string]json.RawMessage `json:"admission"`
@@ -334,24 +332,83 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 		for _, key := range []string{"ceiling", "override", "capChanges"} {
 			if _, carried := served.Admission[key]; carried {
-				t.Errorf("the body served to a caller below %d carries `admission.%s`, a key that contract added", highest, key)
+				t.Errorf("the body served to a caller below %d carries `admission.%s`, a key that contract added", admissionCapContract, key)
 			}
 		}
 		if _, carried := served.Admission["cap"]; !carried {
-			t.Errorf("the body served to a caller below %d carries no `admission.cap`, which every contract reads", highest)
+			t.Errorf("the body served to a caller below %d carries no `admission.cap`, which every contract reads", admissionCapContract)
 		}
-		want := narrowingsExpected(state, highest-1)
+		want := narrowingsExpected(state, below)
 		if len(want) != 1 {
-			t.Fatalf("a caller at %d expects the lines %v, want the highest row's alone", highest-1, want)
+			t.Fatalf("a caller at %d expects the lines %v, want the admission cap's row's alone", below, want)
 		}
+		if len(narrowings) != 1 || narrowings[0].Dropped != want[0] {
+			t.Fatalf("the daemon wrote %+v for a caller at %d, want the one line %q", narrowings, below, want[0])
+		}
+	})
+
+	// The repositories narrowing is a row of the table like every other, so the caller below it
+	// is told what it lost: a caller one contract below that row, which states that contract in
+	// its header as every plugin from shapedAnswersContract on does, is served at the recorded
+	// contract at or below it (recordedContractAtOrBelow), so it stands below that row and the
+	// three rows above it, the assignments' plan, the intake's give-ups and the admission cap, and
+	// the log holds those four rows' lines and nothing else. A caller below the give-ups' row alone
+	// is TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps's. This subtest does not catch a
+	// strip applied beside the loop, because it reads both its expectation and its answer from
+	// stateNarrowings; the subtests below, which name their lines as literals, are what catch that.
+	t.Run("the four highest narrowings write their own lines", func(t *testing.T) {
+		state := populatedState(t)
+		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000",
+			podClaims(repositoriesLiveContract-1), repositoriesLiveContract-1)
+
+		if keys, block := repositoriesServed(t, body); slices.Contains(keys, "live") {
+			t.Errorf("the body served to a caller below %d carries `repositories.live`, the block that contract wrote: %s",
+				repositoriesLiveContract, block)
+		}
+		want := narrowingsExpected(state, repositoriesLiveContract-1)
 		if len(narrowings) != len(want) {
 			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
-				len(narrowings), highest-1, len(want), narrowings)
+				len(narrowings), repositoriesLiveContract-1, len(want), narrowings)
 		}
 		for i, line := range narrowings {
 			if line.Dropped != want[i] {
 				t.Errorf("line %d of a caller at %d says it dropped %q, want %q",
-					i, highest-1, line.Dropped, want[i])
+					i, repositoriesLiveContract-1, line.Dropped, want[i])
+			}
+		}
+	})
+
+	// The assignments' plan narrowing is a row of the table like every other, so the caller below
+	// it is told what it lost: a caller one contract below assignmentPlanContract, which states
+	// that contract in its header as every plugin from shapedAnswersContract on does, is served at
+	// the recorded contract at or below it (recordedContractAtOrBelow), OwnerPlanContract, so it
+	// stands below that row and the two rows above it, the intake's give-ups and the admission cap,
+	// and the log holds those three rows' lines and nothing else. This subtest does not catch a
+	// strip applied beside the loop, because it reads both its expectation and its answer from
+	// stateNarrowings; the subtests below, which name their lines as literals, are what catch that.
+	t.Run("the plan narrowing and the two above it write their own lines", func(t *testing.T) {
+		state := populatedState(t)
+		below := assignmentPlanContract - 1
+		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), below)
+
+		for _, row := range assignmentsOf(t, body, "LEGION-209") {
+			if _, carried := row["plan"]; carried {
+				t.Errorf("the body served to a caller below %d carries an assignment's `plan`, the key that contract added: %v",
+					assignmentPlanContract, row)
+			}
+		}
+		want := narrowingsExpected(state, below)
+		if len(want) != 3 {
+			t.Fatalf("a caller at %d expects the lines %v, want the plan row's, the give-ups' row's and the admission cap's row's alone", below, want)
+		}
+		if len(narrowings) != len(want) {
+			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
+				len(narrowings), below, len(want), narrowings)
+		}
+		for i, line := range narrowings {
+			if line.Dropped != want[i] {
+				t.Errorf("line %d of a caller at %d says it dropped %q, want %q",
+					i, below, line.Dropped, want[i])
 			}
 		}
 	})
@@ -519,10 +576,10 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 // band that changes no byte has taken no key, and the log must say nothing of it. Today the
 // bands of the body's own keys do change the bytes, because every state carries
 // `admission.trees`, `wakesWaiting`, `claimsToRefresh`, the mark, `admission.held`,
-// `lowestPluginContract` for these claims and the repositories block, which the band of
-// repositoriesLiveContract writes in contract 152's shape whatever it names, all but
-// withoutRepositoryApps: this state serves no repository, so that band has no `apps` to take and
-// logs nothing.
+// `lowestPluginContract` for these claims, the repositories block, which the band of
+// repositoriesLiveContract writes in contract 152's shape whatever it names, and `intakeGiveUps`,
+// all but withoutRepositoryApps: this state serves no repository, so that band has no `apps` to
+// take and logs nothing.
 func TestAnEmptyStateLogsNoDropOfAKeyItNeverCarried(t *testing.T) {
 	const below = supervise.PodUpdateContract - 1
 	claims := podClaims(below)
