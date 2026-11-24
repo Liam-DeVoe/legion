@@ -19,11 +19,11 @@ import (
 // of each turn. So it gives the steps of an update round's ask (UpdateTask), less its scratch-file
 // step: push, let each subagent and each background job the role started finish or stop it and
 // push what it made, answer, and end the turn. A role whose work finishes after its answer pushes
-// what that work made before it ends that turn. The text goes to role, and the reviewer creates no
-// commit and pushes nothing (its role part), so, as UpdateTask does, its text says so in step 1 and
-// asks no commit or push of what its work made (createsNoCommit). A role whose tool has no
-// ready_for_update is told to do the first two steps, because the pod goes at deletesAt whatever it
-// does.
+// what that work made before it ends that turn. The text goes to role, and commitSteps gives its
+// step 1 and what its step 2 asks of the work the role started, as it does for UpdateTask; a role
+// that creates no commit is asked nothing of work that finishes after its answer. A role whose
+// tool has no ready_for_update is told to do the first two steps, because the pod goes at
+// deletesAt whatever it does.
 //
 // round is the ask's id, the round the role names in its answer: the `legion` tool's
 // ready_for_update takes any round string, and the daemon hands an answer that names the running
@@ -39,12 +39,9 @@ import (
 // and no word that has a second reading.
 func ReleaseTask(role claim.Role, round, issue string, deletesAt time.Time) string {
 	at := deletesAt.UTC().Format(time.RFC3339)
-	push := "1. Push every commit that you want to keep to the branch legion/" + issue + "."
-	made := " Then commit and push what it made."
+	push, made := commitSteps(role, "1. Push every commit that you want to keep to the branch legion/"+issue+".")
 	after := "\n\nIf a subagent or a background job finishes after you answer, commit and push what it made before you end that turn."
 	if createsNoCommit(role) {
-		push = "1. You create no commit, so you push nothing."
-		made = ""
 		after = ""
 	}
 	return fmt.Sprintf(`The daemon releases every pod of this project. It deletes the pod that runs this issue's roles at %[1]s (UTC), and the disk goes with the pod. The disk holds your workspace. The daemon pushes nothing for you. Work that you do not push before %[1]s is lost with the pod.

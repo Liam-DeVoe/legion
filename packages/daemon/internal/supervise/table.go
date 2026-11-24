@@ -306,8 +306,8 @@ type PodUpdateOpen struct {
 // work, so a role that follows the steps answers with nothing of its own running. A role whose
 // work finishes after its answer pushes what that work made and answers again with the same
 // round, which podUpdateSignalled records in place of the first answer. The text goes to role, and
-// the reviewer creates no commit and pushes nothing (its role part), so its text says so in step 1
-// and asks no commit or push of what its work made (createsNoCommit).
+// commitSteps gives its step 1 and what its step 2 asks of the work the role started; a role that
+// creates no commit is asked only to answer again for work that finishes after its answer.
 //
 // The step to answer is the one step a role can be unable to do: the op list its `legion` tool
 // holds is a closed enum compiled into its plugin, and a plugin below PodUpdateContract has no
@@ -328,12 +328,9 @@ type PodUpdateOpen struct {
 // and no word that has a second reading.
 func UpdateTask(role claim.Role, round, reasons string, endsAt time.Time) string {
 	ends := endsAt.UTC().Format(time.RFC3339)
-	push := "1. Push every commit that you want to keep to this issue's branch."
-	made := " Then commit and push what it made."
+	push, made := commitSteps(role, "1. Push every commit that you want to keep to this issue's branch.")
 	after := "If a subagent or a background job finishes after you answer, commit and push what it made. Then call `ready_for_update` again"
 	if createsNoCommit(role) {
-		push = "1. You create no commit, so you push nothing."
-		made = ""
 		after = "If a subagent or a background job finishes after you answer, call `ready_for_update` again"
 	}
 	return "The daemon must replace the pod that runs this issue's roles. " +
@@ -370,12 +367,27 @@ The daemon starts your process again on the new pod, in this same session. The d
 }
 
 // createsNoCommit says whether role creates no commit and pushes nothing: the reviewer, whose
-// handoff is a record on the Dispatch issue (roles/reviewer.md). The update task and the project
-// release's ask (ReleaseTask) ask no commit or push of it. The merger is not one: it makes and
-// pushes the merge of the base forward in merging (roles/merger.md, workflow's mergeForward), and
-// a merge commit it has not pushed when the pod is replaced or deleted is lost with the pod.
+// handoff is a record on the Dispatch issue (roles/reviewer.md). commitSteps gives the steps the
+// update task and the project release's ask (ReleaseTask) ask of it. The merger is not one: it
+// makes and pushes the merge of the base forward in merging (roles/merger.md, workflow's
+// mergeForward), and a merge commit it has not pushed when the pod is replaced or deleted is lost
+// with the pod.
 func createsNoCommit(role claim.Role) bool {
 	return role == claim.RoleReviewer
+}
+
+// commitSteps is step 1 of the update task (UpdateTask) and of the project release's ask
+// (ReleaseTask), and the sentence that ends their step 2, what that step asks of each subagent's
+// and each background job's work, for role. Both texts take them from here, so the two texts hold
+// one rule. A role that creates no commit and pushes nothing (createsNoCommit, its role part) is
+// told so in step 1, and its step 2 asks no commit or push of what its work made. Every other role
+// is given push, the caller's own step 1, which names where its commits go, and its step 2 asks it
+// to commit and push what that work made.
+func commitSteps(role claim.Role, push string) (step1, made string) {
+	if createsNoCommit(role) {
+		return "1. You create no commit, so you push nothing.", ""
+	}
+	return push, " Then commit and push what it made."
 }
 
 // PodUpdateEnded is the update round over for this claim: every update_* field goes, the task the
