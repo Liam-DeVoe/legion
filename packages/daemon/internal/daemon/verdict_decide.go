@@ -87,10 +87,24 @@ func headConclusion(at []verdictDecision) verdict.Conclusion {
 	return verdict.None
 }
 
-// openPullRequestsAt is the number of each open pull request of repository whose head is head, as
-// GitHub lists the pull requests of that commit with the daemon's read token (GET
-// /commits/{sha}/pulls).
+// openPullRequestsAt is the number of each open pull request of repository whose head is head
+// (pullRequestsAt).
 func (w *workflowRuntime) openPullRequestsAt(ctx context.Context, repository ghrepo.Repository, head string) ([]int, error) {
+	pulls, err := w.pullRequestsAt(ctx, repository, head)
+	if err != nil {
+		return nil, err
+	}
+	open := make([]int, 0, len(pulls))
+	for _, pull := range pulls {
+		open = append(open, pull.Number)
+	}
+	return open, nil
+}
+
+// pullRequestsAt is each open pull request of repository whose head is head, with the branch it
+// merges into, as GitHub lists the pull requests of that commit with the daemon's read token (GET
+// /commits/{sha}/pulls).
+func (w *workflowRuntime) pullRequestsAt(ctx context.Context, repository ghrepo.Repository, head string) ([]githubrest.PullRequest, error) {
 	serving := w.repositories.serving(repository)
 	client, err := readClient(ctx, w.tokens, w.githubAPI, serving)
 	if err != nil {
@@ -102,10 +116,10 @@ func (w *workflowRuntime) openPullRequestsAt(ctx context.Context, repository ghr
 	if err != nil {
 		return nil, fmt.Errorf("list the pull requests of %s at %s: %w", serving, head, err)
 	}
-	var open []int
+	var open []githubrest.PullRequest
 	for _, pull := range pulls {
 		if pull.State == "open" && pull.Head.SHA == head {
-			open = append(open, pull.Number)
+			open = append(open, pull)
 		}
 	}
 	return open, nil
@@ -242,11 +256,12 @@ func (w *workflowRuntime) otherProjectsHead(repository ghrepo.Repository, number
 
 // legionHead is what decideVerdict reads of a Legion head in its transaction (legionInputs): the
 // inputs verdict.Decide reads, all but the change's commits, which readCommits reads from GitHub
-// after the transaction, so it holds no connection over a GitHub call; and the base branch the pull
-// request merges into, the change being its compare with the head.
+// after the transaction, so it holds no connection over a GitHub call; the base branch the record
+// holds for the pull request, "" where it holds none; and the issue's default branch.
 type legionHead struct {
-	in   verdict.Inputs
-	base string
+	in            verdict.Inputs
+	recordedBase  string
+	defaultBranch string
 }
 
 // legionInputs is what the record holds of head of issue's pull request pr: the steps of the task
@@ -269,12 +284,7 @@ func (w *workflowRuntime) legionInputs(ctx context.Context, tx pgx.Tx, entry con
 		return legionHead{}, err
 	}
 	read := legionHead{in: verdict.Inputs{Head: head, Legion: true, Steps: make([]verdict.Step, 0, len(steps)), CIReviewer: entry.CIReviewer},
-		base: pr.Base}
-	if read.base == "" {
-		// A pull request recorded before the daemon kept the base, which the next read of it fills:
-		// a Legion pull request is opened onto the issue's default branch.
-		read.base = issue.DefaultBranch
-	}
+		recordedBase: pr.Base, defaultBranch: issue.DefaultBranch}
 	for _, step := range steps {
 		read.in.Steps = append(read.in.Steps, verdict.Step{Type: step.Type})
 		reader := step.Agent
@@ -332,7 +342,8 @@ func checksAt(held record.HeadStates) []verdict.Check {
 const changeUnread = "verdict: the change's commits could not be read, so no commit has a reader"
 
 // readCommits reads the change's commits of read's head where they decide anything: each check of
-// the task reads yes and every review step approved there (verdict.StepsPassed). Each commit's
+// the task reads yes and every review step approved there (verdict.StepsPassed). The change is the
+// compare of the head with the branch the pull request merges into (compareBase). Each commit's
 // makers are the sessions its Omp-Session lines name (ompSessions). Where the commits cannot be read
 // the change is unread, and no commit has a reader (verdict.Inputs.Unread); the line it logs says
 // why.
@@ -340,13 +351,42 @@ func (w *workflowRuntime) readCommits(ctx context.Context, repository ghrepo.Rep
 	if !verdict.StepsPassed(read.in) {
 		return
 	}
-	commits, err := w.changeCommits(ctx, repository, read.base, read.in.Head)
+	base, err := w.compareBase(ctx, repository, number, read)
+	var commits []verdict.Commit
+	if err == nil {
+		commits, err = w.changeCommits(ctx, repository, base, read.in.Head)
+	}
 	if err != nil {
 		read.in.Unread = true
 		w.log.Warn(changeUnread, "repository", repository.String(), "pull_request", number, "head", read.in.Head, "error", err)
 		return
 	}
 	read.in.Commits = commits
+}
+
+// compareBase is the branch pull request number merges into, with which its head's change is
+// compared: the base GitHub lists for it among the open pull requests at the head (pullRequestsAt,
+// the read atHead makes), so a child issue's change leaves out the commits its parent's branch
+// holds; where GitHub lists no such pull request there, the base the record holds; and only where
+// neither names one, the issue's default branch. Where GitHub's list cannot be read and the record
+// holds no base, the base is unknown, and the change is no reading (an error).
+func (w *workflowRuntime) compareBase(ctx context.Context, repository ghrepo.Repository, number int, read *legionHead) (string, error) {
+	pulls, err := w.pullRequestsAt(ctx, repository, read.in.Head)
+	if err != nil {
+		if read.recordedBase != "" {
+			return read.recordedBase, nil
+		}
+		return "", fmt.Errorf("the branch pull request %d merges into: %w", number, err)
+	}
+	for _, pull := range pulls {
+		if pull.Number == number && pull.Base.Ref != "" {
+			return pull.Base.Ref, nil
+		}
+	}
+	if read.recordedBase != "" {
+		return read.recordedBase, nil
+	}
+	return read.defaultBranch, nil
 }
 
 // listedCommit is one commit of the change as GitHub's compare lists it: its id and its message.

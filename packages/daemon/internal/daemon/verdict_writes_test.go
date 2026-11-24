@@ -107,12 +107,21 @@ func (run fakeRun) appID() int64 {
 	return 0
 }
 
-// fakePull is an open pull request of acme/widgets besides pull request 86: its number, head
-// branch and head commit.
+// fakePull is an open pull request of acme/widgets: its number, head branch, head commit and the
+// branch it merges into, main where base is "".
 type fakePull struct {
 	number int
 	ref    string
 	head   string
+	base   string
+}
+
+// baseRef is the branch pull merges into.
+func (pull fakePull) baseRef() string {
+	if pull.base == "" {
+		return "main"
+	}
+	return pull.base
 }
 
 // fakeStatus is one commit status GitHub holds at a head, newest last, with its creator's login and
@@ -152,7 +161,9 @@ type fakeWrite struct {
 // 86's commits, one for each head it stood at (history), oldest first, each made by the
 // implementer's session unless messages gives its message, as GitHub's compare of the base and a
 // head lists them, and none at all where noCommits is set, as GitHub answers a compare it cannot
-// serve; any other pull request named in pulls, whose reads it
+// serve; the branch pull request 86 merges into (base86, main where it is ""), whose tip holds the
+// first parentCommits commits of history, so a compare with that branch lists only the commits after
+// them while a compare with main lists them all; any other pull request named in pulls, whose reads it
 // counts in pullReads; and the open pull requests at a commit (GET /commits/{sha}/pulls): pull
 // request 86 at its head, and each of opened at its own. Each write and each read of pull request
 // 86 is recorded in order. failCreates is how many of the next creates of a check run GitHub
@@ -160,21 +171,23 @@ type fakeWrite struct {
 // 86, made once its head has a success run, still answer `blocked`, as GitHub does while it has
 // not yet counted a new run.
 type verdictGitHub struct {
-	mu          sync.Mutex
-	nextID      int64
-	head86      string
-	history     []string
-	messages    map[string]string
-	noCommits   bool
-	runs        []fakeRun
-	statuses    []fakeStatus
-	writes      []fakeWrite
-	events      []string
-	pulls       map[int]string
-	pullReads   map[int]int
-	opened      []fakePull
-	failCreates int
-	staleReads  int
+	mu            sync.Mutex
+	nextID        int64
+	head86        string
+	base86        string
+	parentCommits int
+	history       []string
+	messages      map[string]string
+	noCommits     bool
+	runs          []fakeRun
+	statuses      []fakeStatus
+	writes        []fakeWrite
+	events        []string
+	pulls         map[int]string
+	pullReads     map[int]int
+	opened        []fakePull
+	failCreates   int
+	staleReads    int
 }
 
 func newVerdictGitHub() *verdictGitHub {
@@ -188,7 +201,7 @@ func pullsAtCommit(commit string, pulls []fakePull) []map[string]any {
 	listed := []map[string]any{}
 	for _, pull := range pulls {
 		if pull.head == commit {
-			listed = append(listed, map[string]any{"number": pull.number, "state": "open", "base": map[string]any{"ref": "main"},
+			listed = append(listed, map[string]any{"number": pull.number, "state": "open", "base": map[string]any{"ref": pull.baseRef()},
 				"head": map[string]any{"ref": pull.ref, "sha": pull.head}})
 		}
 	}
@@ -278,20 +291,26 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 			g.events = append(g.events, "listed the commits of pull request 86")
 			listed, _ := g.commitsTo(g.head86)
 			answer(listed[:min(len(listed), pullCommitsListed)])
-		case r.Method == http.MethodGet && len(parts) == 2 && parts[0] == "compare":
-			base, head, ranged := strings.Cut(parts[1], "...")
-			g.events = append(g.events, "compared "+parts[1])
+		case r.Method == http.MethodGet && len(parts) >= 2 && parts[0] == "compare":
+			// A branch name holds slashes, and GitHub takes BASE...HEAD as it is.
+			spec := strings.Join(parts[1:], "/")
+			base, head, ranged := strings.Cut(spec, "...")
+			g.events = append(g.events, "compared "+spec)
 			if r.Header.Get("Authorization") != "Bearer "+readToken("acme") {
-				t.Errorf("the change %s was compared with %q, want the read token", parts[1], r.Header.Get("Authorization"))
+				t.Errorf("the change %s was compared with %q, want the read token", spec, r.Header.Get("Authorization"))
 			}
 			commits, reached := g.commitsTo(head)
+			base86 := fakePull{base: g.base86}.baseRef()
 			switch {
 			case g.noCommits:
 				http.Error(w, `{"message":"Server Error"}`, http.StatusBadGateway)
 				return
-			case !ranged || base != "main" || !reached:
+			case !ranged || base != "main" && base != base86 || !reached:
 				http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 				return
+			}
+			if base != "main" {
+				commits = commits[min(g.parentCommits, len(commits)):]
 			}
 			page, next := comparePage(r, commits)
 			if next != "" {
@@ -310,7 +329,7 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 				}
 			}
 			g.events = append(g.events, "read pull request 86: "+state)
-			answer(map[string]any{"number": 86, "state": "open", "base": map[string]any{"ref": "main"},
+			answer(map[string]any{"number": 86, "state": "open", "base": map[string]any{"ref": fakePull{base: g.base86}.baseRef()},
 				"head": map[string]any{"ref": "legion/CAPTURE-1", "sha": g.head86}, "mergeable": true, "mergeable_state": state})
 		case r.Method == http.MethodGet && len(parts) == 2 && parts[0] == "pulls":
 			number, _ := strconv.Atoi(parts[1])
@@ -339,7 +358,7 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 			if r.Header.Get("Authorization") != "Bearer "+readToken("acme") {
 				t.Errorf("the pull requests at %s were listed with %q, want the read token", parts[1], r.Header.Get("Authorization"))
 			}
-			answer(pullsAtCommit(parts[1], append([]fakePull{{number: 86, ref: "legion/CAPTURE-1", head: g.head86}}, g.opened...)))
+			answer(pullsAtCommit(parts[1], append([]fakePull{{number: 86, ref: "legion/CAPTURE-1", head: g.head86, base: g.base86}}, g.opened...)))
 		case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "commits" && parts[2] == "check-runs":
 			if r.Header.Get("Authorization") != verdictBearer() {
 				t.Errorf("the check runs of %s were listed with %q, want the verdict token", parts[1], r.Header.Get("Authorization"))
@@ -1774,6 +1793,29 @@ func compares(events []string) []string {
 		}
 	}
 	return compared
+}
+
+// R4: the change is GitHub's compare of the head with the branch its pull request merges into, which
+// the writer reads from the open pull request at the head as GitHub lists it. Here CAPTURE-1 is a
+// child issue: its pull request 86 merges into its parent's branch, legion/CAPTURE-0, whose tip holds
+// commit p1, and its record holds no base, as one recorded before the daemon kept the base. p1 names
+// a session of the reviewer's claim. With the plan implementer reviewer and the reviewer's approve at
+// code, the change is code alone, which the reviewer reads, so the head gets success. A compare with
+// the issue's default branch would count the parent's p1 as the child's, which no agent but its
+// maker read, and write failure.
+func TestLegionVerdictComparesTheHeadWithTheBranchItsPullRequestMergesInto(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingOnPlan(2, "implementer", "reviewer"))
+	rig.github.mu.Lock()
+	rig.github.base86, rig.github.parentCommits = "legion/CAPTURE-0", 1
+	rig.github.history = []string{"p1", "code"}
+	rig.github.messages["p1"] = commitOf(captureReviewerSession)
+	rig.github.mu.Unlock()
+	rig.apply(t, reviewerVerdict("approve", "code", 1))
+	rig.written(t)
+	if _, events := rig.github.recorded(); !slices.Equal(compares(events), []string{"compared legion/CAPTURE-0...code"}) {
+		t.Fatalf("GitHub saw %v, want one compare of legion/CAPTURE-0, the branch pull request 86 merges into, and code", events)
+	}
+	rig.soleRun(t, "code", "success")
 }
 
 // C2: a plan of the steps implementer reviewer has no testing step. There, with each check reading
