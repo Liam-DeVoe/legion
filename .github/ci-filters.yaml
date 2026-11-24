@@ -1535,6 +1535,7 @@ pi_legion_build:
   - 'packages/pi-shared/test/**'
   - 'packages/envoy-client/src/**'
   - 'packages/envoy-client/test/subscribe-answer.ts'
+  - 'packages/envoy-client/test/fake-dispatch.ts'
   - 'packages/cipher-client/**'
   - 'packages/contracts/src/**'
   - 'packages/test-fixtures/src/**'
