@@ -365,8 +365,10 @@ type Notice struct {
 	// is about: the owner of a part's task, which is that task's sub-owner, or a task's own
 	// sub-owner. So it names a task's sub-owner's claim alone (SubOwnerOf), which the validation
 	// holds (validateOutboxPayload). Empty, the notice goes to the architect that owns its issue,
-	// as every notice that names no claim does (the daemon's noticeRecipient). NoticeGoesTo is the
-	// claims a notice reaches either way.
+	// as every notice that names no claim does (the daemon's noticeRecipient). A controller notice
+	// names none: it goes to the project's controller alone, so a copy of a notice for the
+	// controller (ControllerNotice of a Notice) leaves To empty. NoticeGoesTo is the claims
+	// a notice reaches either way.
 	To claim.Token `json:"to,omitempty"`
 	// Failure is why the claim failed, carried by the notices of a claim's failure and by no
 	// other kind (validateOutboxPayload): the hold a phase worker's failed claim puts its issue
@@ -2517,6 +2519,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if err := validateNoticeStopper(value.Kind, value.StoppedBy); err != nil {
 			return err
+		}
+		if value.To != "" {
+			return fmt.Errorf("a %s controller notice names %s as the claim it goes to; a controller notice goes to the project's controller alone and names no claim", value.Kind, value.To)
 		}
 		if value.Kind == ArchitectStalledNotice && value.Reason == "" {
 			return fmt.Errorf("an architect-stalled notice carries the reason that names its arm, the root and what the record says")
