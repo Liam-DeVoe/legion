@@ -245,11 +245,11 @@ func TestAnUnreadableClosedByWritesNoComment(t *testing.T) {
 	t.Parallel()
 	notFound := `{"message":"Not Found"}`
 	for _, tc := range []struct {
-		name     string
-		refusal  *refusal
-		want     Closed
-		failure  string
-		canPass  bool
+		name    string
+		refusal *refusal
+		want    Closed
+		failure string
+		canPass bool
 	}{
 		{name: "the read answers 502", refusal: &refusal{status: http.StatusBadGateway, body: "bad gateway"}, failure: "with 502", canPass: true},
 		{name: "closed_by is null", want: Closed{Unread: ClosedByNull}},
