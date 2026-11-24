@@ -1,9 +1,9 @@
 /**
  * A sideways scroll box a test sizes, an open panel that scrolls down laid out as a browser lays
- * it out, and the `ResizeObserver` that tells a box it changed. happy-dom lays nothing out, so
- * `scrollWidth`, `clientWidth` and `clientHeight` read 0 and `scrollLeft` and `scrollTop` take any
- * number, and its `ResizeObserver` never calls back; a rule that reads them only runs where a test
- * says how big the box is and when that changed.
+ * it out, the `ResizeObserver` that tells a box it changed, and the end of a windowed table's
+ * scroll. happy-dom lays nothing out, so `scrollWidth`, `clientWidth` and `clientHeight` read 0
+ * and `scrollLeft` and `scrollTop` take any number, and its `ResizeObserver` never calls back; a
+ * rule that reads them only runs where a test says how big the box is and when that changed.
  */
 
 import { act } from "@testing-library/react";
@@ -28,6 +28,26 @@ export function layOutScrollBox(element: HTMLElement, box: ScrollBox): void {
       },
     },
     scrollWidth: { configurable: true, get: () => box.scroll },
+  });
+}
+
+/** How long a windowed table waits after its box's last scroll event to mark the scroll ended:
+ *  `@tanstack/virtual-core`'s `isScrollingResetDelay`, 150 ms by default, which `DataTable`
+ *  keeps, as a debounce on the window's own timer. */
+const WINDOW_SCROLL_END_MS = 150;
+
+/** Waits, inside `act`, past the end a windowed table marks after its box's last scroll event.
+ *  That end is a state update of the table's own on a timer, which can fire outside `act` while
+ *  the row reads on or before its cleanup, and React reports it: `DataTable.test.tsx`'s
+ *  screen-reader row failed so once in a loaded run of 3,553 rows ("update outside act in
+ *  Deploys"), and fails so every time with a 300 ms pause after its scroll. A row that scrolls a
+ *  windowed table's box calls this right after its last scroll, so the end lands inside `act`
+ *  whatever the load: timers fire in the order they are due. */
+export async function endWindowScroll(): Promise<void> {
+  await act(() => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, WINDOW_SCROLL_END_MS + 50);
+    return promise;
   });
 }
 
