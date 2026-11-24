@@ -3858,6 +3858,73 @@ test("a bulk Snooze deep in a long list hands the focus to the row that moves up
   }
 });
 
+// The same Snooze by the keys, below the column's width: `x` marks two rows, and `b` opens the
+// bar's Snooze from the row marked last. Its pick gives the focus back to that row (`MultiSelect`)
+// with no scroll: the row is about to fold into Later, and the hand-off hands the reader on to the
+// row after the marked ones, which moves up into the first one's place (R8, and 9feff4e4's "the
+// next row takes the focus with no scroll while the rows still stand"). A card is tall, and the
+// engine's own scroll of one a focus finds partly out of sight moved the list 230 px in card mode
+// and 214 px in the drawer, and the row after them ended at the top edge (the tester's round 16).
+test("a bulk Snooze by x and b focuses no row with a scroll, and the row after the marked ones takes the focus at the first one's place", async () => {
+  const user = userEvent.setup();
+  const rows = Array.from({ length: 20 }, (_, index) =>
+    inboxIssue(`ask-${index + 1}`, `CORE-${index + 1}`, `Question ${index + 1}?`)
+  );
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+    served = served.map((each) => (each.id === id ? { ...each, snoozed_until: until } : each));
+    return { snoozed_until: until };
+  });
+  const getAsk = mockAskReads(rows);
+  // 100 px a row, with the tenth row at the window's top.
+  const laidOut = layRowsOut("[data-inbox-row]", 9);
+  const moves = watchMoves();
+  const { unmount } = renderInbox("/?group=waiting-on");
+  try {
+    await screen.findByText("Question 20?");
+    const [first, last, next] = rowIds().slice(11, 14) as [string, string, string];
+    for (const id of [first, last]) {
+      act(() => rowOf(id).focus());
+      await user.keyboard("x");
+    }
+    await screen.findByText("2 selected");
+    const place = rowOf(first).getBoundingClientRect().top;
+    const asked = moves.focused.length;
+
+    await user.keyboard("b");
+    await user.keyboard("2");
+    await waitFor(() => expect(rowIds()).not.toContain(last));
+    const landing = rowOf(next);
+    await waitFor(() => expect(landing).toHaveFocus());
+    // Every focus the page asked a row to take, from `b` on, asked it with no scroll: the row the
+    // pick gave it back to, and the row the hand-off gave it to.
+    expect(
+      moves.focused
+        .slice(asked)
+        .filter(
+          ({ options, target }) => target.matches("[data-inbox-row]") && !options?.preventScroll
+        )
+        .map(({ target }) => target.getAttribute("data-inbox-row"))
+    ).toEqual([]);
+    expect(landing.getBoundingClientRect().top).toBe(place);
+    // The bar's list kept its highlighted choice in sight inside its own panel as it opened; nothing
+    // else is scrolled.
+    expect(
+      moves.scrolled
+        .filter((element) => element.getAttribute("role") !== "option")
+        .map((element) => element.outerHTML.slice(0, 120))
+    ).toEqual([]);
+  } finally {
+    unmount();
+    moves.restore();
+    laidOut();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
 /** How tall `layRowsDown` draws each row. */
 const LAID_ROW_PX = 100;
 
@@ -10609,6 +10676,56 @@ test("an empty list with no message to say yet takes the focus itself", async ()
     getInbox.mockRestore();
   }
 });
+
+// R8 with the Later band folded: a snooze of the only row the list shows folds it into the band,
+// so the list draws no row, though it still holds one - the snoozed question, counted in "Later
+// (1)" - and its empty message, which says the list holds nothing, is not drawn. The list itself
+// takes the focus, as it does where it has no message to say (above), beside the column and below
+// its width alike, and the Inbox's keys work from there.
+for (const { name, wide } of [
+  { name: "below the column's width", wide: false },
+  { name: "beside the column", wide: true },
+]) {
+  test(`${name} a snooze of the only row shown, with the Later band folded, gives the list itself the focus, where the Inbox's keys still work`, async () => {
+    const user = userEvent.setup();
+    const narrow = wide ? widenToReadingPane() : () => undefined;
+    const only = inboxIssue("ask-a", "CORE-1", "Which approach?");
+    let served: InboxRow[] = [only];
+    const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+    const snoozeAsk = answerAskSnoozes().mockImplementation(
+      async (id, { snoozed_until: until }) => {
+        served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
+        return { snoozed_until: until };
+      }
+    );
+    const getAsk = mockAskReads([only]);
+    const getIssue = mockIssueReads();
+    const { unmount } = renderInbox();
+
+    try {
+      await screen.findByTestId(wide ? "inbox-pane" : "ask-ask-a");
+      act(() => shortRow("ask-a").focus());
+      await user.keyboard("b");
+      await user.keyboard("2");
+      await waitFor(() => expect(rowIds()).toEqual([]));
+      expect(snoozeAsk).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("button", { name: /^Later \(1\)/ })).toBeTruthy();
+      expect(screen.queryByRole("region", { name: "Inbox empty state" })).not.toBeInTheDocument();
+      const list = screen.getByTestId("inbox-list");
+      await waitFor(() => expect(list).toHaveFocus());
+      // The list is no text field, so the Inbox's own keys reach the page from it.
+      await user.keyboard("f");
+      expect(screen.getByRole("searchbox", { name: "Search asks" })).toHaveFocus();
+    } finally {
+      unmount();
+      narrow();
+      getAsk.mockRestore();
+      getInbox.mockRestore();
+      getIssue.mockRestore();
+      snoozeAsk.mockRestore();
+    }
+  });
+}
 
 // ----------------------------------------------------------------------------------------
 // R7 and R11: `a` and Shift+R on the approval request in hand, and the command bar's own actions

@@ -5,6 +5,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { watchMoves } from "../../__tests__/laid-out-rows";
 import { answerAskSnoozes } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import type { InboxRow, IssueDetails } from "../../api/types";
@@ -194,6 +195,45 @@ test("a key with items selected opens the bar's list and returns to where it was
     expect(shortRow("ask-c"), "the bar's list gives the focus back to the row").toHaveFocus();
   } finally {
     view.unmount();
+    reads();
+  }
+});
+
+// A pick gives the focus back there with no scroll. A card is tall, and the engine's own scroll of
+// one partly out of sight moved the list under the reader at the pick (the tester's round 16: 230
+// px in card mode); a snooze that lands hands the reader on itself, and brings the next row into
+// view once the snoozed one has gone (R8).
+test("a pick gives the focus back to the card a key opened the list from with no scroll", async () => {
+  const user = userEvent.setup();
+  const reads = readsOf(ROWS);
+  const landing = Promise.withResolvers<void>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (_id, { snoozed_until: until }) => {
+    await landing.promise;
+    return { snoozed_until: until };
+  });
+  const view = renderInApp(<Inbox />);
+  try {
+    await screen.findByTestId("ask-ask-b");
+    const card = shortRow("ask-b");
+    act(() => card.focus());
+    await user.keyboard("b");
+    const moves = watchMoves();
+    try {
+      await user.keyboard("1");
+      await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(1));
+      expect(card).toHaveFocus();
+      expect(
+        moves.focused.filter(({ target }) => target === card).map(({ options }) => options)
+      ).toEqual([{ preventScroll: true }]);
+    } finally {
+      moves.restore();
+    }
+  } finally {
+    await act(async () => {
+      landing.resolve();
+    });
+    view.unmount();
+    snoozeAsk.mockRestore();
     reads();
   }
 });

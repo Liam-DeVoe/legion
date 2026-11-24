@@ -527,14 +527,19 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // once its narrowing is on - takes it from the trigger's own place, from which the panel around
   // it hands the focus on (`useFocusPlace`), rather than from a list portalled outside that
   // panel; and a snooze whose write folds the row a key opened its menu from takes the focus from
-  // that row, which the Inbox's hand-off reads (R8). A menu whose host's write is out writes
-  // nothing and stays open (`ariaDisabled`).
+  // that row, which the Inbox's hand-off reads (R8). It gives it back with no scroll: the element
+  // held the focus as the list opened, and a host whose pick takes it away hands the focus on
+  // itself - the Inbox's hand-off focuses the row after the snoozed ones with no scroll while
+  // they still stand, and brings it into view once they have gone (`pane-selection.ts`). The
+  // engine's own scroll of a card a key opened the bar's Snooze from, partly out of sight, moved
+  // the list 230 px in card mode at the pick (the tester's round 16). A menu whose host's write is
+  // out writes nothing and stays open (`ariaDisabled`).
   const choose = (value: string) => {
     if (menu !== undefined && ariaDisabled) return;
     setActiveValue(value);
     if (props.mode === "single") {
       onOpenChange(false, "pick");
-      handBack();
+      handBack(undefined, { preventScroll: true });
       props.onPick(value);
       return;
     }

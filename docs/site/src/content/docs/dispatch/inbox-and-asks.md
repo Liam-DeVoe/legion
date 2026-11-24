@@ -53,8 +53,10 @@ are. `l` moves the focus into the right column, and `Escape` brings it back to t
 
 After you snooze, dismiss, approve, request changes on or answer a row, the row after it is
 selected, and it takes the keyboard focus. If no row comes after it, the row before it is
-selected. If no row is left, the focus goes to the list's empty message. This works the same with
-the **Later** band folded or open, where there is no second column, and in the drawer.
+selected. If no row is left, the focus goes to the list's empty message. If every row left is in
+the folded **Later** band, so that no row is shown, the focus goes to the list itself. This works
+the same with the **Later** band folded or open, where there is no second column, and in the
+drawer.
 
 Three things stay in the column until you select another row: a question you had typed an answer
 into, which is shown closed with your text to copy; a question whose answer you sent and the

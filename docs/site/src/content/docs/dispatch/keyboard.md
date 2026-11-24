@@ -136,8 +136,10 @@ agent-message row has no `dispatch://` reference, so `y` does nothing on one eit
 After you snooze, dismiss, approve, request changes on or answer a row, the row after it is
 selected, and it takes the keyboard focus. If no row comes after it, the row before it is
 selected. If no row is left, the focus goes to the list's empty message, and the Inbox's keys still
-work. For ticked rows, the row after the last of them is selected. A dismiss moves on at once. A
-snooze, an approval, a request for changes and an answer move on when Dispatch has saved them.
+work. If every row left is in the folded **Later** band, the focus goes to the list itself, and the
+keys work there too. For ticked rows, the row after the last of them is selected. A dismiss moves
+on at once. A snooze, an approval, a request for changes and an answer move on when Dispatch has
+saved them.
 
 Each control at the head of the right column shows its first key, such as `p` on the priority and
 `b` on **Snooze**.

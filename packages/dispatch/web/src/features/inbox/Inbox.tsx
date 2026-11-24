@@ -2167,6 +2167,13 @@ function InboxBody({
   // a snooze write, a row's own or the bar's, moves to another band in the commit that lets go of
   // them, and the rows an Assign to me, a hand-on, an answer, a decline, a question back or a
   // reply lets go of, which then leave the list where the read no longer lists them there.
+  //
+  // The list draws no row while every row it holds is in a folded band: a snooze of the only row
+  // shown, with the Later band folded, leaves it so. A row is still left - the snoozed one,
+  // counted on the band's toggle - so the list draws no empty message, whose words say it holds
+  // nothing, and the list itself is what a hand-off gives the focus to then (R8,
+  // `pane-selection.ts`), as the empty list is where it has no message to say yet.
+  const drawsNoRow = presented.current.length === 0;
   const list = (
     // With the reading column beside it the list scrolls in itself rather than in the window,
     // so the two columns move independently; the anchor is given that same box, so a refetch
@@ -2176,8 +2183,10 @@ function InboxBody({
     <section
       aria-label="Inbox list"
       className={paneShown ? "min-w-0 flex-1 overflow-y-auto pr-1" : undefined}
+      data-inbox-empty={drawsNoRow ? "" : undefined}
       data-testid="inbox-list"
       ref={listScroller}
+      tabIndex={drawsNoRow ? -1 : undefined}
     >
       <ViewportAnchor
         className="space-y-4"

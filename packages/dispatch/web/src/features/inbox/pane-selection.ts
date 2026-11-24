@@ -32,8 +32,9 @@ interface Neighbours {
   below: string | undefined;
 }
 
-/** The list's empty message, and the empty list itself where it draws no message: what a
- *  hand-off gives the focus to when the reader's action leaves no item (R8). */
+/** The list's empty message; the empty list itself where it draws no message; and the list where
+ *  it draws no row because every row it holds is in a folded band (`Inbox.tsx`): what a hand-off
+ *  gives the focus to when the reader's action leaves no row in sight (R8). */
 const EMPTY_SELECTOR = "[data-inbox-empty]";
 
 /** Where a hand-off sends the reader: a row, by its `rowId`, or null for the list's empty
