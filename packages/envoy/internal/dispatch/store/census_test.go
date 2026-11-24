@@ -1179,6 +1179,37 @@ func TestCensusExemptsTheDropOfTheSentDeliveriesIndexAtAnyTableSize(t *testing.T
 	}
 }
 
+// btreeGinVersion is one create extension that names no table, so the census admits it at any size
+// of every table: with the limit at one byte, its entry holds no table and no refusal, and its census
+// counts 0. The database is at 20261121060636, so 20261123080000, which writes graph_nodes and
+// graph_tuples, is pending before it. Only this migration's entry is read, never the verdict of the
+// whole set, for the reason TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape
+// gives.
+func TestCensusAdmitsTheBtreeGinMigrationAtAnyTableSize(t *testing.T) {
+	store := openMigratedTestStore(t, 20261121060636)
+	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, btreeGinVersion), pgmigrate.CensusOptions{TableLimit: 1})
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	for i := range report.Pending {
+		entry := &report.Pending[i]
+		if entry.Migration.Version != btreeGinVersion {
+			continue
+		}
+		if i == 0 {
+			t.Fatalf("%s is the first pending migration, and the test needs another pending before it; report:\n%s", entry.Migration.Name, reportText(report))
+		}
+		if len(entry.Refusals) != 0 || len(entry.Tables) != 0 {
+			t.Fatalf("%s at a table limit of 1 byte: refusals %q, tables %+v; want neither", entry.Migration.Name, entry.Refusals, entry.Tables)
+		}
+		if entry.Count == nil || *entry.Count != 0 {
+			t.Fatalf("%s's census does not count 0; report:\n%s", entry.Migration.Name, reportText(report))
+		}
+		return
+	}
+	t.Fatalf("%d is not pending; report:\n%s", btreeGinVersion, reportText(report))
+}
+
 // blockRefsIndexCensus is the census of the two migrations of block_refs' index of targets - the
 // build of block_refs_to_source (blockRefsSourceIndex) and the drop of block_refs_to, the index it
 // replaces (dropBlockRefsTargetIndex) - over a database at beforeBlockRefsSourceIndex, a version
