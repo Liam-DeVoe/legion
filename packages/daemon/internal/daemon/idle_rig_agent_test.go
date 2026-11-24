@@ -527,6 +527,10 @@ func (p *idleRigRoleProcess) run() error {
 			return err
 		}
 	}
+	// FORCED (never committed to a pull request): the process reaches the listener 5 s late, as a
+	// role process does on a loaded run, which puts its registration inside the listener's restart.
+	fmt.Fprintf(os.Stderr, "idle rig role process: FORCED: %s generation %d registers with the listener 5s late\n", p.role, p.generation)
+	time.Sleep(5 * time.Second)
 	if err := p.subscribe(plan.Topics); err != nil {
 		return err
 	}
