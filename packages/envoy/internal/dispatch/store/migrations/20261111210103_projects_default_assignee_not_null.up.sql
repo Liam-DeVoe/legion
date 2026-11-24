@@ -97,6 +97,10 @@ from (
 join people person on person.email = creator.login
 where p.key = creator.project_key and p.default_assignee is null;
 
+create view ask_waiting_on as
+	select a.id, coalesce(a.asked_of, i.assignee) as person
+	from asks a join issues i on i.id = a.issue_id;
+
 -- 3. A project neither source names stops the migration, named by its key.
 do $$
 declare
