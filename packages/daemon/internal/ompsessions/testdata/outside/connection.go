@@ -15,7 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 type Conn struct{ c *pgx.Conn }
@@ -70,28 +70,27 @@ func open(ctx context.Context, dsn string) (*pgx.Conn, error) {
 	return pgx.Connect(ctx, dsn) // want "pgx.Connect (a function of pgx)"
 }
 
-func tupleAssigned(ctx context.Context, dsn string) (n int, err error) {
-	var q record.RowQuerier
+func tupleAssigned(ctx context.Context, dsn string) (err error) {
+	var q store.TxPool
 	q, err = open(ctx, dsn)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	err = q.QueryRow(ctx, "SELECT 1").Scan(&n)
-	return n, err
+	return store.Transact(ctx, q, func(context.Context, pgx.Tx) error { return nil })
 }
 
-func tupleReturned(ctx context.Context, dsn string) (record.RowQuerier, error) {
+func tupleReturned(ctx context.Context, dsn string) (store.TxPool, error) {
 	return open(ctx, dsn)
 }
 
-type carrier struct{ q record.RowQuerier }
+type carrier struct{ q store.TxPool }
 
 func carried(conn *Conn) carrier {
 	return carrier{q: conn.c} // want "conn.c (the connection a Conn holds, reached outside inTransaction, ConnectURL and Conn's Close and IsClosed)"
 }
 
-func handed(ctx context.Context, conn *Conn) (bool, error) {
-	return record.PullRequestRecorded(ctx, conn.c, "owner/repo", 1) // want "conn.c (the connection a Conn holds, reached outside inTransaction, ConnectURL and Conn's Close and IsClosed)"
+func handed(ctx context.Context, conn *Conn) error {
+	return store.Transact(ctx, conn.c, func(context.Context, pgx.Tx) error { return nil }) // want "conn.c (the connection a Conn holds, reached outside inTransaction, ConnectURL and Conn's Close and IsClosed)"
 }
 
 func built(raw *pgx.Conn) *Conn {

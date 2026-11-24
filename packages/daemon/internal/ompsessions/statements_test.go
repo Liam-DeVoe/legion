@@ -620,9 +620,9 @@ func TestNoStatementRunsOutsideTheHelper(t *testing.T) {
 	if err != nil {
 		return nil, err
 	}
-	var q record.RowQuerier = conn
+	var q store.TxPool = conn
 	return q, nil`,
-			"assigned to it as part of a tuple": `var q record.RowQuerier
+			"assigned to it as part of a tuple": `var q store.TxPool
 	var err error
 	q, err = OPEN(ctx, dsn)
 	return q, err`,
@@ -636,14 +636,14 @@ func TestNoStatementRunsOutsideTheHelper(t *testing.T) {
 	if err != nil {
 		return nil, err
 	}
-	_, err = record.PullRequestRecorded(ctx, conn, "owner/repo", 1)
+	err = store.Transact(ctx, conn, func(context.Context, pgx.Tx) error { return nil })
 	return nil, err`,
 		}
-		const refusal = "does not implement record.RowQuerier (missing method QueryRow)"
+		const refusal = "does not implement store.TxPool (missing method BeginTx)"
 		for _, name := range slices.Sorted(maps.Keys(shapes)) {
 			for _, opener := range []string{"pgx.Connect", "ompsessions.ConnectURL"} {
 				err := typeCheckSource(t, strings.Replace(outsider, "BODY", strings.ReplaceAll(shapes[name], "OPEN", opener), 1),
-					"github.com/sjawhar/legion/daemon/internal/ompsessions", "github.com/sjawhar/legion/daemon/internal/record")
+					"github.com/sjawhar/legion/daemon/internal/ompsessions", "github.com/sjawhar/legion/daemon/internal/store")
 				switch {
 				case opener == "pgx.Connect" && err != nil:
 					t.Errorf("control: %s, with pgx.Connect's connection, does not type-check: %v", name, err)
@@ -666,7 +666,7 @@ func TestNoStatementRunsOutsideTheHelper(t *testing.T) {
 	for _, fixture := range fixtures {
 		t.Run("control "+filepath.Base(fixture), func(t *testing.T) {
 			fset, parsed, info, pkg := typeCheck(t, "fixture", []string{fixture},
-				"github.com/jackc/pgx/v5/pgxpool", "database/sql", "github.com/sjawhar/legion/daemon/internal/record")
+				"github.com/jackc/pgx/v5/pgxpool", "database/sql", "github.com/sjawhar/legion/daemon/internal/store")
 			if helperOf(pkg) == nil {
 				t.Fatalf("the fixture declares no function %s", helperName)
 			}
@@ -686,7 +686,8 @@ func TestNoStatementRunsOutsideTheHelper(t *testing.T) {
 }
 
 // outsider is a package outside this one whose function shape opens a connection and carries it
-// toward record's code: BODY is the shape, written with OPEN for the function that opens it.
+// toward store's code, which opens a transaction on any pool it is handed (store.TxPool): BODY is
+// the shape, written with OPEN for the function that opens it.
 const outsider = `package outsider
 
 import (
@@ -695,14 +696,14 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
-	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 var _, _ = pgx.Connect, ompsessions.ConnectURL
 
-type carrier struct{ q record.RowQuerier }
+type carrier struct{ q store.TxPool }
 
-func shape(ctx context.Context, dsn string) (record.RowQuerier, error) {
+func shape(ctx context.Context, dsn string) (store.TxPool, error) {
 	BODY
 }
 `
