@@ -44,6 +44,9 @@ var browserAskServerAttributes = map[string]any{
 // until its pass bound, leaving the ask unrecorded (INFRA-592).
 func TestAPastedAskBlockWhoseServerAttributesAreNullOpensItsAsk(t *testing.T) {
 	service, artifactID := newTestService(t)
+	// Its peer lives across the settlements below, so the room must outlast ygo's idle sweep
+	// (newRoomPeer refuses a service whose rooms are not held, main's #5259).
+	holdRoomsResident(t, service)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "End.\n")
 	settleCurrentGeneration(t, service, artifactID)

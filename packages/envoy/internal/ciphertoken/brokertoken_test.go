@@ -388,7 +388,8 @@ func TestANamedAnswerNamingNoPersonIsItsAccount(t *testing.T) {
 			return rig.verifier.Verify(t.Context(), caller.at(resourcePath, token))
 		},
 		"Live": func() (ciphertoken.Caller, error) {
-			return rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
+			live, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
+			return live.Caller(), err
 		},
 		"SessionCaller": func() (ciphertoken.Caller, error) { return ciphertoken.SessionCaller(answer) },
 	} {
