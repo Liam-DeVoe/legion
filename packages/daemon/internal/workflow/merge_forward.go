@@ -288,7 +288,10 @@ func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string)
 // owner at its own step among them, is told the old head and the new one and to read what the
 // merge changed before it goes on (record.MergeForwardLanded), unless that worker's claim is the
 // one the ask reached (record.MergeForward.Agent): that agent pushed the merge, at its own step or
-// at another step its key works. An issue past its review (record.PastReview) stands on a review
+// at another step its key works. A record of the release before keeps no agent, and the agent it
+// asked is the one mergeForward asks by its rule, the agent of the task's implementation step where
+// the ask was made (implementationAgent at record.MergeForward.Phase), so that agent is told no
+// landed either. An issue past its review (record.PastReview) stands on a review
 // of the old head, so the reviewer is asked to read the merge and approve the new head or request
 // changes (record.MergeForwardReview), whoever pushed the merge, since the merger waits for that
 // approval. The review is addressed as the reviewer, to the claim of the agent of the task's
@@ -343,8 +346,18 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 	if told {
 		sends = append(sends, mergeForwardSend{step: record.MergeForwardLanded, to: roleRecipient{issue: issue.Key, role: worker, row: issue.Key, claim: token}})
 	}
+	pusher := asked.Agent
+	if pusher == "" {
+		// A record of the release before keeps no agent: the one it asked is the agent mergeForward
+		// asks by its rule where the ask was made.
+		agent, _, err := e.implementationAgent(ctx, tx, issue, w, asked.Phase)
+		if err != nil {
+			return err
+		}
+		pusher = agent.claim
+	}
 	pushed := func(step record.MergeForwardStep, to claim.Token) bool {
-		return step == record.MergeForwardLanded && asked.Agent != "" && to == asked.Agent
+		return step == record.MergeForwardLanded && pusher != "" && to == pusher
 	}
 	template := record.MergeForwardMessage{Head: asked.Head, Landed: pr.HeadSHA, Base: asked.Base, Phase: at, PullRequest: pr.Number, Why: asked.Why}
 	messages, err := e.addressMergeForward(ctx, tx, issue.Project, template, sends, pushed)
