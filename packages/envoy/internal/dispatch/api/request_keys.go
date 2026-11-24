@@ -162,8 +162,10 @@ var errRequestKeyTakenOver = errorf(http.StatusConflict, contracts.IdempotencyKe
 // write made as it stands now, with the status the route's write answers - a stale success, in
 // Google AIP-155's words, never a second write. The status change's replay answers what its steps
 // stored instead, each issue as its step's write answered it (replayStatusChange). stored is the
-// first answer's body when the key kept one and it was a success, and nil on a route that resumes
-// and when the first request never answered or answered a refusal.
+// first answer's body when the key kept one and it was a success. It is nil in five cases: when
+// the first request never answered, when it answered a refusal, when it answered more than a key
+// keeps (storedSuccess), when a delete ended the success it answered (answerEndedByDelete), and
+// on a route that resumes (answerHeldKey).
 type keyedReplay func(w http.ResponseWriter, r *http.Request, recovery json.RawMessage, stored []byte)
 
 // keyedRoute is what the keyed layer knows of a keyed route. For a route that commits a recovery
@@ -1568,12 +1570,12 @@ func outlivingTheClient(r *http.Request) context.Context {
 // point's shape. A status change's point is a head on the key's row - the ids of the events and
 // the asks its steps made, then the mark and the answer's issue - and one row per step in
 // request_key_steps holding the step's entry and what a step of an option changed, which every
-// reader reads back under changed and moved (recoveryPointRead); status_change.go names each
-// member once (pointChanged and the others). Each step writes its part in its own transaction,
-// right after its write phase's batch (queueStatusChangeStep, which writeIssue queues through
-// docs.Ledger.AfterWrites), since the step's issue as its write answered it is known only once
-// that batch has run, and the call marks the point finished in the transaction that ends it, with
-// the comment on the named issue where it owes one (statusChangeRun.finish,
+// reader reads back under changed and moved (recoveryPointRead); status_change_recovery.go
+// names each member once (pointChanged and the others). Each step writes its part in its own
+// transaction, right after its write phase's batch (queueStatusChangeStep, which writeIssue
+// queues through docs.Ledger.AfterWrites), since the step's issue as its write answered it is
+// known only once that batch has run, and the call marks the point finished in the transaction
+// that ends it, with the comment on the named issue where it owes one (statusChangeRun.finish,
 // markStatusChangeFinished).
 type recoveryPoint interface {
 	messageRecovery | broadcastRecovery | commentRecovery | statusChangeRecovery

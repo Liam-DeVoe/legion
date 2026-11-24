@@ -415,6 +415,8 @@ const ISSUE_UPDATE_FIELDS_RULE =
 const ISSUE_UPDATE_DONE_RULE =
   "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note";
 const ISSUE_UPDATE_REASON_RULE = "reason goes only with status done";
+const ISSUE_UPDATE_LABELS_RULE = "labels_add goes without labels";
+const ISSUE_UPDATE_LABELS_REFUSAL = `${ISSUE_UPDATE_LABELS_RULE}: labels replaces every label the issue holds and labels_add adds to them, so name the labels to add in labels_add alone, or the whole set in labels alone.`;
 
 /** The options of dispatch_issue_update that say what happens to the issues under the issue or
  *  above it when its status changes. A call that sets one to true sends the status change route
@@ -457,7 +459,6 @@ export const ISSUE_UPDATE_PATCH_FIELDS = [
 
 const ISSUE_UPDATE_OPTIONS_RULE =
   "include_children, unlink_children and include_parent go with status, and with reason when the status is done, and with no other field. include_children does not go with unlink_children, or with status done.";
-const ISSUE_UPDATE_LABELS_RULE = "labels_add goes without labels";
 const ISSUE_UPDATE_RULE = `${ISSUE_UPDATE_FIELDS_RULE} ${ISSUE_UPDATE_DONE_RULE}; ${ISSUE_UPDATE_REASON_RULE}; ${ISSUE_UPDATE_LABELS_RULE}. ${ISSUE_UPDATE_OPTIONS_RULE}`;
 
 /** The refusal of the parts of the options' rule `input` breaks, or undefined when it keeps it or
@@ -508,27 +509,15 @@ function issueReasonProblem(input: {
   return `${ISSUE_UPDATE_REASON_RULE}: it is the note posted on the issue as it closes, and ${status} closes nothing. Drop reason, or set status done to close the issue.`;
 }
 
-/** The refusal of the labels' part of dispatch_issue_update's rule `input` breaks, or undefined
- *  when it keeps it: labels replaces every label and labels_add adds to them, so a call names one
- *  of the two, as the route refuses both. */
-function issueLabelsProblem(input: {
-  readonly labels?: unknown;
-  readonly labels_add?: unknown;
-}): string | undefined {
-  return input.labels !== undefined && input.labels_add !== undefined
-    ? `${ISSUE_UPDATE_LABELS_RULE}: labels replaces every label the issue holds and labels_add adds to them, so name the labels to add in labels_add alone, or the whole set in labels alone.`
-    : undefined;
-}
-
 /** The refusal of the parts of dispatch_issue_update's rule `value` breaks, or undefined when it
  *  keeps the rule: reason is the close's note, so it goes with status done and with nothing else;
  *  labels replaces every label and labels_add adds to them, so a call names one of the two, as the
- *  route refuses both; an option of the status change goes with status alone; and the update
- *  names at least one field to change. It names every part of the reason's, the labels' and the
- *  options' rules the call broke, joined in one refusal, so its caller fixes them all and calls
- *  once. The field part is read only when the call keeps those three: a call refused for its
- *  reason is never told it names no field. `check` and `refusal` both read this one function, so
- *  the refusal never names a part the call kept. */
+ *  route refuses both; an option of the status change goes with status alone, and with reason when
+ *  the status is done; and the update names at least one field to change. It names every part of
+ *  the reason's, the labels' and the options' rules the call broke, joined in one refusal, so its
+ *  caller fixes them all and calls once. The field part is read only when the call keeps those
+ *  three: a call refused for its reason is never told it names no field. `check` and `refusal`
+ *  both read this one function, so the refusal never names a part the call kept. */
 function issueUpdateProblem(value: unknown): string | undefined {
   const input = value as {
     readonly status?: unknown;
@@ -549,11 +538,10 @@ function issueUpdateProblem(value: unknown): string | undefined {
     readonly after?: unknown;
   };
   const reasonProblem = issueReasonProblem(input);
-  const labelsProblem = issueLabelsProblem(input);
   const optionsProblem = issueStatusOptionsProblem(value as Readonly<Record<string, unknown>>);
   const broken = brokenParts([
     [reasonProblem === undefined, reasonProblem ?? ""],
-    [labelsProblem === undefined, labelsProblem ?? ""],
+    [input.labels === undefined || input.labels_add === undefined, ISSUE_UPDATE_LABELS_REFUSAL],
     [optionsProblem === undefined, optionsProblem ?? ""],
   ]);
   if (broken !== undefined) return broken;

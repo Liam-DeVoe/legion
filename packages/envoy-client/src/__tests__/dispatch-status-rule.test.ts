@@ -554,6 +554,7 @@ describe("dispatch issue-update with an option of the status change", () => {
         ["--title", "Renamed"],
         ["--parent", "ACME-4"],
         ["--priority", "1"],
+        ["--labels-add", "x"],
       ] as const) {
         const { code, stdout } = await run([
           "issue-update",
@@ -564,7 +565,7 @@ describe("dispatch issue-update with an option of the status change", () => {
           flag,
           ...other,
         ]);
-        const name = other[0].slice(2);
+        const name = other[0].slice(2).replaceAll("-", "_");
         expect({ flag, other: name, code }).toEqual({ flag, other: name, code: 2 });
         expect(stdout).toStartWith("dispatch issue-update was not called: 1 problem\n");
         expect(stdout).toContain(
