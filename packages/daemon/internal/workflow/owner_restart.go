@@ -64,10 +64,7 @@ func (e *Engine) restartFailedOwner(ctx context.Context, tx pgx.Tx, issue record
 	if err != nil || !child {
 		return next, false, err
 	}
-	where, err := ownersPlaceWords(ctx, tx, e.store, issue)
-	if err != nil {
-		return "", false, err
-	}
+	where := record.OwnersPlaceWords(w.Task, w.Place, w.Steps)
 	if architectStartQueued(run, issue.Phase) {
 		return fmt.Sprintf("%s's own architect failed at %s, which only it reports: a start of it is queued already, and its notices come to you until it runs again",
 			issue.Key, where), false, nil
