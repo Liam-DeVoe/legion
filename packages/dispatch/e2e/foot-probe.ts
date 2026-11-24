@@ -2,7 +2,7 @@
  *  `c-foot-clear` says, clause by clause. Each read of the page is self-contained, with no
  *  closure over this module, so Playwright can send it to the page as it stands, and the names by
  *  which the hook marks the page arrive as its argument (`FOOT_NAMES`): `await
- *  page.evaluate(readFootEnds, FOOT_NAMES)`, `await page.evaluate(readFootElements, selectors)`,
+ *  page.evaluate(readFootEnds, FOOT_NAMES)`, `await page.evaluate(readFootElements)`,
  *  `await page.evaluate(readKeptRoom, FOOT_NAMES)`, `await page.evaluate(readRoomAtStart,
  *  FOOT_NAMES)`, `await page.evaluate(readSidewaysBox, { after, code, toBanner })` and `await
  *  page.evaluate(sampleFootRest, { ms: 2000, names: FOOT_NAMES })`. Each reads the page. Only
@@ -15,9 +15,13 @@
  *
  *  Where each clause of `c-foot-clear` is read:
  *  - "no float's box meets another foot element's box" and "no float covers the centre of a
- *    control": `readFootElements`;
+ *    control, read where that centre lies inside every box that clips the control":
+ *    `readFootElements`;
  *  - "at each scroller's real end (scrollHeight - scrollTop - clientHeight <= 1), no float covers
- *    its content": the block "Cover" of `readFootEnds`;
+ *    its content: no leaf element of its own content, as far as it lies inside each box that
+ *    clips it, the scroller's own box among them, meets a float's box on both axes", and "the
+ *    content of a float, a scroller inside it included, is not read against the floats": the
+ *    block "Cover" of `readFootEnds`;
  *  - "the shell's Navigation stays on the screen at the end of a page": the block "Navigation" of
  *    `readFootEnds`;
  *  - "a box that scrolls only sideways keeps its height under a float": `readSidewaysBox`;
@@ -32,33 +36,37 @@
  *
  *  Beside the reads stand the helpers the rows that read the foot call (`e2e/foot-sweep.e2e.ts`,
  *  `e2e/issues-table.e2e.ts`, `e2e/agents-groups.e2e.ts`): `expectFootClear`, the reading of
- *  both reads while a float shows, against foot elements of `FOOT_ELEMENTS`; `expectNoEndRoom`,
- *  the reading after the floats go; `navigationProblems`, the problems of a reading of the
- *  Navigation alone; and `footCellLine`, which writes the `FOOT-CELL` line a run's output carries
- *  for each reading. */
+ *  both reads while a float shows, against the foot elements `readFootElements` lists;
+ *  `expectNoEndRoom`, the reading after the floats go; `navigationProblems`, the problems of a
+ *  reading of the Navigation alone; and `footCellLine`, which writes the `FOOT-CELL` line a run's
+ *  output carries for each reading. */
 import { expect, type Page } from "@playwright/test";
 
 import {
   CLEARANCE_PROPERTY,
   DOCUMENT_SCROLL_ATTRIBUTE,
+  FOOT_LAYERS,
   MARK_ATTRIBUTE,
 } from "../web/src/hooks/useFootInset";
 
 /** The names by which the hook marks the page (`web/src/hooks/useFootInset.ts`): the attribute of
- *  a scroller that holds end room, the custom property that holds that room, and the attribute of
- *  the element whose content the document scrolls. Each read of the page that reads a mark takes
- *  them as its argument. A read runs in the page and can import nothing there, and a name it
- *  spelled itself would, after a rename in the hook, find no mark and pass. */
+ *  a scroller that holds end room, the custom property that holds that room, the attribute of
+ *  the element whose content the document scrolls, and the custom property of each layer of the
+ *  foot that has one, from the bottom up. Each read of the page that reads a mark or a layer
+ *  takes them as its argument. A read runs in the page and can import nothing there, and a name
+ *  it spelled itself would, after a rename in the hook, find no mark and pass. */
 export interface FootNames {
   readonly mark: string;
   readonly clearance: string;
   readonly documentScroll: string;
+  readonly layers: readonly string[];
 }
 
 /** The hook's own names (`FootNames`), as the hook exports them. */
 export const FOOT_NAMES: FootNames = {
   clearance: CLEARANCE_PROPERTY,
   documentScroll: DOCUMENT_SCROLL_ATTRIBUTE,
+  layers: FOOT_LAYERS.flatMap(({ property }) => (property === null ? [] : [property])),
   mark: MARK_ATTRIBUTE,
 };
 
@@ -90,6 +98,18 @@ export interface FootScroller {
   readonly covers: readonly string[];
 }
 
+/** The problems of a `readFootEnds` answer, by the clause of `c-foot-clear` each reads. */
+export interface FootEndProblems {
+  /** "no float covers its content": each scroller whose own content meets a float at its end. */
+  readonly covers: string[];
+  /** "at each scroller's real end": each scroller the passes left short of its end. */
+  readonly short: string[];
+  /** "the shell's Navigation stays on the screen at the end of a page". */
+  readonly navigation: string[];
+  /** "as a settled state": two readings two animation frames apart that differ. */
+  readonly unsettled: string[];
+}
+
 /** What `readFootEnds` answers. */
 export interface FootEnds {
   /** Each float shown, as `<name> y <top>-<bottom> x <left>-<right>`. */
@@ -97,36 +117,8 @@ export interface FootEnds {
   /** The top of the shell's Navigation where it shows, or null. */
   readonly navigationTop: number | null;
   readonly scrollers: FootScroller[];
-  readonly problems: string[];
+  readonly problems: FootEndProblems;
 }
-
-/** The foot elements `readFootElements` reads the floats against: a name for each, and the CSS
- *  selector of the element so named. */
-export type FootSelectors = Readonly<Record<string, string>>;
-
-/** Every foot element of the page layer a page of the rows that read the foot can show
- *  (`FOOT_LAYERS` in `web/src/hooks/useFootInset.ts`), each by a selector that matches it and no
- *  other element of those pages, and the Conversation's and the live view's `Jump to latest`.
- *  `readFootElements` leaves out each one a page does not show. The selection bar is the one
- *  toolbar with no name: the new issue page's view row is a toolbar named by its controls. The
- *  live view's rows - its row of pickers and its switch lines - stand under its composer, outside
- *  `agent-composer`, in the box `AgentConversationPage` registers. On a wide screen the Agents
- *  page's composer, its queued sends above it, or both stand in the stuck box `BroadcastFoot`
- *  registers, which the selector finds by either; on a narrow or short screen that box is
- *  `display: contents`, has no box and shows nothing here, and the composer sticks by itself. The
- *  sweep (`e2e/foot-sweep.e2e.ts`) reads all of them; a row that reads one page takes the entries
- *  of that page from here. */
-export const FOOT_ELEMENTS = {
-  "the selection bar": '[role="toolbar"]:not([aria-label])',
-  "the broadcast composer": 'section[aria-label="Broadcast"]',
-  "the broadcast foot":
-    'div.sticky.bottom-0:has(> section[aria-label="Broadcast"], > section[aria-label="Sends"])',
-  "the comment composer": 'form[aria-label="Comment composer"]',
-  "the margin's sheet": 'aside[aria-label="Review panel"]',
-  "the live view's composer": '[data-testid="agent-composer"]',
-  "the live view's rows": '[data-testid="agent-composer-footer"]',
-  "Jump to latest": '[data-testid="jump-to-latest"]',
-} as const satisfies FootSelectors;
 
 /** What `readFootElements` answers: each float and each foot element shown, by name, with its box
  *  as `[top, bottom]`, and the problems. */
@@ -185,10 +177,17 @@ declare global {
  * scroller inside it, which is read at its own end. A box sticky only to the left or right moves
  * with the block scroll, so its elements are the scroller's own content. The document's own
  * content is that of `main` (`#main-content`). A leaf is an element of that content with no child
- * element that has a box. A cover is a leaf whose part inside the scroller's box, on the screen,
- * meets a float's box on both axes by more than 1px. The answer names each scroller with its gap
- * to the end, its box, its mark (`names.mark` and the room it holds; the document's is that of the
- * element that carries `names.documentScroll`), its last content (the lowest leaf) and each cover.
+ * element that has a box. A cover is a leaf whose part inside each box that clips it - each box
+ * between it and the scroller, on its chain of containing blocks, whose overflow is not
+ * `visible`, the scroller's box and the screen - meets a float's box on both axes by more than
+ * 1px. The answer names each scroller with its gap to the end, its box, its mark (`names.mark`
+ * and the room it holds; the document's is that of the element that carries
+ * `names.documentScroll`), its last content (the lowest leaf) and each cover.
+ *
+ * The content of a float, a scroller inside it included, is not read against the floats: a
+ * scroller that a float holds, as Pending changes holds its list of refused changes, is none of
+ * the scrollers here. The passes do not scroll it, and no reading reads its content. The hook
+ * does the same: its hit test skips every element inside a float.
  *
  * The Navigation is read as a reader sees it: the column stuck in the Navigation's aside, and the
  * aside itself only where nothing sticks in it. The aside is as tall as the shell and scrolls
@@ -205,7 +204,9 @@ declare global {
  * What it does not see: where a scroller takes its room as bottom padding (`names.mark` is
  * `padding`), the page does not state its own padding apart from the room, so that padding is
  * read as its own. Such a scroller counts by one of the two ways all the same: its content then
- * overflows it, or the box is taller than its content and that padding together.
+ * overflows it, or the box is taller than its content and that padding together. And a box that
+ * clips by `clip-path`, `clip` or paint containment, not by its overflow, is not read as a box
+ * that clips, so the part it hides is read as a part a float can cover.
  */
 export async function readFootEnds(names: FootNames): Promise<FootEnds> {
   const floatSelectors = [
@@ -266,10 +267,23 @@ export async function readFootEnds(names: FootNames): Promise<FootEnds> {
     const own = Number.parseFloat(computed.paddingBottom) || 0;
     return element.clientHeight > foot - origin + own + 1;
   };
-  const scrollers = [
-    document.documentElement,
-    ...[...document.querySelectorAll("*")].filter(scrollsOnBlockAxis),
-  ];
+  // The floats shown, by their accessible names, so a float with no box is left out.
+  const shownFloats = (): Element[] =>
+    floatSelectors
+      .map((selector) => document.querySelector(selector))
+      .filter(
+        (element): element is Element =>
+          element !== null && element.getBoundingClientRect().height > 0
+      );
+  // Cover: "the content of a float, a scroller inside it included, is not read against the
+  // floats". The scrollers are each scroller but one that a float holds (the doc comment above
+  // says why), found before the passes, so that the passes do not scroll such a one.
+  const scrollersOutside = (floatEls: readonly Element[]): HTMLElement[] =>
+    [...document.querySelectorAll("*")].filter(
+      (element): element is HTMLElement =>
+        !floatEls.some((float) => float.contains(element)) && scrollsOnBlockAxis(element)
+    );
+  const scrollers = [document.documentElement, ...scrollersOutside(shownFloats())];
   let heights = "";
   for (let pass = 0; pass < 6; pass++) {
     for (const element of scrollers) element.scrollTop = element.scrollHeight;
@@ -292,17 +306,12 @@ export async function readFootEnds(names: FootNames): Promise<FootEnds> {
         : child.getBoundingClientRect().height > 0
     );
   const read = (): FootEnds => {
-    const floatEls = floatSelectors
-      .map((selector) => document.querySelector(selector))
-      .filter(
-        (element): element is Element =>
-          element !== null && element.getBoundingClientRect().height > 0
-      );
+    const floatEls = shownFloats();
     const floats = floatEls.map((element) => ({
       name: element.getAttribute("aria-label"),
       rect: element.getBoundingClientRect(),
     }));
-    const inner = [...document.querySelectorAll("*")].filter(scrollsOnBlockAxis);
+    const inner = scrollersOutside(floatEls);
     // Scroller, for the document: it overflows, or the page states that it scrolls an element's
     // content (the doc comment above says why).
     const html = document.documentElement;
@@ -329,6 +338,83 @@ export async function readFootEnds(names: FootNames): Promise<FootEnds> {
       placed.set(element, held);
       return held;
     };
+    // Clip: "inside each box that clips it". A box clips an element where it lies on the
+    // element's chain of containing blocks: an element in flow is held by its parent, an absolute
+    // one by the nearest box that is positioned or holds a fixed one, and a fixed one by the
+    // nearest box that holds a fixed one (a transform of any kind, `perspective`, a filter or a
+    // backdrop filter, layout or paint containment by `contain` or a size `container-type`, or a
+    // `will-change` of one of those), else by the screen. Each box on that chain clips to its
+    // padding box on each axis where its overflow is not `visible`, but not a box whose `display`
+    // is inline or contents or a table's row or column, which takes no overflow, and not an SVG
+    // element. The root's overflow, and the body's where the root's is `visible`, is the
+    // screen's, which is read apart. `clipOf` answers the part of the screen that the boxes
+    // between an element and `stop` (null: the document) leave it, with no edge where none clips
+    // it. Each box is read once per reading, as in `heldInPlace`. `readFootElements` holds a copy
+    // of this walk, since a read in the page can import nothing, so the two change together; the
+    // copy has no `stop`, since it always reads up to the document.
+    const open: Edges = { top: -Infinity, bottom: Infinity, left: -Infinity, right: Infinity };
+    const cut = (a: Edges, b: Edges): Edges => ({
+      top: Math.max(a.top, b.top),
+      bottom: Math.min(a.bottom, b.bottom),
+      left: Math.max(a.left, b.left),
+      right: Math.min(a.right, b.right),
+    });
+    const rootStyle = getComputedStyle(document.documentElement);
+    const screenClips = new Set<Element>([document.documentElement]);
+    if (rootStyle.overflowX === "visible" && rootStyle.overflowY === "visible") {
+      screenClips.add(document.body);
+    }
+    const holdsFixed = (style: CSSStyleDeclaration) =>
+      [
+        style.transform,
+        style.translate,
+        style.rotate,
+        style.scale,
+        style.perspective,
+        style.filter,
+        style.backdropFilter,
+      ].some((value) => value !== "none") ||
+      /layout|paint|strict|content/.test(style.contain) ||
+      /size/.test(style.containerType) ||
+      /transform|translate|rotate|scale|perspective|filter/.test(style.willChange);
+    const rooms = new Map<Element, Edges>();
+    const roomIn = (box: Element, stop: Element | null): Edges => {
+      const known = rooms.get(box);
+      if (known !== undefined) return known;
+      const style = getComputedStyle(box);
+      let room = clipOf(box, stop);
+      if (
+        box instanceof HTMLElement &&
+        !screenClips.has(box) &&
+        !/^(inline|contents)$|^table-(row|column|header|footer)/.test(style.display)
+      ) {
+        const { left, top } = box.getBoundingClientRect();
+        const x = left + box.clientLeft;
+        const y = top + box.clientTop;
+        const clipsX = style.overflowX !== "visible";
+        const clipsY = style.overflowY !== "visible";
+        room = cut(room, {
+          top: clipsY ? y : -Infinity,
+          bottom: clipsY ? y + box.clientHeight : Infinity,
+          left: clipsX ? x : -Infinity,
+          right: clipsX ? x + box.clientWidth : Infinity,
+        });
+      }
+      rooms.set(box, room);
+      return room;
+    };
+    const clipOf = (element: Element, stop: Element | null): Edges => {
+      const { position } = getComputedStyle(element);
+      let holder = element.parentElement;
+      if (position === "absolute" || position === "fixed") {
+        while (holder !== null && holder !== stop) {
+          const style = getComputedStyle(holder);
+          if (holdsFixed(style) || (position === "absolute" && style.position !== "static")) break;
+          holder = holder.parentElement;
+        }
+      }
+      return holder === null || holder === stop ? open : roomIn(holder, stop);
+    };
     const leftOut = new Set<Element>([...floatEls, ...inner]);
     const answers = [...(documentScrolls ? [html] : []), ...inner].map((scroller): FootScroller => {
       const isDocument = scroller === document.documentElement;
@@ -336,20 +422,16 @@ export async function readFootEnds(names: FootNames): Promise<FootEnds> {
         ? { top: 0, bottom: innerHeight, left: 0, right: innerWidth }
         : scroller.getBoundingClientRect();
       // The part of the screen inside the scroller's box, where a float can cover its content.
-      const inside: Edges = {
-        top: Math.max(box.top, 0),
-        bottom: Math.min(box.bottom, innerHeight),
-        left: Math.max(box.left, 0),
-        right: Math.min(box.right, innerWidth),
-      };
+      const inside = cut(box, { top: 0, bottom: innerHeight, left: 0, right: innerWidth });
       const root = isDocument
         ? (document.getElementById("main-content") ?? document.body)
         : scroller;
       const stop = isDocument ? document.body : scroller;
-      // Cover: "no leaf element of its own content, as far as it lies inside the scroller's box,
-      // meets a float's box on both axes". Every leaf is read. The walk leaves out each float and
-      // each scroller inside this one, with all they hold; each element it reaches has its box
-      // read once, and the walk up to the scroller comes last.
+      // Cover: "no leaf element of its own content, as far as it lies inside each box that clips
+      // it, the scroller's own box among them, meets a float's box on both axes". Every leaf is
+      // read. The walk leaves out each float and each scroller inside this one, with all they
+      // hold; each element it reaches has its box read once, and the walks up to the scroller
+      // come last.
       let last: {
         readonly rect: DOMRect;
         readonly text: string;
@@ -366,15 +448,12 @@ export async function readFootEnds(names: FootNames): Promise<FootEnds> {
         const leaf = node as Element;
         const rect = leaf.getBoundingClientRect();
         if (rect.height === 0 || rect.width === 0) continue;
-        const part: Edges = {
-          top: Math.max(rect.top, inside.top),
-          bottom: Math.min(rect.bottom, inside.bottom),
-          left: Math.max(rect.left, inside.left),
-          right: Math.min(rect.right, inside.right),
-        };
-        if (part.bottom <= part.top || part.right <= part.left) continue;
+        const seen = cut(rect, inside);
+        if (seen.bottom <= seen.top || seen.right <= seen.left) continue;
         if (holdsABox(leaf)) continue;
         if (heldInPlace(leaf, stop)) continue;
+        const part = cut(seen, clipOf(leaf, isDocument ? null : scroller));
+        if (part.bottom <= part.top || part.right <= part.left) continue;
         const text = (leaf.textContent || leaf.getAttribute("aria-label") || leaf.tagName)
           .trim()
           .slice(0, 40);
@@ -436,10 +515,8 @@ export async function readFootEnds(names: FootNames): Promise<FootEnds> {
           ) ?? navigation);
     const navRect = column?.getBoundingClientRect();
     const navigationTop = navRect && navRect.height > 0 ? Math.round(navRect.top) : null;
-    // `navigationProblems` finds the second and the third kind of problem here, and the one of a
-    // reading that is not settled, by their words: change them together.
-    const problems = [
-      ...answers
+    const problems: FootEndProblems = {
+      covers: answers
         .filter((answer) => answer.covers.length > 0)
         .map(
           (answer) =>
@@ -449,13 +526,15 @@ export async function readFootEnds(names: FootNames): Promise<FootEnds> {
                 "; "
               )}${answer.covers.length > 3 ? `; and ${answer.covers.length - 3} more` : ""}`
         ),
-      ...answers
+      short: answers
         .filter((answer) => answer.gap > 1)
         .map((answer) => `${answer.name} did not reach its end (${answer.gap}px left)`),
-      ...(navigationTop !== null && navigationTop < 0
-        ? [`the Navigation's top is at y ${navigationTop} at the end of the scroll`]
-        : []),
-    ];
+      navigation:
+        navigationTop !== null && navigationTop < 0
+          ? [`the Navigation's top is at y ${navigationTop} at the end of the scroll`]
+          : [],
+      unsettled: [],
+    };
     return {
       floats: floats.map(
         (float) =>
@@ -478,7 +557,9 @@ export async function readFootEnds(names: FootNames): Promise<FootEnds> {
         `mark ${scroller.mark || "none"}, last content y ${scroller.last?.y.join("-") ?? "none"}, ` +
         `${scroller.covers.length} covers`
     ),
-    ...reading.problems,
+    // Every clause's problems, so that a clause added to `FootEndProblems` is compared too.
+    // `read()` leaves `unsettled` empty: only the comparison below fills it.
+    ...Object.values(reading.problems).flat(),
   ];
   const first = read();
   await frames(2);
@@ -490,25 +571,27 @@ export async function readFootEnds(names: FootNames): Promise<FootEnds> {
   if (went.length === 0 && came.length === 0) return second;
   return {
     ...second,
-    problems: [
+    problems: {
       ...second.problems,
-      `the foot was not settled: of two readings two animation frames apart, the first read ` +
-        `${went.slice(0, 3).join("; ") || "nothing more"} and the second ` +
-        `${came.slice(0, 3).join("; ") || "nothing more"}`,
-    ],
+      unsettled: [
+        `the foot was not settled: of two readings two animation frames apart, the first read ` +
+          `${went.slice(0, 3).join("; ") || "nothing more"} and the second ` +
+          `${came.slice(0, 3).join("; ") || "nothing more"}`,
+      ],
+    },
   };
 }
 
 /**
- * Reads the floats against the foot elements `selectors` names ({name: css selector}), as the
+ * Reads the floats against the foot elements it lists, each by a name and a CSS selector, as the
  * page stands, with no scroll: a float meeting a foot element, the two floats meeting each other,
  * a float off the screen, and every control of a float or a foot element whose centre another
- * element covers (`elementFromPoint`). A trial click is no proof of this: one passed over a
- * control a float covered. Pass e.g. {bar: '[role=toolbar]', broadcast:
- * 'section[aria-label="Broadcast"]', composer: 'form[aria-label="Comment composer"]', sheet:
- * 'aside[aria-label="Review panel"]'}.
+ * element covers (`elementFromPoint`), read where that centre lies inside every box that clips
+ * the control. A control whose centre a box clips away, as Pending changes' list of refused
+ * changes scrolls its rows out of its view, is not read. A trial click is no proof of this: one
+ * passed over a control a float covered.
  */
-export async function readFootElements(selectors?: FootSelectors): Promise<FootElements> {
+export async function readFootElements(): Promise<FootElements> {
   const meets = (a: Edges, b: Edges) =>
     Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 &&
     Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1;
@@ -521,7 +604,28 @@ export async function readFootElements(selectors?: FootSelectors): Promise<FootE
     })
       .map(([name, selector]) => [name, document.querySelector(selector)] as const)
       .filter((entry): entry is readonly [string, Element] => shown(entry[1]));
-    const feet = Object.entries(selectors ?? {})
+    // Every foot element of the page layer a page of the rows that read the foot can show
+    // (`FOOT_LAYERS` in `web/src/hooks/useFootInset.ts`), each by a selector that matches it and
+    // no other element of those pages, and the Conversation's and the live view's `Jump to latest`.
+    // `readFootElements` leaves out each one a page does not show. The selection bar is the one
+    // toolbar with no name: the new issue page's view row is a toolbar named by its controls. The
+    // live view's rows - its row of pickers and its switch lines - stand under its composer,
+    // outside `agent-composer`, in the box `AgentConversationPage` registers. On a wide screen the
+    // Agents page's composer, its queued sends above it, or both stand in the stuck box
+    // `BroadcastFoot` registers, which the selector finds by either; on a narrow or short screen
+    // that box is `display: contents`, has no box and shows nothing here, and the composer sticks
+    // by itself. `expectFootClear` reads all of them.
+    const feet = Object.entries({
+      "the selection bar": '[role="toolbar"]:not([aria-label])',
+      "the broadcast composer": 'section[aria-label="Broadcast"]',
+      "the broadcast foot":
+        'div.sticky.bottom-0:has(> section[aria-label="Broadcast"], > section[aria-label="Sends"])',
+      "the comment composer": 'form[aria-label="Comment composer"]',
+      "the margin's sheet": 'aside[aria-label="Review panel"]',
+      "the live view's composer": '[data-testid="agent-composer"]',
+      "the live view's rows": '[data-testid="agent-composer-footer"]',
+      "Jump to latest": '[data-testid="jump-to-latest"]',
+    })
       .map(([name, selector]) => [name, document.querySelector(selector)] as const)
       .filter((entry): entry is readonly [string, Element] => shown(entry[1]));
     const problems: string[] = [];
@@ -542,9 +646,87 @@ export async function readFootElements(selectors?: FootSelectors): Promise<FootE
     ) {
       problems.push("Pending changes meets the update banner");
     }
-    // "no float covers the centre of a control", read for every control of each float and each
-    // foot element on the screen. A control of a scroller's content at its end is a leaf that
-    // `readFootEnds` reads, by its whole box.
+    // Clip: "inside every box that clips the control". A box clips an element where it lies on
+    // the element's chain of containing blocks: an element in flow is held by its parent, an
+    // absolute one by the nearest box that is positioned or holds a fixed one, and a fixed one by
+    // the nearest box that holds a fixed one (a transform of any kind, `perspective`, a filter or
+    // a backdrop filter, layout or paint containment by `contain` or a size `container-type`, or
+    // a `will-change` of one of those), else by the screen. Each box on that chain clips to its
+    // padding box on each axis where its overflow is not `visible`, but not a box whose
+    // `display` is inline or contents or a table's row or column, which takes no overflow, and
+    // not an SVG element. The root's overflow, and the body's where the root's is `visible`, is
+    // the screen's, which is read apart. `clipOf` answers the part of the screen that the boxes
+    // between an element and the document leave it, with no edge where none clips it. Each box
+    // is read once per reading. This is the walk with which `readFootEnds` clips each leaf,
+    // written again here, since a read in the page can import nothing, but with no `stop`, since
+    // this copy always reads up to the document.
+    const open: Edges = { top: -Infinity, bottom: Infinity, left: -Infinity, right: Infinity };
+    const cut = (a: Edges, b: Edges): Edges => ({
+      top: Math.max(a.top, b.top),
+      bottom: Math.min(a.bottom, b.bottom),
+      left: Math.max(a.left, b.left),
+      right: Math.min(a.right, b.right),
+    });
+    const rootStyle = getComputedStyle(document.documentElement);
+    const screenClips = new Set<Element>([document.documentElement]);
+    if (rootStyle.overflowX === "visible" && rootStyle.overflowY === "visible") {
+      screenClips.add(document.body);
+    }
+    const holdsFixed = (style: CSSStyleDeclaration) =>
+      [
+        style.transform,
+        style.translate,
+        style.rotate,
+        style.scale,
+        style.perspective,
+        style.filter,
+        style.backdropFilter,
+      ].some((value) => value !== "none") ||
+      /layout|paint|strict|content/.test(style.contain) ||
+      /size/.test(style.containerType) ||
+      /transform|translate|rotate|scale|perspective|filter/.test(style.willChange);
+    const rooms = new Map<Element, Edges>();
+    const roomIn = (box: Element): Edges => {
+      const known = rooms.get(box);
+      if (known !== undefined) return known;
+      const style = getComputedStyle(box);
+      let room = clipOf(box);
+      if (
+        box instanceof HTMLElement &&
+        !screenClips.has(box) &&
+        !/^(inline|contents)$|^table-(row|column|header|footer)/.test(style.display)
+      ) {
+        const { left, top } = box.getBoundingClientRect();
+        const x = left + box.clientLeft;
+        const y = top + box.clientTop;
+        const clipsX = style.overflowX !== "visible";
+        const clipsY = style.overflowY !== "visible";
+        room = cut(room, {
+          top: clipsY ? y : -Infinity,
+          bottom: clipsY ? y + box.clientHeight : Infinity,
+          left: clipsX ? x : -Infinity,
+          right: clipsX ? x + box.clientWidth : Infinity,
+        });
+      }
+      rooms.set(box, room);
+      return room;
+    };
+    const clipOf = (element: Element): Edges => {
+      const { position } = getComputedStyle(element);
+      let holder = element.parentElement;
+      if (position === "absolute" || position === "fixed") {
+        while (holder !== null) {
+          const style = getComputedStyle(holder);
+          if (holdsFixed(style) || (position === "absolute" && style.position !== "static")) break;
+          holder = holder.parentElement;
+        }
+      }
+      return holder === null ? open : roomIn(holder);
+    };
+    // "no float covers the centre of a control, read where that centre lies inside every box
+    // that clips the control", read for every control of each float and each foot element on the
+    // screen. A control of a scroller's content at its end is a leaf that `readFootEnds` reads,
+    // by its part inside each box that clips it.
     for (const [name, root] of [...floats, ...feet]) {
       for (const control of root.querySelectorAll(
         "button, select, textarea, input:not([type=hidden]), a[href]"
@@ -554,6 +736,8 @@ export async function readFootElements(selectors?: FootSelectors): Promise<FootE
         const x = rect.left + rect.width / 2;
         const y = rect.top + rect.height / 2;
         if (y < 0 || y >= innerHeight || x < 0 || x >= innerWidth) continue;
+        const clip = clipOf(control);
+        if (y < clip.top || y >= clip.bottom || x < clip.left || x >= clip.right) continue;
         const hit = document.elementFromPoint(x, y);
         if (hit && !(control === hit || control.contains(hit) || hit.contains(control))) {
           const label = (
@@ -861,9 +1045,10 @@ export async function readSidewaysBox({
 }
 
 /**
- * Samples the foot every 100 ms for `ms` milliseconds: the three layer properties on the document
- * element, the document's height, the scroll, and every mark (`names.mark`) with the room it
- * holds. Answers the distinct states seen; a page at rest answers one.
+ * Samples the foot every 100 ms for `ms` milliseconds: each layer property of the foot
+ * (`names.layers`) on the document element, the document's height, the scroll, and every mark
+ * (`names.mark`) with the room it holds. Answers the distinct states seen; a page at rest answers
+ * one.
  */
 export async function sampleFootRest({
   ms,
@@ -886,9 +1071,7 @@ export async function sampleFootRest({
       .join(",");
     seen.add(
       [
-        css.getPropertyValue("--foot-page-inset"),
-        css.getPropertyValue("--foot-banner-inset"),
-        css.getPropertyValue("--foot-status-inset"),
+        ...names.layers.map((property) => css.getPropertyValue(property)),
         document.documentElement.scrollHeight,
         Math.round(scrollY),
         marks,
@@ -906,52 +1089,47 @@ export function footCellLine(cell: string, problems: readonly string[]): string 
   return `FOOT-CELL ${cell} ${problems.length === 0 ? "clean" : problems.join(" | ")}`;
 }
 
-/** The problems of `ends` that a row which reads only the Navigation takes: the Navigation's own
- *  ("the Navigation's top ..."), each of a scroller that stopped short of its end ("... did not
- *  reach its end ..."), and the one of two readings that differ ("the foot was not settled ..."),
- *  since the Navigation is read at the end of every scroll, as a settled state. Each is found by
- *  the words `readFootEnds` writes it with: change them together. */
+/** The problems of `ends` that a row which reads only the Navigation takes: one where the probe
+ *  finds no Navigation that shows, the Navigation's own, each of a scroller that stopped short of
+ *  its end, and the one of two readings that differ, since the Navigation is read at the end of
+ *  every scroll, as a settled state. */
 export function navigationProblems(ends: FootEnds): string[] {
-  return ends.problems.filter(
-    (problem) =>
-      problem.startsWith("the Navigation's top") ||
-      problem.includes("did not reach its end") ||
-      problem.startsWith("the foot was not settled")
-  );
+  return [
+    ...(ends.navigationTop === null ? ["the Navigation does not show"] : []),
+    ...ends.problems.short,
+    ...ends.problems.navigation,
+    ...ends.problems.unsettled,
+  ];
 }
 
 /**
  * Fails unless the foot of `page` is clear: one `expect.poll` that takes both reads until
- * neither answers a problem, `readFootEnds` first, so `readFootElements` reads the foot elements
- * `selectors` names as the page stands at the end of every scroll, where the last content of each
- * scroller is. Each read is settled itself: it answers a problem unless two readings two
- * animation frames apart give the same answer, so a foot that flips between clean and not clean
- * does not pass. `message` names the reading, `<page> <WxH> <floats>`; the poll fails under it,
- * with the problems of the last reading, and the reading's `FOOT-CELL` line (`footCellLine`) is
- * printed either way. Answers the last `readFootEnds` answer, which a row reads for a scroller it
- * names. First starts `watchRoomHeld` on the page, so `expectNoEndRoom` reads the room each
- * scroller held while a float showed.
+ * neither answers a problem, of any clause, `readFootEnds` first, so `readFootElements` reads
+ * every foot element it lists as the page stands at the end of every scroll, where the
+ * last content of each scroller is. Each read is settled itself: it answers a problem unless two
+ * readings two animation frames apart give the same answer, so a foot that flips between clean
+ * and not clean does not pass. `message` names the reading, `<page> <WxH> <floats>`; the poll
+ * fails under it, with the problems of the last reading, and the reading's `FOOT-CELL` line
+ * (`footCellLine`) is printed either way. Answers the last `readFootEnds` answer, which a row
+ * reads for a scroller it names. First starts `watchRoomHeld` on the page, so `expectNoEndRoom`
+ * reads the room each scroller held while a float showed.
  */
-export async function expectFootClear(
-  page: Page,
-  selectors: FootSelectors,
-  message: string
-): Promise<FootEnds> {
+export async function expectFootClear(page: Page, message: string): Promise<FootEnds> {
   let ends: FootEnds = {
     floats: [],
     navigationTop: null,
     scrollers: [],
-    problems: ["the foot was never read"],
+    problems: { covers: [], short: [], navigation: [], unsettled: [] },
   };
-  let problems: readonly string[] = ends.problems;
+  let problems: readonly string[] = ["the foot was never read"];
   try {
     await page.evaluate(watchRoomHeld, FOOT_NAMES);
     await expect
       .poll(
         async () => {
           ends = await page.evaluate(readFootEnds, FOOT_NAMES);
-          const elements = await page.evaluate(readFootElements, selectors);
-          problems = [...ends.problems, ...elements.problems];
+          const elements = await page.evaluate(readFootElements);
+          problems = [...Object.values(ends.problems).flat(), ...elements.problems];
           return problems;
         },
         { message }

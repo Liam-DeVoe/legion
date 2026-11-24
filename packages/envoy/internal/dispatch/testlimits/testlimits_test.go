@@ -1,6 +1,6 @@
 package testlimits
 
-//ci:reads packages/daemon/docker/legion-testpg TestLegionTestPGAllowsServerConnections os.ReadFile (legionTestPG, ../../../../daemon/docker/legion-testpg): its max_connections literal must equal testlimits.ServerConnections plus Postgres's default superuser reserve
+//ci:reads packages/daemon/docker/legion-testpg TestLegionTestPGAllowsServerConnections os.ReadFile (legionTestPG, ../../../../daemon/docker/legion-testpg): its max_connections literal must equal testlimits.ServerConnections plus Postgres's default superuser reserve, and TestTheDocumentsStateTheTestServersListenQueue holds the listen queue its comment states (twice that max_connections) to the same sum through docnumbers.Check under ../../../../..
 
 import (
 	"os"

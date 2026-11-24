@@ -269,7 +269,7 @@ import { type RefObject, useLayoutEffect } from "react";
  * one, while it holds no room of its own, reads 0, never the room of the scroller around it. The
  * spacer takes its own scroller's value by `inherit`, which reaches that scroller alone.
  */
-const FOOT_LAYERS = [
+export const FOOT_LAYERS = [
   { name: "page", property: "--foot-page-inset" },
   { name: "banner", property: "--foot-banner-inset" },
   { name: "status", property: "--foot-status-inset" },

@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -201,6 +202,25 @@ func optionComment(key, body string) string {
 	return key + " " + parentStatusRuleActor.Kind + ":" + parentStatusRuleActor.ID + ": " + body + " " + statusChangeRule
 }
 
+// namedComment is the comment of Dispatch's system actor on named, the issue a call of caller
+// names, that lists what the call's options changed, as storedComments lists it: options is each
+// option that changed an issue as the comment names it, and each line is one change (movedLine,
+// removedLine).
+func namedComment(named, caller, options string, lines ...string) string {
+	return optionComment(named, fmt.Sprintf("Dispatch changed the issues below, because %s's status change of %s passed %s.", caller, named, options)) +
+		"\n\n" + strings.Join(lines, "\n")
+}
+
+// movedLine is the line of namedComment for key, which option moved from status from to to.
+func movedLine(key, from, to, option string) string {
+	return fmt.Sprintf("- %s moved from `%s` to `%s` (`%s`)", key, from, to, option)
+}
+
+// removedLine is the line of namedComment for key, which unlink_children removed from named.
+func removedLine(key, named string) string {
+	return fmt.Sprintf("- %s removed from %s (`unlink_children`)", key, named)
+}
+
 // requireComments fails t unless the comments on keys are want, in their order.
 func requireComments(t *testing.T, database *store.Store, keys []string, want ...string) {
 	t.Helper()
@@ -226,8 +246,10 @@ func (rig ruleRig) requireIssue(t *testing.T, key, status, parent string) {
 // issues close deepest first, then the issue itself; for backlog an icebox child is kept, as it is
 // not started already; a done child is kept in both. The answer lists each change in the order of
 // the writes, and each issue an option changes has one comment of Dispatch's system actor that
-// names the caller, the issue and the option, the issue the call names none. With the rule on, the
-// same close with no option is refused before anything is written.
+// names the caller, the issue and the option. The issue the call names then has one comment of
+// that actor too, after them, which names the call and lists each change; it has none when the
+// option moved no issue, and none after a call with no option. With the rule on, the same close
+// with no option is refused before anything is written.
 func TestIncludeChildrenMovesTheOpenIssuesUnderIt(t *testing.T) {
 	rig := newStatusChangeRig(t, true)
 
@@ -258,7 +280,9 @@ func TestIncludeChildrenMovesTheOpenIssuesUnderIt(t *testing.T) {
 			return optionComment(key, fmt.Sprintf("Dispatch moved this issue from `%s` to `done` with %s, because alice's status change of %s passed `include_children`.", from, root, root))
 		}
 		requireComments(t, rig.database, []string{root, middle, leaf, done, iced},
-			moved(leaf, "todo"), moved(middle, "in_progress"), moved(iced, "icebox"))
+			moved(leaf, "todo"), moved(middle, "in_progress"), moved(iced, "icebox"),
+			namedComment(root, "alice", "`include_children`", movedLine(leaf, "todo", "done", optionIncludeChildren),
+				movedLine(middle, "in_progress", "done", optionIncludeChildren), movedLine(iced, "icebox", "done", optionIncludeChildren)))
 	})
 
 	t.Run("backlog moves the issues in work under the issue and keeps the rest", func(t *testing.T) {
@@ -286,7 +310,26 @@ func TestIncludeChildrenMovesTheOpenIssuesUnderIt(t *testing.T) {
 		moved := func(key, from string) string {
 			return optionComment(key, fmt.Sprintf("Dispatch moved this issue from `%s` to `backlog` with %s, because alice's status change of %s passed `include_children`.", from, root, root))
 		}
-		requireComments(t, rig.database, []string{root, child, grandchild, iced, done}, moved(grandchild, "todo"), moved(child, "in_progress"))
+		requireComments(t, rig.database, []string{root, child, grandchild, iced, done}, moved(grandchild, "todo"), moved(child, "in_progress"),
+			namedComment(root, "alice", "`include_children`", movedLine(grandchild, "todo", "backlog", optionIncludeChildren),
+				movedLine(child, "in_progress", "backlog", optionIncludeChildren)))
+	})
+
+	t.Run("an option that moves no issue, and a call with no option, leave no comment", func(t *testing.T) {
+		root := rig.file(t, "Root moved alone", "in_progress", "")
+		done := rig.file(t, "Child that stays done", "done", root)
+		seq := issueLastSeq(t, rig.database, root)
+		write := statusChangeOf(root, map[string]any{"status": "todo", "include_children": true})
+		requireStatusChange(t, write.String(), rig.send(t, write), http.StatusOK, wantAnswer(
+			wantChange{root, "todo", "", seq, seq + 1},
+			wantChange{root, "todo", "", seq, seq + 1},
+		))
+		plain := statusChangeOf(root, map[string]any{"status": "backlog"})
+		requireStatusChange(t, plain.String(), rig.send(t, plain), http.StatusOK, wantAnswer(
+			wantChange{root, "backlog", "", seq + 1, seq + 2},
+			wantChange{root, "backlog", "", seq + 1, seq + 2},
+		))
+		requireComments(t, rig.database, []string{root, done})
 	})
 
 	t.Run("with no option the close is refused and nothing is written", func(t *testing.T) {
@@ -757,12 +800,12 @@ func TestATokenBesideABrowserIdentityIsTheTokens(t *testing.T) {
 // TestAStatusChangesCommentNamesItsCallerAsItsCredentialProvedIt: the comment of an option names
 // its caller from what the request's credential proved. A session that the body names under the
 // deployment's shared token, which proves none, is quoted as code: the id with every backtick,
-// line ending, other control character and format character removed, cut to
-// claimedSessionNameMax runes, in one code span, so a Markdown link, a new line and a block line
-// in the id stay inside that span, the comment reads as one paragraph that links nowhere, and no
-// bidirectional control or zero-width character of the id gets into it. An id the cleaning
-// empties is "a session". A personal token names the person it belongs to, whatever session its
-// body names.
+// line ending, other control character, format character, variation selector and other
+// default-ignorable character removed, cut to claimedSessionNameMax runes, in one code span, so a
+// Markdown link, a new line and a block line in the id stay inside that span, the comment reads as
+// one paragraph that links nowhere, and no bidirectional control or zero-width character of the id
+// gets into it. An id the cleaning empties is "a session". A personal token names the person it
+// belongs to, whatever session its body names.
 func TestAStatusChangesCommentNamesItsCallerAsItsCredentialProvedIt(t *testing.T) {
 	rig := newStatusChangeRig(t, true)
 	// started starts a new issue on the backlog, under a new parent on the backlog, with
@@ -783,10 +826,14 @@ func TestAStatusChangesCommentNamesItsCallerAsItsCredentialProvedIt(t *testing.T
 	shared := func(t *testing.T, path string, body map[string]any) *httptest.ResponseRecorder {
 		return sessionRequest(t, rig.handler, http.MethodPost, path, body)
 	}
-	// moved is the comment that the call on named by caller leaves on parent.
+	// moved is the comment that the call on named by caller leaves on parent, and listed the one it
+	// leaves on named, which lists that move.
 	moved := func(parent, named, caller string) string {
 		return optionComment(parent, fmt.Sprintf(
 			"Dispatch moved this issue from `backlog` to `in_progress`, because %s's status change of %s passed `include_parent`.", caller, named))
+	}
+	listed := func(parent, named, caller string) string {
+		return namedComment(named, caller, "`include_parent`", movedLine(parent, "backlog", "in_progress", optionIncludeParent))
 	}
 
 	t.Run("a session the shared token's body names is code that holds no link, line or block", func(t *testing.T) {
@@ -795,7 +842,7 @@ func TestAStatusChangesCommentNamesItsCallerAsItsCredentialProvedIt(t *testing.T
 		// ::: ends.
 		const quoted = "ses_evil[a link](https://evil.example/x):::decisionWhich one?:::"
 		parent, named := started(t, "Named by the body", map[string]any{"kind": "session", "id": id}, shared)
-		requireComments(t, rig.database, []string{parent, named}, moved(parent, named, "`"+quoted+"`"))
+		requireComments(t, rig.database, []string{parent, named}, moved(parent, named, "`"+quoted+"`"), listed(parent, named, "`"+quoted+"`"))
 		var body string
 		if err := rig.database.Pool.QueryRow(context.Background(), `select body from comments where issue_key = $1`, parent).Scan(&body); err != nil {
 			t.Fatalf("read the comment on %s: %v", parent, err)
@@ -822,19 +869,20 @@ func TestAStatusChangesCommentNamesItsCallerAsItsCredentialProvedIt(t *testing.T
 
 	t.Run("a session id the cleaning empties is a session", func(t *testing.T) {
 		parent, named := started(t, "Named by backticks alone", map[string]any{"kind": "session", "id": "``\n`\t`"}, shared)
-		requireComments(t, rig.database, []string{parent, named}, moved(parent, named, "a session"))
+		requireComments(t, rig.database, []string{parent, named}, moved(parent, named, "a session"), listed(parent, named, "a session"))
 	})
 
 	t.Run("a session id is quoted with no bidirectional control and no zero-width character", func(t *testing.T) {
-		// U+202E would turn the text after the span right to left, and U+200B stays in the span
-		// with no width.
-		parent, named := started(t, "Named with format characters", map[string]any{"kind": "session", "id": "ses_\u202Eevil\u200B_id"}, shared)
-		requireComments(t, rig.database, []string{parent, named}, moved(parent, named, "`ses_evil_id`"))
+		// U+202E would turn the text after the span right to left. U+200B, the combining grapheme
+		// joiner U+034F, the variation selector U+FE0F and the Hangul filler U+3164 each stay in the
+		// span with no width: only U+200B of them is a format character.
+		parent, named := started(t, "Named with format characters", map[string]any{"kind": "session", "id": "ses_\u202Eevil\u200B\u034F\uFE0F\u3164_id"}, shared)
+		requireComments(t, rig.database, []string{parent, named}, moved(parent, named, "`ses_evil_id`"), listed(parent, named, "`ses_evil_id`"))
 	})
 
-	t.Run("a session id of format characters alone is a session", func(t *testing.T) {
-		parent, named := started(t, "Named by format characters alone", map[string]any{"kind": "session", "id": "\u202E\u200B\u2066\u200E\u061C\uFEFF"}, shared)
-		requireComments(t, rig.database, []string{parent, named}, moved(parent, named, "a session"))
+	t.Run("a session id of format characters and other zero-width characters alone is a session", func(t *testing.T) {
+		parent, named := started(t, "Named by zero-width characters alone", map[string]any{"kind": "session", "id": "\u202E\u200B\u2066\u200E\u061C\uFEFF\u034F\uFE0F\u3164"}, shared)
+		requireComments(t, rig.database, []string{parent, named}, moved(parent, named, "a session"), listed(parent, named, "a session"))
 	})
 
 	t.Run("a personal token names its owner, not the session its body names", func(t *testing.T) {
@@ -843,14 +891,14 @@ func TestAStatusChangesCommentNamesItsCallerAsItsCredentialProvedIt(t *testing.T
 			func(t *testing.T, path string, body map[string]any) *httptest.ResponseRecorder {
 				return agentRequest(t, rig.handler, http.MethodPost, path, body, token)
 			})
-		requireComments(t, rig.database, []string{parent, named}, moved(parent, named, "bob"))
+		requireComments(t, rig.database, []string{parent, named}, moved(parent, named, "bob"), listed(parent, named, "bob"))
 	})
 }
 
 // TestUnlinkChildrenMakesEachARoot: unlink_children removes each open child of the issue from it,
 // a child of every group, so each one becomes a root with its status and the issues under it; a
 // done child stays. Each unlinked child has one comment that names the call, and the issue the
-// call names none.
+// call names has one after them, which names the call and lists each unlink.
 func TestUnlinkChildrenMakesEachARoot(t *testing.T) {
 	rig := newStatusChangeRig(t, true)
 	named := rig.file(t, "Parent closed without its children", "in_progress", "")
@@ -882,14 +930,17 @@ func TestUnlinkChildrenMakesEachARoot(t *testing.T) {
 		return optionComment(key, fmt.Sprintf("Dispatch removed this issue from %s, because alice's status change of %s passed `unlink_children`.", named, named))
 	}
 	requireComments(t, rig.database, []string{named, triaged, backlog, grandchild, planned, running, done},
-		removed(triaged), removed(backlog), removed(planned), removed(running))
+		removed(triaged), removed(backlog), removed(planned), removed(running),
+		namedComment(named, "alice", "`unlink_children`", removedLine(triaged, named), removedLine(backlog, named),
+			removedLine(planned, named), removedLine(running, named)))
 }
 
 // TestIncludeParentMovesTheAncestorsIntoWork: include_parent moves each ancestor of the issue that
 // is not in work to in_progress, highest first, and keeps an ancestor in work as it is. A done
 // ancestor is reopened into in_progress, which the reopen of its done child under it needs:
 // with no option the rule refuses that reopen. Each moved ancestor has one comment that names the
-// call, and the issue the call names none.
+// call, and the issue the call names has one after them, which names the call and lists each
+// move; it has none when every ancestor is in work already.
 func TestIncludeParentMovesTheAncestorsIntoWork(t *testing.T) {
 	rig := newStatusChangeRig(t, true)
 
@@ -916,7 +967,9 @@ func TestIncludeParentMovesTheAncestorsIntoWork(t *testing.T) {
 		moved := func(key string) string {
 			return optionComment(key, fmt.Sprintf("Dispatch moved this issue from `backlog` to `in_progress`, because alice's status change of %s passed `include_parent`.", named))
 		}
-		requireComments(t, rig.database, []string{top, upper, lower, named}, moved(upper), moved(lower))
+		requireComments(t, rig.database, []string{top, upper, lower, named}, moved(upper), moved(lower),
+			namedComment(named, "alice", "`include_parent`", movedLine(upper, "backlog", "in_progress", optionIncludeParent),
+				movedLine(lower, "backlog", "in_progress", optionIncludeParent)))
 	})
 
 	t.Run("a done ancestor is reopened", func(t *testing.T) {
@@ -937,7 +990,20 @@ func TestIncludeParentMovesTheAncestorsIntoWork(t *testing.T) {
 		rig.requireIssue(t, parent, "in_progress", "")
 		rig.requireIssue(t, named, "backlog", parent)
 		requireComments(t, rig.database, []string{parent, named}, optionComment(parent,
-			fmt.Sprintf("Dispatch moved this issue from `done` to `in_progress`, because alice's status change of %s passed `include_parent`.", named)))
+			fmt.Sprintf("Dispatch moved this issue from `done` to `in_progress`, because alice's status change of %s passed `include_parent`.", named)),
+			namedComment(named, "alice", "`include_parent`", movedLine(parent, "done", "in_progress", optionIncludeParent)))
+	})
+
+	t.Run("an ancestor in work is kept, and the issue gets no comment", func(t *testing.T) {
+		parent := rig.file(t, "Ancestor kept in work", "in_progress", "")
+		named := rig.file(t, "Issue started under it", "backlog", parent)
+		seq := issueLastSeq(t, rig.database, named)
+		write := statusChangeOf(named, map[string]any{"status": "todo", "include_parent": true})
+		requireStatusChange(t, write.String(), rig.send(t, write), http.StatusOK, wantAnswer(
+			wantChange{named, "todo", parent, seq, seq + 1},
+			wantChange{named, "todo", parent, seq, seq + 1},
+		))
+		requireComments(t, rig.database, []string{parent, named})
 	})
 }
 
@@ -996,11 +1062,12 @@ func (rig ruleRig) keyedStatusChange(t *testing.T, write ruleWrite, key string) 
 // TestADryRunWritesNothing: a dry run of each option answers each issue the call would change,
 // with the status and the parent the call would leave, the issue's last_seq now and no issue, and
 // writes nothing: no row, no event, no comment, and under a request key no recovery point. Its
-// entries name the issues, statuses and parents of the real call's. Its 200 goes out through the
-// route's layers as the handler wrote it (addChangedToRefusals holds it and writes it unchanged):
-// Content-Type application/json, and the bytes WriteJSON writes for the answer, with no changed
-// added or moved. With the rule off, a dry run of a call the rule would refuse answers 409
-// PARENT_STATUS_CONFLICT as with it on, and the real call is taken.
+// entries name the issues, statuses and parents of the real call's. The issue the call names is in
+// both when the call writes it the status it has, since its own step writes it then too. Its 200
+// goes out through the route's layers as the handler wrote it (addChangedToRefusals holds it and
+// writes it unchanged): Content-Type application/json, and the bytes WriteJSON writes for the
+// answer, with no changed added or moved. With the rule off, a dry run of a call the rule would
+// refuse answers 409 PARENT_STATUS_CONFLICT as with it on, and the real call is taken.
 func TestADryRunWritesNothing(t *testing.T) {
 	rig := newStatusChangeRig(t, true)
 	for index, test := range statusChangeCases {
@@ -1053,6 +1120,29 @@ func TestADryRunWritesNothing(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("the issue the call writes at the status it has is in the dry run as in the call", func(t *testing.T) {
+		named := rig.file(t, "Parent kept in work", "in_progress", "")
+		child := rig.file(t, "Child moved into work", "backlog", named)
+		body := map[string]any{"status": "in_progress", "include_children": true}
+		dry := statusChangeOf(named, withMembers(body, map[string]any{"dry_run": true}))
+		planned := rig.send(t, dry)
+		if planned.Code != http.StatusOK {
+			t.Fatalf("%s: status=%d body=%s, want 200", dry, planned.Code, planned.Body.String())
+		}
+		real := statusChangeOf(named, body)
+		taken := rig.send(t, real)
+		if taken.Code != http.StatusOK {
+			t.Fatalf("%s: status=%d body=%s, want 200", real, taken.Code, taken.Body.String())
+		}
+		want := []string{named + " in_progress under ", child + " in_progress under " + named}
+		if got := changedOf(t, planned); !slices.Equal(got, want) {
+			t.Errorf("the dry run answered %q, want %q: the step of %s writes in_progress again", got, want, named)
+		}
+		if got := changedOf(t, taken); !slices.Equal(got, want) {
+			t.Errorf("the call changed %q, want %q: the step of %s writes in_progress again", got, want, named)
+		}
+	})
 
 	t.Run("a call the rule refuses, with the rule off", func(t *testing.T) {
 		off := newStatusChangeRig(t, false)
@@ -1152,14 +1242,14 @@ func TestAStatusChangeRefusedMidwayNamesWhatItChanged(t *testing.T) {
 	}))
 }
 
-// TestAStatusChangeRefusedByItsRequestKeyAnswersChanged: every refusal of the route carries
-// changed beside its code, [] when no step committed before it (plan v19, "The contract"; the
-// check c-route-fence: "a call refused before its first step answers an empty changed"). The
-// refusals of the call's request key carry it too. A repeat while the first holder runs (409
-// KEY_IN_FLIGHT, a 409 whose declared body, StatusChangeRefusal, requires changed) names the
-// entries the running call has committed: here its step 0, the named issue's own move into work.
-// The key sent again with another body (422 KEY_REUSED) and a malformed key (400 KEY_INVALID),
-// under which nothing ran, answer changed [].
+// TestAStatusChangeRefusedByItsRequestKeyAnswersChanged: every refusal that the route's handler
+// answers carries changed beside its code, [] when no step committed before it (plan v19, "The
+// contract"; the check c-route-fence: "a call refused before its first step answers an empty
+// changed"). The refusals of the call's request key carry it too. A repeat while the first holder
+// runs (409 KEY_IN_FLIGHT, a 409 whose declared body, StatusChangeRefusal, requires changed) names
+// the entries the running call has committed: here its step 0, the named issue's own move into
+// work. The key sent again with another body (422 KEY_REUSED) and a malformed key (400
+// KEY_INVALID), under which nothing ran, answer changed [].
 func TestAStatusChangeRefusedByItsRequestKeyAnswersChanged(t *testing.T) {
 	rig := newRepeatRig(t)
 	named := rig.file(t, "Issue whose key is refused", "backlog", "")
@@ -1456,8 +1546,9 @@ func requireEachWriteKeepsTheRule(t *testing.T, database *store.Store, after int
 // requireTheCallWroteItsEntries holds each entry of answer to what the call wrote. Each event of
 // the entry's issue after its previous_last_seq, up to its issue's last_seq, was appended after the
 // event id after, when the call began. Each event of the issue after that, up to its last_seq now,
-// is a child.status that a later step of the call appended. The answer's issue is the named
-// issue's entry's.
+// is a child.status that a later step of the call appended, but for one comment.created on named,
+// the issue the call names, after them: the comment that lists what the options changed, which
+// the call writes after its last step. The answer's issue is the named issue's entry's.
 func requireTheCallWroteItsEntries(t *testing.T, database *store.Store, after int64, named string, answer statusChangeAnswer) {
 	t.Helper()
 	for index, entry := range answer.Changed {
@@ -1474,6 +1565,7 @@ func requireTheCallWroteItsEntries(t *testing.T, database *store.Store, after in
 		if err != nil {
 			t.Fatalf("read the events of %s: %v", entry.Key, err)
 		}
+		commented := false
 		for rows.Next() {
 			var id int64
 			var seq int
@@ -1484,8 +1576,11 @@ func requireTheCallWroteItsEntries(t *testing.T, database *store.Store, after in
 			switch {
 			case id <= after:
 				t.Errorf("the event %d of %s at seq %d, after the entry's previous_last_seq %d, was appended before the call", id, entry.Key, seq, entry.PreviousLastSeq)
-			case seq > entry.Issue.LastSeq && (kind != "child.status" || !later[child]):
-				t.Errorf("the event %d of %s at seq %d, after the entry's last_seq %d, is %s of %q, want a child.status of a later step", id, entry.Key, seq, entry.Issue.LastSeq, kind, child)
+			case seq > entry.Issue.LastSeq && entry.Key == named && kind == "comment.created" && !commented:
+				commented = true
+			case seq > entry.Issue.LastSeq && (commented || kind != "child.status" || !later[child]):
+				t.Errorf("the event %d of %s at seq %d, after the entry's last_seq %d, is %s of %q, want a child.status of a later step, then the comment on %s",
+					id, entry.Key, seq, entry.Issue.LastSeq, kind, child, named)
 			}
 		}
 		rows.Close()
@@ -1738,7 +1833,9 @@ func TestTheStatusChangeRouteTakesThePatchFence(t *testing.T) {
 		moved := func(key, from string) string {
 			return optionComment(key, fmt.Sprintf("Dispatch moved this issue from `%s` to `backlog` with %s, because alice's status change of %s passed `include_children`.", from, named, named))
 		}
-		requireComments(t, rig.database, []string{named, child, first, second}, moved(first, "todo"), moved(child, "in_progress"))
+		requireComments(t, rig.database, []string{named, child, first, second}, moved(first, "todo"), moved(child, "in_progress"),
+			namedComment(named, "alice", "`include_children`", movedLine(first, "todo", "backlog", optionIncludeChildren),
+				movedLine(child, "in_progress", "backlog", optionIncludeChildren)))
 	})
 
 	t.Run("an ancestor another writer moved into work between two steps keeps that status", func(t *testing.T) {
@@ -1758,8 +1855,10 @@ func TestTheStatusChangeRouteTakesThePatchFence(t *testing.T) {
 			wantChange{named, "todo", lower, seq[named], seq[named] + 1},
 		))
 		rig.requireIssue(t, lower, "todo", upper)
+		// The comment on the named issue lists the one ancestor the call moved, not the plan's two.
 		requireComments(t, rig.database, []string{upper, lower, named}, optionComment(upper,
-			fmt.Sprintf("Dispatch moved this issue from `backlog` to `in_progress`, because alice's status change of %s passed `include_parent`.", named)))
+			fmt.Sprintf("Dispatch moved this issue from `backlog` to `in_progress`, because alice's status change of %s passed `include_parent`.", named)),
+			namedComment(named, "alice", "`include_parent`", movedLine(upper, "backlog", "in_progress", optionIncludeParent)))
 	})
 }
 
@@ -2031,7 +2130,8 @@ func movedComment(key, from, to, named string) string {
 // replayRecovered) names each member as those statements do.
 func TestEachFieldOfAStatusChangesRecoveryPointIsTaggedWithItsMember(t *testing.T) {
 	members := map[string]string{
-		"Changed": pointChanged, "Events": pointEvents, "Withdrawn": pointWithdrawn, "Finished": pointFinished, "Issue": pointIssue,
+		"Changed": pointChanged, "Events": pointEvents, "Withdrawn": pointWithdrawn, "Moved": pointMoved, "Finished": pointFinished,
+		"Issue": pointIssue,
 	}
 	fields := reflect.VisibleFields(reflect.TypeFor[statusChangeRecovery]())
 	if len(fields) != len(members) {
@@ -2046,6 +2146,74 @@ func TestEachFieldOfAStatusChangesRecoveryPointIsTaggedWithItsMember(t *testing.
 		if tag, _, _ := strings.Cut(field.Tag.Get("json"), ","); tag != member {
 			t.Errorf("statusChangeRecovery.%s has the json tag %q, want %q, its member's constant", field.Name, tag, member)
 		}
+	}
+}
+
+// TestTheCommentOnTheNamedIssueListsWhatOneBlockHoldsAndCountsTheRest: the comment on the issue a
+// call names lists the moves, in their order, while one block holds them, and its last line then
+// counts the moves it leaves out. So the comment of a call whose options changed thousands of
+// issues passes each check that queueIssueComment makes of its body: its line endings are line
+// feeds, it holds text, and itemblocks.Check refuses none of its blocks. The list stops close to
+// the bound, not far before it. The paragraph names the option of each move, of a move the list
+// leaves out too. A call whose moves fit lists each of them and counts none.
+func TestTheCommentOnTheNamedIssueListsWhatOneBlockHoldsAndCountsTheRest(t *testing.T) {
+	const named = "ACME-1"
+	// moved is count moves by include_children of the issues after first, then, past the cut, one
+	// move by include_parent: no call writes in that order, so that only a move the list leaves out
+	// brings its option.
+	moved := func(first, count int) []statusChangeMove {
+		moves := make([]statusChangeMove, 0, count+1)
+		for index := range count {
+			moves = append(moves, statusChangeMove{
+				Key: fmt.Sprintf("ACME-%d", first+index), Option: optionIncludeChildren, From: "in_progress", To: "done",
+			})
+		}
+		return append(moves, statusChangeMove{Key: "ACME-99999", Option: optionIncludeParent, From: "backlog", To: "in_progress"})
+	}
+	// The moves of an earlier attempt come first, all by include_children, then the attempt's own.
+	earlier := moved(2, 3000)[:3000]
+	run := &statusChangeRun{key: named, callerName: "alice", resumed: &statusChangeRecovery{Moved: earlier}, moved: moved(3002, 2000)}
+	all := append(slices.Clone(run.resumed.Moved), run.moved...)
+	body := run.namedComment()
+	if pmdoc.LineFeeds(body) != body || strings.TrimSpace(body) == "" {
+		t.Fatalf("the comment is blank or holds a line ending that is no line feed: %q", body)
+	}
+	if err := itemblocks.Check("body", body); err != nil {
+		t.Fatalf("the comment for %d moves is refused: %v", len(all), err)
+	}
+	blocks := itemblocks.Split(body)
+	if len(blocks) != 2 {
+		t.Fatalf("the comment is %d blocks, want a paragraph and a list", len(blocks))
+	}
+	want := "Dispatch changed the issues below, because alice's status change of " + named + " passed `include_children` and `include_parent`. " + statusChangeRule
+	if blocks[0].Text != want {
+		t.Errorf("the paragraph is %q, want %q", blocks[0].Text, want)
+	}
+	lines := strings.Split(blocks[1].Text, "\n")
+	listed := len(lines) - 1
+	if listed < 1 || listed >= len(all) {
+		t.Fatalf("the list holds %d lines for %d moves, want the moves one block holds and one line that counts the rest", len(lines), len(all))
+	}
+	for index, line := range lines[:listed] {
+		if move := all[index]; line != movedLine(move.Key, move.From, move.To, move.Option) {
+			t.Fatalf("line %d of the list is %q, want the move of %s", index+1, line, move.Key)
+		}
+	}
+	if count := fmt.Sprintf("- and %d more, each with a comment of its own", len(all)-listed); lines[listed] != count {
+		t.Errorf("the last line of the list is %q, want %q", lines[listed], count)
+	}
+	if units := itemblocks.Units16(blocks[1].Text); units < contracts.DispatchBlockUnits-200 {
+		t.Errorf("the list is %d units, want it to stop close to the bound of %d", units, contracts.DispatchBlockUnits)
+	}
+
+	// A list that holds every move counts none. namedComment is the comment as storedComments
+	// lists it, after its issue and its author.
+	few := &statusChangeRun{key: named, callerName: "alice", moved: moved(2, 2)}
+	got := named + " " + parentStatusRuleActor.Kind + ":" + parentStatusRuleActor.ID + ": " + few.namedComment()
+	if want := namedComment(named, "alice", "`include_children` and `include_parent`",
+		movedLine("ACME-2", "in_progress", "done", optionIncludeChildren), movedLine("ACME-3", "in_progress", "done", optionIncludeChildren),
+		movedLine("ACME-99999", "backlog", "in_progress", optionIncludeParent)); got != want {
+		t.Errorf("the comment for three moves is\n%s\nwant\n%s", got, want)
 	}
 }
 
@@ -2096,12 +2264,19 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 		rig.requireIssue(t, first, "todo", "")
 		rig.requireIssue(t, second, "todo", "")
 		requireEachClosedOnce(t, rig.database, named)
-		requireComments(t, rig.database, []string{named, first, second}, unlinkComment(first, named), unlinkComment(second, named))
+		// The repeat that took the key over wrote the one comment on the named issue, which lists the
+		// unlinks the first run made; the replay below writes no second one.
+		comments := []string{
+			unlinkComment(first, named), unlinkComment(second, named),
+			namedComment(named, "alice", "`unlink_children`", removedLine(first, named), removedLine(second, named)),
+		}
+		requireComments(t, rig.database, []string{named, first, second}, comments...)
 		again := rig.keyedStatusChange(t, write, key)
 		requireStatusChange(t, write.String()+" repeated after it finished", again, http.StatusOK, want)
 		if !replayed(again) {
 			t.Error("the repeat of the finished call is not marked replayed")
 		}
+		requireComments(t, rig.database, []string{named, first, second}, comments...)
 	})
 
 	t.Run("a resumed attempt cut off in its turn and repeated again makes every step once", func(t *testing.T) {
@@ -2136,7 +2311,9 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 		requireEachClosedOnce(t, rig.database, append([]string{named}, children...)...)
 		requireComments(t, rig.database, append([]string{named}, children...),
 			movedComment(children[0], "todo", "done", named), movedComment(children[1], "todo", "done", named),
-			movedComment(children[2], "todo", "done", named))
+			movedComment(children[2], "todo", "done", named),
+			namedComment(named, "alice", "`include_children`", movedLine(children[0], "todo", "done", optionIncludeChildren),
+				movedLine(children[1], "todo", "done", optionIncludeChildren), movedLine(children[2], "todo", "done", optionIncludeChildren)))
 	})
 
 	t.Run("a run cut off at its time bound keeps its row with a released lease, and its repeat finishes", func(t *testing.T) {
@@ -2230,8 +2407,15 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 			wantChange{child, "todo", named, seq[child], seq[child] + 2},
 		)
 		requireStatusChange(t, write.String()+" repeated", rig.keyedStatusChange(t, write, key), http.StatusOK, want)
-		if after := lastEventID(t, rig.database); after != before {
-			t.Errorf("the repeat appended events up to %d after %d, want none: no step was left", after, before)
+		// No step was left, so the repeat appends one event alone: the comment.created of the
+		// comment on the named issue, which the stopped run had not written.
+		var appended []string
+		rows, err := rig.database.Pool.Query(context.Background(), `select issue_key || ' ' || type from events where id > $1 order by id`, before)
+		if err == nil {
+			appended, err = pgx.CollectRows(rows, pgx.RowTo[string])
+		}
+		if err != nil || !slices.Equal(appended, []string{named + " comment.created"}) {
+			t.Errorf("the repeat appended %q (%v), want the comment.created of %s alone: no step was left", appended, err, named)
 		}
 		if held := rig.keyRow(t, key); held.attempt != 2 || !held.point.Finished {
 			t.Errorf("the key holds attempt %d and the point %+v, want attempt 2, marked", held.attempt, held.point)
@@ -2245,6 +2429,9 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 		if !replayed(again) {
 			t.Error("the repeat of the finished call is not marked replayed")
 		}
+		// The stopped run's comment rolled back with its refused mark, and the replay wrote none.
+		requireComments(t, rig.database, []string{named, child}, movedComment(child, "backlog", "todo", named),
+			namedComment(named, "alice", "`include_children`", movedLine(child, "backlog", "todo", optionIncludeChildren)))
 	})
 
 	t.Run("a point with no mark and another writer's event on the named issue answers ISSUE_CHANGED", func(t *testing.T) {

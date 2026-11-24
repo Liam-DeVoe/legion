@@ -3015,14 +3015,13 @@ const sourceDoneDryRun = { dry_run: true, status: "done" };
 
 // A child of a merge's source can be in another project, which this table does not list, so the
 // merge does not move it. Before the close, the listing read again still counts it under the
-// source, and Dispatch's dry run of the close names it. The merge names it with its project, and
-// posts no reason and closes nothing: with the rule off the close would land over the open child,
-// and with the rule on it would be refused after the reason. Finish does the same until the child
-// has moved out, then posts the reason and closes the source.
-test.each([
-  ["off", false],
-  ["on", true],
-])("a merge whose source holds an open child in another project, with the rule %s, names the child with its project and closes nothing, on its first run and on Finish, until the child has moved", async (_rule, ruleOn) => {
+// source, and Dispatch's dry run of the close names it: Dispatch answers that dry run as the rule
+// is on, whatever its setting. The merge names the child with its project, and posts no reason and
+// closes nothing: with the rule off the close would land over the open child, and with the rule on
+// it would be refused after the reason, so the absence of `PATCH CORE-1` in `sent` covers both
+// settings. Finish does the same until the child has moved out, then posts the reason and closes
+// the source.
+test("a merge whose source holds an open child in another project names the child with its project and closes nothing, whatever the rule's setting, on its first run and on Finish, until the child has moved", async () => {
   const user = userEvent.setup();
   const rows = mergeRows("in_progress");
   // CORE-1 has two children: CORE-3, which the table lists, and ACME-5, which it does not. Each
@@ -3030,22 +3029,10 @@ test.each([
   // ACME, as an open child.
   rewrite(rows, "CORE-1", { progress: { tasks: null, children: { done: 0, total: 2 } } });
   const sent = answerOnRows(rows);
-  let childOpen = true;
   answerStatusChanges().mockImplementation(async (key, input) => {
     sent.push(["status-change", key, input]);
     throw fixtureRefusal("conflict");
   });
-  if (ruleOn)
-    answerIssuePatches().mockImplementation(async (key, input) => {
-      sent.push(["PATCH", key, input]);
-      if (key === "CORE-1" && input.status === "done" && childOpen)
-        throw fixtureRefusal("conflict");
-      rewrite(rows, key, {
-        ...(input.parent === undefined ? {} : { parent: input.parent }),
-        ...(typeof input.status === "string" ? { status: input.status } : {}),
-      });
-      return savedIssue(key);
-    });
   const said =
     "The source epic CORE-1 remains open: ACME-5 “Child in work” (project ACME) still needs to move.";
   table(rows, "?group=epic");
@@ -3072,7 +3059,6 @@ test.each([
   expect(sent.slice(before)).toEqual([["status-change", "CORE-1", sourceDoneDryRun]]);
 
   // The reader moves ACME-5 out of CORE-1 in its own project.
-  childOpen = false;
   rewrite(rows, "CORE-1", { progress: { tasks: null, children: { done: 0, total: 0 } } });
   before = sent.length;
   await pressFinish(user);

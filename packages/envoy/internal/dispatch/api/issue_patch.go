@@ -132,6 +132,11 @@ type issueWriteCallStep struct {
 	// leaves the issue as it stands: the step writes no row, no event and no comment, and rolls
 	// its transaction back. It is nil for a step that always writes: the named issue's own.
 	leaves func(before model.Issue) bool
+	// moved is what the write of a step of an option changes, from the issue as the step reads it
+	// under its owner lock, which the comment on named lists (statusChangeRun.namedComment). A
+	// step of a keyed call that writes keeps it in the call's recovery point (queueStatusChangeStep).
+	// It is nil for the named issue's own step and for a step of R25's fix.
+	moved func(before model.Issue) statusChangeMove
 	// sweepsLater is that the caller runs the ask sweep of the step's close itself, after the
 	// call's last step (issueWriteResult.closed), so that no fence of the call reads the events of
 	// the sweep. Only the named issue's own step sets it.
@@ -198,6 +203,9 @@ type issueWriteResult struct {
 	// sweep itself, except for a step whose caller sweeps later (issueWriteCallStep.sweepsLater).
 	closed    bool
 	withdrawn []model.Ask
+	// moved is what the write of a step of an option changed (issueWriteCallStep.moved): nil for
+	// every other write, and for a write that wrote nothing.
+	moved *statusChangeMove
 }
 
 // writeIssue is the PATCH's write core. It parses the call's fields, takes the owner locks of
@@ -431,10 +439,16 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			holdsNamed = true
 		}
 	}
-	// The call's comment is worded from the issue as the write reads it under its owner lock.
+	// The call's comment is worded from the issue as the write reads it under its owner lock, and
+	// so is what a step of an option changes.
 	var commentBody string
 	if call.comment != nil {
 		commentBody = call.comment.words(before)
+	}
+	var moved *statusChangeMove
+	if step != nil && step.moved != nil {
+		move := step.moved(before)
+		moved = &move
 	}
 	if parentProvided && parent != nil {
 		if err := validateIssueParent(ctx, tx, key, call.callerProject, *parent); err != nil {
@@ -887,7 +901,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			if err := ledger.AfterWrites(func(b *store.WriteBatch) error {
 				answered := after
 				answered.LastSeq = appendedIssueLastSeq(key, appended)
-				return queueStatusChangeStep(b, step, answeredStatusChangeEntry(answered, before.LastSeq),
+				return queueStatusChangeStep(b, step, answeredStatusChangeEntry(answered, before.LastSeq), moved,
 					namedLastSeq, holdsNamed, closedAsks, &namedEvents)
 			}); err != nil {
 				return issueWriteResult{}, err
@@ -949,7 +963,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	}
 	return issueWriteResult{
 		issue: after, advice: advice, previousLastSeq: before.LastSeq, wrote: true, appended: appended,
-		namedEvents: namedEvents, closed: closing, withdrawn: withdrawn,
+		namedEvents: namedEvents, closed: closing, withdrawn: withdrawn, moved: moved,
 	}, nil
 }
 
