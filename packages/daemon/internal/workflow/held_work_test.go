@@ -76,7 +76,7 @@ func (h heldWork) stand(t *testing.T, pool *pgxpool.Pool, issue record.Issue) re
 
 // A stopped task and a parent held for its children stand in held, and each path that
 // brings an issue back to work picks the role it gives work to by the role of the issue's phase,
-// which held has none of (phase.RoleFor, OpenPhaseRole). So none of these paths gives either one
+// which held has none of (phase.RoleFor, OpenRoles). So none of these paths gives either one
 // work: the ready of a claim (readyWorkerTask), the boot's resume by rule (booted, through
 // suspendedPhaseOwners), the silence repair (workerSilent, through phaseWorkerRecord), and the CI
 // settlement's wake of a released pod (wakeOnSettlement). The fifth path, a re-admission's
@@ -195,7 +195,7 @@ func TestAStoppedTaskAndAHeldParentGetNoWork(t *testing.T) {
 func TestARetryOfAStoppedTaskOrAHeldParentIsRefused(t *testing.T) {
 	const beneath = heldBeneath
 	stopped := intake.Refusal{Status: 409, Code: "TASK_STOPPED", Message: "task a of LEGION-208 was stopped by its owner; a later version of the plan that changes the task starts it again at its first step (register_plan), and a task that never started waits for its gate and its line first. This retry changed nothing."}
-	waiting := intake.Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: "LEGION-208 waits before its retro for these issues beneath it: " + beneath + ". Legion starts the retro when the last one leaves. This retry changed nothing."}
+	waiting := *intake.RetryOfHeldParent("LEGION-208", []string{beneath})
 	for _, h := range heldWorks {
 		for _, release := range []struct {
 			name string
