@@ -188,16 +188,11 @@ if not packages:
 tracked = set(text(TRACKED).split("\0")) - {""}
 covered = set(text(COVERED).split("\0")) - {""}
 
-
-def required(path: str) -> bool:
-    return path in tracked
-
-
 missing = sorted(f"{package}/" for package, files in packages.items()
-                 if any(required(path) and path not in covered for path in files))
+                 if any(path in tracked and path not in covered for path in files))
 for gomod in sorted(modules):
     for path in (gomod, PurePosixPath(gomod).with_name("go.sum").as_posix()):
-        if required(path) and path not in covered:
+        if path in tracked and path not in covered:
             missing.append(path)
 # The go.work the build reads binds the modules: in workspace mode its go, godebug, use and
 # replace lines set what the binary builds with, and its go.work.sum holds the sums.
@@ -206,7 +201,7 @@ for gowork in sorted(set(text(GOWORK).splitlines()) - {"", "off"}):
     if (path := file_of(gowork)) is None:
         fatal(f"the go.work the legion build reads, {gowork}, is outside the repository, so no path of LEGION_VERSION_ARGS "
               "can name it and a change to it alone would release no legion")
-    workspace += [name for name in (path, f"{path}.sum") if required(name) and name not in workspace]
+    workspace += [name for name in (path, f"{path}.sum") if name in tracked and name not in workspace]
 missing += [path for path in workspace if path not in covered]
 if missing:
     fatal(
