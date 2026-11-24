@@ -300,6 +300,36 @@ func (s *roleSend) deliveredHeld(ctx context.Context, recipient string, seq uint
 	s.delivered(outcome)
 }
 
+// noSourceSessionNotKept ends the error of the 404 a role send that names no source session gets
+// from a role with no live holder (requestRecord.refuseRoleNoSourceSession).
+const noSourceSessionNotKept = "; nothing was kept, because the publish names no source_session: " +
+	"a kept copy that no session took within its hour would expire with no notice to its sender"
+
+// keepTellsNobody reports whether a copy this send kept would expire with no word to anyone: the
+// send asks to be kept and names no source session, and the walk that drops a copy at the end of
+// its hour sends its dead letter to that session and to nobody else (judgeKeptRoleCopy). Such a
+// send is refused rather than kept when its role has no live holder (noHolder), so its sender
+// learns at once that nothing waits for the role, where a 202 kept would have promised a copy
+// whose loss it is never told of.
+func (s *roleSend) keepTellsNobody() bool {
+	return s.keep && s.item.SourceSession == ""
+}
+
+// resolve resolves the role's holder within ctx (roles.ResolveHolder). A send whose keep would
+// tell nobody (keepTellsNobody) is refused on a resolution that finds no live holder, so it reads
+// the role's claim from the role bucket stream's leader (leaderRoleClaims, the read
+// store.Registry.ReadLaneHolders makes) and the holder's record through leaderHolderSessions:
+// never from the registry's watched copy of either bucket, and never by a direct get, which on a
+// replicated bucket a copy that has not applied the newest claim or registration answers, and
+// which would refuse a message a live holder can take. Every other send reads as GET
+// /v1/roles/<role> reads, since its "no live holder" keeps the message rather than refusing it.
+func (s *roleSend) resolve(ctx context.Context) (roles.Resolution, error) {
+	if s.keepTellsNobody() {
+		return roles.ResolveHolder(ctx, leaderRoleClaims{s.d.registry}, leaderHolderSessions{s.d.sessions}, s.role)
+	}
+	return roles.ResolveHolder(ctx, s.d.registry, roleHolderSessions{s.d.sessions}, s.role)
+}
+
 // noHolder answers a role with no live holder. For a state the listener keeps for (roleKeepable:
 // a role nobody claims, and a claim whose holder is not live), and while this send's own keep
 // flag asks for it, it keeps the message for the role's next live holder and hands the lane to
@@ -315,6 +345,15 @@ func (s *roleSend) deliveredHeld(ctx context.Context, recipient string, seq uint
 // what each role route answers is unchanged here, and a sender that publishes again after the
 // 404 gives the role's next holder the message once more, which at-least-once delivery allows.
 //
+// A send whose keep would tell nobody (keepTellsNobody: no source session) keeps nothing and gets
+// that same 404, with the same reason, holder fields and exception, its error naming the role and
+// saying that nothing was kept and why (noSourceSessionNotKept), recorded role_no_source_session
+// (requestRecord.refuseRoleNoSourceSession). Its resolution was read from the buckets' leaders
+// (resolve). A 404 rather than any other status, because every client of this route already reads
+// it as "nothing was kept, run your own fallback" (the Legion daemon's notify.ErrNoHolder,
+// envoy-client's EnvoyApiError), and no client retries it: envoy-client retries nothing below 500,
+// and to a plain HTTP client it is no retry signal, as a 429 or a 503 would be.
+//
 // It is also the one place a message to a Legion role of a released issue pod is seen at all, so
 // it raises the wake report beside the answer, before either answer and waiting for neither
 // (reportRoleWake). Both answers need it: a message kept for the role's next holder waits, for
@@ -327,13 +366,16 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 	reportRoleWake(s.d, s.d.delivery.logger, s.role)
 	// The wake is what this message costs its sender, whether it is kept or answered 404 below.
 	s.record.charge.woke()
+	refuse := s.record.refuseRoleHolder
 	if s.keep && roleKeepable(result) {
-		if kept, err := keepForNextHolder(*s.d.delivery, s.role, s.item); err == nil {
+		if s.keepTellsNobody() {
+			refuse = s.record.refuseRoleNoSourceSession
+		} else if kept, err := keepForNextHolder(*s.d.delivery, s.role, s.item); err == nil {
 			s.kept(result, kept)
 			return
 		}
 	}
-	s.record.refuseRoleHolder(s.w, s.role, s.shownHolder(result))
+	refuse(s.w, s.role, s.shownHolder(result))
 	// The 404 is written; the refusal's own bus signal goes out behind it (publishRefusalException).
 	publishRefusalException(s.d.client, s.d.delivery.logger, s.d.delivery.edge, s.item, result)
 	outcome := sendHolderLapsed
@@ -364,7 +406,8 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 // 202 rather than 200, so a sender tells the three answers of a role send apart by status alone:
 // 200, the message is with a live holder; 202, no live session holds the role and the message
 // waits on the role's kept lane until kept_until; 404, nothing was kept and the sender's own
-// fallback must run, as decided on 2026-10-31.
+// fallback must run, as decided on 2026-10-31. A send that names no source session is never
+// answered 202 (noHolder): no one would be told if its copy expired.
 func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 	if kept.repeat {
 		s.record.charge.forgive()
@@ -562,7 +605,8 @@ func (s *roleSend) settledBeforeForward(ctx context.Context, entry session.Sessi
 // sendRequestBudget of arrived as GET /v1/roles/<role> reads it, and gives that route's answers:
 // a role with no live holder - no claim, or a claim whose holder is not live - is kept for the
 // role's next live holder and answered 202 while keep asks for it, the request's own keep field,
-// true when it set none (roleKeepable), else 404 unclaimed or holder_lapsed (noHolder); and for a
+// true when it set none (roleKeepable), else 404 unclaimed or holder_lapsed (noHolder), which a
+// send that names no source session also gets, read from the buckets' leaders (resolve); and for a
 // resolution that failed the lookup's 503 or 500 (unresolved). The first attempt forwards to that
 // holder without reading the claim again; every other attempt resolves the holder again, so a
 // holder that relaunched under a new session between attempts gets the next one. On those
@@ -595,7 +639,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 	send.item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
 	firstCtx, cancelFirst := context.WithDeadline(ctx, arrived.Add(sendRequestBudget))
 	resolvedAt := d.delivery.now()
-	first, err := roles.ResolveHolder(firstCtx, d.registry, roleHolderSessions{d.sessions}, role)
+	first, err := send.resolve(firstCtx)
 	cancelFirst()
 	if err != nil {
 		send.unresolved(err)
@@ -618,7 +662,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 	for pass := 0; ; pass++ {
 		if pass > 0 || !sessionIsLive(first.HolderState) || roles.ResolutionTooOld(resolvedAt, d.delivery.now()) {
 			resolvedAt = d.delivery.now()
-			resolved, err = roles.ResolveHolder(ctx, d.registry, roleHolderSessions{d.sessions}, role)
+			resolved, err = send.resolve(ctx)
 			if err != nil && ctx.Err() != nil {
 				// The window ended under the resolution: what it read says nothing more.
 				break

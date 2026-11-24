@@ -49,9 +49,32 @@ func (s roleHolderSessions) Holder(ctx context.Context, sessionID string) (sessi
 	return s.Refresh(readCtx, sessionID)
 }
 
+// leaderHolderSessions is roleHolderSessions for a resolution whose "no live holder" refuses a
+// message: a role send that names no source session is refused with nothing kept when its role has
+// no live holder (roleSend.noHolder). The cached record still answers a holder it reads live, which
+// refuses nothing. Every other holder is read from the session bucket stream's leader
+// (bucketSessionEntry) and never by a direct get: on a replicated bucket a copy that has not
+// applied a registration made a moment ago answers that the session has no record, and the send
+// would be refused for a holder that can take it. nats.ErrKeyNotFound is the leader's word that no
+// record stands, as it is Holder's.
+type leaderHolderSessions struct{ *session.SessionRegistry }
+
+func (s leaderHolderSessions) Holder(ctx context.Context, sessionID string) (session.SessionEntry, error) {
+	if entry, state := s.Lookup(sessionID); state == session.Live {
+		return entry, nil
+	}
+	return bucketSessionEntry(ctx, s.SessionRegistry, sessionID, roleHolderReadTimeout)
+}
+
 // writeRoleHolderError writes the 404 of a role whose claim has no live holder
-// (listenerwire.RoleRefusal), naming the holder and its state where a claim names one.
+// (roleHolderRefusal).
 func writeRoleHolderError(w http.ResponseWriter, role string, result roles.Resolution) {
+	writeJSON(w, http.StatusNotFound, roleHolderRefusal(role, result))
+}
+
+// roleHolderRefusal is the body of the 404 of a role whose claim has no live holder
+// (listenerwire.RoleRefusal), naming the holder and its state where a claim names one.
+func roleHolderRefusal(role string, result roles.Resolution) listenerwire.RoleRefusal {
 	response := listenerwire.RoleRefusal{
 		Reason:        result.State,
 		ClaimRevision: result.ClaimRevision,
@@ -78,7 +101,7 @@ func writeRoleHolderError(w http.ResponseWriter, role string, result roles.Resol
 			lastSeen,
 		)
 	}
-	writeJSON(w, http.StatusNotFound, response)
+	return response
 }
 
 // writeRoleClaimUnreadable answers a role-holder resolution that read a claim record it cannot
