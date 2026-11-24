@@ -53,7 +53,7 @@ Name them in the day's report and take nothing for them.
 | `dispatch_blocker` | A `blocked_by` issue is not `done` | Each blocker `done`, or the link taken off |
 | `children_first` | An open child under it | The last open child leaving the workflow |
 | `accepted_ancestor` | The daemon has accepted the head an ancestor's last step passed | That ancestor standing in neither `retro` nor `merging` (a `held` ancestor stands in the phase it was held from) |
-| `children_before_retro` | A parent whose task's last step is not `acceptance:owner` is held before retro while its children run | The last `heldBy` issue leaves the workflow, then Legion starts retro |
+| `children_before_retro` | A parent whose task's last step is not `acceptance:owner` is held before retro while its children run | The last `heldBy` issue leaves the workflow, then Legion starts retro, or holds it further for a fix or its CI |
 | `task_stopped` | A task is stopped and no step of it runs | A later `register_plan` version that changes the task, or a root's `todo`, starts its first step |
 | `at_work` | In `accepting`, `retro` or `merging`, not `held`, on no slot | Its own sign-off, retro and merge |
 | `unclassified` | None of the above | Nothing of yours: name it with its `phase` and `status` |
