@@ -3304,6 +3304,24 @@ func (s *Postgres) TaskBranchQueued(ctx context.Context, tx pgx.Tx, issue string
 	return queued, nil
 }
 
+// QueuedPullRequestCloses is the number of each pull request that a row of the outbox closing pull
+// requests of issue at generation (TaskPullRequestsClose) names, queued and not yet run, in number
+// order: the pull requests a merge, a version or a run started again already closes. None where no
+// such row is queued.
+func (s *Postgres) QueuedPullRequestCloses(ctx context.Context, tx pgx.Tx, issue string, generation uint64) ([]int, error) {
+	rows, err := tx.Query(ctx, `select distinct number::int from outbox, jsonb_array_elements_text(payload->'numbers') as number
+		where issue = $1 and kind = $2 and (payload->>'generation')::bigint = $3 order by 1`,
+		issue, string(OutboxKindTaskPullRequestsClose), int64(generation))
+	if err != nil {
+		return nil, fmt.Errorf("read the queued closes of the pull requests of %s at generation %d: %w", issue, generation, err)
+	}
+	numbers, err := pgx.CollectRows(rows, pgx.RowTo[int])
+	if err != nil {
+		return nil, fmt.Errorf("read the queued closes of the pull requests of %s at generation %d: %w", issue, generation, err)
+	}
+	return numbers, nil
+}
+
 // StepStopQueued says whether the outbox still holds a supervise row of issue whose op is
 // step_stop (workflow's stopTask), queued before the row before — due, running or backing off — so
 // the process of the step a stopped task ran may not be stopped yet. A row of the lifecycle lane

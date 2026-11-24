@@ -2608,6 +2608,9 @@ type Store interface {
 	// generation, whatever its lease or its next_at: the join of the task's needs at that
 	// generation has not ended.
 	TaskBranchQueued(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (bool, error)
+	// QueuedPullRequestCloses is the number of each pull request a queued row closing pull requests
+	// of issue at generation (TaskPullRequestsClose) names, in number order; none for no such row.
+	QueuedPullRequestCloses(ctx context.Context, tx pgx.Tx, issue string, generation uint64) ([]int, error)
 	// StepStopQueued says whether the outbox still holds a supervise row of issue whose op is
 	// step_stop, queued before the row before, whatever its lease or its next_at: the process of a
 	// stopped task's step may still run.
