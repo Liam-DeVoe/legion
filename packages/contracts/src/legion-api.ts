@@ -35,6 +35,9 @@ const nonEmptyString = z.string().min(1);
 const issueKey = z.string().regex(DISPATCH_KEY_PATTERN);
 /** Go emits RFC 3339 through `time.Time`; a daemon on a non-UTC clock emits an offset. */
 const timestamp = z.iso.datetime({ offset: true });
+/** A Dispatch priority as the daemon serves it: 0 for P0 to 3 for P3, or null for none (contract
+ * 250), absent where the daemon serves the caller no such key. */
+const dispatchPriority = z.number().int().min(0).max(3).nullable().optional();
 
 /** The RFC 3339 instant a session sends: seconds required, the fraction optional, `Z` or an
  * offset required, as Go's `time.Time` decode requires them. It is the stricter of the two: it
@@ -510,18 +513,23 @@ const legionSlotView = z.object({
 
 /** `api.WaitingLineView` — where the issue stands in `admission.waiting`: `place`, 1 being first
  * in the line, and `length`, how long that list was at this read, beside the line's own fields
- * for a program that acts on the line rather than reading the sentence `reason` renders: `part`,
- * which of the line's two parts the issue waits in, and `kind`, why it waits there; `partPlace`
- * and `partLength`, its place within its own part and that part's length; `holdsSlot`, whether it
- * already holds one of the cap's slots; and what placed it — `since`, the moment its work came
- * back, for a member of the `returned` part, and `rootRank`, `ownRank` and `rootKey`, the Dispatch
- * ranks and the tree root's key, for a member of the `starting` part. It says where the issue
- * stands, not what holds it, which `admission.blocked` names.
+ * for a program that acts on the line rather than reading the sentence `reason` renders:
+ * `priority`, the Dispatch priority band the issue waits in, which is its own priority, else its
+ * tree root's (0 for P0 to 3 for P3), or null for an issue placed after P3 because neither it nor
+ * its tree root has one; `part`, which of the two parts of its band the issue waits in, and
+ * `kind`, why it waits there; `partPlace` and `partLength`, its place within its own band and
+ * part and that part's length in that band; `holdsSlot`, whether it already holds one of the
+ * cap's slots; and what placed it within its part — `since`, the moment its work came back, for
+ * a member of the `returned` part, and `rootRank`, `ownRank` and `rootKey`, the Dispatch ranks
+ * and the tree root's key, for a member of the `starting` part. The line is ordered by band
+ * first, P0 to P3 and then the band of no priority, and by part and its key within one band. It
+ * says where the issue stands, not what holds it, which `admission.blocked` names.
  *
  * Every member below `length` is optional, for two readers at once: a member carries the fields of
  * its own part alone, so a returned member names no rank and a starting member no `since`; and a
  * caller below the contract that brought `partPlace` and the rest of them, contract 85, is served
- * `place` and `length` alone, with no field of theirs on the wire at all.
+ * `place` and `length` alone, with no field of theirs on the wire at all; `priority` came with
+ * contract 250, and a caller below it is served every member without it.
  *
  * `part` and `kind` are written as the enums they are, which is how `LEGION_WAIT_ANSWERS` writes
  * the acts that end a root's wait: a `z.enum` refuses a value it does not name rather than dropping
@@ -547,6 +555,7 @@ const legionWaitingLineView = z.object({
   rootRank: nonEmptyString.optional(),
   ownRank: nonEmptyString.optional(),
   rootKey: issueKey.optional(),
+  priority: dispatchPriority,
   reason: nonEmptyString.optional(),
 });
 
@@ -622,7 +631,8 @@ export const LEGION_WAIT_ANSWERS = [
 /** The fields every `waitingOn` shape shares: `since`, Dispatch's time of the hand-back the wait
  * began at (absent when unknown), and `answeredAt` with `answeredBy` once the wait was answered
  * (`answeredBy` names how, not always by a person), when the answered root stands in admission's
- * waiting line, among the issues whose work came back, oldest first, until the pass that resumes it. */
+ * waiting line, within its priority, among the issues whose work came back, oldest first, until
+ * the pass that resumes it. */
 const legionWaitTimes = {
   since: timestamp.optional(),
   answeredAt: timestamp.optional(),
@@ -802,6 +812,13 @@ const legionIssue = z.object({
    * any live root stands on its chain, and this is the only surface that chain reaches. */
   ancestry: z.array(issueKey).optional(),
   architect: legionClaimView.optional(),
+  /** The issue's own Dispatch priority, 0 for P0 to 3 for P3, or null for an issue with none
+   * (contract 250): the priority Dispatch sends on the issue itself. The admission line places an
+   * issue at this priority, else at its tree root's, and the line's own `priority` says which.
+   * Present on every issue the workflow records; absent on an issue it does not record (phase
+   * `unrecorded`, an operator's claim), and from every issue of the body the route serves a
+   * caller below 250. */
+  priority: dispatchPriority,
   workers: z.partialRecord(z.string(), legionPhaseView).optional(),
   pullRequest: legionPullRequestView.optional(),
   designGate: legionGateView.optional(),
@@ -1818,7 +1835,7 @@ const legionDeliveryView = z.object({
  * before migration 0038; `released` is one whose idle issue pod the daemon released, which keeps
  * the claim's phase and its pending task until the next wake for its role; an `operator` and a
  * `controller` one hold against the daemon's rules, ranked in that order: the controller's
- * `resume_agent` lifts its own and never the operator's (contract 248). */
+ * `resume_agent` lifts its own and never the operator's (contract 253). */
 const legionSuspendedBy = z.enum([
   "unknown",
   "operator",
@@ -1832,7 +1849,7 @@ const legionSuspendedBy = z.enum([
  * suspend, resume_agent, compact and fresh session of one agent, named by its issue and role)
  * answer: stop, retry, suspend and resume
  * (`POST /legion/v1/agents/stop|retry|suspend|resume`, each taking `LegionClaimRequest`, contract
- * 248): the claim's `state` after the request — `retired` after a stop; `suspended` after a
+ * 253): the claim's `state` after the request — `retired` after a stop; `suspended` after a
  * suspension that landed, and still `working` or `launching` with
  * `suspensionHeld` after one held for the agent's turn or its ready; `launching` after a resume or
  * a retry the claim's machine ran; and still `failed` or `retired` after a retry of a phase worker
@@ -1841,11 +1858,11 @@ const legionSuspendedBy = z.enum([
  * controller's own, which its `resume_agent` and the operator's resume lift; and `operator` for
  * the operator's, which only the operator lifts. These
  * routes are the one session-facing surface that names a suspender, since no plugin below
- * contract 248 calls them; the state does not ("no session-facing response carries suspendedBy"
+ * contract 253 calls them; the state does not ("no session-facing response carries suspendedBy"
  * in legion-api.test.ts). The `legion` tool hands the answer to its agent whole, which is no
  * read, so the reader takes every field as optional (`LEGION_ANSWER_READS`), `state` among them,
  * though the daemon always writes it. The three enumerations are the daemon's table's
- * (`enumerated-fields.json`, the `agent-action` rows), each whole at contract 248. */
+ * (`enumerated-fields.json`, the `agent-action` rows), each whole at contract 253. */
 export const LegionAgentActionResponse = z.object({
   state: z.enum(LEGION_CLAIM_STATES).optional(),
   suspendedBy: legionSuspendedBy.optional(),
@@ -1854,7 +1871,7 @@ export const LegionAgentActionResponse = z.object({
 });
 
 /** `api.PodUpdateRequest`, the project's controller asking the daemon to replace the pod one issue
- * of its project runs in (`POST /legion/v1/issues/pod-update`, contract 248): its grant and the
+ * of its project runs in (`POST /legion/v1/issues/pod-update`, contract 253): its grant and the
  * issue. The daemon opens its update round over that pod as a drift opens one: each role of the
  * pod is asked to push its work and answer `ready_for_update`, and the pod is replaced once each
  * has answered, no turn runs and each role's report since its last turn names no running

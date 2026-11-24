@@ -579,6 +579,7 @@ var stateNarrowings = []stateNarrowing{
 	{contract: assignmentPlanContract, issue: withoutAssignmentPlans, dropped: "the issues' assignments' plan"},
 	{contract: intakeGiveUpsContract, state: withoutIntakeGiveUps, dropped: "intakeGiveUps"},
 	{contract: podHoldContract, issue: withoutPodHold, dropped: "the issues' podHold"},
+	{contract: priorityContract, issue: withoutPriority, dropped: "the issues' priority and their waitingLine's priority"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -887,7 +888,7 @@ const quietTimeContract = 111
 const shapedAnswersContract = 193
 
 // agentActionsContract is the daemon contract four of the agent door's six agent actions and the
-// controller's pod update arrived at (version.go's 248): `POST /legion/v1/agents/stop`, `retry`,
+// controller's pod update arrived at (version.go's 253): `POST /legion/v1/agents/stop`, `retry`,
 // `suspend` and `resume`, which answer AgentActionResponse (AnswerAgentAction), and
 // `POST /legion/v1/issues/pod-update`, which answers PodUpdateResponse (AnswerPodUpdate). Each
 // answer arrived whole with its routes, so no contract below this one records either, no caller
@@ -897,7 +898,7 @@ const shapedAnswersContract = 193
 // It is a literal of its own and never DaemonAPIVersion, as shapedAnswersContract is: a later
 // contract moves that constant, and the contract these answers arrived at stays where it is. It
 // moves only with the number of the change that added the routes (#4065).
-const agentActionsContract = 248
+const agentActionsContract = 253
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
 // line's `kind` (version.go's 132): a started issue that gave its admission slot back to wait on
@@ -1078,7 +1079,7 @@ const intakeGiveUpsContract = 228
 // no key of the state), so a caller from that contract to 245 is served 228's keys.
 //
 // It is a literal of its own and never DaemonAPIVersion, for the reason repositoriesLiveContract
-// is, and it is the last number of answers.go's SupportedContracts, which names the constant.
+// is, and answers.go's SupportedContracts names the constant.
 const podHoldContract = 246
 
 // withoutPodHold is the issue with no `podHold`, the one key podHoldContract added to the state;
@@ -1087,6 +1088,27 @@ const podHoldContract = 246
 func withoutPodHold(issue Issue) (Issue, bool) {
 	moved := issue.PodHold != nil
 	issue.PodHold = nil
+	return issue, moved
+}
+
+// priorityContract is the daemon contract that added each issue's own Dispatch `priority` and
+// its waitingLine's `priority`, the priority that placed it in the line (version.go's 250). A
+// plugin before it is served every issue without either key (withoutPriority). It is a literal
+// of its own and never DaemonAPIVersion, for the reason assignmentPlanContract is, and it is the
+// last number of answers.go's SupportedContracts.
+const priorityContract = 250
+
+// withoutPriority is the issue with no `priority` and a waitingLine with no `priority`, the two
+// keys priorityContract added to the state; every other key stays. The waiting line's view is
+// copied before it is changed, so the state the source answered is left as it was.
+func withoutPriority(issue Issue) (Issue, bool) {
+	moved := issue.Priority != nil
+	issue.Priority = nil
+	if issue.WaitingLine != nil && issue.WaitingLine.Priority != nil {
+		line := *issue.WaitingLine
+		line.Priority = nil
+		issue.WaitingLine, moved = &line, true
+	}
 	return issue, moved
 }
 

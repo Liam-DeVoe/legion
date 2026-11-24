@@ -2073,47 +2073,47 @@
     "values": [
       {
         "value": "failed",
-        "since": 248
+        "since": 253
       },
       {
         "value": "idle",
-        "since": 248
+        "since": 253
       },
       {
         "value": "launch_uncertain",
-        "since": 248
+        "since": 253
       },
       {
         "value": "launching",
-        "since": 248
+        "since": 253
       },
       {
         "value": "queued",
-        "since": 248
+        "since": 253
       },
       {
         "value": "ready",
-        "since": 248
+        "since": 253
       },
       {
         "value": "registered",
-        "since": 248
+        "since": 253
       },
       {
         "value": "retired",
-        "since": 248
+        "since": 253
       },
       {
         "value": "shim_connected",
-        "since": 248
+        "since": 253
       },
       {
         "value": "suspended",
-        "since": 248
+        "since": 253
       },
       {
         "value": "working",
-        "since": 248
+        "since": 253
       }
     ]
   },
@@ -2123,27 +2123,27 @@
     "values": [
       {
         "value": "controller",
-        "since": 248
+        "since": 253
       },
       {
         "value": "daemon",
-        "since": 248
+        "since": 253
       },
       {
         "value": "exit",
-        "since": 248
+        "since": 253
       },
       {
         "value": "operator",
-        "since": 248
+        "since": 253
       },
       {
         "value": "released",
-        "since": 248
+        "since": 253
       },
       {
         "value": "unknown",
-        "since": 248
+        "since": 253
       }
     ]
   },
@@ -2153,27 +2153,27 @@
     "values": [
       {
         "value": "controller",
-        "since": 248
+        "since": 253
       },
       {
         "value": "daemon",
-        "since": 248
+        "since": 253
       },
       {
         "value": "exit",
-        "since": 248
+        "since": 253
       },
       {
         "value": "operator",
-        "since": 248
+        "since": 253
       },
       {
         "value": "released",
-        "since": 248
+        "since": 253
       },
       {
         "value": "unknown",
-        "since": 248
+        "since": 253
       }
     ]
   }

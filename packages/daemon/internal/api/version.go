@@ -3586,7 +3586,33 @@ package api
 // 251 by #5307), so this entry kept 246. Read the base's own number and every open pull request
 // again at every forward merge rather than from this line.)
 //
-// 248: #4065 -- the project's controller gets the actions on an agent (stop, retry, suspend,
+// 250: the admission waiting line is ordered by Dispatch priority first. `GET /legion/v1/state`
+// and `GET /legion/v1/issues/{key}/record` gain two keys: each issue the workflow records carries
+// `priority`, its own Dispatch priority as Dispatch sends it, a number from 0 for P0 to 3 for P3
+// or null for none; and each member's `waitingLine` carries `priority`, the priority that placed
+// it in the line (its own, else its tree root's), null for a member neither it nor its root has a
+// priority for, whose band stands after P3. The records of 250 hold `issues.*.priority` and
+// `issues.*.waitingLine.priority`, and no record below 250 does: a caller whose contract (the one
+// it states, else its pod's) is below 250 is served every issue without either key (the band of
+// shaping.go's stateNarrowings, `withoutPriority`). Two values change meaning at every contract
+// and move no shape: `waitingLine.partPlace` and `partLength` count within the member's priority
+// band and part rather than within the part across the whole line, and `admission.waiting` and
+// each member's `place` follow the new order, which no reader enumerates. (This entry took 221
+// when main declared 220, with no reading of the other open pull requests. A reading of `const
+// DaemonAPIVersion` at the head commit of each open pull request that changes this file or whose
+// file list GitHub cut short (138 of 500), made between 2026-11-24T09:14:34Z and 09:17:00Z, found
+// every number from 221 to 243 declared and nothing above, so this entry moved to 244. The
+// forward merge of 2026-11-24 that brought in e14345bfc8 brought main's 228 (#4590's entry
+// above). A second reading (137 of 498), made between 09:35:23Z and 09:40:15Z, found 221 to 227,
+// 229 to 231 and 233 to 243 declared and nothing above 243, so this entry kept 244. Then #3831
+// took 244, the numbers from 245 to 249 were given to other changes, and this entry moved to 250.
+// The forward merge of 2026-11-24 that brought in 3dbaa2b23a brought main's 232 (#5271's entry
+// above), below 250, so this entry kept 250. The forward merge of 2026-11-24 that brought in
+// 7e75126fae brought main's 246 (#4960's entry above), below 250, so this entry kept 250. Read
+// main's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 253: #4065 -- the project's controller gets the actions on an agent (stop, retry, suspend,
 // resume_agent, compact and fresh session of one agent, named by its issue and role) it lacked, the
 // four the operator already has, as controller routes beside `claims/fresh-session` and
 // `claims/compact`, each taking that route's `api.ClaimRequest` (`grantId`, `issue`, `role`) and
@@ -3654,7 +3680,7 @@ package api
 // The notice of a forgotten session that entry 189 adds, `session-forgotten`, goes to the issue's
 // architect alone, as `session-lost` does: the controller is told of neither (#4065), and no
 // shape moves.
-// Contract 248 is served down by 193's rule (#3659): every answer goes through one writer, which
+// Contract 253 is served down by 193's rule (#3659): every answer goes through one writer, which
 // shapes it to the contract its caller reads. The agent actions' answer and the pod update's
 // are two rows of answers.go's table, `agent-action` on the four routes and `pod-update` on
 // `issues/pod-update`, each arrived whole with its routes at this contract
@@ -3668,11 +3694,12 @@ package api
 // `CONTROLLER_REQUIRED` to `POD_HELD_BY_PAUSE`, is an `api.Failure`, which no contract shapes. The
 // five routes' request records start at this contract
 // (`packages/contracts/fixtures/daemon-api/request-shapes.json`). No key and no value of any
-// other answer moved, so this contract's records of every other answer are 246's, under its own
+// other answer moved, so this contract's records of every other answer are 250's, under its own
 // number. agentActionsContract is now the last number of answers.go's SupportedContracts,
 // after shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract,
 // cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract,
-// 232 and podHoldContract, and a renumber of this entry moves that constant with it.
+// 232, podHoldContract and priorityContract, and a renumber of this entry moves that constant with
+// it.
 // (This change took 136, from a census of `const DaemonAPIVersion` at refs/pull/<n>/head of
 // every open pull request that changes version.go or whose file list GitHub cut at 100, taken at
 // 2026-11-15T06:21:19Z over the 148 open pull requests on main d7dce730: main declared 133, and the
@@ -3800,6 +3827,11 @@ package api
 // 2026-11-24T15:47:51Z to 15:50:22Z). The merge of main `69fcd649`, which still declares 246, keeps
 // 248 though #3993, #4049 and #4392 declare it too: while cybermonklabs/legion#5399, under which no
 // branch picks this number by hand, is open, a branch keeps the number it holds rather than take a
-// new one by a census. Once #5399 has merged, the next merge of main takes the number the way it
-// sets, rather than from this line.)
-const DaemonAPIVersion = 248
+// new one by a census. The merge of main `5df00e2f`, which declares 250 (#5365, the waiting line's
+// priority, the entry right above), moves this entry from 248 to 253: the rule above cannot hold
+// once the base declares a number above the one a branch keeps, since check-daemon-api-contract.sh
+// refuses a number not above the base's, and #5399 is still open. 251 (#5307) and 252 (#4540) are
+// other open pull requests', and no open head declares 253 (read at the head of each of the 488
+// open pull requests, 2026-11-24T17:55:43Z to 18:01:07Z; #5399's head declares no number). Read the
+// base's own number and every open head again at the next merge rather than from this line.)
+const DaemonAPIVersion = 253
