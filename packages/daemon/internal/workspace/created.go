@@ -27,11 +27,11 @@ var errLinkedJJ = errors.New("the workspace's .jj is a symbolic link")
 // with errLinkedJJ and one that is no other directory with ENOTDIR. A link there would carry the
 // records into a directory off the workspace's disk: a record read there says nothing of this
 // workspace, and one written there can be lost at a container restart while the workspace keeps
-// its work. The open itself is the kernel's (openJJDir): on Linux it reads the entry through no
-// link, which gVisor, where issue pods run, needs. Every read and write of a record goes through
-// the open directory (openat, fstatat), so nothing after this open reads .jj by its path again.
-// held, when set, runs once the directory is open and before the record is read or written: a
-// test's seam for a .jj swapped in that window.
+// its work. The open follows no link on any kernel, gVisor's included, where issue pods run
+// (openJJDir). Every read and write of a record goes through the open directory (openat,
+// fstatat), so nothing after this open reads .jj by its path again. held, when set, runs once the
+// directory is open and before the record is read or written: a test's seam for a .jj swapped in
+// that window.
 func openJJ(dir string, held func()) (*os.File, error) {
 	path := filepath.Join(dir, ".jj")
 	jj, err := openJJDir(path)
@@ -42,6 +42,36 @@ func openJJ(dir string, held func()) (*os.File, error) {
 		held()
 	}
 	return jj, nil
+}
+
+// jjOpenFlags is the open of a workspace's .jj (openJJDir). O_NOFOLLOW, and deliberately no
+// O_DIRECTORY, so that a .jj that is a symbolic link is refused with ELOOP: under gVisor the two
+// flags together follow a link to a directory, and the fstat after the open is what makes it a
+// directory's (internal/launcher's volumeOpenFlags, measured there). O_NONBLOCK so that a FIFO
+// planted at .jj answers the open at once rather than block it.
+const jjOpenFlags = unix.O_RDONLY | unix.O_NOFOLLOW | unix.O_NONBLOCK | unix.O_CLOEXEC
+
+// openJJDir opens the directory at path, the workspace's .jj (openJJ), one way on every kernel:
+// one open with jjOpenFlags, which answers ELOOP for a link, refused as errLinkedJJ, then an fstat
+// of what that open reached, which is refused with ENOTDIR where it is no directory.
+func openJJDir(path string) (*os.File, error) {
+	fd, err := unix.Open(path, jjOpenFlags, 0)
+	if errors.Is(err, unix.ELOOP) {
+		return nil, fmt.Errorf("%w: %s", errLinkedJJ, path)
+	}
+	if err != nil {
+		return nil, &fs.PathError{Op: "open", Path: path, Err: err}
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		_ = unix.Close(fd)
+		return nil, &fs.PathError{Op: "fstat", Path: path, Err: err}
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
+		_ = unix.Close(fd)
+		return nil, &fs.PathError{Op: "open", Path: path, Err: unix.ENOTDIR}
+	}
+	return os.NewFile(uintptr(fd), path), nil
 }
 
 // openIn opens name in the open directory jj with flags, adding O_NOFOLLOW and O_CLOEXEC, so a
@@ -220,6 +250,10 @@ func inUse(dir string, held func()) (bool, error) {
 // restarted over the same disk reads it and a workspace created again holds none.
 const restoreFile = "legion-restore"
 
+// RestoreRecordPath is where the record of the restore of the workspace at dir is
+// (restoreFile): the path a refusal that names the record as its remedy names, and a test reads.
+func RestoreRecordPath(dir string) string { return filepath.Join(dir, ".jj", restoreFile) }
+
 // restoreTemp is the name a write of the record is made under before it is renamed over
 // restoreFile, so a reader finds the record before the write or the one after it, whole.
 const restoreTemp = restoreFile + ".tmp"
@@ -230,30 +264,19 @@ const restoreTemp = restoreFile + ".tmp"
 const restoreRecordLimit = shimwire.MaxFrameBytes
 
 // RestoreRecord is the launcher's record of a restore of a saved workspace copy into the
-// workspace: the report the daemon is owed of it (shimwire.LauncherRestored), whose ID is the
-// slice sequence the copy arrived under and whose Release is the release whose save it is, and
-// whether the restore Ended. One not Ended is a restore begun. The launcher writes it before the
-// in-use record and before the restore, only where InUse read false or over another begun record,
-// and replaces it with the ended one, OK and Error its outcome, before any role starts. So a
-// launcher that reads a begun record it did not write knows that restore was cut off and that no
-// role has run on the workspace since the first such record was written (internal/launcher's
-// bundleRestore). An ended record is the report the daemon is owed until a connection carries it,
-// when the record is removed (RemoveRestoreRecord). A record that cannot be read proves neither,
-// so the launcher reads the in-use record beside it.
+// workspace: Report, the report the daemon is owed of it, whose ID is the slice sequence the copy
+// arrived under and whose Release is the release whose save it is, and whether the restore Ended.
+// One not Ended is a restore begun. The launcher writes it before the in-use record and before the
+// restore, only where InUse read false or over another begun record, and replaces it with the
+// ended one, the report's OK and Error its outcome, before any role starts. So a launcher that
+// reads a begun record it did not write knows that restore was cut off and that no role has run on
+// the workspace since the first such record was written (internal/launcher's bundleRestore). An
+// ended record is the report the daemon is owed until a connection carries it, when the record is
+// removed (RemoveRestoreRecord). A record that cannot be read proves neither, so the launcher
+// reads the in-use record beside it.
 type RestoreRecord struct {
-	shimwire.LauncherRestored
-	Ended bool `json:"ended"`
-}
-
-// MarshalJSON writes the report's fields under the frame's own JSON names, beside ended. Without
-// it the report's MarshalJSON, which writes the frame with its type, would be the record's too and
-// leave ended out.
-func (r RestoreRecord) MarshalJSON() ([]byte, error) {
-	type report shimwire.LauncherRestored
-	return json.Marshal(struct {
-		report
-		Ended bool `json:"ended"`
-	}{report(r.LauncherRestored), r.Ended})
+	Report shimwire.LauncherRestored `json:"report"`
+	Ended  bool                      `json:"ended"`
 }
 
 // RecordRestore records record on the disk of the workspace at dir, replacing the record there
@@ -321,7 +344,7 @@ func ReadRestoreRecord(dir string) (record RestoreRecord, ok bool, err error) {
 	if err := json.Unmarshal(body, &record); err != nil {
 		return RestoreRecord{}, false, fmt.Errorf("the restore's record %s holds no record: %w", path, err)
 	}
-	if record.ID == "" {
+	if record.Report.ID == "" {
 		return RestoreRecord{}, false, fmt.Errorf("the restore's record %s names no slice sequence", path)
 	}
 	return record, true, nil

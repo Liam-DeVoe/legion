@@ -3539,13 +3539,11 @@ package api
 // From this entry the last number of answers.go's SupportedContracts is this change's own, after
 // `api.intakeGiveUpsContract`.
 // (A census of `const DaemonAPIVersion` at refs/pull/<n>/head over every open pull request of
-// this repository, 501 of them, taken between 2026-11-24T09:03:12Z and 09:15:05Z, read main's 220,
-// which its experiment group's entry took, above this change's 243, and every number from 221 to
-// 243 declared by another open head: 240 by #5271, 241 by #4771 and #5307, 242 by #4596, and 243
-// by #5349. So 244 is the lowest number above main's that no other open head declared, and this
-// entry takes it. It stood at 204, 207, 212, 216, 218, 240, 241 and 243 before, each the number it
-// took at an earlier census. The forward merge of main 15338e75 brought main's 228
-// (dispatch://INFRA-1575's intake give-ups), which stands below 244, so this entry keeps 244. Read
-// main's own number and every open pull request's again at the next forward merge rather than
-// from this line.)
+// this repository, 490 of them, taken between 2026-11-24T10:15:24Z and 10:27:49Z, after the
+// forward merge of main 15338e75, read main's 228 (dispatch://INFRA-1575's intake give-ups) and
+// numbers from 229 to 243 declared by other open heads, 241 by #4771 and #5307, 242 by #4596 and
+// 243 by #5349 among them, and no other head declaring 244. So 244 is still above main's number
+// and free, and this entry keeps it. It stood at 204, 207, 212, 216, 218, 240, 241 and 243
+// before, each the number it took at an earlier census. Read main's own number and every open
+// pull request's again at the next forward merge rather than from this line.)
 const DaemonAPIVersion = 244

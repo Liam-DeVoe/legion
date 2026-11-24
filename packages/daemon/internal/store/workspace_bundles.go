@@ -252,7 +252,8 @@ func keepReleaseBundleAsRunningCopy(ctx context.Context, tx pgx.Tx, issue string
 // (claim.ProjectToken).
 //
 // It is the take's own ask with the drop's decision in it (askWorkspaceCopies,
-// TakeWorkspaceCopyForRestore), so it keeps the take's rules, read off the same rows. A copy whose
+// TakeWorkspaceCopyForRestore), so it keeps the take's rules, read off the same rows, and fails as
+// the take does: a failure the store did not answer is runtime.ErrWorkspaceCopyStore. A copy whose
 // work came off the asking pod stays, for the pod that replaces it. A spent copy stays, as the
 // record of its attempt. A copy is project's only where project records its issue
 // (issues.project), and where project does not, the drop answers an empty runtime.WorkspaceRestore

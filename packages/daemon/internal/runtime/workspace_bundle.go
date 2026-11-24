@@ -118,8 +118,9 @@ const (
 	WorkspaceBundleSuperseded
 	// WorkspaceBundleHeldByVolume: the copy came off the kept volume this pod mounts, so the
 	// pod's workspace holds its work already, and the store deletes the copy and sends it to no
-	// pod (DecideKeptVolumeDrop, HeldWorkspaceCopiesDrop). Sent there, the copy would be refused
-	// by the pod's launcher, whose workspace is older than the copy, as work that was lost.
+	// pod (DecideKeptVolumeDrop, HeldWorkspaceCopiesDrop). Sent there, each slice of the copy
+	// would be refused by the pod's launcher as one to a workspace in use, the earlier pod's
+	// in-use mark being in that volume's .jj.
 	WorkspaceBundleHeldByVolume
 )
 
@@ -399,12 +400,14 @@ func DecideWorkspaceRestore(bundle, running WorkspaceCopyHeld, push WorkspacePus
 //
 // The comparison reads the copy's time to its own second, because keptSince is a
 // creationTimestamp, which has one-second resolution, and a copy taken in that second cannot be
-// ordered against the Sandbox. Such a copy is not dropped: a drop deletes the work, and a copy the
-// launcher refuses as older than its workspace costs a notice. keptSince is the API server's clock
-// and a copy's time the store's (store.Store.BeginWorkspaceCopy). A copy of an earlier volume was
-// taken before the last pod of that volume ended and its Sandbox was deleted, and a copy of this
-// volume after a pod of this Sandbox started, so a skew of seconds between the two clocks does not
-// change the answer. A zero keptSince is no kept volume, and nothing is dropped.
+// ordered against the Sandbox. Such a copy is not dropped: a drop deletes the work, while a copy
+// sent to a volume that holds it costs no work and writes no notice, since the earlier pod's in-use
+// mark stays in that volume's .jj and the launcher refuses each slice as in use before any restore
+// runs. keptSince is the API server's clock and a copy's time the store's
+// (store.Store.BeginWorkspaceCopy). A copy of an earlier volume was taken before the last pod of
+// that volume ended and its Sandbox was deleted, and a copy of this volume after a pod of this
+// Sandbox started, so a skew of seconds between the two clocks does not change the answer. A zero
+// keptSince is no kept volume, and nothing is dropped.
 func DecideKeptVolumeDrop(bundle, running WorkspaceCopyHeld, podUID string, keptSince time.Time) (bundleTake, runningTake WorkspaceBundleTake, newer WorkspaceCopyKind) {
 	newer = NewerWorkspaceCopy(bundle, running)
 	held := func(c WorkspaceCopyHeld) WorkspaceBundleTake {

@@ -3142,29 +3142,21 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 			m.log.Info("supervise: launch cut short; its context ended", "generation", m.claim.Generation, "error", err)
 			return err
 		}
-		if errors.Is(err, errHoldUnanswered) {
-			// The store did not answer the session's hold, which says nothing about the claim or
-			// its session: nothing started, so nothing is charged, and the same launch is tried
-			// again at the probe interval, as a launch whose write the store did not take is.
-			err = errors.Join(err, m.stopPrevious(starting))
-			m.log.Warn("supervise: the store did not answer the session's hold; trying the launch again at the probe interval, charging nothing",
-				"generation", m.claim.Generation, "error", err)
-			m.relaunchAtProbe(l)
-			return errors.Join(err, m.persist(starting))
-		}
-		if errors.Is(err, runtime.ErrWorkspaceCopyStore) {
-			// The daemon's own store did not take or drop the issue's saved workspace copies for
-			// the pod's restore, which says nothing about the claim: the start sent the pod's
-			// launcher no launcher_start, so nothing is charged, and the same launch is tried again
-			// at the probe interval, as an unanswered hold is. It is not the session store's wait
+		m.claim.LastStartFailure = storetext.FarSideError(err.Error())
+		if unanswered := unansweredStore(err); unanswered != "" {
+			// A store did not answer: the session's hold, or the daemon's own store of the issue's
+			// saved workspace copies for the pod's restore. That says nothing about the claim or
+			// its session: nothing started, no launcher_start having been sent, so nothing is
+			// charged, and the same launch is tried again at the probe interval, as a launch whose
+			// write the store did not take is. The claim keeps why it waits (LastStartFailure),
+			// which its view serves as `lastStartFailure`. It is not the session store's wait
 			// (startWaitsForStore): no session is in question, and the issue is told nothing.
 			err = errors.Join(err, m.stopPrevious(starting))
-			m.log.Warn("supervise: the daemon's store did not answer the take or the drop of the issue's saved workspace copies for the pod's restore; trying the launch again at the probe interval, charging nothing",
+			m.log.Warn("supervise: "+unanswered+"; trying the launch again at the probe interval, charging nothing",
 				"generation", m.claim.Generation, "error", err)
 			m.relaunchAtProbe(l)
 			return errors.Join(err, m.persist(starting))
 		}
-		m.claim.LastStartFailure = storetext.FarSideError(err.Error())
 		if errors.Is(err, runtime.ErrSessionStore) {
 			return m.startWaitsForStore(starting, err, l.charged, l.exempt)
 		}
@@ -3252,6 +3244,20 @@ func (m *Machine) writeTry(starting context.Context, l launchTry) (token string,
 // workspace copies held (runtime.ErrWorkspaceCopyStore, launchTries).
 func (m *Machine) relaunchAtProbe(l launchTry) {
 	m.relaunchLater(m.deps.Timeouts.Probe, m.launchFromTop(l))
+}
+
+// unansweredStore is the line launchTries logs, after "supervise: ", for a start err that failed
+// because a store did not answer, naming which store: the session's hold (errHoldUnanswered), or
+// the daemon's store of the issue's saved workspace copies (runtime.ErrWorkspaceCopyStore). It is
+// "" for every other start error.
+func unansweredStore(err error) string {
+	switch {
+	case errors.Is(err, errHoldUnanswered):
+		return "the store did not answer the session's hold"
+	case errors.Is(err, runtime.ErrWorkspaceCopyStore):
+		return "the daemon's store did not answer the take or the drop of the issue's saved workspace copies for the pod's restore"
+	}
+	return ""
 }
 
 // launchFromTop is the launch l's tries belong to raised anew from the top: as no request's,

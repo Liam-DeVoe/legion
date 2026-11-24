@@ -113,7 +113,9 @@ func TestACopyAKeptVolumeHoldsIsDroppedWithoutItsBody(t *testing.T) {
 // nothing of it and records nothing on it, and the take restores it to that pod as for any pod. A
 // Sandbox made in the copy's own second cannot be ordered against the copy, since a
 // creationTimestamp has one-second resolution, and the copy is restored there too: a drop deletes
-// the work, and a copy the launcher refuses as older than its workspace costs a notice.
+// the work, while a copy sent to a volume that holds it costs no work and writes no notice, since
+// the earlier pod's in-use mark stays in that volume's .jj and the launcher refuses each slice as
+// in use before any restore runs.
 func TestACopyOfAnEarlierVolumeIsRestoredToThePodOfAKeptVolume(t *testing.T) {
 	s := migratedStore(t)
 	for i, kind := range unspentCopyKinds {

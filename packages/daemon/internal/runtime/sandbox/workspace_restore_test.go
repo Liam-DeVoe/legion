@@ -665,13 +665,14 @@ func TestAPodWhoseIssueHoldsBothSavedCopiesRestoresTheNewerAndClosesTheOlder(t *
 
 // The line of a closed copy names the newer copy and what this pod's ask did with it, which is not
 // always a send. Here the newer copy is this pod's own, and the release bundle of the pod before
-// it was never restored: its first role start could not read the store, so the start failed and
-// nothing of its ask was recorded (restoreWorkspace holds a start whose take fails). The daemon
-// lets no role work past such a take, so the copy of this pod's own that a cadence would take had
-// its roles worked is written by hand. The pod's next role start is sent neither: its own copy is
-// its workspace's work, and the bundle is closed all the same, since a pod that restored it would
-// put it over the newer work. Its line says the newer one was answered nothing here rather than
-// naming no copy at all.
+// it was never restored: its first role start's take met a definite error, a trigger that raises,
+// so the start failed, charged as a failed launch rather than held as the store's
+// (runtime.ErrWorkspaceCopyStore), and nothing of its ask was recorded (restoreWorkspace holds a
+// start whose take fails). The daemon lets no role work past such a take, so the copy of this
+// pod's own that a cadence would take had its roles worked is written by hand. The pod's next role
+// start is sent neither: its own copy is its workspace's work, and the bundle is closed all the
+// same, since a pod that restored it would put it over the newer work. Its line says the newer one
+// was answered nothing here rather than naming no copy at all.
 func TestTheLineOfAClosedCopyNamesTheNewerOneAndWhatThisPodWasAnsweredOfIt(t *testing.T) {
 	st := bundleStore(t)
 	ctx := context.Background()
@@ -679,19 +680,12 @@ func TestTheLineOfAClosedCopyNamesTheNewerOneAndWhatThisPodWasAnsweredOfIt(t *te
 	saved := savedWorkspaceBundle()
 	saveReleaseBundle(t, st, saved)
 	savedAt := storedTime(t, st, releaseBundleTaken, testTree)
-	for _, statement := range []string{
-		`create function refuse_restore_ask() returns trigger language plpgsql as $$ begin raise exception 'the store cannot be read'; end $$`,
-		`create trigger refuse_restore_ask before insert on workspace_restore_asks for each row execute function refuse_restore_ask()`,
-	} {
-		if _, err := st.Pool().Exec(ctx, statement); err != nil {
-			t.Fatalf("make the pod's first take fail: %v", err)
-		}
-	}
+	refuseRestoreAsks(t, st)
 	g := newRig(t, nil, withLog(logs), withSavedWorkspace(st))
 	spec := workerSpec(t)
 	g.launcher(spec.Claim)
-	if _, err := g.r.Spawn(g.ctx, spec); err == nil || !strings.Contains(err.Error(), "could not be taken") {
-		t.Fatalf("the start whose take failed answered %v; want it failed with the take's error", err)
+	if _, err := g.r.Spawn(g.ctx, spec); err == nil || !strings.Contains(err.Error(), "could not be taken") || errors.Is(err, runtime.ErrWorkspaceCopyStore) {
+		t.Fatalf("the start whose take failed answered %v; want it failed with the take's error, a definite one and not runtime.ErrWorkspaceCopyStore", err)
 	}
 	pod := string(g.pod(SandboxName(spec.Claim)).UID)
 	if frames := g.sent(spec.Claim); countOf(frames, shimwire.TypeLauncherBundle) != 0 {

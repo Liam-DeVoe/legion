@@ -71,7 +71,7 @@ func wantSettled(t *testing.T, r *bundleRestore, dir, id string) {
 	if report == nil || report.ID != id || report.Release != 11 || report.OK || report.Error == "" {
 		t.Fatalf("the launcher owes %+v, want the failed restore of sequence %q of release 11 with its reason", report, id)
 	}
-	if record, ok, err := workspace.ReadRestoreRecord(dir); !ok || err != nil || !record.Ended || record.LauncherRestored != *report {
+	if record, ok, err := workspace.ReadRestoreRecord(dir); !ok || err != nil || !record.Ended || record.Report != *report {
 		t.Fatalf("the restore's record is %+v, %t, %v; want it ended with the report %+v", record, ok, err, *report)
 	}
 }
@@ -119,11 +119,15 @@ func TestALauncherRestartedAfterItsRestoreEndedStillOwesTheReportAndRefusesTheBu
 // restore's record begun and never ended (bundleRestore.apply). No role has run there, since none
 // starts before a restore ends, but the workspace may hold part of the restore, and the work is
 // in the daemon's database alone. So the launcher that comes back starts no role while no copy has
-// been sent again, each start refused with why, and the begun record stays for the start that
-// restores the copy.
+// been sent again, each start refused with why and with what clears it where the daemon sends no
+// copy again: replacing the pod, resetting a kept volume, or deleting the record, named by its
+// path. The begun record stays for the start that restores the copy.
+//
+// The control (the pull request records the run): the refusal without what clears it, as before,
+// which fails on the first remedy it does not name.
 func TestAStartOverARestoreCutOffWithNoCopySentAgainRunsNoRole(t *testing.T) {
 	dir := newWorkspace(t)
-	begun := workspace.RestoreRecord{LauncherRestored: shimwire.LauncherRestored{ID: "restore-cut-off", Release: 11}}
+	begun := workspace.RestoreRecord{Report: shimwire.LauncherRestored{ID: "restore-cut-off", Release: 11}}
 	if err := workspace.RecordRestore(dir, begun); err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +138,8 @@ func TestAStartOverARestoreCutOffWithNoCopySentAgainRunsNoRole(t *testing.T) {
 	// The daemon's retry is a new start, which finds the restore cut off as the first did.
 	for _, generation := range []uint64{1, 2} {
 		g.wantStartRefused(generation, dir, "restore of release 11", dir, "cut off", "may hold part of it",
-			"no copy of the work has been sent again", "the roles do not start", "only while no role of the pod has registered")
+			"no copy of the work has been sent again", "the roles do not start", "only while no role of the pod has registered",
+			"until the pod is replaced", "on a kept volume once that volume is reset", workspace.RestoreRecordPath(dir)+" is deleted")
 	}
 	if record, ok, err := workspace.ReadRestoreRecord(dir); !ok || err != nil || record != begun {
 		t.Fatalf("after the refused starts the restore's record is %+v, %t, %v; want it begun as it was, %+v", record, ok, err, begun)
@@ -147,7 +152,7 @@ func TestAStartOverARestoreCutOffWithNoCopySentAgainRunsNoRole(t *testing.T) {
 // damagedRecord writes a record of a restore that does not read on the workspace at dir.
 func damagedRecord(t *testing.T, dir string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, ".jj", "legion-restore"), []byte("{not a record"), 0o644); err != nil {
+	if err := os.WriteFile(workspace.RestoreRecordPath(dir), []byte("{not a record"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := workspace.ReadRestoreRecord(dir); err == nil {
@@ -202,7 +207,7 @@ func TestAnUnreadableRestoreRecordOnAWorkspaceInUseRefusesEverySliceAndEveryStar
 	if err != nil {
 		t.Fatal(err)
 	}
-	unsafe := []string{"could not be read", dir, "the workspace is in use", "neither a restore nor a role start is safe", ".jj/legion-restore", "the roles do not start"}
+	unsafe := []string{"could not be read", dir, "the workspace is in use", "neither a restore nor a role start is safe", workspace.RestoreRecordPath(dir), "the roles do not start"}
 	blocked := newBundleRestore(refusingStarter(t), dir)
 	got := blocked.receive(frames[0])
 	for _, want := range unsafe {
@@ -216,7 +221,7 @@ func TestAnUnreadableRestoreRecordOnAWorkspaceInUseRefusesEverySliceAndEveryStar
 	}
 	g.wantStartRefused(1, dir, unsafe...)
 
-	if err := os.Remove(filepath.Join(dir, ".jj", "legion-restore")); err != nil {
+	if err := os.Remove(workspace.RestoreRecordPath(dir)); err != nil {
 		t.Fatal(err)
 	}
 	if got := blocked.receive(frames[0]); got.OK || got.Error != workspaceInUseRefusal {
@@ -263,7 +268,7 @@ func TestAStartWhoseInUseMarkFailsAfterItWroteTheMarkRestoresAtTheNextStart(t *t
 	if got, err := r.apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "mark the workspace") {
 		t.Fatalf("the start whose mark failed answered %+v, %v; want its error", got, err)
 	}
-	if record, ok, err := workspace.ReadRestoreRecord(dir); !ok || err != nil || record.Ended || record.ID != frames[0].ID {
+	if record, ok, err := workspace.ReadRestoreRecord(dir); !ok || err != nil || record.Ended || record.Report.ID != frames[0].ID {
 		t.Fatalf("after the failed mark the restore's record is %+v, %t, %v; want the restore of %q begun", record, ok, err, frames[0].ID)
 	}
 	if inUse, err := workspace.InUse(dir); !inUse || err != nil {
@@ -310,7 +315,7 @@ func TestAStartWhoseBegunRecordCannotBeWrittenRunsNoRoleAndTheNextStartRestores(
 	wantSettled(t, r, dir, frames[0].ID)
 }
 
-// A begun record that settle can neither replace with the outcome nor remove would read, to a
+// A begun record that settled can neither replace with the outcome nor remove would read, to a
 // launcher after this one, as a restore cut off with no role run beside it, so every start that
 // meets it runs no role, and each tries again.
 func TestARestoreRecordThatCanNeitherBeSettledNorRemovedRunsNoRole(t *testing.T) {
@@ -329,7 +334,7 @@ func TestARestoreRecordThatCanNeitherBeSettledNorRemovedRunsNoRole(t *testing.T)
 			t.Fatalf("start %d over the unsettled record answered %+v, %v; want its error", start+1, got, err)
 		}
 	}
-	if record, ok, err := workspace.ReadRestoreRecord(dir); !ok || err != nil || record.Ended || record.ID != frames[0].ID {
+	if record, ok, err := workspace.ReadRestoreRecord(dir); !ok || err != nil || record.Ended || record.Report.ID != frames[0].ID {
 		t.Fatalf("the restore's record is %+v, %t, %v; want the restore of %q still begun", record, ok, err, frames[0].ID)
 	}
 }
@@ -422,7 +427,7 @@ func TestARestoreCutOffInTheMiddleIsRunAgainToItsEndByTheNextLauncher(t *testing
 	// The killed launcher's restore, as far as its `jj git import`: the records apply writes
 	// before it, the unbundle, a temporary branch per saved head and jj's bookmarks of them.
 	begun := shimwire.LauncherRestored{ID: frames[0].ID, Release: bundleRelease}
-	if err := workspace.RecordRestore(ws, workspace.RestoreRecord{LauncherRestored: begun}); err != nil {
+	if err := workspace.RecordRestore(ws, workspace.RestoreRecord{Report: begun}); err != nil {
 		t.Fatal(err)
 	}
 	if err := workspace.MarkInUse(ws); err != nil {
@@ -459,7 +464,7 @@ func TestARestoreCutOffInTheMiddleIsRunAgainToItsEndByTheNextLauncher(t *testing
 		t.Fatalf("the restore over the cut-off one left the workspace\n%s\nwant it as a clean restore leaves one\n%s", state, want)
 	}
 	begun.OK = true
-	ended := workspace.RestoreRecord{LauncherRestored: begun, Ended: true}
+	ended := workspace.RestoreRecord{Report: begun, Ended: true}
 	if record, ok, err := workspace.ReadRestoreRecord(ws); !ok || err != nil || record != ended {
 		t.Fatalf("the restore's record is %+v, %t, %v; want %+v", record, ok, err, ended)
 	}

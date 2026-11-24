@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -369,8 +370,8 @@ var (
 // registers (heldCopy). It is one transaction because the choice is one decision: made as separate
 // statements it could close the older copy and then fail to take the newer, leaving the store
 // half-changed and the pod given neither. A failure that did not commit leaves every row as it
-// was, the first ask's included; one whose outcome stays unknown may have recorded them
-// (askWorkspaceCopies).
+// was, the first ask's included; one whose outcome stays unknown may have recorded them, and one
+// the store did not answer is runtime.ErrWorkspaceCopyStore (askWorkspaceCopies).
 //
 // project is the token of the daemon whose pod asks (claim.ProjectToken), and an issue's copies
 // are project's only where project records the issue (issues.project, the Dispatch key the token
@@ -466,7 +467,7 @@ func (s *Store) TakeWorkspaceCopyForRestore(ctx context.Context, project, issue,
 		return bundleTake, runningTake, nil
 	})
 	if errors.Is(err, ErrCommitOutcomeUnknown) {
-		return runtime.WorkspaceRestore{}, fmt.Errorf("take the saved workspace copies of %s for the pod %s: %w: the take may be recorded, the pod's first ask with it: a copy sent stays owed to the pod until a role of it registers, and one refused or superseded is spent", issue, podUID, err)
+		return runtime.WorkspaceRestore{}, fmt.Errorf("take the saved workspace copies of %s for the pod %s: %w: the take may be recorded, the pod's first ask with it", issue, podUID, err)
 	}
 	if err != nil {
 		return runtime.WorkspaceRestore{}, fmt.Errorf("take the saved workspace copies of %s for the pod %s to restore: %w", issue, podUID, err)
@@ -487,17 +488,22 @@ func (s *Store) TakeWorkspaceCopyForRestore(ctx context.Context, project, issue,
 // newest push. The walk then records each copy's take against the pod: nothing for
 // WorkspaceBundleNone, the copy's two times alone for WorkspaceBundleLeftForNextPod, the delete of
 // a copy the pod's kept volume holds (dropCopy), and the take of every other (takeCopy). A failure
-// that did not commit leaves every row as it was, the first ask's included, and is answered
-// unwrapped, so the caller names the act that failed. It runs until one run commits
-// (transactUntilCommitted): where a commit's reply is lost, the store reads whether that run
-// committed and answers with that run's own ask, and it runs the body again only after a run the
-// store says did not commit, which recorded nothing. A run whose outcome stays unknown at ctx's end
-// (ErrCommitOutcomeUnknown) may have committed whatever the decision was, which is the decision a
-// later ask makes too, so the unknown outcome costs nothing that decision would not. A copy sent
-// then stays owed to the pod, unspent until a role of it registers, and the pod's start, which
-// that error holds (internal/runtime/sandbox's restoreWorkspace), asks again and is sent it; a copy
-// refused or superseded is spent as at any ask, its bytes kept as a refused or superseded copy's
-// are, and a copy dropped is deleted, its work on the kept volume the pod mounts.
+// that did not commit leaves every row as it was, the first ask's included. It runs until one run
+// commits (transactUntilCommitted): where a commit's reply is lost, the store reads whether that
+// run committed and answers with that run's own ask, and it runs the body again only after a run
+// the store says did not commit, which recorded nothing. A run whose outcome stays unknown at
+// ctx's end (ErrCommitOutcomeUnknown) may have committed whatever the decision was, which is the
+// decision a later ask makes too, so the unknown outcome costs nothing that decision would not. A
+// copy sent then stays owed to the pod, unspent until a role of it registers, and the pod's start,
+// which that error holds (internal/runtime/sandbox's restoreWorkspace), asks again and is sent it;
+// a copy refused or superseded is spent as at any ask, its bytes kept as a refused or superseded
+// copy's are, and a copy dropped is deleted, its work on the kept volume the pod mounts. This is
+// the one statement of what an unknown outcome costs; the take, the drop and the start they hold
+// point here.
+//
+// A failure is answered with nothing of the ask's name, so the caller names the act that failed,
+// and wrapped in runtime.ErrWorkspaceCopyStore where the store did not answer the ask
+// (copyAskUnanswered).
 func (s *Store) askWorkspaceCopies(ctx context.Context, project, issue, podUID string,
 	decide func(ctx context.Context, tx pgx.Tx, ask *runtime.WorkspaceRestore, bundle, running runtime.WorkspaceCopyHeld) (bundleTake, runningTake runtime.WorkspaceBundleTake, err error),
 ) (runtime.WorkspaceRestore, error) {
@@ -555,9 +561,37 @@ func (s *Store) askWorkspaceCopies(ctx context.Context, project, issue, podUID s
 		return nil
 	})
 	if err != nil {
-		return runtime.WorkspaceRestore{}, err
+		return runtime.WorkspaceRestore{}, copyAskUnanswered(ctx, err)
 	}
 	return ask, nil
+}
+
+// copyAskUnanswered is err, the failure of an ask of an issue's copies on ctx
+// (askWorkspaceCopies), wrapped in runtime.ErrWorkspaceCopyStore where the store did not answer
+// the ask. That says nothing of the asking pod's claim, so its start is held and tried again at the
+// probe interval, charging nothing (internal/supervise's launchTries). The store did not answer an
+// ask that failed:
+//
+//   - with its outcome unknown (ErrCommitOutcomeUnknown);
+//   - with a failure transactUntilCommitted runs again (retryable), which it answers only once ctx
+//     has ended while it waited to run again;
+//   - at ctx's own end, the hop's bound or its caller's, whatever the statement that end cut short
+//     answered;
+//   - or on a connection that never opened (*pgconn.ConnectError), whatever the server said in
+//     refusing it: no statement was judged, which is the rule internal/supervise's writeOwed reads
+//     first, for the same reason. A refused dial is no failure retryable runs again, so without it
+//     a store that is down would charge every launch that asked.
+//
+// Every other error is definite and is answered as it is: the server refused a statement for a
+// reason of the statement's own, a trigger's P0001 among them, or the ask could not read what the
+// server answered, a jsonb that does not decode among them. An ask again meets it again, so the
+// start it fails is charged as a failed launch.
+func copyAskUnanswered(ctx context.Context, err error) error {
+	var connect *pgconn.ConnectError
+	if errors.Is(err, ErrCommitOutcomeUnknown) || retryable(err) || ctx.Err() != nil || errors.As(err, &connect) {
+		return fmt.Errorf("%w: %w", runtime.ErrWorkspaceCopyStore, err)
+	}
+	return err
 }
 
 // projectRecordsIssue is whether project, a claim.ProjectToken, records issue (issues.project,
@@ -670,9 +704,9 @@ func firstRestoreAsk(ctx context.Context, tx pgx.Tx, issue, podUID string) (time
 // row, so a take and a registration of one pod are ordered: a take that held the lock first sends
 // what it read and commits before the registration is written, and one that comes after reads the
 // registration and sends nothing. It only updates: a pod with no row is left with none. Every
-// pod's first role start asks for a restore, and a start whose ask the store did not answer starts
-// no role (internal/runtime/sandbox's restoreWorkspace), so a pod whose role registers with no row
-// is one of three. Its row was pruned (maxWorkspaceRestoreAsks), which reads as spent; its issue is
+// pod's first role start asks for a restore, and a start whose ask failed starts no role
+// (internal/runtime/sandbox's restoreWorkspace), so a pod whose role registers with no row is one
+// of three. Its row was pruned (maxWorkspaceRestoreAsks), which reads as spent; its issue is
 // one the daemon's project does not record (projectRecordsIssue), whose ask askWorkspaceCopies
 // answers empty and records nothing, so the take sends nothing and the role starts; or its first
 // role start was under a daemon that records no ask, a release before this table or the earlier

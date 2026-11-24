@@ -49,12 +49,9 @@ const restoreRefPrefix = "legion-restore-"
 // report (sent). So a launcher after it over that disk finds one of four things (read). A restore
 // that ended and whose report no connection carried: it refuses the bundle and still owes the
 // report. A restore begun and cut off, its container killed in the middle: no role has run there,
-// so it takes the copy the daemon sends again, restores it, and starts no role until one does; the
-// daemon sends it again only while no role of the pod has registered and its take still offers
-// that copy, and otherwise each start is refused until the claim fails. A record it cannot read,
-// which says nothing of the roles: it reads the in-use record, and counts the restore as cut off
-// only where no role has started on the workspace, and blocks every slice and every start where
-// one may have. No record: it refuses the bundle.
+// so it takes the copy the daemon sends again, restores it, and starts no role until one does, and
+// each start the daemon sends no copy before says what else clears it (apply). A record it cannot
+// read, which read judges by the in-use record beside it. No record: it refuses the bundle.
 type bundleRestore struct {
 	mu sync.Mutex
 	// sequence is the id of the slice sequence being assembled, with the count, the digest and
@@ -79,25 +76,24 @@ type bundleRestore struct {
 	// confirm is the report the daemon is owed for the restore that has run and is still unsent:
 	// the daemon keeps its saved copy until one arrives, so this is held until a connection
 	// carries it and sent again on every connection until one does (manager.reportRestore). It is
-	// recorded on the workspace's disk as well (settle), and a launcher restarted over that disk
+	// recorded on the workspace's disk as well (settled), and a launcher restarted over that disk
 	// starts owing it (read).
 	confirm *shimwire.LauncherRestored
 	// begun is the workspace's disk holding the record of a restore this process began and has
-	// not yet replaced with its outcome (settle), which no role may start beside. While it is set,
+	// not yet replaced with its outcome (settled), which no role may start beside. While it is set,
 	// the in-use record is this process's own, written for that restore, and no role's use of the
 	// workspace (inUse).
 	begun bool
 	// cutOff is why the workspace takes the copy the daemon sends again though its disk may mark
-	// it in use: a restore an earlier launcher began there and never ended, its text naming that
-	// restore's release, or a record of one that could not be read on a workspace no role has
-	// started on, its text naming why (read). nil when there is neither, and once a restore of
-	// this process has ended. No role has run on the workspace since, so a slice is taken (fence),
-	// the copy sent again is restored, and a start with no copy to restore runs no role (apply).
+	// it in use: a restore an earlier launcher began there and never ended, or a record that read
+	// counts as one, its text naming which (read). nil when there is neither, and once a restore
+	// of this process has ended. No role has run on the workspace since, so a slice is taken
+	// (fence), the copy sent again is restored, and a start with no copy to restore runs no role
+	// (apply).
 	cutOff error
-	// blocked is why the workspace takes no slice and starts no role: a record of a restore that
-	// could not be read where the workspace is marked in use, or where its in-use record could
-	// not be read either (read). It holds until the record reads, which each start and each slice
-	// tries again (fence, apply).
+	// blocked is why the workspace takes no slice and starts no role: a record that read can count
+	// as neither a restore nor none. It holds until the record reads, which each start and each
+	// slice tries again (stillBlocked).
 	blocked error
 	// start starts each jj and git of the restore (restoreWorkspace): the launcher's pidGuard,
 	// which holds each one out of PID 1's reaper until its own wait has read its exit.
@@ -137,7 +133,8 @@ func newBundleRestore(start procgroup.Starter, dir string) *bundleRestore {
 
 // read takes what the record of a restore an earlier launcher ran on the workspace says
 // (workspace.ReadRestoreRecord): at this launcher's start, and again at each start and each slice
-// while the workspace is blocked, so a record removed by hand is read at the next one.
+// while the workspace is blocked (stillBlocked), so a record removed by hand is read at the next
+// one. This is the one statement of what a record that cannot be read counts as.
 //
 // A restore that ended and whose report no connection carried is owed from the start: that roles
 // container restarted after its restore ran and before the daemon heard of it, and the daemon
@@ -171,12 +168,12 @@ func (r *bundleRestore) read() {
 		if inUseErr != nil {
 			inUse = fmt.Sprintf("its in-use record could not be read either (%v)", inUseErr)
 		}
-		r.blocked = fmt.Errorf("the record of a restore into the workspace %s could not be read (%v), and %s, so neither a restore nor a role start is safe there: the roles do not start and no copy is taken until the record reads, which removing a damaged .jj/legion-restore from the workspace by hand does, and so does putting the workspace's .jj directory back where .jj is a file or a link, or until the pod is replaced, which on a kept volume takes a reset of that volume",
-			r.workspace, err, inUse)
+		r.blocked = fmt.Errorf("the record of a restore into the workspace %s could not be read (%v), and %s, so neither a restore nor a role start is safe there: the roles do not start and no copy is taken until the record reads, which removing the damaged record %s by hand does, and so does putting the workspace's .jj directory back where .jj is a file or a link, or until the pod is replaced, which on a kept volume takes a reset of that volume",
+			r.workspace, err, inUse, workspace.RestoreRecordPath(r.workspace))
 	case ok && record.Ended:
-		r.confirm = &record.LauncherRestored
+		r.confirm = &record.Report
 	case ok:
-		r.cutOff = fmt.Errorf("a restore of release %d into the workspace %s was cut off before it ended", record.Release, r.workspace)
+		r.cutOff = fmt.Errorf("a restore of release %d into the workspace %s was cut off before it ended", record.Report.Release, r.workspace)
 	}
 }
 
@@ -195,7 +192,7 @@ func (r *bundleRestore) logFound(logf func(format string, args ...any)) {
 // holds the released work, and the notice the role's log and the agent's own message carry.
 // Unrecorded is why the report of the restore could not be recorded on the workspace's disk,
 // which the start logs and which stops no role: the report still stands in memory, and only a
-// launcher restarted before a connection carries it no longer owes it (settle).
+// launcher restarted before a connection carries it no longer owes it (settled).
 type restoreResult struct {
 	Restored   bool
 	Notice     string
@@ -259,8 +256,8 @@ func (r *bundleRestore) receive(frame shimwire.LauncherBundle) shimwire.Launcher
 
 // fence is why the restore refuses a slice it has not taken, and "" when it takes one: a launcher
 // with no workspace restores nothing; a workspace this process has applied to takes no bundle; a
-// blocked one takes none, read again first (read); and one a role may have worked takes none
-// (inUse). It is called under mu.
+// blocked one takes none (stillBlocked); and one a role may have worked takes none (inUse). It is
+// called under mu.
 func (r *bundleRestore) fence() string {
 	switch {
 	case r.workspace == "":
@@ -268,16 +265,23 @@ func (r *bundleRestore) fence() string {
 	case r.applied:
 		return workspaceInUseRefusal
 	}
-	if r.blocked != nil {
-		r.read()
+	if blocked := r.stillBlocked(); blocked != nil {
+		return blocked.Error()
 	}
-	switch {
-	case r.blocked != nil:
-		return r.blocked.Error()
-	case r.inUse():
+	if r.inUse() {
 		return workspaceInUseRefusal
 	}
 	return ""
+}
+
+// stillBlocked is why the workspace is blocked, nil when it is not: a blocked workspace reads its
+// records again first (read), so a record removed or put right by hand clears it at the next slice
+// or start. It is called under mu.
+func (r *bundleRestore) stillBlocked() error {
+	if r.blocked != nil {
+		r.read()
+	}
+	return r.blocked
 }
 
 // inUse is whether a role may have worked the workspace, which then takes no restore: its disk
@@ -339,13 +343,15 @@ func joined(slices [][]byte) []byte {
 // workspace a role has worked. The error leaves the restore as it was, a held body still held, so
 // the next start tries the records again, and slices are still taken, since no role has started;
 // an in-use record this process wrote before such an error is its own (begun), so the next start
-// restores all the same. A blocked workspace is its error (read). So is a restore cut off on this
-// disk whose copy has not arrived again: the workspace may hold part of that restore, the work is
-// in the daemon's database alone, and no role starts on it until a start finds the copy held and
-// restores it. The daemon sends the copy again only while no role of the pod has registered and
-// its take still offers that copy, which a push newer than a running copy refuses; otherwise each
-// start is refused until the claim fails, and on a kept volume the record stays for the later pods
-// of its Sandbox until the volume is reset.
+// restores all the same. A blocked workspace is its error (stillBlocked). So is a restore cut off
+// on this disk whose copy has not arrived again: the workspace may hold part of that restore, the
+// work is in the daemon's database alone, and no role starts on it until a start finds the copy
+// held and restores it. The daemon sends the copy again only while no role of the pod has
+// registered and its take still offers that copy, which a newer push, a rollback or a kept volume
+// at the roll forward can end. Then each start is refused until the claim fails, and a spawn
+// again meets the same disk, so the refusal names what clears it: a new pod, on a kept volume a
+// reset of that volume, whose record stays for the later pods of its Sandbox, or the record
+// deleted, which starts the roles on the workspace as the cut-off restore left it.
 func (r *bundleRestore) apply(ctx context.Context, env []string) (restoreResult, error) {
 	// A manager built without one — a test's, which serves no daemon that could send a bundle —
 	// restores nothing and waits for nothing, as does a role or a launcher that works no
@@ -357,22 +363,20 @@ func (r *bundleRestore) apply(ctx context.Context, env []string) (restoreResult,
 	defer r.mu.Unlock()
 	// The restore has run: it is answered from what it left, since the body it read went with
 	// it. This is read before the body, which a restore that has run no longer holds. A record of
-	// it that still says it is under way keeps the role from starting (settle).
+	// it that still says it is under way keeps the role from starting (settled).
 	if r.applied {
 		return r.settled()
 	}
-	if r.blocked != nil {
-		if r.read(); r.blocked != nil {
-			return restoreResult{}, r.blocked
-		}
+	if blocked := r.stillBlocked(); blocked != nil {
+		return restoreResult{}, blocked
 	}
 	if r.cutOff != nil && r.body == nil {
-		return restoreResult{}, fmt.Errorf("%w, so the workspace may hold part of it, and no copy of the work has been sent again: the roles do not start until a start finds the copy sent again, which the daemon sends only while no role of the pod has registered and its take still offers that copy, and otherwise each start is refused until the claim fails",
-			r.cutOff)
+		return restoreResult{}, fmt.Errorf("%w, so the workspace may hold part of it, and no copy of the work has been sent again: the roles do not start until a start finds the copy sent again, which the daemon sends only while no role of the pod has registered and its take still offers that copy; where it no longer does, each start is refused until the claim fails, and a spawn again meets the same disk, until the pod is replaced, on a kept volume once that volume is reset, or until the restore's record %s is deleted, which starts the roles on the workspace as the cut-off restore left it",
+			r.cutOff, workspace.RestoreRecordPath(r.workspace))
 	}
 	restoring := r.body != nil && !r.inUse()
 	if restoring {
-		if err := r.recordRestore(r.workspace, workspace.RestoreRecord{LauncherRestored: shimwire.LauncherRestored{ID: r.sequence, Release: r.release}}); err != nil {
+		if err := r.recordRestore(r.workspace, workspace.RestoreRecord{Report: shimwire.LauncherRestored{ID: r.sequence, Release: r.release}}); err != nil {
 			return restoreResult{}, fmt.Errorf("record on the workspace %s that the restore of release %d begins, before a role starts on it: %w", r.workspace, r.release, err)
 		}
 		r.begun = true
@@ -407,40 +411,30 @@ func (r *bundleRestore) apply(ctx context.Context, env []string) (restoreResult,
 }
 
 // settled is a start's answer once apply has run, whether or not it restored: the restore's
-// outcome, once the record of a restore this process began is settled (settle), whose error is the
-// start's. Every answer of apply that lets a role start is this one, so none leaves a begun record
-// on the disk behind a role.
+// outcome, once the record of a restore this process began (begun) is replaced with it, the report
+// in confirm. Every answer of apply that lets a role start is this one, so none leaves a begun
+// record on the disk behind a role: a disk that still read as a restore under way would have a
+// launcher after this one take the copy sent again and restore it over the roles' work (cutOff).
+// An outcome that cannot be recorded is answered as unrecorded once the begun record is removed in
+// its place: the report still stands in memory, and only a launcher restarted before a connection
+// carries it no longer owes it. A begun record that can be neither replaced nor removed is the
+// start's error, which keeps its role from starting, and each later start tries again. It is
+// called under mu.
 func (r *bundleRestore) settled() (restoreResult, error) {
-	unrecorded, err := r.settle()
-	if err != nil {
-		return restoreResult{}, err
+	var unrecorded error
+	if r.begun {
+		if report := r.confirm; report != nil {
+			unrecorded = r.recordRestore(r.workspace, workspace.RestoreRecord{Report: *report, Ended: true})
+		}
+		if r.confirm == nil || unrecorded != nil {
+			if err := r.removeRecord(r.workspace); err != nil {
+				return restoreResult{}, fmt.Errorf("the restore of release %d has ended, but its record on the workspace %s still says it is under way and could not be removed, so no role starts there: %w",
+					r.release, r.workspace, errors.Join(unrecorded, err))
+			}
+		}
+		r.begun = false
 	}
 	return restoreResult{Restored: r.restored, Notice: r.notice, Unrecorded: unrecorded}, nil
-}
-
-// settle replaces the record of the restore this process began (begun) with its outcome, the
-// report in confirm, before any role starts: a disk that still read as a restore under way would
-// have a launcher after this one take the copy sent again and restore it over the roles' work
-// (cutOff). An outcome that cannot be recorded is answered as unrecorded once the begun record is
-// removed in its place: the report still stands in memory, and only a launcher restarted before a
-// connection carries it no longer owes it. A begun record that can be neither replaced nor removed
-// is the error that keeps each start's role from starting, and each later start tries again. It
-// is called under mu.
-func (r *bundleRestore) settle() (unrecorded, err error) {
-	if !r.begun {
-		return nil, nil
-	}
-	if report := r.confirm; report != nil {
-		unrecorded = r.recordRestore(r.workspace, workspace.RestoreRecord{LauncherRestored: *report, Ended: true})
-	}
-	if r.confirm == nil || unrecorded != nil {
-		if err := r.removeRecord(r.workspace); err != nil {
-			return unrecorded, fmt.Errorf("the restore of release %d has ended, but its record on the workspace %s still says it is under way and could not be removed, so no role starts there: %w",
-				r.release, r.workspace, errors.Join(unrecorded, err))
-		}
-	}
-	r.begun = false
-	return unrecorded, nil
 }
 
 // owed is the report the daemon has not been given yet, and nil when none is: every connection

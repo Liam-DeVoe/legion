@@ -242,8 +242,8 @@ func TestTheRestoreRecordIsReadAsItWasWrittenUntilItIsRemoved(t *testing.T) {
 		t.Fatalf("ReadRestoreRecord of a fresh .jj = %+v, %t, %v; want none and no error", record, ok, err)
 	}
 
-	begun := RestoreRecord{LauncherRestored: shimwire.LauncherRestored{ID: "restore-INFRA-1117-11", Release: 11}}
-	ended := RestoreRecord{LauncherRestored: shimwire.LauncherRestored{ID: begun.ID, Release: begun.Release, Error: "the released workspace's saved work was not restored (a reason)"}, Ended: true}
+	begun := RestoreRecord{Report: shimwire.LauncherRestored{ID: "restore-INFRA-1117-11", Release: 11}}
+	ended := RestoreRecord{Report: shimwire.LauncherRestored{ID: begun.Report.ID, Release: begun.Report.Release, Error: "the released workspace's saved work was not restored (a reason)"}, Ended: true}
 	for _, want := range []RestoreRecord{begun, ended} {
 		if err := RecordRestore(dir, want); err != nil {
 			t.Fatalf("RecordRestore(%+v) = %v", want, err)
@@ -268,14 +268,14 @@ func TestTheRestoreRecordIsReadAsItWasWrittenUntilItIsRemoved(t *testing.T) {
 	for name, body := range map[string]string{
 		"not JSON":                   "begun\n",
 		"no slice sequence":          "{}\n",
-		"over the record's own size": `{"id":"x","error":"` + strings.Repeat("a", restoreRecordLimit) + `"}`,
+		"over the record's own size": `{"report":{"id":"x","error":"` + strings.Repeat("a", restoreRecordLimit) + `"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			if err := os.Mkdir(filepath.Join(dir, ".jj"), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			path := filepath.Join(dir, ".jj", restoreFile)
+			path := RestoreRecordPath(dir)
 			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -299,7 +299,7 @@ func TestARestoreRecordThatIsALinkOrADirectoryIsRefused(t *testing.T) {
 		}
 		return dir
 	}
-	record := RestoreRecord{LauncherRestored: shimwire.LauncherRestored{ID: "restore-INFRA-1117-11", Release: 11, OK: true}, Ended: true}
+	record := RestoreRecord{Report: shimwire.LauncherRestored{ID: "restore-INFRA-1117-11", Release: 11, OK: true}, Ended: true}
 
 	t.Run("a link at the record's name", func(t *testing.T) {
 		dir := fresh(t)
@@ -309,19 +309,19 @@ func TestARestoreRecordThatIsALinkOrADirectoryIsRefused(t *testing.T) {
 		if err := RecordRestore(elsewhere, record); err != nil {
 			t.Fatal(err)
 		}
-		target := filepath.Join(elsewhere, ".jj", restoreFile)
+		target := RestoreRecordPath(elsewhere)
 		planted, err := os.ReadFile(target)
 		if err != nil {
 			t.Fatal(err)
 		}
-		link := filepath.Join(dir, ".jj", restoreFile)
+		link := RestoreRecordPath(dir)
 		if err := os.Symlink(target, link); err != nil {
 			t.Fatal(err)
 		}
 		if got, ok, err := ReadRestoreRecord(dir); ok || !errors.Is(err, syscall.ELOOP) {
 			t.Fatalf("ReadRestoreRecord of a link = %+v, %t, %v; want ELOOP, the link not followed", got, ok, err)
 		}
-		begun := RestoreRecord{LauncherRestored: shimwire.LauncherRestored{ID: "restore-INFRA-1117-12", Release: 12}}
+		begun := RestoreRecord{Report: shimwire.LauncherRestored{ID: "restore-INFRA-1117-12", Release: 12}}
 		if err := RecordRestore(dir, begun); err != nil {
 			t.Fatalf("RecordRestore over a link = %v", err)
 		}
@@ -338,7 +338,7 @@ func TestARestoreRecordThatIsALinkOrADirectoryIsRefused(t *testing.T) {
 
 	t.Run("a directory at the record's name", func(t *testing.T) {
 		dir := fresh(t)
-		path := filepath.Join(dir, ".jj", restoreFile)
+		path := RestoreRecordPath(dir)
 		if err := os.Mkdir(path, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -367,7 +367,7 @@ func TestARestoreRecordThatIsALinkOrADirectoryIsRefused(t *testing.T) {
 		if _, err := os.Lstat(filepath.Join(target, restoreFile)); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("the record was written through the link into %s (%v)", target, err)
 		}
-		if err := os.WriteFile(filepath.Join(target, restoreFile), []byte(`{"id":"planted","ended":true,"ok":true}`), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(target, restoreFile), []byte(`{"report":{"id":"planted","ok":true},"ended":true}`), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if got, ok, err := ReadRestoreRecord(dir); ok || !errors.Is(err, errLinkedJJ) {

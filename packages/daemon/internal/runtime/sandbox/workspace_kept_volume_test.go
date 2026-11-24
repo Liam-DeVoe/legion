@@ -100,9 +100,10 @@ func evict(t *testing.T, g *rig, loc runtime.Locator) {
 // A pod whose own kept volume holds the work of a copy is sent none of it (R5), the release bundle
 // and the running copy alike. The release keeps the Sandbox that owns the issue's kept volume,
 // Suspended, and an eviction keeps it Running, and the issue's next pod mounts that volume, with
-// the workspace each copy was taken from. The pod's launcher would refuse a copy sent there,
-// because the workspace is older than the copy (internal/launcher's restoreWorkspace). It would
-// log a notice that the work was lost, and a release bundle would hold the issue's pod
+// the workspace each copy was taken from. The pod's launcher would refuse every slice of a copy
+// sent there as one to a workspace in use, since the earlier pod's in-use mark stays in that
+// volume's .jj (internal/launcher's bundleRestore), before any restore runs and with no notice,
+// and a release bundle refused so would hold the issue's pod
 // (workflow.IdleHoldBundleUnrestored). So the daemon sends that pod no slice, drops the copy, and
 // logs one Info line that names which copy it dropped.
 //

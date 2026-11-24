@@ -317,14 +317,15 @@ func TestADropWhoseOutcomeIsUnknownAnswersTheDropOnceTheStoreAnswers(t *testing.
 	}
 }
 
-// A take of the issue's copies that fails holds the role's start, for either kind of copy: the
-// start fails with the take's error, which is the daemon's own store's (runtime.ErrWorkspaceCopyStore,
-// which the supervisor retries charging nothing), and sends the launcher no launcher_start, so no
-// role starts on what was pushed while a copy is owed; and since no Start was sent, it sends no
-// launcher_stop either (stopIssuedChild). The copy is left as it was, and the next launch, whose
-// take the store answers, sends it and starts the role. A role started beside the failed take would
-// register and spend the copy, and a running copy would then be replaced by the next copy of its
-// pod's workspace, which never held the work.
+// A take of the issue's copies that the store does not answer holds the role's start, for either
+// kind of copy: the start fails with the take's error, which is the daemon's own store's
+// (runtime.ErrWorkspaceCopyStore, which the supervisor retries charging nothing), and sends the
+// launcher no launcher_start, so no role starts on what was pushed while a copy is owed; and since
+// no Start was sent, it sends no launcher_stop either (stopIssuedChild). The copy is left as it
+// was, and the next launch, whose take the store answers, sends it and starts the role. A role
+// started beside the failed take would register and spend the copy, and a running copy would then
+// be replaced by the next copy of its pod's workspace, which never held the work. The store here
+// opens no connection (refuseEveryConnection), as one that is down.
 //
 // The controls (the pull request records the runs): the take's error not wrapped in the sentinel
 // fails the errors.Is; and stopIssuedChild without its startHeld case sends a launcher_stop.
@@ -348,8 +349,8 @@ func TestAStartWhoseTakeOfTheCopiesFailsRunsNoRoleUntilATakeSendsTheCopy(t *test
 		t.Run(kind.name, func(t *testing.T) {
 			st := bundleStore(t)
 			saved := kind.save(t, st)
-			faulted, _ := faultedBundleStore(t, st)
-			faulted.Close()
+			faulted, fault := faultedBundleStore(t, st)
+			refuseEveryConnection(faulted, fault)
 			g := newRig(t, nil, withOptions(func(o *Options) {
 				o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeCopies(faulted), st.KeepRestoredWorkspaceCopy
 			}))
@@ -375,20 +376,21 @@ func TestAStartWhoseTakeOfTheCopiesFailsRunsNoRoleUntilATakeSendsTheCopy(t *test
 	}
 }
 
-// A drop of the copies a pod's kept volume holds that fails holds the role's start as a take that
-// fails does: the start fails with the drop's error, which is the daemon's own store's
-// (runtime.ErrWorkspaceCopyStore, which the supervisor retries charging nothing), and the take,
-// which the store would answer, does not run. So the launcher is sent no launcher_start, and no
-// role starts while the drop has not answered which copies the volume holds; and since no Start
+// A drop of the copies a pod's kept volume holds that the store does not answer holds the role's
+// start as such a take does: the start fails with the drop's error, which is the daemon's own
+// store's (runtime.ErrWorkspaceCopyStore, which the supervisor retries charging nothing), and the
+// take, which the store would answer, does not run. So the launcher is sent no launcher_start, and
+// no role starts while the drop has not answered which copies the volume holds; and since no Start
 // was sent, it sends no launcher_stop either (stopIssuedChild). The drop is wired as the daemon
-// hands it to the runtime (withKeptVolumeDrop), on a store that does not answer.
+// hands it to the runtime (withKeptVolumeDrop), on a store that opens no connection
+// (refuseEveryConnection).
 //
-// The control (the pull request records the run): restoreWorkspace answering the failed drop with
-// hold, not storeHeld, fails the errors.Is.
+// The control (the pull request records the run): the drop's error not wrapped in the sentinel
+// fails the errors.Is.
 func TestAStartWhoseDropOfTheKeptVolumesCopiesFailsRunsNoRole(t *testing.T) {
 	st := bundleStore(t)
-	faulted, _ := faultedBundleStore(t, st)
-	faulted.Close()
+	faulted, fault := faultedBundleStore(t, st)
+	refuseEveryConnection(faulted, fault)
 	var takes atomic.Int32
 	take := takeCopies(st)
 	g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)), withOptions(func(o *Options) {
@@ -407,19 +409,98 @@ func TestAStartWhoseDropOfTheKeptVolumesCopiesFailsRunsNoRole(t *testing.T) {
 	}
 }
 
-// requireStoreHeld spawns spec on g and wants the start held by the daemon's own store: an error
-// naming want that is runtime.ErrWorkspaceCopyStore, and neither a launcher_start nor a
-// launcher_stop sent (stopIssuedChild skips a held start). what names the act that failed.
-func requireStoreHeld(t *testing.T, g *rig, spec runtime.SpawnSpec, what, want string) {
+// Only a take the daemon's store did not answer holds the start as the store's
+// (runtime.ErrWorkspaceCopyStore, which the supervisor retries charging nothing): one whose outcome
+// stayed unknown at the start's bound, the commit landed and its reply lost while the store
+// answered nothing more, and one on a store that opens no connection. A take the store answered
+// with a definite error, here a trigger that raises (SQLSTATE P0001), is met again by every take
+// after it, so retried uncharged it would hold the claim for ever: its start fails with the take's
+// error, which is not the sentinel, and the supervisor charges it as a failed launch. It is held
+// all the same, since no copy owed to the pod reached its launcher: no launcher_start is sent.
+//
+// The control (the pull request records the run): the hop wrapping every error of the take in the
+// sentinel, as before, which fails the first row.
+func TestATakeTheStoreAnsweredWithAnErrorIsNoStoreHoldAndOneItDidNotAnswerIs(t *testing.T) {
+	t.Run("a take the store refused", func(t *testing.T) {
+		st := bundleStore(t)
+		saveReleaseBundle(t, st, savedWorkspaceBundle())
+		refuseRestoreAsks(t, st)
+		g := newRig(t, nil, withSavedWorkspace(st))
+		if err := spawnHeld(t, g, workerSpec(t), "take"); !strings.Contains(err.Error(), "could not be taken") ||
+			!strings.Contains(err.Error(), "SQLSTATE P0001") || errors.Is(err, runtime.ErrWorkspaceCopyStore) {
+			t.Fatalf("the start whose take the store refused answered %v; want the take's refusal, which is not runtime.ErrWorkspaceCopyStore", err)
+		}
+	})
+	t.Run("a take whose outcome stays unknown", func(t *testing.T) {
+		st := bundleStore(t)
+		saveReleaseBundle(t, st, savedWorkspaceBundle())
+		faulted, fault := faultedBundleStore(t, st)
+		fired := fault.Cut(bundleTake, testdb.CutAfterCommitRefusing)
+		g := newRig(t, nil, withOptions(func(o *Options) {
+			o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeCopies(faulted), st.KeepRestoredWorkspaceCopy
+		}))
+		requireStoreHeld(t, g, workerSpec(t), "take", "the store did not say whether the transaction committed")
+		testdb.Met(t, fired)
+	})
+	t.Run("a take on a store that opens no connection", func(t *testing.T) {
+		st := bundleStore(t)
+		saveReleaseBundle(t, st, savedWorkspaceBundle())
+		faulted, fault := faultedBundleStore(t, st)
+		refuseEveryConnection(faulted, fault)
+		g := newRig(t, nil, withOptions(func(o *Options) {
+			o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeCopies(faulted), st.KeepRestoredWorkspaceCopy
+		}))
+		requireStoreHeld(t, g, workerSpec(t), "take", "failed to connect")
+	})
+}
+
+// refuseEveryConnection has faulted, a store through fault's proxy, answer nothing: the proxy
+// closes every connection it holds and each new one at once, and the pool lets go of the ones it
+// held, so each ask meets a connection that never opens, as on a store that is down.
+func refuseEveryConnection(faulted *store.Store, fault *testdb.CommitFault) {
+	fault.Refuse(true)
+	faulted.Pool().Reset()
+}
+
+// refuseRestoreAsks has st's database refuse the record of every pod's first ask for a restore
+// with a trigger that raises (SQLSTATE P0001), a definite error every later take meets again,
+// until the trigger refuse_restore_ask is dropped.
+func refuseRestoreAsks(t *testing.T, st *store.Store) {
+	t.Helper()
+	for _, statement := range []string{
+		`create function refuse_restore_ask() returns trigger language plpgsql as $$ begin raise exception 'the store cannot be read'; end $$`,
+		`create trigger refuse_restore_ask before insert on workspace_restore_asks for each row execute function refuse_restore_ask()`,
+	} {
+		if _, err := st.Pool().Exec(context.Background(), statement); err != nil {
+			t.Fatalf("make the pod's take fail: %v", err)
+		}
+	}
+}
+
+// spawnHeld spawns spec on g, wants the start held — it fails, and the launcher is sent neither a
+// launcher_start nor a launcher_stop (stopIssuedChild skips a held start) — and answers its error.
+// what names the act that failed.
+func spawnHeld(t *testing.T, g *rig, spec runtime.SpawnSpec, what string) error {
 	t.Helper()
 	g.launcher(spec.Claim)
-	if _, err := g.r.Spawn(g.ctx, spec); err == nil || !strings.Contains(err.Error(), want) || !errors.Is(err, runtime.ErrWorkspaceCopyStore) {
-		t.Fatalf("the start whose %s failed answered %v; want it failed with the %s's error, runtime.ErrWorkspaceCopyStore", what, err, what)
+	_, err := g.r.Spawn(g.ctx, spec)
+	if err == nil {
+		t.Fatalf("the start whose %s failed answered no error", what)
 	}
 	sent := g.sent(spec.Claim)
 	for _, held := range []string{shimwire.TypeLauncherStart, shimwire.TypeLauncherStop} {
 		if countOf(sent, held) != 0 {
 			t.Fatalf("the start whose %s failed sent the launcher %v; want no %s", what, frameTypes(sent), held)
 		}
+	}
+	return err
+}
+
+// requireStoreHeld spawns spec on g and wants the start held by the daemon's own store: held
+// (spawnHeld), with an error naming want that is runtime.ErrWorkspaceCopyStore.
+func requireStoreHeld(t *testing.T, g *rig, spec runtime.SpawnSpec, what, want string) {
+	t.Helper()
+	if err := spawnHeld(t, g, spec, what); !strings.Contains(err.Error(), want) || !errors.Is(err, runtime.ErrWorkspaceCopyStore) {
+		t.Fatalf("the start whose %s failed answered %v; want it failed with the %s's error, runtime.ErrWorkspaceCopyStore", what, err, what)
 	}
 }
