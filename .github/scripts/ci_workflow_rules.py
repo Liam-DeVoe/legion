@@ -304,8 +304,11 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
     expression, and it is what
     pairs a save with the restores to hold it to; the keys are compared as text and the paths as
     the ordered lists of lines they name. A family ci.yaml restores that this workflow does not
-    save is no fault: docs-pages.yaml saves go-docs. The other way round is one, a family nothing
-    restores being a fill nobody reads.
+    save is no fault when another workflow of the directory saves it: docs-site.yaml saves go-docs.
+    A family no workflow saves is one: its restore misses on every run and nothing fails, as a
+    restore whose family name is misspelled does (`go-envoy-tests-` for go-envoy-test), so every
+    restore of the directory names a family some save writes. The other way round is one too, a
+    family nothing restores being a fill nobody reads.
 
     This workflow's own restores of a family it saves under the commit are what the fill builds on,
     and have one shape: no lookup-only at all (an expression can evaluate to true), so the newest
@@ -334,6 +337,20 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
     elsewhere = restores_of({path: document for path, document in directory_workflows().items()
                              if path not in documents})
     saves = saves_of(caches, problems)
+    saved_anywhere = {family for _, family, _, _ in saves}
+    for path, document in directory_workflows().items():
+        if path != CACHE_WORKFLOW:
+            # Another workflow's saves are held to nothing here, so what saves_of says of them goes
+            # nowhere; only the families they write are read.
+            saved_anywhere |= {family for _, family, _, _ in saves_of(document, [])}
+    for path, document in {**directory_workflows(), **documents}.items():
+        for job_id, family, _ in cache_steps(document, "restore"):
+            if family and family not in saved_anywhere:
+                problems.append(error(path, f"job {job_id} restores cache family {family}, which no "
+                                            f"actions/cache/save of any workflow of this repository writes: the "
+                                            f"restore misses on every run and nothing fails, the job building "
+                                            f"from nothing what it meant to restore; name a family a save "
+                                            f"writes ({', '.join(sorted(saved_anywhere))})"))
     refilled = {family for _, family, key, _ in saves if key.endswith(COMMIT_SUFFIX)}
     for family in sorted(refilled & {family for _, family, key, _ in saves if not key.endswith(COMMIT_SUFFIX)}):
         problems.append(error(CACHE_WORKFLOW, f"this workflow saves family {family} both under `{COMMIT_SUFFIX}` and "

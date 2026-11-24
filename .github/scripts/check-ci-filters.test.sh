@@ -26,7 +26,8 @@
 # cache family must carry
 # the key and the paths every restore of that family names, ci.yaml's and any other workflow's,
 # or that key followed by the commit, its own restores being lookups but those of a family it
-# saves under the commit, which download the newest entry,
+# saves under the commit, which download the newest entry, every restore of any workflow must
+# name a family some workflow saves,
 # ci-caches.yaml's race build must compile exactly the packages ci_job_reads.py's
 # DAEMON_RACE_PACKAGES names,
 # ci_job_reads.py's WORKSPACES must name exactly the workspaces of the root package.json, and no
@@ -3132,6 +3133,50 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the family nothing restores" \
   "$(contains "$out" 'job fill saves cache family go-app, which no actions/cache/restore of .github/workflows/ci.yaml or of a workflow it calls reads')"
+
+# A restore of a family no workflow saves misses on every run and fails nothing. A misspelled
+# family name (go-envoy-tests- for go-envoy-test) is such a family: the paired-key rules above
+# read it as a family of its own, and they hold it to nothing.
+echo "case: a restore of a family no workflow of the repository saves"
+root=$(fixture cache-restore-unsaved)
+cache_workflow "$root"
+replace "$root/.github/workflows/ci.yaml" "      - name: Test the app" \
+  $'      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: |\n            ~/go/pkg/mod\n            ~/.cache/go-build\n          key: go-apps-${{ runner.os }}\n      - name: Test the app'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file, the job, the family and the families a save writes" \
+  "$(contains "$out" '::error file=.github/workflows/ci.yaml::job app restores cache family go-apps, which no actions/cache/save of any workflow of this repository writes: .* name a family a save writes (go-app)')"
+
+echo "case: a restore of a family another workflow than ci-caches.yaml saves"
+root=$(fixture cache-restore-saved-elsewhere)
+cache_workflow "$root"
+replace "$root/.github/workflows/ci.yaml" "      - name: Test the app" \
+  $'      - id: go-docs\n        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: |\n            ~/go/pkg/mod\n            ~/.cache/go-build\n          key: go-docs-${{ runner.os }}\n      - name: Test the app'
+cat > "$root/.github/workflows/docs.yaml" <<'YAML'
+name: Docs
+on:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-docs-${{ runner.os }}
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
+YAML
+run_check "$root"
+check "names no unsaved family" "$(is "$(contains "$out" 'which no actions/cache/save of any workflow')" false)"
 
 # release_restore <root> <key>: a workflow ci.yaml does not call - a release build, as
 # release.yaml and release-envoy-infra.yaml are here - restoring the go-app entry ci-caches.yaml
