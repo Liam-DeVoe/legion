@@ -356,6 +356,54 @@ func TestARoleOfAPlanRunsUnderTheBackstopOfARoleTheFileNamesNoBoundFor(t *testin
 	}
 }
 
+// A read of the plan the stall backstop makes that fails while the daemon runs is the store's
+// fault, and one line names it. A read that fails because the sweep's context ended, the daemon
+// stopping, says nothing of the store, and the backstop writes no line for it, as no other reader
+// of that read does (refreshStalePlugins, supervise's staleRegistration, internal/api's
+// staleClaim). The stop comes during the read, so the backstop reads the plan and the read fails
+// for the stop.
+func TestTheStallBackstopLogsAFailedPlanReadOnlyWhileTheDaemonRuns(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		stopping bool
+		lines    int
+	}{
+		{"while the daemon runs", false, 1},
+		{"once the daemon is stopping", true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newBackstopRig(t)
+			rig.s.cfg.WorkerStallBackstops["prober"] = 0
+			logs := &syncBuffer{}
+			rig.s.log = jsonLogger(logs)
+			ctx, stop := context.WithCancel(context.Background())
+			defer stop()
+			reads := 0
+			rig.s.planRole = func(ctx context.Context, issue string, role claim.Role) (record.PlanRole, bool, error) {
+				reads++
+				if tc.stopping {
+					stop()
+				}
+				if err := ctx.Err(); err != nil {
+					return record.PlanRole{}, false, fmt.Errorf("the role %s of the plan of %s: %w", role, issue, err)
+				}
+				return record.PlanRole{}, false, errors.New("the role " + string(role) + " of the plan of " + issue + ": connection refused")
+			}
+			prober := rig.claim("prober", "LEGION-43", 3*time.Hour, true)
+
+			rig.s.backstopStalledTurns(ctx, rig.supervising(prober))
+
+			if reads != 1 {
+				t.Fatalf("the backstop read the plan %d times, want once", reads)
+			}
+			if lines := loggedLines(t, logs.String(), "supervision: the stall backstop could not read the plan of the claim's issue"); len(lines) != tc.lines {
+				t.Fatalf("the backstop wrote %d lines of a failed read, want %d; it logged:\n%s", len(lines), tc.lines, logs.String())
+			}
+		})
+	}
+}
+
 // A claim whose agent has sent nothing since its turn began is judged from that turn's start,
 // which is the only moment its record holds.
 func TestTheStallBackstopJudgesAClaimWithNoCallFromItsTurnsStart(t *testing.T) {

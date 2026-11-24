@@ -66,8 +66,12 @@ func (s *supervision) backstopStalledTurns(ctx context.Context, claims []supervi
 		}
 		bound, err := s.stallBackstopOf(ctx, c)
 		if err != nil {
-			s.log.Warn("supervision: the stall backstop could not read the plan of the claim's issue, so the claim is judged again at the next sweep",
-				"claim", c.Token, "error", err)
+			// A read that fails because ctx ended, the daemon stopping, says nothing of the store,
+			// and the sweep ends at the next claim.
+			if ctx.Err() == nil {
+				s.log.Warn("supervision: the stall backstop could not read the plan of the claim's issue, so the claim is judged again at the next sweep",
+					"claim", c.Token, "error", err)
+			}
 			continue
 		}
 		if bound <= 0 {
