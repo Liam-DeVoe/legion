@@ -71,6 +71,7 @@ MATRIX = (
     Key("go_version_file", "a string", a_string, as_given),
     Key("apt", "a list of strings", a_list_of_strings, " ".join),
     Key("bun", "a boolean", a_boolean, as_given),
+    Key("omp", "a boolean", a_boolean, as_given),
     Key("jj", "a boolean", a_boolean, as_given),
     Key("evidence_variable", "a string", a_string, as_given),
     Key("timeout_minutes", "a whole number", a_whole_number, as_given),
