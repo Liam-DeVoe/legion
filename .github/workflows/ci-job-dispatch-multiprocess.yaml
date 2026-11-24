@@ -63,8 +63,6 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
-      - name: Size the service for this lane's Dispatch processes
-        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # As dispatch-memory's download step: 180 s per attempt, 1.6 times the 113 s of the
       # slowest cold run measured (packages/envoy/infra; packages/envoy 77 s), and this job
       # restores no module cache either.
@@ -74,6 +72,12 @@ jobs:
         run: |
           . .github/scripts/ci-retry.sh
           retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+      # The go run of .github/scripts/pg-connection-ceiling.sh builds envoy's
+      # internal/dispatch/store/cmd/connections after the retried download above, as
+      # daemon-go-race's step of this name runs after its own, so that it reads the modules that
+      # download fetched and fetches none unretried.
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Two-process tests of the Dispatch server
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/dispatch)

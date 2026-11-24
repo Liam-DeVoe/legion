@@ -104,6 +104,19 @@ jobs:
       - name: Pre-pull the NATS image the credential tests run
         run: docker pull ghcr.io/example/legion/ci@$DIGEST
 YAML
+  # Exception (a) again: the claude-envoy job's pre-pull of that same NATS copy, which main
+  # writes bare and EXEMPTIONS names by its step since review round 37 (dispatch://INFRA-1545).
+  cat > "$root/.github/workflows/ci-job-claude-envoy.yaml" <<YAML
+name: CI job claude-envoy
+on:
+  workflow_call:
+jobs:
+  claude-envoy:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Pre-pull the NATS image the reply-grant row runs
+        run: docker pull ghcr.io/example/legion/ci@$DIGEST
+YAML
   # The download-retry-images job, which since the merge of main's #3675 is the second job of
   # ci.yaml's download-retry call (ci-job-download-retry.yaml), where the exception names it.
   cat > "$root/.github/workflows/ci-job-download-retry.yaml" <<YAML
@@ -486,12 +499,13 @@ root=$(fixture exceptions)
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "says what it read" "$(contains "$out" 'every network fetch in CI retries at the floor')"
-# Eight sites, not the seven this case counted while exception (c) had a script: that script
+# Nine sites, not the seven this case counted while exception (c) had a script: that script
 # went with the browser suite's move into an image this repository builds
 # (cybermonklabs/legion#2938), and its two exempted apt sites went with it; the visual job's
-# pull of its stack's Postgres copy is one added since (dispatch://INFRA-1545, round 37), and
-# the multiprocess and embedder jobs' pulls of that same copy are the other two (round 41).
-check "counts the sites the exceptions name" "$(contains "$out" '8 site(s) the exceptions name')"
+# pull of its stack's Postgres copy is one added since (dispatch://INFRA-1545, round 37), the
+# multiprocess and embedder jobs' pulls of that same copy are two more (round 41), and the
+# claude-envoy job's pre-pull of the NATS copy is the ninth (review round 37).
+check "counts the sites the exceptions name" "$(contains "$out" '9 site(s) the exceptions name')"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
 echo "case: a workflow with a bare curl of a release asset"
@@ -787,6 +801,30 @@ root=$(fixture canonical-retry)
     && rm -rf /var/lib/apt/lists/*
 DOCKER
 } > "$root/packages/envoy/docker/Dockerfile"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+# `apk add` is one of THE VERBS since round 37, which found worker.Dockerfile's go-base stage
+# fetching git from Alpine's CDN with no retry and nothing reporting it (dispatch://INFRA-1545).
+echo "case: a Dockerfile with an unretried apk add is refused, naming the verb"
+root=$(fixture bare-apk)
+cat > "$root/packages/daemon/docker/worker.Dockerfile" <<'DOCKER'
+FROM golang:1.27.3-alpine AS go-base
+RUN apk add --no-cache git
+DOCKER
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the Dockerfile, the line and the verb" \
+  "$(contains "$out" 'file=packages/daemon/docker/worker.Dockerfile,line=2::.apk add. fetches inside a Dockerfile RUN with no retry around it')"
+check "counts the one refusal" "$(contains "$out" '1 download(s) outside the one retry rule')"
+
+echo "case: the same apk add under the file's inline retry passes"
+root=$(fixture canonical-retry-apk)
+{
+  echo 'FROM golang:1.27.3-alpine AS go-base'
+  printf '%s\n' "$CANONICAL"
+  echo '    && retry 420 "apk add" apk add --no-cache git'
+} > "$root/packages/daemon/docker/worker.Dockerfile"
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 
@@ -14986,6 +15024,52 @@ check "refuses the helper behind ci_log_guard, naming it ci-log-guard.sh's shell
 check "and behind ci_log_guard_stderr, in the same words" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=16::step 'Call the helper behind ci_log_guard_stderr' of job 'build' runs .retry_fetch. behind .ci_log_guard_stderr., ci-log-guard.sh's shell function, which runs the helper inside a stop-commands block of its own: retry_fetch already puts each attempt inside a block of its own, so the guard adds nothing and only hides the call from this reading")"
 check "says of neither guard that it runs an executable" "$(is "$(contains "$out" 'runs an executable')" false)"
+check "and its advice names the one composed form that passes" \
+  "$(contains "$out" "behind .ci_log_guard.,.*Call .retry_fetch. as a command of its own, with nothing before it but variable assignments, or as .gh_wait_reset retry_fetch \"<what>\" <bound> -- …., the one composed form this check reads")"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+
+# Review round 37 of the pull request (dispatch://INFRA-1545). The refusal is chosen by the
+# wrapper nearest the `retry_fetch`, so a `gh_wait_reset` with another wrapper in front of it gets
+# RETRY_BEHIND, which until this round said `gh_wait_reset` "runs an executable and cannot run
+# the helper": false of a shell function that runs its command in the shell. Behind `env` the
+# call fails because `env` cannot run `gh_wait_reset`; behind `ci_log_guard` it runs and is only
+# hidden. Under the old sentence the two refusal checks and the check that it is gone fail.
+echo "case: review r37 gh_wait_reset retry_fetch behind env or ci_log_guard is refused in words true of each"
+root=$(fixture r37-review-wait-behind-wrapper)
+gh_read_stub "$root"
+ln -s "$script_dir/ci-log-guard.sh" "$root/.github/scripts/ci-log-guard.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Call the wait behind env
+        run: |
+          . .github/scripts/ci-retry.sh
+          source .github/scripts/gh-read.sh
+          env gh_wait_reset retry_fetch "the pull request" 30 -- gh api repos/o/r/pulls/1 > pull.json
+      - name: Call the wait behind ci_log_guard
+        run: |
+          . .github/scripts/ci-retry.sh
+          source .github/scripts/gh-read.sh
+          . .github/scripts/ci-log-guard.sh
+          ci_log_guard gh_wait_reset retry_fetch "the pull request" 30 -- gh api repos/o/r/pulls/1 > pull.json
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the wait behind env, as a form this check does not read as the helper's call" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=11::step 'Call the wait behind env' of job 'build' runs .retry_fetch. behind .gh_wait_reset., a form this check does not read as a call of the helper, so it charges it nothing")"
+check "and the wait behind ci_log_guard, in the same words" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=17::step 'Call the wait behind ci_log_guard' of job 'build' runs .retry_fetch. behind .gh_wait_reset., a form this check does not read as a call of the helper, so it charges it nothing")"
+check "saying why each fails or hides: a program in front of gh_wait_reset cannot run it, a shell function only hides it" \
+  "$(contains "$out" "behind one, directly or in front of .gh_wait_reset., the call fails before any attempt and fetches nothing; and a shell function in front of the call, or in front of .gh_wait_reset., only hides it from this reading")"
+check "says of neither that gh_wait_reset cannot run the helper" \
+  "$(is "$(contains "$out" 'runs an executable and cannot run the helper')" false)"
+check "names the one composed form that passes" \
+  "$(contains "$out" "or as .gh_wait_reset retry_fetch \"<what>\" <bound> -- …., and write any wrapper inside it")"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
 
 # Review round 36 of dispatch://INFRA-1545. helper_bound_word reads the seconds word after

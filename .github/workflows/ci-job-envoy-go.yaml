@@ -107,8 +107,6 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
-      - name: Size the service for this lane's Dispatch processes
-        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The module the steps below test and build, downloaded once and retried before the
       # first of them (ci-budgets.md's Retries note; the retried unit is the download, never the
       # build and never the test). 180 s per attempt, as that note derives.
@@ -118,6 +116,12 @@ jobs:
         run: |
           . .github/scripts/ci-retry.sh
           retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+      # The go run of .github/scripts/pg-connection-ceiling.sh builds envoy's
+      # internal/dispatch/store/cmd/connections after the cache restore and the retried download
+      # above, as daemon-go-race's step of this name runs after its own, so that it reads the
+      # modules those two leave and fetches none unretried.
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The server's version and the pgvector version it offers, read from the service itself, so
       # the run shows which Postgres the tests below ran on.
       - name: Postgres service version

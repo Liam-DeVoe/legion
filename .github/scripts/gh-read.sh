@@ -37,6 +37,11 @@
 # a ladder of its own. So a wait followed by 5xx answers on those later calls can run the step to
 # its `timeout-minutes`, which the runner reports as the step's timeout, never as a pass. Main put
 # no time bound on those calls.
+# A STATED LIMIT: in the composed form each attempt's log lines, retry_fetch's blocks and gh's
+# words in them, go to this helper's file (_gh_read_run) and reach the log only when that run of
+# the ladder has ended, before the wait for a refused run and when gh_wait_reset returns for the
+# run it ends on. So a step killed at its key in the middle of a ladder shows none of that
+# ladder's lines.
 #
 # Where the caller sent stdout to stderr (`gh_wait_reset ... >&2`, read as
 # `[ /dev/fd/1 -ef /dev/fd/2 ]`), the run's stdout is text for the log, and it is written inside
@@ -84,8 +89,11 @@
 #   prints from the answer's body, and in the composed form no headers are traced, so a 5xx whose
 #   body names a rate limit is taken for one: it gets one more ladder, after the wait where it
 #   names a secondary limit, and fails by name as a rate limit, exit 75. It never passes wrongly.
-#   A read of the answer's status and headers in place of its text is the INFRA-3862 lane's
-#   (dispatch://INFRA-5224).
+#   The same holds in the composed form for the text retry_fetch prints from the last failed
+#   attempt of a GraphQL read, the answer gh printed, which can hold a pull request's own text
+#   (check-pr-text.sh's reads): a planted "API rate limit exceeded" there costs one more ladder
+#   and never a pass. A read of the answer's status and headers in place of its text is the
+#   INFRA-3862 lane's (dispatch://INFRA-5224).
 #
 # Where the limit comes from. GitHub enforces a job's timeout-minutes from the job's start, and
 # a step's from the step's, and the runner exposes neither the limit nor the start to a step.
@@ -120,10 +128,11 @@ if ! command -v ci_log_block_open > /dev/null 2>&1; then
   fi
 fi
 
-# The 30 s the deadline must leave after this call's own run: after a ladder's 5 x <bound> + 150 s,
-# or after the one run of a call with no ladder, where a gh call takes about a second and a
-# paginated read a few. It covers no later call of the same step, each a ladder of its own (the
-# stated limit above).
+# GH_WAIT_MARGIN, the 30 s of the margin above: for a call with a ladder it follows the ladder's
+# 5 x <bound> + 150 s, so the deadline must leave that whole ladder and these 30 s after the wait;
+# for a call with no ladder it is the whole margin, the one run included (the deadline check is
+# `wake + margin`), where a gh call takes about a second and a paginated read a few. It covers no
+# later call of the same step, each a ladder of its own (the header's stated limit on those calls).
 GH_WAIT_MARGIN=30
 
 # Every status is taken with `|| status=$?` and every test sits in an `if`, so a caller under
@@ -250,7 +259,7 @@ gh_wait_reset() {
       ci_log_block_close "$token"
     fi
   else
-    cat "$dir/out"
+    cat "$dir/out" || status=$?
   fi
   rm -rf "$dir"
   return "$status"

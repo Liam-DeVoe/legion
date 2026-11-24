@@ -87,8 +87,6 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
-      - name: Size the service for this lane's Dispatch processes
-        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The module test/envoy-stack.ts builds the listener and natsd from, downloaded once and
       # retried before the suites start it (ci-budgets.md's Retries note; the retried unit is the
       # download, never the build). 180 s per attempt, 1.6 times the 113 s of the slowest cold
@@ -101,6 +99,12 @@ jobs:
         run: |
           . .github/scripts/ci-retry.sh
           retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+      # The go run of .github/scripts/pg-connection-ceiling.sh builds envoy's
+      # internal/dispatch/store/cmd/connections after the cache restore and the retried download
+      # above, as daemon-go-race's step of this name runs after its own, so that it reads the
+      # modules those two leave and fetches none unretried.
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Build contracts for the stall suites
         run: bun run build
         working-directory: packages/contracts

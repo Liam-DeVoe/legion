@@ -956,11 +956,12 @@ To it the rule adds the arithmetic of this job's slowest retried step, the setup
 `ci_tools_fetch` calls at 2 x 1708 = 3416 s, above the Chromium install's one `retry_fetch`
 call, 5 x 300 + 150 = 1650 s, and the module download's and the workspace install's 1050 s
 each. The image pull is no term of it: it is a ghcr.io pull of a package this repository
-publishes, which retries nowhere in this tree (.github/scripts/check-download-retry.sh's
-exception (a)). 1080 + 3416 = 4496 s -> 75 min, which stands above the largest step budget of
-this job, the setup-bun step's own 57, so no job budget fires before a step's own and the
-`if: failure()` upload still runs. It was 780 + 3416 = 4196 s, 70 minutes, until main's #4486
-moved the job's Postgres to the harness's own.
+publishes, which this step makes once and never retries
+(.github/scripts/check-download-retry.sh's exception (a), whose EXEMPTIONS name the step).
+1080 + 3416 = 4496 s -> 75 min, which stands above the largest step budget of this job, the
+setup-bun step's own 57, so no job budget fires before a step's own and the `if: failure()`
+upload still runs. It was 780 + 3416 = 4196 s, 70 minutes, until main's #4486 moved the job's
+Postgres to the harness's own.
 
 ## Why the two-process job restores go-envoy-test
 
@@ -1252,19 +1253,20 @@ minutes, until main's #5195 removed it: the section on the guard that took its p
 
 The job's first term is the measured half of the rule over its steps as they stand now: the
 browser step's 120 s, the Postgres pull's 180 s and the build's 600 s, each that step's own key,
-plus the same 314 s of every step without one, 1214 s -> 21 min, so 1260 s. To it the rule adds
-the arithmetic of its slowest retried step, the setup-bun step at 3416 s, above the workspace
-install's and the module download's 5 x 180 + 150 = 1050 s each. The two image pulls are no
-term of it: each is a ghcr.io pull of a package this repository publishes, which retries nowhere
-in this tree (.github/scripts/check-download-retry.sh's exception (a)). 1260 + 3416 = 4676 s ->
-78 min, which stands above the largest step budget of this job. It was 1380 + 3416 = 4796 s, 80
-minutes, while main's #4536's reverse-order browser step ran, its 120 s in the first term, and
-went back to 78 minutes when main's #5195 removed that step; 1260 + 3416 = 4676 s, 78 minutes,
-until #4536 added it; 1200 + 3416 = 4616 s, 77 minutes, until main's #4383's 120 s reading
-raised the Postgres pull's key from 2 minutes to 3; 1200 + 2562 = 3762 s, 63 minutes, until
-main's #4214 gave each `ci_tools_fetch` a fourth ladder; 600 + 2562 = 3162 s, 53 minutes, until
-round 37 gave the setup steps their own keys; 540 + 2562 = 3102 s, 52 minutes, until main's
-#3516 raised the first term from 9 minutes to 10.
+plus the same 333 s of every step without one, 120 + 180 + 600 + 333 = 1233 s -> 21 min, so
+1260 s. To it the rule adds the arithmetic of its slowest retried step, the setup-bun step at
+3416 s, above the workspace install's and the module download's 5 x 180 + 150 = 1050 s each. The
+two image pulls are no term of it: each is a ghcr.io pull of a package this repository
+publishes, which its step makes once and never retries
+(.github/scripts/check-download-retry.sh's exception (a), whose EXEMPTIONS name each step).
+1260 + 3416 = 4676 s -> 78 min, which stands above the largest step budget of this job. It was
+1380 + 3416 = 4796 s, 80 minutes, while main's #4536's reverse-order browser step ran, its 120 s
+in the first term, and went back to 78 minutes when main's #5195 removed that step;
+1260 + 3416 = 4676 s, 78 minutes, until #4536 added it; 1200 + 3416 = 4616 s, 77 minutes, until
+main's #4383's 120 s reading raised the Postgres pull's key from 2 minutes to 3;
+1200 + 2562 = 3762 s, 63 minutes, until main's #4214 gave each `ci_tools_fetch` a fourth ladder;
+600 + 2562 = 3162 s, 53 minutes, until round 37 gave the setup steps their own keys;
+540 + 2562 = 3102 s, 52 minutes, until main's #3516 raised the first term from 9 minutes to 10.
 
 ## Why the visual job restores go-envoy-test
 

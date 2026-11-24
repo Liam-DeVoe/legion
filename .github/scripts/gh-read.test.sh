@@ -692,6 +692,18 @@ check "the answer is on stderr inside a block that opens before it and closes af
       $0 == want { print (open != "" ? "inside" : "outside"); exit }' <<<"$err" | grep -qx inside &&
     echo true || echo false)"
 
+echo "case: composed, an answer the caller's stdout cannot take fails the call"
+# The answer is written last, from the helper's file to the caller's stdout, which here is
+# /dev/full: every write to it fails. A caller that writes the answer to a file inside an `if`
+# (ci-ok-reconcile.sh's runs, ci-ok-report.sh's jobs, post-check-run.sh's posted) must see that,
+# as a bare retry_fetch shows it (ci-retry.sh's `cat … || status=$?`). With the helper's final
+# `cat` bare it returned 0 (review round 37 of dispatch://INFRA-1545).
+github never
+drive JOB_TIMEOUT_MINUTES=5 -- "$LADDER"'gh_wait_reset retry_fetch "the pull request" 5 -- gh api repos/o/r/pulls/1 > /dev/full'
+check "exits with the failed write's status" "$(is "$status" 1)"
+check "the write's own error reaches stderr" "$(contains "$err" 'write error')"
+check "after one call, which the host answered" "$(is "$(calls /repos/o/r/pulls/1)" 1)"
+
 echo "case: composed, any other refusal climbs the whole ladder and is the ladder's"
 # A 404 is no rate limit: the helper hands the ladder's own result through, after its five
 # attempts, and reads no rate limit.

@@ -692,10 +692,11 @@
 #
 # THE VERBS. A fetch is one of these commands, in command position, after the wrappers below are
 # stripped: curl, wget, apt-get/apt (update, install, download, upgrade, dist-upgrade, source,
-# build-dep), pip install, uv (sync, add, pip, tool, python, lock, export), bun install, bun add,
-# npm/pnpm/yarn (install, ci, add), playwright install, go mod download, go install,
-# mise (install, use), crane (copy, digest, config, pull, export, manifest, blob), docker pull,
-# pulumi plugin install, and gh — every subcommand of it but the local ones named next.
+# build-dep), apk (update, add), pip install, uv (sync, add, pip, tool, python, lock, export),
+# bun install, bun add, npm/pnpm/yarn (install, ci, add), playwright install, go mod download,
+# go install, mise (install, use), crane (copy, digest, config, pull, export, manifest, blob),
+# docker pull, pulumi plugin install, and gh — every subcommand of it but the local ones named
+# next.
 #
 # gh is read the other way round from the rest, by what it is not. `gh api` and `gh release
 # download` were the whole of its table once, and an unretried `gh run list`, `gh pr view`, `gh
@@ -1221,7 +1222,11 @@
 #      copy, each made before its timed browser step (dispatch://INFRA-1545, round 37). The
 #      multiprocess and embedder jobs hold one each, their pulls of that same Postgres digest,
 #      made before their timed browser steps since main's #4486 moved their Postgres from a
-#      `services:` container to the harness's own (dispatch://INFRA-1545, round 41).
+#      `services:` container to the harness's own (dispatch://INFRA-1545, round 41). The
+#      `claude-envoy` job holds one more, its pre-pull of the NATS copy the `envoy-client` job
+#      pulls, which main writes bare ("Show it, do not retry it"): the forward merge 8b4f9c79
+#      had put it under `retry_fetch`, and review round 37 had it written bare again
+#      (dispatch://INFRA-1545).
 #      Main's two actionlint steps make two more, each a `docker run` of the pinned actionlint
 #      copy, ghcr.io/cybermonklabs/legion/ci@sha256:b1934ee5…, which pulls it where the runner
 #      does not hold it: 'Check every workflow file with actionlint' in ci-job-ci-filters.yaml's
@@ -1716,6 +1721,9 @@ APT_SIMULATE = {"-s", "--simulate", "--just-print", "--dry-run", "--no-act", "--
 APT_DOWNLOAD_ONLY = {"-d", "--download-only"}
 # What an `apt-get update` option has to say for rule 5 to be satisfied, the value of an `-o`.
 APT_ERROR_MODE = re.compile(r"apt::update::error-mode\s*=\s*any", re.IGNORECASE)
+# Alpine's package manager, read as apt is: `apk update` reads the index from Alpine's CDN and
+# `apk add` fetches the packages (and the index too, under `--no-cache`).
+APK_SUBCOMMANDS = {"update", "add"}
 # A command that answers about itself is read as no fetch, whatever its verb: true of a binary
 # installed whole, false of a corepack shim, which the header's paragraph on the wrappers names as
 # a stated limit (the worker image's `RUN` that runs `pnpm --version`, `yarn --version`,
@@ -3292,29 +3300,40 @@ SHELL_TEXT_REFUSAL = (
     "refused wherever it is written), and write a loop or a function in the step itself or in a "
     "script under .github/scripts/ that the step runs, where this check reads it")
 # What the refusal of a command `odd_command` names says after naming the step or the script
-# (dispatch://INFRA-1545, round 37): a `retry_fetch` behind a wrapper, which runs an executable
-# and cannot run a shell function, and one outside its signature, which the helper refuses with
-# no attempt made, both fetching nothing and charged nothing; a `timeout` whose short options end
-# in one that takes the next word, which hides the command behind it; a definition of the
-# helper's own name; and a command after the `}` that closes a function, on a line its body
-# holds a command of. None is written in this tree. gh-read.sh's `gh_wait_reset`, a shell
-# function itself, runs the helper, and `gh_wait_reset [--stderr <file>] retry_fetch …` is no
-# such form (rule 6; dispatch://INFRA-1545, round 55). ci-log-guard.sh's `ci_log_guard` and
-# `ci_log_guard_stderr` are shell functions too, which run the helper whole (that file runs
-# `"$@"` in the shell), so a `retry_fetch` behind either is refused for another reason, which
-# RETRY_BEHIND_GUARD says (review round 36 of dispatch://INFRA-1545).
+# (dispatch://INFRA-1545, round 37): a `retry_fetch` behind a wrapper, which this check does not
+# read as a call of the helper, and one outside its signature, which the helper refuses with no
+# attempt made, both charged nothing; a `timeout` whose short options end in one that takes the
+# next word, which hides the command behind it; a definition of the helper's own name; and a
+# command after the `}` that closes a function, on a line its body holds a command of. None is
+# written in this tree. gh-read.sh's `gh_wait_reset`, a shell function itself, runs the helper,
+# and `gh_wait_reset [--stderr <file>] retry_fetch …` is no such form (rule 6;
+# dispatch://INFRA-1545, round 55). The refusal is chosen by the wrapper nearest the
+# `retry_fetch`, so RETRY_BEHIND is said of `gh_wait_reset` too where another wrapper stands in
+# front of it (`env gh_wait_reset retry_fetch …`, `ci_log_guard gh_wait_reset retry_fetch …`),
+# and its words are true of either: a wrapper that runs a program cannot run a shell function,
+# `gh_wait_reset` included, and a shell function in front of the call only hides it (review
+# round 37 of dispatch://INFRA-1545). ci-log-guard.sh's `ci_log_guard` and `ci_log_guard_stderr`
+# are shell functions too, which run the helper whole (that file runs `"$@"` in the shell), so a
+# `retry_fetch` right behind either is refused for the reason RETRY_BEHIND_GUARD says (review
+# round 36 of dispatch://INFRA-1545).
 RETRY_BEHIND = (
-    "runs `retry_fetch` behind `{wrapper}`, which runs an executable and cannot run the helper, "
-    "a shell function: the call fails before any attempt and fetches nothing, so this check "
-    "charges it nothing. Call `retry_fetch` as a command of its own, with nothing before it but "
-    "variable assignments, and write any wrapper inside it, after its `--`")
+    "runs `retry_fetch` behind `{wrapper}`, a form this check does not read as a call of the "
+    "helper, so it charges it nothing. The one wrapper `retry_fetch` may stand behind is "
+    "gh-read.sh's `gh_wait_reset [--stderr <file>]`, alone: a wrapper that runs a program, such as "
+    "`timeout`, `env` or `sudo`, cannot run the helper, a shell function, so behind one, directly "
+    "or in front of `gh_wait_reset`, the call fails before any attempt and fetches nothing; and a "
+    "shell function in front of the call, or in front of `gh_wait_reset`, only hides it from this "
+    "reading. Call `retry_fetch` as a command of its own, with nothing before it but variable "
+    "assignments, or as `gh_wait_reset retry_fetch \"<what>\" <bound> -- …`, and write any "
+    "wrapper inside it, after its `--`")
 LOG_GUARDS = ("ci_log_guard", "ci_log_guard_stderr")
 RETRY_BEHIND_GUARD = (
     "runs `retry_fetch` behind `{wrapper}`, ci-log-guard.sh's shell function, which runs the "
     "helper inside a stop-commands block of its own: retry_fetch already puts each attempt inside "
     "a block of its own, so the guard adds nothing and only hides the call from this reading, "
     "which charges it nothing. Call `retry_fetch` as a command of its own, with nothing before "
-    "it but variable assignments")
+    "it but variable assignments, or as `gh_wait_reset retry_fetch \"<what>\" <bound> -- …`, the "
+    "one composed form this check reads")
 RETRY_UNSIGNED = (
     "calls `retry_fetch` in a form other than its signature, `retry_fetch <what> <seconds> -- "
     "<command…>` with the seconds a whole number above 0: the helper refuses such a call with "
@@ -3842,6 +3861,9 @@ def verb_of(words: list[str]) -> str | None:
         if sub not in APT_SUBCOMMANDS or any(word in APT_SIMULATE for word in rest):
             return None
         return f"apt-get {sub}"
+    if name == "apk":
+        sub = subcommand(rest)
+        return f"apk {sub}" if sub in APK_SUBCOMMANDS else None
     if name in ("pip", "pip3") and subcommand(rest) == "install":
         return "pip install"
     if name == "uv":
@@ -5207,6 +5229,8 @@ EXEMPTIONS = [
               ("docker pull",), GHCR_WHY),
     Exemption(".github/workflows/ci-job-envoy-client.yaml", "envoy-client",
               "Pre-pull the NATS image the credential tests run", ("docker pull",), GHCR_WHY),
+    Exemption(".github/workflows/ci-job-claude-envoy.yaml", "claude-envoy",
+              "Pre-pull the NATS image the reply-grant row runs", ("docker pull",), GHCR_WHY),
     Exemption(".github/workflows/ci-job-download-retry.yaml", "download-retry-images",
               "Pull every base image the four builds read", ("docker pull",), GHCR_WHY),
     Exemption(".github/workflows/dispatch-browser.yaml", "visual",

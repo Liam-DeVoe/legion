@@ -96,8 +96,6 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
-      - name: Size the service for this lane's Dispatch processes
-        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The module the step below builds, downloaded once and retried before it (ci-budgets.md's
       # Retries note). 180 s per attempt, 1.6 times the 113 s of the slowest cold run measured
       # (packages/envoy/infra; packages/envoy 77 s, on an empty module cache on 2026-11-07), and
@@ -109,6 +107,12 @@ jobs:
         run: |
           . .github/scripts/ci-retry.sh
           retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+      # The go run of .github/scripts/pg-connection-ceiling.sh builds envoy's
+      # internal/dispatch/store/cmd/connections after the cache restore and the retried download
+      # above, as daemon-go-race's step of this name runs after its own, so that it reads the
+      # modules those two leave and fetches none unretried.
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # -v, because the package's leak check prints its line from TestMain after the tests have
       # run: go test in package-list mode buffers the test binary's own output and drops it when
       # the package passes, so without -v a green run would carry the `ok` line and nothing else,

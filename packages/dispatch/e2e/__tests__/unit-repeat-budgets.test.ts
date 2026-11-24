@@ -8,7 +8,8 @@
  *    minutes, up;
  *  - `job_minutes`: `step_minutes`, twice `other_steps_seconds` and `retry_seconds`, the retry
  *    arithmetic of the job's single slowest retried step by dispatch-browser.yaml's rule, in whole
- *    minutes, up.
+ *    minutes, up; `retry_seconds` is the setup-bun step's figure, as the comment above that step's
+ *    key writes it.
  *
  *  This file reads no Bun run: it parses the workflow and holds each budget to exactly its rule,
  *  so a budget raised or cut with no new measurement fails, and so does a measurement written
@@ -104,6 +105,18 @@ function byRule(leg: MeasuredLeg): { deadline: number; stepMinutes: number; jobM
     stepMinutes: Math.ceil((leg.deadline + KILL_AFTER + STEP_SLACK) / 60),
     jobMinutes: Math.ceil((leg.stepMinutes * 60 + MARGIN * leg.otherSteps + leg.retry) / 60),
   };
+}
+
+/** The setup-bun step's retry arithmetic, `<calls> x <one call> = <seconds> s`, as the comment
+ *  right above that step's key writes it: the one place the workflow writes the figure, which a
+ *  YAML parse drops. Null where the step or its arithmetic is not there. */
+function setupBunRetry(text: string): { calls: number; each: number; seconds: number } | null {
+  const match = /(\d+) x (\d+) = (\d+) s[^\n]*\n\s*- uses: \.\/\.github\/actions\/setup-bun\n/.exec(
+    text
+  );
+  return match === null
+    ? null
+    : { calls: Number(match[1]), each: Number(match[2]), seconds: Number(match[3]) };
 }
 
 /** Every way the budgets of a parsed workflow miss their rule over the measurements beside them,
@@ -205,17 +218,38 @@ test(
     // beside its budgets, and .github/ci-notes/dispatch-unit-repeat.md says where each was read.
     // The repository's own file, read as the parts the check reads: a part it lacks reads as
     // undefined, which the check names.
-    const workflow = Bun.YAML.parse(
-      readFileSync(
-        fileURLToPath(
-          new URL("../../../../.github/workflows/dispatch-unit-repeat.yaml", import.meta.url)
-        ),
-        "utf8"
-      )
-    ) as RepeatWorkflow | null;
+    const text = readFileSync(
+      fileURLToPath(
+        new URL("../../../../.github/workflows/dispatch-unit-repeat.yaml", import.meta.url)
+      ),
+      "utf8"
+    );
+    const workflow = Bun.YAML.parse(text) as RepeatWorkflow | null;
     const { problems, legs } = budgetProblems(workflow);
     expect(legs.map((leg) => leg.lane)).toEqual(["web", "web-cold", "harness"]);
     expect(problems).toEqual([]);
+
+    // The lie: the setup-bun step's ladder re-priced in the comment above its key while the
+    // matrix keeps the figure it had, so each job is held to a retry term it no longer has. Each
+    // lane's retry_seconds is that step's figure, read from that comment, and the comment's sum is
+    // its product. The control re-prices one call and keeps the sum its product: the figure is
+    // read, and no lane's retry_seconds is it.
+    const setupBun = setupBunRetry(text);
+    if (setupBun === null) throw new Error("no retry arithmetic above the setup-bun step's key");
+    expect(setupBun.calls * setupBun.each).toBe(setupBun.seconds);
+    expect(legs.filter((leg) => leg.retry !== setupBun.seconds).map((leg) => leg.lane)).toEqual([]);
+    const repriced = setupBunRetry(
+      text.replace(
+        `${setupBun.calls} x ${setupBun.each} = ${setupBun.seconds} s`,
+        `${setupBun.calls} x ${setupBun.each + 1} = ${setupBun.seconds + setupBun.calls} s`
+      )
+    );
+    expect(repriced?.seconds).toBe(setupBun.seconds + setupBun.calls);
+    expect(legs.filter((leg) => leg.retry !== repriced?.seconds).map((leg) => leg.lane)).toEqual([
+      "web",
+      "web-cold",
+      "harness",
+    ]);
 
     // The controls. Each plants one fault in a parsed copy of the workflow, and reads its lane and
     // rules by name. A budget one step above and one below its rule, worked out from that lane's

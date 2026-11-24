@@ -40,10 +40,9 @@ decides no verdict.
 (dispatch://INFRA-1545): the setup-bun step's two `ci_tools_fetch` calls at 3416 s
 (`ci-budgets.md`'s Budgets note), above the workspace install's 1050 s and the harness leg's zsh
 install's 1400 s. With it the three jobs take 127, 67 and 197 minutes. The download gate reads no
-number out of `job_minutes`, an expression's value, so the test below holds it. The matrix's
-`retry_seconds` is that 3416 s copied by hand from the setup-bun step's figure: the test holds
-`job_minutes` to the formula with `retry_seconds` in it, and does not hold `retry_seconds` to
-3416 s, so a change of the setup-bun step's figure has to be copied into the matrix by hand too.
+number out of `job_minutes`, an expression's value, so the test below holds it. It also holds each
+lane's `retry_seconds` to the setup-bun step's own figure, which it reads from the comment above
+that step's key (`2 x 1708 = 3416 s`), so a change of that figure the matrix does not take fails it.
 
 `packages/dispatch/e2e/__tests__/unit-repeat-budgets.test.ts`, which the dashboard job of
 `ci.yaml` runs on every change to the workflow, holds each lane's three budgets to exactly those

@@ -227,7 +227,7 @@ Measured, this job sits far inside the 162 minutes its key carries, and the ladd
 In five green runs on 2026-11-10, with the Bun halves alone, it took 41 s, 41 s, 43 s, 45 s and 50 s (jobs 129726973920, 129733754662, 129745140461, 129743510021 and 129721254112), where the tool-fallback job took 1,611 s to 2,007 s in those same five runs;
 in run 44073112404 (2026-11-17), with the arm64 rows' cases and before mise's fetch was retried, the whole job took 76 s, 11:31:39Z to 11:32:55Z, the new cases 25 s of it and the two Bun halves 2 s and 33 s, as before them.
 The reason is the shape of this job's faulted Bun install.
-It reads ci_tools_fetch_fallback (.github/actions/setup-bun/action.yml line 264), which reads the second source alone and tries no primary (.github/scripts/ci-tools.sh lines 1673 to 1679), and the primary it does not try is fetched by oven-sh/setup-bun, a Node action that calls no curl.
+It reads ci_tools_fetch_fallback (.github/actions/setup-bun/action.yml's `ci_tools_fetch_fallback "$row" "$HOME/.bun/bin/bun"`), which reads the second source alone and tries no primary (the `ci_tools_fetch_fallback()` function of .github/scripts/ci-tools.sh), and the primary it does not try is fetched by oven-sh/setup-bun, a Node action that calls no curl.
 The one fetch the helper makes there is of npm, which answers.
 In the step list of job 129743510021 one step alone is above 3 s: the faulted setup-bun at 32 s, which is the 107 MB npm download.
 The 427 s above stay as the headroom of the run where npm does not answer at once.

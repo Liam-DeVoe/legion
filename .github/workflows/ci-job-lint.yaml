@@ -55,8 +55,9 @@ jobs:
     # Budget (ci-budgets.md's Budgets note): 1800 s, the 30 minutes this job carried, above its
     # 1050 s measured maximum, plus its slowest retried step alone — setup-bun's two
     # `ci_tools_fetch` calls, 3416 s, above the Go module download, whose three calls are
-    # 3 x (5 x 180 + 150) = 3150 s, the workspace install's and the lockfile install's
-    # 1050 s each and the ci-ok report's 2460 s. 1800 + 3416 = 5216 s -> 87 min. The pull request's text is checked in the `pr-title` job now, so that job carries
+    # 3 x (5 x 180 + 150) = 3150 s, the workspace install's, the lockfile install's and the NATS
+    # floor's module download's 1050 s each and the ci-ok report's 2460 s.
+    # 1800 + 3416 = 5216 s -> 87 min. The pull request's text is checked in the `pr-title` job now, so that job carries
     # check-pr-text.sh's and post-check-run.sh's arithmetic.
     timeout-minutes: 87
     env:
@@ -199,6 +200,21 @@ jobs:
       # runs it.
       - name: Check the whole tree with Biome
         run: bunx biome check .
+
+      # The modules the step below builds from: its test runs `go build ./natsversion/cmd/natsfloor`
+      # in packages/envoy, and natsversion imports nats.go. Downloaded once and retried before that
+      # build (ci-budgets.md's Retries note; the retried unit is the download, never the build), on
+      # every change, as that step runs: the download further down runs only on the notices step's
+      # condition, and nothing before this restores a module cache. One call: the root go.work
+      # binds packages/daemon and packages/envoy, and a download in either reads both modules'
+      # requirements, as ci-job-test.yaml's "Download the Go modules this job builds" step says.
+      # 180 s per attempt, as that note derives.
+      - name: Download the Go modules the NATS floor's command builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
 
       # The listener and the Legion daemon refuse a nats-server below packages/envoy/natsversion's
       # floor, so a live proof that starts one, and a script or page that installs one, must name

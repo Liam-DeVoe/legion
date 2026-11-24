@@ -521,9 +521,10 @@ COPY .omp-pin /omp-pin
 # above, so a bump of one rebuilds this layer alone. gh-stack is installed as gh lays out an
 # extension it installs, a directory gh-stack holding the executable gh-stack, and must print the
 # version its pin names.
-# Each download retries, as every fetch of this file does: five attempts of 300 s each, the bound
-# the one curl carried before (dispatch://INFRA-1545). gh-stack's binary goes through the same
-# `fetch` and the same bound.
+# Each download retries, as every fetch of this file does (go-base's `apk add` among them, and
+# .github/scripts/check-download-retry.sh refuses a fetch by any of its verbs here that does not):
+# five attempts of 300 s each, the bound the one curl carried before (dispatch://INFRA-1545).
+# gh-stack's binary goes through the same `fetch` and the same bound.
 ARG OMP_SHA256
 ARG JJ_SHA256
 ARG GH_SHA256
@@ -596,8 +597,16 @@ ENV GOPROXY=https://proxy.golang.org|direct
 # The package carries no version pin, for the reason the apt packages above carry none (DL3008,
 # the ARG block): Alpine's repository serves only its branch's current version of a package, so a
 # pinned version stops resolving at the next update. The base image's digest is the pin.
+# The fetch retries on the file's canonical loop, five attempts, the fifth starting 150 s after the
+# first; this base's busybox carries the `timeout` the loop bounds an attempt with. 420 s an
+# attempt is this file's two apt bounds together, 120 s for an index read and 300 s for a package
+# set, because under `--no-cache` this one call is both: each attempt reads Alpine's index from
+# its CDN again and then fetches git's packages, so a retry also retries the index read.
 # hadolint ignore=DL3018
-RUN apk add --no-cache git
+RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
+    && retry 420 "apk add" apk add --no-cache git
 
 # ------------------------------------------------------------------------------------------------
 # go-licenses (pinned in go-third-party-notices.sh), for the go-notices stage, and gopls, for the

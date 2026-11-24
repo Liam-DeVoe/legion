@@ -3,13 +3,16 @@ name: CI job download-retry
 # The two jobs of ci.yaml's `download-retry` job, in a file of their own: `download-retry`, which
 # proves the retries of the workflows' own sites, and `download-retry-images`, which proves the
 # inline retries of the four Dockerfiles. ci.yaml's job of the same id calls this file, and that
-# caller keeps `needs: changes` and the `if:` that decides whether either runs, on the
-# download_retry filter, which is both lanes' filters together. Each job of this file runs behind
-# an input of its own, which the caller fills from the `changes` output of that lane's own filter
-# (download_retry_sites, download_retry_images), so each lane runs on exactly the changes its own
-# filter selects. A job of a called workflow cannot read `needs.changes.outputs.<name>`, so each
-# is an input here. The two lanes share one ci.yaml job, and so one call, because ci.yaml calls
-# as many reusable workflows as .github/scripts/check-workflow-files.sh allows it already.
+# caller keeps `needs: changes` and the `if:` that decides whether either runs, on the `changes`
+# output download_retry: 'false' in a merge group, 'true' on a dispatched run, and otherwise the
+# download_retry filter, which is both lanes' filters together, read on a pull request only under
+# its `full-ci` or `lane:download_retry` label (ci.yaml's `changes` job). Each job of this file
+# runs behind an input of its own, which the caller fills from the `changes` output of that lane's
+# own filter (download_retry_sites, download_retry_images), so each lane runs on exactly the
+# changes its own filter selects, once the caller runs. A job of a called workflow cannot read
+# `needs.changes.outputs.<name>`, so each is an input here. The two lanes share one ci.yaml job,
+# and so one call, because ci.yaml calls as many reusable workflows as
+# .github/scripts/check-workflow-files.sh allows it already.
 #
 # The split is for the filters. Each lane's filter names this file beside ci.yaml, so a change to
 # these steps selects these two jobs alone, where a change to ci.yaml selects every job.
