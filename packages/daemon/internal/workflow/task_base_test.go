@@ -55,7 +55,8 @@ func baseOfD(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) strin
 
 // A version that changes whether a running task merges keeps the base its start fixed. (1) d needs
 // a and c, which are done and do not merge, and e needs d: d's start fixes its join branch
-// legion/LEGION-208.d.join. Version 2 removes e while d reviews, so d now merges and the plan alone
+// legion/LEGION-208.join (d, the first task of the generation to start, holds the issue's own
+// branch). Version 2 removes e while d reviews, so d now merges and the plan alone
 // would base it on main; d's review fails, and its implementer's start text still names the join
 // branch. (2) The same d with no e: its start fixes main. Version 2 adds f, which needs d, so the
 // plan alone would base it on its join branch; d's review fails, and its implementer's start text
@@ -65,12 +66,12 @@ func baseOfD(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) strin
 //
 // The fault it catches is a version that moves a running task's base by its agent's hand, to a
 // branch no start of it made (its control: BaseOf as PlannedBase alone, the revision before, under
-// which case (1)'s text names no base and case (2)'s names legion/LEGION-208.d.join).
+// which case (1)'s text names no base and case (2)'s names legion/LEGION-208.join).
 func TestAVersionThatChangesARunningTasksMergeKeepsItsBase(t *testing.T) {
-	const joined = "Open the pull request of this task against legion/LEGION-208.d.join"
+	const joined = "Open the pull request of this task against legion/LEGION-208.join"
 	t.Run("a version makes d merge", func(t *testing.T) {
 		pool, engine, root, blocks := dNeedsAC(t, true)
-		if base := baseOfD(t, pool, engine, root.Key); base != "legion/LEGION-208.d.join" {
+		if base := baseOfD(t, pool, engine, root.Key); base != "legion/LEGION-208.join" {
 			t.Fatalf("the base d's start fixed = %q, want its join branch", base)
 		}
 		taskMoves(t, pool, engine, root.Key, "d", TriggerImplementationReady, "")
@@ -104,7 +105,7 @@ func TestAVersionThatChangesARunningTasksMergeKeepsItsBase(t *testing.T) {
 		dAgain := keyed(t, "d", " Again.", []string{"implementer:d", "reviewer:dr"}, "a", "c")
 		mustTake(t, "version 3, which changes the stopped d", apply("version-3", laterVersion(t, root.Key, root.Generation, 3,
 			keyed(t, "a", "", []string{"implementer:a"}), keyed(t, "c", "", []string{"implementer:c"}), dAgain, f)))
-		if base := baseOfD(t, pool, engine, root.Key); base != "legion/LEGION-208.d.join" {
+		if base := baseOfD(t, pool, engine, root.Key); base != "legion/LEGION-208.join" {
 			t.Fatalf("d's base after its start again = %q, want the join branch the plan gives now", base)
 		}
 	})
