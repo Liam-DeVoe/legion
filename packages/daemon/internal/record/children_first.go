@@ -108,10 +108,7 @@ func OpenChildHolds(p phase.Phase) bool {
 // one set — one at admitted that owes a start — is judged in each. A parent with none has no entry
 // in any of the three maps. facts are the pass's own, which carry the gates each candidate is read
 // against and the starts the project owes (LineFacts.Owed), and pass the pass's own records
-// (passChain.issues) with the one chain of the pass, which every walk of it reads: the cycle walk
-// (childWaits) and the child left out (withoutHeldUnderAccepted) here, and after this the issues
-// beneath a parent held before its retro (retroHoldsOf), the line (Waiting) and the held list
-// (HeldList), each over the records the pass read (passOver).
+// (passChain.issues) with the pass's one chain (passChain).
 //
 // It is two queries whatever the number of parents, and none where no issue can wait on its
 // children (Store.DispatchChildren reads nothing for no parents, judgeChildren nothing for no
@@ -293,12 +290,9 @@ func ChildOpen(child DispatchIssueRow, recorded *Issue) bool {
 // since the child was filed does not see it, and the children-first wait is complete only from
 // the first boot listing after the child exists.
 //
-// The chain is the records the pass walks its parent chains over (passChain.chain, chainOf): its
-// own records and the records of the issues over them that the pass leaves out
-// (LineFacts.Parents), so that the cycle's own walk of the parent chain crosses an ancestor
-// already done. It is the one chain of the pass, which every walk of the pass reads — this one,
-// withoutHeldUnderAccepted, retroHoldsOf, and the line and the held list where they are handed
-// the records the pass read (passOver) — read here exactly as the line reads it.
+// The chain is the pass's one chain (passChain): its own records and the records of the issues
+// over them that the pass leaves out (LineFacts.Parents), so that the cycle's own walk of the
+// parent chain crosses an ancestor already done, read here exactly as the line reads it.
 func childWaits(pass *passChain, children map[string][]DispatchIssueRow, records map[string]Issue) map[string]ChildWait {
 	own, chain := pass.own(), pass.chain()
 	waits := make(map[string]ChildWait, len(children))

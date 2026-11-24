@@ -160,9 +160,8 @@ type HeldFacts struct {
 	// is read against.
 	Live map[string]struct{}
 	// Chain is the records the accepted-ancestor walk reads, chainOf(ByKey, LineFacts.Parents):
-	// the same map Waiting walks — the chain of the pass the facts were read in, where the line
-	// and this list are handed the records that pass read (passOver) — so the word and the hold
-	// that caused it answer alike about one chain.
+	// the pass's one chain (passChain), the same map Waiting walks, so the word and the hold that
+	// caused it answer alike about one chain.
 	Chain map[string]Issue
 	// Facts is the pass's own facts, for the gates, the Dispatch blockers, the children-first
 	// rows and the moment the pass read the record (LineFacts.Now), which the tree_closed word
@@ -391,9 +390,9 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 // line already hold them, and a deferral the other loop went on to place is dropped here. The
 // first row dropped holds for a key is the one kept, so an issue two loops passed over keeps the
 // word of the first site that left it behind. A candidate dropped names nowhere reads the ladder
-// here (HeldReasonOf) over the same facts the drop sites read — the one chain of the pass
-// (passOver), one queuedRoots and one liveRoots, as Waiting makes them — which is what gives an
-// issue the pass never saw as a candidate its place, the unclassified row of C2 among them.
+// here (HeldReasonOf) over the same facts the drop sites read — the pass's one chain (passChain),
+// one queuedRoots and one liveRoots, as Waiting makes them — which is what gives an issue the pass
+// never saw as a candidate its place, the unclassified row of C2 among them.
 //
 // The rows are sorted by issue key, which gives the state's body and the tick's notice a stable
 // order.
