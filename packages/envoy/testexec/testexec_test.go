@@ -24,7 +24,7 @@ import (
 // Not parallel: its forks are the condition it measures, and a run of its own keeps them its own.
 func TestAnExecutableWrittenWhileTheProcessForksRuns(t *testing.T) {
 	dir := t.TempDir()
-	ForkBeside(t, 8)
+	ForkBeside(t)
 	busy := 0
 	var other error
 	for i := range 400 {

@@ -32,7 +32,7 @@ func WriteFile(name string, data []byte, perm os.FileMode) error {
 	return programfile.Write(name, os.O_TRUNC, perm, bytes.NewReader(data))
 }
 
-// ForkBeside starts n goroutines that each start true and start it again as soon as it exits,
+// ForkBeside starts eight goroutines that each start true and start it again as soon as it exits,
 // until the test ends: the forks that the code a test calls meets in a process whose other
 // goroutines start commands, as a daemon's do and as tests running beside each other do. A test
 // that writes a file and then runs it beside them meets ETXTBSY whenever a child forked inside the
@@ -43,7 +43,7 @@ func WriteFile(name string, data []byte, perm os.FileMode) error {
 // under GITHUB_ACTIONS, where it fails, since CI's runners refuse such a run and one that does not
 // is a broken runner, never a green job with the proof gone from it; any other answer, such as a
 // TMPDIR mounted noexec, fails the test, naming the answer.
-func ForkBeside(t testing.TB, n int) {
+func ForkBeside(t testing.TB) {
 	t.Helper()
 	forker, err := exec.LookPath("true")
 	if err != nil {
@@ -57,7 +57,7 @@ func ForkBeside(t testing.TB, n int) {
 	}
 	var stop atomic.Bool
 	var forks sync.WaitGroup
-	for range n {
+	for range 8 {
 		forks.Go(func() {
 			for !stop.Load() {
 				_ = exec.Command(forker).Run()

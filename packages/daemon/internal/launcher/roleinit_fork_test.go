@@ -31,7 +31,7 @@ func TestAProgramCopiedIntoARolesConfigHomeWhileTheProcessForksRuns(t *testing.T
 	if err := os.WriteFile(filepath.Join(shared, "bin", "tool"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	testexec.ForkBeside(t, 8)
+	testexec.ForkBeside(t)
 	const copies = 400
 	busy := 0
 	var first error

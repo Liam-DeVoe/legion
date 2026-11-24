@@ -20,7 +20,7 @@ import (
 // true without a pause while this test makes the credential again and again and runs each helper
 // as git does, with `get`, as soon as it is made.
 func TestTheProvisioningHelperRunsWhileTheProcessForks(t *testing.T) {
-	testexec.ForkBeside(t, 8)
+	testexec.ForkBeside(t)
 	parent := t.TempDir()
 	const runs = 400
 	busy := 0

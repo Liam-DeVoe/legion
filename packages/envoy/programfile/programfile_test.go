@@ -25,7 +25,7 @@ import (
 // Not parallel: its forks are the condition it measures.
 func TestAProgramWrittenWhileTheProcessForksRuns(t *testing.T) {
 	dir := t.TempDir()
-	testexec.ForkBeside(t, 8)
+	testexec.ForkBeside(t)
 	const runs = 400
 	busy := 0
 	var first error

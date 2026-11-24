@@ -22,7 +22,7 @@ func TestTheScriptsInstallWritesRunWhileTheProcessForks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("no true command for the scripts to exec: %v", err)
 	}
-	testexec.ForkBeside(t, 8)
+	testexec.ForkBeside(t)
 	root := t.TempDir()
 	const installs = 150
 	busy := 0
