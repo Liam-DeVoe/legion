@@ -158,8 +158,8 @@ type whoamiAgent struct {
 	Session *string  `json:"session"`
 	// ProjectScope is the project scope of an access token the secrets broker issued, as the
 	// broker answered it (model.Credential.ProjectScope): `named` for a token an operator's or a
-	// job's entry mapped to its project, `public` for a job's token that writes every public
-	// project and the private projects its entry lists, and `person` for a person's own token and
+	// job's entry mapped to its project, `public` for a job's token that names no one project and
+	// so writes wherever a token that names no project may, and `person` for a person's own token and
 	// for a machine's token that names no person. It is left out for every other credential, which
 	// carries none, and by a Dispatch older than the field. A read-only token, whose scope is
 	// `none`, is refused this route (refuseReadOnlyToken).
