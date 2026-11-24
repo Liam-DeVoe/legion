@@ -3284,6 +3284,14 @@ package api
 // outbox payload is decoded strictly, so no daemon of an earlier release decodes such a row; there
 // is no migration, and the rollback deletes those rows first (docs/kubernetes.md, "Rolling back
 // the release that keeps no saved workspace"). No shape of `GET /legion/v1/state` moves.
+//
+// R7 of the same issue rides this entry and moves no wire of its own: an update round reads the
+// workspace before every replacement, through a role's shim or through the launcher's read
+// above, and keeps a pod whose read finds work over a drift its roles can keep working under. It
+// adds one more notice kind no earlier release decodes, `workspace-taken`, to the issue's
+// architect, for a replacement that still took a disk that may hold work
+// (`record.WorkspaceTakenNotice`), which the same rollback deletes with the `workspace-kept`
+// rows. The round's ask (`supervise.UpdateTask`) changes words only, and no answer's shape moves.
 // (This entry takes 238, above main's 219 at 7cb1f229367c: a reading of `const DaemonAPIVersion`
 // at refs/pull/<n>/head for each of the 493 open pull requests of this repository, made between
 // 2026-11-23T19:54:14Z and 19:54:42Z, found every number from 220 to 237 declared (220 by #4930 and

@@ -42,7 +42,11 @@ Six turns of `role` in a row ended in a provider error; the daemon keeps prompti
 
 ## `workspace-kept`
 
-The daemon keeps an issue's pod in which no role runs, because the pod's workspace holds work that origin does not hold or the daemon could not read it, and the architect that owns the issue will not hold its role again, so you are told in its place. `reason` names the pod, each claim's state and what the read found. The pod stays until a read finds nothing that origin does not hold, the runtime makes another pod for the issue, or the issue or its tree closes. Act on the tree's architect as [`worker-died`](#worker-died-architect) says; once it runs, `envoy_publish` this `reason` to it, since it was not told. Name the pod in the day's report while it stays.
+The daemon keeps an issue's pod, because the pod's workspace holds work that origin does not hold or the daemon could not read it, and the architect that owns the issue will not hold its role again, so you are told in its place. The pod is one in which no role runs, or one an update round did not replace for that work. `reason` names the pod, each claim's state and what the read found. The pod stays until a read finds nothing that origin does not hold, the runtime makes another pod for the issue, or the issue or its tree closes. Act on the tree's architect as [`worker-died`](#worker-died-architect) says; once it runs, `envoy_publish` this `reason` to it, since it was not told. Name the pod in the day's report while it stays.
+
+## `workspace-taken`
+
+A replacement of an issue's pod took a disk that may hold work origin does not hold: an update round over a drift that breaks the pod, or a launch that replaced the pod on its own account. The architect that owns the issue will not hold its role again, so you are told in its place. `reason` names the pod, why it was replaced, and each commit and the working-copy change the read before the replacement found, or that no read could be made. The work is gone with the pod. Act on the tree's architect as [`worker-died`](#worker-died-architect) says; once it runs, `envoy_publish` this `reason` to it, since it was not told, and name the replacement in the day's report.
 
 ## GitHub mentions
 
