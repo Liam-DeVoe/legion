@@ -1466,8 +1466,8 @@ func TestConfigCheckRefusesARequestItCannotRender(t *testing.T) {
 // legion.yaml", or, absent that, this binary's linked pair, "from the binary"; absent both, the
 // gap (TestConfigCheckReportsTheConfigurationsCapabilityGaps's pluginsGap). When
 // worker_backends runs any role on Claude Code, the line gains one sentence naming those roles,
-// whose plugin is the worker image's and never an install: Legion's phase workers in the order
-// the workflow reaches them, then each role of the deployment in the file's order.
+// whose plugin is the worker image's and never an install: Legion's phase workers in claim.Roles'
+// order, the order of the default steps, then each role of the deployment in the file's order.
 func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 	legionState(t)
 	const claudeSentence = ". Claude Code runs implementer, tester, whose plugin is the worker image's: " +
