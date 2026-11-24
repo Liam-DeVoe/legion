@@ -329,6 +329,13 @@
             }
           },
           {
+            "name": "blocks",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "name": "session",
             "in": "query",
             "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
@@ -2386,7 +2393,7 @@
     },
     "/api/v1/artifacts/{id}/versions/{number}": {
       "get": {
-        "description": "One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. {number} is a version from 1 to 2147483647 (the largest the store holds), and any other is 400 INVALID_VERSION. One renderer answers a document's version, JSON and download alike, and names what its bytes are in the Dispatch-Render-Source header: tree for a version the server rendered from the issue's tree, rendered again from the tree as of that version's time; stored for every other version, its stored markdown byte for byte; none for a version that stores no markdown, whose answer holds no bytes and is no document. A version's size and sha256 are those of the bytes answered. A document's version also answers digest, what an approval of it covers and a review's content_sha256 pins (artifact_version_text_sha256): the digest of its query's record where the pass that stated the version recorded one, and otherwise the sha256 of its stored markdown, which a version of a document no query covers always answers; so an approval is compared with digest, not with sha256. A version's author carries proven: true only when the credential of every write that author made to the version proved it.",
+        "description": "One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. {number} is a version from 1 to 2147483647 (the largest the store holds), and any other is 400 INVALID_VERSION. One renderer answers a document's version, JSON and download alike, and names what its bytes are in the Dispatch-Render-Source header: tree for a version the server rendered from the issue's tree, rendered again from the tree as of that version's time; stored for every other version, its stored markdown byte for byte; none for a version that stores no markdown, whose answer holds no bytes and is no document. A version's size and sha256 are those of the bytes answered. A document's version also answers digest, what an approval of it covers and a review's content_sha256 pins (artifact_version_text_sha256): the digest of its query's record where the pass that stated the version recorded one, and otherwise the sha256 of its stored markdown, which a version of a document no query covers always answers; so an approval is compared with digest, not with sha256. A version's author carries proven: true only when the credential of every write that author made to the version proved it. With ?blocks=true a document version's JSON carries that version's typed blocks, each under the id its opening line writes, with byte ranges into the markdown of the same answer: the version as this build renders it.",
         "operationId": "getApiV1ArtifactsByIdVersionsByNumber",
         "parameters": [
           {
@@ -2407,6 +2414,13 @@
           },
           {
             "name": "download",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "blocks",
             "in": "query",
             "schema": {
               "type": "boolean"
@@ -5386,7 +5400,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. Every create names its project, a create from a ref included: external with no project, or an empty one, is 400 INVALID_ISSUE. A title over 1000 characters is 400 CAP_EXCEEDED. A spec that holds a requirement block, on an issue born converted under a parent whose chain's nearest issue holding requirements and no view itself is not done - so the new issue is a view on that issue's spec, the view_of GET /api/v1/issues/{key}/tree answers - is 409 REQUIREMENT_BELONGS_TO_ANCESTOR, naming that issue, and creates nothing; a spec holding one that is taken makes the new issue's spec its own, so the issue is never a view. needs is the issues the issue waits on, of any project, sorted; blocked_by is the same list under the spelling a client of the release before sends, and a body naming both names the same issues in each, else 400 NEEDS_INPUT naming both. A list refused for its count or its keys is 400 NEEDS_INPUT, or BLOCKED_BY_INPUT where the body named blocked_by alone; a wait that closes a ring through waits and parents is 409 DEPENDENCY_CYCLE; and a credential that names one project is refused a target outside it with 403 PROJECT_SCOPE. duplicate_of is the key of another issue of the issue's project, else 400 DUPLICATE_OF_INPUT; filed_from is the canonical reference of a public ask, comment or message of the issue's project, dispatch://\u003cKEY\u003e/\u003cask|comment|message\u003e/\u003cuuid\u003e or dispatch://\u003cPROJECT\u003e/artifact/\u003cslug\u003e/\u003cask|comment\u003e/\u003cuuid\u003e, else 400 FILED_FROM_INPUT, one text for an item of another project, one no row holds and one reserved for its author; a refused relation writes nothing. With DISPATCH_PARENT_STATUS_RULE on, a parent that the new issue would leave out of line with its children (a done parent) is 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}]}, issues naming each issue that holds the rule. When Legion runs the new issue, because it or an issue above it carries the label legion, a create under a parent by a session that is no person and no architect of the parent or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
+        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee when the parent is of the issue's own project, or the project's default assignee. Every create names its project, a create from a ref included: external with no project, or an empty one, is 400 INVALID_ISSUE. A title over 1000 characters is 400 CAP_EXCEEDED. A spec that holds a requirement block, on an issue born converted under a parent whose chain's nearest issue holding requirements and no view itself is not done - so the new issue is a view on that issue's spec, the view_of GET /api/v1/issues/{key}/tree answers - is 409 REQUIREMENT_BELONGS_TO_ANCESTOR, naming that issue, and creates nothing; a spec holding one that is taken makes the new issue's spec its own, so the issue is never a view. needs is the issues the issue waits on, of any project, sorted; blocked_by is the same list under the spelling a client of the release before sends, and a body naming both names the same issues in each, else 400 NEEDS_INPUT naming both. A list refused for its count or its keys is 400 NEEDS_INPUT, or BLOCKED_BY_INPUT where the body named blocked_by alone; a wait that closes a ring through waits and parents is 409 DEPENDENCY_CYCLE; and a credential that names one project is refused a target outside it with 403 PROJECT_SCOPE. duplicate_of is the key of another issue of the issue's project, else 400 DUPLICATE_OF_INPUT; filed_from is the canonical reference of a public ask, comment or message of the issue's project, dispatch://\u003cKEY\u003e/\u003cask|comment|message\u003e/\u003cuuid\u003e or dispatch://\u003cPROJECT\u003e/artifact/\u003cslug\u003e/\u003cask|comment\u003e/\u003cuuid\u003e, else 400 FILED_FROM_INPUT, one text for an item of another project, one no row holds and one reserved for its author; a refused relation writes nothing. With DISPATCH_PARENT_STATUS_RULE on, a parent that the new issue would leave out of line with its children (a done parent) is 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}]}, issues naming each issue that holds the rule. When Legion runs the new issue, because it or an issue of its project above it carries the label legion, a create under a parent of its project by a session that is no person and no architect of the parent or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
         "operationId": "postApiV1Issues",
         "parameters": [
           {
@@ -6245,6 +6259,13 @@
           },
           {
             "name": "download",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "blocks",
             "in": "query",
             "schema": {
               "type": "boolean"
@@ -7748,7 +7769,7 @@
     },
     "/api/v1/issues/{key}/plans/{id}": {
       "put": {
-        "description": "Write the plan one run of the issue ran from {actor, generation, source, artifact_id?, version?, tasks: [{id, steps}]}: the Legion daemon writes it when the run's work starts, under the uuid it derives for the run's plan. source is owner, with the document artifact_id and the version of it Legion took, or default, the default steps of an issue whose owner gave no plan, with neither; each task's id is unique in the plan and its steps are each a role or role:key, the role one a step record's role takes, since each run of the step is a record of that role. Each field the plan does not hold yet is set and every field it holds is left, so a plan sent again changes nothing. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it, and no write appends an issue event. Answers 200 with the plan as it stands after the write {id, issue, generation, source, artifact_id, version, tasks}. A value outside its form is 400 PLAN_INPUT naming the field, a step whose role a step record refuses naming the step and its role, an id whose plan is another issue's 409 PLAN_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND.",
+        "description": "Write the plan one run of the issue ran from {actor, generation, source, artifact_id?, version?, tasks: [{id, steps}]}: the Legion daemon writes it under the uuid it derives for the run's plan, when the run's work starts and again at each later version of the owner's plan that Legion takes. source is owner, with the document artifact_id and the version of it Legion took, or default, the default steps of an issue whose owner gave no plan or whose experiment's group takes none from its owner, with neither; each task's id is unique in the plan and its steps are each a role or role:key, the role one a step record's role takes, since each run of the step is a record of that role. source, artifact_id, version and tasks are one fact: a write whose version is above the one the plan holds replaces all four, and every other write leaves them, a default plan counting as version 0, so a write that arrives late, twice or out of order changes nothing. The generation is the first write's. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it, and no write appends an issue event. Answers 200 with the plan as it stands after the write {id, issue, generation, source, artifact_id, version, tasks}. A value outside its form is 400 PLAN_INPUT naming the field, a step whose role a step record refuses naming the step and its role, an id whose plan is another issue's 409 PLAN_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND.",
         "operationId": "putApiV1IssuesByKeyPlansById",
         "parameters": [
           {
@@ -10468,7 +10489,7 @@
     },
     "/api/v1/people/{login}/nodes": {
       "get": {
-        "description": "One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text, the dashboard path it opens at, and the node's state and visibility (author only on its author's own page, since a node reserved for its author is on no other). It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets, and so is a person none of whose nodes the reader may see, with the same body, so the answer never says whether that person exists. The reader's own login is the one exception, answered 200 with the rows they may see, none where they may see none.",
+        "description": "One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text, the dashboard path it opens at, and the node's state and visibility (author only on its author's own page, since a node reserved for its author is on no other). It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets, and so is a person none of whose nodes the reader may see, with the same body, so the answer never says whether that person exists or holds a hidden node. The reader's own login is the one exception, answered 200 with the rows they may see, none where they may see none.",
         "operationId": "getApiV1PeopleByLoginNodes",
         "parameters": [
           {
@@ -11916,6 +11937,13 @@
           },
           {
             "name": "download",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "blocks",
             "in": "query",
             "schema": {
               "type": "boolean"
@@ -15681,6 +15709,12 @@
               "array",
               "null"
             ]
+          },
+          "blocks": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactBlock"
+            },
+            "type": "array"
           },
           "created_at": {
             "format": "date-time",
@@ -22715,7 +22749,6 @@
               "artifact",
               "ask",
               "ask_block",
-              "attribute",
               "block",
               "comment",
               "comment_block",
@@ -22730,11 +22763,9 @@
               "message_block",
               "page",
               "person",
-              "result",
               "risk",
               "role",
-              "session",
-              "supertag"
+              "session"
             ],
             "type": "string"
           },
@@ -22874,7 +22905,6 @@
               "artifact",
               "ask",
               "ask_block",
-              "attribute",
               "block",
               "comment",
               "comment_block",
@@ -22889,11 +22919,9 @@
               "message_block",
               "page",
               "person",
-              "result",
               "risk",
               "role",
-              "session",
-              "supertag"
+              "session"
             ],
             "type": "string"
           },

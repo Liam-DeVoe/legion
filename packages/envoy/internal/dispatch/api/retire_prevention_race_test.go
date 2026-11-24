@@ -21,6 +21,7 @@ import (
 // retired_at with no lock, and the retirement reads the check's prevented_by tuples before the
 // append commits, so both commit and the tuple is left standing at a check nobody runs.
 func TestAPreventedByAppendedWhileItsChecksDocumentIsRetiredIsNotLeftStanding(t *testing.T) {
+	t.Parallel()
 	rig := newPremortemRig(t)
 	ctx := context.Background()
 	premortem := rig.invoke(rig.spec, graphstore.LensKindPreMortem, "alice", nil)

@@ -150,11 +150,14 @@ type specWrite struct {
 	// Legion write no text of their own and leave it empty: the refusal names the issue's spec.md
 	// for them (documentName).
 	document string
-	// under is the parent of a create or of a move, and labels are the labels the write leaves on
-	// the row: the check reads the row as the write leaves it. under is empty for every other
-	// write, which the check reads on the issue's own chain as it stands.
-	under  string
-	labels []string
+	// under is the parent of a create or of a move, labels are the labels the write leaves on the
+	// row, and project is the row's project: the check reads the row as the write leaves it, and
+	// its chain climbs only to a parent of that project (issueChainSQL), so a parent of another
+	// project ends it as at a root. under is empty for every other write, which the check reads on
+	// the issue's own chain as it stands.
+	under   string
+	labels  []string
+	project string
 	// to is the new parent of a specWriteMoveAway, wherever it is, which the refusal names; the
 	// check reads that move on the issue's own chain, with under empty. toChecked is that the
 	// move is also checked on to's chain (specWriteMove), because Legion runs the moved issue as
@@ -223,11 +226,14 @@ func specWriterReadSQL(start string) string {
 var (
 	// specWriterOfIssueSQL is the check's statement for a write on the issue $2, over its chain as
 	// it stands.
-	specWriterOfIssueSQL = specWriterReadSQL(`select i.key, i.parent_key, i.labels, 0 as depth from issues i where i.key = $2`)
+	specWriterOfIssueSQL = specWriterReadSQL(`select i.key, i.parent_key, i.labels, i.project_key, 0 as depth from issues i where i.key = $2`)
 	// specWriterOfRowSQL is the check's statement for a create or a move under the parent $2, over
-	// the row as the write leaves it, $3 its labels: the walk of legionManagedStatusOfRowSQL. The
-	// row's own key is not carried, so its architects are read from the parent's chain alone.
-	specWriterOfRowSQL = specWriterReadSQL(`select null::text as key, $2::text as parent_key, $3::text[] as labels, 0 as depth`)
+	// the row as the write leaves it, $3 its labels and $4 its project: the walk of
+	// legionManagedStatusOfRowSQL. The row's own key is not carried, so its architects are read
+	// from the parent's chain alone, and a parent of another project, which the walk does not
+	// climb to, leaves the chain no subject and so no project: this statement then passes the
+	// write, as the check passes a create under no parent.
+	specWriterOfRowSQL = specWriterReadSQL(`select null::text as key, $2::text as parent_key, $3::text[] as labels, $4::text as project_key, 0 as depth`)
 )
 
 // specWriterRead is what the check's one statement reads over the chain of a write.
@@ -286,7 +292,7 @@ func judgeSpecWriter(ctx context.Context, q queryer, writer specWriter, write sp
 	session := sessionOf(writer.actor)
 	statement, args := specWriterOfIssueSQL, []any{session, write.issue}
 	if write.under != "" {
-		statement, args = specWriterOfRowSQL, []any{session, write.under, write.labels}
+		statement, args = specWriterOfRowSQL, []any{session, write.under, write.labels, write.project}
 	}
 	var read specWriterRead
 	if err := q.QueryRow(ctx, statement, args...).Scan(
@@ -552,7 +558,7 @@ func refuseSpecWriterOfIssueWrite(ctx context.Context, tx pgx.Tx, writer specWri
 	moves := step.changesParent() && step.parentAfter != nil
 	if moves {
 		if err := refuseSpecWriter(ctx, tx, writer, specWrite{
-			act: specWriteMove, issue: step.key, under: *step.parentAfter, labels: labels,
+			act: specWriteMove, issue: step.key, under: *step.parentAfter, labels: labels, project: step.project,
 		}); err != nil {
 			return err
 		}
@@ -560,7 +566,7 @@ func refuseSpecWriterOfIssueWrite(ctx context.Context, tx pgx.Tx, writer specWri
 		// Legion runs before the move too, wherever the new parent is; its refusal names the new
 		// parent's check only when that check holds the move: when Legion runs the issue as the move
 		// leaves it (runsAfter).
-		runsAfter, err := legionManagedStatusOfRow(ctx, tx, step.key, step.parentAfter, labels)
+		runsAfter, err := legionManagedStatusOfRow(ctx, tx, step.key, step.project, step.parentAfter, labels)
 		if err != nil {
 			return err
 		}
@@ -583,7 +589,7 @@ func refuseSpecWriterOfIssueWrite(ctx context.Context, tx pgx.Tx, writer specWri
 		if step.reparent {
 			parent = step.parentAfter
 		}
-		after, err := legionManagedStatusOfRow(ctx, tx, step.key, parent, labels)
+		after, err := legionManagedStatusOfRow(ctx, tx, step.key, step.project, parent, labels)
 		if err != nil || after {
 			return err
 		}

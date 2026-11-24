@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
-	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -66,18 +65,20 @@ import (
 // Each lens invoked on the document records the row it stood on (graphstore.AttributeArtifactID),
 // so the delete of that row leaves it stale (refs.StaleSQL), and every read answers it, and all
 // that stands under it at every depth, as gone at once. In the transaction that deletes the row,
-// after the delete, the removal states each of them gone through the statement the orphan sweep
-// runs, for the document's address (graphcensus.StateStaleLensesGone): its findings, its risks and
-// the lenses on those, those the person may not see among them, each written again as the store
-// holds it but for its state, keeping its cause, with one state tuple at the sentinel signed by the
-// person at the removal's time (spec requirement r-proposed). The removal takes no person check of
-// its own for them: it is the person's already (routeScopes), and the cascade is part of the
+// after the delete, the removal states each of them gone as the block-index tick's sweep states
+// every stale lens gone (graphcensus's StateStaleLensesGone): it reads the stale lenses on the
+// document's node (refs.StaleLensesOn) and states them gone through graphstore.WriteState, which
+// takes what stands beneath each with it, its findings, its risks and the lenses on those, those
+// the person may not see among them, each written again as the store holds it but for its state,
+// keeping its cause, with one state tuple at the sentinel signed by the person at the removal's
+// time, in one graphstore.Write (spec requirement r-proposed). The removal takes no person check
+// of its own for them: it is the person's already (routeScopes), and the cascade is part of the
 // delete. It reads, with the rest of what it reads before its first write, whether any lens stands
-// on the document's node, and runs the statement only where one does, so a document nothing stands
-// on holds its transaction id no longer than before. No lens stands on a block of the document,
-// since a document the removal takes holds no block, and the statement reads what it takes under
-// the issue's owner lock, which every writer of a lens, a finding or a risk takes first
-// (lockIssueOwner), and which the removal holds, so the statement takes no lock of its own.
+// on the document's node, and reads the stale lenses only where one does, so a document nothing
+// stands on holds its transaction id no longer than before. No lens stands on a block of the
+// document, since a document the removal takes holds no block, and the removal reads what it takes
+// under the issue's owner lock, which every writer of a lens, a finding or a risk takes first
+// (lockIssueOwner), and which the removal holds, so it takes no lock for them.
 //
 // The document's node is addressed by its ref_key, which a later document of the same issue and
 // slug takes again: that document's create finds the node gone and states it live under its own
@@ -171,10 +172,13 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	// Every lens on the document is stale from the delete on, since the row it recorded no longer
 	// stands at the address; each goes gone with all that stands under it, by the person who removed
-	// the document at the same time, through the statement the orphan sweep runs, in this
-	// transaction (spec requirement r-proposed).
+	// the document at the same time, in this transaction (spec requirement r-proposed).
 	if removed.lensed {
-		if _, err := graphcensus.StateStaleLensesGone(r.Context(), tx, artifact.RefKey, removed.at, actor); err != nil {
+		lenses, err := refs.StaleLensesOn(r.Context(), tx, artifact.RefKey)
+		if err == nil {
+			_, err = graphstore.WriteState(r.Context(), tx, lenses, graphstore.StateGone, removed.at.UTC(), actor)
+		}
+		if err != nil {
 			s.writeHandlerError(w, fmt.Errorf("state the lenses on the removed document %s gone: %w", artifact.ID, err))
 			return
 		}
@@ -233,8 +237,8 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 //
 // It reads, too, whether a lens stands on the document's node, so removeArtifact states each lens
 // on it gone, with all that stands under it at every depth, once the delete of the row leaves it
-// stale (graphcensus.StateStaleLensesGone), and only where one does; a version's node, which
-// stands beneath the document's too, is no lens, and is stated gone here, once.
+// stale (refs.StaleLensesOn, graphstore.WriteState), and only where one does; a version's node,
+// which stands beneath the document's too, is no lens, and is stated gone here, once.
 //
 // Everything it reads - whether the store holds the node, the time, the changed_by_run tuples,
 // the versions' nodes and the part_of tuples into the document's node - it reads before its first

@@ -1,6 +1,6 @@
 //go:build basebuild
 
-// Three tests of this tag are cybermonklabs/legion#3178's acceptance runs:
+// Three acceptance tests of this tag are cybermonklabs/legion#3178's acceptance runs:
 // TestTheStoreCensusReadsZeroDifferences in this file, and TestNoWritePathThisChildChangesGetsSlower
 // (write_cost_test.go) and TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode
 // (read_cost_test.go), which share graph_cost_test.go. The fourth is cybermonklabs/legion#4193's

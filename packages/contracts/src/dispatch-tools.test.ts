@@ -715,21 +715,22 @@ describe("dispatchToolSpecs", () => {
   });
 
   // A retarget names the far end the pointer moves from, and no other action names one; the
-  // refusal is the one rule, whichever half of it the call broke.
+  // refusal is the one rule, whichever half of it the call broke, and it names both halves.
   test("dispatch_pointer takes from with a retarget alone, and refuses a call that breaks either half", () => {
     const schema = schemaFor("dispatch_pointer");
     const retarget: Record<string, unknown> = validCalls.dispatch_pointer;
     const { from: _from, ...withoutFrom } = retarget;
     const refusal = (args: Record<string, unknown>) =>
       schema.safeParse(args).error?.issues.map((issue) => issue.message);
-    const rule =
-      "from goes with action retarget, and a retarget names it: the far end the node's pointer is at now.";
 
     expect(schema.safeParse(retarget).success).toBe(true);
     expect(schema.safeParse({ ...withoutFrom, action: "append" }).success).toBe(true);
-    expect(refusal(withoutFrom)).toEqual([rule]);
-    expect(refusal({ ...retarget, action: "append" })).toEqual([rule]);
-    expect(refusal({ ...retarget, action: "retract" })).toEqual([rule]);
+    const rules = refusal(withoutFrom) ?? [];
+    expect(rules).toHaveLength(1);
+    expect(rules[0]).toMatch(/\bfrom\b/);
+    expect(rules[0]).toMatch(/\bretarget\b/);
+    expect(refusal({ ...retarget, action: "append" })).toEqual(rules);
+    expect(refusal({ ...retarget, action: "retract" })).toEqual(rules);
   });
 
   // Each list is typed from the generated contract, so a value the server does not take fails

@@ -418,14 +418,14 @@ func keyedMentionArm(blockKind string) string {
 
 // storeClass is true of the graph_tuples row alias while it is a relation graph_edges' tuple arm
 // answers from the tuples alone, with no projection row behind it (its store class, migrations
-// 20261116184707 and 20261117020856, as store.GraphEdgesView states it): changed_by_run,
-// has_kind, triggered_by, constrained_by and prevented_by out of any node but a finding of a lens,
-// part_of and authored_by out of an interaction, a lens, a risk or a constraint, and an issue's
-// duplicate_of and filed_from.
+// 20261116184707 and 20261117020856, as store.GraphEdgesView states it): storeArmPointers -
+// changed_by_run and each pointer graphstore.PointerKinds lists - out of any node but a finding of
+// a lens, storeArmPlacements and authored_by out of an interaction, a lens, a risk or a
+// constraint, and an issue's duplicate_of and filed_from.
 func storeClass(alias string) string {
-	return `((not (` + alias + `.from_kind = '` + BlockNodeKind + `' and ` + alias + `.from_id like 'lens/%')
-				  and (` + alias + `.kind in ('` + graphstore.TupleChangedByRun + `', '` + graphstore.TupleHasKind + `', '` + graphstore.TupleTriggeredBy + `', '` + graphstore.TupleConstrainedBy + `', '` + graphstore.TuplePreventedBy + `')
-				       or (` + alias + `.kind in ('` + graphstore.TuplePartOf + `', '` + graphstore.TupleAuthoredBy + `')
+	return `((not (` + alias + `.from_kind = '` + BlockNodeKind + `' and ` + graphstore.FindingIDSQL(alias+`.from_id`) + `)
+				  and (` + alias + `.kind in (` + quotedKinds(storeArmPointers) + `)
+				       or (` + alias + `.kind in (` + quotedKinds(slices.Concat(storeArmPlacements, []string{graphstore.TupleAuthoredBy})) + `)
 				           and ` + alias + `.from_kind in ('` + graphstore.KindInteraction + `', '` + graphstore.KindLens + `', '` + graphstore.KindRisk + `', '` + graphstore.KindConstraint + `'))))
 				or (` + alias + `.from_kind = '` + graphstore.KindIssue + `' and ` + alias + `.kind in ('` + graphstore.TupleDuplicateOf + `', '` + graphstore.TupleFiledFrom + `')))`
 }
@@ -458,6 +458,29 @@ func keyedFindingArm(blockKind string) string {
 				  and exists (select 1 from graph_nodes live
 					where live.kind = '` + BlockNodeKind + `' and live.id = r.from_id and live.state <> '` + graphstore.StateGone + `')`
 }
+
+// storeArmPointers are the relations keyedStoreArm reads out of a node of any kind: each pointer
+// graphstore.PointerKinds lists, read once, and changed_by_run. changed_by_run is listed because
+// the view's store class answers it from the tuples alone, out of any node, as it answers each
+// pointer (migration 20261121104002), and TupleKinds (backlink_counts.go) reads the store's own
+// kinds from this list and storeArmPlacements. It is no pointer: a write made for a run appends a
+// changed_by_run out of each node it created or changed to the run's interaction (graphstore's
+// changedByRunMarks and queueChangedByRun, in the append QueueWrite and QueueCaused queue), and no
+// pointer route moves one, so graphstore's pointerRules holds no rule for it and PointerKinds does
+// not list it. Each pointer of pointerRules is here by construction;
+// TestTheStoreArmReadsEveryKindThePointerRulesHold holds each of its placements to
+// storeArmPlacements, and none of those to PointerKinds.
+var storeArmPointers = append([]string{graphstore.TupleChangedByRun}, graphstore.PointerKinds()...)
+
+// storeArmPlacements are the kinds of graphstore's pointerRules that keyedStoreArm leaves out of
+// storeArmPointers: part_of, which the table holds as a placement (graphstore.PlacementKinds), a
+// risk's place under a pre-mortem lens, not as a pointer, so PointerKinds leaves it out. The arm
+// reads it, beside authored_by, only out of a node of the store's own kinds or out of a finding,
+// because the view renders no part_of tuple out of any other node: a session's, a page's and a
+// block's placement are part_of tuples no arm of it renders (TupleKinds, backlink_counts.go). It
+// is a hand list: a placement added to graphstore's pointerRules must join it, and
+// TestTheStoreArmReadsEveryKindThePointerRulesHold (store_arm_kinds_test.go) fails until it does.
+var storeArmPlacements = []string{graphstore.TuplePartOf}
 
 // blockRepliesArm is graph_edges' arm of the replies to a block of an item of kind owner, keyed
 // by the block's node id k.node_id through the replies' partial index on replies_to_block
@@ -863,9 +886,11 @@ func Node(ctx context.Context, q Queryer, who model.Actor, kind, id string, byRe
 // one read per kind rather than one per node, and answered under the target it was asked by, as
 // an edge at the node carries it - the whole text and the frames of a run are its own address's
 // alone (Node). A target that names no node, and a node reserved for an author who is not who, is
-// absent from the answer, exactly as Node answers it not found.
-func Nodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool, targets []Target) (map[Target]model.GraphNode, error) {
-	resolved, err := resolveTargets(ctx, q, who, byRefKey, targets)
+// absent from the answer, exactly as Node answers it not found. The targets are addressed as the
+// to side of an edge addresses them (TargetOf), so an artifact's id is its ref_key, as in
+// TargetNames.
+func Nodes(ctx context.Context, q Queryer, who model.Actor, targets []Target) (map[Target]model.GraphNode, error) {
+	resolved, err := resolveTargets(ctx, q, who, targets)
 	if err != nil {
 		return nil, err
 	}
@@ -885,9 +910,11 @@ type ExcerptedNode struct {
 
 // ExcerptedNodes is Nodes with each node's excerpt beside it, cut as an edge at the node cuts it:
 // a read that lists nodes rather than edges - the proposed nodes of an issue - answers each one
-// with the words a reader recognises it by. What it answers and what it leaves out is Nodes'.
-func ExcerptedNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool, targets []Target) (map[Target]ExcerptedNode, error) {
-	resolved, err := resolveTargets(ctx, q, who, byRefKey, targets)
+// with the words a reader recognises it by. What it answers and what it leaves out is Nodes'. The
+// targets are addressed as the to side of an edge addresses them (TargetOf), so an artifact's id
+// is its ref_key, as in TargetNames.
+func ExcerptedNodes(ctx context.Context, q Queryer, who model.Actor, targets []Target) (map[Target]ExcerptedNode, error) {
+	resolved, err := resolveTargets(ctx, q, who, targets)
 	if err != nil {
 		return nil, err
 	}
@@ -913,7 +940,7 @@ func ExcerptedNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bo
 // either as a reference whose target is gone. Each kind is read in one statement whatever the
 // number of targets, so a batch costs a statement per kind, not per target.
 func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Target) (map[Target]string, error) {
-	resolved, err := resolveTargets(ctx, q, who, true, targets)
+	resolved, err := resolveTargets(ctx, q, who, targets)
 	if err != nil {
 		return nil, err
 	}
@@ -924,13 +951,14 @@ func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Targ
 	return names, nil
 }
 
-// resolveTargets resolves each target for who through its kind's loader, as Node resolves one.
-func resolveTargets(ctx context.Context, q Queryer, who model.Actor, byRefKey bool, targets []Target) (map[[2]string]resolvedNode, error) {
+// resolveTargets resolves each target for who through its kind's loader, as Node resolves one,
+// addressed as the to side of an edge addresses it (TargetOf), so an artifact's id is its ref_key.
+func resolveTargets(ctx context.Context, q Queryer, who model.Actor, targets []Target) (map[[2]string]resolvedNode, error) {
 	rows := make([]edgeRow, len(targets))
 	for index, target := range targets {
 		rows[index] = edgeRow{otherKind: target.Kind, otherID: target.ID}
 	}
-	return resolveNodes(ctx, q, who, byRefKey, rows)
+	return resolveNodes(ctx, q, who, true, rows)
 }
 
 // resolvedNode is a graph node with the text an excerpt is cut from: a block's is its stored
@@ -1408,7 +1436,14 @@ func blockNodesStatement(named blockNodesNamed, seenOnly bool) string {
 // a few documents, and keep the node_id index where they are few. Held to node_id alone, the
 // 5,001 blocks of a list of links were read by scanning the whole table rather than its index,
 // once the block predicate no longer sat on that scan to deter it (visibleStoredKind): 98 ms
-// against 75 ms over the read-cost corpus (check c-read-cost).
+// against 75 ms over the read-cost corpus (check c-read-cost). The documents are an array the
+// read computes once (`artifact_id = any(array(...))`), and not a semi-join, whose selectivity the
+// planner multiplies into the ids' own as if the two were unrelated: it then reckoned 36 of 640
+// blocks of two documents, and scanned the whole table for them where the node_id index reads
+// them. Measured on a copy of a dispatch:local database grown to the read-cost corpus (63,560
+// blocks), 640 blocks of two documents read in 32 to 39 ms under the semi-join and 14 to 15 ms
+// under the array, as the base build's read of node_id alone reads them (14 to 17 ms), and 5,000
+// blocks of one document still read by the primary key under either.
 //
 // Two to blockNodesKeptPlan arrive as the same two arrays, each compared as a value Postgres reads
 // once, before the read - `(select $1::text[])::text[]`, the cast making it the array itself
@@ -1450,12 +1485,13 @@ func (named blockNodesNamed) is(column string) string {
 }
 
 // held is the predicate the document_blocks rows aliased d of the blocks meet: their node ids,
-// and for two or more blocks the documents they name.
+// and for two or more blocks the documents they name, as one array of their uuids the read
+// computes once.
 func (named blockNodesNamed) held() string {
 	if named.documents == "" {
 		return named.is(`d.node_id`)
 	}
-	return named.is(`d.node_id`) + ` and d.artifact_id in (select named.id from artifacts named where named.ref_key = any(` + named.documents + `))`
+	return named.is(`d.node_id`) + ` and d.artifact_id = any(array(select named.id from artifacts named where named.ref_key = any(` + named.documents + `)))`
 }
 
 // blockNodesKeptPlan is the most blocks loadBlockNodes reads under one plan Postgres keeps rather

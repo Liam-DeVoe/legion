@@ -30,10 +30,10 @@ import (
 // run, or for none. The zero WriteBatch is made for no run.
 type WriteBatch struct {
 	batch pgx.Batch
-	run   string
 	// builds holds, beside each statement queued, the function that builds its arguments when
 	// Send reaches it (QueueBuilt), and nil for a statement queued with its arguments.
 	builds []func() ([]any, error)
+	run    string
 }
 
 // runKey is the context key WithRun carries a run under.

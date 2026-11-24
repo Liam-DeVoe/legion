@@ -180,8 +180,9 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 		if slices.Contains(previousReleaseNodeKinds, kind) {
 			continue
 		}
-		// That release resolves no node of the kind. Its predicate stays: the registry answered
-		// for every kind then as it does now, and only the loader is the newer build's.
+		// That release resolves no node of the kind. Its key stays, and with it the predicate
+		// VisibleKind binds: the registry answered for every kind then as it does now, and only
+		// the loader is the newer build's.
 		entry.load = nil
 		previous[kind] = entry
 	}
@@ -218,7 +219,7 @@ func TestAnItemBlocksLinkReachesItsItem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
-	if want := []Member{documentMember(t, tx, handbook, 1, model.ReferenceVia{Kind: "comment", ID: comment})}; !reflect.DeepEqual(references.Members, want) {
+	if want := []Member{documentMember(t, tx, handbook, model.ReferenceVia{Kind: "comment", ID: comment})}; !reflect.DeepEqual(references.Members, want) {
 		t.Errorf("closure = %#v; want %#v", references.Members, want)
 	}
 	citers, err := ReferencedBy(ctx, tx, model.Actor{}, handbook)
@@ -261,7 +262,7 @@ func TestAnAskOptionsLinkJoinsItsIssuesClosure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
-	if want := []Member{documentMember(t, tx, handbook, 1, model.ReferenceVia{Kind: "ask", ID: ask.ID})}; !reflect.DeepEqual(references.Members, want) {
+	if want := []Member{documentMember(t, tx, handbook, model.ReferenceVia{Kind: "ask", ID: ask.ID})}; !reflect.DeepEqual(references.Members, want) {
 		t.Errorf("closure = %#v; want %#v", references.Members, want)
 	}
 }

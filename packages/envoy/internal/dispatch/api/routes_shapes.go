@@ -486,6 +486,13 @@ type artifactVersionQuery struct {
 	// name, `Cache-Control: private, no-cache`, and a document as its Markdown rather than the
 	// JSON that wraps it. Any other value answers as without it.
 	Download bool `query:"download"`
+	// Blocks, `true`, carries a document version's typed blocks beside its markdown, each read
+	// from that version's own text under the id its opening line writes, with its attributes and
+	// its byte range in the markdown the answer carries: the version as this build renders it,
+	// which is the stored text unless an earlier renderer wrote it otherwise, with the sha256 and
+	// the size of that text. A block's references read zero and it carries no embedding state:
+	// both describe the live document, not a version. Any other value carries no blocks.
+	Blocks bool `query:"blocks"`
 }
 
 // openAsksQuery is GET /api/v1/asks/open's query: exactly one of the two scopes is required.
@@ -793,9 +800,9 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/issues/{key}/design-gates": {
 		Status: http.StatusOK, Response: issueDesignGates{}, Request: issueDesignGatesInput{},
 	},
-	// The reasoning nodes under an issue (reasoning_routes.go). Each
-	// write answers the node it wrote, carrying its state and visibility, so an author reads
-	// `author` on the node reserved for her in the answer to her own write.
+	// The reasoning nodes under an issue (reasoning_routes.go, constraint_routes.go and
+	// pointer_routes.go). Each write answers the node it wrote, carrying its state and visibility,
+	// so an author reads `author` on the node reserved for her in the answer to her own write.
 	"POST /api/v1/issues/{key}/lenses": {
 		Status: http.StatusCreated, Response: lensInvoked{}, Request: lensInvocationInput{},
 	},

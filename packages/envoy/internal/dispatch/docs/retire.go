@@ -203,7 +203,7 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 // document would tell another reader it is there.
 func retiredPreventions(ctx context.Context, tx pgx.Tx, artifactID, refKey string, at time.Time, actor model.Actor) ([]graphstore.Tuple, error) {
 	retracted, err := refs.PreventionRetractions(ctx, tx, `array(select held.node_id from document_blocks held where `+refs.DocumentRoomBlocksSQL("held", "$1::uuid")+`)`,
-		[]any{artifactID}, at, actor, graphstore.NoEvent)
+		[]any{artifactID}, at, actor)
 	if err != nil {
 		return nil, fmt.Errorf("read the prevented_by tuples at the checks of %s: %w", refKey, err)
 	}
@@ -253,12 +253,11 @@ func retiredUnderOwnerLock(ctx context.Context, tx pgx.Tx, artifactID string) (b
 }
 
 // writeRetiredNode writes the retired document's artifact node gone, held for the event that
-// causes it, with stated, the caller's own facts of the same write (graphstore.PlanUncaused, its
-// node write run at once through graphstore.QueueNodes). The
-// node keeps every other fact the store holds of it - its supertag, its visibility, its project
-// and who made it - and a document whose node no writer wrote yet takes the node its upload would
-// have written, made by creator when it was created. A ref_key past the store's address bound is
-// no node, as every writer of the store leaves such an address out.
+// causes it, with stated, the caller's own facts of the same write (graphstore.PlanUncaused,
+// QueueNodes). The node keeps every other fact the store holds of it - its supertag, its
+// visibility, its project and who made it - and a document whose node no writer wrote yet takes
+// the node its upload would have written, made by creator when it was created. A ref_key past the
+// store's address bound is no node, as every writer of the store leaves such an address out.
 func writeRetiredNode(ctx context.Context, tx pgx.Tx, refKey, project string, session *string, creator model.Actor, createdAt time.Time, stated []graphstore.Tuple) (graphstore.Uncaused, error) {
 	if !graphstore.AddressFits(refKey) {
 		return graphstore.Uncaused{}, nil

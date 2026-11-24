@@ -128,6 +128,11 @@ type issueWriteStep struct {
 	// labelsAfter is the labels the step writes, or nil when the step keeps them. Only a PATCH
 	// writes labels.
 	labelsAfter *[]string
+	// project is the issue's project, which the walk of the chain the step leaves climbs within
+	// (legionManagedStatusOfRow, issueChainSQL). Only a PATCH's step sets it: it alone moves an
+	// issue under a parent or writes its labels, and every other step that writes a parent
+	// unlinks the issue, whose chain as the step leaves it is the issue's row alone.
+	project string
 }
 
 // changesStatus reports whether the step writes a status other than the one the issue has.
@@ -153,6 +158,7 @@ func issueWritePlanOfPatch(before model.Issue, status *string, parentProvided bo
 		reparent:     parentProvided,
 		parentAfter:  parent,
 		labelsAfter:  labels,
+		project:      before.Project,
 	}}}
 }
 

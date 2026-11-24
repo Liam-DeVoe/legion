@@ -112,7 +112,7 @@ const KindVersion = "version"
 // document version, and a version of a query node is a query version; a document that a query
 // replaces becomes a query node (QueryNode). `document version` is seeded with the closed list
 // (20261109051232); `query` and `query version` are this child's
-// (20261116121500_issue_tree_query_supertags).
+// (20261123174750_issue_tree_query_supertags).
 const (
 	SupertagDocumentVersion = "document version"
 	SupertagQuery           = "query"

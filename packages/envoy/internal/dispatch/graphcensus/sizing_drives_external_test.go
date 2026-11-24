@@ -60,15 +60,16 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			{graphstore.KindInteraction, graphstore.AttributeProject}:    {graphstore.KindInteraction},
 			{graphstore.KindInteraction, graphstore.AttributeWords}:      {graphstore.KindInteraction},
 			{graphstore.KindInteraction, graphstore.AttributeEndsAt}:     {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.AttributeSource}:     {graphstore.KindInteraction},
 			{graphstore.KindInteraction, graphstore.TupleAuthoredBy}:     {graphstore.KindInteraction},
 			{graphstore.KindInteraction, graphstore.AttributeFrame}:      {"frame"},
 		},
 	}, {
-		// A PATCH of the issue's labels made for alice's run (patchIssue), which restates the
-		// issue's node marked changed by the run: its changed_by_run, which the term interaction
-		// counts into the run.
-		Name: "api/issue_patch.go#patchIssue, under a run", Database: r.database,
-		Sites: []string{"api/issue_patch.go#patchIssue"},
+		// A PATCH of the issue's labels made for alice's run (writeIssue, which patchIssue runs),
+		// which restates the issue's node marked changed by the run: its changed_by_run, which the
+		// term interaction counts into the run.
+		Name: "api/issue_patch.go#writeIssue, under a run", Database: r.database,
+		Sites: []string{"api/issue_patch.go#writeIssue"},
 		Ready: func(t *testing.T) { r.runWindowAhead(t, run) },
 		Drive: func(t *testing.T) {
 			r.requestForRun(t, run, http.MethodPatch, "/api/v1/issues/"+r.issue, map[string]any{"labels": []string{"sized"}}, "alice", http.StatusOK)
@@ -113,7 +114,7 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		// which the term issue_relation counts, and the filed_from, which issue_origin counts.
 		Name: "api/issue_relations.go#queueIssueRelations, a PATCH of its needs and its filed_from", Database: r.database,
 		Sites: []string{"api/issue_relations.go#queueIssueRelations", "api/issue_relations.go#stateFiledFromNode",
-			"api/issue_patch.go#patchIssue"},
+			"api/issue_patch.go#writeIssue"},
 		Ready: func(t *testing.T) {
 			target = decoded[model.Issue](t, r.request(t, http.MethodPost, "/api/v1/issues", map[string]any{
 				"project": "SIZE", "title": "What the sized issue waits on", "force": true,

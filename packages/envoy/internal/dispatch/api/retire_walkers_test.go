@@ -99,6 +99,7 @@ func TestAnIssueWhoseDecisionsDocumentTheStepRetiredClosesAndReopensWithItsOpenA
 // is then retired, and the reopen through PATCH is taken: it restores the request still naming
 // version 1 of the retired document, and appends no ask.edited.
 func TestAReopenMovesNoApprovalRequestOntoTheClosedVersionOfARetiredDocument(t *testing.T) {
+	t.Parallel()
 	handler, database, documentService := newClosedSettlementHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "An approval request on a document retired while closed", "Context\n")
 	notes := uploadIssueDocument(t, handler, issue.Key, "notes.md", "Context\n")
@@ -138,6 +139,7 @@ func TestAReopenMovesNoApprovalRequestOntoTheClosedVersionOfARetiredDocument(t *
 // the retired document, which takes no new text, gets no version, before or after the issue's
 // documents settle.
 func TestAnAnswerToAnAskWhoseRowNamesARetiredDecisionsDocumentIsTakenAndWritesItNoVersion(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -178,6 +180,7 @@ func TestAnAnswerToAnAskWhoseRowNamesARetiredDecisionsDocumentIsTakenAndWritesIt
 // `decision` block in the issue's spec, and not DOCUMENT_RETIRED, whose advice to write a document
 // of another name would lead its caller to decisions-2.md. No version is written.
 func TestACommentsMarkOnARetiredDecisionsDocumentIsRefusedAsDecisionsAreNodes(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
@@ -207,6 +210,7 @@ func TestACommentsMarkOnARetiredDecisionsDocumentIsRefusedAsDecisionsAreNodes(t 
 // lock, uncommitted, while the write reads its list, which finds notes.md standing, and commits
 // once the write waits on that lock. The write answers no error and gives notes.md no version.
 func TestAnAskStateWriteSkipsADocumentRetiredAfterItsListWasRead(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -264,6 +268,7 @@ func TestAnAskStateWriteSkipsADocumentRetiredAfterItsListWasRead(t *testing.T) {
 // artifactOwner.Retired), and the call answers no error for it. notes.md takes a browser's edit,
 // which leaves it owing a settlement, and is retired before that settlement runs.
 func TestSettlingAnIssuesDocumentsSettlesARetiredOneWithNoErrorAndNoVersion(t *testing.T) {
+	t.Parallel()
 	handler, database, documentService := closedSettlementHandlerSettlingAfter(t, time.Hour)
 	issue := createInteractionIssue(t, handler, "TEST", "A retired document owing a settlement", "Context\n")
 	notes := uploadIssueDocument(t, handler, issue.Key, "notes.md", "Context\n")

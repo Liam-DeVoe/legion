@@ -181,8 +181,12 @@ var readsWithoutAViewer = map[string]string{
 	"BlockChanges":         nodeDetail,
 	"BlockEmbeddingStates": nodeDetail,
 	"BlockIndexing.Cited":  serverWork + " - a version write reads the blocks that cite the blocks its index changes, to count what it moves",
-	"BlockTargets":         serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
-	"BlockTextAt":          nodeDetail,
+	"BlockRefKinds": serverWork + " - a version write's block index reads the names of the block[] attributes the " +
+		"store's type nodes declare, which only a migration writes, to bind them as a parameter of its own read of the store's tuples",
+	"BlockTargets": serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
+	"BlockTextAt":  nodeDetail,
+	"CommentsNamingNoNode": serverWork + " - the block-index tick's write of the comments the events after its cursor name " +
+		"reads, under those comments' owner locks, which of their rows name no node",
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
 	"CurrentBlockText":     nodeDetail,
 	"CurrentItemBlockText": nodeDetail,
@@ -217,14 +221,15 @@ var readsWithoutAViewer = map[string]string{
 		"resolver reads for no person",
 	"PinnedParent": nodeDetail + " - the lens read names the lenses on a document, a block of one, a block of a comment or a part of an ask " +
 		"it read through Node by the address a lens names that node at, its own pinned to a version of its document or a revision of its item",
-	"PlanBlocks":         serverWork + " - a version write's read phase plans its block index against what the store holds of the document",
-	"PlanDecisionNodes":  serverWork + " - a deferred version write's read phase plans its typed-node pass against what the store holds of the document",
-	"PlanItemIfOwed":     serverWork + " - a write's read phase plans the index an item it writes beside is owed",
-	"PlanOpenedAskTies":  serverWork + " - a settlement's read phase plans the ties of the ask blocks it opened against the document's block index",
-	"PlanReplace":        serverWork + " - a write's read phase plans the reconciliation of a source's references against its edges",
+	"PlanBlocks":        serverWork + " - a version write's read phase plans its block index against what the store holds of the document",
+	"PlanDecisionNodes": serverWork + " - a deferred version write's read phase plans its typed-node pass against what the store holds of the document",
+	"PlanItemIfOwed":    serverWork + " - a write's read phase plans the index an item it writes beside is owed",
+	"PlanOpenedAskTies": serverWork + " - a settlement's read phase plans the ties of the ask blocks it opened against the document's block index",
+	"PlanReplace":       serverWork + " - a write's read phase plans the reconciliation of a source's references against its edges",
+	"PreventionRetractions": serverWork + " - the index pass, a retirement and the backfill read the prevented_by tuples at the checks " +
+		"they end, under those checks' owner lock, to retract each; its writer signs the retractions and views nothing",
 	"QueueAskPartIDs":    nodeDetail,
 	"ReadBlockIndex":     serverWork + " - a version write's read phase reads the document's block index it plans against",
-	"ReadBlockRefKinds":  serverWork + " - a version write's block index plan binds the tuple kinds the block index writes into block_refs, which name no node",
 	"ReadIndexedVersion": serverWork + " - a version write's read phase reads the document's address and the version's writer",
 	"ReadItemIndex":      serverWork + " - a write's read phase reads the item's block index it plans against",
 	"RecordExcerpts":     serverWork,
@@ -236,6 +241,8 @@ var readsWithoutAViewer = map[string]string{
 		"which binds each one's predicate, so a node who may not see is absent from what a reader is shown",
 	"ScopeSources": serverWork,
 	"SourceText":   serverWork,
+	"StaleLensesOn": serverWork + " - a document's removal reads the stale lenses on the removed document to take each " +
+		"gone with all that stands beneath it, those its caller may not see included",
 	"TreeChildren": treeWalk + " - the children of each node the walk reaches",
 	"TreeFactsOf":  treeWalk + " - what each node the walk reaches states at its cut",
 	"TreeMovedTo":  treeWalk + " - the nodes the address a comment's anchor names resolves to at the walk's cut",
@@ -402,11 +409,11 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		everyKind[index] = Target{Kind: kind, ID: "no-such-node"}
 	}
 	record("Nodes", "Nodes of every kind at once", func() error {
-		_, err := Nodes(ctx, recorder, who, true, everyKind)
+		_, err := Nodes(ctx, recorder, who, everyKind)
 		return err
 	})
 	record("ExcerptedNodes", "ExcerptedNodes of every kind at once", func() error {
-		_, err := ExcerptedNodes(ctx, recorder, who, true, everyKind)
+		_, err := ExcerptedNodes(ctx, recorder, who, everyKind)
 		return err
 	})
 	record("BlockNodesAndRows", "BlockNodesAndRows of a block", func() error {
@@ -673,11 +680,19 @@ func seedPlanOrder(t *testing.T, ctx context.Context, database *store.Store) str
 	return root
 }
 
+// writerSigned names each exported read of the store whose model.Actor is the writer that signs
+// the facts it answers for a write to append, not a viewer: PreventionRetractions answers the
+// retractions a writer appends, each signed by that writer, and answers them to no reader.
+// storeReads counts such a read among the reads that take no acting person, so
+// readsWithoutAViewer must name it with its reason.
+var writerSigned = []string{"PreventionRetractions"}
+
 // storeReads is every exported function of this package that reads the store, read out of the
 // package's own source rather than kept as a list: one that takes the Queryer it reads on, or
 // the *pgx.Batch it queues its statement in. viewing is those that take a model.Actor beside it,
 // or a *model.Actor where nil is no person (ResolvePrefixes), the reads of the graph for a
-// viewer, and without is the rest. A method is named by its receiver's type and its own name.
+// viewer, and without is the rest, a read of writerSigned among them. A method is named by its
+// receiver's type and its own name.
 func storeReads(t *testing.T) (viewing, without []string) {
 	t.Helper()
 	files, err := filepath.Glob("*.go")
@@ -703,7 +718,7 @@ func storeReads(t *testing.T) (viewing, without []string) {
 				switch types.ExprString(parameter.Type) {
 				case "model.Actor", "*model.Actor":
 					viewer = true
-				case "Queryer", "*pgx.Batch":
+				case "Queryer", "graphstore.Queryer", "*pgx.Batch":
 					queries = true
 				}
 			}
@@ -714,7 +729,7 @@ func storeReads(t *testing.T) (viewing, without []string) {
 			if function.Recv != nil {
 				name = strings.TrimPrefix(types.ExprString(function.Recv.List[0].Type), "*") + "." + name
 			}
-			if viewer {
+			if viewer && !slices.Contains(writerSigned, name) {
 				viewing = append(viewing, name)
 			} else {
 				without = append(without, name)

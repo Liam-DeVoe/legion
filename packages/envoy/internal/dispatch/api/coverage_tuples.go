@@ -163,7 +163,7 @@ func readTreeRequirements(ctx context.Context, q queryer, who model.Actor, tree 
 			}
 		}
 	}
-	nodes, err := refs.Nodes(ctx, q, who, true, chain)
+	nodes, err := refs.Nodes(ctx, q, who, chain)
 	if err != nil {
 		return treeRequirements{}, err
 	}
@@ -313,7 +313,7 @@ func readServingChecks(ctx context.Context, q queryer, who model.Actor, serving 
 	if len(targets) == 0 {
 		return checks, proof, nil
 	}
-	nodes, err := refs.Nodes(ctx, q, who, true, targets)
+	nodes, err := refs.Nodes(ctx, q, who, targets)
 	if err != nil {
 		return nil, nil, err
 	}

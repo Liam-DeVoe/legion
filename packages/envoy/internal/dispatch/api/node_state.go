@@ -127,12 +127,14 @@ type stateTarget struct {
 
 // goneNodeUnderIssueQuery is whether the store holds the node whose stored kind and id are $1 and
 // $2 as one every read answers as gone - gone, or a stale node of a standing kind - standing under
-// the issue $3 (refs.StandingIssueSQL), for a reader ($4) the node's own kind's predicate admits
-// but for that (refs.VisibleGoneRow).
+// the issue $3 (refs.GoneStandingIssueSQL), for a reader ($4) the node's own kind's predicate
+// admits but for that (refs.VisibleGoneRow). A node whose walk ends at a removed document, whose
+// row is deleted, stands under the issue the document's address spells: a lens on it and every
+// node under it, and the document's own node.
 var goneNodeUnderIssueQuery = `
 	select true from graph_nodes held
 	where held.kind = $1 and held.id = $2
-	  and ` + refs.StandingIssueSQL(`held.kind`, `held.id`) + ` = $3
+	  and ` + refs.GoneStandingIssueSQL(`held.kind`, `held.id`) + ` = $3
 	  and ` + refs.VisibleGoneRow("held", "$4")
 
 // findWrittenNode is the node a write is made on, which id names under the issue key, read for
@@ -142,10 +144,13 @@ var goneNodeUnderIssueQuery = `
 // and the store holds it gone, or stale (refs.StaleSQL), under the issue for a reader who may see
 // it, which every read of the graph leaves out, the write is 409 NODE_GONE, naming the node as id
 // names it (nodeGone): gone is final, so no write is made on a gone node, and a stale node and
-// everything under it are answered as gone ones. Anything else is FindNodeUnderIssue's own 404, word
-// for word, so a refusal tells nothing of a node the caller may not see, gone or not. A far end of
-// a tuple a write appends - the lens a lens is triggered by, a pointer's target - is found
-// through findEndUnderIssue or pointerEnd instead, so a gone one keeps that 404.
+// everything under it are answered as gone ones. That holds of a lens on a removed document and
+// of everything under it too, whichever build removed the document, since the test reads the
+// issue a removed document's address spells (goneNodeUnderIssueQuery). Anything else is
+// FindNodeUnderIssue's own 404, word for word, so a refusal tells nothing of a node the caller may
+// not see, gone or not. A far end of a tuple a write appends - the lens a lens is triggered by, a
+// pointer's target - is found through findEndUnderIssue or pointerEnd instead, so a gone one keeps
+// that 404.
 func findWrittenNode(ctx context.Context, q refs.Queryer, who model.Actor, key, id string) (model.GraphNode, storedEnd, error) {
 	node, end, err := findEndUnderIssue(ctx, q, who, key, id)
 	var refusal *apiError
@@ -512,7 +517,7 @@ func (s *server) listIssueProposed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// The store keys a document by its ref_key, which is the id its loader reads it by.
-	resolved, err := refs.ExcerptedNodes(ctx, pool, reader, true, targets)
+	resolved, err := refs.ExcerptedNodes(ctx, pool, reader, targets)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

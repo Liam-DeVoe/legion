@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -128,7 +128,7 @@ func TestTheKindsThatTakeAuthorAreThisChildsRegisteredKinds(t *testing.T) {
 		compares comparison
 	}{
 		{"resolvedKind", resolvedKind(loadStoreNodes, nodeVisibility{}), false, comparesAuthor},
-		{"unresolvedKind", unresolvedKind(nodeVisibility{}), false, comparesAuthor},
+		{"unresolvedKind", unresolvedKind(), false, comparesAuthor},
 		{"authoredKind", authoredKind(loadStoreNodes), true, comparesAuthor},
 		{"credentialAuthoredKind", credentialAuthoredKind(loadStoreNodes), true, comparesCredential},
 	} {
@@ -176,7 +176,7 @@ func TestAKindComparesTheAuthorOrTheCredentialItsEntryStates(t *testing.T) {
 	defer tx.Rollback(ctx)
 	// The two test kinds are types of no migration, and the store writes a node only of a type it
 	// holds, so their types are seeded first.
-	if err := graphstoretest.SeedSupertags(ctx, tx, authorComparedTestKind, credentialComparedTestKind); err != nil {
+	if err := graphseedtest.SeedSupertags(ctx, tx, authorComparedTestKind, credentialComparedTestKind); err != nil {
 		t.Fatalf("seed the test kinds' types: %v", err)
 	}
 	name := func(login string) *string { return &login }
@@ -271,7 +271,7 @@ func TestAKindComparesTheAuthorOrTheCredentialItsEntryStates(t *testing.T) {
 		// refuses (graphstore.ErrVisibilityNotAdmitted), so a comment's rows are seeded as such
 		// a write would have stored them.
 		if written.node.Kind == graphstore.KindComment {
-			if err := graphstoretest.SeedAuthorOnly(ctx, tx, written.node); err != nil {
+			if err := graphseedtest.SeedAuthorOnly(ctx, tx, written.node); err != nil {
 				t.Fatalf("seed %s: %v", written.name, err)
 			}
 			continue

@@ -50,6 +50,17 @@ test("an issue that is not its tree's root draws none, whatever its project gate
   expect(gatedStepEntries(gating("criteria", "spec"), child)).toEqual([]);
 });
 
+test("an issue whose parent is in another project is a root of its own project and draws its steps", () => {
+  // A parent of another project passes nothing on, so the issue stands in its own project's
+  // gate as a root does; only a parent of the issue's own project makes it a child.
+  const rootUnderAnotherProject: IssueDetails = { ...root, parent: "OTHR-6" };
+
+  expect(
+    gatedStepEntries(gating("criteria", "spec"), rootUnderAnotherProject).map((entry) => entry.step)
+  ).toEqual(["criteria", "spec"]);
+  expect(gatedStepEntries(gating("criteria", "spec"), { ...root, parent: "CORE-9" })).toEqual([]);
+});
+
 test("neither the unread project nor the unread issue draws a step", () => {
   expect(gatedStepEntries(undefined, root)).toEqual([]);
   expect(gatedStepEntries(gating("spec"), undefined)).toEqual([]);

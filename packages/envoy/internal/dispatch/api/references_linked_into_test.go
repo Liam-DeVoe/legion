@@ -80,6 +80,9 @@ const referencesGrowthBound = 6.5
 // budget, every route read answering 503 REFERENCES_TIMEOUT, and 14.2 to 15.0 on the build farm,
 // where every route read answers 200 inside the budget (2026-11-22).
 func TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks(t *testing.T) {
+	// Not parallel: it holds the route's reads to their 2 s budget (referencesClosureBound) and
+	// refs.Closure's read times to a ratio (referencesGrowthBound), wall clock that the load of the
+	// tests beside it can push past.
 	small := seedLinkedIntoIssue(t, 8, 100)
 	large := seedLinkedIntoIssue(t, 40, 500)
 	const reads = 3
@@ -165,7 +168,7 @@ func TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks(t *testing
 var linkedIntoReader = model.Actor{Kind: "user", ID: "alice", Proven: true}
 
 // closureRead reads the references of issue as the route reads them, refs.Closure for alice in a
-// transaction of its own on the issue's database, but with no budget (the route's boundedClosure),
+// transaction of its own on the issue's database, but with no budget (the route's inClosureRead),
 // so that the read runs to its end however long it takes, and answers the time refs.Closure took.
 // It fails t unless the read lists each of the issue's linking documents in linked_from.
 func closureRead(t *testing.T, issue linkedIntoIssue) time.Duration {

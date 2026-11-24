@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -3011,35 +3009,15 @@ func heldBlockParentDifferences(ctx context.Context, q Queryer, refKey, topKind,
 // and no pass that drops a row retracts them.
 type heldLink struct{ kind, toKind, toID string }
 
-// ReadBlockRefKinds reads every tuple kind the block index writes into block_refs
-// (BlockRefKindsSQL): a mention and a pointer of each `block[]` attribute the store's type nodes
-// declare. It is a read of its own, through q, for a statement that binds the kinds rather than
-// selects them: inside that statement the read of the attribute nodes, which no key of
-// graph_nodes names but their kind, would be its one read of graph_nodes that probes no node by
-// its key (TestTheHeldDocumentReadProbesEachMembersNodeOnce).
-func ReadBlockRefKinds(ctx context.Context, q Queryer) ([]string, error) {
-	rows, err := q.Query(ctx, BlockRefKindsSQL)
-	if err != nil {
-		return nil, fmt.Errorf("read the kinds of the links a block index pair writes: %w", err)
-	}
-	kinds, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the kinds of the links a block index pair writes: %w", err)
-	}
-	return kinds, nil
-}
-
-// heldLinkKinds reads the kinds of tuple a pair of a version writes into block_refs, the kinds
-// whose links the release before this one drops by deleting their rows: a mention and a pointer
-// of each `block[]` attribute the store's type nodes declare (ReadBlockRefKinds), and a decision's
-// ties, its decided_by, from_ask and shaped (typedKinds, TypedFacts.pairs). It is the census's own
-// reading of the tuples a block_refs row states (graphcensus's blockRefKinds and tieKinds).
-func heldLinkKinds(ctx context.Context, q Queryer) ([]string, error) {
-	kinds, err := ReadBlockRefKinds(ctx, q)
-	if err != nil {
-		return nil, err
-	}
-	return append(kinds, typedKinds...), nil
+// heldLinkKinds is true of a tuple t of a kind a pair of a version writes into block_refs, the
+// kinds whose links the release before this one drops by deleting their rows: a mention and a
+// pointer of each `block[]` attribute the store's type nodes declare, which blockRefKinds, a
+// text[] parameter bound to what BlockRefKinds read by a statement of its own in the caller's
+// transaction, holds, and a decision's ties, its decided_by, from_ask and shaped (typedKinds,
+// TypedFacts.pairs). It is the census's own reading of the tuples a block_refs row states
+// (graphcensus's blockRefKinds and tieKinds).
+func heldLinkKinds(blockRefKinds string) string {
+	return `(t.kind = any(` + blockRefKinds + `) or t.kind in (` + quotedKinds(typedKinds) + `))`
 }
 
 // heldDocumentBlocks is what the store states now of the blocks of the document refKey names, by
@@ -3056,6 +3034,12 @@ func heldLinkKinds(ctx context.Context, q Queryer) ([]string, error) {
 // decision's or a reading's authored_by, a copy's copied_from. A gone block's pointers are
 // retractGonePointers' to retract.
 //
+// The state read is every state but gone, not live alone: a write marks a block proposed,
+// settled or overtaken, and the index pass keeps such a state unless the pass itself makes the
+// block gone (blockNode). A block in one of those states that another release's version dropped
+// is as gone as a live one, and a read of the live blocks alone would leave it standing in that
+// state for ever, with nothing projecting it.
+//
 // It is the store's own side of the document, and IndexBlocks reads it only where that side is
 // stale (blockStand.stale): another release indexed the document after the store last stated its
 // blocks, and that release deleted the rows of the blocks and the links its version dropped and
@@ -3063,10 +3047,12 @@ func heldLinkKinds(ctx context.Context, q Queryer) ([]string, error) {
 // the version's render: this read is what the store would otherwise go on asserting against it,
 // as heldBlockParentDifferences is for the parents. The members come through
 // graph_tuples_as_of_in in one probe and each member's links through graph_tuples_as_of_out in
-// one probe a block, in one statement, under the kinds heldLinkKinds read first and bound as $2:
-// the links are every kind but two, which proves nothing of graph_tuples_current's predicate, and
-// that index leaves delivered_to out. The value kind is written into the text so the planner can
-// prove each index's partial predicate whatever plan it caches.
+// one probe a block, in one statement: the links are the kinds a version's pairs write
+// (heldLinkKinds), a list that proves nothing of graph_tuples_current's predicate, and that index
+// leaves delivered_to out. The typed kinds and the value kind are written into the text, and the
+// block-reference kinds, read first by a statement of their own in the caller's transaction
+// (BlockRefKinds), are bound as one parameter, so the planner can prove each index's partial
+// predicate whatever plan it caches, and the statement reads no attribute node of graph_nodes.
 //
 // Each member probes its own node through graph_nodes' primary key, in a subquery behind an
 // offset 0 the planner cannot flatten. Joined plainly, the planner took `kind = 'block'` alone
@@ -3075,7 +3061,7 @@ func heldLinkKinds(ctx context.Context, q Queryer) ([]string, error) {
 // that removed 499,500 rows, and a document of 150,000 blocks is the read this pass makes
 // (TestTheHeldDocumentReadProbesEachMembersNodeOnce).
 func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[string][]heldLink, error) {
-	kinds, err := heldLinkKinds(ctx, q)
+	blockRefKinds, err := BlockRefKinds(ctx, q)
 	if err != nil {
 		return nil, err
 	}
@@ -3096,13 +3082,13 @@ func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[stri
 			from (
 				`+graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.kind, t.to_kind, t.to_id, t.asserted`,
 		`t.from_kind = '`+BlockNodeKind+`' and t.from_id = member.id
-				  and t.to_kind <> '`+graphstore.KindValue+`' and t.kind = any($2::text[])`)+`
+				  and t.to_kind <> '`+graphstore.KindValue+`' and `+heldLinkKinds(`$2::text[]`))+`
 			) current
 			where current.asserted
 		) held on true
 		where node.state <> '`+graphstore.StateGone+`'
 		order by member.id, held.kind, held.to_kind, held.to_id
-	`, refKey, kinds)
+	`, refKey, blockRefKinds)
 	if err != nil {
 		return nil, fmt.Errorf("read what the store states of the blocks of %s: %w", refKey, err)
 	}

@@ -836,12 +836,13 @@ func provedSessionOwner(actor string) string {
 var reasoningAuthored = currentAuthors(`(held.kind in ('` + graphstore.KindLens + `', '` + graphstore.KindRisk + `', '` +
 	graphstore.KindConstraint + `') or (held.kind = '` + refs.BlockNodeKind + `' and ` + graphstore.FindingIDSQL("held.id") + `))`)
 
-// goneRunsAuthored is the author every run whose row is gone states now - a process of the release
-// before deleted it an hour old during a roll, and the backfill stated its interaction gone
-// (backfillGoneRuns) - in the shape of reasoningAuthored. The row that named the author went with
-// the run, so the store's own record of the writer stands on the row side, as it does for a
-// reasoning node: an author's node is history and stays, and without this a person whose one
-// write was such a run would read as a node no row projects.
+// goneRunsAuthored is the author every run whose row is gone states now - one the sweep stated gone
+// and removed the rows of an hour after it was asked (api's sweepGoingRequests), or one a process
+// of the release before deleted an hour old during a roll, whose interaction the sweep or the
+// backfill stated gone (backfillGoneRuns) - in the shape of reasoningAuthored. The row that named
+// the author went with the run, so the store's own record of the writer stands on the row side, as
+// it does for a reasoning node: an author's node is history and stays, and without this a person
+// whose one write was such a run would read as a node no row projects.
 var goneRunsAuthored = currentAuthors(`held.kind = '` + graphstore.KindInteraction + `' and held.state = '` + graphstore.StateGone + `'`)
 
 // recordedSessions are the sessions a row of the store names or an event of the log has named,

@@ -585,7 +585,7 @@ func (b *issueTreeBuilder) readFacts(targets []refs.Target) error {
 			loaderTargets = append(loaderTargets, refs.Target{Kind: kind, ID: target.ID})
 		}
 	}
-	loaded, err := refs.ExcerptedNodes(b.ctx, b.q, b.who, true, loaderTargets)
+	loaded, err := refs.ExcerptedNodes(b.ctx, b.q, b.who, loaderTargets)
 	if err != nil {
 		return err
 	}

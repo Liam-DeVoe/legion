@@ -60,6 +60,7 @@ const (
 // reach: a new read that answers more than the read it stands beside, or an old read that
 // quietly answers something else. Each sub-test holds one half of that.
 func TestTheStoreAddsNoReachAndNoReadChangesShape(t *testing.T) {
+	t.Parallel()
 	t.Run("the person read is one route and takes no kind, filter or traversal", onePersonRead)
 	t.Run("the person read admits a person and nobody else", personReadReach)
 	t.Run("every route the table held before this child keeps the shape the contracts declare", declaredShapesUnchanged)
@@ -625,10 +626,6 @@ func threeBadRequests(t *testing.T) {
 				route.Method+" "+target, why)
 		}
 	}
-	if len(reasoning) > 0 {
-		t.Fatalf("the table holds no row of %v, so the request about another project each was written for went to no route",
-			slices.Sorted(maps.Keys(reasoning)))
-	}
 	// A removal that answered 404 but deleted the source all the same would pass the check
 	// above, so the source the probe sent under another project's key must still be listed.
 	if sources := listSources(t, handler, "TEST"); !slices.ContainsFunc(sources, func(source architectureSourceResponse) bool {
@@ -636,6 +633,10 @@ func threeBadRequests(t *testing.T) {
 	}) {
 		t.Errorf("GET /api/v1/projects/TEST/architecture-sources lists %q after the probe, without the source %s it sent under OTH",
 			sourceStrings(sources), owned.architectureSource)
+	}
+	if len(reasoning) > 0 {
+		t.Fatalf("the table holds no row of %v, so the request about another project each was written for went to no route",
+			slices.Sorted(maps.Keys(reasoning)))
 	}
 	if len(probed) < 5 {
 		t.Fatalf("only %d route(s) were probed with another project's identifier, which is too few to prove anything", len(probed))
@@ -929,10 +930,10 @@ func (node lensOrConstraint) storeAddress() string {
 // constraint, an architecture source, and the Legion daemon it names with a read of it; a second
 // project with an issue, which the cross-project probe addresses them under; and one priority,
 // which belongs to neither project and is read at its own id. Under the second project's key the
-// probe sends each route the object of the first its path names (crossProjectPath): design.md to
-// a route of an issue document, the project document to a route of a project document, the
-// message to the message read, the run of a step to the step write, the retro's run to the rating
-// write and the architecture source's repository to the source's removal and its sync.
+// probe sends each route the object of the first its path names (crossProjectPath): design.md to a
+// route of an issue document, the project document to a route of a project document, the message
+// to the message read, the run of a step to the step write, the retro's run to the rating write
+// and the architecture source's repository to the source's removal and its sync.
 func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) crossProject {
 	t.Helper()
 	createDuplicateTestProject(t, handler, "OTH")
@@ -1146,9 +1147,9 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 	return pattern, true
 }
 
-// reasoningRequest is one request a route of cybermonklabs/legion#4193 is sent under another
+// reasoningProbe is one request a route of cybermonklabs/legion#4193 is sent under another
 // project's issue: its target and its body, and what it must answer.
-type reasoningRequest struct {
+type reasoningProbe struct {
 	target string
 	body   map[string]any
 	// refused is the code of the 404 the route must refuse the request with, where the request
@@ -1168,10 +1169,10 @@ type reasoningRequest struct {
 // compared. Each request here is well formed and names a node or a document that exists - a node
 // by its store address, as /nodes/{id} takes one, or by its dispatch:// address in a body - so
 // the only thing wrong with it is the issue.
-func reasoningCrossProject(owned crossProject) map[string]reasoningRequest {
+func reasoningCrossProject(owned crossProject) map[string]reasoningProbe {
 	under := "/api/v1/issues/" + owned.otherIssue
 	node := func(of lensOrConstraint, route string) string { return under + nodePath(of.storeAddress(), route) }
-	return map[string]reasoningRequest{
+	return map[string]reasoningProbe{
 		"POST /api/v1/issues/{key}/lenses": {target: under + "/lenses", refused: "NOT_FOUND",
 			body: map[string]any{"on": "dispatch://" + owned.issue + "/spec", "kind": "trade-off"}},
 		"POST /api/v1/issues/{key}/risks": {target: under + "/risks", refused: "NOT_FOUND", body: map[string]any{
@@ -1198,7 +1199,7 @@ func reasoningCrossProject(owned crossProject) map[string]reasoningRequest {
 
 // probeAcrossProjects sends route its request under the other project's issue as alice, who may
 // read and write both projects, and holds the answer to what the request says it must be.
-func probeAcrossProjects(t *testing.T, handler http.Handler, route string, request reasoningRequest, owned crossProject) {
+func probeAcrossProjects(t *testing.T, handler http.Handler, route string, request reasoningProbe, owned crossProject) {
 	t.Helper()
 	method, _, _ := strings.Cut(route, " ")
 	var body any

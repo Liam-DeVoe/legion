@@ -304,20 +304,25 @@ func blockRefCarries(fromKind, alias string) string {
 // followed_by, and a decision block's from_ask and decided_by, which the
 // arm renders through the block_refs row of the pair as it renders a block's every other link,
 // and the kinds the view answers from the tuples alone, with no projection row behind them (its
-// store class, migrations 20261116184707 and 20261117020856): changed_by_run, has_kind,
-// triggered_by, constrained_by and prevented_by out of any node, and part_of and authored_by out
-// of a node of the kinds cybermonklabs/legion#4193 adds (graphstore.KindInteraction and the three
-// beside it); an issue's relations, child_of and needs, which issues and issue_links project,
-// and duplicate_of and filed_from, which no row does, beside a document's attached_to, the part_of
-// to its issue the view answers by that name (migration 20261117140000); and a component's
-// part_of its parent and depends_on another component and an issue's affects a component, which
-// components, component_depends and issue_component_members project (migration 20261118023219).
+// store class, migrations 20261116184707 and 20261117020856), which the graph read's store arm
+// reads by the same lists (keyedStoreArm): storeArmPointers out of any node, and
+// storeArmPlacements and authored_by out of a node of the kinds cybermonklabs/legion#4193 adds
+// (graphstore.KindInteraction and the three beside it); an issue's relations, child_of and needs,
+// which issues and issue_links project, and duplicate_of and filed_from, which no row does, beside
+// a document's attached_to, the part_of to its issue the view answers by that name (migration
+// 20261117140000); and a component's part_of its parent and depends_on another component and an
+// issue's affects a component, which components, component_depends and issue_component_members
+// project (migration 20261118023219).
 // It is the list the view's tuple arms render (migrations 20261109215947, 20261116094101,
 // 20261116184707, 20261117020856, 20261117140000, 20261118023219 and 20261119100000) and the list
 // the announcer writes into server_build_announcements.tuple_kinds (startup.Deps), which is how
 // the release that deletes an old arm of the view reads whether the release a rollback would
 // reach writes that arm's kinds as tuples too. A child that moves another relation into the store
-// adds its kinds here, so the arm and the announcement read one list.
+// adds its kinds here, so the arm and the announcement read one list; a relation the view answers
+// from the tuples alone goes into graphstore's pointerRules instead: a pointer there alone, which
+// storeArmPointers (graph.go) reads from graphstore.PointerKinds, and a placement there and then
+// in storeArmPlacements (graph.go), which TestTheStoreArmReadsEveryKindThePointerRulesHold holds
+// to graphstore.PlacementKinds. This list reads both.
 //
 // The announcement names a kind alone, and part_of in it is no claim about every part_of the store
 // holds: this build writes a part_of the view answers only out of a lens, a lens_block, a risk, a
@@ -335,16 +340,12 @@ func blockRefCarries(fromKind, alias string) string {
 // room (decision 7 of this branch's plan). No arm renders a capability, so the view answers
 // nothing under that name.
 func TupleKinds() []string {
-	kinds := append([]string{
+	kinds := slices.Concat([]string{
 		TupleInDocument, "mentions", graphstore.TupleAnchoredTo, graphstore.TupleOwnedBy,
-		graphstore.TupleFollowedBy, TupleFromAsk, graphstore.TupleDecidedBy,
-		graphstore.TupleChangedByRun, graphstore.TupleHasKind, graphstore.TupleTriggeredBy,
-		graphstore.TupleConstrainedBy, graphstore.TuplePreventedBy,
-		graphstore.TuplePartOf, graphstore.TupleAuthoredBy,
+		graphstore.TupleFollowedBy, TupleFromAsk, graphstore.TupleDecidedBy, graphstore.TupleAuthoredBy,
 		graphstore.TupleChildOf, graphstore.TupleNeeds, graphstore.TupleDuplicateOf, graphstore.TupleFiledFrom,
 		TupleAttachedTo, graphstore.TupleDependsOn, graphstore.TupleAffects,
-	}, pmdoc.LinkKinds()...)
-	kinds = append(kinds, processes.Capabilities...)
+	}, storeArmPointers, storeArmPlacements, pmdoc.LinkKinds(), processes.Capabilities)
 	slices.Sort(kinds)
 	return slices.Compact(kinds)
 }

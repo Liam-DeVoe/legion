@@ -535,12 +535,13 @@ type ExternalLink struct {
 }
 
 // IssueComponents is an issue's effective component attachment, resolved on
-// read: the nearest ancestor with its own attachment (either mode) decides,
-// and InheritedFrom names it when that ancestor is not the issue itself. Mode
-// "inherit" with no InheritedFrom means no issue on the parent chain chose —
-// the issue is unassigned. IDs is the effective set of live component ids;
-// Unknown the effective member ids a re-import has since retired (kept, never
-// dropped). Reason is set for mode "none".
+// read: the nearest ancestor of the issue's own project with its own
+// attachment (either mode) decides, and InheritedFrom names it when that
+// ancestor is not the issue itself. Mode "inherit" with no InheritedFrom means
+// no issue of its project on the parent chain chose — the issue is unassigned.
+// IDs is the effective set of live component ids; Unknown the effective member
+// ids a re-import has since retired (kept, never dropped). Reason is set for
+// mode "none".
 type IssueComponents struct {
 	Mode          string   `json:"mode"`
 	IDs           []string `json:"ids"`
@@ -643,7 +644,8 @@ type Issue struct {
 	// or not it is any project's default; nil when it inherits.
 	Repo *string `json:"repo"`
 	// ResolvedRepo is the repository the issue targets, resolved on read: its own Repo, else its
-	// nearest ancestor's, else its project's default repository (Project.DefaultRepo), else nil.
+	// nearest ancestor's in its own project, else its project's default repository
+	// (Project.DefaultRepo), else nil.
 	ResolvedRepo      *string    `json:"resolved_repo"`
 	CreatedBy         *Actor     `json:"created_by"`
 	CreatedAt         time.Time  `json:"created_at"`
@@ -1218,9 +1220,10 @@ type ArchitectureTreeComponent struct {
 }
 
 // ArchitectureTreeIssue is an issue counted for a component. Attached is how:
-// "direct" (its own row names the component), "inherited" (an ancestor's row
-// does), or "contained" (its effective set names a component this one
-// contains; Via is that component). When several apply the strongest wins.
+// "direct" (its own row names the component), "inherited" (the row of an
+// ancestor in its own project does), or "contained" (its effective set names
+// a component this one contains; Via is that component). When several apply
+// the strongest wins.
 type ArchitectureTreeIssue struct {
 	Key           string         `json:"key"`
 	Title         string         `json:"title"`
@@ -1241,7 +1244,7 @@ type ArchitectureTreeIssueRef struct {
 }
 
 // ArchitectureTreeNone is an issue declared not architectural, with the reason
-// and, when the declaration is an ancestor's, that ancestor.
+// and, when the declaration is an ancestor's in its own project, that ancestor.
 type ArchitectureTreeNone struct {
 	Key           string  `json:"key"`
 	Title         string  `json:"title"`
@@ -3644,16 +3647,19 @@ type IssueSteps struct {
 }
 
 // PlanTask is one task of a plan: its id, a slug unique in the plan (`default` for the one task of
-// an issue whose owner gave no plan), and its steps in order, each a role or `role:key`.
+// an issue whose owner gave no plan, or whose experiment's group takes none from its owner), and
+// its steps in order, each a role or `role:key`.
 type PlanTask struct {
 	ID    string   `json:"id"`
 	Steps []string `json:"steps"`
 }
 
 // PlanRecord is the plan one run of an issue ran from, as the Legion daemon wrote it when that
-// run's work started (PUT /api/v1/issues/{key}/plans/{id}): its run (Generation), its source, the
-// owner's document and the version of it the plan was read from (both null for the source
-// default, the default steps of an issue whose owner gave none), and its tasks.
+// run's work started and replaced it at each later version of the owner's plan that Legion took
+// (PUT /api/v1/issues/{key}/plans/{id}): its run (Generation), its source, the owner's document
+// and the version of it the plan was read from (both null for the source default, the default
+// steps of an issue whose owner gave none, or whose experiment's group takes none from its
+// owner), and its tasks.
 type PlanRecord struct {
 	ID         string     `json:"id"`
 	Issue      string     `json:"issue"`
@@ -3715,15 +3721,15 @@ type ReferenceVia struct {
 	ID   string `json:"id"`
 }
 
-// ReferenceMember is one document of an issue's references read (refs.Closure): Artifact is the
-// document its own content links to, always at depth 1, through Via, and Kind and Address are the
-// member's own kind and dispatch:// address - `artifact` and that document's address, or `lens` and
-// the lens's address where the link names a document whose address moved to a lens, as the
-// pre-mortem conversion moves the address of the document it retires to the lens it writes in its
-// place. Artifact is then that retired document, whose versions stay readable. It stays for the
-// clients that read members, beside Links. A server of the release before answers neither Kind
-// nor Address during a roll, so the OpenAPI document marks them optional (`required:"false"`) and
-// a reader takes a member that carries neither as the document Artifact names.
+// ReferenceMember is one member of an issue's references read, always at depth 1: Artifact is a
+// document its own content links to, through Via, and Kind and Address are the member's own kind
+// and dispatch:// address - `artifact` and that document's address, or `lens` and the lens's
+// address where the link names the address of a document that moved to a lens, as the pre-mortem
+// conversion moves the address of the document it retires to the lens it writes in its place.
+// Artifact is then that retired document, whose versions stay readable. It stays for the clients
+// that read members, beside Links. A server of the release before answers neither Kind nor
+// Address during a roll, so the OpenAPI document marks them optional (`required:"false"`) and a
+// reader takes a member that carries neither as the document Artifact names.
 type ReferenceMember struct {
 	Artifact Artifact     `json:"artifact"`
 	Kind     string       `json:"kind" enum:"artifact,lens" required:"false"`
@@ -3777,10 +3783,13 @@ type ArtifactReferences struct {
 // the kinds beside it, which that doc names the id of). The edges into and out of a node are the
 // reads `?to=` and `?from=` of its Ref.
 //
-// Kind is one of the node kinds the read registry holds (refs.VisibilityKinds), and the OpenAPI
-// document closes it over them: a kind a later build registers is a member that build adds, and
-// api's TestTheGraphNodeKindEnumIsTheRegistrysKinds holds the tag to the registry. A reader that
-// meets a kind it does not know skips that node rather than failing on it.
+// Kind is one of the node kinds a read of the graph answers - the kinds the read registry holds a
+// loader for (refs.ResolvableKinds) - and the OpenAPI document closes it over them: a kind a later
+// build resolves is a member that build adds, and api's TestTheGraphNodeKindEnumIsTheRegistrysKinds
+// holds the tag to the registry. A kind the registry holds a predicate for and no loader, a
+// supertag or an attribute of the block schema, is the kind of no node an answer carries, so the
+// enum leaves it out. A reader that meets a kind it does not know skips that node rather than
+// failing on it.
 //
 // Every node carries eight facts, whatever its kind: MadeBy and MadeAt, who made it and when;
 // ChangedBy and ChangedAt, who last changed its own text or fields and when (its maker while
@@ -3807,7 +3816,7 @@ type ArtifactReferences struct {
 // whole current text, or a run's whole words, which an edge at the run shows only the head of as
 // its excerpt, and Pin answers a reference pinned to a version.
 type GraphNode struct {
-	Kind           string      `json:"kind" enum:"artifact,ask,ask_block,attribute,block,comment,comment_block,component,constraint,interaction,issue,lens,lens_block,lens_kind,message,message_block,page,person,result,risk,role,session,supertag"`
+	Kind           string      `json:"kind" enum:"artifact,ask,ask_block,block,comment,comment_block,component,constraint,interaction,issue,lens,lens_block,lens_kind,message,message_block,page,person,risk,role,session"`
 	ID             string      `json:"id"`
 	BlockID        string      `json:"block_id,omitempty"`
 	IssueKey       *string     `json:"issue_key,omitempty"`

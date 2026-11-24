@@ -803,11 +803,13 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 // 20261118023219_issue_tree_components and 20261119100000_issue_tree_artifact_refs keep that list
 // arm for arm; the second has the tuple arm read a document's mentions through a union of its own
 // beside the log's other tuples, which is one arm (topLevelUnion).
-// 20261121090000_issue_tree_graph_edges_after_tuple_arm_filter, the last migration to restate
-// graph_edges, keeps that list arm for arm with 20261120122700's filter of the tuple arm. Each of
-// the arms over a kind the store now writes answers only the rows of its table that name no node,
-// and the seed names the node of every row it writes, so those arms answer nothing here
-// (armGatedPerRow).
+// 20261121090000_issue_tree_graph_edges_after_tuple_arm_filter keeps that list arm for arm with
+// 20261120122700's filter of the tuple arm; 20261121104002_graph_edges_store_class_last restates
+// the view from the sibling branch's 29 arms alone, and
+// 20261123180000_issue_tree_graph_edges_after_store_class_last, the last migration to restate
+// graph_edges, states 20261121090000's list again. Each of the arms over a kind the store now
+// writes answers only the rows of its table that name no node, and the seed names the node of
+// every row it writes, so those arms answer nothing here (armGatedPerRow).
 const graphArmCount = 30
 
 var (

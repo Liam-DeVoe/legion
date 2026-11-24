@@ -55,6 +55,7 @@ func contentReviews(t *testing.T, handler http.Handler, id string) []model.Artif
 // born converted, so each version of its spec holds the version_renders row its pass recorded, and a
 // review of it pins its record's digest (recordedDigest); the version read names its stored bytes.
 func TestEveryApprovalReadNamesTheApprovedBytes(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	issue := createInteractionIssue(t, handler, "HASH", "Approve bytes", "Approve me ☕\n")
 	id := issue.PrimaryArtifactID
@@ -139,6 +140,7 @@ func TestEveryApprovalReadNamesTheApprovedBytes(t *testing.T) {
 // build writes, holds no version_renders row. It answers the sha256 of its stored markdown as its
 // digest, and the carried review pins that.
 func TestACarriedApprovalPinsTheVersionItCarriesTo(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	registerTwoBuilds(t, database)
 	issue := createInteractionIssue(t, handler, "CARR", "Carry bytes", "Context\n\n"+waveAsk)

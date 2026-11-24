@@ -1321,18 +1321,12 @@ func main() {
 	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
 	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a
 	// timer and not a woken loop because no commit announces either, and it starts here because
-	// it resumes those deliveries through the API server built just above. Before its first tick,
-	// on the same goroutine, the boot pass ends every answer run past its ends_at with no terminal
-	// frame stored, at any age, where each tick's sweep reads the last day alone
-	// (api.EndGoingRunsOverdueAtBoot); it takes no lease, so every process runs it once a boot.
+	// it resumes those deliveries through the API server built just above.
 	maintenanceInterval := api.MaintenanceSweepInterval
 	if boot.MaintenanceSweepInterval > 0 {
 		maintenanceInterval = boot.MaintenanceSweepInterval
 	}
-	go func() {
-		api.EndGoingRunsOverdueAtBoot(ctx, database.Pool)
-		api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries)
-	}()
+	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries)
 	// /healthz names each GitHub read this process runs, from the copy of the record kept above. A
 	// loop this process did not start, for want of NATS or of the App's private key, is a read it
 	// does not run.

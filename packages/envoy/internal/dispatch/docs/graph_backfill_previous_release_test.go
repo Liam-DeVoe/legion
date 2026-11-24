@@ -366,7 +366,12 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // (refs.CommentsNamingNoNode, graphcensus.BlockRowsStatement, the node write of
 // refs.CommentWrite.Queue). Those columns move no row in or out of what a pass owes, and no build
 // of rule 1 has shipped with the statements before them, so the rule stays 1 and its digest is
-// re-recorded rather than raised.
+// re-recorded rather than raised. It was re-recorded again when the store's write path
+// (graphstore.QueueWrite) began reading the types of the nodes it writes (queueSupertagCheck),
+// which refs.CommentWrite.Queue now sends first, renumbering the statements after it, while its
+// node move and its append changed in whitespace alone: that read writes nothing and refuses a
+// comment write only where the store holds no live supertag row of comment, person or session,
+// rows migration 20261109051232 seeds, so it too moves no row in or out of what a pass owes.
 //
 // It was re-recorded again when main's #4883 made store.LatestEventID a scalar subquery,
 // `(select currval(...))`, which the node write of refs.CommentWrite.Queue names as each comment
@@ -379,7 +384,9 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // It was re-recorded once more when the digest came to fold each statement's whitespace and to
 // cover OwedMarkListed and the revision fence's statement, which both read store_owed_rule: no
 // statement moved a row in or out of what a pass owes. Rule 2's was re-recorded with it, the
-// fence of rule 2 writing stated_version and stated_rule beside store_version.
+// fence of rule 2 writing stated_version and stated_rule beside store_version. Rule 1's digest
+// below holds that change and the supertag read above together: the statements are the folded
+// ones with that read added before the node write of refs.CommentWrite.Queue, and nothing else.
 //
 // Rule 2's statements are this branch's: a pass records the rule and the version it stated a
 // document by (stated_rule, stated_version), and the backfill and the tick mark a document no
@@ -387,7 +394,7 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // of a mark (refs.OwedMarkAbsent), and the backfill's block mark keeps the time of a mark already
 // standing. Rule 1's entry is the sibling branch's, as it records it.
 var markingStatementDigests = map[int]string{
-	1: "62acb9e403b4ee1c6df6a6612723f37403a8eb94040d669e5d58b35946ff3954",
+	1: "2f925616f2b946b6c37e9949f50a72ff2ced0050ac34426c0b14efe0b7a0e3cb",
 	2: "58b60662b0ca419685451c8ed20174f7a39235aec9f59e5e889ec071642a03d4",
 }
 

@@ -1252,6 +1252,8 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
    *  the chart's own word for a task that holds none is `PLAN_WORDS.no_size`. */
   size: "size",
   state: "state",
+  /** The steps of Legion a plan task runs, in their order. */
+  steps: "steps",
   surface: "surface",
   title: "title",
   /** How unsure the agent was of a decision, and in the next one why. */

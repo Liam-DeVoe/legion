@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -36,24 +34,18 @@ func endedChecks(narrow string) string {
 // Tuples count the tuples it retracted.
 func backfillEndedPreventions(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: "prevented_by_retracted"}
-	after := ""
-	for {
-		owed, err := readEndedPreventionDocuments(ctx, database, after, backfillBatch)
-		if err != nil {
-			return done, err
-		}
-		if len(owed) > 0 {
+	err := owedBatches(ctx, database, endedPreventionDocumentsRead, "the documents holding a check nobody runs that a risk is prevented by", "",
+		func(owed []string) error {
 			retracted, err := writeEndedPreventions(ctx, database, owed)
 			if err != nil {
-				return done, err
+				return err
 			}
 			done.Rows += retracted
 			done.Tuples += retracted
-		}
-		if len(owed) < backfillBatch {
-			break
-		}
-		after = owed[len(owed)-1]
+			return nil
+		})
+	if err != nil {
+		return done, err
 	}
 	if err := database.Pool.QueryRow(ctx, refs.CurrentPreventionsSQL(`count(*)`, endedChecks(`true`))).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the prevented_by tuples at checks nobody runs: %w", err)
@@ -62,23 +54,12 @@ func backfillEndedPreventions(ctx context.Context, database *store.Store) (KindB
 	return done, nil
 }
 
-// readEndedPreventionDocuments reads the ref_keys past after, in order, of the documents that hold
-// an ended check a risk is prevented by now, at most limit of them.
-func readEndedPreventionDocuments(ctx context.Context, database *store.Store, after string, limit int) ([]string, error) {
-	rows, err := database.Pool.Query(ctx, `
-		`+refs.CurrentPreventionsSQL(`distinct split_part(checked.to_id, '#', 1)`, endedChecks(`split_part(p.to_id, '#', 1) > $1`))+`
+// endedPreventionDocumentsRead reads the ref_keys past $1, in order, of the documents that hold
+// an ended check a risk is prevented by now, at most $2 of them (owedBatches).
+var endedPreventionDocumentsRead = `
+		` + refs.CurrentPreventionsSQL(`distinct split_part(checked.to_id, '#', 1)`, endedChecks(`split_part(p.to_id, '#', 1) > $1`)) + `
 		order by 1
-		limit $2
-	`, after, limit)
-	if err != nil {
-		return nil, fmt.Errorf("read the documents holding a check nobody runs that a risk is prevented by: %w", err)
-	}
-	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the documents holding a check nobody runs that a risk is prevented by: %w", err)
-	}
-	return owed, nil
-}
+		limit $2`
 
 // writeEndedPreventions retracts, in one transaction, every prevented_by the store asserts now at an
 // ended check of documents, a batch's ref_keys, and answers how many. It takes the owner lock
@@ -98,7 +79,7 @@ func writeEndedPreventions(ctx context.Context, database *store.Store, documents
 		return 0, err
 	}
 	retracted, err := refs.PreventionRetractions(ctx, tx, endedChecks(`split_part(p.to_id, '#', 1) = any($1)`),
-		[]any{documents}, time.Now().UTC(), backfillActor, graphstore.NoEvent)
+		[]any{documents}, time.Now().UTC(), backfillActor)
 	if err != nil {
 		return 0, fmt.Errorf("read the prevented_by tuples at checks nobody runs: %w", err)
 	}

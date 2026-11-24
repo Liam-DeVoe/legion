@@ -458,12 +458,7 @@ func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *B
 			tick.OrphansGone++
 		}
 	}
-	var staleLensesGone int
-	if err := pgx.BeginFunc(ctx, s.store.Pool, func(tx pgx.Tx) error {
-		var err error
-		staleLensesGone, err = graphcensus.StateStaleLensesGone(ctx, tx, "", time.Time{}, graphcensus.SweepActor)
-		return err
-	}); err != nil {
+	if staleLensesGone, err := graphcensus.StateStaleLensesGone(ctx, s.store); err != nil {
 		failed = append(failed, fmt.Errorf("state the stale lenses gone: %w", err))
 	} else {
 		tick.StaleLensesGone = staleLensesGone

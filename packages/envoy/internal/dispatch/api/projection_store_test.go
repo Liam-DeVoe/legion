@@ -27,11 +27,12 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus/censustest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstorecopy"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
 // projectedTables are the tables migration 20261109022248 made projections of the node and
@@ -55,6 +56,7 @@ var projectedTables = slices.Sorted(maps.Keys(censustest.ProjectedColumns))
 // they insert with its node and its tuples from the transaction that inserted the row, and an
 // update of a column a tuple projects carries the transaction of the tuple it appended.
 func TestNoProjectionRowIsWrittenWithoutTheStore(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sources := readProjectionWriters(t)
 	t.Run("every write of a projected row or a projected column sits on the store writer's call path", func(t *testing.T) {
@@ -143,13 +145,13 @@ var (
 
 // storeWriters are the store's own writers as a call names them: every function of graphstore a
 // write of graph_nodes and graph_tuples from outside it goes through
-// (graphstorecopy.WriteFunctions), the one list graphstore's register of the store's write sites
+// (graphstoretest.WriteFunctions), the one list graphstore's register of the store's write sites
 // reads too (TestEveryStoreWriteCallSiteIsListed). Among them are the node writes a projection row
 // follows (Write, QueueWrite, QueueNodes) and the append of what a write stated under its event
 // (Caused, QueueCaused), which gives a link's tuple its legacy_source_seq.
 var storeWriters = func() []string {
 	var calls []string
-	for _, name := range graphstorecopy.WriteFunctions() {
+	for _, name := range graphstoretest.WriteFunctions() {
 		calls = append(calls, "func:graphstore."+name)
 	}
 	return calls
@@ -891,14 +893,15 @@ func requireEveryWriteIsOnTheStorePath(t *testing.T, sources *projectionSources)
 
 // commentsRowWriters are the functions whose statements make or unmake a comments row or set a
 // column of it a tuple projects, by the file each is in and the function that issues the
-// statement, as the scan names a write: the comment create, the comment reply, the seed's
-// batches of comments, each beside the nodes the batch's rows project, and the comment write of
-// the backfill and of the block-index tick (c-projection-write, Verification v108); and this
-// branch's two: the node an issue's filed_from names, written through graphstore.Write before the
-// comment's row names it (stateFiledFromNode), and the anchor block a comment's anchor is pinned
-// to, whose anchored_in the same write states (pinCommentAnchorBlock).
+// statement, as the scan names a write: the comment create, whose row's insert queueCommentRow
+// issues, the comment reply, the seed's batches of comments, each beside the nodes the batch's
+// rows project, and the comment write of the backfill and of the block-index tick
+// (c-projection-write, Verification v108); and this branch's two: the node an issue's filed_from
+// names, written through graphstore.Write before the comment's row names it (stateFiledFromNode),
+// and the anchor block a comment's anchor is pinned to, whose anchored_in the same write states
+// (pinCommentAnchorBlock).
 var commentsRowWriters = []string{
-	"packages/envoy/internal/dispatch/api/comment_create.go#api.*server.createCommentFor",
+	"packages/envoy/internal/dispatch/api/comment_create.go#api.queueCommentRow",
 	"packages/envoy/internal/dispatch/api/comment_delivery.go#api.*server.replyComment",
 	"packages/envoy/cmd/dispatch-seed/write_items.go#main.*seedRun.writeComments",
 	"packages/envoy/internal/dispatch/refs/comment_nodes.go#refs.CommentWrite.Queue",
@@ -974,7 +977,7 @@ func requireNoMigrationWritesAProjection(t *testing.T) {
 			t.Fatalf("read migration %s: %v", entry.Name(), err)
 		}
 		read++
-		for _, clause := range projectionClauses(withoutSQLComments(string(body))) {
+		for _, clause := range projectionClauses(pgmigrate.WithoutComments(string(body))) {
 			if !clause.held {
 				t.Logf("migration %s: %s: no column it sets is one a tuple projects", entry.Name(), clause.text)
 				continue
@@ -986,18 +989,6 @@ func requireNoMigrationWritesAProjection(t *testing.T) {
 		t.Fatal("no migration was read, so nothing was checked")
 	}
 	t.Logf("%d migrations read, none making or unmaking a row of a projected table or setting a column a tuple projects", read)
-}
-
-// withoutSQLComments drops the line comments of a SQL file, so a clause written in prose is no
-// statement.
-func withoutSQLComments(body string) string {
-	lines := strings.Split(body, "\n")
-	for index, line := range lines {
-		if cut := strings.Index(line, "--"); cut >= 0 {
-			lines[index] = line[:cut]
-		}
-	}
-	return strings.Join(lines, "\n")
 }
 
 // --- the fixture the Postgres halves run on ---------------------------------------------
@@ -1152,7 +1143,7 @@ func catalogueProjectionWrites(t *testing.T, ctx context.Context, run *projectio
 			t.Fatalf("read a row of the catalogue: %v", err)
 		}
 		read++
-		for _, clause := range projectionClauses(withoutSQLComments(body)) {
+		for _, clause := range projectionClauses(pgmigrate.WithoutComments(body)) {
 			if !clause.held {
 				t.Logf("%s: %s: no column it sets is one a tuple projects", name, clause.text)
 				continue
