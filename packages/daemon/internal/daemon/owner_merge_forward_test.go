@@ -215,12 +215,7 @@ func TestTheReviewOfAMergeForwardReachesTheOwnerOnceItsSlotHoldsTheReviewApp(t *
 		if got := slotCalls(r.rt, r.owner); len(got) != 0 {
 			t.Fatalf("the review during the owner's retro asked the runtime %q of the owner's slot, want nothing", got)
 		}
-		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-			_, _, err := r.records.EndStepStart(ctx, tx, "LEGION-1", record.StepPlace{Task: "a", Kind: "retro", Place: 0})
-			return err
-		}); err != nil {
-			t.Fatalf("end the retro: %v", err)
-		}
+		r.ended(t, "retro", 0)
 		r.stands(t, phase.Merging, record.TaskPlace{Kind: record.PlaceMerge})
 		held(t, r, review)
 	})

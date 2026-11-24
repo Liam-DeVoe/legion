@@ -68,24 +68,33 @@ func newOwnerHoldRig(t *testing.T, at phase.Phase, place record.TaskPlace, words
 }
 
 // started counts a start of LEGION-1's place kind/at and leaves its run open, as a start does
-// (record.Store.RaiseStepStarts), and ends it where ended, as an end does (EndStepStart).
+// (record.Store.RaiseStepStarts), and ends it where ended (ended).
 func (r *ownerHoldRig) started(t *testing.T, kind string, at int, ended bool) {
 	t.Helper()
 	ctx := context.Background()
 	place := record.StepPlace{Task: "a", Kind: kind, Place: at}
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		if _, err := r.records.RaiseStepStarts(ctx, tx, "LEGION-1", place, func(starts int64) record.StepRecord {
+		_, err := r.records.RaiseStepStarts(ctx, tx, "LEGION-1", place, func(starts int64) record.StepRecord {
 			return record.StepRecord{Task: "a", Kind: kind, Step: at, Agent: string(r.owner), Generation: 1, StartedAt: new(r.now)}
-		}); err != nil {
-			return err
-		}
-		if ended {
-			_, _, err := r.records.EndStepStart(ctx, tx, "LEGION-1", place)
-			return err
-		}
-		return nil
+		})
+		return err
 	}); err != nil {
 		t.Fatalf("start LEGION-1's %s %d: %v", kind, at, err)
+	}
+	if ended {
+		r.ended(t, kind, at)
+	}
+}
+
+// ended ends the open run of LEGION-1's place kind/at, as an end does (record.Store.EndStepStart).
+func (r *ownerHoldRig) ended(t *testing.T, kind string, at int) {
+	t.Helper()
+	ctx := context.Background()
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		_, _, err := r.records.EndStepStart(ctx, tx, "LEGION-1", record.StepPlace{Task: "a", Kind: kind, Place: at})
+		return err
+	}); err != nil {
+		t.Fatalf("end LEGION-1's %s %d: %v", kind, at, err)
 	}
 }
 
@@ -151,12 +160,7 @@ func TestAStaleOwnerStepIsNotDelivered(t *testing.T) {
 		if got := r.published(); len(got) != 1 {
 			t.Fatalf("the retro's notice while it runs published %v, want one", got)
 		}
-		if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
-			_, _, err := r.records.EndStepStart(context.Background(), tx, "LEGION-1", retro.StepPlace())
-			return err
-		}); err != nil {
-			t.Fatalf("end the retro: %v", err)
-		}
+		r.ended(t, "retro", 0)
 		if err := r.told(t, notice); err != nil {
 			t.Fatalf("the retro's notice after it ended = %v, want it finished", err)
 		}
@@ -414,12 +418,7 @@ func TestTheOwnersRetroOfItsOwnImplementationIsDoneAsTheImplementApp(t *testing.
 		r.writtenBack(t)
 		asked(t, r, want, "after a write-back of step 1's end ran during the retro, which must write nothing,")
 
-		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-			_, _, err := r.records.EndStepStart(ctx, tx, "LEGION-1", retro.StepPlace())
-			return err
-		}); err != nil {
-			t.Fatalf("end the retro: %v", err)
-		}
+		r.ended(t, "retro", 0)
 		r.stands(t, phase.Merging, record.TaskPlace{Kind: record.PlaceMerge})
 		r.writtenBack(t)
 		asked(t, r, append(want, "WriteSlotCredential"), "after the retro's write-back ran in merging,")
