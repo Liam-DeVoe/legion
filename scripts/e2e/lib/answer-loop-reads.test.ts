@@ -57,10 +57,19 @@ const gptEvidence = join(dir, "gpt-evidence");
  * gateway, as A10's GPT-6.1 leg asks them: the two cache questions, then the first question of the
  * questions file's a10.reasoning list. */
 const gptReasoningEvidence = join(dir, "gpt-reasoning-evidence");
+/** A run's proxy records of A23's web searches: the loop's own model call, a search that ran and
+ * cited its sources, one whose result was an error, another store's, and the resumed agents'
+ * requests holding a search's call and result, Anthropic's and OpenAI's. */
+const webSearchEvidence = join(dir, "web-search-evidence");
+/** A13's probes with the control's beside them: the branch with `answers` on, whose send was handed
+ * to the daemon rather than stored for the stopped session, and whose other captures are the
+ * branch's own. */
+const controlEvidence = join(dir, "control-evidence");
 /** The questions file the live proof reads. */
 const liveQuestions = join(e2e, "answer-loop", "questions.json");
 /** The questions file's shape, as the tests below read it: the agents the run stops, A10's list of
- * reasoning questions, and every question with its answer keys. */
+ * reasoning questions, and every question with its answer keys, and for A22's the comment the proof
+ * person writes on the agent's issue once it stopped, which holds them. */
 type QuestionsFile = {
   agents: Record<string, { role: string; task: string; replacement_task?: string }>;
   a10: { reasoning: string[] };
@@ -72,6 +81,7 @@ type QuestionsFile = {
     to?: string;
     expect_kind?: string;
     must_contain?: string[];
+    comment?: string;
   }[];
 };
 
@@ -117,6 +127,20 @@ beforeAll(() => {
     join(presence, "dispatch-session.json"),
     JSON.stringify(baseSession.map((delivery) => ({ ...delivery, envelope_id: null })))
   );
+  mkdirSync(webSearchEvidence, { recursive: true });
+  cpSync(join(data, "model-calls-web-search.jsonl"), join(webSearchEvidence, "model-calls.jsonl"));
+  cpSync(join(data, "a13"), join(controlEvidence, "a13"), { recursive: true });
+  cpSync(join(data, "a13", "branch"), join(controlEvidence, "a13", "control"), { recursive: true });
+  const handedOff = JSON.parse(
+    readFileSync(join(data, "a13", "branch", "files", "send.body"), "utf8")
+  ) as Record<string, unknown>;
+  delete handedOff.state;
+  delete handedOff.recipient_state;
+  delete handedOff.last_seen;
+  writeFileSync(
+    join(controlEvidence, "a13", "control", "files", "send.body"),
+    JSON.stringify(handedOff)
+  );
 });
 
 const conversations = {
@@ -159,6 +183,8 @@ branch_only_evidence=${shq(branchOnlyEvidence)}
 presence_evidence=${shq(presenceEvidence)}
 gpt_evidence=${shq(gptEvidence)}
 gpt_reasoning_evidence=${shq(gptReasoningEvidence)}
+web_search_evidence=${shq(webSearchEvidence)}
+control_evidence=${shq(controlEvidence)}
 daemon_log=${shq(daemonLog)}
 empty_log=${shq(emptyLog)}
 quiet_log=${shq(join(data, "daemon-no-answers-quiet.log.txt"))}
@@ -166,6 +192,7 @@ loud_log=${shq(join(data, "daemon-no-answers-loud.log.txt"))}
 review_log=${shq(join(data, "daemon-review-round.log.txt"))}
 gh_lines_log=${shq(join(data, "daemon-gh-lines.log.txt"))}
 thread_replies_log=${shq(join(data, "daemon-thread-replies.log.txt"))}
+tools_log=${shq(join(data, "daemon-tools.log.txt"))}
 boot_offset=${bootOffset}
 whole_run=0
 store=files
@@ -374,6 +401,224 @@ describe("the daemon's log, boot by boot", () => {
     // At Sonnet's prices the same tokens would cost another sum: the model decides the price.
     const asSonnet = JSON.stringify({ ...gptLine, model: "anthropic/claude-sonnet-5-5" });
     expect(read(`bad_cost_lines ${shq(asSonnet)} | jq length`).text).toBe("1");
+  });
+
+  // An answer that searched the web costs its tokens and its searches: webSearchUSD, its searches'
+  // tokens at the search model's price and the per-search fee, is in costUSD and in no token count,
+  // so a line is recomputed with it (A14), and one that leaves it out, or counts it twice, fails.
+  test("bad_cost_lines recomputes an answer's web searches into its cost", () => {
+    const lines = `daemon_log=$tools_log; lines=$(run_log | jq -c 'select(.msg == "answers: answered")')`;
+    expect(read(`${lines}; jq -s length <<<"$lines"`).text).toBe("2");
+    expect(read(`${lines}; bad_cost_lines "$lines"`)).toEqual({ code: 0, text: "[]" });
+    const searched = {
+      msg: "answers: answered",
+      question: "q-searched",
+      model: "anthropic/claude-sonnet-5-5",
+      fault: "",
+      inputTokens: 1000,
+      outputTokens: 200,
+      cacheWriteTokens: 0,
+      cacheReadTokens: 0,
+      webSearches: 1,
+      webSearchUSD: 0.019,
+      costUSD: 0.025,
+    };
+    expect(read(`bad_cost_lines ${shq(JSON.stringify(searched))}`).text).toBe("[]");
+    const unfeed = JSON.stringify({ ...searched, question: "q-no-fee", costUSD: 0.006 });
+    expect(read(`bad_cost_lines ${shq(unfeed)} | jq -r '.[].question'`).text).toBe("q-no-fee");
+    const twice = JSON.stringify({ ...searched, question: "q-fee-twice", costUSD: 0.044 });
+    expect(read(`bad_cost_lines ${shq(twice)} | jq -r '.[].question'`).text).toBe("q-fee-twice");
+    expect(read('daemon_log=$empty_log; bad_cost_lines "$(run_log)"')).toEqual({
+      code: 0,
+      text: "[]",
+    });
+  });
+
+  // The boot's one line naming the loop's tools (A22, A23): the tools it offers, and under each
+  // tool it does not offer, why. A daemon with `answers` removed logs no such line at all.
+  test("boot_tools_line, tools_line_offers and tools_line_absent read the boot's tools line", () => {
+    const tools = "daemon_log=$tools_log; boot_offset=0";
+    expect(read(`${tools}; boot_tools_line | jq -c .tools`).text).toBe(
+      '["gh","dispatch","web_search"]'
+    );
+    expect(run(`${tools}; tools_line_offers "$(boot_tools_line)" dispatch`).code).toBe(0);
+    expect(run(`${tools}; tools_line_offers "$(boot_tools_line)" web_search`).code).toBe(0);
+    expect(run(`${tools}; tools_line_offers "$(boot_tools_line)" bash`).code).toBe(1);
+    expect(run(`${tools}; tools_line_absent "$(boot_tools_line)" dispatch no`).code).toBe(1);
+    const noDispatch = shq(
+      JSON.stringify({
+        msg: "answers: tools",
+        tools: ["gh", "web_search"],
+        dispatch:
+          "no dispatch command on PATH or at /opt/legion/pi-envoy/bin/dispatch (set LEGION_DISPATCH_PATH)",
+      })
+    );
+    expect(run(`tools_line_absent ${noDispatch} dispatch 'no dispatch command'`).code).toBe(0);
+    expect(run(`tools_line_offers ${noDispatch} dispatch`).code).toBe(1);
+    // Another reason, and a tool the line lists, are no absence of the kind the row reads.
+    expect(run(`tools_line_absent ${noDispatch} dispatch 'no dispatch_url'`).code).toBe(1);
+    expect(run(`tools_line_absent ${noDispatch} web_search ''`).code).toBe(1);
+    // A tool the line leaves out with no reason under its name says nothing of why.
+    const noReason = shq(JSON.stringify({ msg: "answers: tools", tools: ["gh"] }));
+    expect(run(`tools_line_absent ${noReason} web_search ''`).code).toBe(1);
+    // The boot before it, and a boot that logged nothing, hold no tools line.
+    expect(read("boot_tools_line")).toEqual({ code: 0, text: "" });
+    expect(read("daemon_log=$empty_log; boot_offset=0; boot_tools_line")).toEqual({
+      code: 0,
+      text: "",
+    });
+    expect(run(`tools_line_offers '' gh`).code).toBe(1);
+    expect(run(`tools_line_absent '' dispatch ''`).code).toBe(1);
+  });
+
+  // `legion config check` says what the boot line says, in one line of its own words.
+  test("check_tools_line, check_tools_lists and check_tools_absent read config check's tools line", () => {
+    const offered = `out=$'Config OK: project=ALX design-gate-steps=none\\nanswers: tools [gh dispatch web_search]\\npause unavailable: runtime: tmux'`;
+    expect(read(`${offered}; check_tools_line "$out"`).text).toBe(
+      "answers: tools [gh dispatch web_search]"
+    );
+    expect(run(`${offered}; check_tools_lists "$(check_tools_line "$out")" dispatch`).code).toBe(0);
+    expect(run(`${offered}; check_tools_lists "$(check_tools_line "$out")" web_search`).code).toBe(
+      0
+    );
+    expect(run(`${offered}; check_tools_lists "$(check_tools_line "$out")" dis`).code).toBe(1);
+    expect(
+      run(`${offered}; check_tools_absent "$(check_tools_line "$out")" dispatch ''`).code
+    ).toBe(1);
+    const absent = `line='answers: tools [gh web_search]; dispatch: no dispatch command on PATH or at /opt/legion/pi-envoy/bin/dispatch (set LEGION_DISPATCH_PATH)'`;
+    expect(run(`${absent}; check_tools_absent "$line" dispatch 'no dispatch command'`).code).toBe(
+      0
+    );
+    expect(run(`${absent}; check_tools_lists "$line" dispatch`).code).toBe(1);
+    expect(run(`${absent}; check_tools_absent "$line" dispatch 'no bun'`).code).toBe(1);
+    expect(run(`${absent}; check_tools_absent "$line" web_search ''`).code).toBe(1);
+    // A refused check prints no tools line, and no line lists or leaves out anything.
+    expect(read(`check_tools_line 'legion config check: refused: answers needs gh'`)).toEqual({
+      code: 0,
+      text: "",
+    });
+    expect(read(`check_tools_line ''`)).toEqual({ code: 0, text: "" });
+    expect(run(`check_tools_lists '' gh`).code).toBe(1);
+    expect(run(`check_tools_absent '' dispatch ''`).code).toBe(1);
+  });
+
+  // A22: the dispatch tool's one line a call names the session it ran as, its command, its exit
+  // and whether it ran. A read of the comment written after the agent stopped is one that ran as
+  // the agent's session and exited 0.
+  test("question_dispatch_lines, dispatch_read_line_is and lines_all_as read the dispatch tool's lines", () => {
+    const tools = "daemon_log=$tools_log; boot_offset=0";
+    const nth = (question: string, n: number) =>
+      `line=$(question_dispatch_lines ${question} | jq -c '.[${n}]')`;
+    expect(read(`${tools}; question_dispatch_lines e1e1e1e1 | jq length`).text).toBe("2");
+    expect(
+      run(`${tools}; ${nth("e1e1e1e1", 0)}; dispatch_read_line_is "$line" session-planner`).code
+    ).toBe(0);
+    expect(
+      run(
+        `${tools}; first_line_where "$(question_dispatch_lines e1e1e1e1)" dispatch_read_line_is session-planner`
+      ).code
+    ).toBe(0);
+    // A read that exited 1, a read as another session, and a write are no such read.
+    expect(
+      run(`${tools}; ${nth("e1e1e1e1", 1)}; dispatch_read_line_is "$line" session-planner`).code
+    ).toBe(1);
+    expect(
+      run(`${tools}; ${nth("e1e1e1e1", 0)}; dispatch_read_line_is "$line" session-other`).code
+    ).toBe(1);
+    expect(
+      run(`${tools}; ${nth("e2e2e2e2", 0)}; dispatch_read_line_is "$line" session-planner`).code
+    ).toBe(1);
+    expect(
+      run(`${tools}; lines_all_as "$(question_dispatch_lines e3e3e3e3)" session-planner`).code
+    ).toBe(0);
+    expect(
+      run(`${tools}; lines_all_as "$(question_dispatch_lines e4e4e4e4)" session-planner`).code
+    ).toBe(1);
+    expect(read(`${tools}; question_dispatch_lines e0e0e0e0`).text).toBe("[]");
+    expect(read(`${tools}; question_dispatch_lines ''`).text).toBe("[]");
+    expect(run(`dispatch_read_line_is '' session-planner`).code).toBe(1);
+    expect(run(`lines_all_as '[]' session-planner`).code).toBe(1);
+    expect(run(`lines_all_as '' session-planner`).code).toBe(1);
+  });
+
+  // A22: asked to set an issue's status, to claim it or to edit its document, the tool refuses each
+  // before dispatch starts, as none of the commands it runs. A call it refused for naming a file of
+  // the host, and a call dispatch ran, are no such refusal.
+  test("dispatch_refusal_is reads a status write, a claim and a document edit the tool refused", () => {
+    const lines = "daemon_log=$tools_log; boot_offset=0; lines=$(question_dispatch_lines e3e3e3e3)";
+    for (const command of ["issue-update", "claim", "doc-edit"]) {
+      expect(
+        run(`${lines}; first_line_where "$lines" dispatch_refusal_is session-planner ${command}`)
+          .code
+      ).toBe(0);
+      expect(
+        run(`${lines}; first_line_where "$lines" dispatch_refusal_is session-other ${command}`).code
+      ).toBe(1);
+    }
+    expect(
+      run(`${lines}; first_line_where "$lines" dispatch_refusal_is session-planner comment`).code
+    ).toBe(1);
+    const ranRead =
+      "daemon_log=$tools_log; boot_offset=0; lines=$(question_dispatch_lines e1e1e1e1)";
+    expect(
+      run(`${ranRead}; first_line_where "$lines" dispatch_refusal_is session-planner read`).code
+    ).toBe(1);
+    expect(run(`dispatch_refusal_is '' session-planner claim`).code).toBe(1);
+    expect(run(`first_line_where '[]' dispatch_refusal_is session-planner claim`).code).toBe(1);
+  });
+
+  // A23: the web_search tool's one line a call carries the searches it made and what it cost, the
+  // per-search fee included, and the answer's cost line counts them as its webSearches and
+  // webSearchUSD.
+  test("question_search_lines and search_fee_carried read a search's fee into the answer's cost line", () => {
+    const tools = "daemon_log=$tools_log; boot_offset=0";
+    const fee = `${tools}; answered=$(answered_line f1f1f1f1); lines=$(question_search_lines f1f1f1f1)`;
+    expect(read(`${tools}; question_search_lines f1f1f1f1 | jq -c 'map(.seq)'`).text).toBe("[1,2]");
+    expect(run(`${fee}; search_fee_carried "$answered" "$lines" 0.01`).code).toBe(0);
+    // A fee above what the search cost: the line does not carry it.
+    expect(run(`${fee}; search_fee_carried "$answered" "$lines" 0.02`).code).toBe(1);
+    // A cost line that left the searches' cost out, or counted no search.
+    const short = shq(
+      JSON.stringify({
+        msg: "answers: answered",
+        webSearches: 1,
+        webSearchUSD: 0.006,
+        costUSD: 0.012,
+      })
+    );
+    expect(run(`${fee}; search_fee_carried ${short} "$lines" 0.01`).code).toBe(1);
+    const uncounted = shq(
+      JSON.stringify({
+        msg: "answers: answered",
+        webSearches: 0,
+        webSearchUSD: 0.019,
+        costUSD: 0.025,
+      })
+    );
+    expect(run(`${fee}; search_fee_carried ${uncounted} "$lines" 0.01`).code).toBe(1);
+    // An answer whose searches all failed made none, and carries no fee.
+    expect(
+      run(
+        `${tools}; search_fee_carried "$(answered_line f2f2f2f2)" "$(question_search_lines f2f2f2f2)" 0.01`
+      ).code
+    ).toBe(1);
+    expect(read(`${tools}; question_search_lines f0f0f0f0`).text).toBe("[]");
+    expect(run(`search_fee_carried '' '[]' 0.01`).code).toBe(1);
+    expect(run(`search_fee_carried '' '' ''`).code).toBe(1);
+  });
+
+  test("search_refused reads the fourth search of an answer, refused", () => {
+    const tools = "daemon_log=$tools_log; boot_offset=0";
+    expect(
+      read(`${tools}; search_refused "$(question_search_lines f2f2f2f2)" | jq -r .seq`)
+    ).toEqual({ code: 0, text: "4" });
+    // Searches that failed, and an answer with no refused search, are no such refusal.
+    expect(read(`${tools}; search_refused "$(question_search_lines f1f1f1f1)"`)).toEqual({
+      code: 1,
+      text: "",
+    });
+    expect(read(`search_refused '[]'`)).toEqual({ code: 1, text: "" });
+    expect(read(`search_refused ''`)).toEqual({ code: 1, text: "" });
   });
 
   test("unpriced_cost_lines names the lines of a model no price recomputes", () => {
@@ -637,6 +882,29 @@ describe("the stopped agents' conversations", () => {
     expect(run("conversation_holds gone stage4b-fixture").code).toBe(1);
   });
 
+  // A15 reads the file's words after its own question, and its control after the control's own
+  // question, which a conversation still holding A15's answer never received: the read must not
+  // find the earlier answer for a question the conversation does not hold.
+  test("conversation_holds_after reads what followed one question alone", () => {
+    const asked = "'question in-order-1 of run 4242, A9'";
+    expect(run(`conversation_holds_after architect VIOLET-OTTER-88 ${asked}`).code).toBe(0);
+    // Before the question, and only in the question's own entry, is not after it.
+    expect(
+      run(`conversation_holds_after architect 'Decide the cache strategy' ${asked}`).code
+    ).toBe(1);
+    expect(run(`conversation_holds_after architect 'Which cache strategy' ${asked}`).code).toBe(1);
+    // A control's question the conversation never received.
+    const control = "'question in-order-1 of run 4242, control of A9'";
+    expect(run(`conversation_holds_after architect VIOLET-OTTER-88 ${control}`).code).toBe(1);
+    const rows = `store=postgres; pg_rows=${shq(sessionRows)}`;
+    expect(run(`${rows}; conversation_holds_after architect VIOLET-OTTER-88 ${asked}`).code).toBe(
+      0
+    );
+    expect(run(`conversation_holds_after architect VIOLET-OTTER-88 ''`).code).toBe(1);
+    expect(run(`conversation_holds_after empty VIOLET-OTTER-88 ${asked}`).code).toBe(1);
+    expect(run(`conversation_holds_after gone VIOLET-OTTER-88 ${asked}`).code).toBe(1);
+  });
+
   test("text_compactions counts the compactions the loop's reader reads, never a snapcompact", () => {
     expect(read("text_compactions twice")).toEqual({ code: 0, text: "1" });
     // A person's bare /compact is the image-based snapcompact, and a rollover is no summary the
@@ -890,6 +1158,48 @@ describe("the asker's inbox", () => {
       code: 0,
       text: "0",
     });
+  });
+
+  // A send the listener named no event for is answered by nothing: `In Reply To: ` alone is in
+  // every reply, and read as an event it took another question's answer for its own. A control
+  // whose message was not taken must read no answer, never every answer.
+  test("the inbox reads an empty event as no send, never as every reply", () => {
+    expect(read('inbox_reply ""')).toEqual({ code: 1, text: "" });
+    expect(read('inbox_message ""').text).toBe("");
+    expect(read('inbox_replies ""')).toEqual({ code: 0, text: "0" });
+    expect(read('replies_to ""')).toEqual({ code: 0, text: "0" });
+    expect(read('first_reply_of "" event-one')).toEqual({ code: 1, text: "" });
+    expect(read('first_reply_of event-one ""')).toEqual({ code: 1, text: "" });
+    expect(read('controller_notices agent-decision ""')).toEqual({ code: 0, text: "0" });
+  });
+
+  test("replied_with_keys reads one event's reply for its question's keys", () => {
+    expect(read("replied_with_keys event-one architect-decision")).toEqual({ code: 0, text: "" });
+    expect(read("replied_with_keys event-two architect-decision")).toEqual({
+      code: 1,
+      text: "write-through",
+    });
+    expect(read("replied_with_keys event-never architect-decision")).toEqual({
+      code: 1,
+      text: "no reply to event-never",
+    });
+    expect(read('replied_with_keys "" architect-decision')).toEqual({
+      code: 1,
+      text: "no reply to a send the listener named no event for",
+    });
+    expect(
+      read("evidence=$empty_evidence; replied_with_keys event-one architect-decision").code
+    ).toBe(1);
+  });
+
+  // A7 reads that nothing was posted in answer to the question the loop forwarded to the running
+  // agent; its control places a reply carrying the loop's mark there, and the read must see it.
+  test("no_reply_to holds only for a send nothing answered", () => {
+    expect(run("no_reply_to event-never").code).toBe(0);
+    expect(run("no_reply_to event-one").code).toBe(1);
+    expect(run("no_reply_to event-two").code).toBe(1);
+    expect(run('no_reply_to ""').code).toBe(1);
+    expect(run("evidence=$bare_evidence; no_reply_to event-one").code).toBe(0);
   });
 });
 
@@ -1382,6 +1692,136 @@ describe("the recording proxy's records", () => {
     expect(read("openai_effort off").text).toBe("none");
     expect(read("openai_effort ''")).toEqual({ code: 0, text: "none" });
   });
+
+  // A23: each web_search call is one Messages call with Anthropic's web search server tool, its
+  // reply's result blocks the searches that ran and the addresses they returned. The loop's own
+  // model call offers the tool by name and is no search.
+  test("search_calls reads each web search the daemon made, its query, its searches and its addresses", () => {
+    const ws = "evidence=$web_search_evidence";
+    expect(
+      read(`${ws}; search_calls daemon-files | jq -c 'map({ordinal, query, searches, urls})'`).text
+    ).toBe(
+      '[{"ordinal":2,"query":"newest jq release","searches":1,"urls":["https://github.com/jqlang/jq/releases","https://jqlang.org/download/","https://jqlang.org/news/"]},{"ordinal":3,"query":"jq changelog","searches":0,"urls":[]}]'
+    );
+    expect(read(`${ws}; search_calls daemon-files | jq -c '.[0].usage'`).text).toBe(
+      '{"input_tokens":1200,"output_tokens":160,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":1}}'
+    );
+    expect(read(`${ws}; search_calls daemon-postgres | jq -r '.[].query'`).text).toBe(
+      "newest ripgrep release"
+    );
+    expect(read(`${ws}; search_calls agents`)).toEqual({ code: 0, text: "[]" });
+    expect(read(`search_calls daemon-files`)).toEqual({ code: 0, text: "[]" });
+    expect(read(`evidence=$empty_evidence; search_calls daemon-files`)).toEqual({
+      code: 0,
+      text: "[]",
+    });
+    expect(read(`evidence=$bare_evidence; search_calls daemon-files`)).toEqual({
+      code: 0,
+      text: "[]",
+    });
+  });
+
+  test("search_call_for reads the call of one search by its query", () => {
+    const calls = "evidence=$web_search_evidence; calls=$(search_calls daemon-files)";
+    expect(read(`${calls}; search_call_for "$calls" 'newest jq release' | jq .ordinal`).text).toBe(
+      "2"
+    );
+    expect(read(`${calls}; search_call_for "$calls" 'never searched'`)).toEqual({
+      code: 0,
+      text: "null",
+    });
+    expect(read(`search_call_for '[]' 'newest jq release'`)).toEqual({ code: 0, text: "null" });
+    expect(read(`search_call_for '' 'newest jq release'`)).toEqual({ code: 0, text: "null" });
+  });
+
+  test("reply_urls reads every address a reply names, without what closes the sentence or the link", () => {
+    const reply = shq(
+      "jq 1.8.1, per https://github.com/jqlang/jq/releases. See [its news](https://jqlang.org/news/) and 'https://jqlang.org/download/'."
+    );
+    expect(read(`reply_urls ${reply}`).text).toBe(
+      "https://github.com/jqlang/jq/releases\nhttps://jqlang.org/download/\nhttps://jqlang.org/news/"
+    );
+    expect(read(`reply_urls 'no address in it'`)).toEqual({ code: 0, text: "" });
+    expect(read(`reply_urls ''`)).toEqual({ code: 0, text: "" });
+  });
+
+  // A23 judges that the address the answer cites came out of the search, not that its fact is
+  // right: an address the search never returned fails, whatever the fact.
+  test("cited_among reads a cited address among the search's results", () => {
+    const call =
+      "evidence=$web_search_evidence; call=$(search_call_for \"$(search_calls daemon-files)\" 'newest jq release')";
+    expect(
+      read(`${call}; cited_among 'jq 1.8.1, per https://jqlang.org/download.' "$call"`)
+    ).toEqual({
+      code: 0,
+      text: "https://jqlang.org/download",
+    });
+    // A citation of the search's own reply is among its addresses.
+    expect(run(`${call}; cited_among 'See https://jqlang.org/news/' "$call"`).code).toBe(0);
+    expect(run(`${call}; cited_among 'per https://example.com/jq' "$call"`).code).toBe(1);
+    expect(run(`${call}; cited_among 'jq 1.8.1, no address' "$call"`).code).toBe(1);
+    expect(run(`${call}; cited_among '' "$call"`).code).toBe(1);
+    expect(run(`cited_among 'https://jqlang.org/news/' null`).code).toBe(1);
+    expect(run(`cited_among 'https://jqlang.org/news/' ''`).code).toBe(1);
+  });
+
+  // A23: a search's cost line is its call's tokens at the search model's price plus the fee for
+  // each search it ran; a failed search's line is its tokens alone.
+  test("search_line_recomputes reads a search's fee into its own line", () => {
+    const pair = (seq: number) =>
+      `daemon_log=$tools_log; boot_offset=0; evidence=$web_search_evidence; line=$(question_search_lines f1f1f1f1 | jq -c '.[${seq - 1}]'); call=$(search_call_for "$(search_calls daemon-files)" "$(jq -r .query <<<"$line")")`;
+    expect(run(`${pair(1)}; search_line_recomputes "$line" "$call" 0.01`).code).toBe(0);
+    expect(run(`${pair(2)}; search_line_recomputes "$line" "$call" 0.01`).code).toBe(0);
+    // Another fee, and the line read against another search's call.
+    expect(run(`${pair(1)}; search_line_recomputes "$line" "$call" 0.02`).code).toBe(1);
+    expect(
+      run(
+        `${pair(1)}; other=$(search_call_for "$(search_calls daemon-files)" 'jq changelog'); search_line_recomputes "$line" "$other" 0.01`
+      ).code
+    ).toBe(1);
+    expect(run(`${pair(1)}; search_line_recomputes "$line" null 0.01`).code).toBe(1);
+    expect(run(`search_line_recomputes '' '' ''`).code).toBe(1);
+  });
+
+  // A23: the resumed agent's first request holds each search's call, its query as the call's
+  // input, and its result, the address it returned; Anthropic's tool_use and OpenAI's
+  // function_call alike. The question's own words naming the same thing are no call.
+  test("request_holds_search reads a search's call and result in a resumed agent's request", () => {
+    const claude = "evidence=$web_search_evidence; request=$(first_request_after agents 0)";
+    expect(
+      run(
+        `${claude}; request_holds_search "$request" 'newest jq release' https://github.com/jqlang/jq/releases`
+      ).code
+    ).toBe(0);
+    const gpt = "evidence=$web_search_evidence; request=$(first_request_after agents-gpt 0)";
+    expect(
+      run(
+        `${gpt}; request_holds_search "$request" 'newest ripgrep release' https://github.com/BurntSushi/ripgrep/releases`
+      ).code
+    ).toBe(0);
+    expect(
+      run(
+        `${claude}; request_holds_search "$request" 'What is the newest jq release' https://github.com/jqlang/jq/releases`
+      ).code
+    ).toBe(1);
+    expect(
+      run(`${claude}; request_holds_search "$request" 'newest jq release' https://example.com/jq`)
+        .code
+    ).toBe(1);
+    expect(
+      run(
+        `${gpt}; request_holds_search "$request" 'newest jq release' https://github.com/jqlang/jq/releases`
+      ).code
+    ).toBe(1);
+    expect(run(`${claude}; request_holds_search "$request" '' ''`).code).toBe(1);
+    expect(
+      run(`request_holds_search null 'newest jq release' https://github.com/jqlang/jq/releases`)
+        .code
+    ).toBe(1);
+    expect(
+      run(`request_holds_search '' 'newest jq release' https://github.com/jqlang/jq/releases`).code
+    ).toBe(1);
+  });
 });
 
 describe("the model route's answer", () => {
@@ -1501,6 +1941,35 @@ describe("the questions file", () => {
     }
   });
 
+  // A22's answer is in a comment the proof person writes on the agent's issue after the agent
+  // stopped, and in nothing the agent was ever told: the comment holds every key, and neither the
+  // question nor any task of the agent holds one. A23's questions ask for a web search and name no
+  // key, since the row judges that a search ran and that the address cited is among its results,
+  // not the fact.
+  test("the live file holds A22's keys in its comment alone, and A23's questions ask for a search", () => {
+    const file = JSON.parse(readFileSync(liveQuestions, "utf8")) as QuestionsFile;
+    const late = file.questions.find((q) => q.id === "a22-late-comment");
+    expect(late?.criteria).toEqual(["A22"]);
+    const agent = file.agents[late?.agent ?? ""];
+    expect(agent?.role).toBe("planner");
+    const tasks = `${agent?.task ?? ""} ${agent?.replacement_task ?? ""}`.toLowerCase();
+    const keys = late?.must_contain ?? [];
+    expect(keys.length).toBeGreaterThan(0);
+    for (const key of keys) {
+      expect(late?.comment ?? "").toContain(key);
+      expect(late?.text.toLowerCase()).not.toContain(key.toLowerCase());
+      expect(tasks).not.toContain(key.toLowerCase());
+    }
+    for (const id of ["a23-web-search", "a23-web-search-gpt", "a23-fourth-search"]) {
+      const question = file.questions.find((q) => q.id === id);
+      expect(question?.criteria).toEqual(["A23"]);
+      expect(question?.must_contain ?? []).toEqual([]);
+    }
+    for (const id of ["a23-web-search", "a23-web-search-gpt"]) {
+      expect(file.questions.find((q) => q.id === id)?.text).toContain("web_search");
+    }
+  });
+
   test("recorded_hit reads the hits the file records as not about the loop", () => {
     expect(
       run(`recorded_hit skills/envoy/SKILL.md 'A peer with no tools of its own still answers.'`)
@@ -1568,11 +2037,26 @@ describe("Dispatch", () => {
     expect(read("ask_of session-architect ALX-404")).toEqual({ code: 0, text: "" });
   });
 
-  test("ask_reply_by prints the agent's own reply on the thread", () => {
-    expect(read("ask_reply_by ask-1 session-architect").text).toContain("Keep the 7-minute TTL");
-    expect(read("ask_reply_by ask-1 session-planner").code).not.toBe(0);
-    expect(read("ask_reply_by ask-2 session-architect").code).not.toBe(0);
-    expect(read("ask_reply_by ask-404 session-architect").code).not.toBe(0);
+  // A1 and A6 read the answer to a person's reply on an ask, and their controls the answer to the
+  // control's own reply on the same thread, which still holds the answer the loop gave before: the
+  // read takes only what was written after the reply it names.
+  test("ask_reply_after prints the agent's reply on the thread after a person's reply", () => {
+    expect(read("ask_reply_after ask-1 reply-person session-architect").text).toContain(
+      "Keep the 7-minute TTL"
+    );
+    expect(read("ask_reply_after ask-3 reply-a1 session-architect").text).toContain(
+      "COBALT-HERON-41"
+    );
+    // The control's reply, after which nothing was written: the earlier answer is not its answer.
+    const control = read("ask_reply_after ask-3 reply-control session-architect");
+    expect(control.text).toBe("");
+    expect(control.code).not.toBe(0);
+    expect(read("ask_reply_after ask-1 reply-agent session-architect").code).not.toBe(0);
+    expect(read("ask_reply_after ask-1 reply-person session-planner").code).not.toBe(0);
+    expect(read("ask_reply_after ask-1 reply-never session-architect").code).not.toBe(0);
+    expect(read("ask_reply_after ask-2 reply-person session-architect").code).not.toBe(0);
+    expect(read("ask_reply_after ask-404 reply-person session-architect").code).not.toBe(0);
+    expect(read("ask_reply_after ask-1 '' session-architect").code).not.toBe(0);
   });
 
   test("comment_reply_by prints the agent's reply to a comment on the issue's thread", () => {
@@ -1589,6 +2073,65 @@ describe("Dispatch", () => {
     expect(read(`record_reply_by '${record}' session-planner`)).toEqual({ code: 0, text: "" });
     expect(read(`record_reply_by '{}' session-tester`)).toEqual({ code: 0, text: "" });
     expect(read(`record_reply_by '' session-tester`)).toEqual({ code: 0, text: "" });
+  });
+
+  // A22: the comment the stopped agent's dispatch tool posted where it was asked is the one
+  // comment carrying the run's marker, in the agent's own name, its body carrying the tool's mark,
+  // `<!-- legion-answer:<question>.<seq> -->`; the loop's own reply carries no seq.
+  test("issue_comments_holding and one_tool_marked_comment_by read the comment the dispatch tool posted", () => {
+    const held = (marker: string) => `comments=$(issue_comments_holding ALX-22 ${marker})`;
+    expect(
+      read(`${held("answer-loop-a22-4242-files")}; jq -c 'map(.id)' <<<"$comments"`).text
+    ).toBe('["comment-220"]');
+    expect(
+      run(
+        `${held("answer-loop-a22-4242-files")}; one_tool_marked_comment_by "$comments" session-planner`
+      ).code
+    ).toBe(0);
+    // The loop's own mark with no seq, two comments carrying the marker, another session's.
+    for (const marker of [
+      "answer-loop-a22-4242-postgres",
+      "answer-loop-a22-4242-twice",
+      "answer-loop-a22-4242-other",
+    ]) {
+      expect(
+        run(`${held(marker)}; one_tool_marked_comment_by "$comments" session-planner`).code
+      ).toBe(1);
+    }
+    expect(
+      run(
+        `${held("answer-loop-a22-4242-other")}; one_tool_marked_comment_by "$comments" session-tester`
+      ).code
+    ).toBe(0);
+    expect(read("issue_comments_holding ALX-22 answer-loop-a22-never")).toEqual({
+      code: 0,
+      text: "[]",
+    });
+    expect(read("issue_comments_holding ALX-404 answer-loop-a22-4242-files")).toEqual({
+      code: 0,
+      text: "[]",
+    });
+    expect(run("one_tool_marked_comment_by '[]' session-planner").code).toBe(1);
+    expect(run("one_tool_marked_comment_by '' session-planner").code).toBe(1);
+  });
+
+  // A22: the tool refused the status write and the claim, so the issue's status and claim read the
+  // same after the ask as before it.
+  test("issue_standing and standing_unchanged read an issue's status and claim", () => {
+    expect(read("issue_standing ALX-22")).toEqual({
+      code: 0,
+      text: '{"status":"backlog","claim":null}',
+    });
+    expect(
+      run(`standing_unchanged "$(issue_standing ALX-22)" "$(issue_standing ALX-22)"`).code
+    ).toBe(0);
+    expect(
+      run(`standing_unchanged "$(issue_standing ALX-22)" "$(issue_standing ALX-23)"`).code
+    ).toBe(1);
+    expect(read("issue_standing ALX-404")).toEqual({ code: 0, text: "null" });
+    expect(read("issue_standing ALX-405")).toEqual({ code: 0, text: "null" });
+    expect(run(`standing_unchanged null null`).code).toBe(1);
+    expect(run(`standing_unchanged '' ''`).code).toBe(1);
   });
 
   test("collaborator_role_token names the current tester's role token alone", () => {
@@ -1927,6 +2470,24 @@ describe("GitHub", () => {
     });
   });
 
+  // A19's control asks the reviewer again after A19's own approval stands on the pull request: only
+  // an approval submitted since the control's ask is its answer.
+  test("reviewer_approvals with a time reads only the approvals submitted since then", () => {
+    const since = (time: string, session = "session-reviewer") =>
+      `reviewer_approvals 41 ${session} ${time} | jq -c 'map(.submitted_at)'`;
+    expect(read(since("2026-11-24T12:04:00Z")).text).toBe('["2026-11-24T12:05:00Z"]');
+    expect(read(since("2026-11-24T12:05:00Z")).text).toBe('["2026-11-24T12:05:00Z"]');
+    expect(read(since("2026-11-24T12:06:00Z")).text).toBe("[]");
+    expect(read(since("2026-11-24T12:04:00Z", "another-session")).text).toBe("[]");
+    expect(read(since("2026-11-24T12:00:00Z", "another-session")).text).toBe(
+      '["2026-11-24T12:01:00Z"]'
+    );
+    expect(read("reviewer_approvals 42 session-reviewer 2026-11-24T12:00:00Z")).toEqual({
+      code: 0,
+      text: "[]",
+    });
+  });
+
   test("approval_by and approval_id read the one approval and its bigint id as a string", () => {
     const head = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c";
     const approvals = `approvals=$(reviewer_approvals 41 session-reviewer)`;
@@ -2157,5 +2718,28 @@ describe("A13: the branch's answer against the base commit's", () => {
     expect(run("evidence=$empty_evidence; a13_same send.body").code).toBe(1);
     // The branch captured its body and the base captured none.
     expect(run("evidence=$branch_only_evidence; a13_same send.body").code).toBe(1);
+  });
+
+  // A13's control: the same probe against the branch with `answers` on, compared with the base
+  // commit's. A send handed to the daemon names no `state: stopped`, and the comparison fails.
+  test("a13_same compares the control's capture with the base's as it compares the branch's", () => {
+    const control = "evidence=$control_evidence";
+    expect(run(`${control}; a13_same send.body control`).code).toBe(1);
+    expect(run(`${control}; a13_same send.body`).code).toBe(0);
+    expect(run(`${control}; a13_same send.status control`).code).toBe(0);
+    expect(run(`${control}; a13_same dispatch-session.json control`).code).toBe(0);
+    // No control probe at all is no capture to compare.
+    expect(run("a13_same send.body control").code).toBe(1);
+  });
+
+  // The control passes on a difference, and a13_same reads a missing capture as one: so the control
+  // first reads that its probe and the base's captured all six files.
+  test("a13_captured reads every capture of a probe and of the base's, each holding bytes", () => {
+    expect(run("evidence=$control_evidence; a13_captured control").code).toBe(0);
+    expect(run("a13_captured branch").code).toBe(0);
+    expect(run("a13_captured control").code).toBe(1);
+    expect(run("evidence=$branch_only_evidence; a13_captured branch").code).toBe(1);
+    expect(run("evidence=$empty_evidence; a13_captured branch").code).toBe(1);
+    expect(run("evidence=$bare_evidence; a13_captured branch").code).toBe(1);
   });
 });

@@ -1,5 +1,5 @@
 {
-  "about": "The answer loop's live proof (scripts/e2e/answer-loop.sh) reads this file before any model call. Each agent is given its decision as its first task, so the decision is in its own conversation; each question names the facts its answer must hold (must_contain, every string, case-insensitive) or the reply kind the daemon must log (expect_kind). Changing a decision or a key is a change to the proof: review it as one.",
+  "about": "The answer loop's live proof (scripts/e2e/answer-loop.sh) reads this file before any model call. Each agent is given its decision as its first task, so the decision is in its own conversation; each question names the facts its answer must hold (must_contain, every string, case-insensitive) or the reply kind the daemon must log (expect_kind). A22's answer is in a comment the proof person writes on the agent's issue once it stopped (comment), never in its conversation. A23's questions name no key: the row judges that a search ran and that the address the answer cites is among its results, not the fact. Changing a decision or a key is a change to the proof: review it as one.",
   "model": "claude-sonnet-5-5",
   "agents": {
     "architect": {
@@ -210,6 +210,36 @@
       "to": "role mention on an issue still in implementing, whose implementer failed",
       "text": "Where does the uploader's retry backoff start, and under which marker is the change tracked?",
       "must_contain": ["250", "AMBER-KESTREL-63"]
+    },
+    {
+      "id": "a22-late-comment",
+      "criteria": ["A22"],
+      "agent": "planner",
+      "to": "a person's Dispatch message on the planner's issue, after the proof person wrote a comment there once the planner stopped",
+      "text": "A comment on your Legion issue, written after you stopped, names the codename the migration's batches now run under. Read your issue's comments with your dispatch tool: which codename is it?",
+      "comment": "Since the planner stopped, the migration's three batches run under one new codename: HALCYON-WREN-58.",
+      "must_contain": ["HALCYON-WREN-58"]
+    },
+    {
+      "id": "a23-web-search",
+      "criteria": ["A23"],
+      "agent": "architect",
+      "to": "session",
+      "text": "Search the web with your web_search tool rather than answer from memory: what is the newest release of jq listed on its GitHub releases page, github.com/jqlang/jq/releases, and when was it published? Name the address of the source you used."
+    },
+    {
+      "id": "a23-web-search-gpt",
+      "criteria": ["A23"],
+      "agent": "gpt",
+      "to": "session",
+      "text": "Search the web with your web_search tool rather than answer from memory: what is the newest release of ripgrep listed on its GitHub releases page, github.com/BurntSushi/ripgrep/releases, and when was it published? Name the address of the source you used."
+    },
+    {
+      "id": "a23-fourth-search",
+      "criteria": ["A23"],
+      "agent": "planner",
+      "to": "session, answered by the proof's stand-in model step that calls web_search four times",
+      "text": "Search the web for the newest jq release."
     }
   ],
   "a10": {

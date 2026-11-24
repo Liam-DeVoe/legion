@@ -50,6 +50,67 @@
       }
     ]
   },
+  "asks/ask-3": {
+    "id": "ask-3",
+    "author": { "id": "session-architect", "kind": "agent" },
+    "replies": [
+      {
+        "id": "reply-a1",
+        "author": { "id": "user:smoke", "kind": "user" },
+        "body": "Which cache strategy did you decide on? (question architect-decision of run 4242)"
+      },
+      {
+        "id": "answer-a1",
+        "author": { "id": "session-architect", "kind": "agent" },
+        "body": "Write-through, under COBALT-HERON-41, with a 7-minute TTL. <!-- legion-answer:a3a3a3a3b4b4b4b4 -->"
+      },
+      {
+        "id": "reply-control",
+        "author": { "id": "user:smoke", "kind": "user" },
+        "body": "Which cache strategy did you decide on? (question architect-decision of run 4242, control of A1)"
+      }
+    ]
+  },
+  "issues/ALX-22/comments": [
+    {
+      "id": "comment-220",
+      "author": { "id": "session-planner", "kind": "session" },
+      "reply_to": null,
+      "body": "answer-loop-a22-4242-files\n\n<!-- legion-answer:e2e2e2e2.1 -->"
+    },
+    {
+      "id": "comment-221",
+      "author": { "id": "user:smoke", "kind": "user" },
+      "reply_to": null,
+      "body": "answer-loop-a22-4242-twice, a person's comment"
+    },
+    {
+      "id": "comment-222",
+      "author": { "id": "session-planner", "kind": "session" },
+      "reply_to": null,
+      "body": "answer-loop-a22-4242-postgres <!-- legion-answer:e2e2e2e2 -->"
+    },
+    {
+      "id": "comment-223",
+      "author": { "id": "session-planner", "kind": "session" },
+      "reply_to": null,
+      "body": "answer-loop-a22-4242-twice\n\n<!-- legion-answer:e2e2e2e2.2 -->"
+    },
+    {
+      "id": "comment-224",
+      "author": { "id": "session-tester", "kind": "session" },
+      "reply_to": null,
+      "body": "answer-loop-a22-4242-other\n\n<!-- legion-answer:e2e2e2e2.3 -->"
+    }
+  ],
+  "issues/ALX-22": { "key": "ALX-22", "status": "backlog", "claim": null, "title": "A22's target" },
+  "issues/ALX-23": {
+    "key": "ALX-23",
+    "status": "in_progress",
+    "claim": { "session_id": "session-planner", "claimed_at": "2026-11-24T12:00:00Z" },
+    "title": "A22's target, claimed"
+  },
+  "issues/ALX-404": { "message": "issue ALX-404 not found", "code": "NOT_FOUND" },
   "issues/ALX-3/comments": [
     {
       "id": "comment-77",

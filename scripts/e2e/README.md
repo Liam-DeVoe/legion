@@ -218,9 +218,10 @@ Each item below names a script, then what it proves.
 
 - `answer-loop.sh`
 
-  the answer loop (INFRA-204, acceptance A1-A10, A12-A21) on the branch's daemon, listener and Dispatch with real Anthropic models, and OpenAI's GPT-6.1 where the model route serves it (A10), under both tmux conversation stores (`files`, then `session_store: postgres`):
-  stopped agents with real conversations about decisions `answer-loop/questions.json` records, a boot that records them and mirrors them to the listener's Legion agent registry, and one check per criterion with its evidence and a negative control, ending in a PASS / FAIL / WAITING summary that names what each waiting criterion waits on.
-  A13 compares a stopped agent's `404`s and failed Dispatch deliveries with the base commit's binaries byte for byte.
+  the answer loop (INFRA-204, acceptance A1-A10, A12-A23) on the branch's daemon, listener and Dispatch with real Anthropic models, and OpenAI's GPT-6.1 where the model route serves it (A10, A23), under both tmux conversation stores (`files`, then `session_store: postgres`):
+  stopped agents with real conversations about decisions `answer-loop/questions.json` records, a boot that records them and mirrors them to the listener's Legion agent registry, and one check per criterion with its evidence, ending in a PASS / FAIL / WAITING summary that names what each waiting criterion waits on.
+  Each answering row that ran has a control row of its own, `A<n> control`, which runs the row's own read with `answers` removed and reads PASS only when that read failed.
+  A13 compares a stopped agent's `404`s and failed Dispatch deliveries with the base commit's binaries byte for byte, and its control makes the same comparison with `answers` on, which must fail.
   Runs in a Legion issue pod (no docker, no root) and on a devbox; the answering criteria need both role Apps' keys, and A3's second leg drives Playwright's Chromium against the SPA this checkout builds and this run's Dispatch serves
 
 - `verifiers-staging-token.sh`
@@ -1526,7 +1527,8 @@ CI does not run it.
   a hold names an ordinal (`proxy_ordinal`).
   A hold file per label stops a label's calls past a given ordinal (`<label>.held` names each waiting one), which is how A7 and A18 put an operator's resume or a daemon's kill between a `gh` call and the reply;
   a stand-in file answers one label with a reply of the proof's own:
-  A12's reply out of form and its first reply that calls the `gh` tool, the two model steps no real model gives on demand.
+  A12's reply out of form and its first reply that calls the `gh` tool, and A23's step that calls the `web_search` tool four times, the model steps no real model gives on demand.
+  The loop's `web_search` tool posts each search to `answers.providers.anthropic`, so every search is a record of the daemon's own label too, a Messages call offering the `web_search_20250305` server tool (`search_calls`).
 
 - [`lib/envoy-inbox.ts`](lib/envoy-inbox.ts):
   the inbox of the run's two stand-in sessions, a core NATS subscriber of each one's relay subject (`--nats`, `--record`, one `--watch <session>=<subject>[,<subject>]` each).
@@ -1541,6 +1543,8 @@ CI does not run it.
 - The listener and Dispatch (`DISPATCH_IDENTITY=header:X-Dispatch-User`), the scratch Dispatch project mapped to `sjawhar/legion-smoke` (and to `LEGION_E2E_REPO_SECOND_OWNER` when given), and each daemon, all started with `env -i` and every variable named, so a pod's own `ENVOY_*`, `DISPATCH_*`, `LEGION_*` and model keys reach none of them.
   The daemon's `PATH` starts with the run's tmux and the first compiled `gh` on the host's `PATH` (a pane's first `gh` is the `legion
   gh` wrapper script, which the daemon refuses).
+  Each branch daemon also boots with `LEGION_DISPATCH_PATH` naming the branch's own pi-envoy pack's `bin/dispatch`, the shim the worker image installs at `/opt/legion/pi-envoy/bin/dispatch`, which the answer loop's `dispatch` tool runs as the stopped agent's session.
+  Before A22 the rig's daemons had no dispatch command at all: their `PATH` holds none and a runner has no worker image's install, so the loop offered no `dispatch` tool.
   The listener, the branch's and the base commit's alike, also serves GitHub's webhook route, `/webhook/github` (`ENVOY_WEBHOOKS=github`), as a deployment's does, so A19 can deliver its reviews there:
   its secret is the run's own random value, written `0600` as `$work/github-webhook-secret` and printed nowhere, and `ENVOY_REVIEWER_APP_ID` is the review App's id, without which the route refuses to start.
   That id only tells the reviewer's verdict check runs from another App's, and the run delivers no check run, so a run that read no review App gives [`lib/github-apps.sh`](lib/github-apps.sh)'s default.
@@ -1559,6 +1563,8 @@ CI does not run it.
 
 The daemon's `answers` block names each provider the loop calls at the model route's endpoint through the proxy, `anthropic` and `openai` (its `base_url` ending in `/v1`, since agentloop's OpenAI client appends `responses` to it), each keyed by the route's own key file or key command, with the prices (Anthropic's list prices, `claude-opus-5-5` 5/25/6.25/0.5 and `claude-sonnet-5-5` 3/15/3.75/0.3 USD per million input, output, cache-write and cache-read tokens, and `gpt-6.1-sol` 2/10/2.5/0.1, the model gateway's own `model_info` for it, `GET /model/info` on 2026-11-18) and the default bounds;
 the postgres pass adds `runtime.tmux.session_store: postgres` with a `session_dsn_file` on the embedded Postgres.
+Every branch daemon's block also sets `answers.web_search`, the loop's `web_search` tool, on `anthropic/claude-sonnet-5-5`, priced in `answers.prices` as the loop's own model is, at `price_per_search: 0.01`;
+A23's absence leg alone boots a daemon without it.
 Where the model route serves GPT-6.1, every branch daemon's file also names the merger's overlay in `role_config_files` (below).
 
 **The stopped agents, and why this way.**
@@ -1737,14 +1743,38 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   A question cannot be trusted to reach that bound
   — the loop's prompt tells the model its last call offers no tool and must be the reply, and the `go.mod` question these legs ask is the one A15 had the planner answer earlier in the pass, which the loop answered again from the conversation in one call with no tool.
 
+- A22 (after A12, before A14): the loop's `dispatch` tool, run as the stopped planner's session.
+  Once the planner stopped, the proof person writes a comment on its issue holding a codename its conversation never held (`questions.json`'s `a22-late-comment`, its `comment`), then asks it, by a Dispatch message on that issue as A17's person asks, which codename the comment names:
+  the answer holds it, and one `answers: dispatch` line of that answer is a `read`, `doc-read` or `search` that ran as the planner's session and exited 0 (`dispatch_read_line_is`).
+  Asked next to post a comment whose body is the run's marker on a new issue of the pass, mentioning the replaced tester's session, the planner posts it there in its own name, its body carrying the dispatch tool's mark `<!-- legion-answer:<question>.<seq> -->` (`one_tool_marked_comment_by`), and the loop answers nothing of it:
+  the mention reaches the replaced tester's daemon, which takes it for no question as `the loop's own answer`, and that session writes no reply to it.
+  Asked then, by a message that says the writes are a test it expects refused, to set that issue's status (`issue-update`), to claim it (`claim`) and to edit its document (`doc-edit`), the tool refuses each before `dispatch` starts as none of the commands it runs (`dispatch_refusal_is`), the reply says so, and the issue's status and claim read the same after as before (`issue_standing`).
+  Every `answers: dispatch` line of the three answers names the planner's session (`lines_all_as`).
+  The boot's `answers: tools` line and `legion config check` (run under the daemon's own environment, `config_check_tools`) list `dispatch`;
+  then the daemon boots once with no dispatch command (no `LEGION_DISPATCH_PATH`, none on its `PATH`, none at `/opt/legion/pi-envoy/bin/dispatch`), and both list none and say `no dispatch command on PATH or at /opt/legion/pi-envoy/bin/dispatch`, before the daemon boots again as it was.
+  A host holding a dispatch command where the daemon looks cannot show that, and the row fails naming it.
+
+- A23 (after A22, before A14): the loop's `web_search` tool.
+  The architect is asked for a fact a web search finds (`a23-web-search`, the newest release on a public project's releases page).
+  The row judges that a search ran and that the address the answer cites is among that search's results, not whether the fact is right:
+  an `answers: web_search` line of the answer made a search;
+  the recording proxy holds that search's Messages call on the daemon's label, offering `web_search_20250305` and answered 200 (`search_calls`);
+  the answer names an address among that call's result and citation addresses, a trailing slash aside (`cited_among`);
+  each search line's `costUSD` is its call's tokens at Claude Sonnet 5.5's prices plus 0.01 for each search it ran (`search_line_recomputes`), and the answer's `answers: answered` line counts those searches as `webSearches` and their cost as `webSearchUSD` (`search_fee_carried`);
+  and the architect, resumed with a one-word task, holds each search's call and result: its first request holds each search's query as a call's input and an address the search returned (`request_holds_search`).
+  Then a fourth search in one answer is refused: the daemon boots with `model_calls: 2` and the proxy's stand-in step calls `web_search` four times, and one `answers: web_search` line of that answer is the refusal of the fourth (`search_refused`).
+  Then the daemon boots once with no `answers.web_search`, and its boot line and `legion config check` list no `web_search` and say `no answers.web_search block`, where the daemon as it was lists it.
+  The same search leg runs for the GPT-6.1 merger (`a23-web-search-gpt`, resumed on `agents-gpt`), a row of its own that waits, as A10's GPT-6.1 clause does, where the model route does not serve GPT-6.1.
+
 - A14: every `answers: answered` line of the run
   — every boot of it, since A12 restarts the daemon five times before this check and its own boot has answered nothing
-  — has a `costUSD` that recomputes from its tokens at its model's configured prices, Claude Sonnet 5.5's or GPT-6.1's, cache writes included (`bad_cost_lines`);
+  — has a `costUSD` that recomputes from its tokens at its model's configured prices, Claude Sonnet 5.5's or GPT-6.1's, cache writes included, plus its `webSearchUSD`, what its web searches cost, the per-search fee included (`bad_cost_lines`);
   a line of any other model is one no price recomputes, and fails the criterion (`unpriced_cost_lines`).
+  A22 and A23 run before it, so the lines it reads hold answers that ran the `dispatch` and `web_search` tools.
 
 - A15 (before every other check that asks the same question, which is why the pass runs it right after A5):
   the planner and the Claude Code reviewer answer from `go.mod` at a fixed commit of the smoke repository read with `gh`;
-  one `answers: gh` line of that answer is a call of the review App on owner `sjawhar` that exited 0, and each conversation holds the call.
+  one `answers: gh` line of that answer is a call of the review App on owner `sjawhar` that exited 0, and each conversation holds the call after the entry holding the question's own suffix (`conversation_holds_after`), so A15's control, whose question no conversation received, does not read A15's own answer.
   The lines judged are those of the question the reply answers, read from the reply's own `legion-answer` marker (`question_gh_lines`), and the leg passes when any one of them is that call (`first_line_where`).
   The role's last `gh` line is not that read: in proof run 44163479734 the Claude Code reviewer read `go.mod` with two good calls and then made a third with no arguments, which the tool refused, so the last line named no owner and the leg read 0 on a right answer.
   A4, A5 and A12's `model_calls` leg read their `answers: answered` line the same way, by the reply's question (`answered_line`), and A17 its `gh` lines and its leak-guard refusals (`question_leak_refusals`).
@@ -1834,10 +1864,25 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   The daemon reads no repository mapping (Dispatch keeps none since main's #4457) and boots without one;
   the default decides the repository Dispatch resolves the pass's rig issues to, which would otherwise be none.
   The base stack's Dispatch is a database of its own, so the base daemon's project is created there and takes the same default.
+  `A13 control`: in the branch's phase, after the control rows of each pass, the same four probes are taken again against the branch's daemon with `answers` on (`a13/control/<store>/`), and the row reads PASS when their comparison with the base commit's fails, once both probes are known to have captured all six files (`a13_captured`), since a missing capture compares as a difference.
 
-- A16 (once): the case-insensitive search for the spec's five phrases over the loop's packages, the daemon's prompts, `skills/`, `docs/` less `docs/plans/` and `docs/solutions/`, and every `AGENTS.md`, each hit printed;
+- A16 (once): the case-insensitive search for the spec's five phrases over the loop's packages (`internal/answer`, `internal/answerloop`, `internal/ghtool`, `internal/dispatchtool`, `internal/websearch`, `internal/conversation`, `internal/agenthistory`), the daemon's prompts, `skills/`, `docs/` less `docs/plans/` and `docs/solutions/`, and every `AGENTS.md`, each hit printed;
   a hit fails unless `questions.json` records it as not about the loop.
-  Then `go test ./internal/answer -run TestTheLoopsToolListHoldsItsThreeTools`.
+  Then `go test -count=1 -v -run '^TestTheLoopsToolListHoldsItsThreeTools$' ./internal/answer/`, by its whole name as the Verification document's A16 check runs it.
+
+**The control rows.**
+Every answering row that ran in a pass (A1-A10, A12, A14, A15 and A17-A23, each as its `criterion` let it run) has a control row of its own, `A<n> control` under the same store, its negative control.
+They run in A13's phase, against the branch's daemon on `plain-<store>.yaml`, with `answers` removed, after A13's own probes of that store.
+For each row the control sends a message of its own to that row's stopped agent, of the kind the row sends (an Envoy question, a reply on an ask, a role mention, a reply in a thread, a Dispatch message), under its own suffix, `(question <id> of run <tag>, control of A<n>)`.
+Every control's message is sent first; then one wait of 300 s, the longest a row's own read waits for its answer, and no wait per row; then each row's own read runs, the very function the row calls, over what follows the control's message alone: its event, its comment, its question's marker.
+Rows whose read is of a conversation (A9, A10, A15, A23) read only what follows the control's own question, since the conversation still holds the answers the loop gave with `answers` on.
+A control row reads PASS only when the row's read failed, and its detail quotes what that read said, part by part.
+A control whose message was not taken reads FAIL, since a read of nothing shows nothing.
+For a part of a row that says the loop posts nothing, the control first places, where the row looks, a post carrying the loop's mark (`<!-- legion-answer:c0de<tag><n> -->`), and that part's read must then fail too:
+A7's forwarded question and A12's reply out of form get a reply on the asker's topic in reply to the control's own question (`place_inbox_reply`), and A20's last sentence a reply in the tester's own name under the control's reply in A3's thread.
+A8's read of the parts that say the loop answers nothing, its own answer and an edit, is the daemon's log, so its control appends a JSON line to that log, an `answers: question` line naming the replaced tester's session and one naming the architect's, each with the marker and `placed_by` saying the control placed it and no daemon wrote it (`place_log_line`), and the control row's detail says so.
+The asker's inbox is started again on A13's restarted NATS, since the controls read it.
+A run narrowed past A13 (`LEGION_E2E_ANSWER_LOOP_ONLY` without A13) runs no control row.
 
 **The reads.**
 Every read a criterion is judged by — the daemon's log boot by boot, the stopped agents' conversations, the asker's inbox, the listener's log, the recording proxy's records, Dispatch, GitHub and the daemon's own state — lives in [`lib/answer-loop-reads.sh`](lib/answer-loop-reads.sh), which the rig sources.
@@ -1852,8 +1897,8 @@ the reachability preflight counted as a model call, the agent's own words counte
 A criterion whose prerequisite is missing records WAITING naming it, each read from the run rather than assumed:
 the daemon's workflow, which carries the answer loop and boots only with two distinct role Apps (without the review App's grant every answering criterion and `boot` wait on it);
 the listener's hand-off, read from the boot's `404` on the heartbeat route;
-INFRA-448's registry routes, read from the checkout (A3, A20, A21); a model route that serves `gpt-6.1-sol`, read from the route's own answer to the GPT-6.1 preflight (A10's GPT-6.1 clause); `LEGION_E2E_REPO_SECOND_OWNER` (A17).
-Everything else that runs records PASS or FAIL, and the run exits non-zero on any FAIL.
+INFRA-448's registry routes, read from the checkout (A3, A20, A21); a model route that serves `gpt-6.1-sol`, read from the route's own answer to the GPT-6.1 preflight (A10's and A23's GPT-6.1 rows); `LEGION_E2E_REPO_SECOND_OWNER` (A17).
+Everything else that runs records PASS or FAIL, a control row included, and the run exits non-zero on any FAIL.
 **Departure:** the review role cannot stand in as the implement App to boot the workflow without the review App:
 the daemon refuses it at boot (`the review App names bot login "<login>" and the implement App "<login>"; the workflow needs
 two different Apps`).
@@ -1891,7 +1936,7 @@ the bring-up and the stopped agents are made as always.
 A run that proves the criteria sets neither.
 
 **Evidence**: `transcript.log`, `summary.txt` (one `store|criterion|verdict|detail` line each), `logs/` (each service and daemon), `model-calls.jsonl` (the GPT-6.1 preflight among them, as `gpt-preflight`), `inbox.jsonl` (the asker's and the controller stand-in's deliveries), `sessions/<store>/` (each agent's conversation as its store holds it, the GPT-6.1 merger's as `gpt.jsonl`), `a3/<store>/` (the conversation-page leg's screenshots:
-the Collaborators view, the conversation it led to, the question sent and the answer, or the step that failed), `a13/{branch,base}/<store>/` (the bodies A13 compares), and `a19/<store>/` (each review A19 delivers by webhook: GitHub's answers for the review and its pull request, and the event body sent).
+the Collaborators view, the conversation it led to, the question sent and the answer, or the step that failed), `a13/{branch,base,control}/<store>/` (the bodies A13 and its control compare), `sessions/<store>/gpt-before-A10-gpt-{1,2}.jsonl` (the conversations the GPT-6.1 clause's cache answers replayed), and `a19/<store>/` (each review A19 delivers by webhook: GitHub's answers for the review and its pull request, and the event body sent).
 
 **GitHub.**
 The run reads the smoke repository, and reads it as the implement App:

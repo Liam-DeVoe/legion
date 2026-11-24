@@ -88,6 +88,42 @@ fault_passed_on() {
 answered_fault_is() {
   jq -e --arg f "$2" --argjson c "$3" '.fault == $f and .calls == $c' <<<"${1:-null}" >/dev/null 2>&1
 }
+# boot_tools_line prints this boot's `answers: tools` line, the one line the daemon logs as it
+# builds the answer loop (internal/daemon's answersToolsLine): `tools`, the tools the loop offers,
+# and under each tool it does not offer a key of that tool's name saying why. It prints nothing for
+# a boot that logged none, as a daemon with `answers` removed logs none.
+boot_tools_line() { boot_log | jq -s -c '[.[] | select(.msg == "answers: tools")] | last // empty'; }
+# tools_line_offers LINE TOOL: the `answers: tools` LINE lists TOOL among the loop's tools. No line
+# at all offers nothing.
+tools_line_offers() {
+  jq -e --arg t "$2" 'type == "object" and any((.tools // [])[]; . == $t)' <<<"${1:-null}" >/dev/null 2>&1
+}
+# tools_line_absent LINE TOOL WHY: the `answers: tools` LINE does not list TOOL and says why under
+# TOOL's own key, a reason that starts with WHY: A22's daemon with no dispatch command, A23's whose
+# answers set no web_search. A line that lists the tool, or names no reason, or no line at all,
+# says nothing of the kind.
+tools_line_absent() {
+  jq -e --arg t "$2" --arg why "$3" 'type == "object" and (any((.tools // [])[]; . == $t) | not)
+    and ((.[$t] // "") | type == "string" and . != "" and startswith($why))' <<<"${1:-null}" >/dev/null 2>&1
+}
+# check_tools_line OUTPUT prints the line `legion config check` printed naming the loop's tools, in
+# the words of the boot's line: `answers: tools [gh dispatch web_search]`, then `; <tool>: <why>`
+# for each tool the loop does not offer (daemon.AnswersToolsLine). Nothing for output holding none.
+check_tools_line() { grep -m1 '^answers: tools \[' <<<"${1:-}" || true; }
+# check_tools_lists LINE TOOL: that line lists TOOL between its brackets.
+check_tools_lists() {
+  local listed re='^answers: tools \[([^]]*)\]'
+  [[ ${1:-} =~ $re ]] || return 1
+  listed=" ${BASH_REMATCH[1]} "
+  [[ $listed == *" $2 "* ]]
+}
+# check_tools_absent LINE TOOL WHY: that line does not list TOOL and says why after its list,
+# `; TOOL: WHY…`.
+check_tools_absent() {
+  local re='^answers: tools \[[^]]*\]'
+  [[ ${1:-} =~ $re ]] || return 1
+  ! check_tools_lists "$1" "$2" && [[ ${1:-} == *"; $2: $3"* ]]
+}
 # decision_lines COMMENT: this boot's `decision passed on` lines for the person's reply COMMENT, as
 # an array of what each says.
 decision_lines() {
@@ -153,11 +189,13 @@ cost_price='def cost_price: (.model // "") as $m
     else null end; '
 # bad_cost_lines LINES: the `answers: answered` LINES (one JSON object a line) of a model cost_price
 # prices whose costUSD is not the price of the tokens they report, cache writes and cache reads
-# included. `[]` says every one of them recomputes. A line of another model is not judged here;
-# unpriced_cost_lines names it.
+# included, plus webSearchUSD, what the answer's web searches cost (their tokens at the search
+# model's price and the per-search fee, which the line's tokens do not hold: internal/answer's
+# Reply.CostUSD). `[]` says every one of them recomputes. A line of another model is not judged
+# here; unpriced_cost_lines names it.
 bad_cost_lines() {
   jq -s -c "$cost_price"'[.[] | cost_price as $p | select($p != null)
-    | select(((((.inputTokens // 0) * $p[0]) + ((.outputTokens // 0) * $p[1]) + ((.cacheWriteTokens // 0) * $p[2]) + ((.cacheReadTokens // 0) * $p[3])) / 1000000 - (.costUSD // 0) | fabs) > 0.000001)]' <<<"${1:-}"
+    | select(((((.inputTokens // 0) * $p[0]) + ((.outputTokens // 0) * $p[1]) + ((.cacheWriteTokens // 0) * $p[2]) + ((.cacheReadTokens // 0) * $p[3])) / 1000000 + (.webSearchUSD // 0) - (.costUSD // 0) | fabs) > 0.000001)]' <<<"${1:-}"
 }
 # unpriced_cost_lines LINES: those of the `answers: answered` LINES whose model cost_price does not
 # price, each as {question, model}, so no cost of theirs is recomputed. `[]` says every line is of
@@ -233,6 +271,61 @@ leak_refusal_is() {
     '.issue == $i and .role == $r and .repository == $repo and ((.why // "") | contains($why))' \
     <<<"${1:-null}" >/dev/null 2>&1
 }
+# question_dispatch_lines QUESTION prints this boot's `answers: dispatch` lines of QUESTION
+# (question_log_lines): the dispatch tool's one line a call, naming the question and seq, the
+# session the call ran as, its command, its arguments as run, its exit (-1 where dispatch never
+# ran), whether it ran, and for a call the tool refused, the refusal (internal/dispatchtool's log).
+question_dispatch_lines() { question_log_lines "answers: dispatch" "$1"; }
+# dispatch_read_line_is LINE SESSION: the `answers: dispatch` LINE is a read of Dispatch — read,
+# doc-read or search — that ran as SESSION and exited 0 (A22: the agent read the comment written
+# after it stopped). No line at all is no read.
+dispatch_read_line_is() {
+  jq -e --arg s "$2" '.session == $s and .ran == true and .exit == 0 and ((.command // "") | IN("read", "doc-read", "search"))' \
+    <<<"${1:-null}" >/dev/null 2>&1
+}
+# dispatch_refusal_is LINE SESSION COMMAND: the line is a call of COMMAND, made as SESSION, that the
+# tool refused before dispatch started because COMMAND is none of the commands it runs
+# (dispatchtool's refusal): A22's status write (`issue-update`), claim (`claim`) and document edit
+# (`doc-edit`). A call dispatch ran, or one refused for another reason, is no such refusal.
+dispatch_refusal_is() {
+  jq -e --arg s "$2" --arg c "$3" '.session == $s and .ran == false and .command == $c
+    and ((.refused // "") | startswith("refused: `dispatch " + $c + "` is none of the commands this tool runs"))' \
+    <<<"${1:-null}" >/dev/null 2>&1
+}
+# lines_all_as LINES SESSION: LINES (an array of `answers: dispatch` lines) are at least one, and
+# each names SESSION as the session its call ran as (A22: the log names each dispatch call with
+# the agent's session).
+lines_all_as() {
+  jq -e --arg s "$2" 'type == "array" and length > 0 and all(.[]; .session == $s)' <<<"${1:-null}" >/dev/null 2>&1
+}
+# question_search_lines QUESTION prints this boot's `answers: web_search` lines of QUESTION
+# (question_log_lines): the web_search tool's one line a call, with its query, the searches it
+# made, what it cost (its tokens at the search model's price plus the per-search fee for each
+# search) and, for a failed or refused call, what the model read (`error`; internal/websearch).
+question_search_lines() { question_log_lines "answers: web_search" "$1"; }
+# search_fee_carried ANSWERED LINES FEE: the `answers: answered` line ANSWERED counts the searches
+# the question's `answers: web_search` LINES made, at least one, as its webSearches, and their cost
+# together as its webSearchUSD; and each line that made searches cost at least FEE, the per-search
+# fee answers.web_search.price_per_search sets, for each of them (A23: the cost line carries the
+# search's fee). No answered line, and lines that made no search, carry no fee.
+search_fee_carried() {
+  jq -e -n --argjson a "${1:-null}" --argjson lines "${2:-[]}" --argjson fee "${3:-0}" '
+    ($lines | if type == "array" then . else [] end) as $l
+    | ([$l[] | .searches // 0] | add // 0) as $searches
+    | ([$l[] | .costUSD // 0] | add // 0) as $usd
+    | $a != null and $searches > 0 and ($a.webSearches // 0) == $searches
+      and (((($a.webSearchUSD // 0) - $usd) | fabs) < 0.000001)
+      and all($l[]; (.searches // 0) == 0 or (.costUSD // 0) >= ((.searches // 0) * $fee) - 0.000001)' >/dev/null 2>&1
+}
+# search_refused LINES prints the first of a question's `answers: web_search` LINES the tool
+# refused because the answer had made its three searches already (websearch.MaxSearches), and
+# fails when none is (A23: a fourth search in one answer is refused).
+search_refused() {
+  local line
+  line=$(jq -c 'first(.[]? | select((.error // "") | startswith("refused: this answer has made its 3 web searches"))) // empty' \
+    <<<"${1:-[]}" 2>/dev/null) || line=
+  [ -n "$line" ] && printf '%s\n' "$line"
+}
 # review_refused ISSUE REASON: this boot set aside a review of ISSUE's pull request for REASON, the
 # workflow's `workflow: a review decides nothing: <reason>` line naming ISSUE (workflow's review,
 # RefusesRound). A review the review App submitted from a session that is not the reviewer's is
@@ -271,6 +364,18 @@ conversation_holds() {
   local text
   text=$(conversation_text "$1") || return 1
   grep -qF -- "$2" <<<"$text"
+}
+# conversation_holds_after NAME NEEDLE AFTER: NAME's conversation holds NEEDLE in an entry after the
+# first entry that holds AFTER, and fails when no entry holds AFTER: what followed one question
+# alone, its own suffix the AFTER (A15, and its control, whose question a conversation still
+# holding earlier answers never received). The conversation is read whole first, as
+# conversation_holds reads it.
+conversation_holds_after() {
+  local text
+  text=$(conversation_text "$1") || return 1
+  jq -R -s -e --arg n "$2" --arg a "$3" '$a != "" and ([split("\n")[] | fromjson?] as $e
+    | ([range($e | length) | select($e[.] | tojson | contains($a))] | first) as $at
+    | $at != null and any($e[$at + 1:][]; tojson | contains($n)))' <<<"$text" >/dev/null 2>&1
 }
 # text_compactions NAME: how many compactions NAME's Oh My Pi conversation holds whose summary is
 # text the loop's reader reads. The reader declines the two others (compactionSummary in
@@ -401,9 +506,11 @@ question_occurrences() { occurrences "$1" "$(question_suffix "$2" "$3" "$4")"; }
 # ---- the asker's inbox -------------------------------------------------------------------------------
 # inbox_reply EVENT prints the text the asker received in reply to EVENT, or fails; inbox_replies
 # EVENT counts them. A reply that never came prints nothing rather than jq's `null`, which an
-# answer key would then be looked for in.
+# answer key would then be looked for in. An empty EVENT, a send the listener named no event for,
+# is answered by nothing: `In Reply To: ` alone is in every reply, and would read another
+# question's answer as this one's.
 inbox_reply() {
-  [ -f "$evidence/inbox.jsonl" ] || return 1
+  [ -n "${1:-}" ] && [ -f "$evidence/inbox.jsonl" ] || return 1
   jq -s -e -r --arg e "In Reply To: $1" '[.[] | select(.text | contains($e)) | .text] | (.[0] // empty)' "$evidence/inbox.jsonl"
 }
 # inbox_message EVENT prints only the message of that reply: the inbox renders an envelope as a
@@ -412,12 +519,27 @@ inbox_message() {
   inbox_reply "$1" | jq -R -s -r 'split("\nMessage:\n") | (.[1] // .[0]) | sub("\n\nTopic: [^\n]*\n?$"; "")'
 }
 inbox_replies() {
-  if [ -f "$evidence/inbox.jsonl" ]; then
+  if [ -n "${1:-}" ] && [ -f "$evidence/inbox.jsonl" ]; then
     jq -s --arg e "In Reply To: $1" '[.[] | select(.text | contains($e))] | length' "$evidence/inbox.jsonl"
   else
     printf '0\n'
   fi
 }
+# replied_with_keys EVENT ID: the asker received a reply to EVENT (inbox_reply), and it holds every
+# key of question ID (answer_holds). It prints what is missing, the reply or the first key it
+# lacks, and nothing when it holds. A2's, A4's and A15's answers are read so, each by its own event.
+replied_with_keys() {
+  local reply
+  reply=$(inbox_reply "$1") || {
+    printf 'no reply to %s\n' "${1:-a send the listener named no event for}"
+    return 1
+  }
+  answer_holds "$2" "$reply"
+}
+# no_reply_to EVENT: the asker received no reply to EVENT, a send the listener named an event for:
+# nothing was posted on the asker's topic in answer to it (A7's question forwarded to the running
+# agent, which the loop posts nothing for). An empty EVENT is no send at all, and shows nothing.
+no_reply_to() { [ -n "${1:-}" ] && [ "$(inbox_replies "$1")" = 0 ]; }
 # replies_to EVENT...: the replies the asker received to the sends whose answers named EVENT...,
 # each event's replies counted once. The listener answers a sender's own repeat under one key with
 # its first copy's event (cmd/listener's answerHandedOff), so every send of one envelope can name
@@ -431,16 +553,16 @@ replies_to() {
   printf '%s\n' "$total"
 }
 # first_reply_of EVENT EVENT: the text of whichever of the two answers reached the asker first, so
-# a check reads the order they were answered in (A9).
+# a check reads the order they were answered in (A9). Either event empty is no pair of sends.
 first_reply_of() {
-  [ -f "$evidence/inbox.jsonl" ] || return 1
+  [ -n "${1:-}" ] && [ -n "${2:-}" ] && [ -f "$evidence/inbox.jsonl" ] || return 1
   jq -s -r --arg a "In Reply To: $1" --arg b "In Reply To: $2" \
     '[.[] | select((.text | contains($a)) or (.text | contains($b)))] | (.[0].text // empty)' "$evidence/inbox.jsonl"
 }
 # controller_notices KIND NEEDLE: how many notices of KIND the controller stand-in received whose
-# text holds NEEDLE.
+# text holds NEEDLE. An empty NEEDLE, a person's reply Dispatch took none of, names no notice.
 controller_notices() {
-  if [ -f "$evidence/inbox.jsonl" ]; then
+  if [ -n "${2:-}" ] && [ -f "$evidence/inbox.jsonl" ]; then
     jq -s --arg s "$controller_session" --arg k "\"kind\":\"$1\"" --arg n "$2" \
       '[.[] | select(.session == $s and (.text | contains($k)) and (.text | contains($n)))] | length' "$evidence/inbox.jsonl"
   else
@@ -722,6 +844,82 @@ openai_effort() {
     printf '%s\n' "$1"
   fi
 }
+# search_calls LABEL prints, as one JSON array in ordinal order, the recording proxy's records of
+# LABEL's web searches: each a Messages call offering Anthropic's web search server tool
+# (`web_search_20250305`), the one call the daemon makes for each web_search call it runs, to
+# answers.providers.anthropic (internal/websearch's search). Each is {ordinal, status, query,
+# searches, urls, usage, model}: the query, read back out of the one message the search sends
+# (`Search the web for: <query>`, websearch's prompt); the searches its reply ran, its result
+# blocks that hold a list of results; the address of every result and every citation of the
+# reply, each once; the reply's usage; and the model the call names. A search's reply is no
+# stream, so the proxy records it as the object it is. `[]` for none.
+search_calls() {
+  local calls
+  calls=$(jq -s -c --arg l "$1" '[.[] | select(.label == $l and (.request_body | type) == "object"
+      and any((.request_body.tools // [])[]?; (.type? // "") == "web_search_20250305"))
+    | (if (.response_body | type) == "object" then .response_body else {} end) as $reply
+    | {ordinal, status,
+       query: ((.request_body.messages // []) | if type == "array" then (.[0].content? // "") else "" end
+         | if type == "string" then (ltrimstr("Search the web for: ") | split("\n\nAnswer briefly from what the search finds")[0]) else "" end),
+       searches: ([($reply.content // [])[]? | select(.type? == "web_search_tool_result" and (.content | type) == "array")] | length),
+       urls: ([($reply.content // [])[]? | if .type? == "web_search_tool_result" then (.content | if type == "array" then .[] else empty end | .url?)
+         else ((.citations // [])[]? | .url?) end | strings] | unique),
+       usage: ($reply.usage // {}), model: .request_body.model}]
+    | sort_by(.ordinal)' "$evidence/model-calls.jsonl" 2>/dev/null) || calls=
+  printf '%s\n' "${calls:-[]}"
+}
+# search_call_for CALLS QUERY prints the first of CALLS (search_calls) whose query is QUERY, the
+# call of one `answers: web_search` line, and `null` for none.
+search_call_for() {
+  local call
+  call=$(jq -c --arg q "$2" 'first(.[]? | select(.query == $q)) // null' <<<"${1:-[]}" 2>/dev/null) || call=
+  printf '%s\n' "${call:-null}"
+}
+# reply_urls TEXT prints every web address TEXT names, one a line, each once, with the punctuation
+# that closes a sentence after it left off, and what closes a markdown link or a quote never taken
+# in. Nothing for a text that names none.
+reply_urls() {
+  jq -R -s -r '[scan("https?://[^\\s<>\"()\\[\\]`]+") | sub("[.,;:!?\u0027*]+$"; "")] | unique[]' <<<"${1:-}" 2>/dev/null || true
+}
+# cited_among REPLY CALL prints the first address REPLY names (reply_urls) that is among the result
+# addresses of CALL (a record of search_calls), a trailing slash aside, and fails when none is:
+# A23 judges that the address the answer cites came out of the search, not that its fact is right.
+cited_among() {
+  local url
+  while IFS= read -r url; do
+    [ -n "$url" ] || continue
+    if jq -e --arg u "$url" 'any((.urls? // [])[]; rtrimstr("/") == ($u | rtrimstr("/")))' <<<"${2:-null}" >/dev/null 2>&1; then
+      printf '%s\n' "$url"
+      return 0
+    fi
+  done <<<"$(reply_urls "${1:-}")"
+  return 1
+}
+# search_line_recomputes LINE CALL FEE: the `answers: web_search` LINE made the searches its call
+# (CALL, a record of search_calls) ran, and its costUSD is that call's tokens at the price
+# cost_price gives the call's model plus FEE for each of those searches: the search's fee is in
+# the line, at the configured price, and nothing else is. No call, or a model with no price, is no
+# such line.
+search_line_recomputes() {
+  jq -e -n --argjson line "${1:-null}" --argjson call "${2:-null}" --argjson fee "${3:-0}" "$cost_price"'
+    ($call | if type == "object" then cost_price else null end) as $p
+    | $p != null and ($line | type) == "object"
+      and ($line.searches // 0) == ($call.searches // 0)
+      and (((((($call.usage.input_tokens // 0) * $p[0]) + (($call.usage.output_tokens // 0) * $p[1])
+          + (($call.usage.cache_creation_input_tokens // 0) * $p[2]) + (($call.usage.cache_read_input_tokens // 0) * $p[3])) / 1000000
+          + ($call.searches // 0) * $fee - ($line.costUSD // 0)) | fabs) < 0.000001)' >/dev/null 2>&1
+}
+# request_holds_search REQUEST QUERY URL: a model request (first_request_after) holds a web search's
+# call and its result: QUERY as a call's input, an object whose query it is or a string of JSON
+# arguments naming it, as Anthropic's tool_use and OpenAI's function_call carry a call; and URL,
+# the address the result named, in some text of it (A23: the resumed agent's conversation holds
+# each search's call and result). An empty QUERY or URL, and no request, hold nothing.
+request_holds_search() {
+  jq -e --arg q "$2" --arg u "$3" '$q != "" and $u != ""
+    and any(..; (type == "object" and .query? == $q)
+      or (type == "string" and ((fromjson? // null) | type == "object" and .query? == $q)))
+    and any(.. | strings; contains($u))' <<<"${1:-null}" >/dev/null 2>&1
+}
 
 # ---- the model route's answer ---------------------------------------------------------------------
 # preflight_refusal CODE BODY [KEY] prints how the model route refused answer-loop.sh's GPT-6.1
@@ -794,13 +992,20 @@ a16_hit() {
 
 # ---- Dispatch -------------------------------------------------------------------------------------
 # ask_of SESSION ISSUE prints the id of the newest ask SESSION opened on ISSUE, empty for none;
-# ask_reply_by ASK SESSION prints SESSION's newest reply on ASK's thread, or fails. The asks route
-# answers an array, so a body that is not one (an error object) names no ask.
+# ask_reply_after ASK COMMENT SESSION prints SESSION's newest reply on ASK's thread written after
+# the reply COMMENT, a person's (A1's, A6's and their controls'), and fails when none is or when
+# the thread holds no COMMENT: the answer to that reply and to no earlier one, which a thread the
+# loop answered before still holds. The asks route answers an array, so a body that is not one (an
+# error object) names no ask.
 ask_of() {
   dispatch_get "issues/$2/asks?thread=1" |
     jq -r --arg s "$1" 'if type == "array" then ([.[] | select(.author.id == $s)] | last | .id? // empty) else empty end' || true
 }
-ask_reply_by() { dispatch_get "asks/$1" | jq -e -r --arg s "$2" '[.replies[]? | select(.author.id == $s)] | (last | .body? // empty)'; }
+ask_reply_after() {
+  dispatch_get "asks/$1" | jq -e -r --arg c "$2" --arg s "$3" '[.replies[]?] as $r
+    | ([range($r | length) | select($r[.].id == $c)] | first) as $at
+    | if $at == null then empty else ([$r[$at + 1:][] | select(.author.id == $s)] | last | .body? // empty) end'
+}
 # comment_reply_by ISSUE COMMENT SESSION prints SESSION's newest reply to COMMENT on ISSUE's own
 # thread, or fails: the answer a role mention of a stopped agent is answered with (A3).
 comment_reply_by() {
@@ -811,6 +1016,39 @@ comment_reply_by() {
 # page reads (GET agents/<session>/messages), empty for none.
 record_reply_by() {
   jq -r --arg s "$2" 'first(.replies[]? | select(.author.id == $s) | .body) // empty' <<<"${1:-null}" 2>/dev/null || true
+}
+# issue_comments_holding ISSUE NEEDLE prints ISSUE's comments whose body holds NEEDLE, each as
+# {id, author, reply_to, body}, the author its id: `[]` for none, for Dispatch's error body and for
+# a read that failed (A22: the comment the stopped agent's dispatch tool posted where it was asked).
+issue_comments_holding() {
+  local body
+  body=$(dispatch_get "issues/$1/comments" 2>/dev/null) || body=
+  jq -c --arg n "$2" '(if type == "array" then . else [] end)
+    | [.[] | select((.body // "") | contains($n)) | {id, author: .author.id?, reply_to, body}]' <<<"${body:-null}" 2>/dev/null ||
+    printf '[]\n'
+}
+# one_tool_marked_comment_by COMMENTS SESSION: the comments (issue_comments_holding) are one,
+# written as SESSION, its body carrying the mark the dispatch tool adds to what it posts, the
+# loop's marker naming the call, `<!-- legion-answer:<question>.<seq> -->` (dispatchtool's Mark),
+# which the loop answers nothing carrying. The loop's own reply carries `<question>` with no seq,
+# and a comment carrying that alone is no comment the tool posted.
+one_tool_marked_comment_by() {
+  jq -e --arg s "$2" 'type == "array" and length == 1 and .[0].author == $s
+    and ((.[0].body // "") | test("legion-answer:[0-9a-f]+\\.[0-9]+ -->"))' <<<"${1:-null}" >/dev/null 2>&1
+}
+# issue_standing ISSUE prints ISSUE's status and claim as Dispatch holds them now, {status, claim},
+# and `null` for a read that failed or answered no issue (A22: the issue whose status write and
+# claim the dispatch tool refused).
+issue_standing() {
+  local body
+  body=$(dispatch_get "issues/$1" 2>/dev/null) || body=
+  jq -c 'if type == "object" and has("status") then {status, claim} else null end' <<<"${body:-null}" 2>/dev/null ||
+    printf 'null\n'
+}
+# standing_unchanged BEFORE AFTER: both are an issue's standing (issue_standing), and the same: its
+# status and its claim did not move. A read that failed on either side shows nothing.
+standing_unchanged() {
+  jq -e -n --argjson a "${1:-null}" --argjson b "${2:-null}" '$a != null and $a == $b' >/dev/null 2>&1
 }
 # collaborator_role_token COLLABORATORS SESSION prints the role token the issue's Collaborators
 # view names for the current tester SESSION (the one no later session replaced), empty for none.
@@ -981,16 +1219,20 @@ refusal_mentioned() { grep -qiE 'refus|denied|403|404|not accessible|permission'
 # what an agent writes for any refusal, so the write that was not made is read beside it
 # (refused_write_absent). No reply at all carries nothing.
 leak_reason_quoted() { grep -qiF -- "$2" <<<"${1:-}"; }
-# reviewer_approvals NUMBER SESSION prints the approving reviews of the pull request whose Legion
-# footer names SESSION, as {id, user, commit_id, footer}. GitHub's error body is an object, not the
-# array of reviews, and so is no review: it prints [], as a gh call that printed nothing or failed
-# does, and one list either way (pr_comments).
+# reviewer_approvals NUMBER SESSION [SINCE] prints the approving reviews of the pull request whose
+# Legion footer names SESSION, as {id, user, commit_id, submitted_at, footer}, and with SINCE (an
+# RFC 3339 UTC time, as `date -u +%FT%TZ` writes it) only those GitHub says were submitted then or
+# later: the approval that followed one ask and no earlier one (A19, and its control after A19's
+# own approval). GitHub's error body is an object, not the array of reviews, and so is no review:
+# it prints [], as a gh call that printed nothing or failed does, and one list either way
+# (pr_comments).
 reviewer_approvals() {
   local body
   body=$(smoke_gh api "repos/$repo/pulls/$1/reviews" 2>/dev/null) || body=
-  jq -s -c --arg s "$2" '(.[0] // []) | if type == "array" then
+  jq -s -c --arg s "$2" --arg since "${3:-}" '(.[0] // []) | if type == "array" then
       [.[] | select(.state == "APPROVED" and (.body | contains("\"session\":\"" + $s + "\"")))
-        | {id, user: .user.login, commit_id, footer: (.body | [capture("legion: (?<f>\\{[^}]*\\})").f] | first // null)}]
+        | select($since == "" or ((.submitted_at // "") >= $since))
+        | {id, user: .user.login, commit_id, submitted_at, footer: (.body | [capture("legion: (?<f>\\{[^}]*\\})").f] | first // null)}]
       else [] end' <<<"$body" 2>/dev/null ||
     printf '[]\n'
 }
@@ -1094,8 +1336,10 @@ merge_base_commit() {
   [ "$base" != 0000000000000000000000000000000000000000 ] || return 1
   printf '%s %s %s\n' "$base" "$commit" "$head"
 }
-# a13_same FILE: branch's and base's FILE for the current store say the same thing — byte for byte,
-# but for what each stack minted for its own call, which no two calls can share. A listener's answer
+# a13_same FILE [SIDE]: SIDE's and base's FILE for the current store say the same thing — byte for
+# byte, but for what each stack minted for its own call, which no two calls can share. SIDE is
+# `branch`, the branch with `answers` removed (A13), by default, or `control`, the branch with
+# `answers` on (A13's control, whose comparison must fail). A listener's answer
 # (send.body, publish.body) mints its envelope's ids — its own and its source's, its dedupe key and
 # its trace id — and the time it was issued, and its answer to a role message it keeps for the
 # role's next holder names the end of that copy's hour, `kept_until`, the time the stream stored the
@@ -1108,7 +1352,7 @@ merge_base_commit() {
 a13_minted_answer='with_entries(if (.key | IN("event_id", "source_event_id", "dedupe_key", "trace_id", "issued_at", "kept_until")) and .value != null then .value = "minted" else . end)'
 a13_minted_deliveries='map(with_entries(if .key == "envelope_id" and .value != null then .value = "minted" else . end))'
 a13_same() {
-  local branch=$evidence/a13/branch/$store/$1 base=$evidence/a13/base/$store/$1 minted left right
+  local branch=$evidence/a13/${2:-branch}/$store/$1 base=$evidence/a13/base/$store/$1 minted left right
   [ -s "$branch" ] && [ -s "$base" ] || return 1
   cmp -s "$branch" "$base" && return 0
   case "$1" in
@@ -1118,4 +1362,16 @@ a13_same() {
   esac
   left=$(jq -S "$minted" "$branch" 2>/dev/null) && right=$(jq -S "$minted" "$base" 2>/dev/null) || return 1
   [ "$left" = "$right" ]
+}
+# a13_captured SIDE: SIDE's probe (a13_probe) and the base commit's both captured every one of the
+# six files A13 compares for the current store, each holding bytes. a13_same answers a missing
+# capture as a difference, so A13's control, which passes on a difference, reads this first: a
+# probe that captured nothing differs from nothing.
+a13_captured() {
+  local file side
+  for side in "$1" base; do
+    for file in send.status send.body publish.status publish.body dispatch-session.json dispatch-role.json; do
+      [ -s "$evidence/a13/$side/$store/$file" ] || return 1
+    done
+  done
 }
