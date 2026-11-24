@@ -552,6 +552,11 @@ type rig struct {
 	// (shimwire.LauncherHello.ResumesBySession, withResumesBySession): unset, each is a launcher
 	// built before it could.
 	resumesBySession bool
+	// readsWorkspace is what every fake launcher's hello says of reading the issue workspace
+	// (shimwire.LauncherHello.ReadsWorkspace, withWorkspaceRead), and workspaceAnswer is what each
+	// such launcher answers a workspace-work request with, its ID set to the request's.
+	readsWorkspace  bool
+	workspaceAnswer shimwire.WorkspaceWorkResult
 }
 
 type rigOption func(*rig, *Options)
@@ -587,6 +592,13 @@ func withCauselessLeakCheck() rigOption {
 // withResumesBySession has every fake launcher's hello say it can look a session up by its id and
 // resume the file it finds, as a launcher of this release says.
 func withResumesBySession() rigOption { return func(g *rig, _ *Options) { g.resumesBySession = true } }
+
+// withWorkspaceRead has every fake launcher's hello say it reads the issue workspace, and answer
+// each workspace-work request with answer, as a launcher of this release answers the daemon's read
+// of a pod no role process reads through (R6 of dispatch://INFRA-3271).
+func withWorkspaceRead(answer shimwire.WorkspaceWorkResult) rigOption {
+	return func(g *rig, _ *Options) { g.readsWorkspace, g.workspaceAnswer = true, answer }
+}
 
 // testLaunchers is a launchers of its own, outside any rig, with no receiver for a memory guard's
 // reports and no volume seam behind it: the tests that build one drive the launcher protocol
@@ -1155,6 +1167,7 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 	session := g.r.launchers.accept(token, launcherIssue(token), shimwire.LauncherHello{
 		LauncherID: "test-" + string(token), PodUID: string(pod.UID),
 		LeakCheckTag: g.leakCheckTag, LeakCheckInstalled: g.leakCheckInstalled, ResumesBySession: g.resumesBySession,
+		ReadsWorkspace: g.readsWorkspace,
 	})
 	g.t.Cleanup(func() { _ = client.Close() })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
@@ -1224,6 +1237,10 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 					installed = installed || len(checks[command.ID]) == command.Count
 					_ = writer.WriteFrame(shimwire.LauncherLeakCheckResult{ID: command.ID, Index: command.Index, OK: true, Installed: installed})
 				}
+			case shimwire.WorkspaceWork:
+				answer := g.workspaceAnswer
+				answer.ID = command.ID
+				_ = writer.WriteFrame(answer)
 			}
 		}
 	}()
