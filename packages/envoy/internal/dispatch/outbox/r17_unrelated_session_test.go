@@ -17,6 +17,7 @@ import (
 // comment's role mention attempt is live and unpinned, ses-u (thread root author, named by no
 // mention) is owed an author-route copy.
 func TestR17UnrelatedAuthorCopyFirstPass(t *testing.T) {
+	t.Parallel()
 	const role = "reviewer"
 	const holder = "ses-r"
 	const author = "ses-u"
@@ -77,6 +78,7 @@ func TestR17UnrelatedAuthorCopyFirstPass(t *testing.T) {
 // R17 order: comment N carries the unpinned, unresolved role mention; comment N+1 of the same
 // owner names no mention. ses-u, the thread root's author, is owed both.
 func TestR17UnrelatedAuthorCopyOrder(t *testing.T) {
+	t.Parallel()
 	const role = "reviewer"
 	const author = "ses-u"
 	ctx := store.WithTransactionTracking(context.Background())

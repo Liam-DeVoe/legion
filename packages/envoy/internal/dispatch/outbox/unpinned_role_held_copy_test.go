@@ -32,6 +32,7 @@ import (
 // it fails, nothing is pinned, and the copy is the outbox's: the pass that reads the row next
 // publishes it under the event's own key.
 func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
+	t.Parallel()
 	const lapsedRole = "mentioned-first-whose-attempt-is-past-its-lease"
 	const liveRole = "mentioned-second-whose-attempt-is-live"
 	const holder = "ses_claims_the_issue"
@@ -105,7 +106,7 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 	}
 
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
-	waitFor(t, 10*time.Second, "the copy both mentions' failure owes", func() bool { return len(claimant.received()) > 0 })
+	waitFor(t, "the copy both mentions' failure owes", func() bool { return len(claimant.received()) > 0 })
 	want := []string{fmt.Sprintf("dispatch-%d", comment.ID)}
 	if got := keysOf(claimant.received()); !slices.Equal(got, want) {
 		t.Fatalf("%s was sent %v once both unnamed mentions had failed, want %v: no mention of the comment is coming, so the copy is the outbox's and carries the event's own key",

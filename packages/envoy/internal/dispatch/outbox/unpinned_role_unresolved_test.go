@@ -76,6 +76,7 @@ func seedCreatedAttempt(t *testing.T, database *store.Store, commentID, target, 
 // Past that lease every copy of the comment is the fallback pass's, this one and a thread
 // session's alike (TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend).
 func TestACommentAnUnansweredRoleMentionWhoseHolderTheOutboxCannotNameReachesThatSessionOnce(t *testing.T) {
+	t.Parallel()
 	const role = "claimed-after-the-comment-was-published"
 	const holder = "ses_claims_the_issue_and_takes_the_role"
 	ctx := store.WithTransactionTracking(context.Background())

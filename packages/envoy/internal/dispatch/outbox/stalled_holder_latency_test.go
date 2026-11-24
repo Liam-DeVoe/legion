@@ -27,6 +27,7 @@ import (
 // comments on a third issue reached their holder more than 1 s late (median 2.8 s, max 5.0 s),
 // against 3 of 30 on main's build.
 func TestAForwardTheStreamDoesNotAcknowledgeDoesNotDelayAnotherIssuesEvents(t *testing.T) {
+	t.Parallel()
 	const (
 		stalledRole, stalledHolder = "stalled-reviewer", "ses_never_acknowledged"
 		liveRole, liveHolder       = "live-reviewer", "ses_acknowledged"

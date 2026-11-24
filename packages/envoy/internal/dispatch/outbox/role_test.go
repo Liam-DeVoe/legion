@@ -498,6 +498,7 @@ func dueNow(t *testing.T, database *store.Store, id int64) {
 // answer: the holder answers nothing. The stream, which captures the holder's subject, holds that
 // one copy, and nothing crosses the role's topic.
 func TestARoleRouteIsForwardedToASelfSubscribedHolderAndPublishedOnTheStreamsAcknowledgement(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role, holder = "reviewer", "ses_self_subscribed"
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
@@ -507,12 +508,7 @@ func TestARoleRouteIsForwardedToASelfSubscribedHolderAndPublishedOnTheStreamsAck
 
 	holding(t, rig.deps()).scan(context.Background(), unfenced{})
 
-	var forward contracts.Envelope
-	select {
-	case forward = <-recv.arrived:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the holder received no forward")
-	}
+	forward := testwait.Receive(t, "the holder's forward", recv.arrived)
 	if forward.Topic != contracts.RoleTopicPrefix+role || forward.DedupeKey != contracts.RoleForwardDedupePrefix+fmt.Sprintf("dispatch-%d", event.ID) ||
 		forward.EventID != fmt.Sprintf("dispatch-%d", event.ID) {
 		t.Fatalf("the holder received topic %q dedupe key %q event id %q, want the role forward of event %d",
@@ -538,6 +534,7 @@ func TestARoleRouteIsForwardedToASelfSubscribedHolderAndPublishedOnTheStreamsAck
 // request, so the stream's acknowledgement of that copy is the forward's answer: the event is
 // published with nobody subscribed to the holder's subject, and the stream holds the forward once.
 func TestARoleRouteToAHolderWithAServingPortIsPublishedOnTheStreamsAcknowledgement(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role, holder = "reviewer", "ses_serving"
 	rig.claim(t, role, holder, session.SessionEntry{Port: 40123})
@@ -562,6 +559,7 @@ func TestARoleRouteToAHolderWithAServingPortIsPublishedOnTheStreamsAcknowledgeme
 // stream's acknowledgement too, so the event is published on its first attempt with the role
 // recorded, and the owner's next event follows in the same batch rather than waiting behind it.
 func TestARoleRouteToAHolderWithNoServingPortIsPublishedOnTheStreamsAcknowledgement(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role, holder = "reviewer", "ses_consumer_delivery"
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -591,6 +589,7 @@ func TestARoleRouteToAHolderWithNoServingPortIsPublishedOnTheStreamsAcknowledgem
 // nothing is sent to any session - the copy kept for the role's next holder goes to that role's
 // kept lane, which is no session's subject (TestARoleRouteToAnUnheldRoleIsKeptForTheRolesNextHolder).
 func TestARoleRouteWithNoClaimIsPublishedWithNothingSentToASession(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role = "unclaimed"
 	rig.silent(t, contracts.RoleTopicPrefix+role)
@@ -616,6 +615,7 @@ func TestARoleRouteWithNoClaimIsPublishedWithNothingSentToASession(t *testing.T)
 // holder, the one send it makes. A role route reached with nothing to send at all is no send of
 // its batch, which TestARoleTokenNoClaimCanNameIsSkippedWithNothingKept holds.
 func TestABatchWhoseOnlyRouteLeftIsAnUnclaimedRoleKeepsItForTheNextHolder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newRoleRig(t)
 	const role = "unclaimed"
@@ -655,6 +655,7 @@ func TestABatchWhoseOnlyRouteLeftIsAnUnclaimedRoleKeepsItForTheNextHolder(t *tes
 // The copy on the role's kept lane is the envelope as its sender sent it, kept for the holder the
 // role-claim reaper's release of this claim lets claim the role next.
 func TestARoleRouteWhoseHolderIsGoneKeepsTheClaimAndIsPublished(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role, holder = "reviewer", "ses_gone"
 	rig.claimRegisteredAt(t, role, holder, session.GoneHorizon+time.Minute)
@@ -690,6 +691,7 @@ func TestARoleRouteWhoseHolderIsGoneKeepsTheClaimAndIsPublished(t *testing.T) {
 // unresponsive, not gone: the event stays unpublished, backed off with its attempt and the
 // reason, to be retried when the session answers again, and the claim stands.
 func TestARoleRouteToAnUnresponsiveHolderStaysPending(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role, holder = "reviewer", "ses_stale"
 	rig.claimRegisteredAt(t, role, holder, session.LiveWindow+time.Minute)
@@ -728,6 +730,7 @@ func TestARoleRouteToAnUnresponsiveHolderStaysPending(t *testing.T) {
 // reached with nothing sent reaches the holder never, however long it stalled
 // (dispatch://INFRA-392).
 func TestARoleRouteIsJudgedOnTheWindowsDispatchWasGiven(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	// Silent for longer than the compiled gone horizon, and well inside a horizon raised to
 	// three hours for a deployment whose sessions stall for longer than one.
@@ -780,6 +783,7 @@ func TestARoleRouteIsJudgedOnTheWindowsDispatchWasGiven(t *testing.T) {
 // its role: the resolution read the expired key as a session that is gone and released the claim
 // on the next event routed to the role (dispatch://INFRA-392).
 func TestARoleRouteWhoseHolderSessionKeyExpiredKeepsTheClaimAndStaysPending(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRigWithSessionMaxAge(t, time.Second)
 	const role, holder = "reviewer", "ses_expired"
 	rig.claimRegisteredAt(t, role, holder, session.LiveWindow+time.Minute)
@@ -811,6 +815,7 @@ func TestARoleRouteWhoseHolderSessionKeyExpiredKeepsTheClaimAndStaysPending(t *t
 // event as one that notifies nobody (events.Broker.Notify), which leaves it no route at all, so the
 // row is marked to notify here: the echo is what keeps such a row from reaching its own actor.
 func TestARoleRouteWhoseHolderIsTheActorIsPublishedWithoutAForward(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role, holder = "reviewer", "ses_actor"
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
@@ -839,14 +844,14 @@ func TestARoleRouteWhoseHolderIsTheActorIsPublishedWithoutAForward(t *testing.T)
 // the stream stores, the 49 others are published with no attempt counted, and the denied one is
 // backed off.
 func TestOneRefusedSubjectFailsOnlyItsOwnEvent(t *testing.T) {
+	t.Parallel()
 	const events, denied = 50, 17
 	holderOf := func(index int) string { return fmt.Sprintf("ses_holder_%02d", index) }
 	seed, public := testnats.User(t)
 	config := fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ { nkey: %q, permissions: { publish: { allow: [\">\"], deny: [%q] } } } ]\n}\n",
 		public, contracts.LegacyAgentSubject(holderOf(denied)))
 	_, url := testnats.StartConfig(t, config, []string{"-js"}, false)
-	t.Setenv("NATS_NKEY_SEED", seed)
-	client, err := bus.ConnectOwningStream([]string{url})
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithEnvironment(bustest.SeedOnly(seed)))
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
@@ -932,6 +937,7 @@ func TestAForwardHeldByItsHoldersResolutionIsAWaitNotAFailure(t *testing.T) {
 // registers it, and the stream captures no agent subject while the batch runs, so nothing
 // acknowledges the forward - and no session answers one.
 func TestAForwardTheStreamDidNotAcknowledgeIsCountedUnanswered(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role, holder = "reviewer", "ses_unacknowledged"
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
@@ -961,6 +967,7 @@ func TestAForwardTheStreamDidNotAcknowledgeIsCountedUnanswered(t *testing.T) {
 // Counting that refusal as reached, which is what adding bus.ErrStreamFull to the ErrRefused case
 // of sendChains' settle would do, drops the event with no copy anywhere.
 func TestARoleForwardAFullStreamRefusesIsCountedFailedAndRetried(t *testing.T) {
+	t.Parallel()
 	const limit = 16 << 10
 	_, url := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{url}, bus.WithStreamMaxBytes(limit))
@@ -1099,6 +1106,7 @@ func seedHeldRoleFallbackCopyMentioningTwo(
 // the role next, and the stream's acknowledgement of the keep settles the row published, as its
 // acknowledgement of a forward settles one.
 func TestAHeldCopyOfARoleRouteReachesTheRolesHolder(t *testing.T) {
+	t.Parallel()
 	const role = "reviewer"
 	roleTopic := contracts.RoleTopicPrefix + role
 
@@ -1176,6 +1184,7 @@ func TestAHeldCopyOfARoleRouteReachesTheRolesHolder(t *testing.T) {
 // twice (fallbackSend.send, contracts.RoleForwardDedupeKey). The prefix is right for every other
 // holder, which TestAHeldCopyOfARoleRouteReachesTheRolesHolder holds.
 func TestAFallbackPassForwardsARoleCopyToItsOwnMentionedHolderUnderTheMentionsKey(t *testing.T) {
+	t.Parallel()
 	ctx := store.WithTransactionTracking(context.Background())
 	rig := newRoleRig(t)
 	// s1 is the session seedHeldRoleFallbackCopy mentions and suppresses the route by, and it
@@ -1224,6 +1233,7 @@ func TestAFallbackPassForwardsARoleCopyToItsOwnMentionedHolderUnderTheMentionsKe
 // session's agent subject under the id bus.ForwardMsgID makes of that same key, which is what
 // the listener's own drain of the lane would forward it under.
 func TestAKeptFallbackCopyHandedToItsOwnMentionedHolderCarriesTheMentionsKey(t *testing.T) {
+	t.Parallel()
 	ctx := store.WithTransactionTracking(context.Background())
 	rig := newRoleRig(t)
 	// s1 is the session seedHeldRoleFallbackCopy mentions and suppresses the route by; nobody
@@ -1276,6 +1286,7 @@ func TestAKeptFallbackCopyHandedToItsOwnMentionedHolderCarriesTheMentionsKey(t *
 // session a comment mentions and the listener's send answer held past Dispatch's 5 s window: the
 // session received agent.<s>.<comment>:session:<s>:steer and envoy.role.forward.dispatch-<event>.
 func TestARoleCopyToTheHolderWhoseOwnMentionFailedCarriesTheMentionsKey(t *testing.T) {
+	t.Parallel()
 	ctx := store.WithTransactionTracking(context.Background())
 	rig := newRoleRig(t)
 	const role, holder, target = "reviewer", "s1", "session:s1"
@@ -1321,6 +1332,7 @@ func TestARoleCopyToTheHolderWhoseOwnMentionFailedCarriesTheMentionsKey(t *testi
 // every other holder too: a host drops only a key it claimed itself, and a key naming another
 // session is one this holder never saw, so it is shown the comment.
 func TestARoleCopyKeptForARoleNobodyHoldsCarriesTheFailedMentionsKey(t *testing.T) {
+	t.Parallel()
 	ctx := store.WithTransactionTracking(context.Background())
 	const role, mentioned, target = "unclaimed-mentioned", "s1", "session:s1"
 	database := storetest.Open(t)
@@ -1385,6 +1397,7 @@ func TestARoleCopyKeptForARoleNobodyHoldsCarriesTheFailedMentionsKey(t *testing.
 // bus.ForwardMsgID makes of that holder's key, which is what the listener's own drain would
 // forward it under.
 func TestAKeptCopyHandedToTheSecondMentionedHolderCarriesItsOwnMentionsKey(t *testing.T) {
+	t.Parallel()
 	ctx := store.WithTransactionTracking(context.Background())
 	rig := newRoleRig(t)
 	const role, key = "kept-for-two-mentioned-sessions", "T-1"
@@ -1464,6 +1477,7 @@ func TestAKeptCopyHandedToTheSecondMentionedHolderCarriesItsOwnMentionsKey(t *te
 // one path the copy has to the holder, and the stream holds its one forward of it under the id
 // bus.ForwardMsgID makes of that holder's key.
 func TestAKeptCopyHandedToAHolderWhoseMentionLandedCarriesItsOwnMentionsKey(t *testing.T) {
+	t.Parallel()
 	ctx := store.WithTransactionTracking(context.Background())
 	rig := newRoleRig(t)
 	const role, key = "kept-for-two-delivered-mentions", "T-1"
@@ -1578,6 +1592,7 @@ func roleRoutedMentioningComment(
 // (model.MentionResumedSQL), so the keep proceeds with whatever settled by then - here nothing
 // at all - rather than holding the copy for as long as a sender holds its send.
 func TestACopyKeptForARoleWaitsForTheCommentsLiveMentions(t *testing.T) {
+	t.Parallel()
 	ctx := store.WithTransactionTracking(context.Background())
 	const first, second = "ses_mentioned_first", "ses_mentioned_second"
 	mentionKey := func(commentID, sessionID string) string {
@@ -1683,6 +1698,7 @@ func TestACopyKeptForARoleWaitsForTheCommentsLiveMentions(t *testing.T) {
 // other case and is left out of the list entirely: the mention delivers that comment to that
 // very session, so it holds none of the owner's later events back (destinations.leftTo).
 func TestALaterEventIsNotKeptBeforeACopyWaitingOnACommentsMentions(t *testing.T) {
+	t.Parallel()
 	ctx := store.WithTransactionTracking(context.Background())
 	const mentioned = "ses_mentioned_before_the_update"
 	database := storetest.Open(t)
@@ -1771,6 +1787,7 @@ func TestALaterEventIsNotKeptBeforeACopyWaitingOnACommentsMentions(t *testing.T)
 // model.DeliveryClaimLapse reads resumed rather than live, and the forward goes with whatever
 // settled by then, under the prefixed event key.
 func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
+	t.Parallel()
 	const role = "forwarded-to-a-live-mentioned-holder"
 	const holder = "ses_holds_the_role_and_is_mentioned"
 	roleTopic := contracts.RoleTopicPrefix + role
@@ -2086,6 +2103,7 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 // Nothing else of the event is lost either: the other owner's comment in the same batch reaches
 // the session that claims that issue, whom no mention of it names, under the event's own key.
 func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.T) {
+	t.Parallel()
 	const role = "routed-to-the-session-its-mention-pinned"
 	const holder = "ses_claims_the_issue_and_holds_the_role"
 	const bystander = "ses_claims_the_other_issue"
@@ -2163,7 +2181,7 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 			t.Fatalf("the other owner's comment reached %v, want %s among them: a session no attempt of that comment names takes its claimant copy as if it had not been mentioned",
 				reached, contracts.LegacyAgentSubject(bystander))
 		}
-		waitFor(t, 10*time.Second, "the other owner's claimant copy", func() bool {
+		waitFor(t, "the other owner's claimant copy", func() bool {
 			return len(other.received()) > 0
 		})
 		copies := other.received()
@@ -2213,7 +2231,7 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 			t.Fatalf("the comment reached %v, want %s among them: the mention of %s failed, so the session it was pinned to is owed the outbox's copy and nothing else delivers it",
 				reached, holderSubject, target)
 		}
-		waitFor(t, 10*time.Second, "the copy owed to the session whose mention failed", func() bool {
+		waitFor(t, "the copy owed to the session whose mention failed", func() bool {
 			return len(pinned.received()) > 0
 		})
 		for _, item := range pinned.received() {
@@ -2249,6 +2267,7 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 // it under the id bus.ForwardMsgID makes of that holder's key, which is what the listener's own
 // drain of the lane would forward it under.
 func TestAFallbackRoleCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey(t *testing.T) {
+	t.Parallel()
 	const role = "held-for-two-mentioned-sessions"
 	const first, second = "ses_a_mentioned_first", "ses_b_mentioned_second"
 	const target = "session:" + second
@@ -2354,6 +2373,7 @@ func TestAFallbackRoleCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey
 // proceeds with whatever settled by then - here the row's own failed mention alone - rather than
 // holding the row for as long as a sender holds its send.
 func TestAFallbackCopyKeptForARoleWaitsForTheCommentsLiveMentions(t *testing.T) {
+	t.Parallel()
 	const role = "kept-while-a-mention-is-live"
 	const first, second = "ses_a_mentioned_first", "ses_b_mentioned_second"
 	roleTopic := contracts.RoleTopicPrefix + role
@@ -2470,6 +2490,7 @@ func TestAFallbackCopyKeptForARoleWaitsForTheCommentsLiveMentions(t *testing.T) 
 // has settled by then, under the prefixed row key, rather than holding the row for as long as a
 // sender holds its send.
 func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
+	t.Parallel()
 	const role = "held-for-a-live-mentioned-holder"
 	const first, second = "ses_a_mentioned_first", "ses_b_holds_the_role"
 	roleTopic := contracts.RoleTopicPrefix + role
@@ -2677,6 +2698,7 @@ func TestAFallbackCopyWhoseRoleHolderIsNotReachedStaysPendingUnderItsHolder(t *t
 // stream captures no agent subject over the pass, so nothing acknowledges the forward - and no
 // session answers one.
 func TestAFallbackCopyTheStreamDidNotAcknowledgeIsCountedUnanswered(t *testing.T) {
+	t.Parallel()
 	ctx := store.WithTransactionTracking(context.Background())
 	rig := newRoleRig(t)
 	const role, holder = "reviewer", "ses_fallback_unacknowledged"
@@ -2731,6 +2753,7 @@ func (unconfirmedForwardSender) Request(subject string, _ contracts.Envelope, _ 
 // is the case that holds it - TestAFallbackCopyTheStreamDidNotAcknowledgeIsCountedUnanswered holds
 // the other.
 func TestAFallbackForwardWhosePublishWasNotConfirmedIsCountedFailed(t *testing.T) {
+	t.Parallel()
 	ctx := store.WithTransactionTracking(context.Background())
 	rig := newRoleRig(t)
 	const role, holder = "reviewer", "ses_fallback_unconfirmed"

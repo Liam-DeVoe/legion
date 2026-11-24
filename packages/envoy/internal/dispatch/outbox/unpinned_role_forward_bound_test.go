@@ -70,6 +70,7 @@ func heldDestinations(t *testing.T, database *store.Store, commentID string) []s
 // of that mention is owed, so the holder is shown the comment once and never beside the mention
 // a send may yet pin to it (decideFallbackCopy, mentionHolds.state).
 func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t *testing.T) {
+	t.Parallel()
 	const routed = "routed-to-a-session-either-mention-may-name"
 	const first = "mentioned-first-whose-sender-still-holds-its-lane"
 	const second = "mentioned-second-whose-sender-still-holds-its-lane"
@@ -158,7 +159,7 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 		t.Fatalf("the role row is settled %v, published %v and attempts %d while a send of the comment's unnamed mentions is still owed, want it waiting with none counted: the row waits for that send as every other copy of the comment does",
 			row.settled, row.published, row.attempts)
 	}
-	waitFor(t, 10*time.Second, "the owner's later event at the holder", func() bool { return len(recv.received()) > 0 })
+	waitFor(t, "the owner's later event at the holder", func() bool { return len(recv.received()) > 0 })
 	if copies := recv.received(); len(copies) != 1 || copies[0].SourceEventID != fmt.Sprint(later.ID) {
 		t.Fatalf("%s was sent %+v past the bound, want the later event (%d) alone: the comment's copy is the row's now, and the order to this one holder is what the bound gives up",
 			holder, copies, later.ID)
@@ -179,7 +180,7 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
 
-	waitFor(t, 10*time.Second, "the comment's copy the row owes the holder", func() bool { return len(recv.received()) > 1 })
+	waitFor(t, "the comment's copy the row owes the holder", func() bool { return len(recv.received()) > 1 })
 	time.Sleep(time.Second)
 	copies := recv.received()
 	if len(copies) != 2 || copies[1].SourceEventID != fmt.Sprint(comment.ID) {

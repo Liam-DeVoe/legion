@@ -38,6 +38,7 @@ import (
 // the copies bound for a session's own topic wait for it to settle, bounded by that attempt's own
 // lease, exactly as destinations.leftTo holds a copy back for a live attempt it can name.
 func TestACommentAnUnansweredRoleMentionNotYetPinnedReachesThatSessionOnce(t *testing.T) {
+	t.Parallel()
 	const role = "routed-to-the-session-its-mention-will-pin"
 	const holder = "ses_claims_the_issue_and_holds_the_role"
 	ctx := store.WithTransactionTracking(context.Background())

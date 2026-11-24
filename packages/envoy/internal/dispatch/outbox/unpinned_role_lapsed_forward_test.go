@@ -42,6 +42,7 @@ import (
 // is its price (holdsTheForwardAsARow,
 // TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents).
 func TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease(t *testing.T) {
+	t.Parallel()
 	const routed = "routed-to-a-session-either-mention-may-name"
 	const first = "mentioned-first-whose-attempt-is-past-its-lease"
 	const second = "mentioned-second-whose-attempt-is-past-its-lease"
@@ -117,7 +118,7 @@ func TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease(t *testing.T) {
 		t.Fatalf("the comment was not published once both mentions settled: attempt_count %d, publish_error %s, reached %v",
 			attempts, publishFailure(failure), reached)
 	}
-	waitFor(t, 10*time.Second, "the copy both mentions' failure owes", func() bool { return len(recv.received()) > 0 })
+	waitFor(t, "the copy both mentions' failure owes", func() bool { return len(recv.received()) > 0 })
 }
 
 // The one unpinned mention of a comment keys the forward past its lease as it does while its
@@ -132,6 +133,7 @@ func TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease(t *testing.T) {
 // A comment whose resend is owed therefore costs this holder nothing where the outbox can mint
 // the mention's key for it.
 func TestAForwardCarriesTheKeyOfAnUnnamedMentionPastItsLease(t *testing.T) {
+	t.Parallel()
 	const routed = "routed-to-a-session-the-unanswered-mention-may-name"
 	const mentioned = "mentioned-and-held-by-nobody-the-outbox-can-name"
 	const holder = "ses_holds_the_routed_role"
@@ -164,7 +166,7 @@ func TestAForwardCarriesTheKeyOfAnUnnamedMentionPastItsLease(t *testing.T) {
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 
 	want := contracts.AgentSendDedupeKey(holder, model.CommentMentionIdempotencyKey(commentID, target, "steer"))
-	waitFor(t, 5*time.Second, "the forward the mention's key covers", func() bool { return len(recv.received()) > 0 })
+	waitFor(t, "the forward the mention's key covers", func() bool { return len(recv.received()) > 0 })
 	forwards := recv.received()
 	if len(forwards) != 1 || forwards[0].DedupeKey != want {
 		t.Fatalf("%s was sent %+v in the pass that read the comment, want one copy under %q, the key the mention of %s carries wherever a resend pins it: the one-target forward waits for no owed resend, the key standing for that mention",

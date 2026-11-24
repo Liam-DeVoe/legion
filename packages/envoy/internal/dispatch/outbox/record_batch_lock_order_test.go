@@ -46,6 +46,7 @@ const recordLockWait = 30 * time.Second
 // The owner and the project are never among them: they are still held when the scan returns with
 // the batch recorded, so the record took no owner row and still passed.
 func TestRecordBatchTakesAPrefixOfTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	const (
 		key  = "T-1"
 		role = "lock-order-role"

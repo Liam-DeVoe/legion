@@ -34,6 +34,7 @@ import (
 // addSession by a road of its own (destinations.leftToMention,
 // TestAnUnnamedRoleMentionPinnedToAFollowerShowsItTheCommentTwice).
 func TestAThreadAuthorsCopyWaitsForAnUnnamedMentionPastItsLease(t *testing.T) {
+	t.Parallel()
 	const role = "mentioned-and-held-by-nobody-this-read-can-name"
 	const author = "ses_wrote_the_thread_root"
 	const issueTopic = "notifications.dispatch.issue.T-1.comment.created"
@@ -117,7 +118,7 @@ func TestAThreadAuthorsCopyWaitsForAnUnnamedMentionPastItsLease(t *testing.T) {
 	}
 
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
-	waitFor(t, 10*time.Second, "the copy the mention's failure owes the thread author", func() bool { return len(wrote.received()) > 0 })
+	waitFor(t, "the copy the mention's failure owes the thread author", func() bool { return len(wrote.received()) > 0 })
 	want := []string{eventKey}
 	if got := keysOf(wrote.received()); !slices.Equal(got, want) {
 		t.Fatalf("%s was sent %v once the resend had failed, want %v: no mention of the comment is coming, so the copy is the outbox's and carries the event's own key",

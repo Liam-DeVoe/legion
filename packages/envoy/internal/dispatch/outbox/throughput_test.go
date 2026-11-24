@@ -503,13 +503,18 @@ func (r *throughputRig) roleArrivals() []int64 {
 // a floor of 25 events/s failed in 20 of 20 runs that published every event, each run in at
 // least one of its cases: 118 of the 240 readings were below 25 events/s, the slowest 9.6, under
 // 48 busy loops on a 2-CPU box on 2026-11-09, so the rate read the machine rather than the
-// outbox.
+// outbox. The cases run beside each other and beside the package's other tests (TestMain's
+// outboxTestParallelism), so a rate logged in a package run reads the load of those too: to
+// compare a reading with THROUGHPUT.md's, which were taken one case at a time, run this test
+// alone with -parallel 1 (go test -run TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency
+// -parallel 1).
 //
 // The burst cases put a batch of messages on one issue, the shape whose events share every
 // destination, so each destination takes them one round trip after another, and log the drain
 // time: from the outbox's start until every event is marked published. One issue is one chain, so
 // they hold only a few sends outstanding and reach no floor; the drain time is the reading.
 func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
+	t.Parallel()
 	const (
 		backlogIssues = 20
 		backlogCount  = 2 * batchSize
@@ -549,7 +554,12 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 		// replier's.
 		{"unclaimed comments", seedUnclaimedCommentBacklog, func(count int) int { return 2*count + count/2 }, func(int) int { return 0 }, false},
 	} {
+		// Each case drains a backlog on a rig of its own (newThroughputRig: its own database,
+		// NATS server and session registry), and its reading is how many sends one outbox held
+		// outstanding, so the cases run beside each other rather than one 50-150 ms round trip
+		// after another.
 		t.Run(load.name, func(t *testing.T) {
+			t.Parallel()
 			for _, tc := range []struct {
 				rtt   time.Duration
 				busy  bool
@@ -577,6 +587,7 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 				}
 				name := load.name + ", " + shape
 				t.Run(shape, func(t *testing.T) {
+					t.Parallel()
 					rig := newThroughputRig(t, rtt)
 					seeded := load.seed(t, rig.database, rig.broker, issues, count)
 					outboxStore := rig.database

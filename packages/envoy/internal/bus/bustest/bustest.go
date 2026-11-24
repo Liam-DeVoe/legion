@@ -179,3 +179,19 @@ func FillStream(t testing.TB, client *bus.Client, most int) {
 		return
 	}
 }
+
+// SeedOnly is a connect's environment (bus.WithEnvironment, bus.Dial) that holds seed as the nkey
+// seed (bus.NkeySeedEnvVar) and nothing else, as a process whose environment held that one
+// variable would: no seed file, no remote server allowed, no proxy. An empty seed is no seed at
+// all, as an empty variable is. A test that connects as an nkey user passes it rather than set the
+// variable with t.Setenv, which changes the whole process and so keeps the test from running in
+// parallel. The bus's own tests keep their copy (seedLookup), because package bus cannot import
+// this package.
+func SeedOnly(seed string) func(string) (string, bool) {
+	return func(name string) (string, bool) {
+		if name == bus.NkeySeedEnvVar && seed != "" {
+			return seed, true
+		}
+		return "", false
+	}
+}

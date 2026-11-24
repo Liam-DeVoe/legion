@@ -73,6 +73,7 @@ func awaitNoRelayResponder(t *testing.T, conn *natsgo.Conn, sessionID string) {
 // sent and the hold counted under that state. So the forward before it comes from the
 // registration's age and from nothing else of the rig.
 func TestTheOutboxForwardsToARoleHolderInsideTheLiveWindow(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role, holder = "window-holder", "ses_window_outbox_holder"
 	alice := model.Actor{Kind: "user", ID: "alice"}

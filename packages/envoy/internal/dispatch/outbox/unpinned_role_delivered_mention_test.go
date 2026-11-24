@@ -45,6 +45,7 @@ import (
 // to a session this comment mentions (resolveRoleHolders, destinations.leftToMention leaving
 // that session's own copy to the mention that delivered it).
 func TestAForwardKeyedByADeliveredMentionSkipsTheWaitForAnUnnamedMention(t *testing.T) {
+	t.Parallel()
 	const routed = "routed-to-a-session-either-unnamed-mention-may-name"
 	const first = "mentioned-first-whose-attempt-is-past-its-lease"
 	const second = "mentioned-second-whose-attempt-is-past-its-lease"
@@ -114,8 +115,7 @@ func TestAForwardKeyedByADeliveredMentionSkipsTheWaitForAnUnnamedMention(t *test
 			rows)
 	}
 
-	waitFor(t, 10*time.Second, "the comment's forward and the owner's later event at the holder",
-		func() bool { return len(recv.received()) > 1 })
+	waitFor(t, "the comment's forward and the owner's later event at the holder", func() bool { return len(recv.received()) > 1 })
 	time.Sleep(time.Second)
 	copies := recv.received()
 	if len(copies) != 2 {
@@ -147,6 +147,7 @@ func TestAForwardKeyedByADeliveredMentionSkipsTheWaitForAnUnnamedMention(t *test
 // pins that line, the comment's other mentions naming no session at all
 // (TestAForwardCarriesTheKeyOfALiveUnnamedMentionBesideASettledOne).
 func TestAForwardKeyedByAFailedMentionStillWaitsForAnUnnamedMention(t *testing.T) {
+	t.Parallel()
 	const routed = "routed-to-a-session-either-unnamed-mention-may-name"
 	const first = "mentioned-first-whose-attempt-is-past-its-lease"
 	const second = "mentioned-second-whose-attempt-is-past-its-lease"

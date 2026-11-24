@@ -31,6 +31,7 @@ import (
 // that one session the mention's mode - the comment arrives as this copy rather than as a steer -
 // and nothing else, which is the trade the round's decision made.
 func TestACopyAnUnnamedRoleMentionMayBePinnedToCarriesThatMentionsKey(t *testing.T) {
+	t.Parallel()
 	const routed = "routed-to-a-session-the-unanswered-mention-may-name"
 	const mentioned = "mentioned-and-held-by-nobody-the-outbox-can-name"
 	const holder = "ses_holds_the_routed_role"
@@ -106,6 +107,7 @@ func TestACopyAnUnnamedRoleMentionMayBePinnedToCarriesThatMentionsKey(t *testing
 // copy bound for the session the issue's claim names, and the comment is published once both
 // have settled.
 func TestTwoUnpinnedRoleMentionsHoldTheirCopiesAsBefore(t *testing.T) {
+	t.Parallel()
 	const routed = "routed-to-a-session-either-mention-may-name"
 	const first = "mentioned-first-and-held-by-nobody-the-outbox-can-name"
 	const second = "mentioned-second-and-held-by-nobody-the-outbox-can-name"
@@ -174,7 +176,7 @@ func TestTwoUnpinnedRoleMentionsHoldTheirCopiesAsBefore(t *testing.T) {
 		t.Fatalf("the comment was not published once both mentions settled: attempt_count %d, publish_error %s, reached %v",
 			attempts, publishFailure(failure), reached)
 	}
-	waitFor(t, 10*time.Second, "the copies both mentions' failure owes", func() bool { return len(recv.received()) > 0 })
+	waitFor(t, "the copies both mentions' failure owes", func() bool { return len(recv.received()) > 0 })
 }
 
 // A comment with two unpinned mentions, one past the lease the outbox waits a send out for and
@@ -188,6 +190,7 @@ func TestTwoUnpinnedRoleMentionsHoldTheirCopiesAsBefore(t *testing.T) {
 // the forward went in this pass under the prefixed event key, a key that host never claimed,
 // and the mention the sender pinned to it landed beside it.
 func TestAForwardWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
+	t.Parallel()
 	const routed = "routed-to-a-session-either-mention-may-name"
 	const lapsed = "mentioned-first-whose-attempt-is-past-its-lease"
 	const live = "mentioned-second-whose-attempt-is-live"
@@ -247,5 +250,5 @@ func TestAForwardWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 		t.Fatalf("the comment was not published once both mentions settled: attempt_count %d, publish_error %s, reached %v",
 			attempts, publishFailure(failure), reached)
 	}
-	waitFor(t, 10*time.Second, "the copy both mentions' failure owes", func() bool { return len(recv.received()) > 0 })
+	waitFor(t, "the copy both mentions' failure owes", func() bool { return len(recv.received()) > 0 })
 }
