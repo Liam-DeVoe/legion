@@ -3656,8 +3656,12 @@ func (s *supervision) roundPodTookRelease(ctx context.Context, issue, round stri
 	pod := strings.TrimPrefix(round, supervise.PodRoundPrefix)
 	took, err := s.supervisor.store.PodTookWorkspaceBundle(ctx, issue, pod)
 	if err != nil {
-		s.log.Error("supervise: read whether the pod of this update round took an idle release's work; the round's end names every member with a session or a pod that had not answered",
-			"issue", issue, "round", round, "pod", pod, "error", err)
+		// A read cut short by the daemon's own stop is no fault of the store's, so it logs
+		// nothing; the end goes on as if the pod held the work, as on any failed read.
+		if ctx.Err() == nil {
+			s.log.Error("supervise: read whether the pod of this update round took an idle release's work; the round's end names every member with a session or a pod that had not answered",
+				"issue", issue, "round", round, "pod", pod, "error", err)
+		}
 		return true
 	}
 	return took

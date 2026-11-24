@@ -317,9 +317,6 @@ func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 // under notWaitedFor. The message on the issue only reports, and it reads the claims unmasked
 // (noticeGroup): the implementer answered the round, so it pushed its work, and no other claim
 // lost work, so the issue is written nothing.
-//
-// The negative control is #4392 at be2e1da539: the message took the claims the round did not wait
-// for from the masked read, and named the implementer as a role whose work went with the pod.
 func TestPodUpdateNamesNoPassedOverClaimThatAnsweredWhileItsMachineDecides(t *testing.T) {
 	rig := newPodUpdateRig(t, suspendedRole(claim.RoleImplementer, supervise.SuspendedByDaemon), readyWorker(claim.RoleTester))
 	token := rig.tokens[claim.RoleImplementer]
