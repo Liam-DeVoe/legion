@@ -1083,7 +1083,10 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 		}
 		if place, _, _, ok := placeOnWalk(*w, standingIn(at)); w.Stored && ok {
 			var moves bool
-			if row, moves = stepRunRow(rows, row, role, w.Task, place.Place, agent); moves {
+			if row, moves, err = stepRunRow(issue, rows, row, role, w.Task, place.Place, agent); err != nil {
+				return entered{}, err
+			}
+			if moves {
 				if err := e.store.MovePhaseToStep(ctx, tx, issue.Key, role, w.Task, place.Place); err != nil {
 					return entered{}, err
 				}
@@ -1146,9 +1149,9 @@ type entered struct {
 	agent claim.Token
 }
 
-// stepRunRow is the row an entry of role's step at place of task raises, among rows, run by agent
-// (startClaim; "" for an issue whose key names no claims), and whether the entry moves that row to
-// the step. It reads the step's row as every read of one does (record.StepRowOf): the row the
+// stepRunRow is the row an entry of role's step at place of task raises on issue, among rows, run
+// by agent (startClaim; "" for an issue whose key names no claims), and whether the entry moves that
+// row to the step. It reads the step's row as every read of one does (record.StepRowOf): the row the
 // step's earlier runs wrote (record.RowOfTheStep), which takes the record the role named last from
 // now, the role's row now, since a return to an earlier step of the role comes after the role named
 // a record at a later one, and the next completion must name one written anew (HANDOFF_NOT_NEW);
@@ -1161,25 +1164,38 @@ type entered struct {
 //
 // The commit a review read (record.PhaseRow.ReviewedHead) the row holds is agent's own, never
 // another agent's: a step's first run takes agent's (record.AgentsReviewedHead), and so does a run
-// whose row names another agent's claim, since a later version of the plan, given after stop_task
-// over the same task, can give a step another key's agent.
-func stepRunRow(rows []record.PhaseRow, now record.PhaseRow, role claim.Role, task string, place int, agent claim.Token) (record.PhaseRow, bool) {
+// whose row another agent's runs wrote (record.RowWorker), since a later version of the plan, given
+// after stop_task over the same task, can give a step another key's agent. A row that names no
+// claim, as the release before writes a step's row, and a row of no step are the role's own
+// token's. A row agent's own runs wrote keeps its commit.
+func stepRunRow(issue record.Issue, rows []record.PhaseRow, now record.PhaseRow, role claim.Role, task string, place int,
+	agent claim.Token) (record.PhaseRow, bool, error) {
 	row, found := record.StepRowOf(rows, role, task, place)
-	switch found {
-	case record.RowOfTheStep:
-		row.LastHandoff = now.LastHandoff
-		if agent != "" && row.Claim != "" && row.Claim != agent {
+	if found == record.NoRowOfTheStep {
+		row = phaseHandoff{}.onto(now)
+		row.StepTask, row.StepPlace = task, place
+		row.ReviewedHead = record.AgentsReviewedHead(rows, role, task, place, agent)
+		return row, false, nil
+	}
+	if agent != "" {
+		project, err := claim.ProjectToken(issue.Project)
+		if err != nil {
+			return record.PhaseRow{}, false, err
+		}
+		worker, err := record.RowWorker(project, issue.Key, role, row)
+		if err != nil {
+			return record.PhaseRow{}, false, err
+		}
+		if worker != agent {
 			row.ReviewedHead = record.AgentsReviewedHead(rows, role, task, place, agent)
 		}
-		return row, false
-	case record.RowOfNoStep:
-		row.StepTask, row.StepPlace = task, place
-		return row, true
 	}
-	row = phaseHandoff{}.onto(now)
-	row.StepTask, row.StepPlace = task, place
-	row.ReviewedHead = record.AgentsReviewedHead(rows, role, task, place, agent)
-	return row, false
+	if found == record.RowOfNoStep {
+		row.StepTask, row.StepPlace = task, place
+		return row, true, nil
+	}
+	row.LastHandoff = now.LastHandoff
+	return row, false, nil
 }
 
 // EnterArchitect raises the phase entry a root's architect is handed on root, writes task as the

@@ -44,15 +44,15 @@ func deploymentEngine() *Engine { return withDeployment(returnEngine()) }
 const stepHead = "0123456789abcdef0123456789abcdef01234567"
 
 // workerOr is the claim role's phases row of key now names on the step it runs, the claim a real
-// route's grant carries (the step's worker), or fallback where the row runs no step or names no
-// claim: a completion from any other claim of the role is refused, HANDOFF_NOT_THE_STEPS_WORKER,
-// or HANDOFF_NOT_CURRENT_PHASE where it is of an entry that claim served on a step the task has
-// left (intake.AnotherAgentsStep). The row now is the role's row with the highest entry
-// (record.PhaseRowOf), since a role that stands at two steps keeps a row for each. It is
-// record.WorkerClaim's rule, with fallback in place of the role's own token.
+// route's grant carries (the step's worker), or fallback where the row names no agent of its own
+// (record.NamesItsAgent): a completion from any other claim of the role is refused,
+// HANDOFF_NOT_THE_STEPS_WORKER, or HANDOFF_NOT_CURRENT_PHASE where it is of an entry that claim
+// served on a step the task has left (intake.AnotherAgentsStep). The row now is the role's row with
+// the highest entry (record.PhaseRowOf), since a role that stands at two steps keeps a row for
+// each. It is record.WorkerClaim's rule, with fallback in place of the role's own token.
 func workerOr(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role, fallback claim.Token) claim.Token {
 	t.Helper()
-	if row := storedPhaseRow(t, pool, key, role); row.StepTask != "" && row.Claim != "" {
+	if row := storedPhaseRow(t, pool, key, role); record.NamesItsAgent(row) {
 		return row.Claim
 	}
 	return fallback

@@ -2159,12 +2159,12 @@ func EntryFence(issue record.Issue, role claim.Role, served, holder claim.Token,
 }
 
 // StepsWorkerFence is the 409 HANDOFF_NOT_THE_STEPS_WORKER refusal of a completion by token, a
-// claim of role on issue, of a step whose run's row names another claim, holder, on a step of the
-// plan (stepTask), and nil where token works the step. Two claims of one issue can hold one role —
-// the agent of a key on a step of another role, beside that role's own claim of an earlier version
-// of the plan, or two agents at two steps of the role — and the row names the one that works its
-// step (record.WorkerClaim), so a completion from the other is no report of the step. A row of no
-// step (stepTask "") or one that names no claim names no worker, and a completion that names no
+// claim of role on issue, of a step whose run's row, row, names another claim on a step of the plan,
+// and nil where token works the step. Two claims of one issue can hold one role — the agent of a
+// key on a step of another role, beside that role's own claim of an earlier version of the plan, or
+// two agents at two steps of the role — and the row names the one that works its step
+// (record.WorkerClaim), so a completion from the other is no report of the step. A row that names
+// no agent of its own (record.NamesItsAgent) names no worker here, and a completion that names no
 // claim, from a route before the claim was carried, is judged by its role. A completion of an
 // entry token's own claim served (served, record.ServedClaim) is the entry fence's to answer: a
 // step token ran that the task has since left for another agent's step, which EntryFence refuses
@@ -2173,14 +2173,14 @@ func EntryFence(issue record.Issue, role claim.Role, served, holder claim.Token,
 // Both judges ask it before EntryFence: the completion route on its read, where the role works the
 // issue's phase, and the workflow's handoff on its own. Asked after, the fence would refuse such a
 // completion HANDOFF_STALE_ENTRY, whose words promise the claim the task of the entry the phase is
-// on, and that task goes to holder alone.
-func StepsWorkerFence(issue string, role claim.Role, token, holder, served claim.Token, stepTask string) *Refusal {
-	if stepTask == "" || holder == "" || token == "" || token == holder || served == token {
+// on, and that task goes to the row's claim alone.
+func StepsWorkerFence(issue string, role claim.Role, token, served claim.Token, row record.PhaseRow) *Refusal {
+	if !record.NamesItsAgent(row) || token == "" || token == row.Claim || served == token {
 		return nil
 	}
 	return &Refusal{Status: 409, Code: "HANDOFF_NOT_THE_STEPS_WORKER", Message: fmt.Sprintf(
 		"%s is a claim of the %s of %s, and %s works its step: only that claim's completion reports the step; this completion changed nothing",
-		token, role, issue, holder)}
+		token, role, issue, row.Claim)}
 }
 
 // AnotherAgentsStep is the 409 HANDOFF_NOT_CURRENT_PHASE refusal of a completion of entry serving

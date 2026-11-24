@@ -1189,7 +1189,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// works the issue's phase (api's answerCompletion), since the fence's HANDOFF_STALE_ENTRY
 	// would promise it the task of an entry its claim never served.
 	served := record.ServedClaim(rows, fact.Role, fact.Entry)
-	if refusal := intake.StepsWorkerFence(issue.Key, fact.Role, fact.Claim, row.Claim, served, row.StepTask); refusal != nil {
+	if refusal := intake.StepsWorkerFence(issue.Key, fact.Role, fact.Claim, served, row); refusal != nil {
 		return intake.Result{Refusal: refusal, Unspent: true}, nil
 	}
 	// The route judged the entry this completion is of on its own read of the role's row, before
@@ -1207,7 +1207,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		record.OtherStepsEntry(rows, row), fact.Commit, pr, nil); refusal != nil {
 		return intake.Result{Refusal: refusal, Unspent: true}, nil
 	}
-	if refusal := intake.StepsWorkerFence(issue.Key, fact.Role, fact.Claim, row.Claim, "", row.StepTask); refusal != nil {
+	if refusal := intake.StepsWorkerFence(issue.Key, fact.Role, fact.Claim, "", row); refusal != nil {
 		return intake.Result{Refusal: refusal, Unspent: true}, nil
 	}
 	// A completion of the phase the issue stands in that is at the head a merge forward replaced
@@ -2776,10 +2776,10 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	// role — the agent of a key on a step of another role, beside that role's own claim of an
 	// earlier version of the plan, or two agents at two steps of the role — and the move names the
 	// claim that asked it (By). A claim the role's row does not name on its step works nothing the
-	// move would send back, so its move is refused, unspent. A row that runs no step of the plan
-	// names no worker, and a move that names no claim, from a route before the claim was carried,
-	// is judged by its role as before.
-	if fact.Requester != claim.RoleArchitect && fact.By != "" && row.StepTask != "" && row.Claim != "" && fact.By != row.Claim {
+	// move would send back, so its move is refused, unspent. A row that names no agent of its own
+	// (record.NamesItsAgent) names no worker here, and a move that names no claim, from a route
+	// before the claim was carried, is judged by its role as before.
+	if fact.Requester != claim.RoleArchitect && fact.By != "" && record.NamesItsAgent(row) && fact.By != row.Claim {
 		return intake.Result{Refusal: refused("BACKWARD_REFUSED", fmt.Sprintf(
 			"%s is a claim of the %s of %s, and %s works its step: only that claim's move sends the step back; this move changed nothing",
 			fact.By, fact.Requester, issue.Key, row.Claim)).Refusal, Unspent: true}, nil
