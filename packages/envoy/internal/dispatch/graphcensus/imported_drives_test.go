@@ -317,9 +317,10 @@ func (r *writersRig) settledAttempts(t *testing.T, comment, state string) {
 // The drives of a run's writes and of the reasoning kinds run right after the tick's, in this
 // order: a run of the command bar alice asks, a run an older pod recorded that a pass of the
 // maintenance sweep ends, a run an hour old the maintenance sweep states gone, the issue's title,
-// the question of an ask alice opens and a comment of alice's each written for a run she asked, a
-// lens with a finding, a finding, a risk and a constraint, a pointer appended and one retargeted,
-// and the lens's state.
+// the question of an ask alice opens and a comment of alice's each written for a run she asked,
+// a message of alice's edited, a comment of hers deleted and a message of hers deleted, each for
+// a run she asked, a lens with a finding, a finding, a risk and a constraint, a pointer appended
+// and one retargeted, and the lens's state.
 func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	t.Helper()
 	r := newWritersRig(t)
@@ -329,9 +330,10 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	}
 	// What the drives of a run's writes and of the reasoning kinds leave for the drives after them:
 	// the run the sweep states gone, the run a write is made for, the ask and the comment the run
-	// rewords, the trade-off lens on the spec, the pre-mortem a risk stands under, the issue whose
-	// spec holds a requirement, and the constraint under that issue.
-	var swept, run, reworded, edited, lens, premortem, requiring, constraint string
+	// rewords, the message the run edits, the comment and the message it deletes, the trade-off
+	// lens on the spec, the pre-mortem a risk stands under, the issue whose spec holds a
+	// requirement, and the constraint under that issue.
+	var swept, run, reworded, edited, correctedMessage, deletedComment, deletedMessage, lens, premortem, requiring, constraint string
 	nodeRoute := func(issue, address, route string) string {
 		return "/api/v1/issues/" + issue + "/nodes/" + url.PathEscape(address) + "/" + route
 	}
@@ -739,6 +741,49 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				map[string]any{"body": "A remark a run reworded."}, "alice", http.StatusOK)
 		},
 		Counts: changedByRunCounted(graphstore.KindComment),
+	}, {
+		// A message of alice's on the issue, its words edited for a run she asked: the message's
+		// node named changed by it.
+		Name: "api/message_corrections.go#editMessage, made for a run", Database: r.database,
+		Sites: []string{"api/message_corrections.go#editMessage"},
+		Ready: func(t *testing.T) {
+			correctedMessage = decoded[model.Message](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/messages",
+				map[string]any{"body": "A message a run edits."}, "alice", http.StatusCreated)).ID
+			run = r.askRun(t, "Edit the message.")
+		},
+		Drive: func(t *testing.T) {
+			r.requestForRun(t, run, http.MethodPatch, "/api/v1/messages/"+correctedMessage,
+				map[string]any{"body": "A message a run edited."}, "alice", http.StatusOK)
+		},
+		Counts: changedByRunCounted(graphstore.KindMessage),
+	}, {
+		// A comment of alice's on the issue deleted for a run she asked: the comment's node named
+		// changed by it.
+		Name: "api/comment_delete.go#deleteComment, made for a run", Database: r.database,
+		Sites: []string{"api/comment_delete.go#deleteComment"},
+		Ready: func(t *testing.T) {
+			deletedComment = decoded[model.Comment](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments",
+				map[string]any{"body": "A remark a run deletes."}, "alice", http.StatusCreated)).ID
+			run = r.askRun(t, "Delete the remark.")
+		},
+		Drive: func(t *testing.T) {
+			r.requestForRun(t, run, http.MethodDelete, "/api/v1/comments/"+deletedComment, nil, "alice", http.StatusOK)
+		},
+		Counts: changedByRunCounted(graphstore.KindComment),
+	}, {
+		// A message of alice's on the issue deleted for a run she asked: the message's node named
+		// changed by it.
+		Name: "api/message_corrections.go#deleteMessage, made for a run", Database: r.database,
+		Sites: []string{"api/message_corrections.go#deleteMessage"},
+		Ready: func(t *testing.T) {
+			deletedMessage = decoded[model.Message](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/messages",
+				map[string]any{"body": "A message a run deletes."}, "alice", http.StatusCreated)).ID
+			run = r.askRun(t, "Delete the message.")
+		},
+		Drive: func(t *testing.T) {
+			r.requestForRun(t, run, http.MethodDelete, "/api/v1/messages/"+deletedMessage, nil, "alice", http.StatusOK)
+		},
+		Counts: changedByRunCounted(graphstore.KindMessage),
 	}, {
 		// A trade-off lens on the spec with its verdict and one finding, as alice invokes it.
 		Name: "api/reasoning_write.go#writeReasoningNodes, a lens and its finding", Database: r.database,

@@ -526,6 +526,13 @@ var indexPasses = map[string]string{
 	"api/comment_actions.go#editComment":   "the edit request's own body, the comment's row it locked and the comment's own event",
 	"api/asks.go#editAsk":                  "the edit request's own body, the ask's row it locked and the ask's own event",
 	"api/comment_delivery.go#replyComment": "the reply a delivery recorded",
+	// An edit of an issue message's words and a delete of a message or a comment, each made for a
+	// run, restate the post's node from the row they locked, caused by their own event, so the
+	// run's change of the post is named (changed_by_run). None reads a row of either side to
+	// decide what the other says: the clear of the post's row is clearDeletedPostBody's, below.
+	"api/message_corrections.go#editMessage":   "the edit request's own body, the message's row it locked and the message's own event",
+	"api/message_corrections.go#deleteMessage": "the delete request, the message's row it locked and the message's own event",
+	"api/comment_delete.go#deleteComment":      "the delete request, the comment's row it locked and the comment's own event",
 	// The orphaning of a comment's anchor, which the accept and the reject arms of commentAction
 	// and deleteComment queue when their document write finds the anchor's mark gone
 	// (docs.ErrAnchorOrphaned). It sets the orphaned key of the anchor the comment's own row
