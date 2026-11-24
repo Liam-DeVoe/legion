@@ -113,8 +113,8 @@ func sqlCode(text string) string {
 			end := quotedEnd(rest, escapes)
 			code.WriteString(rest[:end])
 			at += end
-		case rest[0] == '$' && (at == 0 || !sqlIdentifierByte(text[at-1])) && dollarTag(rest) != "":
-			tag := dollarTag(rest)
+		case rest[0] == '$' && (at == 0 || !sqlIdentifierByte(text[at-1])) && sqlDollarTag(rest) != "":
+			tag := sqlDollarTag(rest)
 			body := rest[len(tag):]
 			end := strings.Index(body, tag)
 			closed := end >= 0
@@ -154,9 +154,9 @@ func quotedEnd(rest string, escapes bool) int {
 	return len(rest)
 }
 
-// dollarTag is the opening tag of the dollar-quoted string rest starts with ($$ or $tag$, a tag
+// sqlDollarTag is the opening tag of the dollar-quoted string rest starts with ($$ or $tag$, a tag
 // being an identifier with no `$`), or "" when rest starts none, as `$1`, a parameter, does not.
-func dollarTag(rest string) string {
+func sqlDollarTag(rest string) string {
 	for end := 1; end < len(rest); end++ {
 		switch c := rest[end]; {
 		case c == '$':
