@@ -616,16 +616,19 @@ test("the sign-out question names every tab's unsent changes, and says when a ta
   }
   // A bound on work, not a hang guard: every wait above ends by its own count of real turns or by
   // `waitFor`'s limit, so this limit only has to sit above the row's loaded cost. Worst measured
-  // cost: 67 802.22 ms over 20 runs at the 96 rung in the Job infra-1580-t24-j12-wh2d8 of the
-  // cluster's `builds` namespace, two CPUs and 8 GiB (140 busy loops, at which row A took
-  // 31.3 s), at 919ee888, where main 2f7ee6dc's form of this row cost up to 32 001.27 ms;
+  // cost: 68 199 ms over 20 runs at the 96 rung in the Job infra-1580-soh-pgv4s of the cluster's
+  // `builds` namespace, two CPUs and 8 GiB (140 busy loops, at which row A's runs took 38.5 s
+  // against the calibration's 31.2 s), at 2a77b2b8, where main 7df64124's form of this row was 14
+  // of 20 at its 60 s flag (infra-1580-som-7dmqn, 147 busy loops, row A 32.7 s); 67 802.22 ms
+  // over 20 runs at that rung in the Job infra-1580-t24-j12-wh2d8 (140 busy loops, at which row A
+  // took 31.3 s), at 919ee888, where main 2f7ee6dc's form of this row cost up to 32 001.27 ms;
   // 49 399.33 ms over 20 runs at that rung in the Job infra-1580-krows-so-rzw2c (109 busy loops,
   // at which row A's runs took 36.0 s against the calibration's 31.2 s), 2026-11-22T22:08Z to
   // 22:34Z, where main's form of this row cost up to 36 303.31 ms; 36 723.83 ms at 16 busy loops
-  // (the 96 rung) on a two-CPU, 8 GiB pod. Six times the worst is 407 s, past what the
+  // (the 96 rung) on a two-CPU, 8 GiB pod. Six times the worst is 409 s, past what the
   // `dispatch-ui` job leaves a hang, so the job decides: its `timeout-minutes: 15` less its test
   // step's 342 s and its other steps' 162 s at a61f3fc7 leaves 396 s (310 s and 145 s at
-  // 919ee888 leave more), and this 390_000 is 5.75 times the worst.
+  // 919ee888 leave more), and this 390_000 is 5.7 times the worst.
 }, 390_000);
 
 // W53. The sign-out question names each change once, by key: a tab duplicated from this one, or
