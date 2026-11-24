@@ -31,6 +31,7 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
 import { ApiError, api, NetworkError, RequestTimeoutError } from "../../api/client";
+import { inboxThreadsQuery } from "../../api/queries";
 import type {
   Artifact,
   AskRead,
@@ -2505,6 +2506,120 @@ test("text typed that hides a row leaves that row counted in the Filter panel", 
   } finally {
     unmount();
     listUsers.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+/** Each row of one filter field's own listbox (`label`, as `DIMENSION_LABELS` names it), by the
+ *  name it is read out as: its `aria-label` where it has one, else its text, as a row with no
+ *  count beside it is named by its label alone. Escape closes the list again, so the next read
+ *  opens its own. */
+async function fieldOptionNames(user: UserEvent, label: string): Promise<string[]> {
+  await openFilterFields(user);
+  await user.click(screen.getByRole("button", { name: `Filter by ${label.toLowerCase()}` }));
+  const listbox = await screen.findByRole("listbox", { name: `${label} options` });
+  const names = within(listbox)
+    .getAllByRole("option")
+    .map((option) => option.getAttribute("aria-label") ?? option.textContent ?? "");
+  await user.keyboard("{Escape}");
+  return names;
+}
+
+/** Whether an option's name carries a count of rows (`, 2 rows`). */
+const COUNTED = /, \d+ rows?$/;
+
+// INFRA-3135, round 25's B2, by the architect's ruling of 2026-11-24 08:07Z: a count beside a
+// value is drawn only once the data it counts has answered. The Type list counted the thread kinds
+// over the rows read so far, so while the reader's thread read was out or refused it offered
+// "Reply, 0 rows" with two reply threads waiting. The questions' count is the Inbox's own read's,
+// which answered, so it stands throughout. Every other field counts asks and threads together, so
+// none of its values carries a count until the thread read has answered.
+test("the Type list draws no count for the thread kinds while the thread read is out or refused, nor does any other field, and the read's counts once it answers", async () => {
+  const user = userEvent.setup();
+  const asks = [
+    issueAsk({ id: "ask-1", question: "First question?" }),
+    issueAsk({ id: "ask-2", question: "Second question?" }),
+  ];
+  const threads = [replyRow("c1"), replyRow("c2")];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(asks);
+  const getAsk = mockAskReads(asks);
+  const getIssue = mockIssueReads();
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const listMyReplies = spyOn(api, "listMyReplies");
+  const listUsers = mockPeople();
+  try {
+    for (const how of ["held", "refused"] as const) {
+      listMyReplies.mockReset();
+      // Held: the read is never answered. Refused: Dispatch answers it 500.
+      if (how === "held") listMyReplies.mockReturnValue(new Promise<never>(() => {}));
+      else {
+        listMyReplies.mockRejectedValue(
+          new ApiError(500, { code: "TEST_REFUSED", error: "test refusal" })
+        );
+      }
+      const { queryClient, unmount } = renderInbox();
+      try {
+        await screen.findByText("Second question?");
+        // The read is out, or Dispatch has refused it.
+        await waitFor(() => expect(listMyReplies).toHaveBeenCalled());
+        await waitFor(() =>
+          expect(queryClient.getQueryState(inboxThreadsQuery().queryKey)?.status).toBe(
+            how === "held" ? "pending" : "error"
+          )
+        );
+        expect(rowIds()).toHaveLength(2);
+        expect(await fieldOptionNames(user, "Type"), `thread read ${how}`).toEqual([
+          "Question, 2 rows",
+          "Decision, 0 rows",
+          "Approval, 0 rows",
+          "Reply",
+          "Agent message",
+        ]);
+        for (const label of ["Priority", "Assignee"]) {
+          const names = await fieldOptionNames(user, label);
+          expect(names.length, `thread read ${how}: ${label}'s values`).toBeGreaterThan(0);
+          expect(
+            names.filter((name) => COUNTED.test(name)),
+            `thread read ${how}: ${label} counts asks and threads`
+          ).toEqual([]);
+        }
+      } finally {
+        unmount();
+      }
+    }
+    // The control: the same Inbox with its thread read answered counts both reply threads.
+    listMyReplies.mockReset();
+    listMyReplies.mockResolvedValue({
+      as_of: "2026-10-12T00:00:00Z",
+      limit: 200,
+      offset: 0,
+      rows: threads,
+      total: threads.length,
+    });
+    const { unmount } = renderInbox();
+    try {
+      await waitFor(() => expect(rowIds()).toHaveLength(4));
+      expect(await fieldOptionNames(user, "Type")).toEqual([
+        "Question, 2 rows",
+        "Decision, 0 rows",
+        "Approval, 0 rows",
+        "Reply, 2 rows",
+        "Agent message, 0 rows",
+      ]);
+      for (const label of ["Priority", "Assignee"]) {
+        const names = await fieldOptionNames(user, label);
+        expect(names.length, `${label}'s values`).toBeGreaterThan(0);
+        expect(names.filter((name) => !COUNTED.test(name))).toEqual([]);
+      }
+    } finally {
+      unmount();
+    }
+  } finally {
+    listUsers.mockRestore();
+    listMyReplies.mockRestore();
+    listComments.mockRestore();
+    getIssue.mockRestore();
     getAsk.mockRestore();
     getInbox.mockRestore();
   }

@@ -1,4 +1,4 @@
-import { awaitsDecision, INBOX_DISMISSED_PAGE } from "@legion/contracts";
+import { awaitsDecision, INBOX_DISMISSED_PAGE, INBOX_THREAD_KINDS } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import {
   type FocusEvent,
@@ -2048,6 +2048,15 @@ function InboxBody({
             (row) => matchesOtherFields(row, field),
             viewer
           );
+          // A count is drawn only once every read whose rows it counts has answered, never as a
+          // count of the rows read so far. A Type value names the one read its rows come from: an
+          // ask kind's, the Inbox's own read, which answered before this panel was drawn; a thread
+          // kind's, the thread read. Every other field counts asks and threads together. So while
+          // the thread read is out or refused (`threads.answered`), the ask kinds keep their count
+          // and every other value is offered with no count, never a 0 or an asks-only count.
+          const counted = (value: string) =>
+            threads.answered ||
+            (field === "type" && !(INBOX_THREAD_KINDS as readonly string[]).includes(value));
           return (
             <MultiSelect
               {...filterPanel(field)}
@@ -2055,8 +2064,10 @@ function InboxBody({
               key={field}
               label={DIMENSION_LABELS[field]}
               onChange={(next) => chooseField(field, next)}
-              optionDetail={(value) => `${counts.get(value) ?? 0}`}
-              optionDetailLabel={(value) => `${counts.get(value) ?? 0} rows`}
+              optionDetail={(value) => (counted(value) ? `${counts.get(value) ?? 0}` : undefined)}
+              optionDetailLabel={(value) =>
+                counted(value) ? `${counts.get(value) ?? 0} rows` : undefined
+              }
               optionLabel={(value) => dimensionValueLabel(field, value)}
               options={fieldOptions(field, candidates, viewer, chosen)}
               searchLabel={`Search ${DIMENSION_LABELS[field].toLowerCase()}`}
@@ -2069,7 +2080,8 @@ function InboxBody({
             reader's own words, and the popover picks any number of people, with Unassigned
             first. Unassigned lists what the server resolved no person for, and every project
             naming a default assignee leaves nothing: it reads 0 and lists nothing, which is
-            what the filter saying so is for. */}
+            what the filter saying so is for. A person's count counts asks and threads, so it is
+            drawn only once the thread read has answered, as every field's above is. */}
         <MultiSelect
           emptyMessage={people.isPending ? "Loading people…" : "No matching person."}
           error={people.isError ? "Could not load the people list." : null}
@@ -2080,12 +2092,16 @@ function InboxBody({
             filterPanel("assignee").onOpenChange(open);
           }}
           open={filterPanel("assignee").open}
-          optionDetail={(value) =>
-            `${value === viewer ? "you · " : ""}${assigneeCounts.get(value) ?? 0}`
-          }
-          optionDetailLabel={(value) =>
-            `${value === viewer ? "you, " : ""}${assigneeCounts.get(value) ?? 0} rows`
-          }
+          optionDetail={(value) => {
+            const you = value === viewer;
+            if (!threads.answered) return you ? "you" : undefined;
+            return `${you ? "you · " : ""}${assigneeCounts.get(value) ?? 0}`;
+          }}
+          optionDetailLabel={(value) => {
+            const you = value === viewer;
+            if (!threads.answered) return you ? "you" : undefined;
+            return `${you ? "you, " : ""}${assigneeCounts.get(value) ?? 0} rows`;
+          }}
           optionLabel={(value) => (value === UNASSIGNED_FILTER_VALUE ? "Unassigned" : value)}
           options={assigneeOptions}
           searchLabel="Search people"

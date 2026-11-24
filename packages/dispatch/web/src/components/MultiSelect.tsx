@@ -138,8 +138,9 @@ interface SharedProps {
    *  comma ("api, 3"), never run together. */
   readonly optionDetail?: (value: string) => string | undefined;
   /** What the row's accessible name says in place of `optionDetail`'s text, such as "3 PRs" for
-   *  a bare count. Defaults to that text. */
-  readonly optionDetailLabel?: (value: string) => string;
+   *  a bare count, or `undefined` for that text itself, which is what it says by default. A row
+   *  both answer `undefined` for draws no detail and is named by its label alone. */
+  readonly optionDetailLabel?: (value: string) => string | undefined;
   readonly searchLabel: string;
   /** How much room the trigger takes (`controlPadding`): the page's size, which the page passes.
    *  The default trigger outside `NoTooltips` takes the comfortable size where none is passed. A
