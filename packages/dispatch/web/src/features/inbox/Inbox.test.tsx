@@ -2255,6 +2255,106 @@ test("after the reader's own answer fails, an answer from elsewhere still holds 
   }
 });
 
+// The reader's own recorded answer lets its row go from under their hand once, and no longer. Here
+// the server lists the ask again after that answer, and refuses the reader's next answer to it:
+// the row stays with the refusal, and when the server then drops it under their focus, it is held
+// where they see it, as any row is, rather than leaving at once as if their answer took it.
+test("a row whose answer the server refused is held under the reader's focus when the server drops it, though an earlier answer of theirs to it landed", async () => {
+  const user = userEvent.setup();
+  const askA = issueAsk({ id: "ask-a" });
+  const askB = issueAsk({
+    id: "ask-b",
+    issue: { assignee: "alice", key: "CORE-2", title: "Other issue" },
+    issue_key: "CORE-2",
+    question: "Which format?",
+  });
+  let inboxRows = [askA, askB];
+  const listOpenAsks = mockInboxReads(() => inboxRows);
+  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) => ({
+    ask: id === askA.id ? askA : askB,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  }));
+  const answerAsk = spyOn(api, "answerAsk")
+    .mockImplementationOnce(async () => {
+      inboxRows = [askA];
+      return {
+        ...askB,
+        answer: { at: "2026-09-11T03:00:00Z", selected: [], text: "JSON", user: "alice" },
+        state: "answered",
+      };
+    })
+    .mockRejectedValueOnce(
+      new ApiError(409, { code: "ISSUE_CLOSED", error: "CORE-2 is closed; reopen it first" })
+    );
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <Inbox />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  /** Types an answer into ask-b's card and presses Answer, the reader's focus in the row. */
+  const answerB = async (): Promise<HTMLElement> => {
+    const card = await screen.findByTestId("ask-ask-b");
+    const field = within(card).getByLabelText("Your answer");
+    await user.clear(field);
+    await user.click(field);
+    await user.paste("JSON");
+    const answer = within(card).getByRole("button", { name: "Answer" });
+    act(() => {
+      answer.focus();
+    });
+    await user.click(answer);
+    return card;
+  };
+
+  try {
+    // The reader's answer lands: its row leaves at once, though their focus was in it.
+    await answerB();
+    await waitFor(() => expect(screen.queryByTestId("ask-ask-b")).not.toBeInTheDocument());
+
+    // The server lists the ask again, and refuses the reader's next answer to it: the row stays,
+    // with the refusal on it.
+    inboxRows = [askA, askB];
+    await act(async () => {
+      landInboxReads(queryClient, [askA, askB]);
+    });
+    const card = await answerB();
+    await waitFor(() => expect(within(card).getByRole("alert")).toBeTruthy());
+    expect(answerAsk).toHaveBeenCalledTimes(2);
+    const row = card.closest<HTMLElement>("[data-inbox-row]");
+    if (row === null) throw new Error("ask-b row missing");
+    act(() => {
+      within(card).getByLabelText("Your answer").focus();
+    });
+
+    // The server drops the row while the reader's focus is in it: it stays where they see it.
+    inboxRows = [askA];
+    await act(async () => {
+      landInboxReads(queryClient, [askA]);
+    });
+    await afterFrameAndTasks();
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+    expect(screen.getByTestId("ask-ask-b").closest("[data-inbox-row]")).toBe(row);
+  } finally {
+    view.unmount();
+    answerAsk.mockRestore();
+    getAsk.mockRestore();
+    listOpenAsks.mockRestore();
+  }
+});
+
 test("an ask card offers backlinks only when the batched count says it has some", async () => {
   const user = userEvent.setup();
   const cited = issueAsk({ id: "ask-cited", referenced_by_count: 2 });

@@ -1594,6 +1594,9 @@ function InboxBody({
   // afresh without it and takes its new place then.
   const viewport = useRef<ViewportAnchor>(null);
   const anchor = viewport.current?.interacted() ?? null;
+  /** The ask whose answer or decline of the reader's the server has just recorded
+   *  (`recordAnswered`): its row goes though their hand is on it, since their answer is what
+   *  takes it. It names that ask only while that is so, and is cleared before the hold below. */
   const answered = useRef<string | null>(null);
   const [, setReleased] = useState(0);
   const release = () => setReleased((count) => count + 1);
@@ -2425,6 +2428,21 @@ function InboxBody({
   // the reader's words have changed since. A row held under the words the reader still has stays
   // held though the server changes the text they search, since only the reader's own typing
   // drops a row at once. A row the server stopped sending is held exactly as it is today.
+  //
+  // The reader's own recorded answer lets its row go from under their hand once. The record of it
+  // (`answered`) ends once the row has left the list, and once a further answer or decline of
+  // theirs on the ask is out: a landing records it again, and a refusal or a failure leaves the
+  // row where it is. A row of that ask the list holds after either is held as any other row is,
+  // and does not leave from under the hand at once as if their answer took it.
+  const answeredId = answered.current;
+  if (
+    answeredId !== null &&
+    (answersOut.has(answeredId) ||
+      declinesOut.has(answeredId) ||
+      !presented.current.some((placed) => rowId(placed.row) === answeredId))
+  ) {
+    answered.current = null;
+  }
   const handId = anchor?.id;
   const typed = words.join(" ");
   const heldBefore = heldUnder.current;
