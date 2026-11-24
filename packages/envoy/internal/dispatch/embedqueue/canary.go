@@ -3,7 +3,6 @@ package embedqueue
 import (
 	"context"
 	"log/slog"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 )
@@ -28,9 +27,10 @@ const embedCanary = "dispatch embedqueue confirmation canary"
 // condition is systemic, not this row's fault: nothing is confirmed, the row goes back to retry,
 // and if the canary itself was throttled, throttled is reported too, so the caller backs off
 // exactly as an outright-throttled call would. A canary that meets an outage (embed.IsOutage: the
-// service failing, since it fails on the known-good text too) backs the shared pace off (pacer),
-// the one place an outage does: the failing halves of a bisection before it say nothing of the
-// service, since one text the service fails on every time gives them as well. The confirmation is
+// service failing, since it fails on the known-good text too) backs the shared pace off
+// (embed.RateLimitedEmbedder.BackOff, when the embedder is one, as cmd/dispatch makes it), the one
+// place an outage does: the failing halves of a bisection before it say nothing of the service,
+// since one text the service fails on every time gives them as well. The confirmation is
 // local to this one row and its own fresh canary call, never reasoning about any other row's
 // result in the same batch or bisection.
 func confirmSoloFailure(ctx context.Context, deps Deps, group []pendingRow, rowErr error, renewal *claimRenewal) bisectResult {
@@ -40,7 +40,7 @@ func confirmSoloFailure(ctx context.Context, deps Deps, group []pendingRow, rowE
 	if canaryErr != nil {
 		slog.Error("dispatch embedqueue: a known-good canary also failed right after this row's own failure - systemic, not this row's fault",
 			"kind", group[0].kind, "id", group[0].id, "rowError", rowErr, "canaryError", canaryErr)
-		if paced, ok := deps.Embedder.(pacer); ok && embed.IsOutage(canaryErr) {
+		if paced, ok := deps.Embedder.(*embed.RateLimitedEmbedder); ok && embed.IsOutage(canaryErr) {
 			paced.BackOff()
 		}
 		return bisectResult{retry: group, throttled: embed.IsThrottled(canaryErr)}
@@ -48,15 +48,6 @@ func confirmSoloFailure(ctx context.Context, deps Deps, group []pendingRow, rowE
 	slog.Error("dispatch embedqueue: a known-good canary embedded successfully right after this row's own failure - confirmed",
 		"kind", group[0].kind, "id", group[0].id, "error", rowErr)
 	return bisectResult{permanent: group}
-}
-
-// pacer is an Embedder that paces its calls: embed.RateLimitedEmbedder, which cmd/dispatch wraps
-// around the queue's embedder. BackOff slows the pace when told the service is failing, and
-// EmbedAfter is Embed with the pace's wait before the call made by the caller, so embedDocuments'
-// wait renews the claim on the rows the call carries.
-type pacer interface {
-	BackOff()
-	EmbedAfter(ctx context.Context, texts []string, inputType embed.InputType, wait func(ctx context.Context, d time.Duration) bool) ([][]float32, error)
 }
 
 // proveEmbedder embeds embedCanary, paced from the shared budget like any other background call,

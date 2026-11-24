@@ -121,7 +121,8 @@ func (p *proof) answered() <-chan struct{} {
 
 // embedDocuments embeds texts as documents with the configured embedder and, when the call
 // succeeds, records that the embedder works (Deps.proven). Every Embed call this package makes
-// goes through it, the canaries' included. An embedder that paces its calls (pacer) waits before
+// goes through it, the canaries' included. An embedder that paces its calls
+// (embed.RateLimitedEmbedder, which cmd/dispatch wraps around the queue's embedder) waits before
 // each one, at its slowest retry.MaxDelay (5 minutes), longer than claimWindow, so that wait
 // renews renewal's claim as a reservation's wait does (waitOutDebt): unrenewed, the claim would
 // lapse mid-wait, and another process's scan would claim the rows and embed them again. The wait
@@ -130,7 +131,7 @@ func (p *proof) answered() <-chan struct{} {
 func (d Deps) embedDocuments(ctx context.Context, texts []string, renewal *claimRenewal) ([][]float32, error) {
 	var vectors [][]float32
 	var err error
-	if paced, ok := d.Embedder.(pacer); ok {
+	if paced, ok := d.Embedder.(*embed.RateLimitedEmbedder); ok {
 		vectors, err = paced.EmbedAfter(ctx, texts, embed.InputDocument, func(ctx context.Context, wait time.Duration) bool {
 			waitOutDebt(ctx, wait, renewal, renewClaimInterval)
 			return ctx.Err() == nil
