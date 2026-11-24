@@ -98,3 +98,54 @@ func TestAPlannerBeforeAnyPullRequestNamesNoStartCommit(t *testing.T) {
 		}
 	})
 }
+
+// reviewEndCommit is the end commit of the record of the review step's first run, the task's third
+// step; the test fails where no end was written.
+func (r *fixRig) reviewEndCommit() string {
+	r.t.Helper()
+	_, end := runRecords(r.t, r, record.PlaceStep, 3, 1)
+	if end == nil {
+		r.t.Fatalf("LEGION-208's records hold no end of the review step's run")
+	}
+	return commitOf(end.EndCommit)
+}
+
+// A review step that a review decision ends ends at the commit the review read, the head its
+// Legion footer names, whatever the pull request's head is then: beside a fix that pushed Y, the
+// reviewer's approval of X and its request for changes at X each end the review step at X, before
+// the reviewer's completion names any commit. The controls, kept: a review step with no fix that
+// an approval of its own head ends keeps that head; and a stop of the review step beside the fix,
+// which no review decided and no completion reported, ends it at the task's head, Y.
+func TestAReviewDecisionEndsItsStepAtTheReviewedCommit(t *testing.T) {
+	for _, state := range []string{"approved", "changes_requested"} {
+		t.Run(state+" beside a fix that pushed Y", func(t *testing.T) {
+			r := besideTheFix(t)
+			r.pushed(headTwo)
+			r.reviewOf(1, state, fixHead)
+			if got := r.reviewEndCommit(); got != fixHead {
+				t.Fatalf("the review step ends at %q, want %s, the commit its review read", got, fixHead)
+			}
+		})
+	}
+
+	t.Run("an approval with no fix ends the step at its own head", func(t *testing.T) {
+		r := reviewing(t)
+		seedClaimSession(t, r.pool, reviewClaim, "ses-reviewer")
+		seedPR(t, r.pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: statesRepo, Number: 42,
+			Branch: "legion/LEGION-208", HeadSHA: fixHead, Failing: []string{}, Cancelled: []string{},
+			Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateClean})
+		r.reviewOf(1, "approved", fixHead)
+		if got := r.reviewEndCommit(); got != fixHead {
+			t.Fatalf("the review step ends at %q, want %s, its own head", got, fixHead)
+		}
+	})
+
+	t.Run("a stop of the review beside the fix ends it at the task's head", func(t *testing.T) {
+		r := besideTheFix(t)
+		r.pushed(headTwo)
+		r.stop()
+		if got := r.reviewEndCommit(); got != headTwo {
+			t.Fatalf("the stopped review step ends at %q, want %s, the task's head", got, headTwo)
+		}
+	})
+}
