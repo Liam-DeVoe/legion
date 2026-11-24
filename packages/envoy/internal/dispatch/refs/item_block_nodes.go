@@ -53,6 +53,10 @@ type itemBlockNode struct {
 // edited before blocks were recorded) and changed at its changed revision's time. It belongs to
 // its item at that revision.
 //
+// Its predicate and its stored state and visibility are read in one probe of its `graph_nodes`
+// row rather than two (visibleStoredKind), as the block loader reads a document's blocks: the
+// graph read hands it every block of the kind at the ends of the edges it answers at once.
+//
 // Only a kind that records its revisions is read here: a message is never edited and has no
 // document of its own, and its blocks are resolved by loadMessageBlockNodes.
 func itemBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind ItemKind, ids []string, includeRemoved bool) ([]itemBlockNode, error) {
@@ -67,7 +71,7 @@ func itemBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind ItemKi
 	if tables.makers {
 		maker = "coalesce(b.made_by, t.author)"
 	}
-	storedJoin, storedColumns := storedNode(kind.BlockKind(), "b.node_id")
+	storedJoin, storedColumns, seen := visibleStoredKind(kind.BlockKind(), "b.node_id", "$3")
 	rows, err := q.Query(ctx, `
 		select b.node_id, b.block_id, b.excerpt, b.made_at, b.changed_revision, b.changed_at, b.removed_at,
 		       t.id::text, t.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), `+maker+`,
@@ -78,7 +82,7 @@ func itemBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind ItemKi
 		left join artifacts a on a.id = t.artifact_id
 		`+storedJoin+`
 		where b.node_id = any($1) and ($2 or b.position is not null)
-		and `+VisibleKind(kind.BlockKind(), "b.node_id", "$3"), ids, includeRemoved, VisibilityArg(who))
+		and `+seen, ids, includeRemoved, VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("load %s block nodes: %w", string(kind), err)
 	}

@@ -87,7 +87,10 @@ func QueueBacklinkCounts(b *pgx.Batch, who model.Actor, toKind string, ids, excl
 //
 // The acting credential is bound as $3, which every arm's visibility predicate names: an edge
 // whose source who may not see raises no count, by the same test the list of those edges binds
-// (readEdgeRows), so a count and its list cannot disagree.
+// (readEdgeRows), so a count and its list cannot disagree. Each arm binds its predicate through
+// the gate, as the list does (authorOnlyGate): only where its source can be reserved for its
+// author. The arms over a document's block keep theirs (gateKeeps), and every count holds them
+// (mentionBacklinkArms), so every statement still names $3, which Postgres must find in it to type.
 //
 // A count of one address binds that address itself and not an array of one, which is the
 // statement every page read of a single node runs (the issue read's own count). An array tells
@@ -333,7 +336,9 @@ func currentTuple(alias string) string {
 // deleted - a block a version no longer holds. The state is the node row's, the projection of
 // its own state tuples, so a block a later version restores holds its edges again. The second
 // is that node kind's predicate from the registry, which keeps an edge whose source the acting
-// person may not see out of the count exactly as it is out of the list (visibility.go).
+// person may not see out of the count exactly as it is out of the list (visibility.go). The first
+// is made on every arm; the second only where the gate keeps the predicate of kind (gateKeeps,
+// authorOnlyGate), so a source the store reserves for nobody is read for its state alone.
 //
 // Written apart - an `exists` over the node's primary key for the state, and the predicate's
 // own scalar subquery over the same key - the arm read that one row twice for every candidate
@@ -347,25 +352,40 @@ func currentTuple(alias string) string {
 // It is keyed as the view's join is, over the node's own primary key, so the count and the
 // view cannot read one tuple differently.
 func liveVisibleNode(kind, address string) string {
-	return liveNode(`'`+kind+`'`, address, VisibleKindRow(kind, "live", backlinkSeen))
+	visible := ""
+	if gateKeeps(kind) {
+		visible = VisibleKindRow(kind, "live", backlinkSeen)
+	}
+	return liveNode(`'`+kind+`'`, address, visible)
 }
 
-// liveVisibleNodeOf is liveVisibleNode over an edge whose source kind is a column, kindExpr: the
-// same one read of the node's row, with the predicate of the row's own kind over it (VisibleRow),
-// which compares each kind's author as that kind's entry states. The arm that binds it keeps only
-// sources of kinds the registry holds (storedSQL), so no row of a kind without a predicate reaches
-// it.
-func liveVisibleNodeOf(kindExpr, address string) string {
-	return liveNode(kindExpr, address, VisibleRow("live", backlinkSeen))
+// liveVisibleNodeOf is liveVisibleNode over an edge whose source kind is a column, kindExpr, of one
+// of kinds: the same one read of the node's row, with the predicate of the row's own kind over it
+// (VisibleRow), which compares each kind's author as that kind's entry states. The arm that binds
+// it keeps only sources of kinds the registry holds (storedSQL), so no row of a kind without a
+// predicate reaches it. The predicate is bound through the gate (authorOnlyGate) as kinds decides
+// it (NodeKinds.gate): not at all where the gate keeps the predicate of none of them, whole where
+// it keeps every one's, and otherwise behind the gate in SQL, tested on the row's own kind.
+func liveVisibleNodeOf(kinds NodeKinds, kindExpr, address string) string {
+	bind, inSQL := kinds.gate()
+	visible := ""
+	if bind {
+		visible = visibleRow("live", backlinkSeen, inSQL)
+	}
+	return liveNode(kindExpr, address, visible)
 }
 
 // liveNode is the one read of the node's row that liveVisibleNode and liveVisibleNodeOf make: the
 // row of the node kindExpr and address name, aliased live, whose state is not gone and which
-// visible, a predicate over live, holds.
+// visible, a predicate over live, holds where it is not empty.
 func liveNode(kindExpr, address, visible string) string {
+	if visible != "" {
+		visible = `
+			and ` + visible
+	}
 	return `exists (select 1 from graph_nodes live
-		where live.kind = ` + kindExpr + ` and live.id = ` + address + ` and live.state <> '` + graphstore.StateGone + `'
-			and ` + visible + `)`
+		where live.kind = ` + kindExpr + ` and live.id = ` + address + ` and live.state <> '` + graphstore.StateGone + `'` +
+		visible + `)`
 }
 
 // backlinkArm is one arm of graph_edges whose edge kind is a SQL literal rather than a column:
@@ -379,8 +399,9 @@ type backlinkArm struct {
 	from string
 	// fromKind and fromID are the node the arm's edge comes from: the kind the view writes as
 	// that arm's from_kind, and the expression that names the node under it. They are what the
-	// arm binds its visibility predicate over, so an edge whose source the acting person may
-	// not see raises no count, exactly as it is no row of the list (readEdgeRows).
+	// arm binds its visibility predicate over, where the gate keeps it (andGatedKind), so an edge
+	// whose source the acting person may not see raises no count, exactly as it is no row of the
+	// list (readEdgeRows).
 	fromKind string
 	fromID   string
 	// addressIs is the test the view's arm makes of the address itself, written as the tail of
@@ -439,7 +460,7 @@ func (a backlinkArm) sql(target backlinkTarget) string {
 		where += ` and `
 	}
 	read := `select ` + counted + ` from ` + a.from + join + ` where ` + where + keyed +
-		` and ` + VisibleKind(a.fromKind, a.fromID, backlinkSeen)
+		andGatedKind(a.fromKind, a.fromID, backlinkSeen)
 	if a.tupleKind == "" {
 		return read
 	}
@@ -475,7 +496,7 @@ func (a backlinkArm) tupleSQL(target backlinkTarget) string {
 // writes it as, and a block arm counts no finding. Every kind of storedFrom is one this build
 // resolves, so the count holds no edge whose node the list behind it cannot answer; and a source
 // is counted only while it is not gone and the acting person may see it, by its own kind's
-// predicate (liveVisibleNodeOf).
+// predicate, bound through the gate over the kinds of storedFrom (liveVisibleNodeOf).
 func (a backlinkArm) storedSQL(target backlinkTarget) string {
 	counted, join, keyed, _ := target.read(`tuple.to_id`)
 	addressed := graphstore.AddressKindSQL(`tuple.from_kind`, `tuple.from_id`)
@@ -489,7 +510,7 @@ func (a backlinkArm) storedSQL(target backlinkTarget) string {
 		` where tuple.to_kind = '` + target.kind + `' and tuple.kind = '` + a.kind +
 		`' and tuple.from_kind in (` + store.QuoteLiterals(stored) + `) and ` + addressed + ` in (` + store.QuoteLiterals(a.storedFrom) + `)` +
 		` and ` + keyed + ` and ` + currentTuple("tuple") +
-		` and ` + liveVisibleNodeOf(`tuple.from_kind`, `tuple.from_id`)
+		` and ` + liveVisibleNodeOf(NodeKinds{kinds: a.storedFrom}, `tuple.from_kind`, `tuple.from_id`)
 }
 
 // authoredByReasoning is the arm that counts, on a person's or a session's node, the authored_by
@@ -705,19 +726,24 @@ var backlinkArms = map[string][]backlinkArm{
 // the edge kind is a column, so an exclusion is a predicate and never drops an arm, and an empty
 // list adds nothing.
 //
-// Each arm carries the visibility predicate of the node its mention comes from: the refs arm's
-// source kind is a column, so it binds the registry over every kind at once (VisibleEnd, over
-// the from side's spelling of an id, and over a refs row's source kinds, none of them standing:
-// refsSources), and each block arm's source is a block of the kind its table holds.
+// Each arm carries the visibility predicate of the node its mention comes from, bound through the
+// gate (authorOnlyGate): only where that node can be reserved for its author. The refs arm's
+// source kind is a column of the kinds a refs row's source can be (refsSources: a document, an
+// ask, a comment or a message, none of them standing), which the store reserves for nobody, so it
+// binds none (andGatedEnd); a document block's arms bind the block predicate (gateKeeps); and the
+// arms over an ask's, a comment's or a message's blocks bind none (andGatedKind). The arms over
+// the store's tuples test the source's state on every arm (liveVisibleNode).
 func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string {
 	exclude := ""
 	if len(excludeKinds) > 0 {
 		exclude = ` and not (r.kind = any($4))`
 	}
 	counted, join, keyed, _ := target.read(`r.to_id`)
-	arm := func(relation, rest, visible string) string {
+	// source is the arm's tests of the node its mention comes from, opened with ` and `, or
+	// nothing where it makes none.
+	arm := func(relation, rest, source string) string {
 		return `select ` + counted + ` from ` + relation + join + `
-			where r.to_kind = '` + target.kind + `' and ` + keyed + rest + exclude + ` and ` + visible
+			where r.to_kind = '` + target.kind + `' and ` + keyed + rest + exclude + source
 	}
 	arms := []string{
 		// refs_to (to_kind, to_id). heldByABlock belongs on this arm alone: it is gated on
@@ -728,7 +754,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		// every other arm's from_kind is a literal, or one of a list of literals (storedSQL), of a
 		// kind nodeRegistry resolves, so the filter would drop nothing there.
 		arm(`refs r`, ` and r.from_kind = any($2) and not `+heldByABlock("r"),
-			VisibleEnd(refsSources, `r.from_kind`, `r.from_id`, false, backlinkSeen)),
+			andGatedEnd(refsSources, `r.from_kind`, `r.from_id`, false, backlinkSeen)),
 		// block_refs_to_source (to_kind, to_id, (artifact_id::text)), by its first two columns,
 		// over the rows that name no node. The view's own arm lists a block[] pointer's row only
 		// while block_ref_listed holds, the types test a typed block's pointer carries, and a row
@@ -737,7 +763,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		// the count the moment it leaves the list, with no rewrite of either.
 		arm(`block_refs r`, ` and (r.to_types is null or block_ref_listed(r.to_types, r.to_id))
 			and `+rowNamesNoNode(`r.node_kind`),
-			VisibleKind("block", `r.from_node`, backlinkSeen)),
+			andGatedKind("block", `r.from_node`, backlinkSeen)),
 		// The same links in the store, read through graph_tuples_as_of_in: every current
 		// relation a block states but its membership of its document, which is the artifact's
 		// own part_of arm, and its placement under the block holding it, which is no edge of
@@ -752,7 +778,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 			and r.kind <> '`+graphstore.TuplePartOf+`' and `+currentTuple("r")+`
 			and (r.kind = 'mentions' or block_ref_listed(block_pointer_targets(r.from_id, r.kind), r.to_id))
 			and `+blockRefCarries(BlockNodeKind, "r"),
-			liveVisibleNode("block", `r.from_id`)),
+			` and `+liveVisibleNode("block", `r.from_id`)),
 	}
 	// An answered ask's shaped, its tie to a block of its issue, which the store states from the
 	// ask's node and the view's tuple arm answers while the block_refs row of the pair, marked with
@@ -761,7 +787,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 	if target.kind == BlockNodeKind {
 		arms = append(arms, arm(`graph_tuples r`, ` and r.from_kind = '`+graphstore.KindAsk+`' and r.kind = '`+TupleShaped+`'
 			and `+currentTuple("r")+` and `+blockRefCarries(graphstore.KindAsk, "r"),
-			liveVisibleNode(graphstore.KindAsk, `r.from_id`)))
+			` and `+liveVisibleNode(graphstore.KindAsk, `r.from_id`)))
 	}
 	// One arm per item kind over the links its blocks hold: <kind>_block_refs_to
 	// (to_kind, to_id, (<item>::text)), then the blocks table's primary key for the join. The
@@ -770,7 +796,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 	// the view's answer rather than correcting it.
 	for _, item := range itemKinds {
 		arms = append(arms, arm(itemBlockLinks(item), ` and `+itemBlockCurrent,
-			VisibleKind(item.BlockKind(), `r.from_node`, backlinkSeen)))
+			andGatedKind(item.BlockKind(), `r.from_node`, backlinkSeen)))
 	}
 	return arms
 }

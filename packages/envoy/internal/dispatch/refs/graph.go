@@ -493,7 +493,12 @@ func excerptOf(node resolvedNode) *model.GraphExcerpt {
 // (visibility.go) and never applied to the rows in Go: an edge whose far end who may not see is
 // no row of this read, and neither is one at a block who may not see. That is what keeps a
 // count and the list behind it saying the same thing, since the count binds the same predicate
-// over the same ends (BacklinkCounts).
+// over the same ends (BacklinkCounts). Each predicate is bound through the gate (authorOnlyGate),
+// so it reads `graph_nodes` only for an end that can be reserved for its author: the far end of
+// an edge, whose kind is a column, is tested on its kind in SQL first, and an end whose kind is a
+// literal of the build - a block of the node read, or the block holding an edge out of it - binds
+// its kind's predicate only where the gate keeps it (andGatedKind): a document's block does, and a
+// block of an ask, a comment or a message, which the store reserves for nobody, binds none.
 //
 // The node's own kind is written into the statement as a literal and only its id is bound, as
 // the count writes the kind it counts for (backlinkCountSQL). graph_edges is a union of
@@ -553,7 +558,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		// The citer is the far end of an inbound edge, and the from side of an edge names an
 		// artifact by its uuid (edgeFrom).
 		from := edgeFrom("g")
-		source += ` and ` + VisibleEnd(AnyKind, "g.from_kind", from, false, seen)
+		source += andGatedEnd(AnyKind, "g.from_kind", from, false, seen)
 		own := source
 		if itemBlocks {
 			own += ` and not ` + repliesToABlockOf(repliesFrom(item), item, "g", blocks)
@@ -564,7 +569,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		case document:
 			arms += `
 			union all
-			` + keyedBlockArm("block", documentBlockIDs(id), VisibleKind("block", "g.to_id", seen)+` and `+source)
+			` + keyedBlockArm("block", documentBlockIDs(id), source+andGatedKind("block", "g.to_id", seen))
 			if query.WholeDocuments {
 				// An ask's row holds its question's links alone, so the only edge from an ask
 				// that cites the document in an option or in its answer is that part's.
@@ -575,38 +580,38 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		case itemBlocks:
 			arms += `
 			union all
-			` + keyedBlockArm(item.BlockKind(), itemBlockIDs(item, blocks), VisibleKind(item.BlockKind(), "g.to_id", seen)+` and `+source)
+			` + keyedBlockArm(item.BlockKind(), itemBlockIDs(item, blocks), source+andGatedKind(item.BlockKind(), "g.to_id", seen))
 		}
 	case query.Direction == "out" && document:
 		// The document's own edges name it by its uuid, but the one the store states out of it
 		// with no projection row behind it, which names it by its ref_key (edgeFrom), read through
 		// that ref_key.
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
-			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id + ` and not ` + heldByABlock("g") + `
-			and ` + VisibleEnd(AnyKind, "g.to_kind", "g.to_id", true, seen) + `
+			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id + ` and not ` + heldByABlock("g") +
+			andGatedEnd(AnyKind, "g.to_kind", "g.to_id", true, seen) + `
 			union all
 			select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
 			from graph_edges g where g.from_kind = ` + kind + ` and g.kind = '` + graphstore.TupleChangedByRun + `'
-			and g.from_id = (select a.ref_key from artifacts a where a.id = ` + blocks + `::uuid)
-			and ` + VisibleEnd(AnyKind, "g.to_kind", "g.to_id", true, seen) + `
+			and g.from_id = (select a.ref_key from artifacts a where a.id = ` + blocks + `::uuid)` +
+			andGatedEnd(AnyKind, "g.to_kind", "g.to_id", true, seen) + `
 			union all
 			select b.kind, b.to_kind, b.to_id, b.created_at, b.source_seq, b.from_node
-			from block_refs b where b.artifact_id = ` + blocks + `::uuid and ` + blockRefListed("b", "b.to_id") + `
-			and ` + VisibleKind("block", "b.from_node", seen) + ` and ` + VisibleEnd(AnyKind, "b.to_kind", "b.to_id", true, seen)
+			from block_refs b where b.artifact_id = ` + blocks + `::uuid and ` + blockRefListed("b", "b.to_id") +
+			andGatedKind("block", "b.from_node", seen) + andGatedEnd(AnyKind, "b.to_kind", "b.to_id", true, seen)
 	case query.Direction == "out" && itemBlocks:
 		tables, _ := item.tables()
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
-			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id + ` and not ` + heldByABlock("g") + `
-			and ` + VisibleEnd(AnyKind, "g.to_kind", "g.to_id", true, seen) + `
+			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id + ` and not ` + heldByABlock("g") +
+			andGatedEnd(AnyKind, "g.to_kind", "g.to_id", true, seen) + `
 			union all
 			select r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq, r.from_node
 			from ` + itemBlockLinks(item) + `
-			where r.` + tables.item + ` = ` + blocks + `::uuid and ` + itemBlockCurrent + `
-			and ` + VisibleKind(item.BlockKind(), "r.from_node", seen) + ` and ` + VisibleEnd(AnyKind, "r.to_kind", "r.to_id", true, seen)
+			where r.` + tables.item + ` = ` + blocks + `::uuid and ` + itemBlockCurrent +
+			andGatedKind(item.BlockKind(), "r.from_node", seen) + andGatedEnd(AnyKind, "r.to_kind", "r.to_id", true, seen)
 	case query.Direction == "out":
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
-			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id + `
-			and ` + VisibleEnd(AnyKind, "g.to_kind", "g.to_id", true, seen)
+			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id +
+			andGatedEnd(AnyKind, "g.to_kind", "g.to_id", true, seen)
 	default:
 		return nil, fmt.Errorf("reference direction %q must be in or out", query.Direction)
 	}
@@ -1037,23 +1042,16 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 // authors. It belongs to its document at its changed version.
 //
 // Its predicate and its stored state and visibility are read in one probe of its `graph_nodes`
-// row rather than two (VisibleKind and storedNode), since a read of a document's every block, or
-// of the 5,000 blocks a list of links points from, answers thousands of them at once. The lateral
-// join stored_visible over that row answers the two columns of the stored state and visibility
-// (StoredRowOf), null where the store holds no row, and VisibleKind's test of the same row under
-// the same key with the same comparison of its author (VisibleKindRow), which the read takes as
-// true where the store holds no row. So it answers the same nodes with the same state and
-// visibility as that pair, and reads `visibility` once under each of the two markers, as that
-// pair does. The join ends in `offset 0`, which keeps it a probe of the primary key per row, as
-// VisibleKind's scalar sub-plan is (visibleWhere): a lateral subquery Postgres may pull up is a
-// join it may hash from a scan of the whole store.
+// row rather than two (visibleStoredKind), since a read of a document's every block, or of the
+// 5,000 blocks a list of links points from, answers thousands of them at once.
 //
 // Its joins to artifacts and artifact_versions are lateral probes by key (nodeLoader).
 func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	held, args := blockNodesAddressed(ids, who)
+	storedJoin, storedColumns, seen := visibleStoredKind("block", "d.node_id", "$2")
 	rows, err := q.Query(ctx, `
 		select d.node_id, d.block_id, d.excerpt, d.changed_version, d.changed_at, changed.authors,
-		       `+documentColumns("a")+`, `+blockFirstColumns("first")+`, `+StoredColumnsOf("stored_visible")+`
+		       `+documentColumns("a")+`, `+blockFirstColumns("first")+`, `+storedColumns+`
 		from document_blocks d
 		cross join lateral (
 			select a.id, a.issue_key, a.project_key, a.session_id, a.slug, a.kind, a.is_primary
@@ -1064,13 +1062,8 @@ func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 			where changed.artifact_id = d.artifact_id and changed.number = d.changed_version limit 1
 		) changed on true
 		`+blockFirstVersion("first", "d.artifact_id", "d.block_id")+`
-		left join lateral (
-			select `+StoredRowOf("stored_visible_node")+`, `+VisibleKindRow("block", "stored_visible_node", "$2")+` as seen
-			from graph_nodes stored_visible_node
-			where stored_visible_node.kind = '`+StoredKindOf("block")+`' and stored_visible_node.id = d.node_id
-			offset 0
-		) stored_visible on true
-		where `+held+` and coalesce(stored_visible.seen, true)`, args...)
+		`+storedJoin+`
+		where `+held+` and `+seen, args...)
 	if err != nil {
 		return fmt.Errorf("load block nodes: %w", err)
 	}

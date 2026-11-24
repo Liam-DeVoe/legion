@@ -5,6 +5,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -91,6 +92,8 @@ type nodeKind struct {
 	// credentialAuthoredKind alone, the constructors of the kinds cybermonklabs/legion#4193 adds that
 	// take `author` - interaction, lens, lens_block, risk and constraint - each called in the
 	// commit that registers its kind; a lens_kind is always project-visible and takes neither.
+	// The reads that leave a predicate out for a kind that can hold no such node read the store's
+	// list back (authorOnlyGate).
 	authorOnly bool
 	// stated is true of an entry one of the constructors made, which is every entry whose
 	// predicate someone stated: the zero value of nodeVisibility is a predicate in its own
@@ -439,9 +442,40 @@ const StoredState = storedNodeAlias + ".stored_state"
 // of the same row. That is a choice for a loader that answers a handful of nodes. The block
 // loader answers thousands - every block of an 8,001-block document, the 5,000 blocks a list of
 // links points from - where the second probe cost a read of 5,001 blocks a fifth of its time
-// (check c-read-cost), so it reads both from one probe (loadBlockNodes).
+// (check c-read-cost), so it reads both from one probe (visibleStoredKind), as the loader of an
+// item's blocks does.
 func storedNode(kind, address string) (join, columns string) {
 	return StoredNodeJoin(`'`+StoredKindOf(kind)+`'`, address)
+}
+
+// visibleStoredKind is VisibleKind and storedNode of the node of kind whose id address names,
+// read in one probe of the node's `graph_nodes` row rather than two, for a loader that answers
+// many nodes at once: the block loader (loadBlockNodes) and the loader of an item's blocks
+// (itemBlockNodes). It answers the lateral join over that row the loader adds to its from list,
+// after every relation address names; the two columns that answer storedNode's state and
+// visibility from it (StoredRowOf), null where the store holds no row; and the predicate over
+// it, VisibleKind's test of the same row under the same key with the same comparison of its
+// author (VisibleKindRow), and true where the store holds no row, as VisibleKind reads such a
+// node. So the loader answers the same nodes with the same state and visibility as the pair it
+// replaces, and the join reads `visibility` once under each of the two markers, as that pair
+// does.
+//
+// The join ends in `offset 0`, which keeps it a probe of the primary key per row, as VisibleKind's
+// scalar sub-plan is (visibleWhere): a lateral subquery Postgres may pull up is a join it may hash
+// from a scan of the whole store. A kind the registry does not hold joins nothing and answers
+// false, as VisibleKind does.
+func visibleStoredKind(kind, address, param string) (join, columns, predicate string) {
+	if _, held := nodeRegistry[kind]; !held {
+		return "", "null::text, null::text", "false"
+	}
+	const alias, row = "stored_visible", "stored_visible_node"
+	join = `left join lateral (
+			select ` + StoredRowOf(row) + `, ` + VisibleKindRow(kind, row, param) + ` as seen
+			from graph_nodes ` + row + `
+			where ` + row + `.kind = '` + StoredKindOf(kind) + `' and ` + row + `.id = ` + address + `
+			offset 0
+		) ` + alias + ` on true`
+	return join, StoredColumnsOf(alias), `coalesce(` + alias + `.seen, true)`
 }
 
 // StoredNodeJoin is what a statement adds to answer the stored state and visibility of the node
@@ -461,8 +495,8 @@ func StoredNodeJoin(kindExpr, address string) (join, columns string) {
 // StoredRowOf is the stored state and the stored visibility of the `graph_nodes` row a statement
 // holds as alias, as two columns named stored_state and stored_visibility, the visibility opened by
 // StoredNodeMarker. A read that joins the node's row anyway selects these (api's lens read, the
-// constraints of an issue), and so do the join storedNode adds and the one loadBlockNodes adds,
-// so each reads that row once.
+// constraints of an issue), and so do the joins storedNode and visibleStoredKind add, so each reads
+// that row once.
 func StoredRowOf(alias string) string {
 	return alias + `.state as stored_state, ` + StoredNodeMarker + alias + `.visibility as stored_visibility`
 }
@@ -503,7 +537,8 @@ func setStored(node *model.GraphNode, stored StoredNode) {
 // lens_block), that column can hold (KindsOf), or every kind (AnyKind) where the end can be any
 // node - the far end of a tuple. The predicate binds the staleness test (StaleSQL) only where one
 // of those kinds is a standing kind, so a read whose ends can be none of a lens, a finding, a risk
-// or a constraint carries none of it.
+// or a constraint carries none of it. A read that binds its predicates through the gate
+// (authorOnlyGate) decides from the same kinds whether the end needs a predicate at all (gate).
 //
 // The test is gated on the row's kind (staleOfKindSQL), so over any other kind it reads nothing,
 // but the planner costs a predicate by every branch it holds: it charges the test's recursive
@@ -534,6 +569,24 @@ func (k NodeKinds) mayBeStanding() bool {
 	return k.any || slices.ContainsFunc(k.kinds, func(kind string) bool { return slices.Contains(standingKinds, kind) })
 }
 
+// gate is what the gate (authorOnlyGate) decides in Go of the predicate over an end of these
+// kinds: bind is whether a read binds it at all - whether the gate keeps the predicate of any
+// kind the end can be (gateKeeps) - and inSQL whether the predicate goes behind the gate in SQL,
+// tested on the end's own kind, which it need not where the gate keeps every one of those kinds'
+// predicates. An end of any kind (AnyKind) binds it behind the gate in SQL.
+func (k NodeKinds) gate() (bind, inSQL bool) {
+	if k.any {
+		return true, true
+	}
+	kept := 0
+	for _, kind := range k.kinds {
+		if gateKeeps(kind) {
+			kept++
+		}
+	}
+	return kept > 0, kept > 0 && kept < len(k.kinds)
+}
+
 // VisibleEnd is the predicate over an end of an edge, whose node kind is a column rather than a
 // literal: one read of `graph_nodes` keyed on that column and on the id beside it, with the
 // artifact's address rewrite (artifactStoreAddress) applied where the column says artifact, the
@@ -549,6 +602,13 @@ func (k NodeKinds) mayBeStanding() bool {
 // its edge anyway (resolveNodes), and refusing here would refuse the whole read for one row a
 // newer build wrote.
 func VisibleEnd(kinds NodeKinds, kindExpr, idExpr string, byRefKey bool, param string) string {
+	return visibleEnd(kinds, kindExpr, idExpr, byRefKey, param, false)
+}
+
+// visibleEnd is VisibleEnd, with its read of `graph_nodes` behind the gate (authorOnlyGate),
+// tested on the end's own kind, where gated says so (andGatedEnd). The staleness test stays
+// beside the gate.
+func visibleEnd(kinds NodeKinds, kindExpr, idExpr string, byRefKey bool, param string, gated bool) string {
 	address := idExpr
 	if !byRefKey {
 		address = `case ` + kindExpr + ` when 'artifact' then ` + artifactStoreAddress(idExpr) + ` else ` + idExpr + ` end`
@@ -557,8 +617,24 @@ func VisibleEnd(kinds NodeKinds, kindExpr, idExpr string, byRefKey bool, param s
 	if kinds.mayBeStanding() {
 		stale = ` and not ` + staleOfKindSQL(kindExpr, idExpr)
 	}
-	return VisibilityMarker + `every kind */(` + visibleWhere(storedKindSQL(kindExpr), address, authorIsOfRow(`visible_node`, param)) +
-		stale + `)`
+	visible := visibleWhere(storedKindSQL(kindExpr), address, authorIsOfRow(`visible_node`, param))
+	if gated {
+		visible = authorOnlyGate(kindExpr, idExpr, visible)
+	}
+	return VisibilityMarker + `every kind */(` + visible + stale + `)`
+}
+
+// andGatedEnd is ` and ` VisibleEnd's predicate over an end of kinds, for a read that binds it
+// through the gate (authorOnlyGate), and nothing where the gate keeps the predicate of no kind
+// the end can be: VisibleEnd whole where it keeps every one's, and otherwise VisibleEnd with its
+// read of `graph_nodes` behind the gate in SQL (NodeKinds.gate), the graph read's end of any
+// kind (AnyKind) among them.
+func andGatedEnd(kinds NodeKinds, kindExpr, idExpr string, byRefKey bool, param string) string {
+	bind, inSQL := kinds.gate()
+	if !bind {
+		return ""
+	}
+	return ` and ` + visibleEnd(kinds, kindExpr, idExpr, byRefKey, param, inSQL)
 }
 
 // VisibleNode is the predicate of a node whose kind is a column of the read's own query rather
@@ -584,7 +660,18 @@ func VisibleNode(kindExpr, idExpr, param string) string {
 // does the count of an arm whose tuples come out of nodes of several kinds (liveVisibleNodeOf). A
 // stale row of a standing kind is no row it admits (staleOfKindSQL), as VisibleKind holds one.
 func VisibleRow(alias, param string) string {
-	return VisibilityMarker + `the row's own kind */(` + visibleHeldRow(alias, authorIsOfRow(alias, param)) +
+	return visibleRow(alias, param, false)
+}
+
+// visibleRow is VisibleRow, with its test of the row's visibility behind the gate
+// (authorOnlyGate), tested on the row's own kind, where gated says so (liveVisibleNodeOf). The
+// staleness test stays beside the gate.
+func visibleRow(alias, param string, gated bool) string {
+	visible := visibleHeldRow(alias, authorIsOfRow(alias, param))
+	if gated {
+		visible = authorOnlyGate(alias+`.kind`, alias+`.id`, visible)
+	}
+	return VisibilityMarker + `the row's own kind */(` + visible +
 		` and not ` + staleOfKindSQL(alias+`.kind`, alias+`.id`) + `)`
 }
 
@@ -653,4 +740,68 @@ func authorIsOfRow(alias, param string) string {
 	}
 	return `(case when ` + graphstore.AddressKindSQL(alias+`.kind`, alias+`.id`) + ` in (` + registrySQL.credentialCompared + `) then ` +
 		graphstore.AuthorCredentialIsSQL(alias+`.made_by`, param) + ` else ` + proved + ` end)`
+}
+
+// storeAdmitsAuthor is the kinds the store takes a node reserved for its author of
+// (graphstore.AuthorOnlyKinds), the kinds this registry flags (nodeKind.authorOnly) and hands it at
+// init (graphstore.AdmitAuthorOnly), and those kinds as the literals of an `in` list, read once, by
+// the first read that gates a predicate on them (authorOnlyGate, gateKeeps): after every init has
+// run, so after this registry's own has handed them over. The gate reads the store's own list and
+// keeps none of its own, so the gate and the store's refusal are one definition and cannot drift
+// apart.
+var storeAdmitsAuthor = sync.OnceValues(func() ([]string, string) {
+	kinds := graphstore.AuthorOnlyKinds()
+	return kinds, store.QuoteLiterals(kinds)
+})
+
+// authorOnlyGate is visible, a test of whether the acting person may see the node whose kind and
+// id are the SQL kindExpr and idExpr, made only where that node can be reserved for its author:
+// true, reading nothing, of a node whose kind as the graph addresses it
+// (graphstore.AddressKindSQL: a block whose id names a lens is a lens_block) is none of the kinds
+// the store admits `author` for (storeAdmitsAuthor), and visible of every other node.
+//
+// It answers what visible answers, row for row, because the store refuses `author` on a node of
+// every other kind before any node write (graphstore.CheckVisibilityAdmitted): visible holds of
+// every such node there is, so the gate spares the read visible's probe of `graph_nodes` for each
+// of them and changes no answer. This is the one statement of that reason, and every read that
+// binds a predicate only where its node can be reserved for its author binds it through this gate:
+// in SQL, here, for a node whose kind is a column of the read (andGatedEnd, liveVisibleNodeOf),
+// and in Go for one whose kind is a literal of the build or a column of kinds the read knows
+// (gateKeeps, NodeKinds.gate). The staleness test of a standing kind (staleOfKindSQL) is no
+// visibility test, and no part of the gate: every caller keeps it beside the gate.
+func authorOnlyGate(kindExpr, idExpr, visible string) string {
+	_, admitted := storeAdmitsAuthor()
+	return `(` + graphstore.AddressKindSQL(kindExpr, idExpr) + ` not in (` + admitted + `) or ` + visible + `)`
+}
+
+// gateKeeps is the gate (authorOnlyGate) decided in Go, for the predicate of kind, a kind of the
+// registry a read writes as a literal or knows a column to hold (NodeKinds): whether a read that
+// binds its predicates through the gate binds kind's.
+//
+// It keeps the predicate wherever a row the predicate reads can be one the store admitted
+// `author` on. The predicate reads the store's row under the kind the store keys kind by
+// (StoredKindOf), at whatever id the read names, and the store addresses that row by that stored
+// kind, or by lens_block where it is a block whose id names a lens (graphstore.AddressKind),
+// which the kind alone cannot tell: so a document's block keeps its predicate, since the store
+// keys a finding as a block. It keeps too the predicate of a kind the registry does not hold,
+// which answers false and so is no test the gate may spare, and the predicate of a standing kind,
+// which holds its node to not stale (notStaleOfLiteralKind): every standing kind is one the store
+// admits `author` for, and this keeps that test bound should one ever not be.
+func gateKeeps(kind string) bool {
+	if _, held := nodeRegistry[kind]; !held || slices.Contains(standingKinds, kind) {
+		return true
+	}
+	stored := StoredKindOf(kind)
+	admitted, _ := storeAdmitsAuthor()
+	return slices.ContainsFunc(admitted, func(other string) bool { return StoredKindOf(other) == stored })
+}
+
+// andGatedKind is ` and ` VisibleKind's predicate of kind, a literal of the build, at address,
+// where the gate keeps it (gateKeeps), and nothing where it does not: a node of a kind the store
+// reserves for nobody is one every reader may see (authorOnlyGate).
+func andGatedKind(kind, address, param string) string {
+	if !gateKeeps(kind) {
+		return ""
+	}
+	return ` and ` + VisibleKind(kind, address, param)
 }
