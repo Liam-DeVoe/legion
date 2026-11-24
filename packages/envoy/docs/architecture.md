@@ -588,14 +588,7 @@ by their brackets and strings, at any depth,
 and only its `topic` and `role` fields are read, each by its exact key, the last of a repeated key
 winning, as the plugins' `JSON.parse` reads them. So a later `"TOPIC"` key, an event id written as
 a number, or a value nested deeper than the 10,000 levels `encoding/json` reads does not change
-what it is. An edge listener's frame rule makes two exceptions (`cmd/listener/edge_frames.go`). It
-withholds first, under `ambiguous_key`, a frame that names `topic` or `role` under more than one
-key or under a key that differs from the name only in case, so a later `"TOPIC"` or `"ROLE"` key
-withholds the frame there rather than leaving its role as it is. And it judges a role message by
-its role only when its topic is a role lane or an agent subject in the old form or in the new form
-under one of the token's projects (`roleFrameVerdict`, `roleMarkOnAgentSubject`); a role-marked
-frame with any other topic, or none, it judges by its topic, as a frame with no role mark. The
-envelope is then read field by field, a field whose value its type does not take
+what it is. The envelope is then read field by field, a field whose value its type does not take
 left unset, so the message is still copied whatever the listener's wire rules or the envelope's
 own say of it. An `urgency` or `source` word a newer build adds is kept in the copy, for the
 holder's reader to judge, and an `issued_at` written as `1795191371979.0` is read as that integer,
@@ -623,6 +616,16 @@ not finished every five minutes, so a listener that stopped at any step delays a
 none. A record is finished by the first pass that starts more than 71 hours after the claim and
 reads to the end of the subject, and then ages out with the stream. A release of the role, the
 reaper's delete of its claim and a claim no read answers leave the records where they are.
+
+An edge listener's frame rule (`edgeFrameVerdict`, `cmd/listener/edge_frames.go`) tells a role
+message by the same read, inside a rule of its own. Before it reads the role, it withholds a frame
+that names `topic` or `role` under more than one key or under a key that differs from the name
+only in case (`ambiguous_key`), so a later `"TOPIC"` or `"ROLE"` key withholds the frame there
+rather than leaving its role as it is, a frame with a top-level `__proto__` key, and a Dispatch
+frame whose payload is no event of a project the token lists. It then judges a role message by
+its role only when its topic is a role lane or an agent subject in the old form or in the new form
+under one of the token's projects (`roleFrameVerdict`, `roleMarkOnAgentSubject`); a role-marked
+frame with any other topic, or none, it judges by its topic, as a frame with no role mark.
 
 The session relay delivers a role message to a session only while the role's claim names that
 session. It reads the claim from the role bucket for each frame that is a role message; when the

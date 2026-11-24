@@ -136,7 +136,8 @@ func TestEdgeFrameVerdictReadsEachFieldByItsExactKey(t *testing.T) {
 	secretRepo := payload(field{"repo", text("acme/secret")})
 	// privEvent is a Dispatch payload of the token's project, so a Dispatch frame below is judged
 	// by the rule the row names and not by its payload (dispatchFrameWithheld).
-	privEvent := payload(field{"issue_key", text("PRIV-1")}, field{"project", text("PRIV")}, field{"type", text("comment.created")})
+	privEvent := payload(field{"issue_key", text("PRIV-1")}, field{"project", text("PRIV")}, field{"type", text("comment.created")},
+		field{"actor", `{"kind":"user","id":"alice"}`}, field{"payload", `{"id":"c-1","body":"PRIV's comment"}`})
 	passed := frameVerdict{action: framePass, answered: true}
 	notHeld := frameDrops(withheldProjectNotHeld)
 	notInProject := frameDrops(withheldNotInProject)
@@ -432,8 +433,8 @@ func TestEdgeFrameVerdictCountsARoleMarkOnlyOnAnAgentSubject(t *testing.T) {
 	}
 	topic := func(s string) [2]string { return [2]string{"topic", text(s)} }
 	role := func(s string) [2]string { return [2]string{"role", text(s)} }
-	pubComment := [2]string{"payload", text(`{"issue_key":"PUB-1","project":"PUB","type":"comment.created","payload":{"body":"PUB's comment"}}`)}
-	privComment := [2]string{"payload", text(`{"issue_key":"PRIV-1","project":"PRIV","type":"comment.created","payload":{"body":"PRIV's comment"}}`)}
+	pubComment := [2]string{"payload", text(`{"issue_key":"PUB-1","project":"PUB","type":"comment.created","actor":{"kind":"user","id":"alice"},"payload":{"body":"PUB's comment"}}`)}
+	privComment := [2]string{"payload", text(`{"issue_key":"PRIV-1","project":"PRIV","type":"comment.created","actor":{"kind":"user","id":"alice"},"payload":{"body":"PRIV's comment"}}`)}
 	dispatch, agent := [2]string{"source", text("dispatch")}, [2]string{"source", text("agent")}
 	privKey, pubKey := store.RoleClaimKeyOf(privRole), store.RoleClaimKeyOf(pubRole)
 
@@ -444,8 +445,11 @@ func TestEdgeFrameVerdictCountsARoleMarkOnlyOnAnAgentSubject(t *testing.T) {
 		role string
 		want frameVerdict
 	}{
-		{"another project's issue event under the token's role mark (the review's frame)",
-			frame(topic(otherIssue), role(privRole), dispatch, pubComment), privKey, notHeld},
+		// The review's frame with a source other than Dispatch's, so the Dispatch rule
+		// (dispatchFrameWithheld) does not decide it before the role-mark rule; the row below holds
+		// the Dispatch form with the token's project's payload.
+		{"another project's issue topic under the token's role mark, as a frame of another source (the review's frame)",
+			frame(topic(otherIssue), role(privRole), agent, pubComment), privKey, notHeld},
 		{"another project's issue topic under the token's role mark, its Dispatch payload of the token's project",
 			frame(topic(otherIssue), role(privRole), dispatch, privComment), privKey, notHeld},
 		{"a GitHub event under the token's role mark",

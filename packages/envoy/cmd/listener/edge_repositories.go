@@ -128,11 +128,12 @@ func newEdgeRepositories(brokerURL string, account ciphertoken.Account, projects
 
 // newEdgeWithheldCounter registers envoy_edge_github_withheld_total, which counts every frame the
 // edge withholds: a GitHub frame by the repository rule, any frame of a project the session's
-// token does not list (withheldProjectNotHeld, edge_frames.go), and any frame that names a field
-// the edge judges by under a key readers disagree on (withheldAmbiguousKey, withheldPrototypeKey).
+// token does not list (withheldProjectNotHeld, edge_frames.go), any frame that names a field the
+// edge judges by under a key readers disagree on (withheldAmbiguousKey, withheldPrototypeKey), and
+// a Dispatch frame the edge cannot place in a project (withheldDispatchProjectUnread).
 func newEdgeWithheldCounter(met *metrics.Registry) *metrics.Counter {
 	return met.NewCounter("envoy_edge_github_withheld_total",
-		"Frames the edge listener withheld from a session, by reason: not_in_project, project_not_held, ambiguous_key and prototype_key acknowledged undelivered, answer_unknown acknowledged undelivered with its gap mark owed to the session's next frame")
+		"Frames the edge listener withheld from a session, by reason: not_in_project, project_not_held, ambiguous_key, prototype_key and dispatch_project_unread acknowledged undelivered, answer_unknown acknowledged undelivered with its gap mark owed to the session's next frame")
 }
 
 // read asks the broker for project's repositories now, and keeps the answer when it is a whole
@@ -336,7 +337,7 @@ func (e *edgeRepositories) relayVerdict(projects []string, subject string, data 
 // payload is no JSON object encoding/json reads (frameIsJSON, json.Valid: text JSON.parse refuses
 // too, which the plugin shows raw, or a document nested deeper than 10,000), or whose repo is no
 // owner/name. The payload and its repo are each read by their exact keys, as the plugin reads the
-// event it shows the session (exactFrameField, exactJSONString), and an event that names either
+// event it shows the session (exactFramePayload, exactJSONString), and an event that names either
 // under more than one key, or under a key that differs from its name only in case, is
 // errAmbiguousFrameKey: encoding/json, which read both before, takes the last key of any case, so
 // a later "Payload" or "Repo" key passed an event under a repository of the session's projects
@@ -346,14 +347,11 @@ func eventRepository(data []byte) (owner, name string, named bool, err error) {
 	if !frameIsJSON(data) {
 		return "", "", false, nil
 	}
-	payload, named, err := exactFrameField(data, "payload")
+	payload, named, err := exactFramePayload(data)
 	if err != nil || !named {
 		return "", "", false, err
 	}
-	if !json.Valid([]byte(payload)) {
-		return "", "", false, nil
-	}
-	repo, named, err := exactJSONString([]byte(payload), "repo")
+	repo, named, err := exactJSONString(payload, "repo")
 	if err != nil || !named {
 		return "", "", false, err
 	}

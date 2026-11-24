@@ -1664,25 +1664,39 @@ describe("renderInbound dispatch events", () => {
     expect(messageContent).toContain("message-1");
   });
 
-  test("renders an unrecognized-shape dispatch payload as its raw structured object", () => {
-    const rendered = renderInbound(
-      JSON.stringify(
-        envelope({
-          source: "dispatch",
-          payload: JSON.stringify({
-            secret: "now visible as data, not prose", // fixture-secret: a field of an unrecognized Dispatch payload, rendered as data; not a credential, never held
-            unexpected: { nested: true },
-          }),
-        })
-      ),
-      reader
-    );
-    const decoded = decode(rendered.content) as { envoy: { dispatch: unknown } };
+  test("shows none of a dispatch payload it reads no event of, and says the payload was unrecognised", () => {
+    // The edge listener passes a Dispatch frame by the event it parses with the same shapes
+    // (dispatchPayloadKind), so text around an event no reader judged is no card's to show:
+    // another project's event nested beside the token's own project is the case it closes.
+    const nested = {
+      event: {
+        issue_key: "PUB-1",
+        type: "comment.created",
+        actor,
+        payload: { id: "c-1", body: "PUB's comment" },
+      },
+      project: "PRIV",
+      issue_key: "PRIV-1",
+    };
+    for (const payload of [
+      JSON.stringify({
+        secret: "never shown", // fixture-secret: a field of an unrecognized Dispatch payload, never rendered; not a credential, never held
+        unexpected: { nested: true },
+      }),
+      JSON.stringify(nested),
+      "PUB's comment, no JSON",
+    ]) {
+      const rendered = renderInbound(
+        JSON.stringify(envelope({ source: "dispatch", payload })),
+        reader
+      );
+      const decoded = decode(rendered.content) as { envoy: Record<string, unknown> };
 
-    expect(decoded.envoy.dispatch).toEqual({
-      secret: "now visible as data, not prose", // fixture-secret: the same payload field, read back; never held
-      unexpected: { nested: true },
-    });
+      expect(decoded.envoy.dispatch).toBeUndefined();
+      expect(decoded.envoy.unrecognised).toBe("payload");
+      expect(rendered.content).not.toContain("never shown");
+      expect(rendered.content).not.toContain("PUB");
+    }
   });
 
   test("falls back to the generic summary path when a dispatch envelope has no payload", () => {

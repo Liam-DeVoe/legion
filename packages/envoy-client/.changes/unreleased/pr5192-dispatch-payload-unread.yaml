@@ -1,0 +1,9 @@
+kind: Fixed
+custom:
+  Issue: pr5192
+body: |-
+  `renderInbound` shows none of a Dispatch payload it reads no event of, and the card says the
+  payload was unrecognised (`unrecognised: payload`). Before, it showed that payload whole, so
+  a frame whose event an edge listener judged by one field could put another project's event,
+  nested beside it, in front of the session. The edge listener now passes a Dispatch frame only
+  when its payload has the shape this reads an event by.

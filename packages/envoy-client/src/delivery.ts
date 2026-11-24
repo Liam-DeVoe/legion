@@ -13,19 +13,20 @@ import {
   DISPATCH_TOPIC_PREFIX,
   type InboundDispatchEvent as DispatchEvent,
   DispatchEventSchema,
-  type DispatchTargetedCommentDeliverySchema,
   DispatchTargetedCommentPayloadSchema,
   DispatchTargetedDeliverySchema,
+  DispatchTargetedFrameSchema,
   DispatchTargetedMessagePayloadSchema,
-  DispatchTargetedResourceIDSchema,
   dedupeKeyNamesItsEvent,
   EnvelopeSchema,
   EXPECTS_REPLY_VALUES,
   type ExpectsReply,
   IssueEventPayloadSchema as IssuePayloadSchema,
+  isCommentTargetedDelivery,
   legacyAgentSubject,
   MessageDeliveryEventPayloadSchema as MessageDeliveryPayloadSchema,
   MessageEventPayloadSchema as MessagePayloadSchema,
+  RecoverableDispatchDeliveryFailureSchema,
   type SessionAnswerRelation,
   SubscriptionRemovedEventPayloadSchema as SubscriptionRemovedPayloadSchema,
   topicForms,
@@ -409,61 +410,6 @@ export function createDeliveryDedupe(now: () => number = Date.now): DeliveryDedu
     },
   };
 }
-
-function isCommentTargetedDelivery(
-  delivery: z.infer<typeof DispatchTargetedDeliverySchema>
-): delivery is z.infer<typeof DispatchTargetedCommentDeliverySchema> {
-  return "comment_id" in delivery;
-}
-
-const DispatchTargetedFrameSchema = z
-  .object({
-    event: DispatchEventSchema,
-    delivery: DispatchTargetedDeliverySchema,
-  })
-  .superRefine(({ event, delivery }, context) => {
-    if (
-      event.type === "message.created" &&
-      !isCommentTargetedDelivery(delivery) &&
-      DispatchTargetedMessagePayloadSchema.safeParse(event.payload).success
-    ) {
-      return;
-    }
-    if (
-      event.type === "comment.created" &&
-      isCommentTargetedDelivery(delivery) &&
-      DispatchTargetedCommentPayloadSchema.safeParse(event.payload).success
-    ) {
-      return;
-    }
-    context.addIssue({
-      code: "custom",
-      message:
-        event.type === "comment.created"
-          ? "targeted delivery requires a complete comment.created event"
-          : "targeted delivery requires a complete message.created event",
-    });
-  });
-
-const RecoverableDispatchDeliveryFailureSchema = z
-  .object({
-    event: z
-      .object({
-        type: z.enum(["message.created", "comment.created"]),
-        issue_key: z.string().nullable(),
-        payload: z.object({ id: z.string(), body: z.string().optional() }).passthrough(),
-      })
-      .passthrough(),
-    delivery: DispatchTargetedDeliverySchema,
-  })
-  .refine(
-    ({ event, delivery }) =>
-      event.type === "comment.created"
-        ? isCommentTargetedDelivery(delivery)
-        : !isCommentTargetedDelivery(delivery) &&
-          DispatchTargetedResourceIDSchema.safeParse(event.payload.id).success,
-    { message: "delivery resource must match its event type" }
-  );
 
 export type DeliveryEnvelope = Pick<
   InboundEnvelope,
@@ -1300,7 +1246,11 @@ export function renderInbound(
           if (edit.success) trailer = humanEditDiffBlock(edit.data.diff, edit.data.diff_truncated);
         }
       } else {
-        dispatchEvent = frame.raw;
+        // A payload neither event schema reads is shown as nothing but the note that it was
+        // unrecognised: its raw text is what no reader judged - the edge listener passes a
+        // Dispatch frame by the event it parses, as this does (dispatchPayloadKind), so the
+        // text around an event it cannot read is no event of a project it judged.
+        dispatchIssue = "payload";
         rejectedDelivery = frame.rejectedDelivery;
         malformedDelivery = frame.malformedDelivery === true;
       }
@@ -1398,7 +1348,9 @@ export function renderInbound(
           },
         }),
     ...(dispatchRendered
-      ? { dispatch: dispatchEvent }
+      ? dispatchEvent === undefined
+        ? {}
+        : { dispatch: dispatchEvent }
       : {
           ...(summaryIsHead ? {} : { summary: payloadSummary }),
           ...(message === undefined ? {} : { message }),
