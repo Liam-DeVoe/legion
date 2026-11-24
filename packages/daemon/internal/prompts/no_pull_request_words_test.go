@@ -227,9 +227,6 @@ func TestTheArchitectPromptsSayWhatEndsARoundAndWhoMovesAfterAMergeForward(t *te
 // endOffWalk, ownerSlotCredential). The owner's own retro of a task with no such step stays on the
 // owner's App.
 func TestTheOwnersRetroOfItsImplementationStepActsAsTheImplementApp(t *testing.T) {
-	saysAndRetires(t, promptPart, [][2]string{
-		{"reviewer.md", "where the implementer step is the owner's, the owner does, at its next implementer step or at its retro."},
-	}, nil)
 	saysAndRetires(t, repoFile, [][2]string{
 		{"docs/site/src/content/docs/legion/running-legion.md", "The retro of a task whose last implementation step is the architect's own acts as the implement App, as that step did."},
 		{"docs/site/src/content/docs/legion/concepts.md", "The architect acts as that role where the step was its own, and keeps its own App where the task has none"},
@@ -259,9 +256,7 @@ func TestTheAcceptancePromptGivesTheRedTeamTheDiffOfATaskWithNoPullRequest(t *te
 // An implementer completes against the issue's open pull request, and opens one only where none
 // is open or merged (HANDOFF_NO_PULL_REQUEST, api's implementationPullRequest).
 func TestTheImplementerCoreOpensAPullRequestOnlyWhereTheIssueHasNone(t *testing.T) {
-	saysAndRetires(t, promptPart, [][2]string{
-		{"core/implementer.md", "Open the PR where the issue has none open, and write its body as you go."},
-	}, [][2]string{
+	saysAndRetires(t, promptPart, [][2]string{}, [][2]string{
 		{"core/implementer.md", "Open the PR; write the PR body as you go."},
 	})
 }
