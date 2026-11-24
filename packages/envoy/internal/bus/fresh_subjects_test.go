@@ -115,6 +115,7 @@ func lastReread(client *Client) (started, ended time.Time) {
 // shares one read again: no judgement answers on a read that started before it asked. A topic the
 // stream captures is answered with no read at all.
 func TestABurstOfUncapturedJudgementsReadsTheDeployedSubjectsOncePerGap(t *testing.T) {
+	t.Parallel()
 	const (
 		uncaptured = "notifications.nostream.burst"
 		captured   = "notifications.team.burst"
@@ -162,6 +163,7 @@ func TestABurstOfUncapturedJudgementsReadsTheDeployedSubjectsOncePerGap(t *testi
 // captures - a newer build's start adding its own during a roll - reads them again and answers
 // captured, and keeps what it read, so DeployedStreamCaptures answers captured from then on too.
 func TestAnUncapturedJudgementReadsASubjectAddedSinceTheLastRead(t *testing.T) {
+	t.Parallel()
 	const topic = newerTopic
 	requireOnlyNewerCaptures(t)
 	client, js, _ := freshSubjectsClient(t)
@@ -218,6 +220,7 @@ func addNewerSubject(t *testing.T, js nats.JetStreamContext) {
 // kept its answer when it ended, so R1 put back the subjects as they stood before the newer
 // build's start, and the client judged the topic uncaptured until its next read.
 func TestASubjectsReadThatEndsAfterALaterOneKeepsTheLaterOnesSubjects(t *testing.T) {
+	t.Parallel()
 	const topic = newerTopic
 	requireOnlyNewerCaptures(t)
 	client, js, _ := freshSubjectsClient(t)
@@ -276,6 +279,7 @@ func TestASubjectsReadThatEndsAfterALaterOneKeepsTheLaterOnesSubjects(t *testing
 // subjects and keeps them; a newer build adds its subject; R2, started after R1 ended, keeps the
 // subjects with it.
 func TestASubjectsReadThatStartsAfterTheKeptOneReplacesIt(t *testing.T) {
+	t.Parallel()
 	const topic = newerTopic
 	requireOnlyNewerCaptures(t)
 	client, js, _ := freshSubjectsClient(t)
@@ -320,6 +324,7 @@ func TestASubjectsReadThatStartsAfterTheKeptOneReplacesIt(t *testing.T) {
 // any publish on a subject it captures, but under no Nats-Msg-Id and with no acknowledgement, so
 // the repeat was stored again and neither store was confirmed to the publisher.
 func TestAPublishJudgesItsTransportOnAFreshReadOfTheSubjects(t *testing.T) {
+	t.Parallel()
 	const topic = newerTopic
 	requireOnlyNewerCaptures(t)
 	client, js, uri := freshSubjectsClient(t)
@@ -454,6 +459,7 @@ func TestAPublishsTransportDoesNotWaitOnAnUnansweredSubjectsRead(t *testing.T) {
 // before R did, so R's older list, kept first, stood over it, and the client judged a topic under
 // the subject its own ensure had added uncaptured until its next read.
 func TestAnEnsureKeepsItsSubjectsOverAReadAnsweredBeforeItsUpdate(t *testing.T) {
+	t.Parallel()
 	const topic = newerTopic
 	requireOnlyNewerCaptures(t)
 	client, _, _ := freshSubjectsClient(t)

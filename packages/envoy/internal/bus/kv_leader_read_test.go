@@ -203,6 +203,7 @@ func TestTheLeaderReadAnswersAKeyAsGetDoes(t *testing.T) {
 // Control: with the marker read as no entry at all, as GetFromLeader reports it, the deleted and
 // purged keys answer revision 0 and the row fails.
 func TestTheLeaderLatestReadAnswersAKeyAsGetLatestDoes(t *testing.T) {
+	t.Parallel()
 	const bucket = "kv_leader_latest"
 	_, kv := leaderReadBucket(t, bucket)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

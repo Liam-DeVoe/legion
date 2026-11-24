@@ -43,6 +43,7 @@ func maxAge(t *testing.T, js nats.JetStreamContext, bucket string) time.Duration
 // raise asks for, so a bucket an operator set to keep its values without limit is left alone: a
 // raise raises an age and never lowers one.
 func TestRaiseMaxAgeLeavesABucketWithNoAgeLimitAlone(t *testing.T) {
+	t.Parallel()
 	bucket := "envoy_test_unlimited_age"
 	conn, js := maxAgeBucket(t, bucket, 0)
 	if err := RaiseMaxAge(t.Context(), conn, js, bucket, 20*time.Minute); err != nil {
@@ -56,6 +57,7 @@ func TestRaiseMaxAgeLeavesABucketWithNoAgeLimitAlone(t *testing.T) {
 // A bucket that keeps its values for less than the age the caller names is raised to it, and one
 // that already keeps them as long or longer is left alone.
 func TestRaiseMaxAgeRaisesAShorterAgeAndKeepsALongerOne(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		ttl  time.Duration

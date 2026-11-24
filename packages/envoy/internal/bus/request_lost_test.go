@@ -156,6 +156,7 @@ func requireLostBeforeHalfItsBound(t *testing.T, relay *testnats.UnansweredRelay
 // is confirmed and the call is waiting on its reply when the link is cut: the order a relay
 // restart met on a pod whose link died, where nats.go wakes no sync subscription and the call
 // waited the restart's whole 5 s.
+// It must not run in parallel: the call must fail within 500 ms of the reconnect it times.
 func TestAConsumerCallLostWithItsConnectionFailsAtTheReconnect(t *testing.T) {
 	uri := testnats.URL(t)
 	owner, err := ConnectOwningStream([]string{uri})
@@ -197,6 +198,7 @@ func TestAConsumerCallLostWithItsConnectionFailsAtTheReconnect(t *testing.T) {
 // fails it only at its own MaxWait (10 s), and only ForceReconnect or a close clears that
 // subscription's waiting requests, so a read sent into a socket that then died waited out its
 // caller's whole deadline.
+// It must not run in parallel: the read must fail within 500 ms of the reconnect it times.
 func TestAKeyValueReadLostWithItsConnectionFailsAtTheReconnect(t *testing.T) {
 	const (
 		bucket = "envoy_read_lost_with_connection"
@@ -239,6 +241,7 @@ func TestAKeyValueReadLostWithItsConnectionFailsAtTheReconnect(t *testing.T) {
 // client: a handle whose own client the search found first would end it before the held one on
 // some reads and not on others.
 func TestAReadThroughBoundedOnWaitsForNoOtherClientsHeldHandshake(t *testing.T) {
+	t.Parallel()
 	const (
 		bucket = "envoy_read_beside_held_handshake"
 		key    = "ses_read_beside"
@@ -304,6 +307,7 @@ func TestAReadThroughBoundedOnWaitsForNoOtherClientsHeldHandshake(t *testing.T) 
 // drops its request, and the cut comes once that request is out, by when the watch, which starts
 // beside the call, has read the connection's reconnect count. The reconnect takes at most a
 // quarter of the bound, and the read fails before half of it.
+// It must not run in parallel: the reconnect must come within 2 s, a quarter of lostReadBound.
 func TestARoleReadLostWithItsConnectionFailsAtTheReconnectNotAtItsBound(t *testing.T) {
 	const role = "reviewer"
 	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), "$JS.API.DIRECT.GET.KV_"+RoleClaimBucket+".$KV."+RoleClaimBucket+"."+role)
@@ -365,6 +369,7 @@ func TestARoleReadLostWithItsConnectionFailsAtTheReconnectNotAtItsBound(t *testi
 // GetFromLeader of a role's claim on a handle opened on the client's connection, held to
 // lostReadBound; the relay drops its request, and the cut comes once that request is out. The
 // reconnect takes at most a quarter of the bound, and the read fails before half of it.
+// It must not run in parallel: the reconnect must come within 2 s, a quarter of lostReadBound.
 func TestALeaderReadLostWithItsConnectionFailsAtTheReconnectNotAtItsBound(t *testing.T) {
 	const (
 		role  = "reviewer"
@@ -433,6 +438,7 @@ func streamInfoThroughRelay(t *testing.T) (*testnats.UnansweredRelay, *Client) {
 // a read whose answer died with the old socket held the guard for that whole window. The relay
 // drops the STREAM.INFO, and the cut comes once it is out. The reconnect takes at most a quarter
 // of the read's bound, and the read fails before half of it.
+// It must not run in parallel: the reconnect must come within 2 s, a quarter of lostReadBound.
 func TestATakeoverRecordsReadLostWithItsConnectionFailsAtTheReconnectNotAtItsBound(t *testing.T) {
 	relay, client := streamInfoThroughRelay(t)
 	requireLostBeforeHalfItsBound(t, relay, client.Connection(), "a read of the takeover records", lostReadBound, func(ctx context.Context) error {
@@ -452,6 +458,7 @@ func TestATakeoverRecordsReadLostWithItsConnectionFailsAtTheReconnectNotAtItsBou
 // fails with ErrRequestLostWithConnection at the reconnect when its connection is cut under its
 // STREAM.INFO, rather than waiting out its bound, as the read of the takeover records does. The
 // reconnect takes at most a quarter of the read's bound, and the read fails before half of it.
+// It must not run in parallel: the reconnect must come within 2 s, a quarter of lostReadBound.
 func TestAKeptLanesReadLostWithItsConnectionFailsAtTheReconnectNotAtItsBound(t *testing.T) {
 	relay, client := streamInfoThroughRelay(t)
 	requireLostBeforeHalfItsBound(t, relay, client.Connection(), "a read of the kept lanes", lostReadBound, func(ctx context.Context) error {

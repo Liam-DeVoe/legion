@@ -19,6 +19,7 @@ import (
 // the connection's next event. The connection itself is down throughout, so a flag that asked it
 // would read down; only the events say up.
 func TestTheConnectedFlagFollowsTheInstalledConnectionsLastEventInAnyOrder(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		// dialedUp is how the dial returned the connection: connected for a dial that waited for
@@ -62,6 +63,7 @@ func TestTheConnectedFlagFollowsTheInstalledConnectionsLastEventInAnyOrder(t *te
 // A late event of a connection the client has replaced moves nothing: the flag follows the
 // connection installed after it.
 func TestALateEventOfAReplacedConnectionLeavesTheFlagToItsReplacement(t *testing.T) {
+	t.Parallel()
 	old, replacement := downConnection(t), downConnection(t)
 	c := &Client{name: t.Name()}
 	if err := c.install(old, false, true); err != nil {

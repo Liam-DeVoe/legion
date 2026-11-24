@@ -82,6 +82,7 @@ func TestPublishReportingDuplicateReportsTheStreamsVerdict(t *testing.T) {
 // and a repeat of it, from a redelivery that ended the same way, is stored once. An exception
 // under another key, or one that is not the listener's, carries none.
 func TestADeliveryExceptionPublishesUnderAMsgIdOfItsKey(t *testing.T) {
+	t.Parallel()
 	client, err := ConnectOwningStream([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)

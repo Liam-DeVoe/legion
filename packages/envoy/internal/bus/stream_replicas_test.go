@@ -606,6 +606,7 @@ func TestOneServerStoppedACreateAtThreeCopiesLandsAndTheStoppedMemberCatchesUp(t
 // A create at more copies than the cluster has servers fails the start, and the error names the
 // replica setting, as a refused raise to the same count does (TestARefusedRaiseNamesTheReplicaSetting).
 func TestACreateAtFiveCopiesOnThreeServersFailsNamingTheSetting(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	client, err := ConnectOwningStream(cluster.URLs(), WithReplicas(5))
 	if err == nil {
@@ -914,6 +915,7 @@ func TestTheServerVersionThatDefaultsAnUnsetConsumerCapIsReadFrom215Onwards(t *t
 // configuration that never succeeds, and one that missed it would crash-loop through a rolling
 // restart of the hub.
 func TestClusterStateAnswerReadsTheCodeOfEitherPackagesAnswer(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		err  error

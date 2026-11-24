@@ -555,6 +555,7 @@ func TestTheKeeperRaisesTheBucketsItsProgramNamesBackToTheirCopies(t *testing.T)
 // bucket there, since a pod whose NATS user lacks the grant for it opens none and must not have
 // the keeper refused on it every period. Until it is added the keeper leaves it alone.
 func TestTheKeeperRaisesABucketItsProgramAddsAfterTheStart(t *testing.T) {
+	t.Parallel()
 	cluster, js := startClusterJetStream(t)
 	const added = "envoy_keeper_added"
 	client := startOnCluster(t, cluster, WithReplicas(3), WithKeepInterval(testKeepInterval))

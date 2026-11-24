@@ -10,6 +10,7 @@ import (
 // subjectsCapture matches a literal topic against stream subjects by NATS's wildcard rules: `*` is
 // one token, a last `>` one or more.
 func TestSubjectsCaptureMatchesByNATSWildcardRules(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		subjects []string
 		topic    string
@@ -44,6 +45,7 @@ func TestSubjectsCaptureMatchesByNATSWildcardRules(t *testing.T) {
 // the start is every subject the stream itself carries (streamCarriedSubjects), the listener's
 // kept lane included, which is one more than the consumer filters take (streamSubjects).
 func TestReadStreamSubjectsReadsASubjectAddedAtRuntime(t *testing.T) {
+	t.Parallel()
 	client, err := ConnectOwningStream([]string{testnats.URL(t)}, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect: %v", err)

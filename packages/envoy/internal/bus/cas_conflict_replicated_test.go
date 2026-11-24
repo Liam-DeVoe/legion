@@ -214,6 +214,7 @@ func TestACursorWriteThatLosesToAReplicatingWriteIsCursorMoved(t *testing.T) {
 // not the 10071 a stream of one copy answers, and a lost race is a lost race whichever it answers.
 // Only 10071 was ErrTakeoverRecordMoved, so a takeover pass that lost its record to another write
 // on a replicated stream logged the loss as a failed write rather than skipping it as a lost race.
+// It must not run in parallel: routes frozen past the 4 s election timeout let a follower campaign.
 func TestATakeoverRecordWriteThatLosesToAReplicatingWriteIsMoved(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	client, err := ConnectOwningStream([]string{cluster.Servers[0].URL()}, WithReplicas(3))

@@ -304,6 +304,7 @@ func TestReachesPrivateStreamSubjectBoundsInterests(t *testing.T) {
 // list does not reach fails there. Its client list once named itself the listener's own while it
 // lacked the kept and resume lanes, and no case under either lane said so.
 func TestEveryPrivateStreamSubjectHasALiteralSharedCase(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile(filepath.Join("testdata", "private-stream-subjects.json"))
 	if err != nil {
 		t.Fatalf("read the shared cases: %v", err)

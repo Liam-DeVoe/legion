@@ -16,6 +16,7 @@ import (
 // JetStream publish to the session's key, so nothing stores it, and then cuts the link: nats.go
 // fails no request its connection drops, so without the connection watch the write waited out its
 // whole context and the registration answered 503 after it.
+// It must not run in parallel: the write must fail within 500 ms of the reconnect it times.
 func TestARegistrationWriteLostWithItsConnectionFailsAtTheReconnect(t *testing.T) {
 	const sessionID = "ses_registration_write_lost"
 	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), "$KV."+bus.SessionBucket+"."+sessionID)
@@ -50,6 +51,7 @@ func TestARegistrationWriteLostWithItsConnectionFailsAtTheReconnect(t *testing.T
 // loses and its next read is the leader's. The relay drops that read's request and then cuts the
 // link. Control: with the leader read made without bus.BoundedOn (readLatest before this row), it
 // waits out the call's context and the row fails.
+// It must not run in parallel: the leader read must fail within 500 ms of the reconnect it times.
 func TestARegistrationWritesLeaderReadLostWithItsConnectionFailsAtTheReconnect(t *testing.T) {
 	const sessionID = "ses_registration_leader_read_lost"
 	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), "$JS.API.STREAM.MSG.GET.KV_"+bus.SessionBucket)
@@ -94,6 +96,7 @@ func TestARegistrationWritesLeaderReadLostWithItsConnectionFailsAtTheReconnect(t
 // drops that read's stream message get and then cuts the link. Control: with the leader read made
 // without bus.BoundedOn (RefreshFromLeader before this row), it waits out the call's context and
 // the row fails.
+// It must not run in parallel: the refresh must fail within 500 ms of the reconnect it times.
 func TestASessionRefreshFromTheLeaderLostWithItsConnectionFailsAtTheReconnect(t *testing.T) {
 	const sessionID = "ses_refresh_leader_read_lost"
 	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), "$JS.API.STREAM.MSG.GET.KV_"+bus.SessionBucket)
