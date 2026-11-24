@@ -388,15 +388,16 @@ func (r *stepRecordsRig) rollBackStepRecords() {
 // release whose owner's plan picks the steps to any release before it takes that way back too
 // (docs/kubernetes.md, "Rolling back the release whose owner's plan picks the steps"), which drops
 // the plan's tables and columns, so the roll forward creates them again empty. The way back of the
-// givers of a plan version (planGiversMigration) runs first, as its header says, so the roll forward
-// adds its column again to the table it creates.
+// givers of a plan version, in the header of the migration whose name ends
+// _plan_earlier_givers.up.sql, runs first, as the guide orders the two, so the roll forward adds its
+// column again to the table it creates.
 func (r *stepRecordsRig) rollBackOwnersPlans() {
 	r.t.Helper()
 	all, err := migrations.All()
 	if err != nil {
 		r.t.Fatalf("read the embedded migrations: %v", err)
 	}
-	for _, suffix := range []string{planGiversMigration, inFlightPlanMigration} {
+	for _, suffix := range []string{"_plan_earlier_givers.up.sql", inFlightPlanMigration} {
 		at := slices.IndexFunc(all, func(migration migrations.Migration) bool { return strings.HasSuffix(migration.Name, suffix) })
 		if at < 0 {
 			r.t.Fatalf("no embedded migration ends %s", suffix)
@@ -408,9 +409,6 @@ func (r *stepRecordsRig) rollBackOwnersPlans() {
 		r.exec(strings.ReplaceAll(block, "<PROJECT>", r.cfg.Project))
 	}
 }
-
-// planGiversMigration ends the name of the migration that adds the givers of a plan version.
-const planGiversMigration = "_plan_earlier_givers.up.sql"
 
 // The record of a member of a tree: a child's acceptance is the work of the architect that owns
 // the child when its step starts, so the record of its step 5 names that architect, with the
