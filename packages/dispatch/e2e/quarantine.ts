@@ -170,6 +170,10 @@ export interface UnquarantinableFiles {
   readonly twoProcess: readonly string[];
 }
 
+/** No file the quarantine cannot take: what `readCheckout` (e2e/tools/quarantine-check.ts)
+ *  answers with no candidate, and what the tests read where they refuse no file. */
+export const noUnquarantinableFiles: UnquarantinableFiles = { embedder: [], twoProcess: [] };
+
 /** Why the quarantine cannot take `row`, or `undefined` where it can: its file is one of `files`,
  *  so a quarantine entry would leave it gating as before and run it ungated nowhere. Such a row is
  *  fixed in its own lines or given a fix entry, which the nightly's check reads the same way for

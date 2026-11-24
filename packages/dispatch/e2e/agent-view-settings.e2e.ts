@@ -62,10 +62,11 @@ const PENDING_PLACEHOLDER = "Waiting for the session to answer the switch…";
  *  one eight times over. */
 const PROBE = { intervals: [50, 50, 100, 100, 250] };
 
-/** A live session of the row's own (`rowSessionId`, e2e/test.ts), `row` telling a row's sessions
- *  apart: the relay's replay and responder are process-global, so a session another row seeded
- *  would carry that row's frames into this one, and Dispatch keeps the switches sent to a session
- *  and its answers by its id, for every person at once. */
+/** A live session under the running row's own id (`rowSessionId`, e2e/test.ts): the relay's
+ *  replay and responder are process-global, so a session another row seeded would carry that
+ *  row's frames into this one, and Dispatch keeps the switches sent to a session and its answers
+ *  by its id, for every person at once. Each row calls this once, so its id is the row's own
+ *  without `row`: `row` numbers the session's title, which the header draws. */
 function liveSession(row: number): FakeSession {
   return {
     capabilities: ["aside", "btw", "steer"],

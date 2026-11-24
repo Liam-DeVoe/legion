@@ -22,17 +22,17 @@ const COST_RIGS = 8;
  *  all drew the most a session can ever answer with. */
 export const COST_RIG_TURNS = AGENT_STREAM_LIMITS.historyMessages;
 
-/** A live session for the rail to pin, under `sessionID`. `last_seen` is taken when the row
- *  seeds, never at this module's scope, which a worker evaluates once and every later spec of
- *  that worker ages. */
-function costRig(sessionID: string, index: number): FakeSession {
+/** The `index`th live session for the rail to pin, under the running row's own id for it
+ *  (`rowSessionId`, e2e/test.ts). `last_seen` is taken when the row seeds, never at this
+ *  module's scope, which a worker evaluates once and every later spec of that worker ages. */
+function costRig(index: number): FakeSession {
   return {
     capabilities: ["aside", "btw", "steer"],
     dir: `/workspaces/cost-${index + 1}`,
     last_seen: Date.now() - 5_000,
     machine_id: "cost-host",
     roles: [],
-    session_id: sessionID,
+    session_id: rowSessionId(`cost${index + 1}`),
     title: `Cost ${index + 1}`,
   };
 }
@@ -50,8 +50,9 @@ function costRig(sessionID: string, index: number): FakeSession {
  * hold.
  */
 export async function seedPinnedRigsAtLimit(login: string): Promise<string[]> {
-  const ids = Array.from({ length: COST_RIGS }, (_, index) => rowSessionId(`cost${index + 1}`));
-  await setLiveSessions(ids.map((sessionID, index) => costRig(sessionID, index)));
+  const sessions = Array.from({ length: COST_RIGS }, (_, index) => costRig(index));
+  const ids = sessions.map((session) => session.session_id);
+  await setLiveSessions(sessions);
   await seedAgentStreamConversations(ids);
   for (const sessionID of ids) {
     await putAgentState(sessionID, { pinned: true }, { login });

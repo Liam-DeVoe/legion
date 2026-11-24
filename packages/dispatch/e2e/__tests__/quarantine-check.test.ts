@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { rowsOfListing } from "../configurations";
-import { entryLines, rowName, twoProcessRuns, type UnquarantinableFiles } from "../quarantine";
+import { entryLines, noUnquarantinableFiles, rowName, twoProcessRuns } from "../quarantine";
 import {
   annotationsPerPage,
   type BlameRange,
@@ -67,9 +67,6 @@ const pictures = "pictures.e2e.ts [chromium] a picture uploads @pr";
  *  hold every row flaky twice. */
 const noneUnlisted: Unlisted = new Map();
 
-/** No file the quarantine cannot take. */
-const noFiles: UnquarantinableFiles = { embedder: [], twoProcess: [] };
-
 /** The rows of `stillRows` with the pictures row's last change read from `ranges`, as the
  *  adapter reads it: its own lines from the listing, their newest commit from the blame. */
 function withPicturesBlame(ranges: (typeof blames)[string]): Map<string, RowChange> {
@@ -116,7 +113,7 @@ test("a row flaky in two runs of the fourteen days is named, with its runs and t
     [{ file: "pictures.e2e.ts", project: "chromium", title: "a picture uploads @pr" }, [101, 102]],
   ]);
   expect(decision.overdue).toEqual([]);
-  const { annotations, failed, summary } = report(decision, readAt, noFiles);
+  const { annotations, failed, summary } = report(decision, readAt, noUnquarantinableFiles);
   expect(failed).toBe(true);
   expect(summary).toContain(
     "- `pictures.e2e.ts [chromium] a picture uploads @pr`, flaky in 2 runs whose heads hold the " +
@@ -155,7 +152,7 @@ test("the same history names nothing once that row is quarantined", () => {
     noneUnlisted
   );
   expect(decision.toQuarantine).toEqual([]);
-  const { annotations, failed, summary } = report(decision, readAt, noFiles);
+  const { annotations, failed, summary } = report(decision, readAt, noUnquarantinableFiles);
   expect(failed).toBe(false);
   expect(annotations).toEqual([]);
   expect(summary).toContain("No entry has been held longer than 14 days.");
@@ -220,7 +217,7 @@ test("a row flaky twice in runs whose heads do not hold its own lines' last chan
         "2026-11-13T09:00:00Z",
     ],
   ]);
-  expect(report(decision, readAt, noFiles).summary).toContain(
+  expect(report(decision, readAt, noUnquarantinableFiles).summary).toContain(
     "- `pictures.e2e.ts [chromium] a picture uploads @pr` in " +
       "[run 101](https://github.com/cybermonklabs/legion/actions/runs/101) of 2026-11-08 " +
       `(schedule): its head ${head(101)} does not hold its own lines' last change, ` +
@@ -335,7 +332,7 @@ test("two merge groups created after a row's own lines last changed, whose heads
         "change, c2a88d81460fd2aad180969d9a04dc1515076732 at 2026-11-20T04:41:21Z",
     ],
   ]);
-  const { failed, summary } = report(decision, at, noFiles);
+  const { failed, summary } = report(decision, at, noUnquarantinableFiles);
   expect(failed).toBe(false);
   expect(summary).toContain(
     `- \`refresh-freshness.e2e.ts [chromium] ${title}\` in ` +
@@ -357,7 +354,7 @@ test("a run whose head cannot be placed against its row's last change is counted
   const because =
     `counted, though it cannot be told whether its head ${head(101)} holds its own lines' last ` +
     `change, ${"1".repeat(40)} at 2026-10-01T00:00:00Z: ${reason}`;
-  const { summary } = report(decision, readAt, noFiles);
+  const { summary } = report(decision, readAt, noUnquarantinableFiles);
   const section = summary.indexOf("#### Flakes counted from runs that could not be placed");
   expect(summary.slice(section, section + 4)).toEqual([
     "#### Flakes counted from runs that could not be placed",
@@ -380,7 +377,7 @@ test("the summary's count of the runs read says how many flakes it set aside for
   const { summary } = report(
     decide(history, [], fixes, stillRows, readAt, holds, noneUnlisted),
     readAt,
-    noFiles
+    noUnquarantinableFiles
   );
   expect(summary[2]).toBe(
     "Read the merge jobs of 4 runs of the 14 days before 2026-11-19T02:17:00.000Z: 1 schedule runs of dispatch-browser-nightly.yaml and 3 merge_group runs of ci.yaml. 3 of them named a flaky row. Flakes set aside because the run's head did not hold the row's last change: 1; because it did not hold the row's fix: 1. A pull request's runs are not read: its head can carry its own defect."
@@ -399,7 +396,7 @@ test("a fix whose commit is not on main fails the check", () => {
     noneUnlisted
   );
   expect(decision.offMain).toEqual([picturesFix]);
-  const { annotations, failed } = report(decision, readAt, noFiles);
+  const { annotations, failed } = report(decision, readAt, noUnquarantinableFiles);
   expect(failed).toBe(true);
   expect(annotations).toEqual([
     "::error title=dispatch-browser quarantine::the fix of pictures.e2e.ts [chromium] a picture " +
@@ -419,7 +416,7 @@ test("a fix older than fourteen days is named for its owner to delete, and fails
     noneUnlisted
   );
   expect(decision.spent).toEqual([{ committedDate: "2026-10-20T09:00:00Z", entry: picturesFix }]);
-  const { failed, summary } = report(decision, readAt, noFiles);
+  const { failed, summary } = report(decision, readAt, noUnquarantinableFiles);
   expect(failed).toBe(false);
   expect(summary).toContain('      fixed: "5555555555555555555555555555555555555555",');
 });
@@ -435,7 +432,7 @@ test("an entry held longer than fourteen days is named with its issue and the li
     noneUnlisted
   );
   expect(decision.overdue).toEqual([{ days: 18, entry: eighteenDays }]);
-  const { annotations, failed, summary } = report(decision, readAt, noFiles);
+  const { annotations, failed, summary } = report(decision, readAt, noUnquarantinableFiles);
   expect(failed).toBe(true);
   const lines = summary.slice(summary.indexOf("  ```ts") + 1, summary.indexOf("  ```ts") + 8);
   expect(lines).toEqual([
@@ -459,7 +456,7 @@ test("flaky rows a run counted and no row notice named are reported as unread", 
   const { annotations } = report(
     decide(short, [picturesEntry], [], stillRows, readAt, held(stillRows), noneUnlisted),
     readAt,
-    noFiles
+    noUnquarantinableFiles
   );
   expect(annotations).toEqual([
     "::warning title=dispatch-browser quarantine::run 106 counts 3 flaky rows that no row " +
@@ -540,7 +537,7 @@ test("a row of the embedder job flaky in two runs is named with a fix entry's li
       "https://github.com/cybermonklabs/legion/actions/runs/201 " +
       "https://github.com/cybermonklabs/legion/actions/runs/202",
   ]);
-  expect(report(decision, readAt, noFiles).summary).toContain(
+  expect(report(decision, readAt, noUnquarantinableFiles).summary).toContain(
     "  The controller files the issue that owns it. Add these lines to `quarantine` in " +
       "`packages/dispatch/e2e/quarantine.ts`, with that issue's key for `<KEY>`:"
   );
@@ -567,7 +564,7 @@ test("a row flaky twice that no row of its file is named as, while the checkout 
     new Map(),
     new Map([[rowName(renamed), []]])
   );
-  const { annotations, failed, summary } = report(decision, readAt, noFiles);
+  const { annotations, failed, summary } = report(decision, readAt, noUnquarantinableFiles);
   expect(failed).toBe(true);
   const section = summary.indexOf("#### Flaky rows this reading could not match");
   expect(summary.slice(section, section + 3)).toEqual([
@@ -593,7 +590,7 @@ test("a row flaky twice that no row of its file is named as, while the checkout 
   expect(decision.unmatched).toEqual([{ row: renamed, runs }]);
   const gone = decide(runs, [], [], new Map(), readAt, new Map(), noneUnlisted);
   expect(gone.absent).toEqual([renamed]);
-  const goneReport = report(gone, readAt, noFiles);
+  const goneReport = report(gone, readAt, noUnquarantinableFiles);
   expect(goneReport.failed).toBe(false);
   expect(goneReport.summary).toContain(
     "- `pictures.e2e.ts [chromium] a picture uploads before its rename`: the checkout does not " +
@@ -624,7 +621,7 @@ test("a row flaky twice by its own title alone, as runs before full titles named
     new Map(),
     new Map([[rowName(ownTitle), [meant]]])
   );
-  const { annotations, failed, summary } = report(decision, readAt, noFiles);
+  const { annotations, failed, summary } = report(decision, readAt, noUnquarantinableFiles);
   expect(summary).toContain(
     "- `offline-edits.e2e.ts [firefox] saves the draft @firefox`: its notices name a row inside " +
       "a `describe` by its own title alone, as a run whose head does not hold " +
@@ -1058,7 +1055,7 @@ test("the recorded answers read as these eleven runs, and decide and report noth
       unparsed: [],
       unplaced: [],
     });
-    expect(report(decision, recordedAt, noFiles)).toEqual({
+    expect(report(decision, recordedAt, noUnquarantinableFiles)).toEqual({
       annotations: [],
       failed: false,
       summary: [

@@ -29,6 +29,7 @@ import {
   entryLines,
   fixes,
   fixFaults,
+  noUnquarantinableFiles,
   quarantine,
   quarantineFaults,
   rowName,
@@ -218,9 +219,7 @@ test(
     // The controls: the planted row is of a file the embedder job's own listing holds, and read
     // against no such file it carries no other fault.
     expect(files.embedder).toContain(embedderRow[0].file);
-    expect(
-      quarantineFaults(embedderRow, retryingProjects, { embedder: [], twoProcess: [] })
-    ).toEqual([]);
+    expect(quarantineFaults(embedderRow, retryingProjects, noUnquarantinableFiles)).toEqual([]);
     expect(quarantineFaults(embedderRow, retryingProjects, files)).toEqual([
       "entry 1 (search-tiers.e2e.ts [chromium] a planted row of the embedder job) names the file " +
         "search-tiers.e2e.ts, which the embedder job runs on both lanes with no quarantine and " +
@@ -251,9 +250,7 @@ test(
     // sign-in spec, and read against no such file the entry carries no other fault.
     expect(files.twoProcess).toContain(entry.file);
     expect(files.twoProcess).toContain("signin.multiprocess.e2e.ts");
-    expect(quarantineFaults([entry], retryingProjects, { embedder: [], twoProcess: [] })).toEqual(
-      []
-    );
+    expect(quarantineFaults([entry], retryingProjects, noUnquarantinableFiles)).toEqual([]);
     expect(quarantineFaults([entry], retryingProjects, files)).toEqual([
       "entry 1 (two-builds.multiprocess.e2e.ts [chromium] a planted row of the two-process job) " +
         "names the file two-builds.multiprocess.e2e.ts, which the two-process job runs in the " +

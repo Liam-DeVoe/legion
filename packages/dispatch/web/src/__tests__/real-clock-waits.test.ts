@@ -410,17 +410,13 @@ function bindings(file: ts.SourceFile, names: WaitNames): Binding[] {
     ) {
       found.push({ source: moduleIs(node.moduleReference.expression.text), target: node.name });
     } else if (
-      (ts.isVariableDeclaration(node) || ts.isParameter(node)) &&
-      node.initializer !== undefined
-    ) {
-      found.push({ source: standsFor(node.initializer), target: node.name });
-    } else if (
-      ts.isBindingElement(node) &&
-      ts.isObjectBindingPattern(node.parent) &&
-      node.initializer !== undefined
-    ) {
       // The default of a name, or of a nested destructure, binds it wherever the destructure
       // takes its value from: a parameter, a `for … of` and a `catch` hand it none the scan reads.
+      (ts.isVariableDeclaration(node) ||
+        ts.isParameter(node) ||
+        (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent))) &&
+      node.initializer !== undefined
+    ) {
       found.push({ source: standsFor(node.initializer), target: node.name });
     } else if (ts.isBinaryExpression(node) && assignments.has(node.operatorToken.kind)) {
       found.push({ source: standsFor(node.right), target: node.left });

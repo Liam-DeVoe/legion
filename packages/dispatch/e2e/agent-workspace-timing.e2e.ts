@@ -96,17 +96,18 @@ const ORDINARY_RIGS = 3;
  *  hundred turns of the stream's limit. */
 const ORDINARY_TURNS = 6;
 
-/** One of R2's own case: a live session for the rail to pin, under `sessionID`. `last_seen` is
- *  taken when the row seeds, never at this module's scope, which a worker evaluates once and
- *  every later spec of that worker ages. */
-function ordinaryRig(sessionID: string, index: number): FakeSession {
+/** One of R2's own case: the `index`th live session for the rail to pin, under the running
+ *  row's own id for it (`rowSessionId`, e2e/test.ts). `last_seen` is taken when the row seeds,
+ *  never at this module's scope, which a worker evaluates once and every later spec of that
+ *  worker ages. */
+function ordinaryRig(index: number): FakeSession {
   return {
     capabilities: ["aside", "btw", "steer"],
     dir: `/workspaces/ordinary-${index + 1}`,
     last_seen: Date.now() - 5_000,
     machine_id: "ordinary-host",
     roles: [],
-    session_id: sessionID,
+    session_id: rowSessionId(`ordinary${index + 1}`),
     title: `Ordinary ${index + 1}`,
   };
 }
@@ -120,10 +121,9 @@ function ordinaryRig(sessionID: string, index: number): FakeSession {
  * wake comes back to.
  */
 async function seedPinnedOrdinaryRigs(login: string): Promise<string[]> {
-  const ids = Array.from({ length: ORDINARY_RIGS }, (_, index) =>
-    rowSessionId(`ordinary${index + 1}`)
-  );
-  await setLiveSessions(ids.map((sessionID, index) => ordinaryRig(sessionID, index)));
+  const sessions = Array.from({ length: ORDINARY_RIGS }, (_, index) => ordinaryRig(index));
+  const ids = sessions.map((session) => session.session_id);
+  await setLiveSessions(sessions);
   for (const [index, sessionID] of ids.entries()) {
     const frames = Array.from({ length: ORDINARY_TURNS }, (_, turn) => ({
       kind: "message",

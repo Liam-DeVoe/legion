@@ -80,6 +80,7 @@ import {
   entryLines,
   type FixEntry,
   fixes,
+  noUnquarantinableFiles,
   type QuarantineEntry,
   type QuarantineRow,
   quarantine,
@@ -1448,7 +1449,7 @@ export async function readCheckout(
   const changes = new Map<string, RowChange>();
   const unlisted = new Map<string, readonly string[]>();
   if (candidates.length === 0) {
-    return { changes, unlisted, unquarantinable: { embedder: [], twoProcess: [] } };
+    return { changes, unlisted, unquarantinable: noUnquarantinableFiles };
   }
   const config = "e2e/playwright.config.ts";
   const files = [...new Set(candidates.map((row) => row.file))];
