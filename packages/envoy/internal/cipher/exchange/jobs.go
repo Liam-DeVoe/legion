@@ -104,19 +104,6 @@ func (j JobProjects) String() string {
 	return jobPublic + "," + strings.ReplaceAll(j.projects, " ", ",")
 }
 
-// listed reports whether the entry holding j names a job list.
-func (j JobProjects) listed() bool { return j.scope != ProjectScopeUnset }
-
-// checkJob refuses what NewSet cannot serve in an entry that names a job list: a person or a
-// project beside the list, since an entry names a person and its project, or a job list, and
-// never both, and a fixed session name no request could name back. The list itself needs no
-// check, since only ParseJobProjects builds one.
-func checkJob(where string, job JobProjects, project, person, session string) error {
-	if person != "" || project != "" {
-		return fmt.Errorf("exchange: %s: the entry names the job list %s beside a person or a project (person %q, project %q); an entry names a person and its project, or a job list, and never both", where, job, person, project)
-	}
-	if session != "" && !ValidSession(session) {
-		return fmt.Errorf("exchange: %s: %s", where, sessionRule)
-	}
-	return nil
-}
+// Listed reports whether the entry holding j names a job list: false for the zero value alone,
+// which an entry naming a person holds.
+func (j JobProjects) Listed() bool { return j.scope != ProjectScopeUnset }

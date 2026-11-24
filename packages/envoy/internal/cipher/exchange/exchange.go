@@ -577,7 +577,7 @@ type mapping struct {
 // mappingOf is what an entry naming person, project and job gives its principal's tokens.
 func mappingOf(person, project string, job JobProjects) mapping {
 	switch {
-	case job.listed():
+	case job.Listed():
 		return mapping{projects: job.Projects()}
 	case project == "":
 		return mapping{person: person}
@@ -641,13 +641,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 		if !accountPattern.MatchString(entry.Account) {
 			return nil, fmt.Errorf("exchange: %s: an account is system:serviceaccount:<namespace>:<name>", where)
 		}
-		var err error
-		if entry.Job.listed() {
-			err = checkJob(where, entry.Job, entry.Project, entry.Person, entry.Session)
-		} else {
-			err = checkGrant(where, entry.Project, entry.Person, entry.Session, true)
-		}
-		if err != nil {
+		if err := checkGrant(where, entry.Job, entry.Project, entry.Person, entry.Session, true); err != nil {
 			return nil, err
 		}
 		if _, listed := set.accounts[entry.Account]; listed {
@@ -693,13 +687,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 		if strings.TrimSpace(entry.Ref) == "" {
 			return nil, fmt.Errorf("exchange: %s: the ref is required, since an entry with no ref matches no run", where)
 		}
-		var err error
-		if entry.Job.listed() {
-			err = checkJob(where, entry.Job, entry.Project, entry.Person, entry.Session)
-		} else {
-			err = checkGrant(where, entry.Project, entry.Person, entry.Session, false)
-		}
-		if err != nil {
+		if err := checkGrant(where, entry.Job, entry.Project, entry.Person, entry.Session, false); err != nil {
 			return nil, err
 		}
 		key := workflowKey{entry.Repository, entry.Workflow, entry.Ref}
@@ -731,19 +719,17 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 		if _, err := path.Match(entry.Instance, ""); err != nil {
 			return nil, fmt.Errorf("exchange: %s: the instance-name pattern %q is not a pattern: %w", where, entry.Instance, err)
 		}
-		var err error
-		switch {
-		case entry.Job.listed():
-			err = checkJob(where, entry.Job, entry.Project, entry.Person, entry.Session)
-		case (entry.Project == "") != (entry.Person == ""):
-			err = fmt.Errorf("exchange: %s: an entry names the person and the project together or neither (project %q, person %q)", where, entry.Project, entry.Person)
-		case entry.Person != "":
-			err = checkGrant(where, entry.Project, entry.Person, entry.Session, false)
-		case entry.Session != "" && !ValidSession(entry.Session):
-			err = fmt.Errorf("exchange: %s: %s", where, sessionRule)
+		if !entry.Job.Listed() && (entry.Project == "") != (entry.Person == "") {
+			return nil, fmt.Errorf("exchange: %s: an entry names the person and the project together or neither (project %q, person %q)", where, entry.Project, entry.Person)
 		}
-		if err != nil {
-			return nil, err
+		if entry.Job.Listed() || entry.Person != "" {
+			if err := checkGrant(where, entry.Job, entry.Project, entry.Person, entry.Session, false); err != nil {
+				return nil, err
+			}
+		} else if entry.Session != "" && !ValidSession(entry.Session) {
+			// An entry naming neither a person nor a job list is a machine that is its service and
+			// nothing else, so its session is all there is to check.
+			return nil, fmt.Errorf("exchange: %s: %s", where, sessionRule)
 		}
 		if _, listed := set.google[entry.Account]; listed {
 			return nil, fmt.Errorf("exchange: %s: the account is listed twice, and one account writes as one identity", where)
@@ -829,27 +815,54 @@ func jobProjects(identity string, job JobProjects, asked []string) ([]string, er
 	return listed, nil
 }
 
-// checkGrant refuses what every entry that names no job list shares: a blank person, which would
-// mint a token answerable to nobody, and a fixed session name no request could name back. So an
-// account or a workflow entry that names neither a person nor a job list is refused here. The
-// project is required too, except where noProject allows an empty one: an account entry may name
-// a person and no project, which is the shared public-session account's entry, minting named
-// tokens that name no project (a pod account many people launch must never act as one person's
-// own token). A project that is blank without being empty is refused everywhere, and so is one
-// that is no project key: every token the entry mints names it, the exchange stores and reads
-// that list through oauthwire.ParseProjects, which takes only project keys, so an entry naming
-// anything else would boot and then fail every trade.
-func checkGrant(where, project, person, session string, noProject bool) error {
-	if !(noProject && project == "") && strings.TrimSpace(project) == "" {
-		return fmt.Errorf("exchange: %s: the project is required, since the minted token may write one project; an entry names a person and its project, or a job list", where)
+// grant sets in c what an operator's entry naming person and project, or the job list job, gives
+// its token: for a person, Person, ProjectScopeNamed and the entry's one project or none
+// (entryProjects); for a job list, service as Service, the list's scope and its whole list
+// (jobProjects). identity is the caller as a refusal of the request's projects names it, and
+// service the identity a job's token names, which Pod, Workflow and Google each spell their own
+// way. It refuses what those two refuse, and c is then the caller's to drop.
+func (c *Claims) grant(identity, service, person, project string, job JobProjects, asked []string) error {
+	var err error
+	if job.Listed() {
+		c.Service, c.Scope = service, job.Scope()
+		c.Projects, err = jobProjects(identity, job, asked)
+	} else {
+		c.Person, c.Scope = person, ProjectScopeNamed
+		c.Projects, err = entryProjects(identity, project, asked)
 	}
-	if project != "" {
-		if err := oauthwire.ValidProjects([]string{project}); err != nil {
-			return fmt.Errorf("exchange: %s: the entry's project %v", where, err)
+	return err
+}
+
+// checkGrant refuses what an entry's grant cannot be, deciding first whether it names the job
+// list job. An entry that names one is refused a person or a project beside it, since an entry
+// names a person and its project, or a job list, and never both; the list itself needs no check,
+// since only ParseJobProjects builds one. Every other entry is refused a blank person, which
+// would mint a token answerable to nobody, so an account or a workflow entry that names neither a
+// person nor a job list is refused here. Its project is required too, except where noProject
+// allows an empty one: an account entry may name a person and no project, which is the shared
+// public-session account's entry, minting named tokens that name no project (a pod account many
+// people launch must never act as one person's own token). A project that is blank without being
+// empty is refused everywhere, and so is one that is no project key: every token the entry mints
+// names it, the exchange stores and reads that list through oauthwire.ParseProjects, which takes
+// only project keys, so an entry naming anything else would boot and then fail every trade. Every
+// entry, of either kind, is refused a fixed session name no request could name back.
+func checkGrant(where string, job JobProjects, project, person, session string, noProject bool) error {
+	if job.Listed() {
+		if person != "" || project != "" {
+			return fmt.Errorf("exchange: %s: the entry names the job list %s beside a person or a project (person %q, project %q); an entry names a person and its project, or a job list, and never both", where, job, person, project)
 		}
-	}
-	if strings.TrimSpace(person) == "" {
-		return fmt.Errorf("exchange: %s: the person is required, since a token acts for someone unless its entry names a job list", where)
+	} else {
+		if !(noProject && project == "") && strings.TrimSpace(project) == "" {
+			return fmt.Errorf("exchange: %s: the project is required, since the minted token may write one project; an entry names a person and its project, or a job list", where)
+		}
+		if project != "" {
+			if err := oauthwire.ValidProjects([]string{project}); err != nil {
+				return fmt.Errorf("exchange: %s: the entry's project %v", where, err)
+			}
+		}
+		if strings.TrimSpace(person) == "" {
+			return fmt.Errorf("exchange: %s: the person is required, since a token acts for someone unless its entry names a job list", where)
+		}
 	}
 	if session != "" && !ValidSession(session) {
 		return fmt.Errorf("exchange: %s: %s", where, sessionRule)
@@ -914,14 +927,7 @@ func (s *Set) Pod(token map[string]any, session string, projects []string) (Clai
 	}
 	entry := listing.account
 	claims := Claims{Session: name, Principal: AccountPrincipal(account)}
-	if entry.Job.listed() {
-		claims.Service, claims.Scope = account, entry.Job.Scope()
-		claims.Projects, err = jobProjects(account, entry.Job, projects)
-	} else {
-		claims.Person, claims.Scope = entry.Person, ProjectScopeNamed
-		claims.Projects, err = entryProjects(account, entry.Project, projects)
-	}
-	if err != nil {
+	if err := claims.grant(account, account, entry.Person, entry.Project, entry.Job, projects); err != nil {
 		return Claims{}, err
 	}
 	if entry.Session == "" {
@@ -1037,14 +1043,7 @@ func (s *Set) Workflow(token map[string]any, session string, projects []string) 
 		return Claims{}, err
 	}
 	claims := Claims{Session: name, Principal: workflowPrincipal(key)}
-	if entry.Job.listed() {
-		claims.Service, claims.Scope = workflowIdentity(key), entry.Job.Scope()
-		claims.Projects, err = jobProjects(repository+"/"+workflow, entry.Job, projects)
-	} else {
-		claims.Person, claims.Scope = entry.Person, ProjectScopeNamed
-		claims.Projects, err = entryProjects(repository+"/"+workflow, entry.Project, projects)
-	}
-	if err != nil {
+	if err := claims.grant(repository+"/"+workflow, workflowIdentity(key), entry.Person, entry.Project, entry.Job, projects); err != nil {
 		return Claims{}, err
 	}
 	return claims, nil
@@ -1103,26 +1102,18 @@ func (s *Set) Google(token map[string]any, session string, projects []string) (C
 	if err != nil {
 		return Claims{}, err
 	}
-	claims := Claims{Session: name, Scope: ProjectScopePerson, Principal: GooglePrincipal(identity.Account), Fleet: entry.Service}
-	if entry.Job.listed() {
-		if claims.Projects, err = jobProjects(identity.Account, entry.Job, projects); err != nil {
-			return Claims{}, err
-		}
-		claims.Service, claims.Scope = identity.Account, entry.Job.Scope()
-		return claims, nil
-	}
-	if entry.Person == "" {
+	claims := Claims{Session: name, Principal: GooglePrincipal(identity.Account), Fleet: entry.Service}
+	if !entry.Job.Listed() && entry.Person == "" {
 		if len(projects) > 0 {
 			return Claims{}, fmt.Errorf("%w: %s is the service %s and names no person, and the request named %s",
 				ErrProjectsNoPerson, identity.Account, entry.Service, oauthwire.JoinProjects(projects))
 		}
-		claims.Service = entry.Service
+		claims.Service, claims.Scope = entry.Service, ProjectScopePerson
 		return claims, nil
 	}
-	if claims.Projects, err = entryProjects(identity.Account, entry.Project, projects); err != nil {
+	if err := claims.grant(identity.Account, identity.Account, entry.Person, entry.Project, entry.Job, projects); err != nil {
 		return Claims{}, err
 	}
-	claims.Person, claims.Scope = entry.Person, ProjectScopeNamed
 	return claims, nil
 }
 

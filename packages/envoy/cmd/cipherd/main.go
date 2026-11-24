@@ -1442,7 +1442,7 @@ func vmPersonsByAccount(entries []exchange.GoogleEntry) map[string]string {
 func jobMachines(entries []exchange.GoogleEntry) int {
 	n := 0
 	for _, e := range entries {
-		if e.Job.Scope() != exchange.ProjectScopeUnset {
+		if e.Job.Listed() {
 			n++
 		}
 	}

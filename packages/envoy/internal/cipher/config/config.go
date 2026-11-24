@@ -1780,6 +1780,56 @@ func mappedAccountRefusal(cfg *Config) error {
 	return nil
 }
 
+// exchangeListingRefusal refuses an identity two exchange settings list: a Kubernetes service
+// account that BROKER_EXCHANGE_ACCOUNTS, BROKER_EXCHANGE_READ_ACCOUNTS and
+// BROKER_EXCHANGE_JOB_ACCOUNTS list more than once between them, or a workflow that
+// BROKER_EXCHANGE_WORKFLOWS and BROKER_EXCHANGE_JOB_WORKFLOWS both list. One identity has one
+// answer: listed in two settings, it would mint two kinds of token. exchange.NewSet refuses it
+// too, but only this refusal can name both settings. Each setting's parser refuses an identity
+// that setting lists twice, so a second listing is in a later setting: the refusal names that
+// setting, then the one that lists the identity first, then the identity, and says why a token of
+// the later setting cannot share it. Load calls it once, after it reads all five settings. An
+// account BROKER_VM_EXCHANGE_JOB_ACCOUNTS and BROKER_VM_EXCHANGE_ACCOUNTS both name is refused
+// where Load merges the two into the machines of BROKER_VM_SERVICES.
+func exchangeListingRefusal(cfg *Config) error {
+	const account, workflow = "service account", "workflow"
+	// listedBy is the setting that lists each identity, keyed by its kind and the identity as a
+	// refusal names it.
+	listedBy := map[[2]string]string{}
+	for _, entry := range cfg.ExchangeAccounts {
+		listedBy[[2]string{account, entry.Account}] = "BROKER_EXCHANGE_ACCOUNTS"
+	}
+	for _, entry := range cfg.ExchangeWorkflows {
+		listedBy[[2]string{workflow, entry.Repository + "=" + entry.Workflow + "=" + entry.Ref}] = "BROKER_EXCHANGE_WORKFLOWS"
+	}
+	// list indexes identity, of kind, by setting, and refuses it when an earlier setting lists it,
+	// with reason, which says why a token of setting cannot share it.
+	list := func(setting, kind, identity, reason string) error {
+		key := [2]string{kind, identity}
+		if first, listed := listedBy[key]; listed {
+			return fmt.Errorf("%s and %s both name the %s %s; %s, so name it in one of them", setting, first, kind, identity, reason)
+		}
+		listedBy[key] = setting
+		return nil
+	}
+	for _, entry := range cfg.ExchangeReadAccounts {
+		if err := list("BROKER_EXCHANGE_READ_ACCOUNTS", account, entry.Account, "one account mints one kind of token, a read-only one or one that writes as its person"); err != nil {
+			return err
+		}
+	}
+	for _, entry := range cfg.ExchangeJobAccounts {
+		if err := list("BROKER_EXCHANGE_JOB_ACCOUNTS", account, entry.Account, "one account mints one kind of token, and a job's names the account as its service and no person"); err != nil {
+			return err
+		}
+	}
+	for _, entry := range cfg.ExchangeJobWorkflows {
+		if err := list("BROKER_EXCHANGE_JOB_WORKFLOWS", workflow, entry.Repository+"="+entry.Workflow+"="+entry.Ref, "one workflow run has one answer, a token that acts for its person or a job's that names none"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // parseExchangeAccounts reads setting's whitespace-separated
 // <service account>=<project>=<person>[=<session>] entries, the identities BROKER_EXCHANGE_ACCOUNTS
 // lists, in order. The project may be empty (<service account>==<person>), which is the shared
@@ -1816,8 +1866,8 @@ func parseExchangeAccounts(setting, value string) ([]exchange.AccountEntry, erro
 // or a namespace's default account (podAccountRefusal); a service that is not a service's name,
 // or is policy.OwnerShared, the rule parseServiceAccounts holds a service to; and an account
 // listed twice, since one account reads as one identity. An account BROKER_EXCHANGE_ACCOUNTS
-// lists too is Load's to refuse, since it reads both settings. exchange.NewSet is the second
-// gate, and the session name's own form is its to refuse.
+// lists too is exchangeListingRefusal's to refuse, since it reads both settings. exchange.NewSet
+// is the second gate, and the session name's own form is its to refuse.
 func parseExchangeReadAccounts(setting, value string) ([]exchange.ReadEntry, error) {
 	var entries []exchange.ReadEntry
 	seen := map[string]bool{}
@@ -1848,8 +1898,8 @@ func parseExchangeReadAccounts(setting, value string) ([]exchange.ReadEntry, err
 // <service account>=<projects>[=<session>] entries, the job accounts BROKER_EXCHANGE_JOB_ACCOUNTS
 // lists, in order, each with its projects as Job and no person and no project. It refuses what
 // parseJobEntries refuses, an account podAccountRefusal refuses among them. An account another
-// exchange setting lists too is Load's to refuse, since it reads them all. exchange.NewSet is the
-// second gate, and the session name's own form is its to refuse.
+// exchange setting lists too is exchangeListingRefusal's to refuse, since it reads them all.
+// exchange.NewSet is the second gate, and the session name's own form is its to refuse.
 func parseExchangeJobAccounts(setting, value string) ([]exchange.AccountEntry, error) {
 	parsed, err := parseJobEntries(setting, value, "<service account>=<projects>[=<session>]", podAccountRefusal)
 	if err != nil {
@@ -2157,9 +2207,9 @@ func parseExchangeWorkflows(setting, value string) ([]exchange.WorkflowEntry, er
 // no project. It refuses, naming the setting and the entry: one not of that form or with a blank
 // repository, workflow or ref; projects parseJobProjects refuses; and a repository, workflow and
 // ref listed twice, since one workflow run writes as one identity. A workflow
-// BROKER_EXCHANGE_WORKFLOWS lists too is Load's to refuse, since it reads both settings.
-// exchange.NewSet is the second gate, and the repository's and the session name's own forms are
-// its to refuse.
+// BROKER_EXCHANGE_WORKFLOWS lists too is exchangeListingRefusal's to refuse, since it reads both
+// settings. exchange.NewSet is the second gate, and the repository's and the session name's own
+// forms are its to refuse.
 func parseExchangeJobWorkflows(setting, value string) ([]exchange.WorkflowEntry, error) {
 	var entries []exchange.WorkflowEntry
 	seen := map[string]bool{}
@@ -2745,45 +2795,14 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.ExchangeReadAccounts, err = parseExchangeReadAccounts("BROKER_EXCHANGE_READ_ACCOUNTS", getenv("BROKER_EXCHANGE_READ_ACCOUNTS")); err != nil {
 		return Config{}, err
 	}
-	if len(cfg.ExchangeReadAccounts) > 0 {
-		if cfg.ExchangeK8sAudience == "" {
-			return Config{}, fmt.Errorf("BROKER_EXCHANGE_READ_ACCOUNTS needs BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present")
-		}
-		// One account mints one kind of token: listed in both settings, it would have two
-		// answers, a token that writes as its person and one that only reads. exchange.NewSet
-		// refuses it too, but only this refusal can name both settings.
-		writers := make(map[string]bool, len(cfg.ExchangeAccounts))
-		for _, entry := range cfg.ExchangeAccounts {
-			writers[entry.Account] = true
-		}
-		for _, entry := range cfg.ExchangeReadAccounts {
-			if writers[entry.Account] {
-				return Config{}, fmt.Errorf("BROKER_EXCHANGE_READ_ACCOUNTS and BROKER_EXCHANGE_ACCOUNTS both name the service account %s; one account mints one kind of token, a read-only one or one that writes as its person, so name it in one of them", entry.Account)
-			}
-		}
+	if len(cfg.ExchangeReadAccounts) > 0 && cfg.ExchangeK8sAudience == "" {
+		return Config{}, fmt.Errorf("BROKER_EXCHANGE_READ_ACCOUNTS needs BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present")
 	}
 	if cfg.ExchangeJobAccounts, err = parseExchangeJobAccounts("BROKER_EXCHANGE_JOB_ACCOUNTS", getenv("BROKER_EXCHANGE_JOB_ACCOUNTS")); err != nil {
 		return Config{}, err
 	}
-	if len(cfg.ExchangeJobAccounts) > 0 {
-		if cfg.ExchangeK8sAudience == "" {
-			return Config{}, fmt.Errorf("BROKER_EXCHANGE_JOB_ACCOUNTS needs BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present")
-		}
-		// One account has one answer: listed beside a person's or a reader's entry, it would mint
-		// two kinds of token, and a job's names no person. exchange.NewSet refuses it too, but
-		// only this refusal can name both settings.
-		others := make(map[string]string, len(cfg.ExchangeAccounts)+len(cfg.ExchangeReadAccounts))
-		for _, entry := range cfg.ExchangeAccounts {
-			others[entry.Account] = "BROKER_EXCHANGE_ACCOUNTS"
-		}
-		for _, entry := range cfg.ExchangeReadAccounts {
-			others[entry.Account] = "BROKER_EXCHANGE_READ_ACCOUNTS"
-		}
-		for _, entry := range cfg.ExchangeJobAccounts {
-			if other, listed := others[entry.Account]; listed {
-				return Config{}, fmt.Errorf("BROKER_EXCHANGE_JOB_ACCOUNTS and %s both name the service account %s; one account mints one kind of token, and a job's names the account as its service and no person, so name it in one of them", other, entry.Account)
-			}
-		}
+	if len(cfg.ExchangeJobAccounts) > 0 && cfg.ExchangeK8sAudience == "" {
+		return Config{}, fmt.Errorf("BROKER_EXCHANGE_JOB_ACCOUNTS needs BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present")
 	}
 	if cfg.ExchangeWorkflows, err = parseExchangeWorkflows("BROKER_EXCHANGE_WORKFLOWS", getenv("BROKER_EXCHANGE_WORKFLOWS")); err != nil {
 		return Config{}, err
@@ -2794,20 +2813,11 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.ExchangeJobWorkflows, err = parseExchangeJobWorkflows("BROKER_EXCHANGE_JOB_WORKFLOWS", getenv("BROKER_EXCHANGE_JOB_WORKFLOWS")); err != nil {
 		return Config{}, err
 	}
-	if len(cfg.ExchangeJobWorkflows) > 0 {
-		if cfg.ExchangeGitHubIssuer == "" {
-			return Config{}, fmt.Errorf("BROKER_EXCHANGE_JOB_WORKFLOWS needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs present")
-		}
-		// One workflow run has one answer, as an account has (above).
-		persons := make(map[[3]string]bool, len(cfg.ExchangeWorkflows))
-		for _, entry := range cfg.ExchangeWorkflows {
-			persons[[3]string{entry.Repository, entry.Workflow, entry.Ref}] = true
-		}
-		for _, entry := range cfg.ExchangeJobWorkflows {
-			if persons[[3]string{entry.Repository, entry.Workflow, entry.Ref}] {
-				return Config{}, fmt.Errorf("BROKER_EXCHANGE_JOB_WORKFLOWS and BROKER_EXCHANGE_WORKFLOWS both name the workflow %s=%s=%s; one workflow run has one answer, a token that acts for its person or a job's that names none, so name it in one of them", entry.Repository, entry.Workflow, entry.Ref)
-			}
-		}
+	if len(cfg.ExchangeJobWorkflows) > 0 && cfg.ExchangeGitHubIssuer == "" {
+		return Config{}, fmt.Errorf("BROKER_EXCHANGE_JOB_WORKFLOWS needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs present")
+	}
+	if err := exchangeListingRefusal(&cfg); err != nil {
+		return Config{}, err
 	}
 	if cfg.PrivateProjects, err = exchange.ParsePrivateProjects(getenv("BROKER_PRIVATE_PROJECTS")); err != nil {
 		return Config{}, fmt.Errorf("BROKER_PRIVATE_PROJECTS: %w", err)
