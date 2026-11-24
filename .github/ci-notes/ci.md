@@ -2738,7 +2738,7 @@ means a step before it wrote the module cache. Read on 2026-11-24 over the 22 jo
 run 45317043698 (ci.yaml dispatched, every job selected) and the jobs of ci-caches.yaml run
 45323050174, lint's go-notices restore was the only one with such a line. A reading of every step
 before every restore of every workflow file, and of the scripts, actions and test files those steps
-run, found no other step that writes a path its restore names, but the envoy fill below. Two
+run, found one other step that writes a path its restore names, in the envoy fill below. Two
 earlier go commands write elsewhere: envoy-go-build runs the architecture-note and spec-file
 actions before its restore of the module cache, and their builds keep module and build caches of
 their own under `$RUNNER_TEMP` (.github/scripts/build-envoy-command.sh). No job restores
@@ -2747,16 +2747,16 @@ so a `bun install` writes no restored path.
 
 No check of the workflow text holds this rule. The go command lint's restore met was inside a test
 file a `bun test` step loads, which no reading of the step's `run:` sees. A rule that refuses a
-`go` line before a restore of the module cache passes that case and refuses the envoy fill below;
+`go` line before a restore of the module cache passes that case and refused the envoy fill below;
 one that also refuses `bun install` and `bun test` steps refuses six steps that write no restored
 path. A check at run time is exact: right before an extracting restore, fail when a path it names
 already holds anything, and when it cannot read one. That is the next step if a job breaks this
 rule again; until then the rule is this note and the line above each restore.
 
-One job restores over a step's writes on purpose: ci-caches.yaml's envoy job fills go-envoy and
-go-envoy-test in one job, and the go-envoy-test entry holds go-envoy's objects too, so its restore
-lands on the go-envoy build. Two jobs would end the overlap and take go-envoy's objects out of
-go-envoy-test, which is a change to what a family holds, not to the order of a job's steps. Its
-step "Let the go-envoy-test restore replace the module files the go-envoy restore left" makes the
-module directories writable first (`chmod -R u+w ~/go/pkg/mod`), and that restore logs no such
-line (job 138205905583, run 45323050174). A run-time check would refuse this job as it stands.
+The envoy fill had the second instance: ci-caches.yaml's envoy job filled go-envoy and
+go-envoy-test in one job, so the go-envoy-test restore unpacked over the go-envoy restore and
+build, and a step before it made the module cache writable (`chmod -R u+w ~/go/pkg/mod`) so tar
+could replace those files (no such line in job 138205905583, run 45323050174). go-envoy-test now
+fills in a job of its own, envoy-test, which restores first and then builds the listener and
+natsd as the envoy job does and the test binaries, so its entry still holds go-envoy's objects,
+built on its own entry, and the chmod step is gone. A run-time check would pass both jobs.

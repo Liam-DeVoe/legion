@@ -339,13 +339,10 @@ jobs:
           KEY: ${{ steps.go-notices.outputs.cache-primary-key }}-${{ github.sha }}
         run: echo "go-notices-${RUNNER_ARCH,,}=$KEY" >>"$GITHUB_OUTPUT"
 
-  # go-envoy and go-envoy-test. Both key on packages/envoy/go.mod's Go, the module every job that
-  # restores them sets Go up from, so one setup serves the two. Each push fills both again: go-envoy
-  # restores its newest entry, builds and saves, then go-envoy-test restores its own newest entry
-  # on top and builds and saves, so go-envoy-test's entry holds go-envoy's objects too and
-  # go-envoy's stays the small one. One leg per runner: the envoy lanes that restore them run on
-  # ubuntu-24.04-arm, and envoy-go-claim-model, whose deadlines were measured on ubuntu-24.04, and
-  # the browser lane's jobs restore them on ubuntu-24.04.
+  # go-envoy. It keys on packages/envoy/go.mod's Go, the module every job that restores it sets Go
+  # up from. Each push fills it again from its newest entry (the header says why). One leg per
+  # runner: the envoy lanes that restore it run on ubuntu-24.04-arm, and envoy-go-build and the
+  # browser lane's embedder restore it on ubuntu-24.04.
   envoy:
     if: inputs.only != 'dispatch-builds'
     strategy:
@@ -353,15 +350,12 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
-    # Compiling the test binary of every package of the envoy module on a cold module cache is
-    # the long step; the listener and natsd are minutes.
+    # The limit the job had while it filled go-envoy-test too, whose test build is the long one.
     timeout-minutes: 60
     outputs:
-      # The keys each leg saved, named by family and architecture as the daemon job's are.
+      # The key each leg saved, named by family and architecture as the daemon job's are.
       go-envoy-x64: ${{ steps.go-envoy-saved.outputs.go-envoy-x64 }}
       go-envoy-arm64: ${{ steps.go-envoy-saved.outputs.go-envoy-arm64 }}
-      go-envoy-test-x64: ${{ steps.go-envoy-test-saved.outputs.go-envoy-test-x64 }}
-      go-envoy-test-arm64: ${{ steps.go-envoy-test-saved.outputs.go-envoy-test-arm64 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -410,13 +404,39 @@ jobs:
           KEY: ${{ steps.go-envoy.outputs.cache-primary-key }}-${{ github.sha }}
         run: echo "go-envoy-${RUNNER_ARCH,,}=$KEY" >>"$GITHUB_OUTPUT"
 
-      # Go leaves each module directory of its module cache read-only, and tar can replace no file
-      # in a read-only directory: the go-envoy-test restore below unpacks into the module cache the
-      # go-envoy restore filled, and fails with "Cannot open: File exists" at every module the two
-      # entries share (GNU tar 1.35, a read-only directory unpacked over twice). Made writable, each
-      # such file is replaced, and the restore gives the directories their read-only mode back.
-      - name: Let the go-envoy-test restore replace the module files the go-envoy restore left
-        run: chmod -R u+w ~/go/pkg/mod
+  # go-envoy-test, on go-envoy's Go and runners. A job of its own, so its restore comes before
+  # every build that writes what it restores: it restores its newest entry, then builds the
+  # listener and natsd as the envoy job does and the test binary of every package, and saves. Its
+  # entry holds go-envoy's objects too, built here on its own entry: envoy-go's tests build the
+  # listener and natsd, and the browser lane's jobs that restore this family build commands of the
+  # same module. In one job with the envoy fill, this restore unpacked over that fill's build and
+  # needed the module cache made writable first.
+  envoy-test:
+    if: inputs.only != 'dispatch-builds'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    # Compiling the test binary of every package of the envoy module on a cold module cache is
+    # the long step.
+    timeout-minutes: 60
+    outputs:
+      # The key each leg saved, named by family and architecture as the daemon job's are.
+      go-envoy-test-x64: ${{ steps.go-envoy-test-saved.outputs.go-envoy-test-x64 }}
+      go-envoy-test-arm64: ${{ steps.go-envoy-test-saved.outputs.go-envoy-test-arm64 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
 
       # The newest entry of the family, found as the daemon job's restore finds its own.
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
@@ -428,6 +448,11 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
+
+      # The envoy job's build of the same name, so this entry holds those objects too.
+      - name: Build the listener and natsd of the envoy module
+        run: go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd
+        working-directory: packages/envoy
 
       # envoy-go's set: the test binary of every package of the envoy module, the integration
       # package's and the natslive build of internal/testnats among them. `go test -c` links each
@@ -463,7 +488,7 @@ jobs:
   # restores go-envoy first, as envoy-go-build does, for the module cache the vet reads. It runs on
   # ubuntu-24.04 alone, the runner envoy-go-build runs on, and its key carries that runner's
   # architecture as every family's does. A job of its own, so neither this fill nor the envoy
-  # job's can stop the other.
+  # jobs' can stop the other.
   envoy-darwin-vet:
     if: inputs.only != 'dispatch-builds'
     runs-on: ubuntu-24.04
@@ -555,7 +580,7 @@ jobs:
   # does not stop the others' deletes. Every leg runs on ubuntu-24.04-arm: gh and jq need nothing
   # of an x64 machine.
   refill-superseded:
-    needs: [daemon, notices, envoy, envoy-darwin-vet]
+    needs: [daemon, notices, envoy, envoy-test, envoy-darwin-vet]
     if: ${{ !cancelled() && inputs.only != 'dispatch-builds' }}
     strategy:
       fail-fast: false
@@ -566,8 +591,8 @@ jobs:
           - { job: notices, family: go-notices, arch: arm64 }
           - { job: envoy, family: go-envoy, arch: x64 }
           - { job: envoy, family: go-envoy, arch: arm64 }
-          - { job: envoy, family: go-envoy-test, arch: x64 }
-          - { job: envoy, family: go-envoy-test, arch: arm64 }
+          - { job: envoy-test, family: go-envoy-test, arch: x64 }
+          - { job: envoy-test, family: go-envoy-test, arch: arm64 }
           - { job: envoy-darwin-vet, family: go-envoy-darwin-vet, arch: x64 }
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
