@@ -302,6 +302,17 @@ function unescaped(text: string): string {
   return text.replace(/\\(["\\/nrt])/g, (_, escaped: string) => decoded[escaped] ?? escaped);
 }
 
+/** `text` with a form's `+` read as a space and each `%XX` decoded to its byte, which is how a
+ *  token in a logged URL query (`%20<token>`, `%3D<token>`) or a form body (`DPoP+<token>`) reads
+ *  as itself. */
+function urlDecoded(text: string): string {
+  return text
+    .replace(/\+/g, " ")
+    .replace(/%([0-9A-Fa-f]{2})/g, (_, hex: string) =>
+      String.fromCharCode(Number.parseInt(hex, 16))
+    );
+}
+
 /** Each JWK with a private part (`d`), anywhere in `value`. */
 function privateJwks(value: unknown, into: Jwk[]): void {
   if (Array.isArray(value)) {
@@ -408,19 +419,25 @@ async function scan(): Promise<void> {
   const keys = new Map<string, Jwk>();
   // Each text in every form a credential can sit in it: as written; with the escapes a JSON or
   // shell string writes a line ending, a quote or a slash in decoded, so a PEM key a file keeps as
-  // one JSON string (a sign-in record's box_key) reads as PEM; and each string value of every JSON
-  // document or line in it, which may itself hold JSON or PEM. Each form is read once.
+  // one JSON string (a sign-in record's box_key) reads as PEM; with a URL's percent-encoding and a
+  // form's `+` for a space decoded (urlDecoded), so a token in a logged query or form body reads
+  // as itself; and each string value of every JSON document or line in it, which may itself hold
+  // JSON or PEM. Each form is read once.
   const seen = new Set<string>();
   const queue = [...texts];
   for (let text = queue.pop(); text !== undefined; text = queue.pop()) {
     if (seen.has(text)) continue;
     seen.add(text);
-    queue.push(unescaped(text));
+    queue.push(unescaped(text), urlDecoded(text));
     for (const match of text.matchAll(/[A-Za-z0-9_-]{20,}/g)) base64url.add(match[0]);
     // RFC 7235's token68: `=` only as trailing padding. A broker token holds a `.` (authelia's
     // HMAC strategy writes `%s.%s`), so the base64url pattern finds only its halves, and an `=`
     // inside the class would take the `NAME=` before a token as part of it.
     for (const match of text.matchAll(/[A-Za-z0-9._~+/-]{20,}=*/g)) token68.add(match[0]);
+    // The broker token's own shape, two base64url parts joined by `.`: token68 takes a `/`, `+`,
+    // `~` or `.` before a token as part of it, as in a URL path or `DPoP+<token>`, and this does not.
+    for (const match of text.matchAll(/[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/g))
+      token68.add(match[0]);
     for (const block of text.matchAll(
       /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g
     )) {

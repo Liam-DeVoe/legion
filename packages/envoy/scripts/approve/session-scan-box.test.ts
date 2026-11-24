@@ -10,10 +10,11 @@
 // named, or whose broker log names no minted token's hash or no key binding: an instrument that
 // compared nothing has not passed.
 //
-// The control is a token of the shape the broker mints - a prefix and two base64url parts joined by
-// a `.` (authelia's HMAC strategy, `%s.%s`) - in a named process's environment, where a variable
-// reads `NAME=value`. The scan must find it there, so the read it refuses to skip is a read that
-// can find something.
+// The control is a token of the shape the broker mints - two base64url parts of 43 characters
+// joined by a `.`, with no prefix (authelia's HMAC strategy, `%s.%s`, built with an empty prefix:
+// oauth/provider.go's compose.NewOAuth2HMACStrategy) - in a named process's environment, where a
+// variable reads `NAME=value`, and in a file in the forms a log, a URL or an env file writes. The
+// scan must find it in each, so the read it refuses to skip is a read that can find something.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -39,9 +40,10 @@ afterAll(() => {
   rmSync(work, { recursive: true, force: true });
 });
 
-/** A token of the shape the broker mints: its prefix, then two base64url parts joined by `.`. */
+/** A token of the shape the broker mints: two base64url parts of 43 characters (32 bytes each)
+ *  joined by `.`, with no prefix. */
 function brokerShapedToken(): string {
-  return `authelia_at_${randomBytes(32).toString("base64url")}.${randomBytes(32).toString("base64url")}`;
+  return `${randomBytes(32).toString("base64url")}.${randomBytes(32).toString("base64url")}`;
 }
 
 function sha256(text: string): string {
@@ -219,4 +221,24 @@ test("control: a token of the broker's shape in a file as NAME=value, export NAM
   expect(exitCode, stderr).toBe(0);
   const found = (answer["hash_matches"] as { sha256: string }[]).map((match) => match.sha256);
   for (const token of tokens) expect(found).toContain(sha256(token));
+});
+
+test("control: a token of the broker's shape after a / in a URL or a path, or percent-encoded after %20, is found", {
+  timeout: 60_000,
+}, async () => {
+  const tokens = [brokerShapedToken(), brokerShapedToken(), brokerShapedToken()];
+  const dir = join(work, "box-url-forms");
+  mkdirSync(join(dir, "box"), { recursive: true });
+  writeFileSync(
+    join(dir, "box", "access.log"),
+    `GET https://dispatch.example/v1/${tokens[0]} HTTP/1.1\n/run/user/1000/${tokens[1]}\nGET /x?h=Authorization%3A%20DPoP%20${tokens[2]} HTTP/1.1\n`
+  );
+  const { answer, exitCode, stderr } = await scanCase("url-forms", "box", {
+    log: tokens.map((token) => mintedLine(sha256(token), "jkt")).join(""),
+    paths: ["box"],
+    pids: READABLE,
+  });
+  expect(exitCode, stderr).toBe(0);
+  const found = (answer["hash_matches"] as { sha256: string }[]).map((match) => match.sha256);
+  expect(tokens.map((token) => found.includes(sha256(token)))).toEqual([true, true, true]);
 });
