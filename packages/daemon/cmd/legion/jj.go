@@ -213,13 +213,14 @@ var jjDryRunQuiet = []string{"--config", "ui.quiet=false"}
 // revisionGiven gives it, which name the commits it named before the step, as the step left them:
 // once a metaedit of the step has run, every argument is held to them, whether or not it moved the
 // argument's own commits.
-// Each of its jj commands runs next, one after another, as a child in this process's group, with
-// the caller's repository and configuration options (jjPush.options), and so does each of its git
-// reads (gitRead), with the first git on PATH. Each jj command but one runs with
-// --ignore-working-copy, so it takes no snapshot; the one is the snapshot the push would take
-// itself (snapshot), which the step takes before its first read where git has moved HEAD or a
-// branch since jj last imported them (gitMoved), and otherwise before it changes a commit or a
-// word of the push, where errJJSnapshot says; snapshotted says how the real push runs after it.
+// Each of its jj commands runs next with the caller's repository and configuration options
+// (jjPush.options), and each of its git reads (gitRead) runs the first git on PATH with -C and the
+// workspace's root; they run one after another, each as a child in this process's group. Each jj
+// command but one runs with --ignore-working-copy, so it takes no snapshot; the one is the
+// snapshot the push would take itself (snapshot), which the step takes before its first read where
+// git has moved HEAD or a branch since jj last imported them (gitMoved), and otherwise before it
+// changes a commit or a word of the push, where errJJSnapshot says; snapshotted says how the real
+// push runs after it.
 type jjStep struct {
 	push   jjPush
 	next   string   // the jj each command of the step runs, and the push after them

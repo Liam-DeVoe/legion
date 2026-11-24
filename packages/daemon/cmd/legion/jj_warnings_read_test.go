@@ -209,12 +209,15 @@ func capturedStderrCases(t *testing.T) []jjOnceOnlyCase {
 // heading, a warning jj prints on every command, each warning with the lines jj prints as its
 // parts, and some with jj's colours, and jj's note of a key a read names and no configuration
 // sets. They are in an order that puts a block that jjOnceOnly keeps, one with no heading among
-// them, right after each that it drops. Among them are lines on each side of each edge of the
-// first lines that jjEveryCommand matches and the pod's wrapper's once_only copies, the kept ones
-// lines that no jj prints: the built-in command's name in quotes or not; the alias table's name
-// right after the backtick or later in the line, of one letter or of none, and of a-z alone or
-// with a digit; and the source of a migrated setting one word of letters and `-`, two words, or
-// none. So TestThePodWrappersFilterOfJJsOutputIsLegionJJs fails where the two drift apart.
+// them, right after each that it drops, but in two runs of blocks it drops, where the kept block
+// follows the last of the run: the aliases that -R, --config or --config-file would define, then
+// jj's two notes of a key no configuration sets; and the coloured trunk() that does not resolve,
+// then the trunk() hint alone. Among them are lines on each side of each edge of the first lines
+// that jjEveryCommand matches and the pod's wrapper's once_only copies, the kept ones lines that no
+// jj prints: the built-in command's name in quotes or not; the alias table's name right after the
+// backtick or later in the line, of one letter or of none, and of a-z alone or with a digit; and
+// the source of a migrated setting one word of letters and `-`, two words, or none. So
+// TestThePodWrappersFilterOfJJsOutputIsLegionJJs fails where the two drift apart.
 var jjOnceOnlyBlocks = []struct {
 	name, text string
 	kept       bool
@@ -291,11 +294,11 @@ var jjOnceOnlyErrors = []string{
 }
 
 // jjOnceOnlyCase is a text of jj's standard error and what each filter gives of it: want, what
-// jjOnceOnly and the pod's wrapper's `once_only` give, which drop jj's error, and withError, what
+// jjOnceOnly and the pod's wrapper's `once_only` give, which drop jj's error, and wantError, what
 // `once_only error` gives, which keeps it.
 type jjOnceOnlyCase struct {
 	name, text      string
-	want, withError string
+	want, wantError string
 }
 
 // jjOnceOnlyCases are the texts that each filter of jj's standard error is read over: each capture
@@ -382,8 +385,8 @@ func TestThePodWrappersFilterOfJJsOutputIsLegionJJs(t *testing.T) {
 		if got, want := onceOnly(c.name, "", c.text), jjOnceOnly(c.text); got != want || got != c.want {
 			t.Errorf("%s: once_only prints\n%q\nwant what jjOnceOnly gives\n%q\nand the case wants\n%q", c.name, got, want, c.want)
 		}
-		if got := onceOnly(c.name, "error", c.text); got != c.withError {
-			t.Errorf("%s: once_only error prints\n%q\nwant\n%q", c.name, got, c.withError)
+		if got := onceOnly(c.name, "error", c.text); got != c.wantError {
+			t.Errorf("%s: once_only error prints\n%q\nwant\n%q", c.name, got, c.wantError)
 		}
 	}
 }

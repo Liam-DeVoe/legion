@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,7 +24,7 @@ import (
 // revsets of a list of commit or change ids in as few words as keep each under jjWordBound bytes
 // (jjWords, jjChanges, jjCommitIDs), with the bytes Linux counts against jjArgMax (jjSize); and
 // how the step and the expansion run a jj command, name its failure and print what it printed on
-// standard error (jj, output, command, runJJCommand, jjErrorLine, jjOnceOnly).
+// standard error (jj, output, command, runChild, jjErrorLine, jjOnceOnly).
 
 // jjCommitTemplate prints, for each commit, its change id, its commit id, whether it is hidden,
 // whether it is the working-copy commit of the workspace the command runs in
@@ -130,10 +129,13 @@ const jjGitBookmarkTemplate = `if(remote == "git", json(name) ++ " " ++ if(norma
 // is a difference. jj 0.45 has no read of the HEAD it last imported, and first_parent(@) is the
 // read jj 0.38 recommends in place of git_head(). Each git read runs as gitRead says.
 //
-// A jj read that fails is its jjStepFailure, as for every other read of the step. A git read that
-// cannot run or that fails, other than for an unborn HEAD, a .git that cannot be read, or a line
-// of jj's whose name does not decode, answers true: the snapshot that follows is the one the push
-// takes anyway, so a read that fails adds no refusal and still lets the step see what git did.
+// A jj read that fails is its jjStepFailure, as for every other read of the step. Each of these
+// answers true: a .git that cannot be read (an Lstat error but for its absence), a git read that
+// cannot run (a PATH with no git among them) or that fails (but for an unborn HEAD), and a line of
+// jj's whose name does not decode, which is compared as jj printed it and so differs from git's
+// line for that branch. Each leaves the step unable to rule out a move of git's, and the snapshot
+// that follows is the one the push takes anyway, so a read that fails adds no refusal and still
+// lets the step see what git did.
 func (s *jjStep) gitMoved() (bool, error) {
 	root, err := s.jj(s.env, "--color=never", "workspace", "root")
 	if err != nil {
@@ -141,20 +143,25 @@ func (s *jjStep) gitMoved() (bool, error) {
 	}
 	root = strings.TrimSuffix(root, "\n")
 	if _, err := os.Lstat(filepath.Join(root, ".git")); err != nil {
-		return !errors.Is(err, fs.ErrNotExist), nil
+		return !errors.Is(err, os.ErrNotExist), nil
 	}
 	parent, err := s.jj(s.env, "--color=never", "log", "--no-graph", "-r", "first_parent(@)", "-T", `if(root, "", commit_id) ++ "\n"`)
 	if err != nil {
 		return false, err
 	}
-	// An unborn HEAD names no commit: rev-parse --verify --quiet exits 1 and prints nothing, as
-	// the read of @'s first parent prints nothing but its newline for the root commit.
-	head, code, ran := s.gitRead(root, "rev-parse", "--verify", "--quiet", "HEAD")
-	unborn := ran && code == 1 && head == ""
-	if !unborn && (!ran || code != 0) || strings.TrimSuffix(head, "\n") != strings.TrimSuffix(parent, "\n") {
+	git, found := lookpath.On(envValue(s.env, "PATH"), "git")
+	if !found {
 		return true, nil
 	}
-	branches, code, ran := s.gitRead(root, "for-each-ref", "--format=%(refname:strip=2) %(objectname)", "refs/heads")
+	// An unborn HEAD names no commit: rev-parse --verify --quiet exits 1 and prints nothing, as
+	// the read of @'s first parent prints nothing but its newline for the root commit.
+	head, code, ran := s.gitRead(git, root, "rev-parse", "--verify", "--quiet", "HEAD")
+	unborn := ran && code == 1 && head == ""
+	failed := !ran || code != 0
+	if (failed && !unborn) || strings.TrimSuffix(head, "\n") != strings.TrimSuffix(parent, "\n") {
+		return true, nil
+	}
+	branches, code, ran := s.gitRead(git, root, "for-each-ref", "--format=%(refname:strip=2) %(objectname)", "refs/heads")
 	if !ran || code != 0 {
 		return true, nil
 	}
@@ -174,17 +181,14 @@ func (s *jjStep) gitMoved() (bool, error) {
 	return !slices.Equal(imported, slices.Sorted(strings.Lines(branches))), nil
 }
 
-// gitRead runs one git read of gitMoved's: the first git on the PATH of the step's environment
-// (lookpath.On), which is the image's git wrapper in a pod and a tmux pane's bin/git, each of which
-// passes a read through to the real git, with -C root, then args, in that environment, as a child
-// in this process's group with no standard input (runJJCommand). It answers what the read printed
-// on standard output and its status; ran is false where that PATH holds no git or it cannot start.
-func (s *jjStep) gitRead(root string, args ...string) (stdout string, code int, ran bool) {
-	git, found := lookpath.On(envValue(s.env, "PATH"), "git")
-	if !found {
-		return "", 0, false
-	}
-	stdout, _, code, err := runJJCommand(git, s.env, slices.Concat([]string{"-C", root}, args))
+// gitRead runs git, the first git on the PATH of the step's environment, which gitMoved looks up
+// once for its reads (lookpath.On): the image's git wrapper in a pod and a tmux pane's bin/git,
+// each of which passes a read through to the real git. It runs it with -C root, then args, in that
+// environment, as a child in this process's group with no standard input (runChild), and answers
+// what the read printed on standard output and its status; ran is false only where git cannot
+// start.
+func (s *jjStep) gitRead(git, root string, args ...string) (stdout string, code int, ran bool) {
+	stdout, _, code, err := runChild(git, s.env, slices.Concat([]string{"-C", root}, args))
 	return stdout, code, err == nil
 }
 
@@ -306,12 +310,12 @@ func (s *jjStep) output(env, args []string) (stdout, stderr string, err error) {
 	return stdout, stderr, nil
 }
 
-// command runs next with args in env and waits for it (runJJCommand). A command that cannot start
+// command runs next with args in env and waits for it (runChild). A command that cannot start
 // is a jjStepFailure whose status and output are execWrapped's for the same failure
 // (wrapperStartFailure): 127 where next does not exist and 126 otherwise, and the line `legion jj:
 // run <next>: <error>`.
 func (s *jjStep) command(env, args []string) (stdout, stderr string, code int, err error) {
-	stdout, stderr, code, err = runJJCommand(s.next, env, args)
+	stdout, stderr, code, err = runChild(s.next, env, args)
 	if err == nil {
 		return stdout, stderr, code, nil
 	}
@@ -319,14 +323,14 @@ func (s *jjStep) command(env, args []string) (stdout, stderr string, code int, e
 	return "", "", 0, jjStepFailure{code: status, output: line}
 }
 
-// runJJCommand runs next with args in env and waits for it, as a child in this process's group,
+// runChild runs next with args in env and waits for it, as a child in this process's group,
 // with no standard input: each command of the step (jjStep.command), each git read of its
 // comparison (jjStep.gitRead) and the read of the aliases (readJJAliases). It answers what the
 // command printed and its status, a death by a signal being 128 and the signal's number, as a
 // shell reads it. A file the kernel refuses to run runs with /bin/sh, as execWrapped runs it. A
 // command that cannot start is its start error alone, which each caller names in its own words
 // (jjStep.command, readJJAliases), or reads as gitRead does.
-func runJJCommand(next string, env, args []string) (stdout, stderr string, code int, err error) {
+func runChild(next string, env, args []string) (stdout, stderr string, code int, err error) {
 	var out, errOut bytes.Buffer
 	run := func(path string, argv []string) error {
 		out.Reset()

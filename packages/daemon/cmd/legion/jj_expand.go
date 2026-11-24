@@ -138,14 +138,14 @@ type jjUnexpandable struct{ what, why string }
 
 func (u jjUnexpandable) Error() string { return "could not expand " + u.what + ": " + u.why }
 
-// readJJAliases runs the read (jjAliasRead) as each command of the step runs (runJJCommand): next,
+// readJJAliases runs the read (jjAliasRead) as each command of the step runs (runChild): next,
 // in env, in the working directory, as a child in this process's group, prints on stderr
 // jjOnceOnly of what it printed on standard error, and reads what it printed (parseJJAliases).
 // jj's error is named by the line of a read that fails (jjUnexpandable), which runJJ prints next.
 // A read that cannot start prints nothing of its own, and is jjUnexpandable too, with its start
 // error.
 func readJJAliases(next string, env []string, stderr io.Writer) (jjAliases, error) {
-	stdout, printed, code, err := runJJCommand(next, env, jjAliasRead)
+	stdout, printed, code, err := runChild(next, env, jjAliasRead)
 	if err != nil {
 		return jjAliases{}, jjUnexpandable{"the command", "jj config list could not start: " + err.Error()}
 	}

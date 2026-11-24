@@ -17,9 +17,10 @@ import (
 // bookmarks, with reads that import nothing, and where they differ takes the push's one snapshot
 // first, so that its first read sees the commit git made and it sets that commit's author as for
 // any other. A workspace with no git working tree compares nothing. The helpers here read the
-// comparison's commands (checkCompared), and run a push of a commit git made (rolePushGitMade),
-// which jj_push_test.go and jj_push_snapshot_test.go use too. As jj_push_test.go does, the file
-// names nothing the step's change adds, so it compiles and runs at the base too.
+// comparison's commands (checkCompared), run a push of a commit git made (rolePushGitMade) and
+// make a commit with git alone (gitCommitWrite); jj_push_test.go uses each of them, and
+// jj_push_snapshot_test.go the first. As jj_push_test.go does, the file names nothing the step's
+// change adds, so it compiles and runs at the base too.
 
 // rolePushComparisonRead is one of the step's jj reads of its comparison of git's HEAD and
 // branches with jj's: its name, and whether a command the recording jj ran is that read, told from
@@ -158,6 +159,16 @@ func rolePushGitMade(t *testing.T, gitMakes func(f *rolePushFixture) (made strin
 	}
 }
 
+// gitCommitWrite writes a file of its own into the working copy (write), and with git alone, as
+// as, adds it and runs `git commit` with commit; it answers HEAD's id after that commit.
+func (f *rolePushFixture) gitCommitWrite(as rolePushIdentity, commit ...string) string {
+	f.write()
+	run := f.runner(f.setupPath, as)
+	run.Run(f.repo, f.git, "add", "change-"+strconv.Itoa(f.files)+".txt")
+	run.Run(f.repo, slices.Concat([]string{f.git, "commit"}, commit)...)
+	return strings.TrimSpace(run.Out(f.repo, f.git, "rev-parse", "HEAD"))
+}
+
 // A git rebase of a branch under @, git alone, of an unpushed commit that the reviewer made with
 // the implementer's trailer, onto a commit of the implementer's, then a push that names the
 // rebased commit by its id: the remote gets that commit with the implementer's author, and the
@@ -189,22 +200,12 @@ func TestAPushAfterAGitCommitOnTheDetachedHeadSetsTheTrailersAuthor(t *testing.T
 	impl, rev := rolePushImplementer, rolePushReviewer
 	rolePushGitMade(t, func(f *rolePushFixture) (string, []rolePushCommit, bool) {
 		c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
-		f.write()
-		run := f.runner(f.setupPath, impl)
-		run.Run(f.repo, f.git, "add", "change-"+strconv.Itoa(f.files)+".txt")
-		run.Run(f.repo, f.git, "commit", "--quiet", "--amend", "--no-edit")
-		made := strings.TrimSpace(run.Out(f.repo, f.git, "rev-parse", "HEAD"))
+		made := f.gitCommitWrite(impl, "--quiet", "--amend", "--no-edit")
 		if made == c.commit {
 			f.t.Fatalf("git commit --amend left HEAD on %s, want a new commit", made)
 		}
 		return made, nil, true
 	})
-}
-
-// rolePushGitRecorder is a git that appends its arguments to log, each ended by \037 and the call
-// by \036, which no argument holds, then runs real with them.
-func rolePushGitRecorder(real, log string) string {
-	return "#!/bin/sh\n{ printf '%s\\037' \"$@\"; printf '\\036'; } >>'" + log + "'\nexec '" + real + "' \"$@\"\n"
 }
 
 // A push from a workspace with no git working tree, such as an issue workspace under jj 0.38,
@@ -215,9 +216,10 @@ func rolePushGitRecorder(real, log string) string {
 // the commit that the reviewer made with the implementer's trailer with the implementer's author.
 // The git first on the push's PATH, which the step's git reads run, is the form's own, the pod's
 // directory's (which the pod's jj requires first on PATH) or the pane's bin/git, and the test
-// makes it a recording git that runs the real git (rolePushGitRecorder), as the pod's does; no
-// commit goes through it. The same push from the colocated default workspace makes every read of
-// the comparison, git's HEAD and branches among them, which that recording git sees.
+// makes it a git that records its arguments (trailerLogging, read back by trailerCalls) and runs
+// the real git, as the pod's does; no commit goes through it. The same push from the colocated
+// default workspace makes every read of the comparison, git's HEAD and branches among them, which
+// that recording git sees.
 func TestAPushFromAWorkspaceWithNoGitWorkingTreeComparesNothing(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer
@@ -246,7 +248,10 @@ func TestAPushFromAWorkspaceWithNoGitWorkingTreeComparesNothing(t *testing.T) {
 				c := f.read(workspace + "@-")
 				f.bookmark("legion/K-1", c.commit)
 				log := filepath.Join(f.root, "git-calls")
-				f.script(f.formDir, "git", rolePushGitRecorder(f.git, log))
+				// The log starts empty, so that trailerCalls reads it where no git ran: as one run
+				// with no argument, which is no git read.
+				f.writeFile(log, "")
+				writeTrailerScript(t, filepath.Join(f.formDir, "git"), trailerLogging(log)+"exec '"+f.git+"' \"$@\"\n")
 				divergent := f.divergence()
 				code, _, stderr := f.runIn(f.path, dir, impl, nil, rolePushBookmark...)
 				want := rolePushSends("legion/K-1", c, "implementer", impl)
@@ -257,13 +262,8 @@ func TestAPushFromAWorkspaceWithNoGitWorkingTreeComparesNothing(t *testing.T) {
 					reads = len(rolePushComparisonReads)
 				}
 				f.checkCompared(f.calls(), reads)
-				data, err := os.ReadFile(log)
-				if err != nil && !errors.Is(err, os.ErrNotExist) {
-					t.Fatal(err)
-				}
 				var gitReads [][]string
-				for record := range strings.SplitSeq(strings.TrimSuffix(string(data), "\036"), "\036") {
-					args := strings.Split(strings.TrimSuffix(record, "\037"), "\037")
+				for _, args := range trailerCalls(t, log) {
 					if slices.Contains(args, "rev-parse") || slices.Contains(args, "for-each-ref") {
 						gitReads = append(gitReads, args)
 					}

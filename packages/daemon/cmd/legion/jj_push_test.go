@@ -781,11 +781,7 @@ var rolePushUnimportedRows = []struct {
 func TestAPushOfACommitJJHasNotImportedSendsIt(t *testing.T) {
 	t.Parallel()
 	rolePushGitMade(t, func(f *rolePushFixture) (string, []rolePushCommit, bool) {
-		f.write()
-		run := f.runner(f.setupPath, rolePushImplementer)
-		run.Run(f.repo, f.git, "add", "change-"+strconv.Itoa(f.files)+".txt")
-		run.Run(f.repo, f.git, "commit", "--quiet", "-m", rolePushMessage("work", "implementer"))
-		return strings.TrimSpace(run.Out(f.repo, f.git, "rev-parse", "HEAD")), nil, false
+		return f.gitCommitWrite(rolePushImplementer, "--quiet", "-m", rolePushMessage("work", "implementer")), nil, false
 	})
 }
 
@@ -1401,40 +1397,11 @@ var rolePushFailingRows = []struct{ name, behaviour, error string }{
 	{name: "a snapshot that fails", behaviour: rolePushFailsSnapshot, error: "Error: legion test: this snapshot fails"},
 }
 
-// When a jj command of the step fails, its metaedit, its read of the set the push sends or its
-// snapshot of the working copy, the push exits with its status after jj's error, and nothing
-// reaches the remote.
-func TestAFailingStepSendsNothing(t *testing.T) {
-	t.Parallel()
-	impl, rev := rolePushImplementer, rolePushReviewer
-	for _, row := range rolePushFailingRows {
-		t.Run(row.name, func(t *testing.T) {
-			t.Parallel()
-			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
-				f := newRolePushFixture(t, form, row.behaviour)
-				c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
-				f.bookmark("legion/K-1", c.commit)
-				divergent := f.divergence()
-				code, _, stderr := f.push(impl, rolePushBookmark...)
-				f.check(rolePushWant{exit: 1, refs: []rolePushRef{{ref: "refs/heads/legion/K-1", absent: true}}}, rolePushBookmark, code, stderr, divergent, 0)
-				if !strings.Contains(stderr, row.error) {
-					t.Errorf("the push printed\n%s\nwant jj's error %q", stderr, row.error)
-				}
-			})
-		})
-	}
-}
-
-// When the read of the push's configuration that the pane's legion jj makes before the step's
-// first command fails, the push exits with its status after jj's error, and nothing reaches the
-// remote: under the tmux form alone, with a recording jj ahead of the real one that fails every
-// `jj config list`. The pod's form leaves that read to the pod's wrapper's own read of
-// git.executable-path, whose failure refuses the push (internal/leakguard's
-// TestTheJJWrapperReadsTheConfigurationThePushWouldUse).
-func TestAFailingReadOfThePushsConfigurationSendsNothing(t *testing.T) {
-	t.Parallel()
-	const failure = "Error: legion test: this read of the configuration fails"
-	f := newRolePushFixture(t, rolePushTmux, `case " $* " in *" config list "*) echo '`+failure+`' >&2; status=1; ran=1 ;; esac`)
+// rolePushFailingPush pushes legion/K-1, on a commit that the reviewer made with the implementer's
+// trailer, under form with a recording jj of behaviour ahead of the real one, and checks that the
+// push exits 1 after jj's error, failure, and that nothing reaches the remote.
+func rolePushFailingPush(t *testing.T, form rolePushForm, behaviour, failure string) {
+	f := newRolePushFixture(t, form, behaviour)
 	c := f.commitOn(rolePushReviewer, rolePushImplementer, "main", rolePushMessage("work", "implementer"))
 	f.bookmark("legion/K-1", c.commit)
 	divergent := f.divergence()
@@ -1443,6 +1410,33 @@ func TestAFailingReadOfThePushsConfigurationSendsNothing(t *testing.T) {
 	if !strings.Contains(stderr, failure) {
 		t.Errorf("the push printed\n%s\nwant jj's error %q", stderr, failure)
 	}
+}
+
+// When a jj command of the step fails, its metaedit, its read of the set the push sends or its
+// snapshot of the working copy, the push exits with its status after jj's error, and nothing
+// reaches the remote (rolePushFailingPush).
+func TestAFailingStepSendsNothing(t *testing.T) {
+	t.Parallel()
+	for _, row := range rolePushFailingRows {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+				rolePushFailingPush(t, form, row.behaviour, row.error)
+			})
+		})
+	}
+}
+
+// When the read of the push's configuration that the pane's legion jj makes before the step's
+// first command fails, the push exits with its status after jj's error, and nothing reaches the
+// remote (rolePushFailingPush): under the tmux form alone, with a recording jj ahead of the real
+// one that fails every `jj config list`. The pod's form leaves that read to the pod's wrapper's own
+// read of git.executable-path, whose failure refuses the push (internal/leakguard's
+// TestTheJJWrapperReadsTheConfigurationThePushWouldUse).
+func TestAFailingReadOfThePushsConfigurationSendsNothing(t *testing.T) {
+	t.Parallel()
+	const failure = "Error: legion test: this read of the configuration fails"
+	rolePushFailingPush(t, rolePushTmux, `case " $* " in *" config list "*) echo '`+failure+`' >&2; status=1; ran=1 ;; esac`, failure)
 }
 
 // rolePushPanesRows are the PATHs on which a pane's jj comes back to itself: its directory twice, a
