@@ -309,7 +309,7 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 			reads:    []exchange.ReadEntry{reader}, names: `read entry 1, "` + readerAccount + `"`},
 		// An entry names a person and its project, or a job list, and never both; a workflow entry
 		// that names neither mints a token answerable to nobody. An account entry that names
-		// neither acts as the account itself (TestAPersonlessEntryNamesNoProject).
+		// neither acts as the account itself (TestAnAccountEntryMayNameNoPerson).
 		{name: "a job account that names a person too",
 			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Project, e.Job = "", jobList(t, project) })}, names: workerAccount},
 		{name: "a job account that names a project too",
@@ -383,9 +383,9 @@ func TestAnAccountEntryWithNoProjectNamesNone(t *testing.T) {
 	}
 }
 
-// TestAnAccountEntryMayNameNoPerson: an account entry may name neither a person nor a project,
-// which is a job's own entry (<service account>==): its tokens act as the account itself. The set
-// boots with it, and its pods' tokens are named, name no person and no project, and carry the
+// TestAnAccountEntryMayNameNoPerson: an account entry may name neither a person nor a project
+// (<service account>==), an account whose tokens act as the account itself. The set boots with
+// it, and its pods' tokens are named, name no person and no project, and carry the
 // account as their service, which is what Dispatch records their writes under, beside the account
 // as the principal their session names belong to. An entry that fixes a session answers that
 // session and no pod uid, and its session is reserved for the account as any fixed one is. A
@@ -423,11 +423,12 @@ func TestAnAccountEntryMayNameNoPerson(t *testing.T) {
 	}
 }
 
-// TestAPersonlessEntryNamesNoProject: only an account entry that names no project may name no
-// person: an entry that names a project names its person, so no token held to a project is
-// personless. An account entry naming a project and no person is refused, naming the entry and
-// that rule; a person that is blank without being empty is refused whatever the project; and a
-// workflow entry still needs a person, whether or not it names a project.
+// TestAPersonlessEntryNamesNoProject: of the entries that name no job list, only an account entry
+// that names no project may name no person: an account entry that names a project names its
+// person, so no account entry's token held to a project is personless. An account entry naming a
+// project and no person is refused, naming the entry and that rule; a person that is blank without
+// being empty is refused whatever the project; and a workflow entry still needs a person, whether
+// or not it names a project.
 func TestAPersonlessEntryNamesNoProject(t *testing.T) {
 	for _, c := range []struct {
 		name      string

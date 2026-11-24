@@ -838,7 +838,7 @@ type Config struct {
 	// the session the entry fixes; an entry that fixes none requires the pod to name its own
 	// session. An entry may name no project (<service account>==<person>): the shared
 	// public-session account's, whose tokens act for that person and name no project. An entry
-	// may name neither a project nor a person (<service account>==): a job's own account, whose
+	// may name neither a project nor a person (<service account>==): an account whose
 	// tokens name no person and no project and act as the account itself, which Dispatch records
 	// their writes under. An entry naming a project and no person is refused: an entry that names
 	// a project names its person, so no account entry's token held to a project is personless.
@@ -1877,7 +1877,7 @@ func exchangeListingRefusal(cfg *Config) error {
 // <service account>=<project>=<person>[=<session>] entries, the identities BROKER_EXCHANGE_ACCOUNTS
 // lists, in order. The project may be empty (<service account>==<person>), which is the shared
 // public-session account's entry: its named tokens act for the person and name no project. The
-// person may be empty with it (<service account>==), a job's own account, whose tokens act as the
+// person may be empty with it (<service account>==), an account whose tokens act as the
 // account itself. It refuses, naming the entry: one not of that form, with a blank account, or
 // naming a project and no person, since an entry that names a project names its person, so no
 // account entry's token held to a project is personless; an account that is not

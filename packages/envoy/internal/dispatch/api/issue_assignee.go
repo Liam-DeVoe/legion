@@ -144,9 +144,10 @@ type whoamiUser struct {
 // (`<repository>/<workflow path>@<ref>`) or a Google account; Session is the session the token
 // proved; Scopes is empty; Project is the one project an entry naming one project names, and
 // null for an entry naming `public`, whose token names no one project and writes wherever a
-// token naming no project may; and ProjectScope is `named` or `public`, which is what tells a
-// job's token from a machine's that names a service and no person too, whose ProjectScope is
-// `person` and whose every write Dispatch refuses (writeNeedsASignedInPerson).
+// token naming no project may; ProjectScope is `named` or `public`; and SignInRequired is false,
+// which is what tells a job's token from a machine's that names a service and no person too,
+// whose ProjectScope is `person`, whose SignInRequired is true and whose every write Dispatch
+// refuses (writeNeedsASignedInPerson).
 type whoamiAgent struct {
 	// Always "agent": whoami writes this body for every credential that is not a person's
 	// browser session, the personal token holding the person scope included.
@@ -192,11 +193,6 @@ type whoamiAgent struct {
 // broker-issued token that names a service and no person. The kind stays `agent` for a personal
 // token holding the person scope, since the kind names the credential and not the act; the
 // person that token acts for is its `owner`, which the dispatch command reads.
-//
-// An agent is also told whether Dispatch refuses its every write until a person signs in on its
-// machine (sign_in_required): true for a broker-issued token of a machine nobody has signed in
-// on, and false for every other credential, an account entry's token naming no person among them,
-// whose writes are recorded under its account.
 func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {

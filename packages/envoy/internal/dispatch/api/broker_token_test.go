@@ -125,20 +125,13 @@ func liveJobPublicToken(jkt string, projects ...string) ciphertoken.Introspectio
 const brokerTestAccount = "system:serviceaccount:example-ns:example-public"
 
 // personlessAccountToken is the broker's answer for a token minted from an account entry that
-// names no person and no project (cipher/exchange's Set.Pod): live, bound to jkt, named, naming
-// the account as its service and no person and no project, which is the shape the broker's
-// introspection answers for such a token (cmd/cipherd's
-// TestTheBinaryExchangesAPersonlessAccountEntrysPodToken).
+// names no person and no project (cipher/exchange's Set.Pod): liveJobNamedToken's shape with the
+// account as its service and no project, which is the shape the broker's introspection answers for
+// such a token (cmd/cipherd's TestTheBinaryExchangesAPersonlessAccountEntrysPodToken).
 func personlessAccountToken(jkt string) ciphertoken.Introspection {
-	return ciphertoken.Introspection{
-		Active:       true,
-		Session:      brokerTestSession,
-		Service:      brokerTestAccount,
-		ProjectScope: ciphertoken.ProjectScopeNamed,
-		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
-		ClientID:     ciphertoken.ExchangeClientID,
-		Thumbprint:   jkt,
-	}
+	answer := liveJobNamedToken(jkt)
+	answer.Service, answer.Projects = brokerTestAccount, nil
+	return answer
 }
 
 // readOnlyToken is the broker's answer for a read-only token: live, bound to jkt, naming a session
@@ -1201,10 +1194,7 @@ func TestAPersonlessTokenWritesAsItsAccount(t *testing.T) {
 	if who.Code != http.StatusOK {
 		t.Fatalf("whoami under a personless account token: status=%d body=%s", who.Code, who.Body.String())
 	}
-	answer := decodeBody[struct {
-		whoamiAnswer
-		Scopes []string `json:"scopes"`
-	}](t, who)
+	answer := decodeBody[whoamiAnswer](t, who)
 	if answer.Kind != "agent" || answer.Session == nil || *answer.Session != brokerTestSession ||
 		answer.Service == nil || *answer.Service != brokerTestAccount || answer.Owner != nil || answer.Project != nil || len(answer.Scopes) != 0 {
 		t.Fatalf("whoami = %+v, want the session %s acting for the service %s, no owner, no project and no scope", answer, brokerTestSession, brokerTestAccount)
@@ -1317,8 +1307,9 @@ func TestAPersonlessTokenWritesAsItsAccount(t *testing.T) {
 // TestWhoamiSaysNoSignInForEveryCredentialThatMayWrite: whoami answers sign_in_required false for
 // every credential the sign-in check lets write — a personal token, the deployment's shared
 // token, a verified service-account token and a broker token that names a person — so a client
-// reading the field tells none of them to run `agent-secrets login`. The two broker tokens naming
-// a service and no person are the tests above: a machine's answers true, an account's false.
+// reading the field tells none of them to run `agent-secrets login`. The broker tokens naming a
+// service and no person are tested elsewhere: a machine's answers true, and an account's and a
+// job's answer false (TestAPersonlessTokenWritesAsItsAccount, TestAJobBrokerTokenIsNamedByWhoami).
 func TestWhoamiSaysNoSignInForEveryCredentialThatMayWrite(t *testing.T) {
 	issuer := newServiceTokenIssuer(t)
 	rig := newBrokerTokenRigOn(t, testServerOptions{oidc: issuer.verifier(t)})
@@ -1605,8 +1596,8 @@ func TestAJobsPublicTokenWritesEveryProjectAndTheDeployment(t *testing.T) {
 // TestAJobBrokerTokenIsNamedByWhoami: whoami names a job's token by the session it proved and the
 // identity its entry lists as its service, with no owner and no OAuth scope; the project is the
 // one a named token's entry names, and none for a public token, which no one project limits; and
-// the project scope is the token's own, named or public, which is what tells a job's token, whose
-// service writes, from a machine's, which is refused every write.
+// the project scope is the token's own, named or public, and sign_in_required is false, which is
+// what tells a job's token, whose service writes, from a machine's, which is refused every write.
 func TestAJobBrokerTokenIsNamedByWhoami(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)
@@ -1647,6 +1638,9 @@ func TestAJobBrokerTokenIsNamedByWhoami(t *testing.T) {
 			}
 			if answer.ProjectScope == nil || *answer.ProjectScope != row.scope {
 				t.Fatalf("whoami project_scope = %v, want %q: %s", answer.ProjectScope, row.scope, response.Body.String())
+			}
+			if answer.SignInRequired == nil || *answer.SignInRequired {
+				t.Fatalf("whoami answered %s, want sign_in_required false: a job's token writes as its service", response.Body.String())
 			}
 		})
 	}

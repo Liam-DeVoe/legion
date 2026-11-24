@@ -855,18 +855,19 @@ func (c *Claims) grant(identity, service, person, project string, job JobProject
 // checkGrant refuses what an entry's grant cannot be, deciding first whether it names the job
 // list job. An entry that names one is refused a person or a project beside it, since an entry
 // names a person and its project, or a job list, and never both; the list itself needs no check,
-// since only ParseJobProjects builds one. Every other entry is refused a blank person, which
-// would mint a token answerable to nobody, so a workflow entry that names neither a person nor a
-// job list is refused here. Its project is required too, except of an account entry (account
-// set), which may name a person and no project — the shared public-session account's entry,
-// minting named tokens that name no project (a pod account many people launch must never act as
-// one person's own token) — or name neither, when its tokens act as the account itself (Pod). An
-// account entry that names a project names its person, so no token held to a project is
-// personless. A person or a project that is blank without being empty is refused everywhere, and
-// so is a project that is no project key: every token the entry mints names it, the exchange
-// stores and reads that list through oauthwire.ParseProjects, which takes only project keys, so
-// an entry naming anything else would boot and then fail every trade. Every entry, of either
-// kind, is refused a fixed session name no request could name back.
+// since only ParseJobProjects builds one. Every other entry but an account entry naming no
+// project is refused an empty person, which would mint a token answerable to nobody, so a
+// workflow entry that names neither a person nor a job list is refused here. Its project is
+// required too, except of an account entry (account set), which may name a person and no project
+// — the shared public-session account's entry, minting named tokens that name no project (a pod
+// account many people launch must never act as one person's own token) — or name neither, when
+// its tokens act as the account itself (Pod). An account entry that names a project names its
+// person, so no account entry's token held to a project is personless. A person or a project that
+// is blank without being empty is refused everywhere, and so is a project that is no project key:
+// every token the entry mints names it, the exchange stores and reads that list through
+// oauthwire.ParseProjects, which takes only project keys, so an entry naming anything else would
+// boot and then fail every trade. Every entry, of either kind, is refused a fixed session name no
+// request could name back.
 func checkGrant(where, person, project string, job JobProjects, session string, account bool) error {
 	if job.Listed() {
 		if person != "" || project != "" {

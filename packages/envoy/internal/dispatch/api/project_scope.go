@@ -69,12 +69,13 @@ package api
 //
 // A third check stands outside both, in front of every mutating row whatever its class
 // (writeNeedsASignedInPerson): a broker credential that names a service and no person writes only
-// when its project scope is `named` or `public`, the two shapes of a job's token, which the
-// exchange mints from an entry that names the job's identity and its projects and no person.
-// Every other broker credential naming no person is refused SIGN_IN_REQUIRED. The rule names the
-// scopes that write rather than the one that does not, so it fails closed: today the one other
-// scope that reaches it is `person`, a machine nobody has signed in on, and a project scope the
-// broker answers later is refused until this rule names it.
+// when its project scope is `named` or `public`: the two shapes of a job's token, which the
+// exchange mints from an entry that names the job's identity and its projects and no person, and
+// under `named` the token of an account entry that names no person and no project, whose service
+// is that account. Every other broker credential naming no person is refused SIGN_IN_REQUIRED. The
+// rule names the scopes that write rather than the one that does not, so it fails closed: today the
+// one other scope that reaches it is `person`, a machine nobody has signed in on, and a project
+// scope the broker answers later is refused until this rule names it.
 
 import (
 	"context"
@@ -458,14 +459,11 @@ func addressesOneSession(route apiRoute) bool {
 // the command that signs a person in on that machine, since running it is the whole remedy. A
 // project scope the broker answers later is refused the same way until this rule names it.
 //
-// A token that names a service and no person under the project scope named or public is no such
-// caller: the broker minted it from a job entry, or, under named with no project, from an account
-// entry that names no person and no project, whose service is that account, which the operator
-// listed. Its writes are recorded under its service (model.Actor.Service), so it reaches the
-// handler as a credential naming a person does, and it is held to the routes its lack of OAuth
-// scope leaves it (gateRouteScopes). The test is on the project scope the broker answered, one
-// of contracts.JobProjectScopes and nothing else, so a scope this check does not know is refused
-// as a machine's is.
+// A token naming no person that writes under one of the named scopes has its writes recorded
+// under its service (model.Actor.Service), so it reaches the handler as a credential naming a
+// person does, and it is held to the routes its lack of OAuth scope leaves it (gateRouteScopes).
+// The test is on the project scope the broker answered, one of contracts.JobProjectScopes and
+// nothing else, so a scope this check does not know is refused as a machine's is.
 //
 // A read-only token names a service and no person too, but it is no such caller: it reads only
 // what the read list names, and signing a person in is no remedy for it. It never reaches this
@@ -494,7 +492,7 @@ func (s *server) writeNeedsASignedInPerson(handler http.HandlerFunc) http.Handle
 
 // signInRequired is the one decision writeNeedsASignedInPerson refuses a write on and whoami
 // answers as sign_in_required: whether r presents a broker-issued token that resolved and names a
-// service and no person, and whose project scope is none under which such a token writes as its
+// service and no person, and whose project scope is not one under which such a token writes as its
 // service (writesAsItsService), which is a machine nobody has signed in on, and the service that
 // token names. Every other caller answers false: a credential that is no broker token, one that
 // did not resolve (its refusal is written further in), one that names a person, a job's token
@@ -513,8 +511,9 @@ func (s *server) signInRequired(r *http.Request) (string, bool) {
 // scopes under which a token naming a service and no person writes as that service,
 // contracts.JobProjectScopes: `named`, a job's token naming its one project or an exchange
 // account entry's naming no person and no project, whose service is that account, and `public`,
-// a job's. It is the list `dispatch whoami` reads too. A nil credential, an empty scope and
-// every other word answer false, `person` among them, a machine's nobody signed in on.
+// a job's. whoami answers the decision built on it as sign_in_required (signInRequired), which
+// `dispatch whoami` reads. A nil credential, an empty scope and every other word answer false,
+// `person` among them, a machine's nobody signed in on.
 func writesAsItsService(credential *model.Credential) bool {
 	return credential != nil && slices.Contains(contracts.JobProjectScopes, credential.ProjectScope)
 }

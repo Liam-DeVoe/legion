@@ -814,7 +814,7 @@ func TestTheBinaryExchangesAJobPodTokenForOneThatNamesItsAccount(t *testing.T) {
 		if err := json.Unmarshal(raw, &answer); err != nil {
 			t.Fatalf("the introspection answer %s is not an introspection: %v", raw, err)
 		}
-		want := oauthwire.Introspection{Active: true, ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt, Session: jobSession, Service: jobAccount, ProjectScope: "public", Projects: []string{"PRIVA"}, ExpiresAt: answer.ExpiresAt}
+		want := oauthwire.Introspection{Active: true, ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt, Session: jobSession, Service: jobAccount, ProjectScope: oauthwire.ProjectScopePublic, Projects: []string{"PRIVA"}, ExpiresAt: answer.ExpiresAt}
 		if !reflect.DeepEqual(answer, want) {
 			t.Errorf("introspection answered %+v, want %+v: a job's token names its account as its service, the project scope public and the private projects its entry lists, and no person and no scope", answer, want)
 		}

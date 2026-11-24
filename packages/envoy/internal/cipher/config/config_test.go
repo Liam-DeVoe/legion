@@ -2154,7 +2154,7 @@ func TestLoadReadsTheAccessTokenLifetime(t *testing.T) {
 // TestLoadReadsTheExchangeAccounts pins BROKER_EXCHANGE_ACCOUNTS: whitespace-separated
 // <account>=<project>=<person>[=<session>] entries in order, none when unset, a session that may
 // itself carry "=", an empty project (the shared public-session account's entry, whose named
-// tokens name no project), an empty project and person (a job's own account, whose tokens act as
+// tokens name no project), an empty project and person (an account whose tokens act as
 // the account itself), and refusals naming the entry for one that is not of that form, has a
 // blank account, names a project and no person, names a namespace's default account or lists an
 // account twice. It needs the cluster issuer and the exchange audience, whose tokens its pods

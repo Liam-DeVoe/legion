@@ -245,24 +245,24 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	noScope.ProjectScope = ""
 	unknownScope := liveToken(caller.jkt, time.Hour)
 	unknownScope.ProjectScope = "organisation"
-	// Each personless named answer below holds no OAuth scope, as the broker mints that shape, so
-	// its service is the one reason it is refused (shapeOf refuses a scope word on its own).
-	namedFleet := liveToken(caller.jkt, time.Hour)
-	namedFleet.Person, namedFleet.Service, namedFleet.Projects, namedFleet.Scope = "", "example-fleet", nil, ""
+	// personlessNamed is a named answer naming no person, no project and no OAuth scope, as the
+	// broker mints that shape, and the service given, so the service is the one reason each row
+	// built from it is refused (shapeOf refuses a scope word on its own).
+	personlessNamed := func(service string) ciphertoken.Introspection {
+		answer := liveToken(caller.jkt, time.Hour)
+		answer.Person, answer.Service, answer.Projects, answer.Scope = "", service, nil, ""
+		return answer
+	}
+	namedFleet := personlessNamed("example-fleet")
 	// Services that open like an account and are no whole account subject, which no account
 	// entry can hold (exchange.NewSet holds each to oauthwire.AccountSubject).
-	namedPrefixOnly := liveToken(caller.jkt, time.Hour)
-	namedPrefixOnly.Person, namedPrefixOnly.Service, namedPrefixOnly.Projects, namedPrefixOnly.Scope = "", "system:serviceaccount:", nil, ""
-	namedNoName := liveToken(caller.jkt, time.Hour)
-	namedNoName.Person, namedNoName.Service, namedNoName.Projects, namedNoName.Scope = "", "system:serviceaccount:ns", nil, ""
-	namedUpperCase := liveToken(caller.jkt, time.Hour)
-	namedUpperCase.Person, namedUpperCase.Service, namedUpperCase.Projects, namedUpperCase.Scope = "", "system:serviceaccount:NS:Name", nil, ""
+	namedPrefixOnly := personlessNamed("system:serviceaccount:")
+	namedNoName := personlessNamed("system:serviceaccount:ns")
+	namedUpperCase := personlessNamed("system:serviceaccount:NS:Name")
 	// An account with text after it, and an account with text before it: the grammar is anchored
 	// at both ends, so neither is the account it holds.
-	namedTrailing := liveToken(caller.jkt, time.Hour)
-	namedTrailing.Person, namedTrailing.Service, namedTrailing.Projects, namedTrailing.Scope = "", "system:serviceaccount:example-ns:example-public===x", nil, ""
-	namedLeading := liveToken(caller.jkt, time.Hour)
-	namedLeading.Person, namedLeading.Service, namedLeading.Projects, namedLeading.Scope = "", "xsystem:serviceaccount:example-ns:example-public", nil, ""
+	namedTrailing := personlessNamed("system:serviceaccount:example-ns:example-public===x")
+	namedLeading := personlessNamed("xsystem:serviceaccount:example-ns:example-public")
 	namedTwo := liveToken(caller.jkt, time.Hour)
 	namedTwo.Projects = []string{"INFRA", "PRIV"}
 	unsorted := liveToken(caller.jkt, time.Hour)
