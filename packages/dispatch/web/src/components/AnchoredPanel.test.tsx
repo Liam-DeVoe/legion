@@ -540,6 +540,65 @@ test("a control in a scroll box of its own inside the panel: the panel scrolls t
   }
 });
 
+// INFRA-3135, round 26: the shared list's text box and its Clear foot are children of the panel's
+// own box, stuck to its top and its bottom, and its rows scroll under both; a row that took the
+// focus under either, as a screen reader's cursor puts it there, stood covered, since the panel
+// counted its whole box as in view. A control the focus reaches stands whole in the part of the
+// box neither covers, and a control inside one of them, which stands where it sticks whatever the
+// panel's scroll, scrolls nothing.
+test("a control the focus reaches in a panel stands whole between the panel's sticky top and bottom children, and one inside such a child scrolls nothing", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <OpenPanel label="Status">
+      <div data-testid="head" style={{ position: "sticky", top: 0 }}>
+        Statuses
+      </div>
+      {buttons(["Alpha", "Beta", "Gamma"])}
+      <div data-testid="foot" style={{ bottom: 0, position: "sticky" }}>
+        {buttons(["Clear"])}
+      </div>
+    </OpenPanel>
+  );
+  try {
+    await user.click(screen.getByRole("button", { name: "Status" }));
+    const panel = screen.getByRole("dialog", { name: "Status" });
+    const [alpha, beta, gamma, clear] = within(panel).getAllByRole("button");
+    // The panel shows 0-198 px of the 300 px it holds. Its 50 px top child covers 0-50 of that,
+    // and its 60 px bottom child 138-198, each where it sticks whatever the panel's scroll, so the
+    // part neither covers is 50-138. Alpha stands at 50-90, Beta at 98-138, and Gamma at 148-188,
+    // inside the box but under the bottom child, which holds Clear.
+    layOutPanel(panel, 300, [
+      [alpha, 50, 40],
+      [beta, 98, 40],
+      [gamma, 148, 40],
+    ]);
+    screen.getByTestId("head").getBoundingClientRect = () => new DOMRect(1, 101, 254, 50);
+    screen.getByTestId("foot").getBoundingClientRect = () => new DOMRect(1, 239, 254, 60);
+    clear.getBoundingClientRect = () => new DOMRect(9, 247, 238, 44);
+    expect(alpha).toHaveFocus();
+    // The control each key puts the focus on, and how far the panel has scrolled then.
+    const walked: [string, number][] = [];
+    for (const shift of [false, false, false, true, true, true]) {
+      await user.tab({ shift });
+      walked.push([document.activeElement?.textContent ?? "nothing", panel.scrollTop]);
+    }
+    expect(walked).toEqual([
+      // Its bottom edge on the bottom child's top edge: whole, so nothing scrolls.
+      ["Beta", 0],
+      // Down to the bottom child's top edge.
+      ["Gamma", 50],
+      // Inside the bottom child, which no scroll moves.
+      ["Clear", 50],
+      ["Gamma", 50],
+      // Beta, now at 48-88, starts 2 px under the top child: up to its bottom edge.
+      ["Beta", 48],
+      ["Alpha", 0],
+    ]);
+  } finally {
+    view.unmount();
+  }
+});
+
 // A panel opened from inside another - a filter panel's list - is portalled out of it to the body,
 // so a focus there is that panel's own and none of the panel it was opened from.
 test("a control the focus reaches in a panel opened from inside a panel stands whole in its own panel's box, and the panel it was opened from scrolls nothing", async () => {

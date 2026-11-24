@@ -1553,6 +1553,22 @@ test("a rework or deployed value the page has no label for reaches neither the s
   ]);
 });
 
+// `?priority=` names a closed set too: an issue's priority, P0 to P3, an issue with none and a
+// pull request that names no issue, the values Dispatch counts the facet by and reads a selection
+// of. A value outside it was kept, sent to Dispatch and drawn as a chip.
+test("a priority value outside its facet's values reaches neither the subscription nor a chip, and a known one beside it does", async () => {
+  renderPage(`${DELIVERY_URL}&priority=P9&priority=P0`);
+  const socket = await openSocket();
+  const { sub } = await subscriptionTo(socket, {
+    kind: "timeline",
+    window: URL_WINDOW,
+    query: "priority=P0",
+  });
+  serve(socket, snapshotFrame(sub, everyFacet));
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(rowControls()).toEqual(["Filter · 1", "Remove Priority: P0 filter"]);
+});
+
 // F2 item 3: the count is the answer's for the filter and the window the address names, so the
 // previous answer's number is never shown as this filter's.
 test("the count says it is counting while a new filter's read is out, and shows the answer's number again", async () => {
@@ -1579,6 +1595,135 @@ test("the count says it is counting while a new filter's read is out, and shows 
 
   serve(socket, snapshotFrame(sub, { ...everyFacet, prs: [] }));
   expect(await screen.findByText("0 PRs in current filter/window")).toBeDefined();
+});
+
+// INFRA-3135, round 26, by the ruling of 2026-11-24 08:07Z: a count beside a value is drawn only
+// once the data it counts has answered. After the first answer a pick in one facet sends a new
+// read, and while it is out the previous answer stays on screen (`keepPreviousData`): every other
+// facet in the open panel drew that answer's counts as the new filter's. Its values are drawn with
+// no count until the pick's read answers, as the header's count waits.
+test("while a pick's read is out the Filter panel's other facets draw no count beside a value, and the answer's counts once it is in", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  const socket = await answered(everyFacet);
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await facetOptionNames(user, "Priority")).toEqual(["P0, 1 PR"]);
+
+  await user.click(await panelFacet(user, "Repository"));
+  await user.click(
+    within(screen.getByRole("listbox", { name: "Repository options" })).getByRole("option", {
+      name: /^acme\/widgets/,
+    })
+  );
+  const { sub } = await subscriptionTo(socket, {
+    kind: "timeline",
+    window: URL_WINDOW,
+    query: "repo=acme%2Fwidgets",
+  });
+  // The first answer is still on screen while the pick's read is out.
+  await screen.findByText("Counting PRs in current filter/window…");
+  expect(await facetOptionNames(user, "Priority")).toEqual(["P0"]);
+
+  serve(
+    socket,
+    snapshotFrame(sub, {
+      ...everyFacet,
+      facet_counts: { ...everyFacet.facet_counts, priority: { P0: 1, P1: 2 } },
+    })
+  );
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await facetOptionNames(user, "Priority")).toEqual(["P1, 2 PRs", "P0, 1 PR"]);
+});
+
+/** Each value a List column's header filter offers, by the name it is read out as
+ *  (`listOptionNames`). Escape closes the list again, so the next read opens its own. */
+async function columnOptionNames(user: UserEvent, column: string): Promise<string[]> {
+  await user.click(screen.getByRole("button", { name: new RegExp(`^Filter ${column}`) }));
+  const names = listOptionNames(screen.getByRole("listbox", { name: `${column} options` }));
+  await user.keyboard("{Escape}");
+  return names;
+}
+
+// The same for the List view's column filters, which count each value from the same answer: while
+// a pick's read was out, a header's filter drew the previous filter's count beside each value.
+test("while a pick's read is out a List column's filter draws no count beside a value, and the answer's counts once it is in", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  const socket = await answered(everyFacet);
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await columnOptionNames(user, "Author")).toEqual(["octocat, 1 PR"]);
+
+  await user.click(screen.getByRole("button", { name: "Filter Issue" }));
+  await user.click(
+    within(screen.getByRole("listbox", { name: "Issue options" })).getByRole("option", {
+      name: /^ACME-1/,
+    })
+  );
+  const { sub } = await subscriptionTo(socket, {
+    kind: "timeline",
+    window: URL_WINDOW,
+    query: "issue=ACME-1",
+  });
+  await user.keyboard("{Escape}");
+  // The first answer is still on screen while the pick's read is out.
+  await screen.findByText("Counting PRs in current filter/window…");
+  expect(await columnOptionNames(user, "Author")).toEqual(["octocat"]);
+
+  serve(
+    socket,
+    snapshotFrame(sub, {
+      ...everyFacet,
+      facet_counts: { ...everyFacet.facet_counts, author: { hubot: 2, octocat: 1 } },
+    })
+  );
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await columnOptionNames(user, "Author")).toEqual(["hubot, 2 PRs", "octocat, 1 PR"]);
+});
+
+/** Each agent the Own colour list offers, by the name it is read out as (`listOptionNames`).
+ *  Escape closes the list again, so the next read opens its own. */
+async function ownColourNames(user: UserEvent): Promise<string[]> {
+  await user.click(screen.getByRole("button", { name: /^Own colour and lane: / }));
+  const names = listOptionNames(
+    screen.getByRole("listbox", { name: "Own colour and lane options" })
+  );
+  await user.keyboard("{Escape}");
+  return names;
+}
+
+// The same, for the Own colour list, which counts each agent from the same answer: while a new
+// filter's read was out it drew the previous filter's "N PRs" beside each agent.
+test("while a new filter's read is out the Own colour list draws no count beside an agent, and the answer's counts once it is in", async () => {
+  const user = userEvent.setup();
+  const colouredByAgent: DeliveryTimelineWithMeasures = {
+    ...everyFacet,
+    color_counts: { ...emptyTimeline.color_counts, parent_agent: { "group:g1": 3, Reviewer: 2 } },
+    session_groups: [RELEASE_CREW],
+  };
+  renderPage(`${DELIVERY_URL}&colorBy=parentAgent`);
+  const socket = await answered(colouredByAgent);
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await ownColourNames(user)).toEqual(["Release crew, 3 PRs", "Reviewer, 2 PRs"]);
+
+  await user.click(screen.getByRole("button", { name: "Filter Author" }));
+  await user.click(
+    within(screen.getByRole("listbox", { name: "Author options" })).getByRole("option", {
+      name: /^octocat/,
+    })
+  );
+  const { sub } = await subscriptionTo(socket, {
+    kind: "timeline",
+    window: URL_WINDOW,
+    query: "author=octocat",
+  });
+  await user.keyboard("{Escape}");
+  // The first answer is still on screen while the filter's read is out.
+  await screen.findByText("Counting PRs in current filter/window…");
+  expect(await ownColourNames(user)).toEqual(["Release crew", "Reviewer"]);
+
+  serve(socket, snapshotFrame(sub, colouredByAgent));
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await ownColourNames(user)).toEqual(["Release crew, 3 PRs", "Reviewer, 2 PRs"]);
 });
 
 // F2 item 4: `?ws=x&we=y` was kept as written, `Date.parse` gave NaN and every pull request was

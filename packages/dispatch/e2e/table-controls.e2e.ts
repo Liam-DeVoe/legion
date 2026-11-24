@@ -2096,6 +2096,19 @@ test("the Delivery page's facet parameters open the pull requests they name", as
   expect(await listed("session=__no_session__"), "?session=").toEqual([]);
   // ACME-1, the issue #1 is attributed to, is the window's one P0; #2 links no issue at all.
   expect(await listed("priority=0"), "?priority=").toEqual(["acme/widgets#1"]);
+  const knownChips = await chipNames(page.locator("main"));
+  expect(knownChips, "?priority=: the known value's chip").not.toEqual([]);
+  // A value that names no priority, beside a known one, is dropped from the address's reading:
+  // the list is the one the known value alone lists, and the control row draws the known
+  // value's chip alone. Dispatch selects nothing by an unknown value, so the list alone would
+  // read the same with it kept; the chip it would draw is what the page itself shows of it.
+  expect(await listed("priority=P9&priority=0"), "?priority= beside an unknown value").toEqual([
+    "acme/widgets#1",
+  ]);
+  expect(
+    await chipNames(page.locator("main")),
+    "?priority= beside an unknown value: the control row's chips"
+  ).toEqual(knownChips);
   // ACME-1 carries no component, and #2 links no issue at all, so the server counts only the
   // attributed pull request under the placeholder.
   expect(await listed("component=__no_component__"), "?component=").toEqual(["acme/widgets#1"]);
@@ -8173,17 +8186,25 @@ test("a thread's Dismiss in the Inbox's list hands the focus to the next row, an
 }) => {
   await createProject({ key: "CORE", name: "Core" });
   const list = page.getByTestId("inbox-list");
-  /** Where the window and the list's box stand and how far each can scroll, and what holds the
-   *  focus: its name, the row it is in, whether it is that row itself, its top and height, the
-   *  part of the window the reader sees through the list's box, and whether its box is inside
-   *  it. */
+  /** Where the window, the list's box and the reading column's box, where it is drawn, stand and
+   *  how far each can scroll, and what holds the focus: its name, the row it is in, whether it is
+   *  that row itself, its top and height, the part of the window the reader sees through the
+   *  list's box, and whether its box is inside it. */
   const landing = () =>
     page.evaluate(() => {
       const frame = document.querySelector<HTMLElement>('[data-testid="inbox-list"]');
+      const column = document.querySelector<HTMLElement>('[data-testid="inbox-pane-scroller"]');
       const scroller = document.scrollingElement ?? document.documentElement;
       const scroll = {
         farthestTop: frame === null ? 0 : Math.round(frame.scrollHeight - frame.clientHeight),
         farthestY: Math.round(scroller.scrollHeight - scroller.clientHeight),
+        pane:
+          column === null
+            ? null
+            : {
+                farthest: Math.round(column.scrollHeight - column.clientHeight),
+                top: Math.round(column.scrollTop),
+              },
         scrollTop: Math.round(frame?.scrollTop ?? 0),
         scrollY: Math.round(window.scrollY),
       };
@@ -8256,16 +8277,25 @@ test("a thread's Dismiss in the Inbox's list hands the focus to the next row, an
     );
     await row.locator("[data-inbox-dismiss]").focus();
     await nextFrames(page);
-    // One instant is the point: where the window and the list stand just before the press.
+    // One instant is the point: where the window, the list and the reading column stand just
+    // before the press.
     const before = await landing();
     await page.keyboard.press("Enter");
     await expect(row).toHaveCount(0);
     // The hand-off runs with the commit that took the row away, and a scroll lands over frames.
     await settledScrollTop(list);
     await settledScrollTop(page);
-    // One read is the answer: every hand-off of the press has run, and nothing else moves.
+    // The reading column's box, where it was drawn before the press, is read once it holds still
+    // too: the Inbox's own hand-off can land in it at 1440.
+    if (before.pane !== null) await settledScrollTop(page.getByTestId("inbox-pane-scroller"));
+    // One read is the answer: every hand-off of the press has run, every box holds still, and
+    // nothing else moves them.
     const now = await landing();
-    const numbers = `window.scrollY ${before.scrollY} -> ${now.scrollY} (farthest ${now.farthestY}), list scrollTop ${before.scrollTop} -> ${now.scrollTop} (farthest ${now.farthestTop})`;
+    const columnNumbers =
+      before.pane === null || now.pane === null
+        ? ""
+        : `, reading column scrollTop ${before.pane.top} -> ${now.pane.top} (farthest ${now.pane.farthest})`;
+    const numbers = `window.scrollY ${before.scrollY} -> ${now.scrollY} (farthest ${now.farthestY}), list scrollTop ${before.scrollTop} -> ${now.scrollTop} (farthest ${now.farthestTop})${columnNumbers}`;
     if (now.row !== next || !now.isRow) {
       wrong.push(
         `${where}: after Enter on the first thread's Dismiss the focus is on ${now.name}, not on the row now at its place, "${next}" (${numbers})`
@@ -8292,6 +8322,15 @@ test("a thread's Dismiss in the Inbox's list hands the focus to the next row, an
       if (Math.abs(moved) > 1 && !clamped && !shownWhole) {
         wrong.push(
           `${where}: after Enter on the first thread's Dismiss the ${box} scrolled ${moved} px, more than shows ${now.name} whole at ${now.top} px (${numbers})`
+        );
+      }
+    }
+    if (before.pane !== null && now.pane !== null) {
+      const columnClamped =
+        now.pane.top >= now.pane.farthest - 1 && before.pane.top > now.pane.farthest;
+      if (Math.abs(now.pane.top - before.pane.top) > 1 && !columnClamped) {
+        wrong.push(
+          `${where}: after Enter on the first thread's Dismiss the reading column scrolled ${now.pane.top - before.pane.top} px, with the focus on ${now.name} at ${now.top} px (${numbers})`
         );
       }
     }

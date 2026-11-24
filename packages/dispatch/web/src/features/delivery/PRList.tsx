@@ -465,6 +465,7 @@ export function PRList({
   colorBy,
   colorScale,
   columnFilters,
+  counted,
   facetCounts,
   issueTitles,
   onColumnFiltersChange,
@@ -482,6 +483,10 @@ export function PRList({
   colorScale: Map<string, string>;
   /** The picked values of the five facets that are columns, as TanStack holds them. */
   columnFilters: ColumnFiltersState;
+  /** Whether `facetCounts` is the answer for the window, filters and search the address names
+   *  (`DeliveryPage`'s `counted`): while it is not, a header's filter draws no count beside a
+   *  value, since the counts on screen are the previous filter's. */
+  counted: boolean;
   /** Every facet's counts as Dispatch answered them, by the server's own facet name. */
   facetCounts: Readonly<Record<string, Readonly<Record<string, number>>>>;
   issueTitles: Readonly<Record<string, string>>;
@@ -582,6 +587,7 @@ export function PRList({
     <DataTable
       empty="No PRs in the current filter/window."
       fillColumn="title"
+      filterCounted={counted}
       filterCounts={counts}
       label="Merged pull requests"
       model={model}

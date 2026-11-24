@@ -91,6 +91,7 @@ function renderList(
           colorBy="repo"
           colorScale={new Map()}
           columnFilters={[]}
+          counted
           facetCounts={{}}
           issueTitles={{}}
           onColumnFiltersChange={() => {}}

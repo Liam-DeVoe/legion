@@ -88,13 +88,13 @@ export interface ViewportAnchorProps {
   group?: string;
   /** Attribute naming each row and carrying its id, e.g. `data-inbox-row`. */
   item: string;
-  /** Whether a press of the reader's is taking row `id` away from its place: a Dismiss, or a
-   *  write that moves the row into another group once it lands. The anchor does not hold the
-   *  current row in place against the going of such a row above it: the current row and the rows
-   *  after it move up by the whole space the row took, and the view does not scroll. It is asked
-   *  of the render that last drew the rows and of the render being committed alike, because a
-   *  write can stop naming its rows in the same commit that moves them. With no function, no row
-   *  is named. */
+  /** Whether a press of the reader's is taking row `id` away from its place: for example a
+   *  Dismiss, or a write that moves the row into another group once it lands. The anchor does not
+   *  hold the current row in place against the going of such a row above it: the current row and
+   *  the rows after it move up by the whole space the row took, and the view does not scroll. It
+   *  is asked of the render that last drew the rows and of the render being committed alike,
+   *  because a write can stop naming its rows in the same commit that moves them. With no
+   *  function, no row is named. */
   leaving?: (id: string) => boolean;
   label?: string;
   /** Receives the rendered root element, for a host that also queries the rows itself. */
@@ -179,13 +179,14 @@ function rowWithin(root: HTMLElement, selector: string, node: Element | null): H
  * and the rows after it move up into the place it leaves (`pressing`).
  *
  * One shift is not compensated: a row that a press of the reader's takes away from above the
- * current row (`leaving`: a Dismiss, or a snooze that moves its rows into another group), with
- * the heading of a group its going empties. The reader asked for that row to go, so the current
- * row and the rows after it move up by the whole space the row took, the part above the view's
- * top included: the view is not scrolled to hold them. Every other change of height above the
- * current row in the same commit, growing or shrinking, is compensated, so the place the row left
- * stays where it stood on screen: the Inbox's **Mark all read** goes with the last unread rows,
- * and below `sm` the header loses the line it stood on, so the view scrolls up by that line.
+ * current row (`leaving`: for example a Dismiss, or a snooze that moves its rows into another
+ * group), with the heading of a group its going empties. The reader asked for that row to go, so
+ * the current row and the rows after it move up by the whole space the row took, the part above
+ * the view's top included: the view is not scrolled to hold them. Every other change of height
+ * above the current row in the same commit, growing or shrinking, is compensated, so the place
+ * the row left stays where it stood on screen: the Inbox's **Mark all read** goes with the last
+ * unread rows, and below `sm` the header loses the line it stood on, so the view scrolls up by
+ * that line.
  * Where the press takes the current row itself away, as a thread's own Dismiss does, the row that
  * keeps its place once it has gone (`standInFor`) is held the same way: the row after it, which
  * moves up into its place, else the row before it. A current row that holds the focus and is left

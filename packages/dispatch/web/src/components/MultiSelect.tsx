@@ -452,6 +452,14 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // step picks the row it highlights, and the text it puts in the search box. A press of the
   // trigger opens it as a click does, on the value picked with an empty search.
   const openedBy = useRef<{ readonly key?: string; readonly query: string } | undefined>(undefined);
+  // The search and the highlight an open starts with, from the open until the commit that draws
+  // them: the open's own commit still draws the ones the list last closed on (the layout effect
+  // that shows the highlighted row, below).
+  const opening = useRef<{ readonly active: string | undefined; readonly query: string } | null>(
+    null
+  );
+  // The highlighted row that layout effect last showed whole, by its element's id.
+  const shownRow = useRef<string | undefined>(undefined);
   const keysOnTrigger = props.mode === "single" && props.keysOnTrigger === true;
   // D5's rules, which a single pick takes whole or not at all (`ListMenu`).
   const menu = props.mode === "single" ? props.menu : undefined;
@@ -583,32 +591,41 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // Opening starts a fresh search on the value a single pick holds - or on what the key that
   // opened it says: the character typed on the closed trigger in the text box, with its first
   // match highlighted as typing into the box highlights it, or the row a move key steps to
-  // (`keysOnTrigger`); the panel hands the focus to the search unless the host hands
-  // it in itself (`focusOnOpen`), and a menu opened on a coarse pointer gives it to its list
-  // rather than to the box, with no scroll: the layout effect below alone decides where the panel
-  // stands scrolled. The engine's own scroll of the list box it focuses centred that box in the
-  // panel, which put the status's first choice under the text box and its last under the foot line
-  // on a phone (the tester's round 16). Closing gives the focus back - to the trigger, or where a
-  // menu's goes - when the close left it nowhere - the list that held it is gone - and leaves a
-  // focus that is somewhere. Whether it is nowhere is the page's one check for a lost focus
-  // (`focusLost`, whose doc says where each engine leaves the focus of an element taken away), so
-  // a Tab out of the text box the close took away puts the reader back rather than leave the focus
-  // to fall onto the page. A press outside moves the focus after this runs, so the focus ends where
-  // that press put it.
-  useEffect(() => {
-    if (open) {
-      const by = openedBy.current;
-      openedBy.current = undefined;
-      setQuery(by?.query ?? "");
-      setActiveValue(
+  // (`keysOnTrigger`) - before the open paints: the search the list last closed on would otherwise
+  // narrow the rows its first frame draws. The row it highlights is then shown whole (`opening`,
+  // the layout effect below). The panel hands the focus to the search unless the host hands it in
+  // itself (`focusOnOpen`), and a menu opened on a coarse pointer gives it to its list rather than
+  // to the box, with no scroll, here, before the panel's own effect starts to follow the focus
+  // (`AnchoredPanel`): the layout effect below alone decides where the panel stands scrolled. The
+  // engine's own scroll of the list box it focuses centred that box in the panel, which put the
+  // status's first choice under the text box and its last under the foot line on a phone (the
+  // tester's round 16).
+  useLayoutEffect(() => {
+    if (!open) return;
+    const by = openedBy.current;
+    openedBy.current = undefined;
+    const opened = {
+      active:
         by === undefined
           ? opensOn.current
           : by.key === undefined
             ? undefined
-            : stepTo(by.key, opensWith.current, opensOn.current)
-      );
-      if (opensBare.current) listboxRef.current?.focus({ preventScroll: true });
-    } else if (wasOpen.current) {
+            : stepTo(by.key, opensWith.current, opensOn.current),
+      query: by?.query ?? "",
+    };
+    setQuery(opened.query);
+    setActiveValue(opened.active);
+    opening.current = opened;
+    if (opensBare.current) listboxRef.current?.focus({ preventScroll: true });
+  }, [open]);
+  // Closing gives the focus back - to the trigger, or where a menu's goes - when the close left it
+  // nowhere - the list that held it is gone - and leaves a focus that is somewhere. Whether it is
+  // nowhere is the check for a lost focus a list asks (`focusLost`, whose doc says where each
+  // engine leaves the focus of an element taken away), so a Tab out of the text box the close took
+  // away puts the reader back rather than leave the focus to fall onto the page. A press outside
+  // moves the focus after this runs, so the focus ends where that press put it.
+  useEffect(() => {
+    if (!open && wasOpen.current) {
       if (focusLost()) handBackNow.current();
       returnTo.current = null;
     }
@@ -619,12 +636,27 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // the value picked, a move key on the closed trigger, an arrow, Home or End in the text box, a
   // search - since the panel holds about five rows and the highlight is drawn on the row alone:
   // End, Page Down or ArrowUp's wrap would otherwise highlight a row below the fold, which Enter
-  // then picks unseen. The panel scrolls the least that shows the row whole between the sticky
-  // text box and the foot - the sticky foot, or the panel's own bottom where the foot follows the
-  // rows (a menu on a coarse pointer) - so a row already whole scrolls nothing. Only the panel's
-  // own box scrolls, never the window (`scrollToShow`). Laid out before the browser paints, so the
-  // row is never drawn out of sight first.
+  // then picks unseen, as it took the issue header's Status on an issue in Testing, Needs review
+  // or Retro, whose list opened with that status below the five rows its box shows. The panel
+  // scrolls the least that shows the row whole between the sticky text box and the foot - the
+  // sticky foot, or the panel's own bottom where the foot follows the rows (a menu on a coarse
+  // pointer) - so a row already whole scrolls nothing. Only the panel's own box scrolls, never the
+  // window (`scrollToShow`). Laid out before the browser paints, so the row is never drawn out of
+  // sight first. A row is shown as the highlight moves onto it (`shownRow`), and the row an open
+  // highlights - the first choice of a menu of acts, else the value picked, or the row the key
+  // that opened it names - in the commit that draws the open's own search and highlight
+  // (`opening`), whether the highlight's row changed there or not: the open's own commit still
+  // draws the ones the list last closed on, and the open's setting of its own draws them in the
+  // commit right after it, before anything paints. So a list that closed on a search opens with
+  // its picked row shown whole among every option again, not where it stood among the few that
+  // search left.
   useLayoutEffect(() => {
+    const opened = opening.current;
+    if (opened !== null) {
+      if (opened.query !== query || opened.active !== activeValue) return;
+      opening.current = null;
+    } else if (activeId === shownRow.current) return;
+    shownRow.current = activeId;
     const row = activeId === undefined ? null : document.getElementById(activeId);
     const head = headRef.current;
     const box = head?.parentElement ?? null;
@@ -633,7 +665,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     const boxBottom = shownSpan(box).bottom;
     const bottom = Math.min(footRef.current?.getBoundingClientRect().top ?? boxBottom, boxBottom);
     scrollToShow(box, row.getBoundingClientRect(), { bottom, top });
-  }, [activeId]);
+  });
 
   // The closed trigger opens the list on the keys the WAI-ARIA select-only combobox opens it on:
   // ArrowDown and ArrowUp, with Alt or without, open it as a click does, on the value picked, and

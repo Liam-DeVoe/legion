@@ -77,13 +77,36 @@ export function scrollToShow(box: Element, span: Span, shown: Span): void {
   else if (span.bottom > shown.bottom) box.scrollTop += span.bottom - shown.bottom;
 }
 
+/** The part of `panel`'s shown span (`shownSpan`) that no sticky child of the panel covers: cut
+ *  at the bottom edge of a child stuck to its top and at the top edge of one stuck to its bottom,
+ *  as the shared list's text box and Clear foot are, the rows scrolling under both (`MultiSelect`,
+ *  whose arrows measure the same span). A sticky child that holds `control` cuts nothing: it
+ *  stands where it sticks however the panel scrolls. */
+function uncoveredSpan(panel: HTMLElement, control: Element): Span {
+  let { bottom, top } = shownSpan(panel);
+  for (const child of panel.children) {
+    if (child.contains(control)) continue;
+    const { bottom: stuckBottom, position, top: stuckTop } = getComputedStyle(child);
+    if (position !== "sticky") continue;
+    const box = child.getBoundingClientRect();
+    // A sticky box sticks to a side whose inset is set: `auto` in a browser, empty in happy-dom,
+    // is no side.
+    if (stuckTop !== "auto" && stuckTop !== "") top = Math.max(top, box.bottom);
+    else if (stuckBottom !== "auto" && stuckBottom !== "") bottom = Math.min(bottom, box.top);
+  }
+  return { bottom, top };
+}
+
 /**
  * Scrolls `panel` the least that shows `control`, which has just taken the focus inside it, whole
- * in the panel's box: up to its top edge where it starts above the box, down to its bottom edge
- * where it ends below, and not at all where it stands whole. Chromium and WebKit scroll a control
- * the focus reaches into view themselves; Firefox leaves one that is partly in sight cut at the
- * box's edge (Remove Waiting on you filter in the Inbox's `+N more` panel, 19 px below it at
- * 390x664). Only the panel's box scrolls: this sets its `scrollTop` rather than call
+ * in the part of the panel's box that no sticky child of the panel covers (`uncoveredSpan`): up
+ * to that part's top edge where the control starts above it, down to its bottom edge where it ends
+ * below, and not at all where it stands whole. Chromium and WebKit scroll a control the focus
+ * reaches into view themselves; Firefox leaves one that is partly in sight cut at the box's edge
+ * (Remove Waiting on you filter in the Inbox's `+N more` panel, 19 px below it at 390x664). A row
+ * of the shared list that takes the focus under its text box or its Clear foot, as a screen
+ * reader's cursor puts it there, stands covered in every engine, since each counts the whole box
+ * as in view. Only the panel's box scrolls: this sets its `scrollTop` rather than call
  * `scrollIntoView`, which scrolls the window too (`scrollToShow`).
  *
  * A control inside a box of its own that cuts it - a box inside the panel whose `overflow-y` clips
@@ -101,7 +124,7 @@ function scrollPanelToShow(panel: HTMLElement, control: Element): void {
     bottom = Math.min(bottom, cut.bottom);
   }
   if (top > bottom) return;
-  scrollToShow(panel, { bottom, top }, shownSpan(panel));
+  scrollToShow(panel, { bottom, top }, uncoveredSpan(panel, control));
 }
 
 /** What dismissed a panel, which `onDismiss` hands its host: Escape, Tab or Shift+Tab past its
@@ -160,9 +183,10 @@ export function noteOpenedFrom(anchor: HTMLElement): void {
  * the panel they picked it from. Escape and Tab stay each panel's own, so Escape in the inner
  * list closes that list alone.
  *
- * A control the focus reaches inside the panel stands whole in the panel's box, which scrolls the
- * least that shows it, in every engine (`scrollPanelToShow`); a focus in a panel opened from
- * inside this one is that panel's own, and scrolls this one nothing.
+ * A control the focus reaches inside the panel stands whole in the part of the panel's box no
+ * sticky child of the panel covers, which scrolls the least that shows it, in every engine
+ * (`scrollPanelToShow`); a focus in a panel opened from inside this one is that panel's own, and
+ * scrolls this one nothing.
  *
  * The panel's element carries `PANEL_ATTRIBUTE` (`key-targets.ts`), so a key pressed anywhere inside
  * it fires only the page's bindings that fire in a text field (`inEditable`): a radio or a
