@@ -2423,17 +2423,20 @@ This release's one-time start of the mergers that the `awaiting_merge` cutover l
 This release asks the merger, not the implementer, to merge the base forward once the issue stands in `merging`, and asks nothing in `retro`, or in `accepting` where the acceptance is the task's last step (cybermonklabs/legion#4979).
 It adds no migration: a `merge_forward` row's payload and `pull_requests.merge_forward` are JSON, and the ask names its role there (`role`).
 An earlier release refuses a `merge_forward` ask whose role is the merger when it decodes the row, and reads an ask that names the merger as the implementer's, already made, so it would ask nobody.
-Run this with the daemon stopped, before the earlier image is pinned:
+Run this before the earlier image is pinned, with the daemon of the project that rolls back stopped, and with `<PROJECT>` replaced by the project's key: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`:
 
 ```sql
 begin;
--- The merger's asks still queued, and the asks of the merger that have not landed.
-delete from outbox where kind = 'merge_forward' and payload->>'step' = 'ask' and payload->>'role' = 'merger';
+-- The merger's asks still queued, and the asks of the merger that have not landed, of one project.
+delete from outbox where kind = 'merge_forward' and payload->>'step' = 'ask' and payload->>'role' = 'merger'
+  and split_part(issue, '-', 1) = '<PROJECT>';
 update pull_requests set merge_forward = null
-  where merge_forward->>'role' = 'merger' and coalesce(merge_forward->>'landed', '') = '';
+  where merge_forward->>'role' = 'merger' and coalesce(merge_forward->>'landed', '') = ''
+    and split_part(issue, '-', 1) = '<PROJECT>';
 commit;
 ```
 
+The outbox and `pull_requests` are shared by every project's daemon on the database, so each statement takes the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project, since a project key holds no hyphen), and a project that stays on this release keeps its merger's asks.
 The earlier release decides again on the next read of each such head that finds it conflicting, and asks the implementer.
 An ask of the merger that has landed stays: the earlier release reads it as a landed merge forward, as it reads its own.
 
@@ -2448,14 +2451,14 @@ A `merge_forward` row is one message to one role about a conflict the daemon act
 **The rows of the two new kinds, and the two columns, must be cleared before the earlier image is pinned.**
 An earlier release puts neither kind in an outbox lane (`laneKinds` in `record/outbox.go`), so it never runs a row of either kind, and such a row would wait through the rollback and run at the roll forward, when the head it names has long moved.
 The earlier release never names the two columns either, so it neither reads nor clears them, and a first read or an ask it left standing would name a head its own moves have overtaken by the roll forward.
-Run this with the daemon stopped, before the earlier image is pinned:
+Run this before the earlier image is pinned, with the daemon of the project that rolls back stopped, and with `<PROJECT>` replaced by its key as above:
 
 ```sql
 begin;
--- The second reads of conflicting heads, and the merge-forward messages.
-delete from outbox where kind in ('conflict_confirm', 'merge_forward');
+-- The second reads of conflicting heads, and the merge-forward messages, of one project.
+delete from outbox where kind in ('conflict_confirm', 'merge_forward') and split_part(issue, '-', 1) = '<PROJECT>';
 update pull_requests set conflict_read = null, merge_forward = null
-  where conflict_read is not null or merge_forward is not null;
+  where (conflict_read is not null or merge_forward is not null) and split_part(issue, '-', 1) = '<PROJECT>';
 commit;
 ```
 
@@ -2464,12 +2467,14 @@ Each deleted `merge_forward` row is a message that nobody delivers.
 
 The kind check keeps `phase_ended` and both new names after the rollback, so it refuses nothing the earlier release writes.
 That release queues `phase_ended` rows again when a conflict sends an issue back, and the migration that deletes them does not run a second time, since the database still records its version.
-So run this once more with the earlier release stopped, before this release starts again:
+So run this once more with the earlier release of that project stopped, before this release starts again:
 
 ```sql
--- A phase-ended message the earlier release queued about a move this release no longer makes.
-delete from outbox where kind = 'phase_ended';
+-- A phase-ended message the earlier release queued about a move this release no longer makes, of one project.
+delete from outbox where kind = 'phase_ended' and split_part(issue, '-', 1) = '<PROJECT>';
 ```
+
+The outbox and `pull_requests` are shared by every project's daemon on the database, so each statement of this section takes the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project), and a project that stays on this release keeps its second reads and its merge-forward messages.
 
 #### Rolling back the release that publishes each issue's role sessions to Dispatch
 
@@ -2795,18 +2800,24 @@ After a roll forward, this release would count each one that still does, in `des
 This release marks a pending task that it queued for news alone in its own column, `news_only`, and the earlier release reads no such mark.
 So the earlier release reads such a task as its claim's phase task, and a task it writes over such a row keeps the mark, which this release would read after the roll forward as a task of news alone.
 It also reads a root architect's untaken news-only task as a start of that architect's work on its way (`workflow.ArchitectStartPending`), so its sweep would send that architect no entry its row is owed until a turn took the news.
-Stop this release's daemon, run these four statements, and then start the release before it:
+Stop the daemon of the project that rolls back, run these four statements with `<PROJECT>` replaced by the project's key (`project` in its `legion.yaml`, the part of each of its issue keys before the hyphen), and then start the release before it:
 
 ```sql
-delete from outbox where kind = 'supervise' and payload ? 'news';
+delete from outbox where kind = 'supervise' and payload ? 'news' and split_part(issue, '-', 1) = '<PROJECT>';
 update outbox set payload = jsonb_set(payload, '{gates}',
     (select coalesce(jsonb_agg(gate - 'holds' order by position), '[]'::jsonb)
       from jsonb_array_elements(payload -> 'gates') with ordinality as entry (gate, position)))
-  where kind = 'design_gates_publish' and jsonb_typeof(payload -> 'gates') = 'array';
-delete from pending_task_deliveries where news_only;
+  where kind = 'design_gates_publish' and jsonb_typeof(payload -> 'gates') = 'array'
+    and split_part(issue, '-', 1) = '<PROJECT>';
+delete from pending_task_deliveries where news_only
+  and claim_token in (select token from claims where split_part(issue, '-', 1) = '<PROJECT>');
 update pending_task_deliveries set design_news = null, carried_news = null
-  where design_news is not null or carried_news is not null;
+  where (design_news is not null or carried_news is not null)
+    and claim_token in (select token from claims where split_part(issue, '-', 1) = '<PROJECT>');
 ```
+
+The outbox, `pending_task_deliveries` and `claims` are shared by every project's daemon on the database, so each statement takes the rows of the project that rolls back alone: an outbox row's project is `split_part(issue, '-', 1)`, since a project key holds no hyphen, and a pending task's is the issue of the claim it is for.
+A project that stays on this release keeps its news.
 
 The first statement deletes each news-only start.
 The news that such a start would tell stays owed in `design_news_told`, so this release sends it again after the roll forward.
