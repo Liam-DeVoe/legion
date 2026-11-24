@@ -29,6 +29,14 @@ The pull request body's `Checks` lines are in `skill://legion-worker/references/
 
 ## The rules every phase's evidence follows
 
+- Every role writes the one workspace, so a file can change under your check.
+  Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) unless the check needs the workspace itself.
+  Run `git diff --quiet <head> -- <files the check reads>` before you record a result.
+
+- A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged just before and after.
+
+- A run whose output you did not capture can be neither confirmed nor cleared.
+
 - The tester tries to break the changed surface (wrong and boundary inputs, the second and the concurrent run, the party it must refuse) and writes a failing test for each way it breaks that no existing test catches.
   Lint, types and the unit and integration suites are CI's: read them on GitHub at the head, rerun no lane as evidence, and wait for none.
 
