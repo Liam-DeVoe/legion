@@ -848,7 +848,7 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
     "LEGION-67 implementer: long names end in an ellipsis wherever a link or a control truncates them, on a 390 px phone and in a 280 px margin as much as on a 1280 px desktop";
   // The session is the row's own (`rowSessionId`, e2e/test.ts): Dispatch keeps the broadcast's
   // copy to it by its id, for every person at once.
-  const longSessionId = rowSessionId("long-title");
+  const longSessionId = rowSessionId("longtitle");
   const longTitledSession = {
     actor: {
       kind: "session" as const,

@@ -71,13 +71,13 @@ export function threadSessions(sessionId: (logical: string) => string): {
     other: {
       ...OTHER_SESSION,
       get session_id() {
-        return sessionId("review-bot");
+        return sessionId("reviewbot");
       },
     },
     thread: {
       ...THREAD_SESSION,
       get session_id() {
-        return sessionId("release-bot");
+        return sessionId("releasebot");
       },
     },
   };
