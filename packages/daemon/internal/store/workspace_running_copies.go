@@ -492,12 +492,12 @@ func (s *Store) TakeWorkspaceCopyForRestore(ctx context.Context, project, issue,
 // (transactUntilCommitted): where a commit's reply is lost, the store reads whether that run
 // committed and answers with that run's own ask, and it runs the body again only after a run the
 // store says did not commit, which recorded nothing. A run whose outcome stays unknown at ctx's end
-// (ErrCommitOutcomeUnknown) may have committed whatever the decision was. A copy sent then stays
-// owed to the pod, unspent until a role of it registers, and the pod's start, which that error
-// holds (internal/runtime/sandbox's restoreWorkspace), asks again and is sent it; a copy refused or
-// superseded is spent at once, and one dropped is deleted, either of which loses no work: a refused
-// or superseded copy is older than the work the pod is given, and a dropped one is on the kept
-// volume the pod mounts.
+// (ErrCommitOutcomeUnknown) may have committed whatever the decision was, which is the decision a
+// later ask makes too, so the unknown outcome costs nothing that decision would not. A copy sent
+// then stays owed to the pod, unspent until a role of it registers, and the pod's start, which
+// that error holds (internal/runtime/sandbox's restoreWorkspace), asks again and is sent it; a copy
+// refused or superseded is spent as at any ask, its bytes kept as a refused or superseded copy's
+// are, and a copy dropped is deleted, its work on the kept volume the pod mounts.
 func (s *Store) askWorkspaceCopies(ctx context.Context, project, issue, podUID string,
 	decide func(ctx context.Context, tx pgx.Tx, ask *runtime.WorkspaceRestore, bundle, running runtime.WorkspaceCopyHeld) (bundleTake, runningTake runtime.WorkspaceBundleTake, err error),
 ) (runtime.WorkspaceRestore, error) {
@@ -672,9 +672,11 @@ func firstRestoreAsk(ctx context.Context, tx pgx.Tx, issue, podUID string) (time
 // registration and sends nothing. It only updates: a pod with no row is left with none. Every
 // pod's first role start asks for a restore, and a start whose ask the store did not answer starts
 // no role (internal/runtime/sandbox's restoreWorkspace), so a pod whose role registers with no row
-// is one of two. Its row was pruned (maxWorkspaceRestoreAsks), which reads as spent; or its issue
-// is one the daemon's project does not record (projectRecordsIssue), whose ask askWorkspaceCopies
-// answers empty and records nothing, so the take sends nothing and the role starts.
+// is one of three. Its row was pruned (maxWorkspaceRestoreAsks), which reads as spent; its issue is
+// one the daemon's project does not record (projectRecordsIssue), whose ask askWorkspaceCopies
+// answers empty and records nothing, so the take sends nothing and the role starts; or its first
+// role start was under a daemon that records no ask, a release before this table or the earlier
+// release a rollback runs, whose roles register with this daemon later.
 func (s *Store) RecordPodRegistration(ctx context.Context, issue, podUID string) error {
 	if podUID == "" {
 		return fmt.Errorf("record a registration in a pod of %s: no pod named", issue)

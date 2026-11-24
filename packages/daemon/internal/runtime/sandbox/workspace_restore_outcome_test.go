@@ -148,8 +148,8 @@ func TestABundleTakeWhoseOutcomeIsUnknownIsSentOnceTheStoreAnswers(t *testing.T)
 	requireSentOnce(t, st, g, spec, saved)
 }
 
-// A take whose outcome stays unknown past its caller's bound says that the attempt and this pod's
-// first ask may be recorded. The run committed, so the row records the attempt to the pod. No role
+// A take whose outcome stays unknown past its caller's bound says that the take, with this pod's
+// first ask, may be recorded. The run committed, so the row records the attempt to the pod. No role
 // of that pod has registered, so the copy is unspent: a later take by the same pod, which is what
 // its restarted container asks, is sent the same copy under the same restore id. Once a role of the
 // pod registers, the copy is spent and a take by the pod answers nothing, while the work stays in
@@ -166,7 +166,7 @@ func TestABundleTakeWhoseOutcomeStaysUnknownLeavesTheCopyUnspentUntilARoleRegist
 	take, err := faulted.TakeWorkspaceCopyForRestore(ctx, testProject, testTree, podUID)
 	testdb.Met(t, fired)
 	if !errors.Is(err, store.ErrCommitOutcomeUnknown) || !strings.Contains(err.Error(), "may be recorded") {
-		t.Fatalf("the take whose outcome stayed unknown = %+v (%v), want an error that is store.ErrCommitOutcomeUnknown and says the attempt may be recorded", take, err)
+		t.Fatalf("the take whose outcome stayed unknown = %+v (%v), want an error that is store.ErrCommitOutcomeUnknown and says the take may be recorded", take, err)
 	}
 	fault.Refuse(false)
 	var attempt *string
@@ -354,17 +354,7 @@ func TestAStartWhoseTakeOfTheCopiesFailsRunsNoRoleUntilATakeSendsTheCopy(t *test
 				o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeCopies(faulted), st.KeepRestoredWorkspaceCopy
 			}))
 			spec := workerSpec(t)
-			g.launcher(spec.Claim)
-			_, err := g.r.Spawn(g.ctx, spec)
-			if err == nil || !strings.Contains(err.Error(), "could not be taken") || !errors.Is(err, runtime.ErrWorkspaceCopyStore) {
-				t.Fatalf("the start whose take failed answered %v; want it failed with the take's error, runtime.ErrWorkspaceCopyStore", err)
-			}
-			sent := g.sent(spec.Claim)
-			for _, held := range []string{shimwire.TypeLauncherStart, shimwire.TypeLauncherStop} {
-				if countOf(sent, held) != 0 {
-					t.Fatalf("the start whose take failed sent the launcher %v; want no %s", frameTypes(sent), held)
-				}
-			}
+			requireStoreHeld(t, g, spec, "take", "could not be taken")
 
 			again := newRig(t, nil, withOptions(func(o *Options) {
 				o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeCopies(st), st.KeepRestoredWorkspaceCopy
@@ -399,22 +389,37 @@ func TestAStartWhoseDropOfTheKeptVolumesCopiesFailsRunsNoRole(t *testing.T) {
 	st := bundleStore(t)
 	faulted, _ := faultedBundleStore(t, st)
 	faulted.Close()
+	var takes atomic.Int32
+	take := takeCopies(st)
 	g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)), withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeCopies(st), st.KeepRestoredWorkspaceCopy
+		o.SavedWorkspaceBundle = func(ctx context.Context, issue, podUID string) (runtime.WorkspaceRestore, error) {
+			takes.Add(1)
+			return take(ctx, issue, podUID)
+		}
+		o.WorkspaceBundleRestored = st.KeepRestoredWorkspaceCopy
 		o.HeldWorkspaceCopies = func(ctx context.Context, issue, podUID string, keptSince time.Time) (runtime.WorkspaceRestore, error) {
 			return faulted.DropHeldWorkspaceCopies(ctx, testProject, issue, podUID, keptSince)
 		}
 	}))
-	spec := workerSpec(t)
+	requireStoreHeld(t, g, workerSpec(t), "drop", "the drop of the saved workspace copies")
+	if n := takes.Load(); n != 0 {
+		t.Fatalf("the start whose drop failed took the copies %d times; want the take never run", n)
+	}
+}
+
+// requireStoreHeld spawns spec on g and wants the start held by the daemon's own store: an error
+// naming want that is runtime.ErrWorkspaceCopyStore, and neither a launcher_start nor a
+// launcher_stop sent (stopIssuedChild skips a held start). what names the act that failed.
+func requireStoreHeld(t *testing.T, g *rig, spec runtime.SpawnSpec, what, want string) {
+	t.Helper()
 	g.launcher(spec.Claim)
-	_, err := g.r.Spawn(g.ctx, spec)
-	if err == nil || !strings.Contains(err.Error(), "the drop of the saved workspace copies") || !errors.Is(err, runtime.ErrWorkspaceCopyStore) {
-		t.Fatalf("the start whose drop failed answered %v; want it failed with the drop's error, runtime.ErrWorkspaceCopyStore", err)
+	if _, err := g.r.Spawn(g.ctx, spec); err == nil || !strings.Contains(err.Error(), want) || !errors.Is(err, runtime.ErrWorkspaceCopyStore) {
+		t.Fatalf("the start whose %s failed answered %v; want it failed with the %s's error, runtime.ErrWorkspaceCopyStore", what, err, what)
 	}
 	sent := g.sent(spec.Claim)
 	for _, held := range []string{shimwire.TypeLauncherStart, shimwire.TypeLauncherStop} {
 		if countOf(sent, held) != 0 {
-			t.Fatalf("the start whose drop failed sent the launcher %v; want no %s", frameTypes(sent), held)
+			t.Fatalf("the start whose %s failed sent the launcher %v; want no %s", what, frameTypes(sent), held)
 		}
 	}
 }

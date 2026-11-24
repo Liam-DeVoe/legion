@@ -174,9 +174,9 @@ const keptVolumeDropFailedLine = "launcher bundle: the drop of the saved workspa
 // (restoreWorkspace), a store error or an outcome still unknown at the hop's bound. No role of the
 // pod starts: the start fails with the take's error, wrapped in runtime.ErrWorkspaceCopyStore, and
 // the supervisor tries the launch again at the probe interval, charging nothing. Where the outcome
-// is unknown the take may have committed: an attempt to this pod leaves the copy owed to the pod
-// until a role of it registers, and a refusal or a supersession spends a copy at once, which loses
-// no work (store.Store.TakeWorkspaceCopyForRestore).
+// is unknown the take may have made its decision, which a later take would make the same way: a
+// copy sent stays owed to the pod until a role of it registers, and one refused or superseded is
+// spent as at any take (store.Store.TakeWorkspaceCopyForRestore).
 const takeFailedLine = "launcher bundle: the issue's saved workspace copies could not be taken for this pod's restore, so no role of the pod starts until a launch takes them"
 
 // restoreWorkspace carries the newer of the two copies of this pod's issue workspace to the pod's
@@ -216,9 +216,10 @@ const takeFailedLine = "launcher bundle: the issue's saved workspace copies coul
 // copy of its workspace replace the issue's only running copy, losing the work; held, the roles
 // start once the copy is restored, or once a take answers that no copy is owed this pod. A slice
 // the launcher refuses is the launcher's answer, which holds nothing here: its workspace is in use,
-// or it works none, and the launcher writes the agent its own notice of what was lost
-// (internal/launcher's restoreWorkspace), or refuses the start itself where neither a restore nor
-// a role is safe there (internal/launcher's bundleRestore).
+// or it works none, so the copy stays in the daemon's database, or the launcher refuses the start
+// itself where neither a restore nor a role is safe there (internal/launcher's bundleRestore). A
+// notice of what was lost is the launcher's for a restore it ran and that failed alone
+// (internal/launcher's restoreWorkspace).
 //
 // The take records the pod this send is for before it answers the body, and the copy is spent once
 // a role of this pod registers (store.Store.RecordPodRegistration), after which the take answers
