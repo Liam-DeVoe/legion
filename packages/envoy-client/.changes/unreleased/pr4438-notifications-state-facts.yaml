@@ -34,7 +34,10 @@ body: |-
   character outside the Basic Multilingual Plane (`headUnits`), and neither does the head of an
   event's text (`textHead`). The sender's title on a card's `from:` line, and a document's name and
   its editors on an `edit:` line, stay on that line: each run of white space in them, NEXT LINE
-  (U+0085), LINE SEPARATOR and PARAGRAPH SEPARATOR included, prints as one space (`oneLine`). A
+  (U+0085), LINE SEPARATOR and PARAGRAPH SEPARATOR included, prints as one space (`oneLine`). Every
+  other value among a card's fields, such as a comment's quote, an ask's option labels or an
+  issue's new title, stays on its line too: each NEXT LINE, LINE SEPARATOR and PARAGRAPH SEPARATOR
+  in it prints as one space, a new line stays escaped, and the words in a block keep all three. A
   daemon card whose payload is nested too deep to lay out shows that payload as text, as any other
   card does, also where the payload holds `words`. A card whose body the plugin reads again from
   Dispatch states an edit or a delete of that post as fields (`edited_at`, or `deleted_at` and

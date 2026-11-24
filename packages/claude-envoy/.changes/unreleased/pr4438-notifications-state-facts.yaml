@@ -13,4 +13,6 @@ body: |-
   stay inside their block and the line after the card is the plugin's. The SessionStart open-asks
   summary keeps each ask on one line, whatever new lines an issue's title, a document's name or a
   question holds, and so does the error a SessionStart hook prints
-  when it cannot read that summary.
+  when it cannot read that summary. Each value among a card's fields, such as a comment's quote or
+  an ask's option labels, stays on its line: NEXT LINE (U+0085), LINE SEPARATOR and PARAGRAPH
+  SEPARATOR in it print as one space.

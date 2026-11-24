@@ -1275,13 +1275,10 @@ export function inboundTimestamp(milliseconds: number | undefined): string {
 /** A value that starts as an RFC 3339 time does. */
 const TIME = /^\d{4}-\d{2}-\d{2}T/;
 
-/** A segment of a words path (`WORDS_PATH`): a field's name that holds no `.`, `[`, `]`, white
- *  space, control character, `<`, `>`, `"`, `'` or `&`. */
-const PATH_SEGMENT = /^[^.[\]\s\p{Cc}<>"'&]+$/u;
-
 /** A key of a daemon payload's `words` object: the path of a field in the payload, its segments
- *  (`PATH_SEGMENT`) joined by `.`, each followed by the index of a list's item in brackets for
- *  each list the path enters there, as `summary` or `catch_up.kept.decisions[1].answer`. */
+ *  joined by `.`, each followed by the index of a list's item in brackets for each list the path
+ *  enters there, as `summary` or `catch_up.kept.decisions[1].answer`. A segment is a field's name
+ *  that holds no `.`, `[`, `]`, white space, control character, `<`, `>`, `"`, `'` or `&`. */
 const WORDS_PATH =
   /^[^.[\]\s\p{Cc}<>"'&]+(?:\[(?:0|[1-9][0-9]*)\])*(?:\.[^.[\]\s\p{Cc}<>"'&]+(?:\[(?:0|[1-9][0-9]*)\])*)*$/u;
 
@@ -1352,7 +1349,7 @@ function daemonFields(
   }
   const root = Object.fromEntries(Object.entries(visible).filter(([key]) => key !== "words"));
   const taken: TakenWords[] = [];
-  const fields = withoutWords(root, "", paths, [], taken);
+  const fields = withoutWords(root, pathTree(keyed), [], taken);
   const found = new Set(taken.map(({ path }) => path));
   for (const [path, keys] of keyed) {
     if (found.has(path)) continue;
@@ -1428,7 +1425,7 @@ function namesOwn(holder: Readonly<Record<string, unknown>>, key: string): boole
   return value !== undefined && value !== null && value !== "";
 }
 
-/** The name of the block of the field `name`, a segment of a words path (`PATH_SEGMENT`): `name`
+/** The name of the block of the field `name`, a segment of a words path (`WORDS_PATH`): `name`
  *  with each character that is no ASCII letter, digit or `_` written as `_`, and a `_` before a
  *  leading digit. That is a name a tag can have (`wordsBlocks`), and it holds no `-`, which joins
  *  a tag's suffix to its name, so no block's name is another block's tag with a suffix. */
@@ -1463,46 +1460,66 @@ interface TakenWords {
   readonly holders: readonly Readonly<Record<string, unknown>>[];
 }
 
-/** `value`, whose path in the payload is `path`, less each string field that `paths` names,
- *  each of which goes to `taken`. `path` is undefined where no words path reaches `value`, as
- *  below a field whose name is no segment of one (`PATH_SEGMENT`). `holders` are the objects
- *  that hold `value`. */
+/** A step of the words paths' tree (`pathTree`): the path that ends here, where one does, and the
+ *  step each longer path takes next, by its key (`PATH_KEY`): a field's name, or a list's index. */
+interface PathStep {
+  path?: string;
+  readonly next: Map<string | number, PathStep>;
+}
+
+/** The words paths of a payload, each with its keys (`PATH_KEY`), as one tree: from its root, a
+ *  path's keys lead to the step where that path ends. */
+function pathTree(keyed: readonly (readonly [string, readonly (string | number)[]])[]): PathStep {
+  const root: PathStep = { next: new Map() };
+  for (const [path, keys] of keyed) {
+    let step = root;
+    for (const key of keys) {
+      let next = step.next.get(key);
+      if (next === undefined) {
+        next = { next: new Map() };
+        step.next.set(key, next);
+      }
+      step = next;
+    }
+    step.path = path;
+  }
+  return root;
+}
+
+/** `value`, which the words paths reach at `step` of their tree (`pathTree`), less each string
+ *  field at which a path ends, each of which goes to `taken`. `step` is undefined where no words
+ *  path reaches `value`, as below a field whose name is no segment of one (`WORDS_PATH`), which
+ *  no path's keys hold. `holders` are the objects that hold `value`, from the payload's own fields
+ *  down: one list for the whole walk, which takes each object as the walk enters it and lets it go
+ *  as the walk leaves it, so a level costs the same at any depth. A field taken keeps a copy of
+ *  the list, no longer than its path. */
 function withoutWords(
   value: unknown,
-  path: string | undefined,
-  paths: Readonly<Record<string, unknown>>,
-  holders: readonly Readonly<Record<string, unknown>>[],
+  step: PathStep | undefined,
+  holders: Readonly<Record<string, unknown>>[],
   taken: TakenWords[]
 ): unknown {
   if (Array.isArray(value)) {
-    return value.map((item, index) =>
-      withoutWords(
-        item,
-        path === undefined ? undefined : `${path}[${index}]`,
-        paths,
-        holders,
-        taken
-      )
-    );
+    return value.map((item, index) => withoutWords(item, step?.next.get(index), holders, taken));
   }
   if (!isObject(value)) return value;
   const kept: Record<string, unknown> = {};
-  const chain = [...holders, kept];
+  holders.push(kept);
   for (const [key, item] of Object.entries(value)) {
-    let at: string | undefined;
-    if (path !== undefined && PATH_SEGMENT.test(key)) at = path === "" ? key : `${path}.${key}`;
-    if (typeof item === "string" && at !== undefined && Object.hasOwn(paths, at)) {
-      taken.push({ path: at, name: key, text: item, holders: chain });
+    const next = step?.next.get(key);
+    if (typeof item === "string" && next?.path !== undefined) {
+      taken.push({ path: next.path, name: key, text: item, holders: holders.slice() });
     } else {
       // Defined, not assigned: an assignment of `__proto__` would set the prototype of `kept`.
       Object.defineProperty(kept, key, {
-        value: withoutWords(item, at, paths, chain, taken),
+        value: withoutWords(item, next, holders, taken),
         enumerable: true,
         writable: true,
         configurable: true,
       });
     }
   }
+  holders.pop();
   return kept;
 }
 
@@ -1530,6 +1547,49 @@ function summaryOpens(text: string, summary: string | undefined): boolean {
   return first.replace(/^[ \t\r]+/, "").startsWith(head);
 }
 
+/** NEXT LINE (U+0085), LINE SEPARATOR (U+2028) and PARAGRAPH SEPARATOR (U+2029): TOON writes each
+ *  in a value as it is, where it escapes a new line, a carriage return and a tab, and a reader
+ *  takes each for a line break. */
+const UNESCAPED_LINE_BREAKS = /[\u0085\u2028\u2029]/g;
+
+/**
+ * `card`, a card's fields, with each string value in it, at any depth, holding one space for each
+ * character of `UNESCAPED_LINE_BREAKS` in it. Some of those values are another author's words that
+ * stay a field: a comment's quote and its document's name, an ask's option labels and the options a
+ * person chose, a payload the card shows as it came, such as an issue's new title. One that held
+ * such a character would break the card's line, and its words after it would read as a field of
+ * the card. A new line stays, which TOON escapes; keys stay as they are, and so do the words of a
+ * block, which are no field. The objects and lists still to copy wait on a stack of the walk's own,
+ * as in `parseFrameJSON`, so the walk takes time linear in the card's size at any depth, and a
+ * payload too deep for the encoder fails in the encoder as before.
+ */
+function fieldsOnTheirLines(card: object): object {
+  const copy = {};
+  const pending: [object, object][] = [[card, copy]];
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    const [from, to] = next;
+    for (const [key, item] of Object.entries(from)) {
+      let value: unknown = item;
+      if (typeof item === "string") {
+        value = item.replace(UNESCAPED_LINE_BREAKS, " ");
+      } else if (isObject(item)) {
+        const held = Array.isArray(item) ? [] : {};
+        pending.push([item, held]);
+        value = held;
+      }
+      // Defined, not assigned: an assignment of `__proto__` would set the prototype of `to`. A
+      // list's items are defined in their order, which keeps its length.
+      Object.defineProperty(to, key, {
+        value,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
+  }
+  return copy;
+}
+
 /**
  * The card's fields under `envoy:` as TOON: `shown`, then `after` (the note and the issues the
  * render found), with the fields of `shown` the card holds, the words that go in blocks after
@@ -1554,6 +1614,9 @@ function summaryOpens(text: string, summary: string | undefined): boolean {
  * bound, and the host takes the frame. That text is bounded as every message's is: by the frame,
  * at most the hub's 1 MiB. A payload's field that already is text is bounded so already, and a
  * throw the payload is not behind is thrown as before.
+ *
+ * Each string value the card's fields hold, the payload shown as text too, stays on its line
+ * (`fieldsOnTheirLines`), inside the same fallback.
  */
 function encodeCardFields(
   shown: Readonly<Record<string, unknown>>,
@@ -1572,7 +1635,7 @@ function encodeCardFields(
   try {
     const laid = layPayload?.();
     const fields = laid === undefined ? shown : { ...shown, [payloadKey]: laid.fields };
-    const card = { envoy: { ...fields, ...after } };
+    const card = fieldsOnTheirLines({ envoy: { ...fields, ...after } });
     const value = fields[payloadKey];
     const toon =
       typeof value === "object" && value !== null ? encodeWithin(card, bound) : encode(card);
@@ -1585,7 +1648,7 @@ function encodeCardFields(
   // The payload's field keeps its place among the card's fields.
   const asText = { ...shown, [payloadKey]: payload };
   return {
-    toon: encode({ envoy: { ...asText, ...after } }),
+    toon: encode(fieldsOnTheirLines({ envoy: { ...asText, ...after } })),
     shown: asText,
     words: [],
     payloadShownAsText: reason,
@@ -1622,9 +1685,11 @@ export function renderInbound(
   } catch {
     return {
       skip: false,
-      content: encode({
-        envoy: { topic: subject ?? "unknown", unrecognised: "payload was not JSON" },
-      }),
+      content: encode(
+        fieldsOnTheirLines({
+          envoy: { topic: subject ?? "unknown", unrecognised: "payload was not JSON" },
+        })
+      ),
     };
   }
 

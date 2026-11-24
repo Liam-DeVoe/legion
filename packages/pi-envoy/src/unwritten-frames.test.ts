@@ -349,8 +349,8 @@ describe("a card the host withdrew unwritten", () => {
 
 // An inert card goes as a steer that starts no turn, so a busy host would steer it into the turn
 // it runs: it is handed only to a settled host. While it is held, its record in the transcript
-// holds it across a restart, so its claim settles once that record is written, as a held stored
-// card's does.
+// holds it across a restart once the session's store holds the record, so its claim settles once
+// that record is written, as a held stored card's does.
 describe("an inert card", () => {
   test("sent while the host is not settled is held and recorded, its claim settles, and it is handed once at the first settled moment", async () => {
     const { frames, state, handed, recorded, storedRecords, claim, claimState } = harness();
@@ -562,8 +562,8 @@ describe("an inert card", () => {
 // A `low` card goes as `nextTurn` with no turn: an idle host stores it in the context and the
 // session file at once, with no `message_end`, and a busy host keeps it in memory only. So it is
 // handed only to a settled host, and the session file is the witness that it was written. While it
-// waits, held or handed, its record in the transcript holds it across a restart, so its claim
-// settles once that record is written.
+// waits, held or handed, its record in the transcript holds it across a restart once the session's
+// store holds the record, so its claim settles once that record is written.
 describe("a stored card", () => {
   test("sent while the host is not settled is held and recorded, its claim settles, and the first settled check hands it", async () => {
     const { frames, state, handed, recorded, storedRecords, claim, claimState } = harness();

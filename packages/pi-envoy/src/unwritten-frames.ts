@@ -20,8 +20,9 @@ import { type HeldReplayNotice, type HeldStoredCard, writtenCardIdentity } from 
  * that a card starts does not take it and a process that ends loses it. So a stored card too is
  * handed only to a settled host, and not while a card handed to start a turn has not started it
  * (`runStarted`). One sent while the host is busy is held, and handed at the first settled check
- * (`storedCheck`, which the extension runs after a run that does not continue, after a compaction,
- * automatic or asked for by the session, and at each heartbeat that finds the host settled) or
+ * (`storedCheck`, which the extension runs when a stored card comes and when one is handed, after a
+ * run that does not continue, after a compaction, automatic or asked for by the session, after a
+ * restore that holds recorded cards again, and at each heartbeat that finds the host settled) or
  * right before a card that starts a turn. A held stored card holds back no other card. With no
  * `message_end`, a stored card is written once the session's store holds its entry
  * (`storedCheck`, `UnwrittenFramesHost.storedEntries`), and it is never handed again.
@@ -29,13 +30,14 @@ import { type HeldReplayNotice, type HeldStoredCard, writtenCardIdentity } from 
  * A stored card that waits for the store, held or handed, is recorded in the session's transcript
  * (`UnwrittenFramesHost.recordStored`), and its frame's claim settles once that record is written.
  * So is an inert card held while the host is busy, such as a late BTW (`relayed.late` in
- * extensions/envoy.ts), with the record saying it is handed inert. The record holds the card
- * across a restart (`requeueStored`), so its frame keeps no place in the relay while the card
- * waits: an edge listener's relay holds at most 16 frames of a session in flight
- * (`relayEdgeInFlight` in packages/envoy/cmd/listener/session_relay.go), and 16 frames held
- * through a long turn would stop every later card. A card whose record cannot be written keeps
- * its claim until the host writes it: a stored card until the session's store holds it, an inert
- * card until its `message_end`.
+ * extensions/envoy.ts), with the record saying it is handed inert. Once the session's store holds
+ * the record (Oh My Pi stores a new session only from its first assistant message, so before that
+ * the record is in memory alone), it holds the card across a restart (`requeueStored`). So the
+ * card's frame keeps no place in the relay while the card waits: an edge listener's relay holds at
+ * most 16 frames of a session in flight (`relayEdgeInFlight` in
+ * packages/envoy/cmd/listener/session_relay.go), and 16 frames held through a long turn would stop
+ * every later card. A card whose record cannot be written keeps its claim until the host writes
+ * it: a stored card until the session's store holds it, an inert card until its `message_end`.
  */
 export type CardDelivery = CardMode | "inert";
 
@@ -76,9 +78,10 @@ interface UnwrittenCard extends Unwritten {
    * card held, never handed, which the next settled moment hands.
    */
   readonly handedAt: number | undefined;
-  /** Its record in the session's transcript (`STORED_CARD_ENTRY`) holds it across a restart: a
-   *  stored card or a held inert card whose record was written, or one held again from its
-   *  record (`requeueStored`). Its frame was answered `done` then, so the card has no claim. */
+  /** Its record in the session's transcript (`STORED_CARD_ENTRY`) holds it across a restart once
+   *  the session's store holds the record: a stored card or a held inert card whose record was
+   *  written, or one held again from its record (`requeueStored`). Its frame was answered `done`
+   *  then, so the card has no claim. */
   readonly recorded: boolean;
 }
 
@@ -178,8 +181,8 @@ export interface UnwrittenFramesHost {
   /** Records a card held for a settled host in the transcript of `sessionID`, the session the
    *  card is for (`STORED_CARD_ENTRY`): a stored card that waits for the session's store, held or
    *  handed, or an inert card held while the host is busy. A restart that cuts the wait short
-   *  holds it again (`requeueStored`) and hands it as `card.deliverAs` says; a throw means it was
-   *  not recorded. */
+   *  holds it again once the session's store holds the record (`requeueStored`), and hands it as
+   *  `card.deliverAs` says; a throw means it was not recorded. */
   recordStored(sessionID: string, card: HeldStoredCard): void;
   /** A held card's record could not be written: its frame's claim waits until the host writes
    *  the card (a stored card once the session's store holds it), so the stream keeps its copy
@@ -249,7 +252,8 @@ export function storeHoldsSession(entries: readonly unknown[]): boolean {
  * waits on its write. A held notice is recorded in the session's transcript, and marked handed
  * there once it is, so a restart that cuts the hold short holds it again (`requeueNotices`). A
  * stored card that waits, and an inert card held, are recorded there too, so a restart or a
- * session change holds them again (`requeueStored`).
+ * session change holds them again (`requeueStored`). Each holds only once the session's store
+ * holds the record: Oh My Pi stores a new session only from its first assistant message.
  */
 export class UnwrittenFrames {
   readonly #host: UnwrittenFramesHost;
@@ -738,11 +742,12 @@ export class UnwrittenFrames {
 
   // Records a stored card that waits for the session's store, or an inert card held while the
   // host is busy, in the transcript of the session it is for, with how it is handed, and settles
-  // its claim once the record is written: the frame is answered `done`, and the record holds the
-  // card across a restart (`requeueStored`). A card with no claim is not recorded: a card held
-  // again from its record has none, and so has a replayed card of a frame the dedupe let go of,
-  // which holds no place in the relay. One whose record cannot be written keeps its claim until
-  // the host writes it (`storedCheck` for a stored card, `written` for an inert one).
+  // its claim once the record is written: the frame is answered `done`, and once the session's
+  // store holds the record, it holds the card across a restart (`requeueStored`). A card with no
+  // claim is not recorded: a card held again from its record has none, and so has a replayed card
+  // of a frame the dedupe let go of, which holds no place in the relay. One whose record cannot be
+  // written keeps its claim until the host writes it (`storedCheck` for a stored card, `written`
+  // for an inert one).
   #recordStored(card: UnwrittenCard): void {
     if (card.claim === undefined || card.deliverAs === "card" || card.deliverAs === "aside") {
       return;

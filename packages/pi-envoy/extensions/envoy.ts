@@ -1701,14 +1701,14 @@ export default function envoyExtension(hostApi: PiApi): void {
   // A stored card (`UnwrittenFrames`, `stored`) raises no host event: neither the moment the host
   // settles, when one held while it was busy is handed, nor its write to the session file. So a
   // check on the host's timer looks for both (`storedCheck`), every `STORED_CHECK_MS`, from a
-  // run's end that no continuation follows, the end of a compaction (an automatic one, and one the
-  // session asked for), a stored card's hand-over, a restore that holds recorded cards again, and
-  // each heartbeat of a settled host, until no stored card waits or `STORED_CHECKS` checks have
-  // run. A run that starts in between holds the card again, as the host is not settled, and its
-  // end checks again; so does the next heartbeat for a session whose file Oh My Pi has not written
-  // yet. A new arming counts the checks again from the first. While one chain of checks is live
-  // (`storedCheckLive`) an arming starts no other, so two never run side by side, and a card that
-  // comes while a check awaits keeps the live chain going.
+  // stored card's coming and its hand-over, a run's end that no continuation follows, the end of a
+  // compaction (an automatic one, and one the session asked for), a restore that holds recorded
+  // cards again, and each heartbeat of a settled host, until no stored card waits or
+  // `STORED_CHECKS` checks have run. A run that starts in between holds the card again, as the
+  // host is not settled, and its end checks again; so does the next heartbeat for a session whose
+  // file Oh My Pi has not written yet. A new arming counts the checks again from the first. While
+  // one chain of checks is live (`storedCheckLive`) an arming starts no other, so two never run
+  // side by side, and a card that comes while a check awaits keeps the live chain going.
   let storedChecksLeft = 0;
   let storedCheckLive = false;
   const checkStoredCards = (): void => {
@@ -2201,9 +2201,10 @@ export default function envoyExtension(hostApi: PiApi): void {
     // A relay frame's claim answers the listener as the claim ends: `done` once it settles (the
     // host wrote the frame, or handled it with nothing to write, the ledger recording it first, or
     // the transcript records the held card that shows it, a stored card or an inert card held
-    // while the host is busy, which a restart holds again),
-    // `nak` once it is released with nothing recorded (the host dropped the frame unwritten: a
-    // session change, an interrupt that withdrew a person's turn), so the listener sends it again.
+    // while the host is busy, which a restart holds again once the session's store holds that
+    // record), `nak` once it is released with nothing recorded (the host dropped the frame
+    // unwritten: a session change, an interrupt that withdrew a person's turn), so the listener
+    // sends it again.
     // A release while this call still runs answers only once the call returns: a throw is the
     // relay's own to count (its failure notice comes from `createConsumerDelivery`).
     let handing = true;
@@ -2753,7 +2754,7 @@ export default function envoyExtension(hostApi: PiApi): void {
 
   // Tells the session a gap notice: a card held until the host is settled
   // (`UnwrittenFrames.sendNotice`), which the transcript records held, so a restart holds it
-  // again.
+  // again once the session's store holds that record.
   const tellGapNotice = (notice: ConsumerGapNotice): void => {
     logger.warn(`envoy: ${notice.message}`);
     unwritten.sendNotice(gapNoticeText(notice));

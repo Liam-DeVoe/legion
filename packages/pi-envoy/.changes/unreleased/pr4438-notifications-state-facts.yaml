@@ -19,4 +19,6 @@ body: |-
   AskGate's reviewers read each transcript message's later lines opened by `> `, which escaped text
   never holds, so a tool result that quotes `**user**: ...` on a line of its own reads as part of
   that result and not as the person's message. The `Pictures:` lines after a delivered card keep
-  each picture's name on that picture's line.
+  each picture's name on that picture's line, and each value among a delivered card's fields, such
+  as a comment's quote or an ask's option labels, stays on its line: NEXT LINE (U+0085), LINE
+  SEPARATOR and PARAGRAPH SEPARATOR in it print as one space.

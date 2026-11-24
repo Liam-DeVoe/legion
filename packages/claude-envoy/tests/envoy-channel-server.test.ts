@@ -170,13 +170,18 @@ test("a cut comment's card keeps the part its frame carried and the note, and a 
 
   const [cut, deleted] = notifier.notifications.map((notification) => notification.content)
   expect(cut).toContain("type: comment.created")
-  expect(cut).toContain("body: The first paragraph.")
+  // The part the frame carried is the author's words, in the body's block after the card's fields.
+  expect(splitWordsBlocks(cut ?? "").blocks).toEqual([
+    { tag: "body", name: "body", text: "The first paragraph." },
+  ])
   expect(cut).toContain(
     "the body is its first part only; read it whole with GET /api/v1/comments/22222222-2222-4222-8222-222222222222",
   )
   expect(deleted).toContain("type: comment.deleted")
   expect(deleted).toContain('deleted_at: "2026-11-03T00:00:00Z"')
+  // A delete carries no body: no field of it and no block.
   expect(deleted).not.toContain("body:")
+  expect(splitWordsBlocks(deleted ?? "").blocks).toEqual([])
 })
 
 test("delivers each dedupe key once and answers each relayed frame, never a receipt", async () => {

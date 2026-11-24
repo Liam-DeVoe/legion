@@ -25395,11 +25395,25 @@ describe("consumer delivery", () => {
       );
     });
 
+    /** The fields of the comment event's payload on `card`, read from the TOON before its blocks,
+     *  and the card's blocks. */
+    function cardParts(card: string): {
+      readonly payload: Record<string, unknown>;
+      readonly blocks: readonly { readonly name: string; readonly text: string }[];
+    } {
+      const { head, blocks } = splitWordsBlocks(card);
+      const fields = decode(head) as {
+        readonly envoy: { readonly dispatch: { readonly payload: Record<string, unknown> } };
+      };
+      return { payload: fields.envoy.dispatch.payload, blocks };
+    }
+
     // The comment changed after its event was written. The card re-reads it, so it prints the
-    // comment as it stands: the deleted line every read prints in place of the body a delete
-    // cleared, or the words an edit wrote with the edited mark beside them. The part the event
-    // carried is in neither, nor the note that the body was cut.
-    test("is prompted with the deleted line for a comment deleted since", async () => {
+    // comment as it stands: a delete as the fields that say when and by whom (`deleted_at`,
+    // `deleted_by`), where the body the delete cleared would stand, with no block for words that
+    // are gone; an edit as the words it wrote in the body's block, and the time it was written in
+    // `edited_at`. The part the event carried is in neither, nor the note that the body was cut.
+    test("is prompted with the delete's time and author for a comment deleted since", async () => {
       const card = await cardForCutComment("cut-comment-deleted", (path) =>
         path === `/api/v1/comments/${CUT_COMMENT}`
           ? response({
@@ -25415,14 +25429,18 @@ describe("consumer delivery", () => {
           : undefined
       );
 
-      expect(card).toContain(
-        `body: ${JSON.stringify("Deleted by user alice at 2026-11-03T00:00:00Z")}`
-      );
+      const { payload, blocks } = cardParts(card);
+      expect(payload).toMatchObject({
+        deleted_at: "2026-11-03T00:00:00Z",
+        deleted_by: { kind: "user", id: "alice" },
+      });
+      expect(payload["body"]).toBeUndefined();
+      expect(blocks).toEqual([]);
       expect(card).not.toContain(CARRIED);
       expect(card).not.toContain("first part only");
     });
 
-    test("is prompted with the words an edit wrote and the edited mark for a comment edited since", async () => {
+    test("is prompted with the words an edit wrote and the edit's time for a comment edited since", async () => {
       const card = await cardForCutComment("cut-comment-edited", (path) =>
         path === `/api/v1/comments/${CUT_COMMENT}`
           ? response({
@@ -25437,9 +25455,11 @@ describe("consumer delivery", () => {
           : undefined
       );
 
-      expect(card).toContain(
-        `body: ${JSON.stringify("The paragraph as edited.\n\nAnd a second one. · edited 2026-11-03T00:00:00Z")}`
-      );
+      const { payload, blocks } = cardParts(card);
+      expect(payload["edited_at"]).toBe("2026-11-03T00:00:00Z");
+      expect(blocks).toEqual([
+        { tag: "body", name: "body", text: "The paragraph as edited.\n\nAnd a second one." },
+      ]);
       expect(card).not.toContain(CARRIED);
       expect(card).not.toContain("first part only");
     });
