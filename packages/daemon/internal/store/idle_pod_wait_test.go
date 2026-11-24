@@ -48,8 +48,10 @@ func TestTheIdleViewCountsAStartThatWaitsForItsPodAsNoDelivery(t *testing.T) {
 	if view.Waiting {
 		t.Errorf("the view reads a delivery waiting, want none: the one start waits for its pod")
 	}
-	if !slices.Equal(view.StartsWaitingForPod, []claim.Role{"checker"}) {
-		t.Errorf("the view's starts waiting for the pod = %v, want [checker]", view.StartsWaitingForPod)
+	want := []pods.WaitingStart{{Role: "checker"}}
+	if !slices.Equal(view.StartsWaitingForPod, want) {
+		t.Errorf("the view's starts waiting for the pod = %v, want %v", view.StartsWaitingForPod,
+			want)
 	}
 	if view.HeldFor != "" {
 		t.Errorf("the view's hold = %q, want none", view.HeldFor)

@@ -2403,7 +2403,7 @@ type Store interface {
 	// begins with pods.StartWaitsForPodPrefix), each with its role and the claim it names,
 	// distinct and in the order of their rows.
 	StartsWaitingForPod(ctx context.Context, tx pgx.Tx, project string,
-	) (map[string][]PodWaitStart, error)
+	) (map[string][]pods.WaitingStart, error)
 	// FinishOutbox deletes row id while leaseToken holds it; a stale lease's finish is a no-op, so
 	// a worker whose lease expired never removes the row its replacement now holds.
 	FinishOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error

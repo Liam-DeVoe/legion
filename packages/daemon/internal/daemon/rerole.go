@@ -160,7 +160,7 @@ func (r *outbox) reroleWaitsForCredential(ctx context.Context, row record.Outbox
 	if waits {
 		return nil
 	}
-	prefix, err := r.podWaitPrefix(ctx, row, issue.Key, pod, role, "before its launchers waited for a new role's credential")
+	prefix, err := r.podWaitPrefix(ctx, row, issue.Key, pod, role, token, "before its launchers waited for a new role's credential")
 	if err != nil {
 		return err
 	}

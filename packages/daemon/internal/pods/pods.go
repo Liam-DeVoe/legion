@@ -144,6 +144,18 @@ type IdleRoot struct {
 // the release's boundary and the served state read.
 const StartWaitsForPodPrefix = "the start waits for its issue's pod: "
 
+// WaitingStart is one start row that waits because its issue's pod lacks the slot of the start's
+// claim or the role of its step (StartWaitsForPodPrefix): the role of the start's step, and the
+// claim the row names, "" for a row that names none, whose claim the outbox reads through
+// record.WorkerClaim. Two claims of one issue can hold one role (record.WorkerClaim), so the role
+// alone does not say which agent a start brings up. It is a type of this package, which record
+// imports, so the idle view and the record's own read of these rows
+// (record.Store.StartsWaitingForPod) share it.
+type WaitingStart struct {
+	Role  claim.Role
+	Claim claim.Token
+}
+
 // IdleView is one issue's pod as the idle rule reads it, in one read per issue: every claim of
 // the pod, whether any queued outbox row is addressed to one of its roles, the issue's own place
 // in the workflow and its tree root's. Found is false for an issue the record does not hold under
@@ -183,11 +195,11 @@ type IdleView struct {
 	// (StartWaitsForPodPrefix) is no such delivery: the pod cannot run it, so it is counted in
 	// StartsWaitingForPod instead.
 	Waiting bool
-	// StartsWaitingForPod are the roles of the start rows, distinct and in the order the rows were
+	// StartsWaitingForPod are the start rows, each pair once and in the order the rows were
 	// queued, that wait because the issue's pod lacks the slot of the start's claim or the role of
 	// its step (an outbox start row whose last error begins with StartWaitsForPodPrefix): only the
 	// pod's update round or its release lets them start.
-	StartsWaitingForPod []claim.Role
+	StartsWaitingForPod []WaitingStart
 	// HeldFor is the reason of the pod's running hold streak (store's pod_holds), "" for none.
 	HeldFor string
 	// Releasing is whether a release of this pod is already marked in progress, which no second
