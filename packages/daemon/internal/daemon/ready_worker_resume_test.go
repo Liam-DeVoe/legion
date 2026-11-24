@@ -69,7 +69,7 @@ type readyWorkerRig struct {
 // newReadyWorkerRig starts the tester of a testing issue and queues it the start's task.
 func newReadyWorkerRig(t *testing.T) *readyWorkerRig {
 	t.Helper()
-	rig := newStartedTesterRig(t, "Test it.")
+	rig := newStartedTesterRig(t, "Test it.", true)
 	if held := rig.claim().Pending; held == nil || held.Task != "Test it." {
 		t.Fatalf("the started tester holds %+v, want the start's task", held)
 	}
@@ -77,8 +77,11 @@ func newReadyWorkerRig(t *testing.T) *readyWorkerRig {
 }
 
 // newStartedTesterRig starts the tester of a testing issue from a start carrying task, which ""
-// leaves carrying none, and brings its agent to ready in testerSession.
-func newStartedTesterRig(t *testing.T, task string) *readyWorkerRig {
+// leaves carrying none, and brings its agent to ready in testerSession. With readyResume, its
+// ready delivers the resume row the ready's fact queued, as the daemon's does
+// (supervise.Deps.ReadyResume); without, it leaves that row to the outbox's own run. The start
+// creates the machine, which copies the supervisor's deps then, so the choice is made here.
+func newStartedTesterRig(t *testing.T, task string, readyResume bool) *readyWorkerRig {
 	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -116,7 +119,9 @@ func newStartedTesterRig(t *testing.T, task string) *readyWorkerRig {
 	sup.deps.Conns.(*fake.Conns).Register(rig.token, rig.conn)
 	rig.values = supervisetest.NewTaskValues()
 	sup.deps.TaskValues = rig.values
-	sup.deps.ReadyResume = rig.runner.readyResume
+	if readyResume {
+		sup.deps.ReadyResume = rig.runner.readyResume
+	}
 	// The start that moved the issue into testing: it creates the claim, launches it and hands it
 	// task where it carries one, which waits for the agent to be ready.
 	if err := rig.runner.execute(ctx, mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree,
