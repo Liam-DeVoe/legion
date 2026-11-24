@@ -1351,8 +1351,9 @@ Closing the terminal leaves the project without one, and the daemon logs
    claim `suspended`, not merely `suspensionHeld`: read it again after a call that ran out of its
    `--wait`, or give a drain's calls a `--wait` longer than the stop timeout. The resumed agent
    continues the same conversation in a new pod — and that pod brings a disk of its own, so its
-   workspace is provisioned afresh from the issue's branch and anything the old pod held unpushed
-   is gone. Let the agent push before you suspend it.
+   workspace is provisioned afresh from the issue's branch, and what the old pod held unpushed
+   comes back only up to the daemon's last copy of that workspace: the work since that copy is
+   gone. Let the agent push before you suspend it.
 
    **An operator's suspension holds until the operator resumes the claim.** The daemon keeps every
    role of an open issue live and idle between phases and while the root waits on a person. A child
