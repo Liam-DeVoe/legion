@@ -102,7 +102,9 @@ func TestAnEditOfARecoveredIssuesRepositoryIsNotedAndNotApplied(t *testing.T) {
 // child; the recovery keeps the child in the scope of its next pass and zeta/tools among the
 // repositories to recover, and that next pass's listing, at 2, records the child under its
 // parent. Before, the pass let zeta/tools go with the child unrecorded, and no later pass listed
-// it.
+// it. The check reads what the held pass left while the next pass waits on its own listing: run
+// free, the next pass recorded the child and let zeta/tools go between the check's two reads,
+// which read as the held pass letting zeta/tools go with the child unrecorded.
 func TestAChildARecoveryFoundNewerThanItsListingIsRecordedByTheNextPass(t *testing.T) {
 	t.Parallel()
 	installs := &installations{}
@@ -133,6 +135,12 @@ func TestAChildARecoveryFoundNewerThanItsListingIsRecordedByTheNextPass(t *testi
 	if got := recordedIssue(t, w, child); got != nil {
 		t.Fatalf("%s is %s after its event at 2, applied while its parent was unrecorded, want it unrecorded", child, recordedAs(t, w, child))
 	}
+	// The next pass's listing is held as well. That pass asks for its listing only once the held
+	// pass has returned, since the refresher runs one pass at a time, and before its listing
+	// answers it records nothing and lets no repository go, so while it waits the check reads
+	// what the held pass left and nothing else.
+	releaseNext := client.holdListing()
+	t.Cleanup(releaseNext)
 	release()
 	testwait.Eventually(t, "the held recovery ended", func() bool {
 		return len(w.recoveringReasons()) == 0 || client.listingCount() > listed
@@ -140,6 +148,7 @@ func TestAChildARecoveryFoundNewerThanItsListingIsRecordedByTheNextPass(t *testi
 	if recordedIssue(t, w, child) == nil && len(w.recoveringReasons()) == 0 {
 		t.Fatalf("the held recovery let zeta/tools go with %s unrecorded: its listing, at 1, was older than the child's event at 2, and no later pass lists it", child)
 	}
+	releaseNext()
 	testwait.Eventually(t, child+" recorded by a later recovery", func() bool { return recordedIssue(t, w, child) != nil })
 	if got := recordedIssue(t, w, child); got.Repo != "zeta/tools" || got.Tree != root || got.LastDispatchSeq != 2 {
 		t.Fatalf("%s is %s in tree %s, want it recorded on zeta/tools in %s's tree at sequence 2", child, recordedAs(t, w, child), got.Tree, root)
