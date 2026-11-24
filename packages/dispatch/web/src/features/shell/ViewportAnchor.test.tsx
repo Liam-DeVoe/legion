@@ -1,10 +1,20 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: this file sends the pointer's own clientX/clientY and a pointerout's relatedTarget, neither of which user-event's hover and unhover can set.
-import { fireEvent, render } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createRef, Fragment, type ReactNode, type RefObject, useLayoutEffect } from "react";
+import {
+  createRef,
+  Fragment,
+  type ReactNode,
+  type RefObject,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { nextFrame } from "../../__tests__/frames";
+import { CONTROL } from "../../components/control-names";
+import { ARM_ON_PRESS } from "../../components/focus-place";
 import { type AnchorRow, ViewportAnchor } from "./ViewportAnchor";
 
 const ROW_HEIGHT = 50;
@@ -950,6 +960,123 @@ test("in a named box the kept place moves up with the focused row, and the next 
     expect(anchoringSeen.at(-1)).toBe("auto");
     expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("auto");
   } finally {
+    view.unmount();
+  }
+});
+
+/** A page's control row above the list, drawn as `components/ControlRow.tsx` draws its own: it
+ *  arms the reader's press at its root (`ARM_ON_PRESS`), and in the commit that takes its chip
+ *  away it hands the focus to its Filter, ahead of the list's own commit work, as the Inbox draws
+ *  the row before the list. */
+function Controls({ chip, onTakeOff }: { chip: boolean; onTakeOff?: () => void }): ReactNode {
+  const filter = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    if (!chip) filter.current?.focus();
+  }, [chip]);
+  return (
+    <div data-control={CONTROL.controlRow} {...ARM_ON_PRESS}>
+      <button ref={filter} type="button">
+        Filter
+      </button>
+      {chip ? (
+        <button onClick={onTakeOff} type="button">
+          Remove Type: question filter
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/** The list under that row, narrowed by its chip to the rows from r4 on: taking the chip off
+ *  draws r1 to r3 again at the list's head in the same commit, as the Inbox draws again the
+ *  threads its narrowing to questions left out. */
+function Narrowed({ scroller }: { scroller?: RefObject<HTMLDivElement | null> }): ReactNode {
+  const [narrowed, setNarrowed] = useState(true);
+  return (
+    <>
+      <Controls chip={narrowed} onTakeOff={() => setNarrowed(false)} />
+      <List rows={narrowed ? ids(9, 4) : ids(12)} scroller={scroller} />
+    </>
+  );
+}
+
+/** Ends a press still armed as a case ends, as the reader's next pointer press on the page does
+ *  (`components/focus-place.ts`'s `armHandOff`), so none outlives its case into the next one. */
+function disarm(): void {
+  document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+}
+
+// The reader takes the list's only narrowing off from the keyboard with the window scrolled, and
+// the rows it left out come back at the list's head, above the row nearest the list's centre.
+// Their place is the control they pressed: the control row stays where it stood, the rows come
+// back below it, and the Filter the row hands the focus to stands where it stood. Measured in the
+// Inbox at 390x664 while the anchor held the centre row instead: the window went from 30 px to
+// 1,269 px, and Filter stood at -1,140 px.
+test("a press of the reader's in the control row above the list that draws rows back above the list's centre keeps that row where it stood, and the window does not scroll", async () => {
+  const user = userEvent.setup();
+  const view = render(<Narrowed />);
+  try {
+    setScrollY(100);
+    const filter = screen.getByRole("button", { name: "Filter" });
+    screen.getByRole("button", { name: "Remove Type: question filter" }).focus();
+    const stood = filter.getBoundingClientRect().top;
+    // With no press, a commit now would hold the row at the list's centre.
+    expect(chosen()).toEqual({ id: "r8", via: "center" });
+
+    await user.keyboard("{Enter}");
+    expect(viewportTop("r1")).toBeDefined();
+    expect(filter).toHaveFocus();
+    expect(filter.getBoundingClientRect().top).toBe(stood);
+    expect(window.scrollY).toBe(100);
+  } finally {
+    disarm();
+    view.unmount();
+  }
+});
+
+// The same rows drawn back by a live update while the focus rests on the row's Filter, with no
+// press of the reader's: a change they did not make is made up for around the row at the list's
+// centre, as any other is, so the rows in view stay where they were.
+test("rows a live update draws above the list's centre while the focus rests in the control row are made up for, and the rows in view stay", () => {
+  const page = (rows: string[]) => (
+    <>
+      <Controls chip />
+      <List rows={rows} />
+    </>
+  );
+  const view = render(page(ids(9, 4)));
+  try {
+    setScrollY(100);
+    screen.getByRole("button", { name: "Filter" }).focus();
+    const centre = viewportTop("r8");
+
+    view.rerender(page(ids(12)));
+    expect(viewportTop("r8")).toBe(centre);
+    expect(window.scrollY).toBe(100 + 3 * ROW_HEIGHT);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The control row stands outside the box the rows scroll in, as the Inbox's stands above the list
+// column beside its reading pane: the box's scroll moves nothing of the row, so the press leaves
+// the box to hold the row at its centre, and the window does not move.
+test("a press in a control row outside the box the rows scroll in leaves that box holding the row at its centre", async () => {
+  const user = userEvent.setup();
+  const view = render(<Narrowed scroller={scrollerRef} />);
+  try {
+    const scroller = scrollerRef.current;
+    if (scroller === null) throw new Error("scroller missing");
+    scroller.scrollTop = 100;
+    screen.getByRole("button", { name: "Remove Type: question filter" }).focus();
+    const centre = viewportTop("r8");
+
+    await user.keyboard("{Enter}");
+    expect(viewportTop("r8")).toBe(centre);
+    expect(scroller.scrollTop).toBe(100 + 3 * ROW_HEIGHT);
+    expect(window.scrollY).toBe(0);
+  } finally {
+    disarm();
     view.unmount();
   }
 });
