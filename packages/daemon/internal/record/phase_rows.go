@@ -196,9 +196,9 @@ func StartLeft(rows []PhaseRow, role claim.Role, entry int64) (int64, bool) {
 
 // PhaseRowAt is role's row among rows where the task of an issue with plan rows stands: task, at
 // at, whose steps are steps. A role can stand at two steps of a task, one agent doing both or one
-// agent each (a second agent of the role, `implementer-2`), and each run of a step keeps a row of
-// its own (StepTask, StepPlace), so the row read is the row of one of the role's places in the
-// task: its step at at where the step there is the role's; else its latest place before at, the
+// agent each (such as a second agent of the role, `implementer-2`), and each run of a step keeps a
+// row of its own (StepTask, StepPlace), so the row read is the row of one of the role's places in
+// the task: its step at at where the step there is the role's; else its latest place before at, the
 // retro, the implementer's (phase.RoleFor), and the merge, the merger's, standing after every
 // step; else its first place after at, so a read or a write before the role's first step reaches
 // the row of that step, as the one row of a role did; and place 0 where the task gives the role no

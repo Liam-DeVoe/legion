@@ -2937,11 +2937,11 @@ func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase !
 // runs as step, so a start or a task queued for the step of one role names a phase that still
 // reads the same while the task stands at the step of another; the role is what tells the two
 // apart. At step the role names the step. A role can stand at two steps of a task, one agent doing
-// both or one agent each, a second agent of the role taking a name of its own (plan.Supported), and
-// work queued for either reads the same here: the entry the work is of and the claim it is for tell
-// the two apart, which the outbox's fence on a start (the role's row now and its entry, StartLeft)
-// and the claim's given entry compare beside this. Away from step the phase alone is compared: one
-// role works several phases (the implementer
+// both or one agent each (plan.Supported), a second agent of the role taking a name of its own
+// (record.NameAgents), and work queued for either reads the same here: the entry the work is of
+// and the claim it is for tell the two apart, which the outbox's fence on a start (the role's row
+// now and its entry, StartLeft) and the claim's given entry compare beside this. Away from step the
+// phase alone is compared: one role works several phases (the implementer
 // implementing and retro), and a phase names its one role. It is the one definition of that
 // question, which the four judges of queued work ask, each on its own read: the outbox before it
 // runs a start (daemon's supervise), the
