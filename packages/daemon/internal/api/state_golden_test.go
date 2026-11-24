@@ -242,6 +242,8 @@ func populatedState(t *testing.T) State {
 	t.Helper()
 	approvedVersion, mergedApproval, lineApproval := 6, 4, 3
 	reviewApproval, stuckApproval := 5, 2
+	// The specs of the two step roots, each approved at the version Dispatch holds.
+	stepApproval, heldStepApproval := 2, 1
 	waitedSince := time.Date(2026, 9, 22, 8, 5, 0, 0, time.UTC)
 	answeredAt := time.Date(2026, 9, 22, 9, 21, 0, 0, time.UTC)
 	// When LEGION-210's implementer failed, the moment its claim carries beside the cause.
@@ -786,6 +788,20 @@ func populatedState(t *testing.T) State {
 				DefaultBranch:    "main",
 				Workers:          map[claim.Role]PhaseView{},
 				StartWaitsForPod: []string{"checker"},
+				// Its work began once a person approved its spec, which stands approved at the
+				// version Dispatch holds: the one step `root-issues` gates, served twice.
+				DesignGate: &GateView{
+					ArtifactID:      "4b8e2f61-7a3c-4d95-b0e6-1c9f5a2d8e74",
+					CurrentVersion:  2,
+					ApprovedVersion: &stepApproval,
+				},
+				GatedSteps: []GatedStepView{{
+					Step:            record.DesignStepSpec,
+					ArtifactID:      "4b8e2f61-7a3c-4d95-b0e6-1c9f5a2d8e74",
+					CurrentVersion:  2,
+					ApprovedVersion: &stepApproval,
+					Status:          GatedStepApproved,
+				}},
 				Slot: &SlotView{
 					Index:      5,
 					AdmittedAt: time.Date(2026, 9, 22, 8, 36, 5, 0, time.UTC),
@@ -804,6 +820,20 @@ func populatedState(t *testing.T) State {
 				Workers: map[claim.Role]PhaseView{
 					"checker": {Claim: ClaimView{Session: "ses_checker_241", State: "failed"}},
 				},
+				// Its spec stands approved at the version Dispatch holds, as LEGION-240's does: the
+				// hold is its checker's failed claim, not the gate.
+				DesignGate: &GateView{
+					ArtifactID:      "9d3a6c18-2e7f-4b50-8c41-6f0b3e9a5d27",
+					CurrentVersion:  1,
+					ApprovedVersion: &heldStepApproval,
+				},
+				GatedSteps: []GatedStepView{{
+					Step:            record.DesignStepSpec,
+					ArtifactID:      "9d3a6c18-2e7f-4b50-8c41-6f0b3e9a5d27",
+					CurrentVersion:  1,
+					ApprovedVersion: &heldStepApproval,
+					Status:          GatedStepApproved,
+				}},
 				Slot: &SlotView{
 					Index:      6,
 					AdmittedAt: time.Date(2026, 9, 22, 8, 39, 47, 0, time.UTC),
@@ -818,6 +848,9 @@ func populatedState(t *testing.T) State {
 				Repo:          "zeta/tools",
 				DefaultBranch: "release/v7.1",
 				Workers:       map[claim.Role]PhaseView{},
+				// Nothing hands it to the daemon, so no architect of it has registered its spec:
+				// its one gated step carries no document, as LEGION-210's does.
+				GatedSteps: []GatedStepView{{Step: record.DesignStepSpec, Status: GatedStepUnregistered}},
 			},
 			// LEGION-207 merged and closed; its production check opened before this release, so the
 			// migration left the implementer on it (20261105231916_production_check_role_and_wake),
@@ -1285,8 +1318,10 @@ func TestStateGolden(t *testing.T) {
 // reads 0 (record.QuietTrees). The spec row of a root is served twice, as `designGate`
 // (record.SpecGate) and as the spec entry of `gatedSteps` (GatedStepViewsOf), so where the
 // deployment gates spec an issue carries `designGate` exactly when that entry names a document,
-// and the two name the same artifact and versions (internal/projection). A golden that breaks any
-// of these rules shows every reader of state.json a state the daemon never serves.
+// and the two name the same artifact and versions (internal/projection). Every root carries one
+// `gatedSteps` entry for each step its tree is gated on (record.TreeSteps over the steps the
+// deployment gates, `settings.gates.design`), and an issue that is no root carries none. A golden
+// that breaks any of these rules shows every reader of state.json a state the daemon never serves.
 func TestTheStateGoldensAdmissionNamesEveryIssueItHolds(t *testing.T) {
 	state := populatedState(t)
 	admission := state.Admission
@@ -1399,6 +1434,29 @@ func TestTheStateGoldensAdmissionNamesEveryIssueItHolds(t *testing.T) {
 		case spec != nil && (gate.ArtifactID != spec.ArtifactID || gate.CurrentVersion != spec.CurrentVersion || !reflect.DeepEqual(gate.ApprovedVersion, spec.ApprovedVersion)):
 			t.Errorf("%s carries the design gate of document %s at version %d approved at %s, and its spec step names document %s at version %d approved at %s",
 				key, gate.ArtifactID, gate.CurrentVersion, approvedAt(gate.ApprovedVersion), spec.ArtifactID, spec.CurrentVersion, approvedAt(spec.ApprovedVersion))
+		}
+	}
+	// The gated steps: the projection gives every root GatedStepViewsOf(TreeSteps(steps, rows)),
+	// one entry for each step the deployment gates, an `unregistered` one where the root holds no
+	// row, with criteria after them where the root registered a criteria document beside a
+	// deployment that gates spec and not criteria; and an issue that is no root holds no gate rows
+	// and is given no entry. The rows a root holds are the entries that name a document.
+	for _, key := range slices.Sorted(maps.Keys(state.Issues)) {
+		issue := state.Issues[key]
+		rows := map[record.DesignStep]record.DesignGate{}
+		steps := make([]record.DesignStep, 0, len(issue.GatedSteps))
+		for _, entry := range issue.GatedSteps {
+			steps = append(steps, entry.Step)
+			if entry.ArtifactID != "" {
+				rows[entry.Step] = record.DesignGate{Issue: key, Step: entry.Step, ArtifactID: entry.ArtifactID}
+			}
+		}
+		var want []record.DesignStep
+		if key == issue.Tree {
+			want = record.TreeSteps(state.Settings.Gates.Design, rows)
+		}
+		if !slices.Equal(steps, want) {
+			t.Errorf("%s, of the tree of %q, carries the gated steps %v, and its tree's gate gives it %v", key, issue.Tree, steps, want)
 		}
 	}
 }

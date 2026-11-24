@@ -647,7 +647,14 @@
       "tree": "LEGION-214",
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
-      "workers": {}
+      "workers": {},
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "approvedVersion": null,
+          "status": "unregistered"
+        }
+      ]
     },
     "LEGION-218": {
       "key": "LEGION-218",
@@ -798,6 +805,20 @@
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "workers": {},
+      "designGate": {
+        "artifactId": "4b8e2f61-7a3c-4d95-b0e6-1c9f5a2d8e74",
+        "currentVersion": 2,
+        "approvedVersion": 2
+      },
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "artifactId": "4b8e2f61-7a3c-4d95-b0e6-1c9f5a2d8e74",
+          "currentVersion": 2,
+          "approvedVersion": 2,
+          "status": "approved"
+        }
+      ],
       "slot": {
         "index": 5,
         "admittedAt": "2026-09-22T08:36:05Z"
@@ -826,6 +847,20 @@
           "rounds": 0
         }
       },
+      "designGate": {
+        "artifactId": "9d3a6c18-2e7f-4b50-8c41-6f0b3e9a5d27",
+        "currentVersion": 1,
+        "approvedVersion": 1
+      },
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "artifactId": "9d3a6c18-2e7f-4b50-8c41-6f0b3e9a5d27",
+          "currentVersion": 1,
+          "approvedVersion": 1,
+          "status": "approved"
+        }
+      ],
       "slot": {
         "index": 6,
         "admittedAt": "2026-09-22T08:39:47Z"
