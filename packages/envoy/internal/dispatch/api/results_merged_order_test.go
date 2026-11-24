@@ -217,43 +217,50 @@ func TestTheCIReadWithNoOpenHeadReadsTheLastToMerge(t *testing.T) {
 
 // TestAMergedSubjectThatCannotBeOrderedReadsNotKnown: the same two merges, and GitHub answers 404
 // for #70, so Dispatch learns no time of #70's merge and cannot tell which of the two merged last.
-// k1 names no subject and answers unknown for read_failed, and compares with both merged heads; c1
-// reads no head, so its read is unread for read_failed, its answer unknown for read_failed, and no
-// check runs are read. A pass at #71's final head, the older merge, then leaves k1 unknown for
-// read_failed: while the order is not known, a pass at a merged head is no pass that stands.
+// With no result, k1 names no subject and answers unknown for read_failed, and compares with both
+// merged heads; c1 reads no head, so its read is unread for read_failed, its answer unknown for
+// read_failed, and no check runs are read. With a pass at #71's final head, the older merge, k1
+// reads unknown for read_failed too: while the order is not known, a pass at a merged head is no
+// pass that stands. Each case has a Dispatch of its own.
 func TestAMergedSubjectThatCannotBeOrderedReadsNotKnown(t *testing.T) {
 	t.Parallel()
-	rig := newMergedOrderRig(t, true)
-	checks := rig.read(t)
-	k1 := checks["k1"]
-	if k1.PassStands.Answer != "unknown" || k1.PassStands.Reason != "read_failed" || len(k1.PassStands.Subjects) != 0 {
-		t.Fatalf("k1 reads %q (reason %q) with the subjects %+v, want unknown for read_failed with no subject",
-			k1.PassStands.Answer, k1.PassStands.Reason, k1.PassStands.Subjects)
-	}
-	merged := map[int]string{}
-	for _, basis := range k1.ComparedWith {
-		if basis.PullRequest != nil && basis.Merged {
-			merged[*basis.PullRequest] = basis.Commit
+	t.Run("no result", func(t *testing.T) {
+		t.Parallel()
+		rig := newMergedOrderRig(t, true)
+		checks := rig.read(t)
+		k1 := checks["k1"]
+		if k1.PassStands.Answer != "unknown" || k1.PassStands.Reason != "read_failed" || len(k1.PassStands.Subjects) != 0 {
+			t.Fatalf("k1 reads %q (reason %q) with the subjects %+v, want unknown for read_failed with no subject",
+				k1.PassStands.Answer, k1.PassStands.Reason, k1.PassStands.Subjects)
 		}
-	}
-	if len(k1.ComparedWith) != 2 || merged[70] != mergedOrderF70 || merged[71] != mergedOrderF71 {
-		t.Fatalf("k1 compares with %+v, want the merged heads of #70 (%s) and #71 (%s)", k1.ComparedWith, mergedOrderF70, mergedOrderF71)
-	}
-	c1 := checks["c1"]
-	if c1.CI["state"] != "unread" || c1.CI["case"] != "read_failed" || c1.PassStands.Answer != "unknown" || c1.PassStands.Reason != "read_failed" {
-		t.Fatalf("c1's read is %v and it reads %q (reason %q), want unread for read_failed, and unknown for read_failed",
-			c1.CI, c1.PassStands.Answer, c1.PassStands.Reason)
-	}
-	if reads := rig.runs.allReads(); reads != 0 {
-		t.Fatalf("GitHub was asked for %d pages of check runs, want none: no head is read while the order is not known", reads)
-	}
-
-	recorded := recordResult(t, rig.handler, rig.issue, resultBody("k1", "pass", mergedOrderF71, map[string]any{"role": "tester"}))
-	if recorded.Code != http.StatusCreated {
-		t.Fatalf("the tester's pass of k1 at #71's head: status=%d body=%s", recorded.Code, recorded.Body.String())
-	}
-	if k1 := rig.read(t)["k1"]; k1.PassStands.Answer != "unknown" || k1.PassStands.Reason != "read_failed" {
-		t.Fatalf("with a pass at #71's final head, the older merge, k1 reads %q (reason %q), want unknown for read_failed and never yes",
-			k1.PassStands.Answer, k1.PassStands.Reason)
-	}
+		merged := map[int]string{}
+		for _, basis := range k1.ComparedWith {
+			if basis.PullRequest != nil && basis.Merged {
+				merged[*basis.PullRequest] = basis.Commit
+			}
+		}
+		if len(k1.ComparedWith) != 2 || merged[70] != mergedOrderF70 || merged[71] != mergedOrderF71 {
+			t.Fatalf("k1 compares with %+v, want the merged heads of #70 (%s) and #71 (%s)", k1.ComparedWith, mergedOrderF70, mergedOrderF71)
+		}
+		c1 := checks["c1"]
+		if c1.CI["state"] != "unread" || c1.CI["case"] != "read_failed" || c1.PassStands.Answer != "unknown" || c1.PassStands.Reason != "read_failed" {
+			t.Fatalf("c1's read is %v and it reads %q (reason %q), want unread for read_failed, and unknown for read_failed",
+				c1.CI, c1.PassStands.Answer, c1.PassStands.Reason)
+		}
+		if reads := rig.runs.allReads(); reads != 0 {
+			t.Fatalf("GitHub was asked for %d pages of check runs, want none: no head is read while the order is not known", reads)
+		}
+	})
+	t.Run("a pass at the older merged head", func(t *testing.T) {
+		t.Parallel()
+		rig := newMergedOrderRig(t, true)
+		recorded := recordResult(t, rig.handler, rig.issue, resultBody("k1", "pass", mergedOrderF71, map[string]any{"role": "tester"}))
+		if recorded.Code != http.StatusCreated {
+			t.Fatalf("the tester's pass of k1 at #71's head: status=%d body=%s", recorded.Code, recorded.Body.String())
+		}
+		if k1 := rig.read(t)["k1"]; k1.PassStands.Answer != "unknown" || k1.PassStands.Reason != "read_failed" {
+			t.Fatalf("with a pass at #71's final head, the older merge, k1 reads %q (reason %q), want unknown for read_failed and never yes",
+				k1.PassStands.Answer, k1.PassStands.Reason)
+		}
+	})
 }
