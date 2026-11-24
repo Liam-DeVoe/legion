@@ -204,16 +204,18 @@ func (p forcedPlan) warm(t *testing.T, target string, began time.Time, budget ti
 	return made
 }
 
-// statementPrefix is statement's text up to its first constant: a quote, or a digit that starts a
-// number rather than continuing a parameter (`$13`) or a name (`t1`).
+// statementPrefix is statement's text up to its first parameter or constant: a `$` before a digit,
+// a quote, or a digit that starts a number rather than continuing a name (`t1`).
 func statementPrefix(statement string) string {
 	for at := range len(statement) {
 		switch c := statement[at]; {
 		case c == '\'':
 			return statement[:at]
+		case c == '$' && at+1 < len(statement) && statement[at+1] >= '0' && statement[at+1] <= '9':
+			return statement[:at]
 		case c >= '0' && c <= '9' && at > 0:
 			before := statement[at-1]
-			if before != '$' && before != '_' && !(before >= '0' && before <= '9') &&
+			if before != '_' && !(before >= '0' && before <= '9') &&
 				!(before >= 'a' && before <= 'z') && !(before >= 'A' && before <= 'Z') {
 				return statement[:at]
 			}
@@ -224,9 +226,10 @@ func statementPrefix(statement string) string {
 
 // listingStatementTime is statement's calls and total execution time in database, as
 // pg_stat_statements counts them, and false where the server does not preload it. The view holds
-// a statement's text with each constant, a quoted string or a number, made a parameter, so it is
-// found by its text up to its first constant (statementPrefix). Every listing text starts that
-// way, the speed test's among them, so a reading is the difference of two calls around one
+// a statement's text with its parameters and constants numbered anew in the order they appear
+// (PostgreSQL 18 holds the listing's `any($11::text[])` as `any($1::text[])`), so it is found by
+// its text up to its first parameter or constant (statementPrefix). Every listing text starts
+// that way, the speed test's among them, so a reading is the difference of two calls around one
 // request's reads, which its caller holds to the number of reads it made.
 func listingStatementTime(t *testing.T, database *store.Store, statement string) (int64, float64, bool) {
 	t.Helper()
