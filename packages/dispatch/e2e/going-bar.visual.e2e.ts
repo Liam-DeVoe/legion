@@ -251,8 +251,14 @@ async function chipsRead(where: Locator, count: number): Promise<void> {
  *  pinned to the foot of the conversation's scroll (design v3, state 6; review R1): the bar that
  *  holds them ends where the scroll ends, to the pixel, so no row shows under it. */
 async function approvePinned(surface: Locator): Promise<void> {
-  const pinned = await surface.getByTestId("going-plan-actions").boundingBox();
-  const scroll = await surface.getByTestId("going-conversation-view").boundingBox();
+  const actions = surface.getByTestId("going-plan-actions");
+  const view = surface.getByTestId("going-conversation-view");
+  await expect(actions).toBeVisible();
+  await expect(view).toBeVisible();
+  // The wait above drew the Approve bar, and a drawn element has a box, so the box is there.
+  const pinned = await actions.boundingBox();
+  // The wait above drew the conversation's scroll as well, so its box is there as the bar's is.
+  const scroll = await view.boundingBox();
   if (pinned === null || scroll === null) {
     throw new Error("the plan's Approve bar or the conversation's scroll is not drawn");
   }
@@ -1147,8 +1153,14 @@ const barRows: readonly BarRow[] = [
         .getByRole("option")
         .filter({ has: page.getByTestId("search-hit-snippet") })
         .first();
-      const snippet = await hit.getByTestId("search-hit-snippet").boundingBox();
-      const status = await hit.getByTestId("search-hit-status").boundingBox();
+      const snippetLine = hit.getByTestId("search-hit-snippet");
+      const statusMark = hit.getByTestId("search-hit-status");
+      await expect(snippetLine).toBeVisible();
+      await expect(statusMark).toBeVisible();
+      // The wait above drew the hit's snippet, and a drawn element has a box, so the box is there.
+      const snippet = await snippetLine.boundingBox();
+      // The wait above drew the hit's status as well, so its box is there as the snippet's is.
+      const status = await statusMark.boundingBox();
       if (snippet === null || status === null) {
         throw new Error("the hit's snippet or its status is not drawn");
       }
