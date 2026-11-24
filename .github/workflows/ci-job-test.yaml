@@ -216,6 +216,10 @@ on:
         description: "ci.yaml's needs.changes.outputs.ci_ok_reconcile_test: ci-ok-reconcile.test.sh and what it tests."
         type: string
         required: false
+      large_pr_lanes_test:
+        description: "ci.yaml's needs.changes.outputs.large_pr_lanes_test: large-pr-lanes.test.sh and what it tests."
+        type: string
+        required: false
       find_pr_payload_test:
         description: "ci.yaml's needs.changes.outputs.find_pr_payload_test: find-pr-payload.test.sh and what it tests."
         type: string
@@ -482,6 +486,10 @@ jobs:
       - name: Test the reconciliation of this head's other ci-ok check runs (a stand-in gh)
         if: inputs.changes-result != 'success' || inputs.ci_ok_reconcile_test == 'true'
         run: .github/scripts/ci-ok-reconcile.test.sh
+
+      - name: Test the large pull request's label and its approval-time ci-ok (a stand-in gh)
+        if: inputs.changes-result != 'success' || inputs.large_pr_lanes_test == 'true'
+        run: .github/scripts/large-pr-lanes.test.sh
 
       - name: Test the pull request payload both pr-title checks read (a stand-in gh)
         if: inputs.changes-result != 'success' || inputs.find_pr_payload_test == 'true'

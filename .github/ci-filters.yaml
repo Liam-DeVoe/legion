@@ -942,6 +942,14 @@ ci_ok_reconcile_test: &ci_ok_reconcile_test
   - '.github/scripts/ci-ok-reconcile.test.sh'
   - '.github/scripts/ci-ok-reconcile.sh'
   - '.github/scripts/gh-read.sh'
+large_pr_lanes_test: &large_pr_lanes_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/large-pr-lanes.test.sh'
+  - '.github/scripts/large-pr-lanes.sh'
+  - '.github/scripts/gh-read.sh'
 find_pr_payload_test: &find_pr_payload_test
   - *ci_router
   - *ci_filters_data
@@ -1123,6 +1131,7 @@ test:
   - *ci_ok_test
   - *ci_ok_report_test
   - *ci_ok_reconcile_test
+  - *large_pr_lanes_test
   - *find_pr_payload_test
   - *merge_group_cancels_test
   - *main_bypass_check_test

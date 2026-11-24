@@ -17,6 +17,7 @@ on:
           a run on another branch that names none compares with the branch's merge base with main.
         type: string
         required: false
+  workflow_call:
 
 # why: .github/ci-notes/ci.md#what-a-newer-push-cancels-and-what-is-never-cancelled
 concurrency:
@@ -158,6 +159,7 @@ jobs:
       ci_ok_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_test }}
       ci_ok_report_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_report_test }}
       ci_ok_reconcile_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_reconcile_test }}
+      large_pr_lanes_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.large_pr_lanes_test }}
       find_pr_payload_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.find_pr_payload_test }}
       merge_group_cancels_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.merge_group_cancels_test }}
       main_bypass_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.main_bypass_check_test }}
@@ -284,6 +286,7 @@ jobs:
       contents: read
       actions: read
       checks: write
+      issues: write
       pull-requests: read
     uses: ./.github/workflows/ci-job-lint.yaml
     with:
@@ -392,6 +395,7 @@ jobs:
       ci_ok_test: ${{ needs.changes.outputs.ci_ok_test }}
       ci_ok_report_test: ${{ needs.changes.outputs.ci_ok_report_test }}
       ci_ok_reconcile_test: ${{ needs.changes.outputs.ci_ok_reconcile_test }}
+      large_pr_lanes_test: ${{ needs.changes.outputs.large_pr_lanes_test }}
       find_pr_payload_test: ${{ needs.changes.outputs.find_pr_payload_test }}
       merge_group_cancels_test: ${{ needs.changes.outputs.merge_group_cancels_test }}
       main_bypass_check_test: ${{ needs.changes.outputs.main_bypass_check_test }}

@@ -60,6 +60,18 @@ jobs:
         with:
           persist-credentials: false
 
+      # A pull request's own size decides whether its approval runs its slow suites, and the
+      # approval workflow reads the label this writes, since a review's event carries no size
+      # (.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head).
+      # On a pull request only, the one event whose payload holds the size; the condition tests
+      # `github.event_name` and no output of `changes`. The script reads the payload itself, so the
+      # step's env holds the token alone.
+      - name: Label a pull request of 100 files or 10,000 lines large-pr, so its approval runs its slow suites
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/large-pr-lanes.sh label
+
       # This job runs on every change, so the pin check runs on every change rather than only on
       # one that touches a package.
       - name: Check every Bun install reads .bun-version

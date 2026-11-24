@@ -2631,6 +2631,11 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/ci-ok-reconcile.sh", "the script under test"),
         (f"{SCRIPTS}/gh-read.sh", "ci-ok-reconcile.sh:80 sources it for its bounded gh reads"),
     ]),
+    harness("large_pr_lanes_test", "Test the large pull request's label and its approval-time ci-ok (a stand-in gh)",
+            f"{SCRIPTS}/large-pr-lanes.test.sh", [
+        (f"{SCRIPTS}/large-pr-lanes.sh", "the script under test"),
+        (f"{SCRIPTS}/gh-read.sh", "large-pr-lanes.sh:52 sources it for its bounded gh reads and writes"),
+    ]),
     harness("find_pr_payload_test", "Test the pull request payload both pr-title checks read (a stand-in gh)",
             f"{SCRIPTS}/find-pr-payload.test.sh", [
         (f"{SCRIPTS}/find-pr-payload.sh", "the script under test"),

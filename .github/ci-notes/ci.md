@@ -1253,6 +1253,10 @@ run at main's tip when a commit reached main without a passing merge-group ci-ok
 selects every job there. A dispatch of any other ref is a full run started by hand (`gh
 workflow run ci.yaml --ref <branch>`), and it reports under names of its own
 (.github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own).
+workflow_call is .github/workflows/large-pr-lanes.yaml's: it calls this file on an approval's
+pull_request_review event, which the called run keeps as its own event, so `changes` selects as
+on a merge group (.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head).
+It passes no input, and the one input this file reads, `migration-base`, is a dispatch's.
 
 ## The commit main pointed at before the push the bypass check read
 
@@ -1460,7 +1464,9 @@ A job whose numbers cross the line moves class by the same rule.
 What this accepts: a slow test that would have failed the pull request now fails first in the
 queue, where the failure takes the entry out and the queue rebuilds the groups behind it. Every
 build, vet, format, typecheck and lint failure, and every failure of a fast test, still comes
-back on the pull request.
+back on the pull request. A large pull request, where a slow failure in the queue is likeliest
+and costs most, runs its slow suites once more before the queue, at the head a reviewer
+approves (.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head).
 
 ## How a slow suite is held back on a pull request
 
@@ -1509,6 +1515,94 @@ request and reopen it. Take it off once the run it was added for passes, as `ful
 own output and leaves every other one as an unlabelled pull request has it, `full-ci` still
 turns all fifteen on, the paths term still holds under both, and a label naming no such output
 turns on nothing.
+
+## A large pull request runs its slow suites once, at the approved head
+
+A pull request of 100 changed files or more, or of 10,000 changed lines (additions and
+deletions) or more, runs every slow suite its paths select once before it can enter the merge
+queue: at the head a reviewer approves. Its pushes run what every pull request's pushes run, the
+fast lane and any lane label's suite. Each new approval runs it again; a push after an approval
+runs it again only once the new head is approved. A smaller pull request is not changed, and its
+approval starts no job.
+
+Why: a pull request's run holds the slow suites back for the queue
+(.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue), so a
+defect only a slow suite finds fails first in the queue, which takes the entry out and rebuilds
+every group behind it. Of the 23 queue removals in the first hours after that rule (2026-11-23
+22:13Z to 2026-11-24 02:35Z), 3 were failed checks, and one of them failed in a job its pull
+request's run had skipped: #3125, 769 files and 70,803 lines, in envoy-go-docs-finalizers, about
+1,140 runner-minutes and 5 rebuilt groups. A large change is the likeliest to carry such a
+defect and the costliest to rebuild behind. The two lines are from the 360 pull requests merged
+from 2026-11-21: changed files p95 98 and p99 340, changed lines p95 8,702, so about 7 pull
+requests a day cross one of them.
+
+Three pieces make it:
+
+- ci-job-lint.yaml's step "Label a pull request of 100 files or 10,000 lines large-pr, so its
+  approval runs its slow suites" runs `.github/scripts/large-pr-lanes.sh label` at every push of
+  a pull request. It reads the size from the event's payload and puts the label `large-pr` on a
+  large pull request, or takes it off one that shrank, with the lint job's GITHUB_TOKEN. An
+  event that token makes starts no workflow run, and none is wanted: the label is read later, by
+  the approval's run. A fork's pull request is passed over, since its token cannot write a label.
+- .github/workflows/large-pr-lanes.yaml runs on every submitted review. The review is made with
+  the reviewer's own token, an App's or a person's, so its event starts a run; nothing this
+  mechanism writes has to start one. Both its jobs run only on an approval of a pull request
+  that is not a draft and carries `large-pr`, an `if:` that reads the event alone, so every other
+  review's run is decided before any runner starts and leaves no check named ci-ok.
+  - `approval` calls this file (ci.yaml's `on.workflow_call`). A called workflow runs under its
+    caller's event, and on pull_request_review the `full-ci` term of every held-back output
+    (`github.event_name != 'pull_request' || …`) is true, so each takes its paths filter's
+    verdict, as on a merge group: the run selects exactly the slow suites the change's paths
+    select, beside every fast job, and skips the two jobs that run on a pull request alone
+    (dispatch-browser-pr, worker-image), as a merge group does. ci-router-outputs.test.sh holds a
+    review run's outputs equal to a merge group's for the same paths verdicts. This file's own
+    ci-ok judges that run as `approval / ci-ok`, a name no ruleset reads.
+  - `ci-ok` is the check main's ruleset reads. GitHub creates the check run of a job with no
+    needs when it creates the run, and that of a job with needs only once they have ended: on
+    run 45314504563, read at 2026-11-24T02:45:31Z, the `changes` and `pr-title` check runs were
+    there from 02:43:54Z while 23 jobs ran, and no ci-ok check run was. So `approval / ci-ok`
+    appears only at the run's end, and this job, which needs nothing, holds a pending ci-ok on
+    the head from the run's first seconds, then concludes as `approval / ci-ok` concluded
+    (`.github/scripts/large-pr-lanes.sh hold`). A run that ends with no verdict fails it, so a
+    broken run never holds the head pending until the job's timeout.
+
+Why a pending ci-ok keeps the pull request out of the queue until the run ends. GitHub reads
+the newest check run of each name, workflow and event on a head
+(docs/solutions/github/a-head-is-green-by-the-newest-run-of-each-check-name-workflow-and-event-INFRA-256.md),
+and the checks of a pull_request_review run are among those it evaluates for a required check
+(docs.github.com, "Troubleshooting required status checks", "Checks from some workflow jobs are
+not evaluated"). pr-title.yaml's header holds the measurement of the same shape for pr-title: a
+review's run that waited for a runner held the required pr-title pending, and the queue took
+the pull request only once it passed (dispatch://INFRA-1825). Legion's merger enqueues with
+`enqueuePullRequest`, which adds a pull request only when it can be added at once, and waits for
+a required check still running (packages/daemon/internal/prompts/roles/merger.md, steps 4 and
+6). What is left is the seconds between the approval and GitHub creating the run; each approval
+of a large pull request names it, as the time from the review's submission to the ci-ok check
+run's creation.
+
+Why a run that tests nothing leaves no passing ci-ok. A skipped job's check run is a passing
+required check, so a skipped job named ci-ok on a head whose own ci-ok is red would read as
+green to any reader that takes one check run per name. Both jobs here are skipped on every
+review but a large pull request's approval, and GitHub evaluates a skipped job's name not at
+all (.github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own): the
+check run carries the expression's text. The name repeats the job's whole condition besides, so
+it reads `ci-ok` only where the job runs even if it were evaluated.
+
+One group per pull request holds the runs that test, and a newer approval's run cancels the
+older one's, whose head is the same or older; every other review's run is a group of its own, so
+a comment posted during the approval-time run cancels nothing.
+
+What it leaves as it was:
+
+- Main's ruleset keeps an approval across a push (`dismiss_stale_reviews_on_push` is false), so a
+  head pushed after the approval and not approved again reaches the queue with its fast lane
+  alone, as before this rule. Legion's review step approves each new head, which runs it again.
+- ci.yaml's ci-ok reads a runner shutdown off check runs named for its own jobs
+  (.github/scripts/runner-shutdown.sh), and under this caller each is named `approval / <job>`,
+  so a job the platform killed in an approval-time run reads as a failure, not as cancelled.
+  Approve again, or re-run that job, to run it again.
+- `full-ci` and the lane labels decide nothing here: the approval's run selects by paths alone,
+  as the queue does.
 
 ## Why envoy-go's build and checks come back on every push
 
@@ -1579,12 +1673,15 @@ would fail `changes`, whose result every job's `if:` reads.
 
 ## Why the lint job holds each of its scopes
 
-The ci-ok-report step is the whole of this job's GitHub writing: it posts a failing ci-ok
+The ci-ok-report step is the whole of this job's GitHub writing but one: it posts a failing ci-ok
 with `checks: write` and names the run's jobs in it with `actions: read`. `contents: read`
 is the checkout's. `pull-requests: read` is the daemon API contract check's: when it is
 about to refuse a change it reads every open pull request of the repository, with the paths
-each changes, to name a number no other one has taken. The pull request's text is the
-`pr-title` job's, which declares the scopes its own routes read.
+each changes, to name a number no other one has taken. `issues: write` is the large-pr label
+step's, which puts that label on a pull request, or takes it off, through the issues route
+(.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head);
+it is `issues` and not `pull-requests: write`, which would let the token write reviews too.
+The pull request's text is the `pr-title` job's, which declares the scopes its own routes read.
 
 ## What the ci-images job copies, and why the order is the point
 
@@ -1776,8 +1873,9 @@ typechecks that ran beside these tests are the tooling-checks job's, in the same
 ## Two jobs that call one file
 
 ci.yaml calls 45 unique reusable workflows, the most .github/scripts/check-workflow-files.sh
-allows it (its rule 5 keeps five below the 50 GitHub counts over every tree of nested calls),
-so a job split in two takes no file of its own for its new half. test and tooling-checks call
+allows it: its rule 5 holds every file to 46 over the 50 GitHub counts over every tree of nested
+calls, and .github/workflows/large-pr-lanes.yaml, which calls ci.yaml, counts ci.yaml and its 45.
+So a job split in two takes no file of its own for its new half. test and tooling-checks call
 ci-job-test.yaml, pi-legion and pi-legion-build call ci-job-pi-legion.yaml, and envoy-infra-go
 and envoy-infra-build call ci-job-envoy-infra-go.yaml. Such a file holds one job per caller and
 takes a `job` input: each of its jobs carries exactly `if: inputs.job == '<its id>'`, each

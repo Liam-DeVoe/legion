@@ -4,7 +4,10 @@
 # outputs are false whatever their paths say, `full-ci` turns every one of them on, a
 # `lane:<output>` label turns on that one output and no other, still only where its paths
 # matched, and a label that names no such output turns on nothing
-# (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request).
+# (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request). On an
+# approval's pull_request_review run, the event .github/workflows/large-pr-lanes.yaml calls
+# ci.yaml under, every output reads as a merge group's with the same paths verdicts, whatever the
+# labels (.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head).
 #
 # The held-back set is read, not listed here, and read apart from the label terms it tests: the
 # outputs a merge group turns on and an unlabelled pull request holds false, every paths filter
@@ -177,5 +180,60 @@ status=$?
 set -e
 check "exits 2" "$(is "$status" 2)"
 check "names the output and the context" "$(contains "$err" 'output x: context github.actor is outside the modelled contexts')"
+
+echo "case: an approval's run evaluates every output"
+# The comparisons below diff two lists; two empty lists would compare equal, so this reads the
+# review run's list on its own first.
+check "as many outputs as a merge group's" \
+  "$(is "$(outputs --event pull_request_review | wc -l)" "$(outputs --event merge_group | wc -l)")"
+check "and more than fifty" "$(is "$(($(outputs --event pull_request_review | wc -l) > 50))" 1)"
+
+# verdicts_half <0|1>: a --verdict argument for every filter of ci-filters.yaml, every other one
+# true (starting at the first for 0, the second for 1), so the comparisons below cover each
+# filter both ways.
+verdicts_half() {
+  local at=0 name
+  while read -r name; do
+    if [ $(((at + $1) % 2)) -eq 0 ]; then echo "--verdict $name=true"; else echo "--verdict $name=false"; fi
+    at=$((at + 1))
+  done < <(python3 -c 'import sys, yaml; print("\n".join(yaml.safe_load(open(sys.argv[1]))))' \
+    "$repo/.github/ci-filters.yaml")
+}
+# review_differs <workflow> <argument>...: each output a pull_request_review run, the event
+# .github/workflows/large-pr-lanes.yaml calls ci.yaml under, holds differently from a merge
+# group with the same paths verdicts, as the review run's `name=value`, on one line.
+review_differs() {
+  local workflow=$1
+  shift
+  { diff <(outputs_of "$workflow" --event pull_request_review "$@") \
+    <(outputs_of "$workflow" --event merge_group "$@") || true; } | sed -n 's/^< //p' | tr '\n' ' '
+}
+
+echo "case: an approval's run selects, value for value, what a merge group selects"
+# .github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head: the
+# approval-time run of a large pull request is this file called on pull_request_review, and it
+# must run exactly the slow suites the change's paths select, beside every fast job.
+check "every filter yes" "$(is "$(review_differs "$repo/.github/workflows/ci.yaml" --verdicts true)" "")"
+check "every filter no" "$(is "$(review_differs "$repo/.github/workflows/ci.yaml" --verdicts false)" "")"
+mapfile -t half0 < <(verdicts_half 0)
+mapfile -t half1 < <(verdicts_half 1)
+check "the halves name every filter" "$(is "$((${#half0[@]} > 50))" 1)"
+# shellcheck disable=SC2068 # each element is `--verdict name=value`, split on purpose
+check "every other filter yes" "$(is "$(review_differs "$repo/.github/workflows/ci.yaml" ${half0[@]})" "")"
+# shellcheck disable=SC2068 # as above
+check "the other half yes" "$(is "$(review_differs "$repo/.github/workflows/ci.yaml" ${half1[@]})" "")"
+got=$(outputs --event pull_request_review --verdicts false --verdict "${held[0]}=true")
+check "one slow suite's paths alone turn on that suite" "$(is "$(value "$got" "${held[0]}")" true)"
+check "and no other slow suite" \
+  "$(is "$(not_value "$repo/.github/workflows/ci.yaml" false --event pull_request_review --verdicts false --verdict "${held[0]}=true" | tr '\n' ' ')" "${held[0]} ")"
+check "full-ci on the pull request turns on no suite its paths did not select" \
+  "$(is "$(not_value "$repo/.github/workflows/ci.yaml" false --event pull_request_review --verdicts false --label full-ci | tr '\n' ' ')" "")"
+
+echo "case: an output whose event term admits only the merge group fails the approval case"
+broken=$(broken_copy "$work/merge-group-only" pi_legion "github.event_name != 'pull_request'" "github.event_name == 'merge_group'")
+check "the copy differs from ci.yaml" "$(is "$(cmp -s "$broken" "$repo/.github/workflows/ci.yaml" && echo same)" "")"
+check "a merge group still turns it on" "$(is "$(not_value "$broken" true --event merge_group | tr '\n' ' ')" "")"
+check "an approval's run differs from the merge group's on exactly pi_legion" \
+  "$(is "$(review_differs "$broken" --verdicts true)" "pi_legion=false ")"
 
 summary "ci.yaml's changes outputs turn on what full-ci and the lane labels name, and nothing else"

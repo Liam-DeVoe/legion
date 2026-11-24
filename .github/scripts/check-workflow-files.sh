@@ -22,11 +22,13 @@
 #      through on purpose (yaml-object-reader.ts parses with uniqueKeys: false). A load cannot find
 #      it — yaml.safe_load keeps the last of a repeated key and reports nothing — so this walks the
 #      composed nodes instead;
-#   5. a file calling more than 45 unique reusable workflows. GitHub allows 50 from a single
+#   5. a file calling more than 46 unique reusable workflows. GitHub allows 50 from a single
 #      workflow file, counting every tree of nested calls. This check follows only the calls to
 #      this repository's own workflows (`./.github/workflows/…`) and counts a call to another
-#      repository's workflow as one call. ci.yaml calls 45 today, the limit, which keeps five
-#      below GitHub's cap for a surprise; a job split in two calls the file it was split from
+#      repository's workflow as one call. ci.yaml calls 45 today, and large-pr-lanes.yaml, which
+#      calls ci.yaml, 46: ci.yaml itself and its whole tree. That is the limit, which keeps four
+#      below GitHub's cap for a surprise and holds ci.yaml to 45, since its caller counts one more;
+#      a job split in two calls the file it was split from
 #      (.github/ci-notes/ci.md#two-jobs-that-call-one-file);
 #   6. a job whose `env:`, or one of whose steps' `env:`, sets JOB_TIMEOUT_MINUTES to anything but
 #      the job's timeout-minutes (GitHub's default of 360 where the job sets none), and a step whose
@@ -82,7 +84,7 @@ LIMIT = 64_000
 GITHUB_CAP = 500_000
 # Calls counted as fault 5 of the header says: a call to this repository's own workflow is
 # followed, and a call to another repository's workflow counts as one.
-CALL_LIMIT = 45
+CALL_LIMIT = 46
 GITHUB_CALL_CAP = 50
 # Where the rule the two size refusals enforce is written down: what a workflow file holds, and
 # where the rest goes.

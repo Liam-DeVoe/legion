@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for `check-workflow-files.sh`: every file under .github/workflows is within 64,000 bytes,
-# parses as YAML, repeats no mapping key after upper-casing, calls at most 45 unique reusable
+# parses as YAML, repeats no mapping key after upper-casing, calls at most 46 unique reusable
 # workflows, and sets JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they
 # stand for.
 #
@@ -302,17 +302,17 @@ check "and the file with the folded keys, in the same run" \
 check "counts both" \
   "$(contains "$out" '^2 problem(s) across the 2 workflow file(s) under .github/workflows$')"
 
-echo "case: exactly 64,000 bytes and exactly 45 unique reusable workflows passes"
+echo "case: exactly 64,000 bytes and exactly 46 unique reusable workflows passes"
 root=$(fixture at-both-limits)
-caller "$root/.github/workflows/ci.yaml" 45 1
-callees "$root/.github/workflows" 45 1
+caller "$root/.github/workflows/ci.yaml" 46 1
+callees "$root/.github/workflows" 46 1
 pad_to "$root/.github/workflows/ci.yaml" 64000
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "says what it read" \
-  "$(contains "$out" '^all 46 workflow files under .github/workflows are within 64,000 bytes')"
+  "$(contains "$out" '^all 47 workflow files under .github/workflows are within 64,000 bytes')"
 check "and what it held them to" \
-  "$(contains "$out" 'call at most 45 unique reusable workflows, and set JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for$')"
+  "$(contains "$out" 'call at most 46 unique reusable workflows, and set JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for$')"
 
 echo "case: job ids and with: keys that differ only in case"
 root=$(fixture folded-elsewhere)
@@ -347,32 +347,32 @@ check "names the two job ids" \
 check "and the two with: keys" \
   "$(contains "$out" "^::error file=.github/workflows/with.yaml,line=8::.github/workflows/with.yaml:8: the mapping key 'Token' is the key 'token' of line 7 again")"
 
-echo "case: a file calling 46 unique reusable workflows"
+echo "case: a file calling 47 unique reusable workflows"
 root=$(fixture over-calls)
-caller "$root/.github/workflows/ci.yaml" 46 1
-callees "$root/.github/workflows" 46 1
+caller "$root/.github/workflows/ci.yaml" 47 1
+callees "$root/.github/workflows" 47 1
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the count and the limit" \
-  "$(contains "$out" '^::error file=.github/workflows/ci.yaml::.github/workflows/ci.yaml calls 46 unique reusable workflows, above this check.s limit of 45:')"
-check "lists the callees" "$(contains "$out" '.github/workflows/w46.yaml')"
+  "$(contains "$out" '^::error file=.github/workflows/ci.yaml::.github/workflows/ci.yaml calls 47 unique reusable workflows, above this check.s limit of 46:')"
+check "lists the callees" "$(contains "$out" '.github/workflows/w47.yaml')"
 check "names GitHub's own cap of 50" \
   "$(contains "$out" 'GitHub allows 50 from a single workflow file, counting every tree of nested calls')"
 check "names this check's limit and GitHub's cap, with the file's bytes" \
   "$(contains "$out" "^::error file=.github/workflows/ci.yaml::.* The file is [0-9,]* bytes, against this check.s limit of 64,000 bytes and GitHub.s cap of 500,000 bytes (500 KB), above which GitHub starts no run at all\.$")"
 
-echo "case: 44 calls, one of which calls two more, is a tree of 46"
+echo "case: 45 calls, one of which calls two more, is a tree of 47"
 root=$(fixture nested-calls)
-caller "$root/.github/workflows/ci.yaml" 44 1
-callees "$root/.github/workflows" 44 1
-caller "$root/.github/workflows/w01.yaml" 2 45
-callees "$root/.github/workflows" 2 45
+caller "$root/.github/workflows/ci.yaml" 45 1
+callees "$root/.github/workflows" 45 1
+caller "$root/.github/workflows/w01.yaml" 2 46
+callees "$root/.github/workflows" 2 46
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "counts the whole tree" \
-  "$(contains "$out" '^::error file=.github/workflows/ci.yaml::.github/workflows/ci.yaml calls 46 unique reusable workflows')"
+  "$(contains "$out" '^::error file=.github/workflows/ci.yaml::.github/workflows/ci.yaml calls 47 unique reusable workflows')"
 check "names a workflow only the nested call reaches" \
-  "$(contains "$out" '.github/workflows/w46.yaml')"
+  "$(contains "$out" '.github/workflows/w47.yaml')"
 check "the nested caller itself, which calls two, passes" \
   "$(is "$(contains "$out" 'file=.github/workflows/w01.yaml')" false)"
 

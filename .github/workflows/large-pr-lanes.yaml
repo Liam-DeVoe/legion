@@ -1,0 +1,77 @@
+name: Large PR lanes
+
+# A large pull request runs, once, at the head a reviewer approves, every slow suite its paths
+# select, beside every fast job, before it can enter the merge queue
+# (.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head).
+#
+# The approval is the trigger: a review is made with the reviewer's own token (an App's or a
+# person's), so its event starts this workflow, where an event made with GITHUB_TOKEN would start
+# nothing. Every review of every pull request starts a run, and on all but an approval of a pull
+# request labelled large-pr both jobs are skipped by their `if:`, which reads the event alone, so
+# such a run starts no runner and leaves no check named ci-ok. ci-job-lint.yaml's label step puts
+# that label on at every push (.github/scripts/large-pr-lanes.sh label).
+#
+# `approval` calls ci.yaml on this event. A called workflow runs under its caller's event, and on
+# pull_request_review each `changes` output a pull request holds back takes its paths filter's
+# verdict, as on a merge group, so the run selects exactly the slow suites the change's paths
+# select, with every fast job beside them, and ci.yaml's own ci-ok judges them all. That check
+# run is named `approval / ci-ok`, which no ruleset reads, and GitHub creates it only once every
+# job it needs has ended. The job named ci-ok here is the one the ruleset reads: it has no needs,
+# so GitHub creates its check run, queued, with the run, and it concludes as `approval / ci-ok`
+# concludes (large-pr-lanes.sh hold).
+on:
+  pull_request_review:
+    types: [submitted]
+
+# One group per pull request for the runs that test: a newer approval cancels an older one's run,
+# whose head is older or the same. Every other review gets a group of its own, so a comment
+# posted while the approval-time run is going cancels nothing.
+concurrency:
+  group: large-pr-lanes-${{ github.event.pull_request.number }}-${{ github.event.review.state == 'approved' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'large-pr') && 'approval' || github.run_id }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  ci-ok:
+    # GitHub leaves a skipped job's name unevaluated, so a review that tests nothing leaves the
+    # text of this expression on the head, not a skipped ci-ok, which GitHub and every reader by
+    # name would count as a pass
+    # (.github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own). The
+    # name repeats the job's whole condition, so it is ci-ok only where the job runs even if
+    # GitHub did evaluate it.
+    name: ${{ github.event.review.state == 'approved' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'large-pr') && 'ci-ok' || 'large-pr-lanes (not run)' }}
+    if: ${{ github.event.review.state == 'approved' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'large-pr') }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    env:
+      JOB_TIMEOUT_MINUTES: 180 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+      - name: Wait for the approval-time run's verdict and conclude as it did
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CALLER: approval
+        run: .github/scripts/large-pr-lanes.sh hold
+
+  approval:
+    if: ${{ github.event.review.state == 'approved' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'large-pr') }}
+    # GitHub refuses a run whose calling job grants less than any job of the called workflow
+    # declares, whatever that job's `if:`: these are the scopes ci.yaml's jobs declare, together.
+    permissions:
+      contents: read
+      actions: write
+      checks: write
+      packages: write
+      id-token: write
+      attestations: write
+      issues: write
+      pull-requests: read
+    uses: ./.github/workflows/ci.yaml
+    secrets: inherit
