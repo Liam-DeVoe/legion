@@ -58,13 +58,17 @@ func (r *fixRig) ciRunsAtTheEnd() {
 	r.at(fixHead, noCIJob("k-unit"), ciPassing("k-ci2"), jobRunning("k-ci"))
 }
 
+// reviewedCommit is the commit the reviewer's report names: the task that is told the report names
+// it, and no other part of a retro's task does.
+const reviewedCommit = headThree
+
 // reviewerReported writes the reviewer's report on its phases row, as its completion writes it,
-// and answers the row: the report the step after the review is told.
+// naming reviewedCommit, and answers the row: the report the step after the review is told.
 func (r *fixRig) reviewerReported() record.PhaseRow {
 	r.t.Helper()
 	row := roleRowOf(r.t, r.pool, r.engine, "LEGION-208", claim.RoleReviewer)
 	row.Issue, row.Role = "LEGION-208", claim.RoleReviewer
-	row.HandoffRecord, row.HandoffVersion, row.HandoffCommit, row.Summary = reviewRecord, 1, fixHead, "approved"
+	row.HandoffRecord, row.HandoffVersion, row.HandoffCommit, row.Summary = reviewRecord, 1, reviewedCommit, "approved"
 	applyInTx(r.t, r.pool, r.engine, func(ctx context.Context, tx pgx.Tx) error { return r.engine.store.PutPhase(ctx, tx, row) })
 	return row
 }
@@ -251,7 +255,7 @@ func TestTheRetroStartsWhenTheJobPassesAtTheHead(t *testing.T) {
 
 	r.at(fixHead, ciPassing("k-ci"))
 	start := r.assertRetroStarted()
-	assertNames(t, "the retro's task", start.Task, []string{reviewRecord})
+	assertNames(t, "the retro's task", start.Task, []string{reviewedCommit})
 	if writes := statusWrites(t, r.pool, "LEGION-208")[statuses:]; len(writes) != 1 || writes[0].Status != PhaseStatus(phase.Retro) {
 		t.Fatalf("the release queued the status writes %+v, want the retro's", writes)
 	}
@@ -395,7 +399,7 @@ func TestAnIssueWithNoPlanRowsIsHeldForCIAfterItsSignOff(t *testing.T) {
 	r.at(fixHead, ciPassing("k-ci"))
 
 	start := r.assertRetroStarted()
-	assertNames(t, "the retro's task", start.Task, []string{reviewRecord})
+	assertNames(t, "the retro's task", start.Task, []string{reviewedCommit})
 }
 
 // A stored walk ending in the owner's acceptance, the project's default steps, is told at its
@@ -415,7 +419,7 @@ func TestTheDefaultStepsRetroIsToldTheReviewsReport(t *testing.T) {
 		r.at(fixHead, ciPassing("k-ci"))
 
 		start := r.assertRetroStarted()
-		assertNames(t, "the retro's task", start.Task, []string{reviewRecord})
+		assertNames(t, "the retro's task", start.Task, []string{reviewedCommit})
 	})
 
 	t.Run("the control: a parent held for its children is told its last step's report", func(t *testing.T) {
@@ -428,7 +432,7 @@ func TestTheDefaultStepsRetroIsToldTheReviewsReport(t *testing.T) {
 		childLeavesDone(t, r.pool, r.engine)
 
 		start := r.assertRetroStarted()
-		assertNames(t, "the retro's task", start.Task, []string{reviewRecord})
+		assertNames(t, "the retro's task", start.Task, []string{reviewedCommit})
 	})
 }
 
