@@ -152,7 +152,7 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 			}
 			// The pod's launcher of each role serves the slot of that role's name.
 			slot := claim.Agent(role)
-			if _, runs := held[slotKey{sandbox: pod.Name, slot: slot}]; !runs && role != claim.RoleController && !slices.Contains(r.issueRoles, role) {
+			if _, runs := held[slotKey{sandbox: pod.Name, slot: slot}]; !runs && !slices.Contains(r.launcherRoles(), role) {
 				continue
 			}
 			r.refreshGitHubCredential(ctx, pod, owner.UID, slot, held, repo, bundles)
@@ -663,15 +663,16 @@ func (r *Runtime) slotHolders(ctx context.Context) (map[slotKey]slotHolder, erro
 // holds: two claims of one issue can hold one role (record.WorkerClaim).
 //
 // Where no stored claim runs in the slot, it is the slot's own name, and only where that name is a
-// role the runtime writes a slot for with no claim: one of its issue roles, or the controller. The
-// slot of an agent of the plan whose name is no role (`implementer-2`) names no App, so it is
+// role the runtime writes a slot for with no claim (launcherRoles: its issue roles and the
+// controller), as the refresh walk passes over every other slot that runs no claim. The slot of an
+// agent of the plan whose name is no role (`implementer-2`) names no App, so it is
 // refused: the pod's build writes it for the App of its agent's first step (gitHubBundles), and
 // its claim's launch for that claim's role (writeLaunchCredential).
 func (r *Runtime) slotAppRole(ctx context.Context, held map[slotKey]slotHolder, sandbox string, slot claim.Agent, launched string) (claim.Role, error) {
 	h, ok := held[slotKey{sandbox: sandbox, slot: slot}]
 	if !ok {
 		own := launcherOf(slot)
-		if own != claim.RoleController && !slices.Contains(r.issueRoles, own) {
+		if !slices.Contains(r.launcherRoles(), own) {
 			return "", fmt.Errorf("the slot %s of %s runs no stored claim, and its name is no role, so it names no App", slot, sandbox)
 		}
 		return own, nil
