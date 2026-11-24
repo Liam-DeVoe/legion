@@ -578,6 +578,49 @@ func TestAnOperatorsRetryLetsOutATryThePauseMetAfterItsWrite(t *testing.T) {
 	h.wantWakeLine(h.token, "kind=launch", "paced=false")
 }
 
+// A start whose issue pod's grant the pause met (podStartDue) is held launching, past the pacing
+// already, as a try the pause met after its write is. A retry under the pause is refused as a retry
+// of a launching claim is, and gives the launch back to the pause's gate; a retry once the pause
+// has ended runs a fresh try of that launch, once, through the pod's gate again rather than on the
+// grant the pause took, with no second wake line and the gate's stop disarmed.
+func TestAnOperatorsRetryLetsOutAStartWhosePodGrantThePauseMet(t *testing.T) {
+	h, second, flag, stops := grantedDuringAPause(t)
+	parked := second.m.View().Claim.Generation
+	stopPosted := func() bool {
+		second.m.mu.Lock()
+		defer second.m.mu.Unlock()
+		_, posted := second.m.timers[TimerPause]
+		return posted
+	}
+
+	err := h.postTo(second.m, RequestOperatorRetry{Claim: second.token})
+	var refused *RefusedError
+	if !errors.As(err, &refused) || refused.State != StateLaunching {
+		t.Fatalf("the operator's retry under the pause answered %v, want a refusal naming %s", err, StateLaunching)
+	}
+	h.wantStarts(second.token, 0)
+	if !stopPosted() {
+		t.Fatal("the launch the refused retry gave back is held with no stop of the pause's gate armed")
+	}
+
+	flag.set(0)
+	h.mustPostTo(second.m, RequestOperatorRetry{Claim: second.token})
+
+	h.wantGrantedStart(second, 1)
+	if c := second.m.View().Claim; c.State != StateLaunching || c.Locator == nil || c.Generation != parked+1 {
+		t.Fatalf("the second is %s at generation %d recording %+v, want it launching a fresh try (generation %d) with its process", c.State,
+			c.Generation, c.Locator, parked+1)
+	}
+	if holder := h.podHolder(); holder != second.token {
+		t.Fatalf("the pod's start is held by %q, want the second's load to hold it", holder)
+	}
+	if stopPosted() {
+		t.Fatal("the gate's stop is still armed over a start the retry let out")
+	}
+	stops.wantStops(t)
+	h.wantWakeLine(second.token, "kind=launch", "paced=false")
+}
+
 // An operator's request no row of the state the gate found decides, and that is no retry, is
 // refused as that state refuses it — a queued claim is spawned, not resumed — and the refusal costs
 // the claim nothing: the wake it dropped is taken up again and runs at the moment it already held.
