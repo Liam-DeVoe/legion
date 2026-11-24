@@ -159,22 +159,22 @@ test("the broker's request and release names are public only on their routes", (
 
 // Go's TestATokenExchangesNamesArePublicOnlyOnItsRoutes.
 test("a token exchange's names are public only on its routes", () => {
-  const token = `${broker}/v1/oauth/token`;
+  const tokenRoute = `${broker}/v1/oauth/token`;
   const sts = "https://sts.googleapis.com/v1/token";
   const identity = `${metadata}/computeMetadata/v1/instance/service-accounts/default/identity`;
   requireRoutes([
-    ["POST", token, "form", "session", "worker-session", true],
-    ["POST", token, "form", "projects", "project-keys", true],
-    ["POST", token, "form", "launcher_credential", "launcher-false", true],
-    ["POST", token, "form", "grant_type", "token-exchange-grant", true],
-    ["POST", token, "form", "subject_token_type", "subject-type-name", true],
-    ["POST", token, "form", "actor_token_type", "actor-type-name", true],
+    ["POST", tokenRoute, "form", "session", "worker-session", true],
+    ["POST", tokenRoute, "form", "projects", "project-keys", true],
+    ["POST", tokenRoute, "form", "launcher_credential", "launcher-false", true],
+    ["POST", tokenRoute, "form", "grant_type", "token-exchange-grant", true],
+    ["POST", tokenRoute, "form", "subject_token_type", "subject-type-name", true],
+    ["POST", tokenRoute, "form", "actor_token_type", "actor-type-name", true],
     ["POST", sts, "form", "requested_token_type", "requested-type-name", true],
     ["POST", sts, "form", "audience", "audience-of-token", true],
     ["GET", "https://idp.example/authorize", "query", "client_id", "client-identifier", true],
     ["GET", "https://idp.example/authorize", "query", "scope", "openid-profile", true],
     ["POST", `${broker}/token`, "form", "session", "worker-session", false],
-    ["GET", token, "query", "session", "worker-session", false],
+    ["GET", tokenRoute, "query", "session", "worker-session", false],
     [
       "POST",
       `${broker}/v1/oauth/exchange/pod-sessions`,
@@ -185,7 +185,7 @@ test("a token exchange's names are public only on its routes", () => {
     ],
     ["POST", `${broker}/v1/oauth/revoke`, "form", "launcher_credential", "launcher-false", false],
     ["GET", identity, "query", "audience", "audience-of-token", false],
-    ["GET", token, "query", "grant_type", "token-exchange-grant", false],
+    ["GET", tokenRoute, "query", "grant_type", "token-exchange-grant", false],
     ["PUT", sts, "form", "subject_token_type", "subject-type-name", false],
   ]);
 });
@@ -229,9 +229,9 @@ test("a page number is public only on a GET", () => {
 
 // Go's TestAMetadataFlavorIsPublicOnlyOnAMetadataRead.
 test("a Metadata-Flavor is public only on a metadata read", () => {
-  const token = `${metadata}/computeMetadata/v1/instance/service-accounts/default/token`;
+  const tokenRoute = `${metadata}/computeMetadata/v1/instance/service-accounts/default/token`;
   requireRoutes([
-    ["GET", token, "header", "Metadata-Flavor", "flavor-of-google", true],
+    ["GET", tokenRoute, "header", "Metadata-Flavor", "flavor-of-google", true],
     [
       "GET",
       `${metadata}/computeMetadata/v1`,
