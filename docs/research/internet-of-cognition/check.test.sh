@@ -4823,10 +4823,10 @@ fi
 # plant, and every assertion it leaves could not run, of the kind environment. It holds the
 # run to no time: each run a case makes ends at its own bound at the latest, BOUND_RUN, or
 # BOUND_CASES for a run of a check.test.sh, and each plant ends before that, so no case
-# waits forever and the last line alone decides, on a machine of any speed. A caller that
-# still passes the seconds its run took and a limit, as the tester's case 176 does as it was
-# committed, has both read and ignored, so that case stands unchanged. Cases 160 to 164,
-# 176, 179 and 182 read their runs by it.
+# waits forever and the last line alone decides, on a machine of any speed. It reads its
+# first three arguments alone: a caller that still passes the seconds its run took and a
+# limit, as the tester's case 176 does as it was committed, passes two it takes no notice of,
+# so that case stands unchanged. Cases 160 to 164, 176, 179 and 182 read their runs by it.
 bound_case() {
     if ! case_read "$1" "$3" "$2"; then
         :
@@ -6697,6 +6697,187 @@ for form in json json-namespace module stub-first; do
             "citation-our-code: f-our-1 cites the symbol schema\\.notes, whose prefix names the file pkg/schema\\.py as the module schema, and pkg/schema\\.py does not hold the name 'notes'" "$out"
         ;;
     *) honest_result "a dotted name schema.load, cited in $cited, which holds load under schema or is the module schema, passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 212. A part that starts with a digit and is no line is read by every reading of its form that
+# reads it as a file or as text its file holds, and fails as no line only when none holds it
+# (review 6031558230, its thread at check.sh's resolve_symbol). resolve_symbol failed such a
+# part as no line right after it read the part as text, before it read it as a file's name at
+# or below the cited paths (5c) or as a path the commit holds (7), so at ef564aae, cited in
+# docs, `2024-report.md` failed though docs/deep/r/2024-report.md stands, while
+# `y2024-report.md` in its place held, and `2024/` failed though docs/2024/ stands. The case
+# commits notes/deep/r/2024-report.md and notes/2024/x.md, neither writing 2024, in the
+# directory notes, which holds nothing else (the fixture's docs holds the gate, whose text
+# names these parts), and writes the row f-our-1 as citing notes with the symbol
+# '2024-report.md', then '2024/', then '2024-missing.md', a name no path below notes ends
+# with, running --citations over each (symbol_plant): the first two must pass
+# citation-our-code; the third must fail it, naming the part as no line or line range the gate
+# reads. At ef564aae the first two failed so.
+for form in name directory missing; do
+    case "$form" in
+    name) symbol='2024-report.md' named='notes/deep/r/2024-report.md' ;;
+    directory) symbol='2024/' named='notes/2024/' ;;
+    missing) symbol='2024-missing.md' named='' ;;
+    esac
+    dir="$(symbol_plant "symbol-digit-path-$form" notes "$symbol" notes/deep/r/2024-report.md $'# The yearly report\n' notes/2024/x.md $'one note\n')" &&
+        ! git -C "$dir/repo" grep -qF 2024 HEAD -- notes || {
+        printf 'FAIL the symbol %s cited in notes could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    missing)
+        case_result "a symbol part 2024-missing.md cited in notes, a name no path below notes ends with, fails --citations, named as no line or line range the gate reads" \
+            "citation-our-code: f-our-1 cites 2024-missing\\.md, which starts with a digit and is no line or line range this gate reads" "$out"
+        ;;
+    *) honest_result "a symbol part $symbol cited in notes, which names $named, passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 213. A part that starts with a digit is read as a file or as a module by a prefixed name and
+# by a qualified name, as any other part is (review 6031558230, the class of case 212: no
+# refusal runs before a reading that can hold the part). At ef564aae such a part failed as no
+# line before 6 read it as `file:Symbol` or `module:attr` and before 5d read it as
+# `file.ext.Symbol` or `module.symbol`, so `2024-report.md:Title`, `2024-report.md.Title`,
+# `2024_report:main` and `2024_report.main`, cited in notes, each failed, though
+# notes/2024-report.md holds Title and notes/2024_report.py declares main. The case commits
+# those two files, neither writing 2024, in the directory notes, which holds nothing else, and
+# writes the row f-our-1 as citing notes with each of the four symbols, then with
+# '2024-missing.md:Title', whose prefix names no file and no module, running --citations over
+# each (symbol_plant): the four must pass citation-our-code; the last must fail it, naming the
+# part as no line or line range the gate reads, since a namespace reading never holds such a
+# part (case 215). At ef564aae the four failed so.
+for form in file-colon file-dot module-colon module-dot missing; do
+    case "$form" in
+    file-colon) symbol='2024-report.md:Title' ;;
+    file-dot) symbol='2024-report.md.Title' ;;
+    module-colon) symbol='2024_report:main' ;;
+    module-dot) symbol='2024_report.main' ;;
+    missing) symbol='2024-missing.md:Title' ;;
+    esac
+    dir="$(symbol_plant "symbol-digit-file-$form" notes "$symbol" notes/2024-report.md $'# Title\n' notes/2024_report.py $'def main():\n    return 1\n')" &&
+        ! git -C "$dir/repo" grep -qF 2024 HEAD -- notes || {
+        printf 'FAIL the symbol %s cited in notes could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    missing)
+        case_result "a symbol part 2024-missing.md:Title cited in notes, whose prefix names no file and no module, fails --citations, named as no line or line range the gate reads" \
+            "citation-our-code: f-our-1 cites 2024-missing\\.md:Title, which starts with a digit and is no line or line range this gate reads" "$out"
+        ;;
+    *) honest_result "a symbol part $symbol cited in notes, whose prefix names notes/2024-report.md or notes/2024_report.py, which holds its name, passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 214. A pattern that starts with a digit is read by the rules of 8, as any other pattern is
+# (review 6031558230, the class of case 212). At ef564aae such a part failed as no line before
+# 8 read it, so `2024-*`, a glob of names, failed in a file that holds 2024-11-23, a name it
+# covers, and so did `2023|2024`, an extended regular expression a line of that file matches.
+# The case commits docs/notes.md and writes the row f-our-1 as citing it with the symbol
+# '2024-*', then '2023|2024', over a file holding 2024-11-23, then '2024-*' over one whose only
+# such text is x2024-11, whose 2024 follows a letter, running --citations over each
+# (symbol_plant): the first two must pass citation-our-code; the last must fail it, naming the
+# part as no line or line range the gate reads. At ef564aae the first two failed so.
+for form in glob regex glob-other; do
+    case "$form" in
+    glob) symbol='2024-*' text=$'released on 2024-11-23\n' ;;
+    regex) symbol='2023|2024' text=$'released on 2024-11-23\n' ;;
+    glob-other) symbol='2024-*' text=$'build x2024-11\n' ;;
+    esac
+    dir="$(symbol_plant "symbol-digit-pattern-$form" docs/notes.md "$symbol" docs/notes.md "$text")" &&
+        [ "$(grep -c 2024 "$dir/repo/docs/notes.md")" = 1 ] || {
+        printf 'FAIL the pattern %s could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    glob-other)
+        case_result "a glob 2024-* cited in a file whose only such text is x2024-11 fails --citations, named as no line or line range the gate reads" \
+            "citation-our-code: f-our-1 cites 2024-\\*, which starts with a digit and is no line or line range this gate reads" "$out"
+        ;;
+    *) honest_result "a pattern $symbol cited in a file that holds 2024-11-23 passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 215. A namespace reading never holds a part that starts with a digit (the architect's ruling
+# on review 6031558230: such a part is read by every reading of its form that reads it as a
+# file or as text its file holds, and a namespace reading reads it as neither). The namespace
+# reading of a qualified name holds where its file holds the local part and each component of
+# its prefix as words (prefix_held), so read so, `3.14`, a version, would hold in a file that
+# holds 3 and 14 apart, and `12a:b` in one that holds 12a and b apart. The case commits
+# docs/notes.md and writes the row f-our-1 as citing it with the symbol '3.14' over a file
+# holding `version 3 lists 14 items`, then '12a:b' over one holding `row 12a of table b`, then
+# '3.14' over one holding `version 3.14`, running --citations over each (symbol_plant): the
+# first two must fail citation-our-code, naming the part as no line or line range the gate
+# reads; the last must pass it. ef564aae did the same, since it failed such a part before any
+# reading after its text, and the case holds that the new order keeps it.
+for form in version prefixed honest; do
+    case "$form" in
+    version) symbol='3.14' text=$'version 3 lists 14 items\n' detail='3\.14' ;;
+    prefixed) symbol='12a:b' text=$'row 12a of table b\n' detail='12a:b' ;;
+    honest) symbol='3.14' text=$'version 3.14\n' detail='' ;;
+    esac
+    dir="$(symbol_plant "symbol-digit-namespace-$form" docs/notes.md "$symbol" docs/notes.md "$text")" &&
+        case "$form" in
+        version) grep -qw 3 "$dir/repo/docs/notes.md" && grep -qw 14 "$dir/repo/docs/notes.md" && ! grep -qF 3.14 "$dir/repo/docs/notes.md" ;;
+        prefixed) grep -qw 12a "$dir/repo/docs/notes.md" && grep -qw b "$dir/repo/docs/notes.md" && ! grep -qF 12a:b "$dir/repo/docs/notes.md" ;;
+        honest) grep -qF 3.14 "$dir/repo/docs/notes.md" ;;
+        esac || {
+        printf 'FAIL the symbol %s could not be planted in the fixture row f-our-1 over a %s docs/notes.md\n' "$symbol" "$form"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    honest) honest_result "a symbol part 3.14 cited in a file that holds 3.14 passes citation-our-code" citation-our-code "$out" ;;
+    *)
+        case_result "a symbol part $symbol cited in a file that holds each component apart and not $symbol fails --citations, named as no line or line range the gate reads" \
+            "citation-our-code: f-our-1 cites $detail, which starts with a digit and is no line or line range this gate reads" "$out"
+        ;;
+    esac
+done
+
+# 216. A glob in a file field or in a symbol part names a path whose characters are the glob's,
+# its `*` any run within one path element (found while the class of review 6031558230 was
+# fixed: a reader that turns a cited path into a pattern quotes every character it does not
+# read). paths_at turned a glob into an extended regular expression with only `.` quoted, so
+# `+`, `?`, `(`, `[`, `{`, `|`, `^` and `$` acted as its own characters: at ef564aae
+# `src/c++/*`, read as src/, one c or more, then a path element, named src/cc/x.h and not
+# src/c++/x.h. The case commits src/c++/x.h, then, in another fixture, src/cc/x.h alone, each
+# declaring CPP_HEADER, and writes the row f-our-1 as citing the file field 'src/c++/*' with
+# no symbol, as live rows cite a file alone, then as citing
+# skills/legion-worker/references/pr-body.md with the symbol 'src/c++/*' (symbol_plant),
+# running --citations over each: over src/c++/x.h both must pass citation-our-code; over
+# src/cc/x.h both must fail it, the first naming the field as a path the repository does not
+# hold, the second naming the part. At ef564aae each form read the wrong path: the two over
+# src/c++/x.h failed and the two over src/cc/x.h passed.
+for form in field part field-other part-other; do
+    case "$form" in
+    field | field-other) cited='src/c++/*' symbol='' ;;
+    part | part-other) cited='skills/legion-worker/references/pr-body.md' symbol='src/c++/*' ;;
+    esac
+    case "$form" in
+    field | part) header='src/c++/x.h' ;;
+    *) header='src/cc/x.h' ;;
+    esac
+    dir="$(symbol_plant "symbol-path-glob-chars-$form" "$cited" "$symbol" "$header" $'#define CPP_HEADER 1\n')" &&
+        [ -f "$dir/repo/$header" ] && [ "$(find "$dir/repo/src" -name x.h | wc -l)" = 1 ] &&
+        ! grep -qF 'src/c++' "$dir/repo/skills/legion-worker/references/pr-body.md" || {
+        printf 'FAIL the citation of %s with the symbol %s over %s could not be planted in the fixture row f-our-1\n' "$cited" "$symbol" "$header"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    field-other)
+        case_result "a file field src/c++/* over a tree whose only header is src/cc/x.h fails --citations, naming the field" \
+            "citation-our-code: f-our-1 cites src/c\\+\\+/\\*, which this repository does not hold" "$out"
+        ;;
+    part-other)
+        case_result "a symbol part src/c++/* over a tree whose only header is src/cc/x.h fails --citations, naming the part" \
+            "citation-our-code: f-our-1 cites the symbol src/c\\+\\+/\\*, which skills/legion-worker/references/pr-body\\.md does not hold" "$out"
+        ;;
+    *) honest_result "a citation of src/c++/* as its $form over a tree holding src/c++/x.h passes citation-our-code" citation-our-code "$out" ;;
     esac
 done
 

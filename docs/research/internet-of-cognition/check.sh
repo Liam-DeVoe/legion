@@ -5870,7 +5870,9 @@ shape_order() {
 # The paths a citation names, at one commit. A citation writes a path, a directory, a
 # glob such as `*.py`, or several of those separated by a comma or by the word "and".
 # Each is read here, so a citation of a set of files resolves when the commit holds at
-# least one path of every part it names.
+# least one path of every part it names. A glob's `*` is any run of characters within one
+# path element, and every other character of a glob or a path stands for itself, as
+# paths_below reads one: `src/c++/*` names src/c++/x.h and never src/cc/x.h (case 216).
 paths_at() {
     local root="$1" commit="$2" spec="$3" part regex names
     names="$(git -C "$root" ls-tree -r --name-only "$commit" 2>/dev/null)"
@@ -5887,7 +5889,7 @@ paths_at() {
         esac
         case "$part" in
         *'*'*)
-            regex="$(printf '%s' "$part" | sed 's/[.]/\\./g; s/[*]/[^\/]*/g')"
+            regex="$(printf '%s' "$part" | sed 's/[^a-zA-Z0-9_/*-]/\\&/g; s/[*]/[^\/]*/g')"
             case "$part" in
             */*) printf '%s\n' "$names" | grep -qE "^$regex(/|$)" || return 1 ;;
             *) printf '%s\n' "$names" | grep -qE "(^|/)$regex(/|$)" || return 1 ;;
@@ -6382,7 +6384,8 @@ symbol_refused() {
 #        - `Namespace.Symbol`, any other prefix: the part holds when here holds the local part
 #          and each component of the prefix too, each a word of letters, digits, `_` and `-`
 #          (prefix_held), so `Engin.match` fails where `class Engine` and `def match` stand,
-#          naming Engin, and so does `Engine.matc` (cases 172, 174);
+#          naming Engin, and so does `Engine.matc` (cases 172, 174); a part that starts with a
+#          digit is never read so (below, case 215);
 #     else the part fails.
 #  6. A prefixed name, `prefix:local`, its prefix a name, a key path, a key path in square
 #     brackets or a path and its local part keys joined by dots, one or more, as
@@ -6401,8 +6404,10 @@ symbol_refused() {
 #     `protocols/accord`, `skills/`, `src/mas/library/*` (cases 198, 202). It is read in turn
 #     as a file beside the paths, which becomes here; as text here holds; as a file's name, as
 #     in 5c; and as a path, a directory or a glob the commit holds (paths_at), from the root or
-#     below a directory or a glob the citation names, a glob's `*` within one path element, and
-#     never as a pattern over text; else the part fails.
+#     below a directory or a glob the citation names, a glob's `*` any run of characters
+#     within one path element and every other character itself, as paths_at reads a file
+#     field too, so `src/c++/*` names src/c++/x.h and never src/cc/x.h (case 216), and never
+#     as a pattern over text; else the part fails.
 #  8. A pattern: a table head, a part in neither 1 nor 2 that begins with `[` and ends with
 #     `]`, and any other part holding `|`, `*`, `?` or `\`. Its text alone decides how it is
 #     read, by three rules:
@@ -6443,13 +6448,24 @@ symbol_refused() {
 # "<id> cites the symbol part '<part>', which is not a symbol form the gate reads", and is
 # never read as text or as a form it might have meant (case 200). A part that starts with a
 # digit and is no line, as `3–9` written with a dash or `12a`, is never read as the line its
-# first digits name: in no form, or in 3 to 8 once it is neither a file nor text here holds,
-# it fails by name as no line or line range this gate reads (case 167). A citation whose file
-# field names no path, each part of it written in words, as "15 pyproject.toml files under
-# backend/", holds its symbol to no file: each part in a form is not checked. A part not
-# checked, there or in 2, is written to $RUN_SCRATCH/unchecked-parts, which --citations
-# prints, one line per part with its row, so that a part nothing read is never counted as
-# checked.
+# first digits name. In no form, it fails by name as no line or line range this gate reads
+# (case 167). In 3 to 8, every reading of its form that reads it as a file or as text here
+# holds reads it: 5a, 5b and 5c; `file:Symbol` and `module:attr` in 6; the readings of 7; the
+# three rules of 8; and `file.ext.Symbol` and `module.symbol` in 5d. So, cited in notes,
+# `2024-report.md` holds where notes/deep/r/2024-report.md stands, and `2024/` where
+# notes/2024/ does (case 212); `2024-report.md:Title`, `2024-report.md.Title`,
+# `2024_report:main` and `2024_report.main` hold where notes/2024-report.md holds Title and
+# notes/2024_report.py declares main (case 213); and `2024-*` holds where a file holds
+# 2024-11-23, and `2023|2024` where a line of it matches (case 214). A namespace reading,
+# `Namespace:Symbol` in 6 and `Namespace.Symbol` in 5d, reads the part neither as a file nor
+# as text, only each component of its prefix as a word, so it never holds such a part. Where
+# no other reading holds it, the part fails by name as no line or line range this gate
+# reads: `3.14` fails so in a file that holds 3 and 14 as words and not 3.14, and holds in
+# one that holds 3.14 (case 215). A citation whose file field names no path, each part of it
+# written in words, as "15 pyproject.toml files under backend/", holds its symbol to no file:
+# each part in a form is not checked. A part not checked, there or in 2, is written to
+# $RUN_SCRATCH/unchecked-parts, which --citations prints, one line per part with its row, so
+# that a part nothing read is never counted as checked.
 
 # resolve_symbol <id> <repo root> <commit> <pathspec> <symbol> [<family>]; reads each part of
 # a citation's symbol by the symbol grammar above and fails <family>, citation-our-code unless
@@ -6488,7 +6504,7 @@ resolve_symbol() {
     fi
     # here: the file each part is read against, the paths the citation names until a part
     # names a file of its own; here_name: how a failure names it.
-    local here=("${pathspec[@]}") here_name="$file" named path lines most most_path held part_line part_end reference run rest
+    local here=("${pathspec[@]}") here_name="$file" named path lines most most_path held part_line part_end reference run rest digit
     while IFS= read -r part; do
         part="$(printf '%s' "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
         [ -n "$part" ] || continue
@@ -6539,6 +6555,13 @@ resolve_symbol() {
             fail "$family" "$id cites the symbol $part, which $here_name does not hold as a table head, a line that is that head, at $commit"
             return 1
         fi
+        # digit: a part of 3 to 8 that starts with a digit, as "12a" or "2024-report.md". Each
+        # reading of its form below that reads it as a file or as text here holds reads it; a
+        # namespace reading (prefix_held) reads neither, so it never holds such a part; and
+        # where no reading holds it, it fails, naming the row and the part, as no line this
+        # gate reads, rather than being read as the line its first digits name.
+        digit=""
+        case "$part" in [0-9]*) [ "$form" = words ] || digit=1 ;; esac
         # 5a, 7: a file's name or a path that is a file beside the paths the citation names
         # is that file, which becomes here for this part and the parts after it.
         case "$form" in
@@ -6554,17 +6577,6 @@ resolve_symbol() {
         if token_held "$root" "$commit" "$part" "${here[@]}"; then
             continue
         fi
-        # A part of 3 to 8 that starts with a digit, as "12a", and is neither a file nor text
-        # here holds is no line this gate reads, and fails, naming the row and the part,
-        # rather than being read as the line its first digits name.
-        if [ "$form" != words ]; then
-            case "$part" in
-            [0-9]*)
-                fail "$family" "$id cites $part, which starts with a digit and is no line or line range this gate reads, nor text $here_name holds at $commit: a line is digits and a line range two lines joined by a hyphen, as 1 or 1-3"
-                return 1
-                ;;
-            esac
-        fi
         # 5c, 7: a file's name that a path at or below the paths the citation names ends with
         # after a slash, and no path elsewhere in the tree.
         case "$form" in
@@ -6578,7 +6590,8 @@ resolve_symbol() {
             ;;
         esac
         # 6, and 2 where it holds a colon: a prefixed name, read as `file:Symbol`, as
-        # `module:attr` and as `Namespace:Symbol`, in that order.
+        # `module:attr` and as `Namespace:Symbol`, in that order, the last never for a part
+        # that starts with a digit (digit).
         case "$form" in
         prefixed | words)
             case "$part" in
@@ -6596,7 +6609,7 @@ resolve_symbol() {
                     module_held "$family" "$id" "$part" "$run" "$path" "${rest:+$rest.}${part##*:}" "$root" "$commit" || return 1
                     continue
                 fi
-                if token_held "$root" "$commit" "${part##*:}" "${here[@]}"; then
+                if [ -z "$digit" ] && token_held "$root" "$commit" "${part##*:}" "${here[@]}"; then
                     prefix_held "$family" "$id" "$part" : "$here_name" "$root" "$commit" "${here[@]}" || return 1
                     continue
                 fi
@@ -6649,7 +6662,8 @@ resolve_symbol() {
             continue
         fi
         # 5d: a key path holding a dot, a qualified name, read as `file.ext.Symbol`, as
-        # `module.symbol` and as `Namespace.Symbol`, in that order.
+        # `module.symbol` and as `Namespace.Symbol`, in that order, the last never for a part
+        # that starts with a digit (digit).
         case "$form" in
         key)
             case "$part" in
@@ -6666,7 +6680,7 @@ resolve_symbol() {
                     module_held "$family" "$id" "$part" "$run" "$path" "${part#"$run".}" "$root" "$commit" || return 1
                     continue
                 fi
-                if token_held "$root" "$commit" "${part##*.}" "${here[@]}"; then
+                if [ -z "$digit" ] && token_held "$root" "$commit" "${part##*.}" "${here[@]}"; then
                     prefix_held "$family" "$id" "$part" . "$here_name" "$root" "$commit" "${here[@]}" || return 1
                     continue
                 fi
@@ -6674,7 +6688,13 @@ resolve_symbol() {
             esac
             ;;
         esac
-        fail "$family" "$id cites the symbol $part, which $here_name does not hold at $commit"
+        # No reading of the part's form holds it: a part that starts with a digit fails as no
+        # line this gate reads (digit), and any other as a part here does not hold.
+        if [ -n "$digit" ]; then
+            fail "$family" "$id cites $part, which starts with a digit and is no line or line range this gate reads, nor text $here_name holds at $commit: a line is digits and a line range two lines joined by a hyphen, as 1 or 1-3"
+        else
+            fail "$family" "$id cites the symbol $part, which $here_name does not hold at $commit"
+        fi
         return 1
     done < <(printf '%s\n' "$symbol" | sed 's/ and /\n/g; s/,/\n/g')
     return 0
