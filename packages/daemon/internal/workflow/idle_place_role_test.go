@@ -15,20 +15,23 @@ import (
 // issue with no plan rows) keeps the role of its phase. The control is the rule of the step's role
 // and the phase alone, which arms the implementer's claim at both places and never the coder's.
 func TestAPhaseReminderIsArmedForTheClaimThatWorksThePlace(t *testing.T) {
-	retro := pods.IdleView{Phase: phase.Retro, PlaceRole: "coder", Generation: 3}
-	owners := pods.IdleView{Phase: phase.Implementing, PlaceRole: claim.RoleArchitect, Generation: 3}
-	bare := pods.IdleView{Phase: phase.Implementing, Generation: 3}
+	retro := pods.IdleView{Issue: "LEGION-208", Project: "legion", Phase: phase.Retro, PlaceRole: "coder", Generation: 3}
+	owners := pods.IdleView{Issue: "LEGION-208", Project: "legion", Phase: phase.Implementing, PlaceRole: claim.RoleArchitect, Generation: 3}
+	bare := pods.IdleView{Issue: "LEGION-208", Project: "legion", Phase: phase.Implementing, Generation: 3}
+	// Each claim is its role's own token, the claim a role whose row names none works its place in
+	// (record.WorkerClaim, which idlePhaseOpen reads too).
+	const coder, implementer claim.Token = "legion-legion-legion-208-coder", "legion-legion-legion-208-implementer"
 	for _, tc := range []struct {
 		name  string
 		view  pods.IdleView
 		claim pods.IdleClaim
 		want  bool
 	}{
-		{"the coder at its retro", retro, pods.IdleClaim{Role: "coder", ServingGeneration: 3}, true},
-		{"the coder at its retro, serving another generation", retro, pods.IdleClaim{Role: "coder", ServingGeneration: 2}, false},
-		{"the implementer at the coder's retro", retro, pods.IdleClaim{Role: claim.RoleImplementer, ServingGeneration: 3}, false},
-		{"the implementer at the owner's step", owners, pods.IdleClaim{Role: claim.RoleImplementer, ServingGeneration: 3}, false},
-		{"the implementer of an issue with no plan rows", bare, pods.IdleClaim{Role: claim.RoleImplementer, ServingGeneration: 3}, true},
+		{"the coder at its retro", retro, pods.IdleClaim{Token: coder, Role: "coder", ServingGeneration: 3}, true},
+		{"the coder at its retro, serving another generation", retro, pods.IdleClaim{Token: coder, Role: "coder", ServingGeneration: 2}, false},
+		{"the implementer at the coder's retro", retro, pods.IdleClaim{Token: implementer, Role: claim.RoleImplementer, ServingGeneration: 3}, false},
+		{"the implementer at the owner's step", owners, pods.IdleClaim{Token: implementer, Role: claim.RoleImplementer, ServingGeneration: 3}, false},
+		{"the implementer of an issue with no plan rows", bare, pods.IdleClaim{Token: implementer, Role: claim.RoleImplementer, ServingGeneration: 3}, true},
 	} {
 		if got := idlePhaseOpen(tc.view, tc.claim); got != tc.want {
 			t.Errorf("%s: idlePhaseOpen = %v, want %v", tc.name, got, tc.want)

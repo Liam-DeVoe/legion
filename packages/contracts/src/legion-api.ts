@@ -760,13 +760,13 @@ const legionIssue = z.object({
    * from every issue of the body the route serves a caller before 221, which is served an issue at
    * `step` as `implementing`. */
   stepRole: stepRole.optional(),
-  /** The role of the claim that works the place where the issue's task stands (contract 238),
+  /** The role of the claim that works the place where the issue's task stands (contract 227),
    * read from its plan rows: `architect` at a step or a retro the owner does, `acceptance` for
    * the fresh agent of a step `acceptance` with no key, the role of the retro's agent at the
    * retro, and the step's own role at any other step; kept while a hold stands. It names who works
    * an issue where the phase names another role: at `accepting` the phase names the architect
    * whoever accepts. Absent on an issue with no plan rows, at the merge, before the first step,
-   * and from every issue of the body the route serves a caller before 238. */
+   * and from every issue of the body the route serves a caller before 227. */
   placeRole: stepRole.optional(),
   status: nonEmptyString.optional(),
   /** The key of the root of the issue's tree, equal to `key` on a root (contract 51). A child
@@ -2181,7 +2181,7 @@ export const LegionEscalateRequest = z.strictObject({
  * contract 51 it is also refused while an issue beneath that one is still in the workflow
  * (`SIGNOFF_CHILD_IN_WORKFLOW`, naming them): each child is done, merged where it has a pull
  * request, before its parent, whose own head proves their merged work (dispatch://INFRA-980). From
- * contract 238 it is refused too where the acceptance the issue's task stands at is not its owner's
+ * contract 227 it is refused too where the acceptance the issue's task stands at is not its owner's
  * own step: a step `acceptance` with no key, whose fresh agent ends it with its own verdict, or
  * with another key, whose agent does (`SIGNOFF_NOT_THE_OWNERS`). */
 export const LegionSignOffRequest = z.strictObject({
@@ -2189,7 +2189,7 @@ export const LegionSignOffRequest = z.strictObject({
   issue: nonEmptyString,
 });
 
-/** `api.CompleteStepRequest`, the owner's report of a step of its own (contract 238): a step of
+/** `api.CompleteStepRequest`, the owner's report of a step of its own (contract 227): a step of
  * the issue's running task whose key is owner, or that task's retro where the retro is the
  * owner's. Only the issue's own architect sends it (`NOT_THE_OWNER` for any other grant), and only
  * for the step that runs now with the owner as its agent (`OWNER_STEP_NOT_RUNNING`, naming where

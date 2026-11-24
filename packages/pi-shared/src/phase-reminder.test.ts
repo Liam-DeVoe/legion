@@ -602,7 +602,7 @@ async function remindedAt(role: string, record: LegionIssue): Promise<boolean> {
   return reminded;
 }
 
-// Contract 238: the issue's `placeRole` names the claim that works its place, which neither the
+// Contract 227: the issue's `placeRole` names the claim that works its place, which neither the
 // phase nor `stepRole` names where a fresh agent of acceptance accepts, a role of the deployment
 // does the retro, or the owner does a step of a role. The record check reminds that claim alone.
 test("the fresh agent of acceptance is reminded at accepting, where placeRole names it", async () => {
@@ -627,7 +627,7 @@ test("a claim of the step's role is not reminded at a step placeRole gives the o
   expect(await remindedAt("checker", ownerStep)).toBe(false);
 });
 
-// A daemon below contract 238 serves no `placeRole`: the record check reads the phase, and
+// A daemon below contract 227 serves no `placeRole`: the record check reads the phase, and
 // `stepRole` at `step`, as it did before that contract.
 test("an issue with no placeRole is read by its phase, and by its stepRole at step", async () => {
   expect(await remindedAt("acceptance", issueAt({ phase: "accepting" }))).toBe(false);
@@ -635,7 +635,6 @@ test("an issue with no placeRole is read by its phase, and by its stepRole at st
   expect(await remindedAt("coder", issueAt({ phase: "retro" }))).toBe(false);
   expect(await remindedAt("checker", issueAt({ phase: "step", stepRole: "checker" }))).toBe(true);
 });
-
 
 // Contract 222: two claims of one issue can hold one role — the agent implementer's claim on the
 // tester's step, beside the tester's own claim of an earlier version of the plan — and only the

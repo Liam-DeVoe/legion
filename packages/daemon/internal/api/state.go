@@ -715,7 +715,7 @@ type Issue struct {
 	// with the place while a hold stands. It says who works an issue where the phase alone names
 	// the wrong role: at accepting the phase names the architect whoever accepts. Absent on an
 	// issue with no plan rows, whose phase names its role, at the merge, before the first step,
-	// and from every issue of the body served a caller below 238 (shaping.go's withoutPlaceRole).
+	// and from every issue of the body served a caller below 227 (shaping.go's withoutPlaceRole).
 	PlaceRole string `json:"placeRole,omitempty"`
 	// StartWaitsForPod are the roles of the starts that wait because the issue's live pod lacks
 	// the slot of the start's claim or the role of its step, the pod having been built before the

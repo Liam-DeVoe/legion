@@ -655,7 +655,7 @@ test("request_backward_move sends return_to as returnTo", async () => {
   );
 });
 
-// Contract 221: the daemon takes a verdict from a role of the deployment too, and contract 238
+// Contract 221: the daemon takes a verdict from a role of the deployment too, and contract 227
 // from a role of the plan, the fresh agent of acceptance and a reviewer of an issue with no pull
 // request; the one description every role reads says so.
 test("the description gives a verdict to the tester, a role of the deployment or of the plan, the fresh agent of acceptance and a reviewer with no pull request", () => {

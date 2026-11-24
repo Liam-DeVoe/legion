@@ -826,16 +826,19 @@ pass
 # HANDOFF_NO_PULL_REQUEST otherwise (implementer_pull_request, lib/workflow.sh).
 begin claude-implementer-handoff
 marker="claude-proof-marker-$ptoken-$RANDOM$RANDOM"
-send_agent "$issue" implementer "Claude backend proof implementation operation ($marker): make the smallest one-file change this issue's spec describes in your $repo workspace, commit it on legion/$issue, push the branch to origin, open its pull request on $repo, write the required implementation handoff with dispatch handoff-write, then call the legion tool's handoff_complete with a concise summary. Do not merge."
+send_agent "$issue" implementer "Claude backend proof implementation operation ($marker): make the smallest one-file change this issue's spec describes in your $repo workspace, commit it on legion/$issue, push the branch to origin, write the required implementation handoff with dispatch handoff-write, open a pull request from legion/$issue to the repository's default branch, then call the legion tool's handoff_complete with a concise summary. Do not merge."
 until_true 900 "the daemon to record the implementer's handoff_complete" handoff_recorded
 commit=$(role_handoff "$issue" implementer implementing)
 assert_handoff_record "$issue" implementer implementing 0
 files=$(smoke_commit_files "$commit") || exit 1
 ! grep -q '^\.legion/' <<<"$files" || fail "the implementer's commit $commit changes files under .legion/, where no handoff goes now: $(tr '\n' ' ' <<<"$files")"
+open_prs=$(gh -R "$repo" pr list --state open --head "legion/$issue" --json number --jq length) ||
+  fail "could not list the open pull requests on $repo branch legion/$issue"
+[ "$open_prs" = 1 ] || fail "$repo has $open_prs open pull requests on legion/$issue at the implementer's completion, want exactly 1"
 pr_number=$(implementer_pull_request "$issue") || exit 1
 legion_handoff_in || fail "the transcript $transcript holds no successful legion handoff_complete call"
 until_true 300 "the implementer's turn to end" issue_worker_state "$issue" implementer idle
-note "handoff_complete through mcp__legion__legion named the implementer's Dispatch handoff record, written under its Claude Code session $session, and its pushed commit $commit on $repo, which changes nothing under .legion/, with its pull request #$pr_number open on legion/$issue"
+note "handoff_complete through mcp__legion__legion named the implementer's Dispatch handoff record, written under its Claude Code session $session, and its pushed commit $commit on $repo, which changes nothing under .legion/, with its pull request #$pr_number the one open on legion/$issue"
 pass
 
 # Background work on the Claude Code backend. The runtime sets no

@@ -9,7 +9,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
-// planSteps is the plan rows of task a for steps, a plan's steps, each with the type at its place.
+// planSteps is the plan rows of task a for steps, a plan's steps, each with the type at its place,
+// and each step's agent named as the daemon names it when it stores a plan (NameAgents), since a
+// stored step's name is read from that column alone.
 func planSteps(t *testing.T, steps string, types ...plan.Type) []PlanStep {
 	t.Helper()
 	parsed, err := plan.ParseSteps(steps)
@@ -23,7 +25,7 @@ func planSteps(t *testing.T, steps string, types ...plan.Type) []PlanStep {
 	for i, step := range parsed {
 		rows[i] = PlanStep{Task: "a", Position: i + 1, Role: step.Role, AgentKey: step.Key, Type: types[i]}
 	}
-	return rows
+	return NameAgents(nil, nil, rows)
 }
 
 // The one rule of who works a place of a task. At a step it is the step's own role and agent. The
@@ -56,7 +58,7 @@ func TestOneRuleNamesWhoWorksEachPlaceOfATask(t *testing.T) {
 		{"the retro of the implementer", planSteps(t, "implementer tester", plan.TypeImplementation, plan.TypeTesting), retro,
 			true, "implementer", plan.Agent{Task: "a", Place: 1}, 1, "implementer", "implementer"},
 		{"the retro of the last implementation step", planSteps(t, "implementer:x reviewer implementer:y", plan.TypeImplementation, plan.TypeReview, plan.TypeImplementation), retro,
-			true, "implementer", plan.Agent{Key: "y"}, 3, "implementer", "implementer"},
+			true, "implementer", plan.Agent{Key: "y"}, 3, "implementer", "implementer-2"},
 		{"the retro of a task with no implementation step", planSteps(t, "tester", plan.TypeTesting), retro,
 			true, "implementer", owner, 0, claim.RoleArchitect, ""},
 		{"the retro of an implementer of the key owner", planSteps(t, "implementer:owner reviewer", plan.TypeImplementation, plan.TypeReview), retro,

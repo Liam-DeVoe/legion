@@ -1456,7 +1456,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/children/park",
     "fieldPaths": [
       "grantId",
@@ -1464,7 +1464,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/children/rerun",
     "fieldPaths": [
       "grantId",
@@ -1472,7 +1472,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/claims/activity",
     "fieldPaths": [
       "activity",
@@ -1489,7 +1489,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/claims/compact",
     "fieldPaths": [
       "claim",
@@ -1499,7 +1499,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/claims/exit",
     "fieldPaths": [
       "claimToken",
@@ -1510,7 +1510,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/claims/fresh-session",
     "fieldPaths": [
       "claim",
@@ -1520,7 +1520,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/claims/ready",
     "fieldPaths": [
       "capabilities",
@@ -1538,7 +1538,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/claims/ready-for-update",
     "fieldPaths": [
       "claimToken",
@@ -1550,7 +1550,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/claims/register",
     "fieldPaths": [
       "agentId",
@@ -1561,7 +1561,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/claims/release-records",
     "fieldPaths": [
       "claimToken",
@@ -1570,7 +1570,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/claims/turn-outcome",
     "fieldPaths": [
       "bootToken",
@@ -1584,7 +1584,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/gates/register",
     "fieldPaths": [
       "artifactId",
@@ -1595,7 +1595,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/grants",
     "fieldPaths": [
       "issue",
@@ -1605,7 +1605,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/handoff/complete",
     "fieldPaths": [
       "commit",
@@ -1621,7 +1621,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/issues/status",
     "fieldPaths": [
       "grantId",
@@ -1630,7 +1630,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/phase/backward",
     "fieldPaths": [
       "grantId",
@@ -1641,7 +1641,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/phase/retry",
     "fieldPaths": [
       "decision",
@@ -1651,7 +1651,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/plans/register",
     "fieldPaths": [
       "artifactId",
@@ -1661,7 +1661,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/project/pause",
     "fieldPaths": [
       "grantId",
@@ -1669,14 +1669,14 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/project/resume",
     "fieldPaths": [
       "grantId"
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/roots/close",
     "fieldPaths": [
       "grantId",
@@ -1685,7 +1685,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/signoff",
     "fieldPaths": [
       "grantId",
@@ -1693,7 +1693,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/steps/complete",
     "fieldPaths": [
       "commit",
@@ -1710,7 +1710,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/tasks/stop",
     "fieldPaths": [
       "grantId",
@@ -1719,7 +1719,7 @@
     ]
   },
   {
-    "contract": 238,
+    "contract": 227,
     "route": "POST /legion/v1/waves/release",
     "fieldPaths": [
       "grantId",

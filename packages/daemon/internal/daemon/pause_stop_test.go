@@ -466,13 +466,16 @@ func TestACancelWhilePausedArmsTheBackstopOfTheRoleThatWorksThePlace(t *testing.
 	for _, tc := range pauseStopPlaces {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newPauseRig(t)
-			if err := r.st.PutClaim(r.ctx, r.releasedAt(tc.role, tc.serving)); err != nil {
+			released := r.releasedAt(tc.role, tc.serving)
+			if err := r.st.PutClaim(r.ctx, released); err != nil {
 				t.Fatalf("seed the released %s: %v", tc.role, err)
 			}
 			seedPauseRigPlan(t, r, tc.steps, tc.types, tc.at, tc.stands)
+			// The release's mark names the claims it suspended by their tokens, as its stops record
+			// them on the base (store.ReleaseSuspendedClaim).
 			if _, err := r.pool.Exec(r.ctx, `insert into issue_releases
 				(project, issue, generation, first_row, boundary_row, last_row, started_row, role, suspended, marked_at)
-				values ('legion', $1, 1, 18, 20, 22, 0, 'architect', $2, now())`, pauseIssue, []string{string(tc.role)}); err != nil {
+				values ('legion', $1, 1, 18, 20, 22, 0, 'architect', $2, now())`, pauseIssue, []string{string(released.Token)}); err != nil {
 				t.Fatalf("mark the release of %s: %v", pauseIssue, err)
 			}
 			held := r.pauseLegion()

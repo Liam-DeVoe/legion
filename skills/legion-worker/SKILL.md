@@ -66,7 +66,6 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 - No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/results.md`).
 
 - A released pod is not a stop.
-  Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives.
 
 - When another role's topic answers 404, read that step's report as item 1 says.
 
