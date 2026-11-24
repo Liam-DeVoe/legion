@@ -1,4 +1,4 @@
--- 20261124090000_graph_supertags_decision_reading_creatable.up.sql
+-- 20261124005758_graph_supertags_decision_reading_creatable.up.sql
 --
 -- The block schema moves from version 6 to version 7, which makes `decision` and `reading`, every
 -- attribute of `decision`, and `ask`'s `shaped` creatable. 20261123174700 gave each of them
