@@ -33,7 +33,7 @@ group that this job's own result decides, it posts the failing ci-ok at once
 ## The job's budget, and the bound every install step carries
 
 The budget, added up from the slowest run this job can have, the way the
-tool-fallback-arm leg adds up its own:
+tool-fallback-arm job adds up its own:
 the job's set-up, the two checkouts and the runner's download of the actions (1), the two
 steps that read the package and the manifest, and `stage`, which fetches about 320 MB over
 the real sources while the network is whole and so keeps the pinned ladder (2), the

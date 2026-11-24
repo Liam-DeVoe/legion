@@ -1,17 +1,19 @@
 name: envoy-go, one leg's share
 description: >-
   The steps of the envoy-go legs of ci.yaml's go-envoy-held job, which runs the old envoy-go job's
-  tests in legs: the unit step over every package of packages/envoy that no other job runs, split
-  between the legs at run time by .github/scripts/go-test-split.sh, so each test, one added later
-  included, runs in exactly one leg; the corpus tests of internal/dispatch/pmdoc in every leg, each
-  on the leg's shard of the repository's markdown; in the leg the `rest` input marks, the steps no
-  leg splits: the backend count, the skip counter's own test, the moto run, the natslive matrix,
-  the integration tests and the callout check; and in the last leg (`part` equal to `legs`), the
-  two unsplit steps the `rest` leg has no room for: what the race build cannot run at all or at
-  full size, and the pmdoc differential. ci.yaml's go-envoy-held job runs the database broker suites'
-  skip count after these steps, in each leg, and the statement timings in the `rest` leg, as steps
-  of its own with their own timeout-minutes; its envoy-go job carries the old check-run name
-  `envoy-go / envoy-go` and passes only when every leg passed (.github/scripts/leg-verdict.sh).
+  tests in legs: the list of the packages of packages/envoy that no other job runs, which ci.yaml's
+  unit step after these steps splits between the legs at run time by
+  .github/scripts/go-test-split.sh, so each test, one added later included, runs in exactly one
+  leg; the corpus tests of internal/dispatch/pmdoc in every leg, each on the leg's shard of the
+  repository's markdown; in the leg the `rest` input marks, the steps no leg splits: the backend
+  count, the skip counter's own test, the moto run, the natslive matrix, the integration tests and
+  the callout check; and in the last leg (`part` equal to `legs`), the two unsplit steps the `rest`
+  leg has no room for: what the race build cannot run at all or at full size, and the pmdoc
+  differential. ci.yaml's go-envoy-held job runs the unit step, one go test through the database
+  skip counter (packages/envoy/scripts/database-skips.sh), after these steps, in each leg, and the
+  statement timings in the `rest` leg, as steps of its own with their own timeout-minutes; its
+  envoy-go job carries the old check-run name `envoy-go / envoy-go` and passes only when every leg
+  passed (.github/scripts/leg-verdict.sh).
 
   The job gives every step DISPATCH_TEST_DATABASE_URL, BROKER_TEST_DATABASE_URL and
   LEGION_TEST_PG_DSN, its Postgres, and TESTCONTAINERS_RYUK_DISABLED: the runner VM is discarded
@@ -56,9 +58,9 @@ runs:
           ~/.cache/go-build
         key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
         restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
-    # gotestsum, which every go test step below, the backend count and the database-skips step
-    # after this action run their tests under, through .github/scripts/go-test.sh, on PATH for
-    # every later step.
+    # gotestsum, which every go test step below, the backend count and ci.yaml's unit step after
+    # this action run their tests under, through .github/scripts/go-test.sh, on PATH for every
+    # later step.
     - uses: ./.github/actions/install-gotestsum
     - name: Size the service for this lane's Dispatch processes
       shell: bash
@@ -148,37 +150,27 @@ runs:
         written=$(find "$corpus" -type f -name '*.md' | wc -l)
         echo "$written documents in $corpus, of the $tracked tracked *.md files"
         [ "$written" -eq "$tracked" ] || { echo "::error::two tracked *.md paths flatten to one name"; exit 1; }
-    # Everything the three race lanes run is left out here, since they run it under the detector,
-    # and so is internal/integration, which the integration step below tests, and
-    # internal/textcheck, whose tests are the text-check job's. So are
-    # internal/dispatch/architecture/notes, internal/runnerlog, internal/dispatch/specgraph,
-    # cmd/architecture-check and cmd/spec-check, which envoy-go-checks tests on every push
-    # (NOTE_AND_SPEC_PACKAGES), and listenerwire and internal/wirecheck, which envoy-go-checks tests
-    # in their place (LISTENERWIRE_PACKAGES). The pattern names the packages those jobs' own steps
-    # name. The broker's packages,
-    # internal/cipher and everything under it, and its command, cmd/cipherd, are left out too: the
-    # database-skips step after this action runs them and fails on a failed test as on a skipped
-    # one. The two tests of the web app's display-tree
-    # fixture are skipped: without `--check` TestWebDisplayFixture writes the committed fixture
-    # rather than checking it, and TestTheWebFixtureFindsItsFilesFromAnyDirectory stats that same
-    # file; envoy-go-checks runs both, the first with the check. So is internal/dispatch/refs'
-    # TestStatementTimings, which the statement-timing step runs (STATEMENT_TIMING_TESTS), so are
-    # the backend count's four tests of cmd/cipher, which the count step below runs in this same
-    # job and env (BACKEND_COUNT_TESTS), and so are pmdoc's six corpus tests, which the corpus step
-    # below runs in every leg. go-test-split.sh lists the packages' tests and keeps this leg's
-    # share. -timeout 12m is the smallest whole minute at which the slowest package, cmd/cipher at
-    # 345 s in run 45197837366, takes at most half of it.
-    - name: Unit test envoy Go package
+    # The packages ci.yaml's unit step runs after this action, its leg's share of their tests, in
+    # one go test through database-skips.sh (main's #5084): the module less what other jobs run.
+    # Everything the three race lanes run is left out, since they run it under the detector, and so
+    # is internal/integration, which the integration step below tests, and internal/textcheck,
+    # whose tests are the text-check job's. So are internal/dispatch/architecture/notes,
+    # internal/runnerlog, internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check,
+    # which envoy-go-checks tests on every push (NOTE_AND_SPEC_PACKAGES), and listenerwire and
+    # internal/wirecheck, which envoy-go-checks tests in their place (LISTENERWIRE_PACKAGES). The
+    # pattern is the unit step's --module-except, word for word, so the split go-test-split.sh
+    # makes of these packages' tests is the split of exactly the packages the unit step runs: the
+    # broker's packages, internal/cipher and everything under it but natscallout and cmd/cipherd,
+    # which database-skips.sh counts, are among them. The list goes into UNIT_PACKAGES, which the
+    # unit step hands go-test-split.sh, rather than into a `$(go list …)` inside the unit step's
+    # one line, which shellcheck refuses unquoted (SC2046) and which must stay unquoted to be
+    # read as packages.
+    - name: List the packages the unit step runs
       shell: bash
       working-directory: packages/envoy
       run: |
-        pkgs=$(go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/cipher($|/)|/cmd/cipherd$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$')
-        run=$(../../.github/scripts/go-test-split.sh "${{ inputs.part }}" "${{ inputs.legs }}" $pkgs)
-        ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-${{ inputs.part }}-unit.json" --packages "$pkgs" -- -count=1 -timeout 12m -run "$run" -skip '^(TestEverySecretFormNamesTheSourceItUses|TestFindMarksMatchesFindMarkOnAnchorCorpus|TestIncrementalRenderCorpus|TestNoSecretFormAsksTheBrokerForACredential|TestReanchorReuseMatchesPerCallOnAnchorCorpus|TestStatementTimings|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestValidDocumentRenderWithLayoutIsTheValidatingRender|TestWalkMatchesTheReferenceWalkOnACorpus|TestWebDisplayFixture|TestYTextRangesMatchesFrozenOnAnchorCorpus)$'
-    - if: always()
-      uses: ./.github/actions/go-test-upload
-      with:
-        name: go-envoy-held-envoy-go-${{ inputs.part }}-unit
+        pkgs=$(go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$')
+        echo "UNIT_PACKAGES=$(tr '\n' ' ' <<<"$pkgs")" >> "$GITHUB_ENV"
     # pmdoc's six corpus tests run in every leg, each on the leg's shard of the corpus
     # (CORPUS_SHARD=<part>/<legs>: corpustest keeps the documents whose hash of the name falls in
     # it), so the split keeps no corpus test to one leg and the legs between them read each
@@ -207,7 +199,7 @@ runs:
     # only those two packages (-run, under backend-count.sh's own 5-minute -timeout) and counts the
     # passes of each, so a test whose AWS half was skipped or removed, or that lives in neither
     # package, reads aws=0 and fails, as the verification's check c8 requires. It is their one run:
-    # the unit step and the database-skips step skip them by name. Its jsonfile is
+    # ci.yaml's unit step skips them by name. Its jsonfile is
     # go-envoy-held-backend-count.json, after the job's id.
     - name: Count the store-form rows on each backend
       if: inputs.rest == 'true'
@@ -217,16 +209,18 @@ runs:
       uses: ./.github/actions/go-test-upload
       with:
         name: go-envoy-held-backend-count
-    # The database-skips step after this action is the one skip counter of the module's
-    # database-backed packages, which envoy-go-race-api runs the Dispatch API through too, so its
-    # own test runs first: packages/envoy/scripts/database-skips.test.sh plants a skipped test in
-    # ./internal/cipher/api/, ./cmd/cipherd/ and ./internal/dispatch/api/ through a Go overlay and
-    # holds the counter to count it; holds it to database_skips=UNKNOWN with a variable unset and
-    # on a report that shows no run; holds it to failing on a failed test; holds its --timeout to
-    # ending a test binary; and holds a copy of it with one line of its expected-skip table
-    # deleted, in a temporary checkout of this commit, to counting that test's skip. Each control
-    # stands beside a run the counter passes, and each run is narrowed with -run to the tests it is
-    # about. It keeps the 15-minute bound it had as a step of its own, around its one command.
+    # ci.yaml's unit step after this action runs the module through the one skip counter of its
+    # database-backed packages, which envoy-go-race-api runs the Dispatch API through too, so the
+    # counter's own test runs first: packages/envoy/scripts/database-skips.test.sh plants a skipped
+    # test in ./internal/cipher/api/, ./cmd/cipherd/ and ./internal/dispatch/api/ through a Go
+    # overlay and holds the counter to count it; holds it to database_skips=UNKNOWN with a variable
+    # unset and on a report that shows no run; holds it to failing on a failed test; holds its
+    # --timeout to ending a test binary; holds a copy of it with one line of its expected-skip
+    # table deleted, in a temporary checkout of this commit, to counting that test's skip; and holds
+    # its --module-except to counting no skip of the packages it adds and failing on their
+    # failures. Each control stands beside a run the counter passes, and each run is narrowed with
+    # -run to the tests it is about. It keeps the 15-minute bound it had as a step of its own,
+    # around its one command.
     - name: Test the database skip counter
       if: inputs.rest == 'true'
       shell: bash

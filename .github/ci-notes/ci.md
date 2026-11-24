@@ -77,7 +77,7 @@ as every output's workflow_dispatch case is, and so is one an event must hold ba
 suites' pull-request case is
 (.github/ci-notes/ci.md#the-go-envoy-held-job-and-its-legs).
 .github/scripts/check-ci-layout.sh holds all of it, its header numbering each rule, and
-.github/scripts/check-workflow-files.sh holds this file to 30 jobs besides the carriers of a split
+.github/scripts/check-workflow-files.sh holds this file to 32 jobs besides the carriers of a split
 job's old name. The re-run term is on every job but `ci-ok` and
 `pr-title`: each of those two is named for a check main's ruleset requires, where a skip is a
 passing required check, so each refuses such an attempt in a step of its own instead.
@@ -178,6 +178,32 @@ ubuntu-24.04, each a reason of its own machine and not of the job's code:
 Every Go cache family carries the runner's architecture in its key, as the paragraph above
 says, so a job moved from one runner to the other reads a cold entry until
 .github/workflows/ci-caches.yaml fills its family on the runner it moved to.
+
+## The steps and services every job repeats are YAML anchors
+
+Three steps and three Postgres services stand word for word in many jobs of this file. Each is
+written out once, in the first job that has it, under a YAML anchor, and every other job names
+it with an alias:
+
+  * `&checkout`, the checkout of the whole tree, and `&checkout-github`, the sparse checkout of
+    `.github` alone that the carriers and claude-envoy-names make;
+  * `&report`, the ci-ok-report step every job ends with (`- *report`);
+  * the Postgres service in its three shapes: `&postgres-tcp`, whose health check reads the
+    port (go-daemon, daemon-live); `&postgres`, whose health check reads the socket
+    (agent-harness, airlock-arm); `&postgres-pg-legs`, started only for the legs whose matrix
+    sets `pg` (go-envoy, envoy-held).
+
+GitHub Actions reads anchors and aliases in a workflow file. It does not read the merge key
+`<<:`, and this file does not use it. The other readers of this file expand each alias into the
+node it names: actionlint 1.7.12; PyYAML, which every check under `.github/scripts/` that parses
+this file loads it with (check-ci-layout.sh's ci_layout.py and UniqueKeyLoader,
+check-workflow-files.sh, check-test-reach.sh, check-image-trigger-paths.sh, go_test_steps.py
+and go-test-step-expansion.py, ci_router_outputs.py); and yq, through which ci-ok.sh and
+ci-ok-report.sh read it. So a rule that reads a job's steps or services reads the anchored
+node in every job that names it. The aliases keep this file under the 63,000 bytes the layout
+holds it to (check-workflow-files.sh refuses it above 64,000). An edit to an anchored step
+changes that step in every job that names it. A job whose step or service must differ writes
+its own out in full.
 
 ## Why the router runs on these events and no others
 
@@ -492,9 +518,10 @@ the eight with nowhere to go by the control step "Check all eight installs with 
 `report` itself - and why a new bound on a step some later assertion accepts the failure of
 needs the same treatment or none at all (dispatch://INFRA-2605).
 
-Each install is a step of ci.yaml's tool-fallback job with its own 11-minute bound: the x64
-leg's steps run under `matrix.x64`, the arm64 leg's under `matrix.arm`.
-.github/actions/tool-fallback/<x64|arm> runs what lies between two of them.
+Each install is a step of ci.yaml's tool-fallback job (x64) or tool-fallback-arm job (arm64)
+with its own 11-minute bound; two jobs rather than two legs of one, so no step carries a
+`matrix.x64` or `matrix.arm` gate. .github/actions/tool-fallback/<x64|arm> runs what lies
+between two of them.
 
 ## Why the tool-fallback job needs no packages scope
 
@@ -967,11 +994,37 @@ The slow half: the unit tests of every package of the envoy module, the containe
 matrix and the integration suite, all against this job's Postgres. Its format, generated-code,
 build and pack steps are envoy-go-build's, and its shell-script tests envoy-go-checks'.
 
-The broker's database-backed packages' skip count, the envoy-go leg's share, is a step of
-ci.yaml to keep its 30-minute bound (packages/envoy/scripts/database-skips.sh says what it
-refuses). Each Pair of TestStatementTimings runs on the database cmd/dispatch-seed fills, one
-package at a time after every Postgres-backed step of the leg (the step "Time the statements on
-the seeded measurement database" of ci.yaml's go-envoy-held job).
+The unit step, the envoy-go leg's share of the module's unit tests, is a step of ci.yaml to keep
+its 45-minute bound (main's #5084; .github/ci-notes/ci.md#the-envoy-go-unit-step-one-go-test-that-counts-the-brokers-skips).
+Each Pair of TestStatementTimings runs on the database cmd/dispatch-seed fills, one package at a
+time after every Postgres-backed step of the leg (the step "Time the statements on the seeded
+measurement database" of ci.yaml's go-envoy-held job).
+
+## The envoy-go unit step: one go test that counts the broker's skips
+
+main's #5084 ran envoy-go's unit tests and the database broker's packages in one go test, where
+they had been two steps, each waiting on its longest package with its `-p` slots idle behind it:
+in merge-group run 45048924209 (job 137290624677) the unit step took 14.8 minutes behind
+cmd/cipher's 690 s, and the broker's step 15.3 behind cmd/cipherd's 714 s. Each envoy-go leg
+runs its share of that one go test, the step "Unit test envoy Go package" of ci.yaml's
+go-envoy-held job, through packages/envoy/scripts/database-skips.sh:
+
+  * `--module-except` adds to the broker's packages (./internal/cipher/... and ./cmd/cipherd/,
+    less natscallout, the script's DEFAULT_PACKAGES) every package of the module the pattern
+    keeps: the module less the race lanes' packages, internal/integration, internal/textcheck and
+    the packages envoy-go-build and envoy-go-checks test. The script counts the skips of the
+    broker's packages alone, and fails on any there but the airlock's model comparisons its
+    EXPECTED_SKIPS names, and on a failed test of any package of the run;
+  * `--run` is the leg's share, which .github/scripts/go-test-split.sh prints from the packages
+    the envoy-go action's step "List the packages the unit step runs" lists with that same
+    pattern into UNIT_PACKAGES, so the legs between them run each test of the run once;
+  * `--skip` leaves out the web display fixture's two tests (envoy-go-build runs them), the
+    backend count's five (its step runs them in the same job and env), pmdoc's six corpus tests
+    (each leg runs them on its shard) and TestStatementTimings (the timing step runs it).
+
+The `--timeout 15m` is the broker step's, which cmd/cipherd needed whole; a leg's share of it is
+about a third. The step's 45 minutes are main's bound for the whole module's run, which a leg's
+share stays far inside.
 
 ## The envoy-infra module, its own workspace and its live tests
 
@@ -1312,7 +1365,7 @@ carries, how a Go step runs its tests and retries them on a merge group, the bou
 keeps, and the notes these `why:` links name. Its rule 20 runs go list with GOPROXY=off over an
 empty module cache, so the leg needs Go but downloads no module. It also holds every workflow file
 to 64,000 bytes, to what GitHub's own parser reads, to 10 unique reusable workflows and to less
-than 10,000 bytes of filter text, and this file to 30 jobs besides its carriers
+than 10,000 bytes of filter text, and this file to 32 jobs besides its carriers
 (.github/scripts/check-workflow-files.sh), which .github/workflows/workflow-files.yaml runs a
 second time, in a file small enough to start when this one is too large to.
 

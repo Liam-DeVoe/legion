@@ -88,7 +88,7 @@ runs:
       name: Read the Go release for the cache key
       shell: bash
       run: |
-        cd "$GITHUB_ACTION_PATH/../../../packages/envoy"
+        cd "$GITHUB_ACTION_PATH/../../../packages/envoy" || exit 1
         v=$(GOTOOLCHAIN=local GOWORK=off GOENV=off go env GOVERSION)
         echo "go-version=${v#go}" >> "$GITHUB_OUTPUT"
 

@@ -260,9 +260,12 @@ replace "$root/.github/actions/go-daemon/action.yml" \
   'key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-drift'
 replace "$root/.github/actions/architecture-check/action.yml" '${{ runner.temp }}/architecture-check/mod' \
   '${{ runner.temp }}/architecture-check/modules'
-replace "$ci" '{if: matrix.arm, timeout-minutes: 11, uses: ./.github/actions/install-crane}' \
-  '{if: matrix.arm, uses: ./.github/actions/install-crane}'
-replace "$ci" $'      - {if: matrix.x64, timeout-minutes: 11, uses: ./.github/actions/install-elan}\n' ''
+# tool-fallback-arm's first crane install loses its bound; two of tool-fallback's three elan
+# installs are left
+replace "$ci" $'      - {timeout-minutes: 11, uses: ./.github/actions/setup-bun}\n      - {uses: ./.github/actions/tool-fallback/arm, with: {after: healthy-bun}}\n      - {timeout-minutes: 11, uses: ./.github/actions/install-crane}' \
+  $'      - {timeout-minutes: 11, uses: ./.github/actions/setup-bun}\n      - {uses: ./.github/actions/tool-fallback/arm, with: {after: healthy-bun}}\n      - {uses: ./.github/actions/install-crane}'
+replace "$ci" $'      - {timeout-minutes: 11, uses: ./.github/actions/install-elan}\n      - {timeout-minutes: 11, uses: ./.github/actions/install-uv}\n' \
+  $'      - {timeout-minutes: 11, uses: ./.github/actions/install-uv}\n'
 printf 'name: Extra\non:\n  merge_group:\njobs:\n  extra:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: "true"\n' \
   >"$root/.github/workflows/extra.yaml"
 run_check "$root"
@@ -274,9 +277,9 @@ check "names the cache key that drifted inside an action (rule 11)" \
 check "names the cache path that drifted inside an action ci-caches.yaml runs (rule 11)" \
   "$(has "$out" "the save of .github/actions/architecture-check/action.yml, which job architecture-check runs")"
 check "names the install that lost its bound (rule 31)" \
-  "$(has "$out" "holds 1 step(s) with if matrix.arm, uses ./.github/actions/install-crane bound to 11 minutes, where 2 kept")"
+  "$(has "$out" "job tool-fallback-arm of .github/workflows/ci.yaml holds 1 step(s) with uses ./.github/actions/install-crane bound to 11 minutes, where 2 kept")"
 check "names the timed installs folded into one (rule 31)" \
-  "$(has "$out" "holds 2 step(s) with if matrix.x64, uses ./.github/actions/install-elan bound to 11 minutes, where 3 kept")"
+  "$(has "$out" "job tool-fallback of .github/workflows/ci.yaml holds 2 step(s) with uses ./.github/actions/install-elan bound to 11 minutes, where 3 kept")"
 check "names the second merge-group workflow (rule 14)" "$(has "$out" ".github/workflows/extra.yaml runs on merge_group")"
 
 echo "case: the verdict job's reconcile step runs on a dispatch of another ref, or after the hold"

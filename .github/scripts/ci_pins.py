@@ -127,25 +127,25 @@ MAIN_CHECK_RUN_NAMES = [
 ]
 
 CI = ".github/workflows/ci.yaml"
-_X64 = {"if": "matrix.x64"}
-_ARM = {"if": "matrix.arm"}
 # Each (file, job or None for an action's step, what picks the step out, minutes, how many): a
 # uses: step of ci.yaml keeps its own timeout-minutes; a run: body moved into an action keeps a
 # `timeout <minutes>m` command in its body. The count holds the number of such steps, so two timed
 # steps put under one calling step with one bound are one fewer.
 TIMED_STEPS = (
-    [(CI, "tool-fallback", {**_X64, "uses": f"./.github/actions/{action}"}, 11, count)
+    [(CI, "tool-fallback", {"uses": f"./.github/actions/{action}"}, 11, count)
      for action, count in (("install-changie", 3), ("install-crane", 3), ("install-docker-plugin", 4),
                            ("install-elan", 3), ("install-helm", 3), ("install-jj", 3), ("install-pulumi", 3),
                            ("install-uv", 3), ("setup-bun", 3))]
-    + [(CI, "tool-fallback", {**_X64, "uses": f"./base/.github/actions/{action}"}, 11, 1)
+    + [(CI, "tool-fallback", {"uses": f"./base/.github/actions/{action}"}, 11, 1)
        for action in ("install-changie", "install-crane", "install-elan", "install-jj", "install-pulumi",
                       "install-uv", "setup-bun")]
-    + [(CI, "tool-fallback", {**_ARM, "uses": f"./.github/actions/{action}"}, 11, 2)
+    + [(CI, "tool-fallback-arm", {"uses": f"./.github/actions/{action}"}, 11, 2)
        for action in ("install-changie", "install-crane", "install-elan", "install-jj", "setup-bun")]
     + [
         (".github/actions/go-envoy-held/envoy-go/action.yml", None, {"name": "Test the database skip counter"}, 15, 1),
-        (CI, "go-envoy-held", {"name": "Count the database broker suites' skips"}, 30, 1),
+        # main's #5084 ran the unit step and the broker's skip count in one go test, the unit step,
+        # under its own 45 minutes.
+        (CI, "go-envoy-held", {"name": "Unit test envoy Go package"}, 45, 1),
         (".github/actions/go-envoy-held/envoy-go/action.yml", None,
          {"name": "Prove the hub behind the NATS auth service on the local stack (callout-check.sh)"}, 6, 1),
         # dispatch-two-builds and dispatch-two-builds-same share these three steps of ci.yaml.

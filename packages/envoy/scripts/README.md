@@ -397,7 +397,7 @@ counts only the tests it names, so the `aws` and
 `GO_TEST_TIMEOUT` replaces the 5-minute `-timeout`, which `ci.yaml`'s `envoy-go` job counts
 in its time budget; the job runs it as "Count the store-form rows on each backend", over
 `./cmd/cipher/` and `./internal/cipher/api/`, as those tests' one run: the job's unit
-step and its database-skips step skip them by name (`BACKEND_COUNT_TESTS` in
+step skips them by name (`BACKEND_COUNT_TESTS` in
 `.github/scripts/go_test_steps.py` lists them for the step reader).
 
 ## database-skips.sh
@@ -458,12 +458,14 @@ not pass, and any line test2json files under a test after that test's own `--- P
 output and, for a run of its own, go-test.sh's stderr. A run of its own also prints each
 package's `pass|fail PACKAGE <seconds>s` on stderr.
 
-`ci.yaml`'s `envoy-go` job runs the module through it as "Unit test envoy Go package", with
-`--timeout 20m`, `--skip` of the web display fixture's two tests and of the five the job's
-"Count the store-form rows on each backend" runs (`backend-count.sh`, above), `--module-except`
-of the packages other jobs run, and a step limit of its own (`timeout-minutes: 45`) that its
-time budget counts; one go test lets the broker's packages share its `-p` slots with the rest
-of the module, where a step of their own after the unit step waited on `cmd/cipherd` alone.
+`ci.yaml`'s `go-envoy-held` job runs the module through it in each `envoy-go` leg as "Unit
+test envoy Go package", with `--timeout 15m`, `--skip` of the web display fixture's two tests,
+of the five the job's "Count the store-form rows on each backend" runs (`backend-count.sh`,
+above), of pmdoc's six corpus tests and of `TestStatementTimings`, `--module-except` of the
+packages other jobs run, `--run` of the leg's share of the packages that pattern keeps, and a
+step limit of its own (`timeout-minutes: 45`); one go test lets the broker's packages share its
+`-p` slots with the rest of the module, where a step of their own after the unit step waited on
+`cmd/cipherd` alone.
 `envoy-go-race-api` runs the Dispatch API through it as the second line above.
 `database-skips.test.sh` holds it to six controls, which `envoy-go` runs as "Test the database
 skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`, `./cmd/cipherd/`

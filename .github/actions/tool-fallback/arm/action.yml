@@ -1,21 +1,21 @@
 name: Read an arm64 tool-fallback install and set up the next
 description: >-
-  The steps between the installs of the tool-fallback-arm leg of ci.yaml's tool-fallback job
+  The steps between the installs of ci.yaml's tool-fallback-arm job
   (ubuntu-24.04-arm), the arm64 half of the tool-fallback proof: the healthy installs of Bun and
   of the arm64 rows of crane, changie, mise, jj and elan from their release assets, and each again
   under the fault, where each must read its second source. Each install is a step of ci.yaml with
   its own 11-minute bound (a composite action's step takes no timeout-minutes), so this action
-  runs only what lies between two of them: `after` names the point of the leg it follows, and the
+  runs only what lies between two of them: `after` names the point of the job it follows, and the
   steps of that name below run. None of those installs carries `continue-on-error`, so a held
-  install is loud by itself: its bound fails the leg at about 11.5 minutes.
+  install is loud by itself: its bound fails the job at about 11.5 minutes.
 
-  The leg's 40 minutes, from the slowest run it can have: the two Bun halves take 15 (the
+  The job's 40 minutes, from the slowest run it can have: the two Bun halves take 15 (the
   checkout and the actions' download 1, the healthy 34 MB release zip 2, the fault and its probe
   1, the faulted install - oven-sh/setup-bun's own download refused at once, then one ladder of
   .github/scripts/ci-tools.sh, two minutes at worst - 4, the 107 MB npm tarball 3, the two
   readings 2, the report 1, the machine watch 1); the other rows' four healthy and four faulted
   installs make ten fetches that can each take a whole 124-second ladder (21), the four probes 2,
-  and the rest of their readings 1. That is 39, and the next minute up is 40. Measured, the leg
+  and the rest of their readings 1. That is 39, and the next minute up is 40. Measured, the job
   took 76 s in run 44073112404.
 # why: .github/ci-notes/ci.md#the-arm64-half-of-the-tool-fallback-proof
 # The job holds the router's own scopes and no other:
@@ -23,7 +23,7 @@ description: >-
 inputs:
   after:
     description: >-
-      The point of the leg this step follows: `start`, `healthy-bun`, `healthy`, `faulted-bun`,
+      The point of the job this step follows: `start`, `healthy-bun`, `healthy`, `faulted-bun`,
       `faulted-crane`, `faulted-changie`, `faulted-jj` or `faulted-elan`.
     required: true
 # why: .github/ci-notes/ci.md#the-arm64-half-of-the-tool-fallback-proof

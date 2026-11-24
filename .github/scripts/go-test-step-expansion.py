@@ -221,7 +221,7 @@ EXCEPTIONS = (
     Exception_(
         steps=frozenset({
             (".github/workflows/ci.yaml", "go-envoy"),
-            (".github/workflows/ci.yaml", "Count the database broker suites' skips"),
+            (".github/workflows/ci.yaml", "Unit test envoy Go package"),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("FuzzAirlock",),
@@ -231,8 +231,8 @@ EXCEPTIONS = (
             "envoy-go is a leg of go-envoy-held, which a pull request runs only with full-ci, so "
             "on such a pull request the seed corpus would run nowhere else. Its leg's two steps are "
             "the corpus comparison and the 120-second fuzz, which seeds from that same corpus, so "
-            "both name the function. The envoy-go legs' step \"Count the database broker suites' "
-            "skips\" runs every broker package but the race lane's through "
+            "both name the function. The envoy-go legs' step \"Unit test envoy Go package\" runs "
+            "every broker package but the race lane's through "
             "packages/envoy/scripts/database-skips.sh, so a listing counts the function run there "
             "too, but it skips there for want of AIRLOCK_MODEL, as that script's EXPECTED_SKIPS "
             "records, so the corpus runs only in airlock-lean."
@@ -241,7 +241,7 @@ EXCEPTIONS = (
     Exception_(
         steps=frozenset({
             (".github/workflows/ci.yaml", "go-envoy"),
-            (".github/workflows/ci.yaml", "Count the database broker suites' skips"),
+            (".github/workflows/ci.yaml", "Unit test envoy Go package"),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("TestModelAgreesOnHostShapes",),
@@ -259,7 +259,7 @@ EXCEPTIONS = (
     Exception_(
         steps=frozenset({
             (".github/workflows/ci.yaml", "go-envoy"),
-            (".github/workflows/ci.yaml", "Count the database broker suites' skips"),
+            (".github/workflows/ci.yaml", "Unit test envoy Go package"),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("TestTheModelRefusesAHostlessEntry",),
@@ -274,7 +274,7 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci.yaml", "envoy-go"),
+            (".github/workflows/ci.yaml", "Unit test envoy Go package"),
             (".github/workflows/ci.yaml", "go-envoy"),
         }),
         package="github.com/sjawhar/envoy/internal/dispatch/pmdoc",

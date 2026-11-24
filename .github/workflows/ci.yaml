@@ -39,7 +39,7 @@ env:
   # why: .github/ci-notes/ci.md#the-go-jobs-module-proxy
   GOPROXY: https://proxy.golang.org|direct
   # why: .github/ci-notes/ci.md#what-ci_ok_selected_by-holds-and-which-programs-read-it
-  CI_OK_SELECTED_BY: '{"daemon-go":"go-daemon","daemon-go-race":"go-daemon","claude-envoy-names":"pi","kind-image":"kind","envoy-go":"go-envoy-held","envoy-go-race-api":"go-envoy-held","envoy-go-race-docs":"go-envoy-held","envoy-go-docs-finalizers":"go-envoy-held","dispatch-memory":"go-envoy-held"}'
+  CI_OK_SELECTED_BY: '{"tool-fallback-arm":"tool-fallback","daemon-go":"go-daemon","daemon-go-race":"go-daemon","claude-envoy-names":"pi","kind-image":"kind","envoy-go":"go-envoy-held","envoy-go-race-api":"go-envoy-held","envoy-go-race-docs":"go-envoy-held","envoy-go-docs-finalizers":"go-envoy-held","dispatch-memory":"go-envoy-held"}'
   CI_OK_PULL_REQUEST_ONLY: '["worker-image", "dispatch-browser-pr"]'
   # why: .github/ci-notes/ci.md#the-jobs-that-run-on-every-change
   CI_OK_ALWAYS_RUN: '["changes", "lint"]'
@@ -137,7 +137,9 @@ jobs:
           - {leg: private-names, name: lint / private-names, runner: ubuntu-24.04, timeout: 10}
           - {leg: typecheck, name: typecheck / typecheck, runner: ubuntu-24.04-arm, timeout: 10}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # why: .github/ci-notes/ci.md#the-steps-and-services-every-job-repeats-are-yaml-anchors
+      - &checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - {if: matrix.leg == 'lint', uses: ./.github/actions/lint/lint}
       - name: private-names
@@ -145,7 +147,7 @@ jobs:
         env: {PRIVATE_NAME_TERMS: '${{ secrets.PRIVATE_NAME_TERMS }}'}
         run: '"$GITHUB_WORKSPACE/.github/scripts/check-private-names.sh"'
       - {if: matrix.leg == 'typecheck', uses: ./.github/actions/lint/typecheck}
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - &report {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
 
   # why: .github/ci-notes/ci.md#the-fail-open-jobs
   scripts:
@@ -170,10 +172,9 @@ jobs:
         ports: ["5432:5432"]
         options: --health-cmd "pg_isready -h 127.0.0.1 -U postgres" --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
+      - *checkout
       - {uses: ./.github/actions/scripts, with: {leg: '${{ matrix.leg }}'}}
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   # why: .github/ci-notes/ci.md#what-the-test-job-runs-and-how-each-harness-step-is-gated
   scripts-held:
@@ -184,10 +185,9 @@ jobs:
     timeout-minutes: 30
     env: {JOB_TIMEOUT_MINUTES: 30}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
+      - *checkout
       - uses: ./.github/actions/scripts/test
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   ci-images:
     needs: changes
@@ -199,114 +199,118 @@ jobs:
     # why: .github/ci-notes/ci.md#why-the-ci-images-job-holds-packages-write
     permissions: {contents: read, packages: write, actions: read, checks: write}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
+      - *checkout
       - name: ci-images
         uses: ./.github/actions/ci-images
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   tool-fallback:
     needs: [changes, ci-images]
     if: ${{ !cancelled() && needs.changes.outputs.tool-fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
-    name: ${{ format('{0} / {0}', matrix.leg) }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ matrix.timeout }}
-    env: {JOB_TIMEOUT_MINUTES: '${{ matrix.timeout }}'}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {leg: tool-fallback, runner: ubuntu-24.04, timeout: 25, x64: true}
-          - {leg: tool-fallback-arm, runner: ubuntu-24.04-arm, timeout: 40, arm: true}
+    name: ${{ 'tool-fallback / tool-fallback' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env: {JOB_TIMEOUT_MINUTES: 25}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
-      - {id: origin, if: matrix.x64, uses: ./.github/actions/tool-fallback/start}
-      - {id: jj-primary, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-jj, env: {CI_TOOLS_GHCR_BASE: '${{ steps.origin.outputs.ghcr }}'}}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: jj-primary, steps: '${{ toJSON(steps) }}'}}
-      - {id: mark-base-crane, if: matrix.x64, run: 'echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"'}
-      - {id: base-crane, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./base/.github/actions/install-crane, env: {CI_TOOLS_GHCR_BASE: 'http://127.0.0.1:1', CI_TOOLS_NPM_BASE: 'http://127.0.0.1:1'}}
-      - {id: mark-base-changie, if: matrix.x64, run: 'echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"'}
-      - {id: base-changie, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./base/.github/actions/install-changie, env: {CI_TOOLS_GHCR_BASE: 'http://127.0.0.1:1', CI_TOOLS_NPM_BASE: 'http://127.0.0.1:1'}}
-      - {id: mark-base-jj, if: matrix.x64, run: 'echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"'}
-      - {id: base-jj, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./base/.github/actions/install-jj, env: {CI_TOOLS_GHCR_BASE: 'http://127.0.0.1:1', CI_TOOLS_NPM_BASE: 'http://127.0.0.1:1'}}
-      - {id: mark-base-bun, if: matrix.x64, run: 'echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"'}
-      - {id: base-bun, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./base/.github/actions/setup-bun, env: {CI_TOOLS_GHCR_BASE: 'http://127.0.0.1:1', CI_TOOLS_NPM_BASE: 'http://127.0.0.1:1'}}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: base-bun, steps: '${{ toJSON(steps) }}'}}
-      - {id: mark-base-elan, if: matrix.x64, run: 'echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"'}
-      - {id: base-elan, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./base/.github/actions/install-elan, env: {CI_TOOLS_GHCR_BASE: 'http://127.0.0.1:1', CI_TOOLS_NPM_BASE: 'http://127.0.0.1:1'}}
-      - {id: mark-base-uv, if: matrix.x64, run: 'echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"'}
-      - {id: base-uv, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./base/.github/actions/install-uv, env: {CI_TOOLS_URL_BASE: 'http://127.0.0.1:1'}}
-      - {id: mark-nowhere-pulumi-docker, if: matrix.x64, run: 'echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"'}
-      - {id: nowhere-pulumi-docker, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-docker-plugin, env: {CI_TOOLS_URL_BASE: 'http://127.0.0.1:1'}}
-      - {id: mark-base-pulumi, if: matrix.x64, run: 'echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"'}
-      - {id: base-pulumi, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./base/.github/actions/install-pulumi, env: {http_proxy: 'http://127.0.0.1:1', https_proxy: 'http://127.0.0.1:1'}}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: nowhere, steps: '${{ toJSON(steps) }}'}}
-      - {if: matrix.x64, timeout-minutes: 11, uses: ./.github/actions/install-crane, env: {CI_TOOLS_PROOF_FULL_LADDER: crane-head}}
-      - {if: matrix.x64, timeout-minutes: 11, uses: ./.github/actions/install-changie}
-      - {if: matrix.x64, timeout-minutes: 11, uses: ./.github/actions/install-jj}
-      - {if: matrix.x64, timeout-minutes: 11, uses: ./.github/actions/setup-bun}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: head-bun, steps: '${{ toJSON(steps) }}'}}
-      - {if: matrix.x64, timeout-minutes: 11, uses: ./.github/actions/install-elan}
-      - {if: matrix.x64, timeout-minutes: 11, uses: ./.github/actions/install-uv}
-      - {id: docker-plugin, if: matrix.x64, timeout-minutes: 11, uses: ./.github/actions/install-docker-plugin}
-      - {if: matrix.x64, timeout-minutes: 11, uses: ./.github/actions/install-pulumi, env: {CI_TOOLS_URL_BASE: 'http://127.0.0.1:1', CI_TOOLS_GITHUB_BASE: '${{ steps.origin.outputs.github }}'}}
-      - {if: matrix.x64, timeout-minutes: 11, uses: ./.github/actions/install-helm}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: head, steps: '${{ toJSON(steps) }}'}}
-      - {id: crane-primary, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-crane, env: {CI_TOOLS_GITHUB_BASE: '${{ steps.origin.outputs.github }}', CI_TOOLS_GHCR_BASE: '${{ steps.origin.outputs.ghcr }}'}}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: crane-primary, steps: '${{ toJSON(steps) }}'}}
-      - {id: crane-second-source, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-crane, env: {CI_TOOLS_GHCR_BASE: '${{ steps.origin.outputs.ghcr }}'}}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: crane-second-source, steps: '${{ toJSON(steps) }}'}}
-      - {id: changie-primary, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-changie, env: {CI_TOOLS_GITHUB_BASE: '${{ steps.origin.outputs.github }}', CI_TOOLS_GHCR_BASE: '${{ steps.origin.outputs.ghcr }}'}}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: changie-primary, steps: '${{ toJSON(steps) }}'}}
-      - {id: changie-second-source, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-changie, env: {CI_TOOLS_GHCR_BASE: '${{ steps.origin.outputs.ghcr }}'}}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: changie-second-source, steps: '${{ toJSON(steps) }}'}}
-      - {id: jj-second-source, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-jj, env: {CI_TOOLS_GHCR_BASE: '${{ steps.origin.outputs.ghcr }}'}}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: jj-second-source, steps: '${{ toJSON(steps) }}'}}
-      - {id: bun-primary, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/setup-bun}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: bun-primary, steps: '${{ toJSON(steps) }}'}}
-      - {id: bun-second-source, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/setup-bun, env: {CI_TOOLS_NPM_BASE: '${{ steps.origin.outputs.npm }}'}}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: bun-second-source, steps: '${{ toJSON(steps) }}'}}
-      - {id: elan-primary, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-elan, env: {CI_TOOLS_GITHUB_BASE: '${{ steps.origin.outputs.github }}', CI_TOOLS_GHCR_BASE: '${{ steps.origin.outputs.ghcr }}'}}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: elan-primary, steps: '${{ toJSON(steps) }}'}}
-      - {id: elan-second-source, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-elan, env: {CI_TOOLS_GHCR_BASE: '${{ steps.origin.outputs.ghcr }}'}}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: elan-second-source, steps: '${{ toJSON(steps) }}'}}
-      - {id: uv-primary, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-uv, env: {CI_TOOLS_GITHUB_BASE: '${{ steps.origin.outputs.github }}', CI_TOOLS_URL_BASE: '${{ steps.origin.outputs.url }}'}}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: uv-primary, steps: '${{ toJSON(steps) }}'}}
-      - {id: uv-second-source, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-uv, env: {CI_TOOLS_URL_BASE: '${{ steps.origin.outputs.url }}'}}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: uv-second-source, steps: '${{ toJSON(steps) }}'}}
-      - {id: pulumi-docker-primary, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-docker-plugin, env: {CI_TOOLS_GITHUB_BASE: '${{ steps.origin.outputs.github }}', CI_TOOLS_URL_BASE: '${{ steps.origin.outputs.url }}'}}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: pulumi-docker-primary, steps: '${{ toJSON(steps) }}'}}
-      - {id: pulumi-docker-second-source, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-docker-plugin, env: {CI_TOOLS_URL_BASE: '${{ steps.origin.outputs.url }}'}}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: pulumi-docker-second-source, steps: '${{ toJSON(steps) }}'}}
-      - {id: pulumi-cli-primary, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-pulumi, env: {CI_TOOLS_URL_BASE: '${{ steps.origin.outputs.url }}', CI_TOOLS_GITHUB_BASE: '${{ steps.origin.outputs.github }}'}}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: pulumi-cli-primary, steps: '${{ toJSON(steps) }}'}}
-      - {id: pulumi-cli-second-source, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-pulumi, env: {CI_TOOLS_URL_BASE: 'http://127.0.0.1:1', CI_TOOLS_GITHUB_BASE: '${{ steps.origin.outputs.github }}'}}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: pulumi-cli-second-source, steps: '${{ toJSON(steps) }}'}}
-      - {id: helm-primary, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-helm, env: {CI_TOOLS_URL_BASE: '${{ steps.origin.outputs.url }}', CI_TOOLS_GHCR_BASE: '${{ steps.origin.outputs.ghcr }}'}}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: helm-primary, steps: '${{ toJSON(steps) }}'}}
-      - {id: helm-second-source, if: matrix.x64, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-helm, env: {CI_TOOLS_GHCR_BASE: '${{ steps.origin.outputs.ghcr }}'}}
-      - {if: matrix.x64, uses: ./.github/actions/tool-fallback/x64, with: {after: helm-second-source, steps: '${{ toJSON(steps) }}'}}
-      - {if: matrix.arm, uses: ./.github/actions/tool-fallback/arm, with: {after: start}}
-      - {if: matrix.arm, timeout-minutes: 11, uses: ./.github/actions/setup-bun}
-      - {if: matrix.arm, uses: ./.github/actions/tool-fallback/arm, with: {after: healthy-bun}}
-      - {if: matrix.arm, timeout-minutes: 11, uses: ./.github/actions/install-crane}
-      - {if: matrix.arm, timeout-minutes: 11, uses: ./.github/actions/install-changie}
-      - {if: matrix.arm, timeout-minutes: 11, uses: ./.github/actions/install-jj}
-      - {if: matrix.arm, timeout-minutes: 11, uses: ./.github/actions/install-elan}
-      - {if: matrix.arm, uses: ./.github/actions/tool-fallback/arm, with: {after: healthy}}
-      - {if: matrix.arm, timeout-minutes: 11, uses: ./.github/actions/setup-bun}
-      - {if: matrix.arm, uses: ./.github/actions/tool-fallback/arm, with: {after: faulted-bun}}
-      - {if: matrix.arm, timeout-minutes: 11, uses: ./.github/actions/install-crane}
-      - {if: matrix.arm, uses: ./.github/actions/tool-fallback/arm, with: {after: faulted-crane}}
-      - {if: matrix.arm, timeout-minutes: 11, uses: ./.github/actions/install-changie}
-      - {if: matrix.arm, uses: ./.github/actions/tool-fallback/arm, with: {after: faulted-changie}}
-      - {if: matrix.arm, timeout-minutes: 11, uses: ./.github/actions/install-jj}
-      - {if: matrix.arm, uses: ./.github/actions/tool-fallback/arm, with: {after: faulted-jj}}
-      - {if: matrix.arm, timeout-minutes: 11, uses: ./.github/actions/install-elan}
-      - {if: matrix.arm, uses: ./.github/actions/tool-fallback/arm, with: {after: faulted-elan}}
+      - *checkout
+      - {id: origin, uses: ./.github/actions/tool-fallback/start}
+      - {id: jj-primary, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-jj, env: {CI_TOOLS_GHCR_BASE: '${{ steps.origin.outputs.ghcr }}'}}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: jj-primary, steps: '${{ toJSON(steps) }}'}}
+      - {id: mark-base-crane, run: 'echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"'}
+      - {id: base-crane, continue-on-error: true, timeout-minutes: 11, uses: ./base/.github/actions/install-crane, env: {CI_TOOLS_GHCR_BASE: 'http://127.0.0.1:1', CI_TOOLS_NPM_BASE: 'http://127.0.0.1:1'}}
+      - {id: mark-base-changie, run: 'echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"'}
+      - {id: base-changie, continue-on-error: true, timeout-minutes: 11, uses: ./base/.github/actions/install-changie, env: {CI_TOOLS_GHCR_BASE: 'http://127.0.0.1:1', CI_TOOLS_NPM_BASE: 'http://127.0.0.1:1'}}
+      - {id: mark-base-jj, run: 'echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"'}
+      - {id: base-jj, continue-on-error: true, timeout-minutes: 11, uses: ./base/.github/actions/install-jj, env: {CI_TOOLS_GHCR_BASE: 'http://127.0.0.1:1', CI_TOOLS_NPM_BASE: 'http://127.0.0.1:1'}}
+      - {id: mark-base-bun, run: 'echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"'}
+      - {id: base-bun, continue-on-error: true, timeout-minutes: 11, uses: ./base/.github/actions/setup-bun, env: {CI_TOOLS_GHCR_BASE: 'http://127.0.0.1:1', CI_TOOLS_NPM_BASE: 'http://127.0.0.1:1'}}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: base-bun, steps: '${{ toJSON(steps) }}'}}
+      - {id: mark-base-elan, run: 'echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"'}
+      - {id: base-elan, continue-on-error: true, timeout-minutes: 11, uses: ./base/.github/actions/install-elan, env: {CI_TOOLS_GHCR_BASE: 'http://127.0.0.1:1', CI_TOOLS_NPM_BASE: 'http://127.0.0.1:1'}}
+      - {id: mark-base-uv, run: 'echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"'}
+      - {id: base-uv, continue-on-error: true, timeout-minutes: 11, uses: ./base/.github/actions/install-uv, env: {CI_TOOLS_URL_BASE: 'http://127.0.0.1:1'}}
+      - {id: mark-nowhere-pulumi-docker, run: 'echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"'}
+      - {id: nowhere-pulumi-docker, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-docker-plugin, env: {CI_TOOLS_URL_BASE: 'http://127.0.0.1:1'}}
+      - {id: mark-base-pulumi, run: 'echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"'}
+      - {id: base-pulumi, continue-on-error: true, timeout-minutes: 11, uses: ./base/.github/actions/install-pulumi, env: {http_proxy: 'http://127.0.0.1:1', https_proxy: 'http://127.0.0.1:1'}}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: nowhere, steps: '${{ toJSON(steps) }}'}}
+      - {timeout-minutes: 11, uses: ./.github/actions/install-crane, env: {CI_TOOLS_PROOF_FULL_LADDER: crane-head}}
+      - {timeout-minutes: 11, uses: ./.github/actions/install-changie}
+      - {timeout-minutes: 11, uses: ./.github/actions/install-jj}
+      - {timeout-minutes: 11, uses: ./.github/actions/setup-bun}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: head-bun, steps: '${{ toJSON(steps) }}'}}
+      - {timeout-minutes: 11, uses: ./.github/actions/install-elan}
+      - {timeout-minutes: 11, uses: ./.github/actions/install-uv}
+      - {id: docker-plugin, timeout-minutes: 11, uses: ./.github/actions/install-docker-plugin}
+      - {timeout-minutes: 11, uses: ./.github/actions/install-pulumi, env: {CI_TOOLS_URL_BASE: 'http://127.0.0.1:1', CI_TOOLS_GITHUB_BASE: '${{ steps.origin.outputs.github }}'}}
+      - {timeout-minutes: 11, uses: ./.github/actions/install-helm}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: head, steps: '${{ toJSON(steps) }}'}}
+      - {id: crane-primary, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-crane, env: {CI_TOOLS_GITHUB_BASE: '${{ steps.origin.outputs.github }}', CI_TOOLS_GHCR_BASE: '${{ steps.origin.outputs.ghcr }}'}}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: crane-primary, steps: '${{ toJSON(steps) }}'}}
+      - {id: crane-second-source, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-crane, env: {CI_TOOLS_GHCR_BASE: '${{ steps.origin.outputs.ghcr }}'}}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: crane-second-source, steps: '${{ toJSON(steps) }}'}}
+      - {id: changie-primary, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-changie, env: {CI_TOOLS_GITHUB_BASE: '${{ steps.origin.outputs.github }}', CI_TOOLS_GHCR_BASE: '${{ steps.origin.outputs.ghcr }}'}}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: changie-primary, steps: '${{ toJSON(steps) }}'}}
+      - {id: changie-second-source, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-changie, env: {CI_TOOLS_GHCR_BASE: '${{ steps.origin.outputs.ghcr }}'}}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: changie-second-source, steps: '${{ toJSON(steps) }}'}}
+      - {id: jj-second-source, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-jj, env: {CI_TOOLS_GHCR_BASE: '${{ steps.origin.outputs.ghcr }}'}}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: jj-second-source, steps: '${{ toJSON(steps) }}'}}
+      - {id: bun-primary, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/setup-bun}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: bun-primary, steps: '${{ toJSON(steps) }}'}}
+      - {id: bun-second-source, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/setup-bun, env: {CI_TOOLS_NPM_BASE: '${{ steps.origin.outputs.npm }}'}}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: bun-second-source, steps: '${{ toJSON(steps) }}'}}
+      - {id: elan-primary, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-elan, env: {CI_TOOLS_GITHUB_BASE: '${{ steps.origin.outputs.github }}', CI_TOOLS_GHCR_BASE: '${{ steps.origin.outputs.ghcr }}'}}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: elan-primary, steps: '${{ toJSON(steps) }}'}}
+      - {id: elan-second-source, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-elan, env: {CI_TOOLS_GHCR_BASE: '${{ steps.origin.outputs.ghcr }}'}}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: elan-second-source, steps: '${{ toJSON(steps) }}'}}
+      - {id: uv-primary, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-uv, env: {CI_TOOLS_GITHUB_BASE: '${{ steps.origin.outputs.github }}', CI_TOOLS_URL_BASE: '${{ steps.origin.outputs.url }}'}}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: uv-primary, steps: '${{ toJSON(steps) }}'}}
+      - {id: uv-second-source, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-uv, env: {CI_TOOLS_URL_BASE: '${{ steps.origin.outputs.url }}'}}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: uv-second-source, steps: '${{ toJSON(steps) }}'}}
+      - {id: pulumi-docker-primary, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-docker-plugin, env: {CI_TOOLS_GITHUB_BASE: '${{ steps.origin.outputs.github }}', CI_TOOLS_URL_BASE: '${{ steps.origin.outputs.url }}'}}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: pulumi-docker-primary, steps: '${{ toJSON(steps) }}'}}
+      - {id: pulumi-docker-second-source, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-docker-plugin, env: {CI_TOOLS_URL_BASE: '${{ steps.origin.outputs.url }}'}}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: pulumi-docker-second-source, steps: '${{ toJSON(steps) }}'}}
+      - {id: pulumi-cli-primary, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-pulumi, env: {CI_TOOLS_URL_BASE: '${{ steps.origin.outputs.url }}', CI_TOOLS_GITHUB_BASE: '${{ steps.origin.outputs.github }}'}}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: pulumi-cli-primary, steps: '${{ toJSON(steps) }}'}}
+      - {id: pulumi-cli-second-source, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-pulumi, env: {CI_TOOLS_URL_BASE: 'http://127.0.0.1:1', CI_TOOLS_GITHUB_BASE: '${{ steps.origin.outputs.github }}'}}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: pulumi-cli-second-source, steps: '${{ toJSON(steps) }}'}}
+      - {id: helm-primary, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-helm, env: {CI_TOOLS_URL_BASE: '${{ steps.origin.outputs.url }}', CI_TOOLS_GHCR_BASE: '${{ steps.origin.outputs.ghcr }}'}}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: helm-primary, steps: '${{ toJSON(steps) }}'}}
+      - {id: helm-second-source, continue-on-error: true, timeout-minutes: 11, uses: ./.github/actions/install-helm, env: {CI_TOOLS_GHCR_BASE: '${{ steps.origin.outputs.ghcr }}'}}
+      - {uses: ./.github/actions/tool-fallback/x64, with: {after: helm-second-source, steps: '${{ toJSON(steps) }}'}}
       - {if: always(), uses: ./.github/actions/tool-fallback/end}
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
+
+  tool-fallback-arm:
+    needs: [changes, ci-images]
+    if: ${{ !cancelled() && needs.changes.outputs.tool-fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
+    name: ${{ 'tool-fallback-arm / tool-fallback-arm' }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    env: {JOB_TIMEOUT_MINUTES: 40}
+    steps:
+      - *checkout
+      - {uses: ./.github/actions/tool-fallback/arm, with: {after: start}}
+      - {timeout-minutes: 11, uses: ./.github/actions/setup-bun}
+      - {uses: ./.github/actions/tool-fallback/arm, with: {after: healthy-bun}}
+      - {timeout-minutes: 11, uses: ./.github/actions/install-crane}
+      - {timeout-minutes: 11, uses: ./.github/actions/install-changie}
+      - {timeout-minutes: 11, uses: ./.github/actions/install-jj}
+      - {timeout-minutes: 11, uses: ./.github/actions/install-elan}
+      - {uses: ./.github/actions/tool-fallback/arm, with: {after: healthy}}
+      - {timeout-minutes: 11, uses: ./.github/actions/setup-bun}
+      - {uses: ./.github/actions/tool-fallback/arm, with: {after: faulted-bun}}
+      - {timeout-minutes: 11, uses: ./.github/actions/install-crane}
+      - {uses: ./.github/actions/tool-fallback/arm, with: {after: faulted-crane}}
+      - {timeout-minutes: 11, uses: ./.github/actions/install-changie}
+      - {uses: ./.github/actions/tool-fallback/arm, with: {after: faulted-changie}}
+      - {timeout-minutes: 11, uses: ./.github/actions/install-jj}
+      - {uses: ./.github/actions/tool-fallback/arm, with: {after: faulted-jj}}
+      - {timeout-minutes: 11, uses: ./.github/actions/install-elan}
+      - {uses: ./.github/actions/tool-fallback/arm, with: {after: faulted-elan}}
+      - {if: always(), uses: ./.github/actions/tool-fallback/end}
+      - *report
 
   go-daemon:
     needs: changes
@@ -325,18 +329,17 @@ jobs:
           - {name: daemon-go-race (1/2), leg: 1, legs: 2, race: 25m, timeout: 48}
           - {name: daemon-go-race (2/2), leg: 2, legs: 2, race: 25m, timeout: 48}
     services:
-      postgres:
+      postgres: &postgres-tcp
         image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
         env: {POSTGRES_PASSWORD: ci}
         ports: ["5432:5432"]
         options: --health-cmd "pg_isready -h 127.0.0.1 -U postgres" --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
+      - *checkout
       - name: daemon-go
         uses: ./.github/actions/go-daemon
         with: {leg: '${{ matrix.leg }}', legs: '${{ matrix.legs }}', race-timeout: '${{ matrix.race }}', postgres: '${{ job.services.postgres.id }}'}
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   # why: .github/ci-notes/ci.md#the-carriers
   daemon-go:
@@ -347,11 +350,12 @@ jobs:
     timeout-minutes: 10
     env: {JOB_TIMEOUT_MINUTES: 10}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - &checkout-github
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {sparse-checkout: .github, persist-credentials: false}
       - env: {GH_TOKEN: '${{ github.token }}'}
         run: .github/scripts/leg-verdict.sh 'daemon-go (1/3)' 'daemon-go (2/3)' 'daemon-go (3/3)'
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   # why: .github/ci-notes/ci-job-daemon-go.md#why-the-race-step-is-a-job-of-its-own
   daemon-go-race:
@@ -362,11 +366,10 @@ jobs:
     timeout-minutes: 10
     env: {JOB_TIMEOUT_MINUTES: 10}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {sparse-checkout: .github, persist-credentials: false}
+      - *checkout-github
       - env: {GH_TOKEN: '${{ github.token }}'}
         run: .github/scripts/leg-verdict.sh 'daemon-go-race (1/2)' 'daemon-go-race (2/2)'
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   plugin-pack:
     needs: changes
@@ -376,11 +379,10 @@ jobs:
     timeout-minutes: 30
     env: {JOB_TIMEOUT_MINUTES: 30}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
+      - *checkout
       - name: plugin-pack
         uses: ./.github/actions/plugin-pack
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   daemon-live:
     needs: changes
@@ -390,17 +392,12 @@ jobs:
     timeout-minutes: 40
     env: {JOB_TIMEOUT_MINUTES: 40}
     services:
-      postgres:
-        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-        env: {POSTGRES_PASSWORD: ci}
-        ports: ["5432:5432"]
-        options: --health-cmd "pg_isready -h 127.0.0.1 -U postgres" --health-interval 10s --health-timeout 5s --health-retries 5
+      postgres: *postgres-tcp
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
+      - *checkout
       - name: daemon-live
         uses: ./.github/actions/daemon-live
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   agent-harness:
     needs: changes
@@ -420,17 +417,16 @@ jobs:
           - {leg: plugin-smokes, t: 25}
           - {leg: nats-callout-sessions, t: 25}
     services:
-      postgres:
+      postgres: &postgres
         image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
         env: {POSTGRES_PASSWORD: ci}
         ports: ["5432:5432"]
         options: --health-cmd "pg_isready -U postgres" --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
+      - *checkout
       - {uses: ./.github/actions/agent-harness/install, with: {leg: '${{ matrix.leg }}'}}
       - {uses: ./.github/actions/agent-harness, with: {leg: '${{ matrix.leg }}'}}
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   kind-image:
     needs: [changes, ci-images]
@@ -440,10 +436,9 @@ jobs:
     timeout-minutes: 45
     env: {JOB_TIMEOUT_MINUTES: 45}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
+      - *checkout
       - uses: ./.github/actions/kind/image
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   kind:
     needs: [changes, kind-image]
@@ -458,15 +453,14 @@ jobs:
         leg: [rig, shares, burstable, sweep, runtime-root, runtime-secrets, runtime-roles, runtime-adopt, runtime-image, runtime-issues, runtime-pod-update, runtime-pod-update-fleet, tree-claude, tree-stage4b, tree-stage4b-restart, tree-stage4b-address, tree-stage4b-move, tree-stage4b-controller, leak-guard]
         include: [{leg: rig, t: 25}, {leg: tree-claude, t: 36}, {leg: tree-stage4b, t: 39}, {leg: tree-stage4b-restart, t: 38}, {leg: tree-stage4b-address, t: 37}, {leg: tree-stage4b-move, t: 36}, {leg: tree-stage4b-controller, t: 37}, {leg: leak-guard, t: 20}]
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
+      - *checkout
       - {uses: ./.github/actions/kind/build, with: {leg: '${{ matrix.leg }}'}}
       - name: Download the worker image the image job built
         timeout-minutes: 10
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with: {name: kind-image-worker-image, path: '${{ runner.temp }}/kind-image'}
       - {uses: ./.github/actions/kind, with: {leg: '${{ matrix.leg }}'}}
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   docs:
     needs: changes
@@ -496,11 +490,10 @@ jobs:
         leg: [contracts, test-fixtures, broker-client, envoy-client, dispatch-ui, proof-sdk-offline]
         include: [{leg: dispatch-ui, timeout: 15}, {leg: proof-sdk-offline, timeout: 15}]
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
+      - *checkout
       - uses: ./.github/actions/setup-bun
       - {uses: ./.github/actions/ts, with: {leg: '${{ matrix.leg }}'}}
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   # why: .github/ci-notes/ci.md#the-web-cold-job
   web-cold:
@@ -511,11 +504,10 @@ jobs:
     timeout-minutes: 10
     env: {JOB_TIMEOUT_MINUTES: 10}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
+      - *checkout
       - uses: ./.github/actions/setup-bun
       - uses: ./.github/actions/ts/web-cold
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   pi:
     needs: changes
@@ -534,14 +526,13 @@ jobs:
         image: ${{ matrix.nats && 'ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f' || '' }}
         ports: ["${{ matrix.nats || '4222' }}"]
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
+      - *checkout
       - uses: ./.github/actions/setup-bun
       - {if: matrix.omp, uses: ./.github/actions/install-omp}
       - {if: matrix.leg == 'claude-envoy', uses: ./.github/actions/install-claude-code}
       - {if: matrix.leg == 'claude-envoy', uses: ./.github/actions/install-codex}
       - {uses: ./.github/actions/pi, with: {leg: '${{ matrix.leg }}', nats-port: '${{ job.services.nats.ports[''4222''] }}'}}
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   # why: .github/ci-notes/ci.md#the-pi-legion-plugins-suite-and-its-build
   pi-held:
@@ -554,13 +545,12 @@ jobs:
     services:
       nats: {image: 'ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f', ports: ["4222:4222"]}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
+      - *checkout
       - uses: ./.github/actions/setup-bun
       - uses: ./.github/actions/install-jj
       - uses: ./.github/actions/install-omp
       - uses: ./.github/actions/pi/pi-legion
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   claude-envoy-names:
     needs: [changes, pi]
@@ -570,11 +560,10 @@ jobs:
     timeout-minutes: 10
     env: {JOB_TIMEOUT_MINUTES: 10}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {sparse-checkout: .github, persist-credentials: false}
+      - *checkout-github
       - uses: ./.github/actions/private-names-packed-plugin
         with: {artifact: claude-envoy-pr, private-name-terms: '${{ secrets.PRIVATE_NAME_TERMS }}'}
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file
   dispatch-browser:
@@ -625,18 +614,17 @@ jobs:
           - {leg: broker-multiprocess, runner: ubuntu-24.04-arm, timeout: 30, pg: true}
           - {leg: listener-server-change, runner: ubuntu-24.04-arm, timeout: 30}
     services:
-      postgres:
+      postgres: &postgres-pg-legs
         image: ${{ matrix.pg && 'ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11' || '' }}
         env: {POSTGRES_PASSWORD: ci}
         ports: ["5432:5432"]
         options: --health-cmd "pg_isready -U postgres" --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
+      - *checkout
       - name: go-envoy
         uses: ./.github/actions/go-envoy
         with: {leg: '${{ matrix.leg }}', migration-base: '${{ inputs.migration-base }}', postgres: '${{ job.services.postgres.id }}'}
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   envoy-held:
     needs: changes
@@ -654,18 +642,13 @@ jobs:
           - {leg: envoy-session-proofs, runner: ubuntu-24.04, timeout: 20, pg: true}
           - {leg: envoy-e2e-refill, runner: ubuntu-24.04-arm, timeout: 15}
     services:
-      postgres:
-        image: ${{ matrix.pg && 'ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11' || '' }}
-        env: {POSTGRES_PASSWORD: ci}
-        ports: ["5432:5432"]
-        options: --health-cmd "pg_isready -U postgres" --health-interval 10s --health-timeout 5s --health-retries 5
+      postgres: *postgres-pg-legs
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
+      - *checkout
       - name: envoy-held
         uses: ./.github/actions/go-envoy/held
         with: {leg: '${{ matrix.leg }}', postgres: '${{ job.services.postgres.id }}'}
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   # why: .github/ci-notes/ci.md#the-go-envoy-held-job-and-its-legs
   go-envoy-held:
@@ -737,13 +720,14 @@ jobs:
         timeout-minutes: 2
         with: {persist-credentials: false, fetch-depth: 0}
       - {name: envoy-go, if: matrix.suite == 'envoy-go', uses: ./.github/actions/go-envoy-held/envoy-go, with: {part: '${{ matrix.part }}', legs: 3, rest: '${{ matrix.rest }}', postgres: '${{ job.services.postgres.id }}'}}
-      - name: Count the database broker suites' skips
+      # why: .github/ci-notes/ci.md#the-envoy-go-unit-step-one-go-test-that-counts-the-brokers-skips
+      - name: Unit test envoy Go package
         if: matrix.suite == 'envoy-go'
-        timeout-minutes: 30
+        timeout-minutes: 45
         working-directory: packages/envoy
         env: {LEG: '${{ matrix.part }}'}
-        run: scripts/database-skips.sh --timeout 15m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' --run "$(../../.github/scripts/go-test-split.sh "$LEG" 3 ./internal/cipher/... ./cmd/cipherd/)" --jsonfile "go-envoy-held-envoy-go-$LEG-database-skips.json"
-      - {if: always() && matrix.suite == 'envoy-go', uses: ./.github/actions/go-test-upload, with: {name: 'go-envoy-held-envoy-go-${{ matrix.part }}-database-skips'}}
+        run: scripts/database-skips.sh --timeout 15m --skip '^(TestEverySecretFormNamesTheSourceItUses|TestFindMarksMatchesFindMarkOnAnchorCorpus|TestIncrementalRenderCorpus|TestNoSecretFormAsksTheBrokerForACredential|TestReanchorReuseMatchesPerCallOnAnchorCorpus|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestStatementTimings|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestValidDocumentRenderWithLayoutIsTheValidatingRender|TestWalkMatchesTheReferenceWalkOnACorpus|TestWebDisplayFixture|TestYTextRangesMatchesFrozenOnAnchorCorpus)$' --module-except '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$' --run "$(../../.github/scripts/go-test-split.sh "$LEG" 3 $UNIT_PACKAGES)" --jsonfile "go-envoy-held-envoy-go-$LEG-unit.json"
+      - {if: always() && matrix.suite == 'envoy-go', uses: ./.github/actions/go-test-upload, with: {name: 'go-envoy-held-envoy-go-${{ matrix.part }}-unit'}}
       - name: Time the statements on the seeded measurement database
         if: matrix.rest
         timeout-minutes: 15
@@ -765,7 +749,7 @@ jobs:
       - {name: dispatch-two-builds, if: matrix.leg == 'dispatch-two-builds', uses: ./.github/actions/go-envoy-held/dispatch-two-builds, with: {postgres: '${{ job.services.postgres.id }}'}}
       - {name: dispatch-two-builds-same, if: matrix.leg == 'dispatch-two-builds-same', uses: ./.github/actions/go-envoy-held/dispatch-two-builds-same, with: {postgres: '${{ job.services.postgres.id }}'}}
       - {name: envoy-smoke, if: matrix.leg == 'envoy-smoke', uses: ./.github/actions/go-envoy-held/envoy-smoke}
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   envoy-go:
     name: ${{ 'envoy-go / envoy-go' }}
@@ -775,11 +759,10 @@ jobs:
     timeout-minutes: 10
     env: {JOB_TIMEOUT_MINUTES: 10}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {sparse-checkout: .github, persist-credentials: false}
+      - *checkout-github
       - env: {GH_TOKEN: '${{ github.token }}'}
         run: .github/scripts/leg-verdict.sh 'envoy-go (1/3)' 'envoy-go (2/3)' 'envoy-go (3/3)'
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   envoy-go-race-api:
     name: ${{ 'envoy-go-race-api / envoy-go-race-api' }}
@@ -789,11 +772,10 @@ jobs:
     timeout-minutes: 10
     env: {JOB_TIMEOUT_MINUTES: 10}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {sparse-checkout: .github, persist-credentials: false}
+      - *checkout-github
       - env: {GH_TOKEN: '${{ github.token }}'}
         run: .github/scripts/leg-verdict.sh 'envoy-go-race-api (1/2)' 'envoy-go-race-api (2/2)'
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   envoy-go-race-docs:
     name: ${{ 'envoy-go-race-docs / envoy-go-race-docs' }}
@@ -803,11 +785,10 @@ jobs:
     timeout-minutes: 10
     env: {JOB_TIMEOUT_MINUTES: 10}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {sparse-checkout: .github, persist-credentials: false}
+      - *checkout-github
       - env: {GH_TOKEN: '${{ github.token }}'}
         run: .github/scripts/leg-verdict.sh 'envoy-go-race-docs (1/2)' 'envoy-go-race-docs (2/2)'
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   envoy-go-docs-finalizers:
     name: ${{ 'envoy-go-docs-finalizers / envoy-go-docs-finalizers' }}
@@ -817,11 +798,10 @@ jobs:
     timeout-minutes: 10
     env: {JOB_TIMEOUT_MINUTES: 10}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {sparse-checkout: .github, persist-credentials: false}
+      - *checkout-github
       - env: {GH_TOKEN: '${{ github.token }}'}
         run: .github/scripts/leg-verdict.sh 'envoy-go-docs-finalizers (1/3)' 'envoy-go-docs-finalizers (2/3)' 'envoy-go-docs-finalizers (3/3)'
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   dispatch-memory:
     name: ${{ 'dispatch-memory / dispatch-memory' }}
@@ -831,11 +811,10 @@ jobs:
     timeout-minutes: 10
     env: {JOB_TIMEOUT_MINUTES: 10}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {sparse-checkout: .github, persist-credentials: false}
+      - *checkout-github
       - env: {GH_TOKEN: '${{ github.token }}'}
         run: .github/scripts/leg-verdict.sh 'dispatch-memory (1/2)' 'dispatch-memory (2/2)'
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   airlock-arm:
     needs: changes
@@ -846,16 +825,11 @@ jobs:
     env: {JOB_TIMEOUT_MINUTES: 45}
     strategy: {fail-fast: false, matrix: {leg: [k9, lease]}}
     services:
-      postgres:
-        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-        env: {POSTGRES_PASSWORD: ci}
-        ports: ["5432:5432"]
-        options: --health-cmd "pg_isready -U postgres" --health-interval 10s --health-timeout 5s --health-retries 5
+      postgres: *postgres
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
+      - *checkout
       - {uses: ./.github/actions/airlock-arm, with: {leg: '${{ matrix.leg }}'}}
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   text-checks:
     needs: changes
@@ -865,11 +839,10 @@ jobs:
     timeout-minutes: 15
     env: {JOB_TIMEOUT_MINUTES: 15}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
+      - *checkout
       - name: text-checks
         uses: ./.github/actions/text-checks
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   notices:
     needs: changes
@@ -879,11 +852,10 @@ jobs:
     timeout-minutes: 30
     env: {JOB_TIMEOUT_MINUTES: 30}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
+      - *checkout
       - name: notices
         uses: ./.github/actions/notices
-      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+      - *report
 
   worker-image:
     needs: changes
@@ -973,7 +945,7 @@ jobs:
   ci-ok:
     # why: .github/ci-notes/ci.md#a-dispatched-runs-check-names
     name: ${{ github.event_name == 'workflow_dispatch' && needs.changes.outputs.ref_is_main != 'true' && 'ci-ok (dispatch)' || 'ci-ok' }}
-    needs: [changes,lint,scripts,scripts-held,ci-images,tool-fallback,go-daemon,daemon-go,daemon-go-race,plugin-pack,daemon-live,agent-harness,kind-image,kind,docs,ts,web-cold,pi,pi-held,claude-envoy-names,dispatch-browser,dispatch-browser-pr,go-envoy,envoy-held,go-envoy-held,envoy-go,envoy-go-race-api,envoy-go-race-docs,envoy-go-docs-finalizers,dispatch-memory,airlock-arm,text-checks,notices,worker-image,browser-image]
+    needs: [changes,lint,scripts,scripts-held,ci-images,tool-fallback,tool-fallback-arm,go-daemon,daemon-go,daemon-go-race,plugin-pack,daemon-live,agent-harness,kind-image,kind,docs,ts,web-cold,pi,pi-held,claude-envoy-names,dispatch-browser,dispatch-browser-pr,go-envoy,envoy-held,go-envoy-held,envoy-go,envoy-go-race-api,envoy-go-race-docs,envoy-go-docs-finalizers,dispatch-memory,airlock-arm,text-checks,notices,worker-image,browser-image]
     if: ${{ always() }}
     runs-on: ubuntu-24.04-arm
     # why: .github/ci-notes/ci.md#why-a-failing-verdict-of-a-group-behind-the-front-waits-for-the-front

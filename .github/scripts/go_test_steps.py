@@ -135,8 +135,7 @@ class AuditedScript:
 
 
 # The tests envoy-go's "Count the store-form rows on each backend" names, in the order its run:
-# passes them to backend-count.sh; the unit and database-skips steps' -skip lists name the same
-# tests by package.
+# passes them to backend-count.sh; the unit step's -skip names the same tests.
 BACKEND_COUNT_TESTS = (
     "TestEverySecretFormNamesTheSourceItUses",
     "TestNoSecretFormAsksTheBrokerForACredential",
@@ -144,6 +143,23 @@ BACKEND_COUNT_TESTS = (
     "TestTheChainSkipsAbsenceAndStopsOnABrokenSource",
     "TestSettingsNameTheGoogleExchangeAudienceOnEitherStore",
 )
+
+# The unit step's -skip and --module-except as ci.yaml writes them, quoted: the web display
+# fixture's two tests, BACKEND_COUNT_TESTS, pmdoc's six corpus tests and TestStatementTimings; and
+# the race lanes' packages, the text checks, internal/integration and the packages envoy-go-build
+# and envoy-go-checks run. The pattern is the one the envoy-go action's list step writes.
+UNIT_SKIP = ("'^(TestEverySecretFormNamesTheSourceItUses|TestFindMarksMatchesFindMarkOnAnchorCorpus|"
+             "TestIncrementalRenderCorpus|TestNoSecretFormAsksTheBrokerForACredential|"
+             "TestReanchorReuseMatchesPerCallOnAnchorCorpus|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|"
+             "TestStatementTimings|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|"
+             "TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|"
+             "TestValidDocumentRenderWithLayoutIsTheValidatingRender|TestWalkMatchesTheReferenceWalkOnACorpus|"
+             "TestWebDisplayFixture|TestYTextRangesMatchesFrozenOnAnchorCorpus)$'")
+UNIT_EXCEPT = ("'/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|"
+               "/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|"
+               "/internal/wirecheck$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|"
+               "/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|"
+               "/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$'")
 
 # Each script a step of ci.yaml's router runs as its whole run: line, read by a person, with the
 # one `go test` it runs for each argument list a step passes it. A step that runs any other script
@@ -164,22 +180,27 @@ AUDITED_SCRIPTS = {
     # -race, -run or -skip, under -timeout "${GO_TEST_TIMEOUT:-15m}". A package argument replaces
     # those packages, `--race` adds -race, `--skip P` adds -skip P, `--run P` adds -run P,
     # `--timeout D` sets the -timeout, and `--var NAME` and `--jsonfile NAME` decide only whether it
-    # runs at all and where its jsonfile goes. With `--report FILE` it reads a report and runs no
-    # test. ci.yaml's go-envoy-held job runs it in two kinds of leg, each passing its own share of
-    # the packages' tests as --run, the `$(…)` call of .github/scripts/go-test-split.sh that prints
-    # it, with the leg's number in $LEG: the envoy-go legs' "Count the database broker suites'
-    # skips" step passes the first argument list below, whose command is that run in the listing
-    # form this module reads, and the envoy-go-race-api legs' race step the second. Each command's
-    # -run is the split's, so the legs between them run the packages whole. The first's --skip
-    # leaves out the backend count's test of ./internal/cipher/api/.
+    # runs at all and where its jsonfile goes. `--module-except P` adds to the run every package of
+    # `go list ./... | grep -Ev P`, in that order, and then each counted package P took out; P keeps
+    # every counted package here, so the run is the listing alone. With `--report FILE` it reads a
+    # report and runs no test. ci.yaml's go-envoy-held job runs it in two kinds of leg, each passing
+    # its own share of the packages' tests as --run, the `$(…)` call of
+    # .github/scripts/go-test-split.sh that prints it, with the leg's number in $LEG: the envoy-go
+    # legs' "Unit test envoy Go package" step (main's #5084: the unit tests and the broker's
+    # packages in one go test) passes the first argument list below, whose command is that run in
+    # the listing form this module reads, and the envoy-go-race-api legs' race step the second. The
+    # first's split lists UNIT_PACKAGES, which the envoy-go action's step "List the packages the
+    # unit step runs" lists with that same pattern, so its share is of the packages it runs. Each
+    # command's -run is the split's, so the legs between them run the packages whole. The first's
+    # --skip leaves out the web display fixture's two tests, the backend count's five, pmdoc's six
+    # corpus tests and TestStatementTimings, each of which another step of the job runs.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         commands={
-            "--timeout 15m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' "
-            "--run \"$(../../.github/scripts/go-test-split.sh \"$LEG\" 3 ./internal/cipher/... ./cmd/cipherd/)\" "
-            "--jsonfile \"go-envoy-held-envoy-go-$LEG-database-skips.json\"":
-                "go list ./internal/cipher/... ./cmd/cipherd/ | grep -Ev '/internal/cipher/natscallout$' | "
-                "xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' "
+            f"--timeout 15m --skip {UNIT_SKIP} --module-except {UNIT_EXCEPT} "
+            "--run \"$(../../.github/scripts/go-test-split.sh \"$LEG\" 3 $UNIT_PACKAGES)\" "
+            "--jsonfile \"go-envoy-held-envoy-go-$LEG-unit.json\"":
+                f"go list ./... | grep -Ev {UNIT_EXCEPT} | xargs go test -json -count=1 -skip {UNIT_SKIP} "
                 "-run \"$(../../.github/scripts/go-test-split.sh)\" -timeout 15m",
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 26m "
             "--run \"$(../../.github/scripts/go-test-split.sh \"$LEG\" \"$LEGS\" -race ./internal/dispatch/api/)\" "
