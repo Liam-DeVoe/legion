@@ -279,15 +279,16 @@ func TestARefusalNamesTheFirstReasonsOfEachKindAndCountsTheRest(t *testing.T) {
 			ringNeeds = append(ringNeeds, shown{task: id, item: next})
 		}
 	}
-	// selves is 21 tasks s01 to s21, each needing itself: 21 sets of one task.
+	// selves is 21 tasks s01 to s21, each needing itself: 21 sets of one task. Of its first 20
+	// tasks, the reason of the need (`task s01 needs s01.`) and the reason of the set (`task s01
+	// needs itself: s01 needs s01.`) each name `s01 needs s01`, so selfNamed stands for both.
 	var selves []Block
-	var selfNeeds, selfSets []shown
+	var selfNamed []shown
 	for i := 1; i <= 21; i++ {
 		id := fmt.Sprintf("s%02d", i)
 		selves = append(selves, taskNeeding(id, id))
 		if i <= MostReasons {
-			selfNeeds = append(selfNeeds, shown{task: id, item: id + " needs " + id})
-			selfSets = append(selfSets, shown{task: id, item: id + " needs " + id})
+			selfNamed = append(selfNamed, shown{task: id, item: id + " needs " + id})
 		}
 	}
 	// mixed is task a with 25 words that name no task and two roles nobody defines, then task b
@@ -326,7 +327,7 @@ func TestARefusalNamesTheFirstReasonsOfEachKindAndCountsTheRest(t *testing.T) {
 		{name: "a cycle is named after more than MostReasons reasons of another kind", plan: planOf(t, 1, ring...),
 			want: slices.Concat(naming("", "(t01, t02, "), ringNeeds, counting(2), naming("t01", "t22 needs t01"))},
 		{name: "21 sets of tasks that need each other: 20 named, 1 counted", plan: planOf(t, 1, selves...),
-			want: slices.Concat(naming("", "(s01, s02, "), selfNeeds, counting(1), selfSets, counting(1))},
+			want: slices.Concat(naming("", "(s01, s02, "), selfNamed, counting(1), selfNamed, counting(1))},
 		{name: "the reasons named keep the checks' order, the dropped ones left out", plan: mixed,
 			want: slices.Concat(naming("", "(a, b)", "(a, b)"), naming("a", numbered("x", MostReasons)...), counting(8),
 				naming("a", "r00001", "r00002"), naming("b", "r00003"))},
