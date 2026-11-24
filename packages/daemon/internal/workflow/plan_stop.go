@@ -149,8 +149,8 @@ func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Iss
 // changes nothing and says so, and so does a stop where its hold cannot stand: a root that waits on
 // a person before its first step (stopRefusal).
 //
-// An issue whose group takes no plan from its owner (groupOf, takesNoPlan) takes no stop of its
-// tasks from that owner either: the experiment decides how the issue is done. The stop is
+// An issue whose group runs the project's default steps (groupOf, takesNoPlan) takes no stop of
+// its tasks from its owner: the experiment decides how the issue is done. The stop is
 // answered PLAN_NOT_TAKEN before anything else is read, and the task goes on as it stood.
 func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskStopped) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)

@@ -80,9 +80,11 @@ func (e *Engine) groupOf(ctx context.Context, tx pgx.Tx, issue string) (record.A
 	return experiment.GroupOf(rows[issue]), nil
 }
 
-// takesNoPlan says whether group, an issue's row of groupOf, takes no plan from the issue's owner:
-// the arm runs the project's default steps. It is the one answer the three readers of the group
-// read — the first step (planFirstStep), register_plan (planGiven) and stop_task (taskStopped) —
+// takesNoPlan says whether group, an issue's row of groupOf, sets how the issue is done: the arm
+// runs the project's default steps, and the issue takes from its owner no plan but a version that
+// changes nothing but the text of its running task default (versionRefusal). It is the one answer
+// the three readers of the group read — the first step (planFirstStep), register_plan (planGiven)
+// and stop_task (taskStopped) —
 // and it holds only the word this release carries out: the loader refuses `owner-alone`
 // (config's readVariants), so no draw of this release writes it.
 func takesNoPlan(group record.Assignment) bool {
@@ -101,7 +103,7 @@ func takesNoPlan(group record.Assignment) bool {
 // (defaultRows). Nothing is passed over in silence, and the plan the run takes is the one the
 // telling names (tellPassedOver).
 //
-// An issue whose group takes no plan from its owner (groupOf, takesNoPlan) takes the default
+// An issue whose group runs the project's default steps (groupOf, takesNoPlan) takes the default
 // steps: the owner's plans are passed over too (passOverOwners), and the one notice that tells
 // what it passed over names the group (tellNotTaken).
 func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
