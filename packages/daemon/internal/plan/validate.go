@@ -233,9 +233,9 @@ func chainOf(cycle []string) string {
 // is the shortest from the set's first task in id order back to that task, found breadth first
 // inside the set (cycleFrom), as Dispatch's spec graph names its loops (findLoops in
 // packages/envoy/internal/dispatch/specgraph). So the check takes time linear in the tasks and
-// their needs, and a set gives one reason however many cycles run through it: a search from
-// every need, which named the shortest cycle through each one, was quadratic on a ring of tasks,
-// and Dispatch takes an owner's plan of 10,000 of them. Each cycle starts at its set's first task,
+// their needs, and a set gives one reason however many cycles run through it, where a search from
+// each task of a set would follow each of its needs once for each task, quadratic on a ring of
+// tasks, and Dispatch takes an owner's plan of 10,000 of them. Each cycle starts at its set's first task,
 // and the cycles are in the order of those tasks' ids. A need is a task id (FromBlocks); one that
 // names no task of tasks closes no cycle. followed is how many needs cycleFrom follows over all
 // the sets, at most the needs of tasks, since a task joins at most one search.

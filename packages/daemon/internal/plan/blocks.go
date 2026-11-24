@@ -105,10 +105,11 @@ func resolveNeeds(p Plan) Plan {
 
 // resolved is one task's `needs` words as the ids of the tasks of ids they name, and the words
 // that name none, each kept once in the block's order. Each word is looked up in a set of what
-// is kept already, so the read takes time linear in the words: a scan of the kept list for each
-// word was quadratic in the words of one block, and one `needs` attribute within Dispatch's
-// document limit holds hundreds of thousands of words. TestEachNeedOfAPlanIsReadInLinearTime
-// holds the read to its thread's CPU time, since no count kept here sees a scan.
+// is kept already, so the read takes time linear in the words, where a scan of the kept list for
+// each word would be quadratic in the words of one block, and one `needs` attribute within
+// Dispatch's document limit holds hundreds of thousands of words.
+// TestEachNeedOfAPlanIsReadInLinearTime holds the read to its thread's CPU time, since no count
+// kept here would see a scan.
 func resolved(words []string, ids map[string]bool) (needs, unresolved []string) {
 	if len(words) == 0 {
 		return nil, nil
