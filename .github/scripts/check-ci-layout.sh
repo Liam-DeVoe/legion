@@ -76,12 +76,10 @@
 #       output of changes nor a job of ci.yaml.
 #   34. the legs of a split job (`<name> (<i>/<n>)`) that name two counts of legs, or that leave an
 #       index from 1 to n out, name one twice or name one outside 1 to n; a leg whose matrix `part`
-#       is not its own index; and a step that runs in a leg and hands it another count than n, as
-#       its `with: legs` (written out, or read off the leg's matrix) or in a go-test-split.sh call
-#       of its run:. A leg reads its shard of a corpus by its index and count
-#       (CORPUS_SHARD=<i>/<n>), and go-test-split.sh prints its share of a list by the same two, so
-#       the legs read each document and each test once between them only when each index names one
-#       leg and every step divides by the same n.
+#       is not its own index; and a step that runs in a leg and hands it another count than n as
+#       its `with: legs` (written out, or read off the leg's matrix). A leg reads its shard of a
+#       corpus by its index and count (CORPUS_SHARD=<i>/<n>), so the legs read each document once
+#       between them only when each index names one leg and every step divides by the same n.
 #
 # Rule 20 runs go list over each vetted module with GOPROXY=off over an empty module cache and the
 # module's own toolchain, so nothing is fetched and a cold runner answers as a warm machine does.

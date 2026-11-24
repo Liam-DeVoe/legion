@@ -10,9 +10,9 @@
 # a job gated on an output changes does not declare, a carrier with a fourth step, a carrier for a
 # job that is not split, a carrier with no report step, a split job's legs that leave an index out,
 # that name one twice, that name two counts or an index outside them, a step that hands a leg
-# another count than its name's (a `with: legs`, written out or read off the matrix, or a
-# go-test-split.sh call), ci-ok's reconcile step renamed and its hold step's if: drifted from the
-# term the reconcile negates, pr-title needing changes, a literal name
+# another count than its name's as its `with: legs` (written out or read off the matrix), ci-ok's
+# reconcile step renamed and its hold step's if: drifted from the term the reconcile negates,
+# pr-title needing changes, a literal name
 # on a job a run can skip (worker-image, an agent-harness part, dispatch-browser.yaml's visual),
 # a changes output reading another step, the airlock job on x64, the race step dropping a package
 # the fill names, a push-only if: in an action only ci.yaml runs, a cache key drifting inside an
@@ -264,8 +264,6 @@ replace "$ci" "uses: ./.github/actions/go-envoy-held/envoy-go-docs-finalizers, w
   "uses: ./.github/actions/go-envoy-held/envoy-go-docs-finalizers, with: {part: '\${{ matrix.part }}', legs: 4,"
 # go-daemon's third leg's matrix count, which its step reads as \${{ matrix.legs }}
 replace "$ci" '{name: daemon-go (3/3), leg: 3, legs: 3,' '{name: daemon-go (3/3), leg: 3, legs: 4,'
-# the unit step's share of the packages split two ways under three legs
-replace "$ci" 'go-test-split.sh "$LEG" 3 $UNIT_PACKAGES' 'go-test-split.sh "$LEG" 2 $UNIT_PACKAGES'
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the legs that name two counts (rule 34)" \
@@ -278,8 +276,6 @@ check "names a matrix count a step reads that is not the leg's (rule 34)" \
   "$(has "$out" "leg \`daemon-go (3/3)\` of job go-daemon runs step \"daemon-go\", which hands it legs 4, where its name counts 3")"
 check "and not the legs whose matrix count is right" \
   "$(is "$(has "$out" "leg \`daemon-go (1/3)\` of job go-daemon runs step \"daemon-go\"")" false)"
-check "names a go-test-split.sh count that is not the legs' (rule 34)" \
-  "$(has "$out" "leg \`envoy-go (2/3)\` of job go-envoy-held runs step \"Unit test envoy Go package\", whose go-test-split.sh call splits into 2 legs, where its name counts 3")"
 check "and no step of a leg its if: keeps it out of" \
   "$(is "$(has "$out" "leg \`envoy-go-race-api (1/2)\` of job go-envoy-held runs step")" false)"
 

@@ -1341,10 +1341,6 @@ def check_carriers(document: dict, legs: list, splits: dict, pins, problems: lis
 
 
 # ---------------------------------------------------------------- rule 34: the shard legs
-# A count a step's run: body hands go-test-split.sh, which prints one leg's share of a list.
-SPLIT_CALL = re.compile(r"go-test-split\.sh\s+\S+\s+(\d+)\b")
-
-
 def whole(value):
     """A count as a step's `with:` or a matrix gives it (3, 3.0 or '3'), or None for anything
     else, an expression the reader cannot know among them."""
@@ -1370,13 +1366,13 @@ def leg_value(text: str, leg: dict):
 def check_shard_legs(document: dict, splits: dict, problems: list) -> None:
     """Rule 34: the legs of a split job, each named `<name> (<i>/<n>)`, name one count n and each
     index from 1 to n once, a leg that hands its steps a matrix `part` hands them its own index,
-    and each step that runs in such a leg hands it n: a `with: legs`, written out (`legs: 3`) or
-    read off the leg's matrix (`${{ matrix.legs }}`), and the count of a go-test-split.sh call of
-    its run:. A leg reads its shard of a corpus by its index and the count (CORPUS_SHARD=<i>/<n>),
-    and go-test-split.sh prints its share of a list by the same two, so the legs read each
-    document and each test once between them only when every index is one leg's and every step
-    of every leg divides by the same n. `splits` is split_legs over what jq_names reads off the
-    workflow."""
+    and each step that runs in such a leg and hands it a `with: legs`, written out (`legs: 3`) or
+    read off the leg's matrix (`${{ matrix.legs }}`), hands it n. A leg reads its shard of a corpus
+    by its index and the count (CORPUS_SHARD=<i>/<n>), so the legs read each document once between
+    them only when every index is one leg's and every step of every leg divides by the same n.
+    (The envoy-go unit step's `go-test-split.sh "$LEG" 3` is no `with:`: go_test_steps'
+    AUDITED_SCRIPTS holds that run: to its text, so another count is refused there.) `splits` is
+    split_legs over what jq_names reads off the workflow."""
     jobs = document.get("jobs") or {}
     for (job, base), entries in sorted(splits.items(), key=lambda item: item[0]):
         counts = sorted({legs_count for _, legs_count, _ in entries})
@@ -1412,11 +1408,6 @@ def check_shard_legs(document: dict, splits: dict, problems: list) -> None:
                     problems.append(error(WORKFLOW, f"leg `{entry['name']}` of job {job} runs step "
                                                     f"\"{step_label(step)}\", which hands it legs {handed}, where its "
                                                     f"name counts {count}"))
-                for found in SPLIT_CALL.finditer(str(step.get("run", ""))):
-                    if int(found.group(1)) != count:
-                        problems.append(error(WORKFLOW, f"leg `{entry['name']}` of job {job} runs step "
-                                                        f"\"{step_label(step)}\", whose go-test-split.sh call splits "
-                                                        f"into {found.group(1)} legs, where its name counts {count}"))
 
 
 # ---------------------------------------------------------------- rule 20: darwin vets
