@@ -35,8 +35,10 @@
  * `bash <label>/packages/pi-legion/scripts/skill-scenarios/label-texts.sh plan-check <request>
  * <answer>` with that version as C2's plan request. It answers the entry's answer, its status and
  * its body. An entry that exits non-zero is answered 500, naming its exit and the last line of its
- * stderr, and so is a stand-in started without `--label` or `--dispatch`: it never answers a plan on
- * its own.
+ * stderr; so is an entry that leaves no answer, an answer whose status no response carries (below
+ * 200, or a body on a status that has none), and a stand-in started without `--label` or
+ * `--dispatch`: it never answers a plan on its own. A read of the run's Dispatch that fails, and a
+ * version whose blocks cannot be read, are answered 502.
  *
  * Every request appends one JSON line to the log file: `{at, path, status, grantId?, sessionId?,
  * mintedGrantId?, handoffId?, handoffVersion?, body?}` (C3's `StandinLogLine`), the run's record of
@@ -524,22 +526,26 @@ async function runEntry(label: string, request: PlanRequest): Promise<Response> 
       console.error(`daemon-standin: register_plan answered 500: ${reason}`);
       return failure(500, "PLAN_CHECK_FAILED", reason);
     }
-    try {
-      return new Response(answer.body === "" ? null : answer.body, {
-        status: answer.status,
-        headers: { "Content-Type": "application/json" },
-      });
-    } catch (error) {
-      return failure(
-        500,
-        "PLAN_CHECK_FAILED",
-        `the label's register_plan answered status ${answer.status}, which no response carries: ${error}`
-      );
+    // A status below 200 is no answer the Fetch standard's `Response` takes; Bun sends it anyway
+    // (a 101 reaches the client as an upgrade), so it is refused here, as is a body on a status
+    // that has none.
+    if (answer.status < 200 || (answer.body !== "" && BODILESS_STATUSES.has(answer.status))) {
+      const reason = `the label's register_plan answered status ${answer.status} with a body of ${answer.body.length} characters, which no response carries`;
+      console.error(`daemon-standin: register_plan answered 500: ${reason}`);
+      return failure(500, "PLAN_CHECK_FAILED", reason);
     }
+    return new Response(answer.body === "" ? null : answer.body, {
+      status: answer.status,
+      headers: { "Content-Type": "application/json" },
+    });
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
 }
+
+/** The statuses whose response has no body (the Fetch standard's null body statuses that a
+ *  response can be made with). */
+const BODILESS_STATUSES: ReadonlySet<number> = new Set([204, 205, 304]);
 
 /** What one request is answered, and what its log line keeps beside the request's own fields: the
  * grant a grant request minted, and `body`. */
