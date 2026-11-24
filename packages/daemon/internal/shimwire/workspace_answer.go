@@ -36,7 +36,7 @@ func CutAnswerError(reason string) string {
 	for tail < len(reason) && !utf8.RuneStart(reason[tail]) {
 		tail++
 	}
-	return fmt.Sprintf("%s\n[The shim cut %d bytes of this error here. The error had %d bytes.]\n%s",
+	return fmt.Sprintf("%s\n[%d bytes of this error were cut here. The error had %d bytes.]\n%s",
 		reason[:head], tail-head, len(reason), reason[tail:])
 }
 

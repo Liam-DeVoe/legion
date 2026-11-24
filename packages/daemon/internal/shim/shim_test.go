@@ -1598,7 +1598,7 @@ func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 // connection and send that line first again at each reconnect, so the role's stream would stay
 // down (ASVS v5.0.0-15.2.2). The answer keeps the start of the reason, which names the command and
 // its exit, and its end, where the note about a stale git lock goes, which tells the role what to
-// do; it says that the shim cut the bytes between. The connection then carries the next answer.
+// do; it says how many bytes were cut between. The connection then carries the next answer.
 func TestAdoptWorkingCopyFailureOverOneLineKeepsItsStartAndItsLockNote(t *testing.T) {
 	workspace := t.TempDir()
 	lock := filepath.Join(workspace, ".git", "index.lock")
@@ -1641,7 +1641,7 @@ func TestAdoptWorkingCopyFailureOverOneLineKeepsItsStartAndItsLockNote(t *testin
 	for _, want := range []string{
 		"Command failed (exit 1)",
 		"the working copy is stale",
-		"The shim cut",
+		"bytes of this error were cut here",
 		"git lock " + lock + " was last written 31m",
 		"Run the command again in about 16 minutes.",
 	} {

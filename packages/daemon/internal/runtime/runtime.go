@@ -325,22 +325,28 @@ type IssueReleaser interface {
 // kept volume, was made before since, carries no reset mark, and has the disk shape that the
 // configuration now renders for the issue. A Sandbox made at or after since holds a new volume,
 // which holds nothing of a pod before it. The next launch deletes a Sandbox that carries the reset
-// mark or that has another disk shape, with its volume. The daemon asks it when a pod goes before
-// its update round is over, with the time the round opened, to tell the issue whether the work its
-// roles did not push is still on the volume, and in the rename pass's live-pod rules, at each boot
-// and each pod end, with the present time, to keep the issue on the name its workspace on the
-// volume is under. Every runtime that runs a pod per issue implements it, since the daemon's test
-// of such a runtime (issuePods) needs it; one whose pods keep no volume answers false.
+// mark or that has another disk shape, with its volume. The daemon asks it of an update round's
+// pod, with the time the round opened: before a replacement, which it makes over a kept volume
+// whatever the read before it found (internal/daemon's roundKeeps), and once the pod is replaced or
+// went before its round was over, to tell the issue whether the work its roles did not push is
+// still on the volume. It asks it with the present time of the release of a pod no claim owns,
+// where the release's decision turns on it (workflow.IdleDecision.TurnsOnKeptVolume), since that
+// release keeps such a volume, reads nothing and is held by no failed read; and in the rename
+// pass's live-pod rules, at each boot and each pod end, to keep the issue on the name its workspace
+// on the volume is under. Every runtime that runs a pod per issue implements it, since the daemon's
+// test of such a runtime (issuePods) needs it; one whose pods keep no volume answers false.
 type IssueVolumeReader interface {
 	IssueKeepsVolume(issue string, since time.Time) bool
 }
 
 // WorkspaceWorkReader asks one live role's process whether the issue workspace every role of the
-// issue shares holds work that no branch or tag on origin holds. Two decisions rest on the read. A
-// pod update round makes it before it replaces a pod without waiting for every role, so that the
-// replacement can name what goes with the pod. The idle release makes it before it takes an
-// issue's pod, and takes the pod only when the read finds no work: nothing keeps a copy of work a
-// released pod's workspace held. The role named must be one whose process runs in the issue's pod:
+// issue shares holds work that no branch or tag on origin holds. A pod update round makes it before
+// each replacement it makes
+// through a role, and replaces the pod only over a read that found nothing, unless the round is
+// over a drift that breaks the pod or the disk is a kept volume (R7 of dispatch://INFRA-3271). The
+// idle release and the close of a left pod with a live claim make it before they take the pod, and
+// take it only when the read finds no work: nothing keeps a copy of work a taken pod's workspace
+// held. The role named must be one whose process runs in the issue's pod:
 // its shim reads the workspace with the jj it already works with. The read keeps nothing of the
 // work; the one thing it writes is jj's snapshot of the working copy (Conn.WorkspaceWork). A
 // runtime whose processes share no workspace implements nothing here.
@@ -351,8 +357,9 @@ type WorkspaceWorkReader interface {
 // PodWorkspaceReader asks the issue pod's launcher, which runs in the pod whether or not a role
 // process does, to make WorkspaceWorkReader's read of the issue workspace, with the same count
 // (R6 of dispatch://INFRA-3271). The release of a pod no claim owns and the close of a left pod
-// with no live claim make it before they delete a disk, since no role's shim runs there to read
-// through. The pod read is the one the runtime holds for the issue now; a pod with no launcher
+// with no live claim make it before they delete a disk, and an update round before a replacement
+// it makes by issue or at a launch, since no role's shim runs there to read through. The pod read
+// is the one the runtime holds for the issue now; a pod with no launcher
 // that says it reads a workspace, a pod the runtime cannot name, and a launcher that refuses are
 // each an error, never an answer of no work. A runtime whose processes run in no pod implements
 // nothing here.
