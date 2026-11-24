@@ -706,11 +706,11 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
     url.password = "s3cret";
     return url.href;
   };
-  /** services_up given URL and a NATS, in a services directory of its own, with a psql first on
-   * PATH that appends to psql.log each time it runs. until_true runs its command once, so a URL
-   * that passed every check would reach psql at once. Answers services_up's status and standard
-   * error, whether psql ran, and what the services directory holds. */
-  function up(url: string) {
+  /** services_up given URL and the NATS nats, in a services directory of its own, with a psql
+   * first on PATH that appends to psql.log each time it runs. until_true runs its command once, so
+   * a URL that passed every check would reach psql at once. Answers services_up's status and
+   * standard error, whether psql ran, and what the services directory holds. */
+  function up(url: string, nats = "nats://127.0.0.1:4222") {
     const dir = freshDir("services-up");
     const bin = path.join(dir, "bin");
     const log = path.join(dir, "psql.log");
@@ -722,14 +722,14 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
     });
     const result = bash(
       `set -euo pipefail\n. "$1"\n. "$2"\n${fn("fail")}\n${fn("given_services")}\n` +
-        `${fn("safe_url")}\n${fn("pg_sql")}\n${fn("services_up")}\n` +
+        `${fn("safe_url")}\n${fn("pg_sql")}\n${fn("nats_url_host")}\n${fn("services_up")}\n` +
         `until_true() { shift 2; "$@"; }\n` +
         `S=$3\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nservices_up`,
       [pgUrl, loopbackDsn, services],
       {
         PATH: `${bin}:${childEnv.PATH}`,
         SKILL_SCENARIOS_POSTGRES_URL: url,
-        SKILL_SCENARIOS_NATS_URL: "nats://127.0.0.1:4222",
+        SKILL_SCENARIOS_NATS_URL: nats,
       }
     );
     return {
@@ -782,6 +782,33 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
     }
   });
 
+  // Catches: a given NATS off this machine's loopback refused late, after the batch reached the
+  // Postgres and the NATS and built the listener, or by fixturebuckets alone: services_up refuses
+  // it with the Postgres URL's checks, before psql runs or a URL is written, naming the host it
+  // read and no user info (an IPv6 address, and a name that only begins with localhost, too).
+  test("refuses a NATS off this machine's loopback before psql runs or the URL is written", () => {
+    for (const [hostPort, host] of [
+      ["db.example:4222", "the host db.example"],
+      ["[2001:db8::1]:4222", "the host 2001:db8::1"],
+      ["localhost.example:4222", "the host localhost.example"],
+      [":4222", "no host the batch can read"],
+    ]) {
+      // A URL with no host is built by hand: new URL() refuses it, and the batch must refuse it
+      // too rather than read a host out of the user info.
+      const nats =
+        hostPort === ":4222"
+          ? withPassword("x:4222").replace("x:4222", ":4222")
+          : withPassword(hostPort);
+      expect({ nats, ...up("postgres://u:p@127.0.0.1:5432/postgres", nats) }).toEqual({
+        nats,
+        code: 1,
+        stderr: `skill-scenarios: SKILL_SCENARIOS_NATS_URL must name 127.0.0.1, localhost or ::1: it names ${host}, and the batch provisions that server with every bucket a listener copies (fixturebuckets), which provisions only a server on this machine's loopback\n`,
+        psqlRan: false,
+        written: [],
+      });
+    }
+  });
+
   /** services_up given a loopback Postgres URL and natsUrl, past every check to the provisioning
    * of that NATS: a psql that answers 500 to `SHOW max_connections`, a NATS probe that answers,
    * and a go that builds a fixturebuckets that fails, as the real one does on a server it cannot
@@ -808,7 +835,7 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
     );
     const result = bash(
       `set -euo pipefail\n. "$1"\n. "$2"\n${fn("fail")}\n${fn("given_services")}\n` +
-        `${fn("safe_url")}\n${fn("pg_sql")}\n${fn("services_up")}\n` +
+        `${fn("safe_url")}\n${fn("pg_sql")}\n${fn("nats_url_host")}\n${fn("services_up")}\n` +
         `until_true() { shift 2; "$@" >/dev/null; }\nnats_ready() { :; }\n` +
         `start_listener() { echo "the listener started" >&2; }\n` +
         `root=$3\nS=$4\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nservices_up`,

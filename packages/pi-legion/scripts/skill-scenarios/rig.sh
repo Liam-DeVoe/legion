@@ -114,17 +114,18 @@
 # SKILL_SCENARIOS_POSTGRES_URL and SKILL_SCENARIOS_NATS_URL are both set, the two servers those
 # URLs name, which the batch uses and leaves running: that is how a batch runs where there is no
 # docker. The two Optional entries below say what each given server must be: the Postgres on this
-# machine, and a NATS of the batch's own. Each run gets a Dispatch of its own (own_dispatch): a
-# database named after the run in the batch's Postgres, and the e2e harness's real Go Dispatch
-# server (packages/dispatch/e2e/run-server.sh) on that database, seeded and read back through its
-# API (seed.ts) and stopped when the run ends. A `dispatch search` searches every project of its
-# server, and a Dispatch bearer cannot be limited to one project, so a shared server would show
-# each run the other runs' issues and asks. Each run records its Dispatch in <run>/dispatch.json,
-# and score.ts does not score two runs that name one database. A given server's URL carries its
-# port and docker assigns a container's host port; the listener serves on a port the kernel chose
-# and scripts/e2e/lib/rig.sh holds for it until it serves (start_held), each run's Dispatch on its
-# own run-server.sh holds the same way and reports, and the kernel assigns each run's daemon
-# stand-in its port.
+# machine, and a NATS of the batch's own on this machine's loopback, which the batch provisions
+# with every bucket a listener copies before its listener starts (fixturebuckets). Each run gets a
+# Dispatch of its own (own_dispatch): a database named after the run in the batch's Postgres, and
+# the e2e harness's real Go Dispatch server (packages/dispatch/e2e/run-server.sh) on that database,
+# seeded and read back through its API (seed.ts) and stopped when the run ends. A `dispatch search`
+# searches every project of its server, and a Dispatch bearer cannot be limited to one project, so
+# a shared server would show each run the other runs' issues and asks. Each run records its
+# Dispatch in <run>/dispatch.json, and score.ts does not score two runs that name one database. A
+# given server's URL carries its port and docker assigns a container's host port; the listener
+# serves on a port the kernel chose and scripts/e2e/lib/rig.sh holds for it until it serves
+# (start_held), each run's Dispatch on its own run-server.sh holds the same way and reports, and
+# the kernel assigns each run's daemon stand-in its port.
 #
 # Operator input (no default in this repository), for `profile`, `judge` and `judge-omp`:
 #   LEGION_E2E_MODEL_ROUTE        gateway (the default), key-file or provider: how the agents reach
@@ -929,6 +930,29 @@ nats_ready() {
   case $line in 'INFO '*) ;; *) return 1 ;; esac
 }
 
+# nats_url_host URL prints the host URL, a given NATS's, names, and succeeds when that host is on
+# this machine's loopback as fixturebuckets reads it (bus.LocalNATSURL): localhost, or a loopback
+# address, read from the URL and never resolved, its root dot dropped. The host is what follows
+# the last `@` of the authority, as Go's net/url reads it, so it never holds the URL's user info. A
+# URL it cannot read prints nothing and fails.
+nats_url_host() {
+  python3 -c '
+import ipaddress, sys, urllib.parse
+raw = sys.argv[1].strip()
+if "://" not in raw:
+    raw = "nats://" + raw
+try:
+    host = (urllib.parse.urlsplit(raw).hostname or "").rstrip(".")
+except ValueError:
+    sys.exit(1)
+print(host)
+try:
+    sys.exit(0 if host == "localhost" or ipaddress.ip_address(host).is_loopback else 1)
+except ValueError:
+    sys.exit(1)
+' "$1"
+}
+
 # services_up brings up the batch's services: its Postgres and its NATS, the servers the operator
 # gave (given_services) or two containers it starts, and the Envoy listener built from this
 # checkout, which the services file ($services_env) names with the NATS and the listener token.
@@ -950,9 +974,14 @@ nats_ready() {
 # the host the guard read. run_database_url then rebuilds, for a placeholder database, the
 # connection string each run's Dispatch gets (own_dispatch), and refuses a value that string
 # cannot carry, so such a URL is refused here, before anything starts, and not in every run.
+#
+# A given NATS must be a server on this machine's loopback: the batch provisions it with every
+# bucket a listener copies (fixturebuckets), which refuses any other server. services_up reads its
+# host with nats_url_host beside the Postgres URL's checks, and refuses any other host there,
+# before anything starts or connects.
 services_up() {
   evidence=$S
-  local parallel=${SKILL_SCENARIOS_PARALLEL:-5} needs admits fits pg_port nats_port pg_host run_url tool rest param key
+  local parallel=${SKILL_SCENARIOS_PARALLEL:-5} needs admits fits pg_port nats_port pg_host nats_host run_url tool rest param key
   local -a params=()
   needs=$((30 * parallel + 20))
   if given_services; then
@@ -977,6 +1006,8 @@ services_up() {
     done
     require_loopback_dsn pg_host SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL" "each run creates a database there" || fail "$pg_host"
     run_database_url run_url SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL" run_placeholder "each run's Dispatch opens its database there" || fail "$run_url"
+    nats_host=$(nats_url_host "$SKILL_SCENARIOS_NATS_URL") ||
+      fail "SKILL_SCENARIOS_NATS_URL must name 127.0.0.1, localhost or ::1: it names ${nats_host:+the host }${nats_host:-no host the batch can read}, and the batch provisions that server with every bucket a listener copies (fixturebuckets), which provisions only a server on this machine's loopback"
     pg_url=$SKILL_SCENARIOS_POSTGRES_URL
     nats_url=$SKILL_SCENARIOS_NATS_URL
     (umask 077 && printf '%s\n' "$pg_url" >"$services_postgres")
