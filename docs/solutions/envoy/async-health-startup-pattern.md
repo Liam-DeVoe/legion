@@ -41,12 +41,13 @@ orchestrators (Pulumi, Kubernetes) time out and kill the container.
 2. net.Listen("tcp", addr) — bind port in main goroutine (deterministic)
 3. Build HTTP mux           — /healthz always available, /v1/* and webhooks each behind a gate
 4. go server.Serve(ln)      — HTTP live immediately, /healthz answers 503 {"status":"starting"}
-5. Slow init in main()      — NATS connect (retried every 2 s until NATS answers), CI store open,
-                              the webhook gate opens, then the listener state bucket and the other
-                              stores open and their caches warm
-6. role lane, v1Gate.open,  — the role lane subscribes, the /v1 gate opens onto the stores, the
-   lease and receive loop      delivery lease and the durable's receive loop start, then the
-   start, deps.Store           atomic publish turns /healthz 200, as the active pod or a standby
+5. Slow init in main()      — NATS connect (retried every 2 s until NATS answers), CI store open
+                              (GitHub route only), the webhook gate opens, then the listener state
+                              bucket and the other stores open and their caches warm
+6. role lane, v1Gate.open,  — the role lane subscribes (none on an edge listener), the /v1 gate
+   lease and receive loop      opens onto the stores, the delivery lease and the durable's receive
+   start, deps.Store           loop start, then the atomic publish turns /healthz 200, as the
+                               active pod or a standby
 7. select on fatal/signal   — block on HTTP server error channel or SIGTERM, then shut down
 ```
 
@@ -103,13 +104,19 @@ func (g *startingGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 ```
 
 main registers two gates before `server.Serve`, one bare on every enabled webhook path and one
-inside `apiAuth` on `/v1`, so those paths answer 503 while the listener starts, and each refusal
-logs `request refused while starting` with the gate, the method and the path: that line is the
-listener's only record of a caller it turned away. Once NATS and the CI store are open,
-`openWebhooks` builds the webhook handlers and opens the webhook gate onto them. In phase 6, once
-the interest and session caches are warm, the role lane subscribes and `openV1Routes` builds the
-`/v1` routes over the stores and opens the `/v1` gate onto them, logging `envoy-listener /v1 open`
-with `since_listening_ms`. Neither gate waits for the durable consumer: no webhook and no `/v1`
+ahead of `apiAuth` on `/v1` (`v1API`), so those paths answer 503 while the listener starts, and
+each refusal logs `request refused while starting` with the gate, the method and the path: that
+line is the listener's only record of a caller it turned away. The `/v1` gate answers before
+`apiAuth` judges any credential, so a refusal while starting spends no request's DPoP proof, and
+the one retry Google's load balancer sends of a body-less request after that 503, with the same
+proof, is not refused as a replay. Once NATS is connected and, on a listener with the GitHub
+route, the CI store is open (no other listener opens it), `openWebhooks` builds the webhook
+handlers and opens the webhook gate onto them. In phase 6, once the interest and session cache
+warm-ups end, each bounded at 30 s and failing open (a warm-up that does not complete logs a
+warning, and the listener serves from what its cache holds), the role lane subscribes, except on
+an edge listener, which subscribes none, and `openV1Routes` builds the `/v1` routes over the
+stores and opens the `/v1` gate onto them, logging `envoy-listener /v1 open` with
+`since_listening_ms`. Neither gate waits for the durable consumer: no webhook and no `/v1`
 handler reads the durable, and a machine id runs an active pod and standbys
 (`packages/envoy/cmd/listener/README.md`), every one of which serves the webhooks and `/v1` while
 only the holder of the machine's delivery lease receives the durable. GitHub does not redeliver a
@@ -122,12 +129,13 @@ webhookGate, v1Gate := newStartingGate("webhook", logger), newStartingGate("v1",
 for _, hook := range hooks {
     mux.Handle(hook.path, webhookGate)
 }
-v1Handler := apiAuth(apiAuthConfig, v1Gate)
+v1Handler := v1API(apiAuthConfig, v1Gate) // v1Gate.ahead(apiAuth(apiAuthConfig, v1Gate))
 mux.Handle("/v1", v1Handler)
 mux.Handle("/v1/", v1Handler)
-// ... phase 5, once NATS and the CI store are open:
-openWebhooks(webhookGate, hooks, client, ciStore)
-// ... phase 6, once the interest and session caches are warm:
+// ... phase 5, once NATS is connected and, with the GitHub route, the CI store is open (else ciStore is nil):
+publisher := ghrename.Publishing(client, renames, logger)
+openWebhooks(webhookGate, hooks, publisher, ciStore)
+// ... phase 6, once the interest and session cache warm-ups end (30 s each, fail open):
 openV1Routes(v1Gate, ready, &v1Deps, cfg.MachineID, logger, listeningAt)
 deliveryLease.Start(leaseCtx)
 receiver.Start()
@@ -151,7 +159,7 @@ while the old pod still delivers.
 
 | Phase | `/healthz` | Body | Meaning |
 |-------|-----------|------|---------|
-| Starting | 503 | `{"status":"starting"}` | Up, init in progress: NATS connecting, caches warming or the discovery of the OIDC issuer or of Google's issuer pending. Webhooks answer 503 until NATS and the CI store are open, `/v1/*` until the interest and session caches are warm too |
+| Starting | 503 | `{"status":"starting"}` | Up, init in progress: NATS connecting, caches warming or the discovery of the OIDC issuer or of Google's issuer pending. Webhooks answer 503 until NATS is connected and, with the GitHub route, the CI store is open, `/v1/*` until the interest and session caches are warm too |
 | Active | 200 | `{"status":"healthy","role":"active",...}` | Serving, and this pod receives the durable; the body carries its lag |
 | Standby | 200 | `{"status":"healthy","role":"standby","active_instance":...}` | Serving; another pod of the machine id holds the lease |
 | Degraded | 200 | `{"status":"degraded","error":"..."}` | A KV dependency or the durable's lag read failed transiently (NATS reconnect and the monitor retry), or this pod is the machine's deliverer and does not receive the durable yet: it holds the delivery lease, runs without one, has read no holder at all, or the lease record still names it while its renewals have lapsed. Nothing of the durable reaches a session until it receives, so no such answer is healthy; it stays 200, so a readiness probe keeps the pod in service |
