@@ -182,7 +182,7 @@ func (c *Client) keepBuckets(ctx context.Context, js nats.JetStreamContext, buck
 			}
 			continue
 		}
-		if refused.answered(bucket, answeredRequests("KV_"+bucket, info, replicas, err)) {
+		if refused.answered(bucket, answeredRequests("KV_"+bucket, info, from, err)) {
 			slog.Info("envoy nats keeper's grant now covers a bucket the server refused it", slog.String("name", c.name), slog.String("bucket", bucket))
 		}
 		switch {
@@ -196,17 +196,18 @@ func (c *Client) keepBuckets(ctx context.Context, js nats.JetStreamContext, buck
 }
 
 // answeredRequests is the subjects of the requests of one raise of stream the server answered,
-// from what the raise came to: info, the read's answer, nil when the read failed, and err, the
-// raise's error, the read's when info is nil and the update's otherwise. The read is answered when
-// it read the stream, or its error is the server's answer (serverAnswered); the update was sent
-// when the read found fewer copies than replicas (raiseStream), and is answered when it raised the
-// stream, or its error is the server's answer.
-func answeredRequests(stream string, info *nats.StreamInfo, replicas int, err error) []string {
+// from what the raise came to: info, the read's answer, nil when the read failed; from, the copies
+// raiseStream returned, above 0 exactly when it raised the stream; and err, the raise's error, the
+// read's when info is nil and the update's otherwise, since raiseStream returns an error only
+// after it sent the update. The read is answered when it read the stream, or its error is the
+// server's answer (serverAnswered); the update is answered when it raised the stream, or its error
+// is the server's answer.
+func answeredRequests(stream string, info *nats.StreamInfo, from int, err error) []string {
 	var answered []string
 	if info != nil || serverAnswered(err) {
 		answered = append(answered, jsAPI("STREAM.INFO", stream))
 	}
-	if info != nil && info.Config.Replicas < replicas && (err == nil || serverAnswered(err)) {
+	if info != nil && (from > 0 || serverAnswered(err)) {
 		answered = append(answered, jsAPI("STREAM.UPDATE", stream))
 	}
 	return answered
