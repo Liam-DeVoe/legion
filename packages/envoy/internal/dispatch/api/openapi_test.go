@@ -467,7 +467,8 @@ func openAPIResponsesByRoute(tree any) map[string]map[string]any {
 }
 
 // openAPIAnswerSchemas names the component schemas one response answers as JSON: its schema's
-// reference, or each reference of its oneOf.
+// reference, or each reference of its oneOf or its anyOf. The emitter writes anyOf at a status
+// that answers a rich refusal beside ErrorBody (openapi.go, the combinator of a refusal status).
 func openAPIAnswerSchemas(response any) []string {
 	answer, _ := response.(map[string]any)
 	content, _ := answer["content"].(map[string]any)
@@ -476,6 +477,8 @@ func openAPIAnswerSchemas(response any) []string {
 	shapes := []any{schema}
 	if oneOf, many := schema["oneOf"].([]any); many {
 		shapes = oneOf
+	} else if anyOf, many := schema["anyOf"].([]any); many {
+		shapes = anyOf
 	}
 	var names []string
 	for _, shape := range shapes {
