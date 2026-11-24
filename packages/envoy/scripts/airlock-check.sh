@@ -5,7 +5,8 @@
 # generated traffic no call fails, the proxy adds at most 100 ms at the median against a plain
 # tunnel, and each broker process passes at most half its wall time in CPU and at most 1 GiB of
 # memory, which are the document's rules for the broker. The `airlock-arm` job of `ci.yaml` runs
-# it in merge groups and on a pull request that carries the `full-ci` label.
+# it in merge groups, in a dispatched run and on a pull request that carries the `full-ci` or the
+# `lane:airlock_arm` label.
 #
 # The script starts the local stack the check needs (scripts/dev-airlock.sh, with github.com's
 # stand-in, so k9's clone reads a repository of the stack's own and no host outside the
@@ -34,7 +35,7 @@
 # The document's other checks are Go tests: k3, k4, k5 and k8a are
 # TestAMethodOrPathTheEntryDoesNotAllowIsRefused and TestTheProxyRefusesTheAddressesItMustNeverDial
 # (internal/cipher/proxy), TestARereadOfASecretReachesTheAirlocksProxy and
-# TestAirlockCheckRefusesAFileTheBrokerWouldNotServe (cmd/cipherd); k1's memory and file scan is a
+# TestProfilesCheckRefusesAFileTheBrokerWouldNotServe (cmd/cipherd); k1's memory and file scan is a
 # row of TestExecFormRunsACommandForANameBehindTheAirlock (cmd/cipher); the swaps k6 and
 # k7 drove real clients through are the proxy's Azure, AWS, GitHub App and gRPC tests; k15 is
 # the airlock-lean job and scripts/airlock-mutants.sh. k2 was a one-time check of a release from
@@ -484,7 +485,7 @@ check_k9_main() {
 		"the proxy adds at most 100 milliseconds at the median" \
 		"the median was $p50 ms against the plain tunnel's $base_p50 ms over $(jq -r .calls "$WORK_DIR/k9/baseline.json") baseline calls ($(jq -r .failed "$WORK_DIR/k9/baseline.json") of them failed), which is $added ms added"
 
-	local i wall cpu peak limits="" worst_cpu=0 over=0
+	local i wall cpu peak limits="" last_cpu=0 over=0
 	wall="$(awk -v a="$wall_before" -v b="$wall_after" 'BEGIN { printf "%.1f", b - a }')"
 	for i in "${!pids[@]}"; do
 		cpu="$(awk -v a="${before[$i]}" -v b="${after[$i]}" 'BEGIN { printf "%.1f", b - a }')"
@@ -492,12 +493,12 @@ check_k9_main() {
 		limits="$limits; pid ${pids[$i]}: $cpu s of CPU over $wall s of wall (a share of $(awk -v c="$cpu" -v w="$wall" 'BEGIN { printf "%.2f", c / w }')), peak memory $(awk -v k="$peak" 'BEGIN { printf "%.0f", k / 1024 }') MiB"
 		awk -v c="$cpu" -v w="$wall" 'BEGIN { exit !(c <= w / 2) }' || over=$((over + 1))
 		[ "${peak:-0}" -le 1048576 ] || over=$((over + 1))
-		worst_cpu="$cpu"
+		last_cpu="$cpu"
 	done
 	observe "each broker process over the ten minutes${limits}"
 	judge "$([ "$over" = 0 ] && echo 0 || echo 1)" broker-cpu-and-memory \
 		"each process's CPU time is at most half its wall time and its peak memory at most 1 GiB" \
-		"${limits#; } (the last CPU figure read $worst_cpu s)"
+		"${limits#; } (the last CPU figure read $last_cpu s)"
 
 	# The upload, the answer with a gap in it, the upgrade and the clone.
 	echo "airlock-check: k9 is uploading 50 MiB, waiting out a 90-second gap and cloning..." >&2
@@ -547,7 +548,7 @@ check_k9_main() {
 	# One broker stopped while a connection through it is open, and then the next call. The
 	# connection is this run's own gap connection on the second broker's proxy port, so what is
 	# stopped is the process carrying it.
-	local stopped="${pids[-1]}" after_stop
+	local stopped="${pids[-1]}"
 	"$STANDS_BIN" load gap --proxy-file <(proxy_for "${BROKER_PROXY_ADDRS[-1]}") \
 		--host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" --header-file <(printf '%s\n' "$PLACEHOLDER") --gap 8 \
 		--out "$WORK_DIR/k9/stopped.json" >/dev/null 2>&1 &

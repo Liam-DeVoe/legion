@@ -77,7 +77,7 @@
 # installations hold, as one or more space-separated
 # <owner>=<permission>:<level>[,<permission>:<level>...], which the stands take as
 # --installation-permissions. DEV_BROKER_BROKER_BIN names a broker binary this script starts in
-# place of building one, which is how a check's control swaps the broker and nothing else.
+# place of building one, so a run swaps the broker for another build and nothing else of the stack.
 #
 # The broker's approval routes, and its introspection route, take the calling service's own
 # Kubernetes ServiceAccount token (BROKER_API_ACCOUNTS, verified against BROKER_K8S_OIDC_ISSUER),
