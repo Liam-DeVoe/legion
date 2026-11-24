@@ -53,10 +53,10 @@ func testedAs(t *testing.T, pool store.TxPool, issue, head string, passes bool, 
 // test applies (checkstatetest.Seq), so a later event of the head replaces it. A task whose head
 // holds no set waits for CI at its end; one whose head has no check waits for none. A rig whose
 // daemon runs no consumer of Dispatch's events holds what Dispatch would publish, as testedAs does.
-func noChecksAt(t *testing.T, pool intake.Pool, issue, repo, head string) {
+func noChecksAt(t *testing.T, pool store.TxPool, issue, repo, head string) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := record.NewStore().PutCheckSet(ctx, tx, issue, repo, head, []string{}, 1)
 		return err
 	}); err != nil {
