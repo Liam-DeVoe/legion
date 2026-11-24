@@ -843,7 +843,7 @@ a pull request's build reads what main wrote and writes none, because a newer he
 The image is pushed with the workflow's own `GITHUB_TOKEN`: no third-party builder, no project variable, no extra credential.
 It runs (1) from `release.yaml` on every `main` run (its push paths include every file the image builds from):
 a build-only call beside the `publish` job, linking the plugin pair `legion_build` decided, then an attest-only call after `publish`;
-(2) from the `worker-image` job of `ci.yaml` on every head of a pull request, on any base, whose diff its `worker_image` filter matches
+(2) from the `worker-image` job of `ci.yaml` on every head of a pull request, on any base, whose diff the `worker-image` area of `.github/ci-areas.yaml` matches
 — building the PR head and publishing `sha-` only (a stacked pull request publishes a `sha-` tag too, which a pin never accepts)
 — and (3) by `gh workflow run worker-image.yaml --ref <ref>`.
 Trigger (2) does not build every head.
@@ -864,8 +864,8 @@ What a pod executes is part of the image's behaviour
 The Go build inputs are `go.work`, `go.work.sum`, and `packages/envoy` (copied whole for the `agent-secrets` binary the image also builds):
 the image compiles the Go `legion` at `go.work`'s Go version, so a change that moves it past the build stage's Go fails on its own pull request rather than in the next image build.
 `.github/scripts/check-image-trigger-paths.sh` (the lint job of `ci.yaml`) parses the Dockerfile and fails when trigger (1) or (2) misses a file it reads, so these lists cannot drift from it.
-It also fails when trigger (2)'s `worker_image` filter matches a file the build does not read (one the `.dockerignore` drops, or one no `COPY` names), since a pull request touching only that file would build an image for nothing;
-the filter's `!` patterns drop those, under its step's `some-with-excludes`.
+It also fails when trigger (2)'s `worker-image` area matches a file the build does not read (one the `.dockerignore` drops, or one no `COPY` names), since a pull request touching only that file would build an image for nothing;
+the area's `!` patterns drop those, under the filter step's `some-with-excludes`.
 Trigger (2) selects by the pull request's whole diff:
 on `pull_request`, the `changes` job of `ci.yaml` reads the pull request's file list, so a later commit that touches none of those paths (a docs fix, say) still gets the build and the PR head never loses it.
 A filter on the pushed commits alone would leave such a head unguarded.
@@ -5882,7 +5882,7 @@ A claim whose suspension was held for that turn's end is suspended instead, as i
 
 The record costs one API write per generation started, the annotation's patch (844 bytes in the runtime's tests, with Dispatch and the broker unset), where a start in a running issue pod made none before.
 The kind job's Stage 4b tests drive both cases with real agents in issue pods:
-`address-moved-env-same-pod` hands the pods another address of the same Envoy listener (`TestStage4bDaemonRestartsOnTheKindRigLive`), and `address-moved-stream-new-pod` swaps the daemon's API and worker-stream ports (`TestStage4bStreamMoveOnTheKindRigLive`), both in `packages/daemon/internal/daemon/stage4b_kind_live_test.go`.
+`address-moved-env-same-pod` hands the pods another address of the same Envoy listener (`TestStage4bListenerAddressMoveOnTheKindRigLive`), and `address-moved-stream-new-pod` swaps the daemon's API and worker-stream ports (`TestStage4bStreamMoveOnTheKindRigLive`), both in `packages/daemon/internal/daemon/stage4b_kind_live_test.go`.
 
 ### A shell on an issue's disk
 
@@ -8661,10 +8661,10 @@ It has no pod create or delete and no PVC verb (LEGION-206 Requirement 8).
 
 ### The test on a kind cluster
 
-`TestStage4bSandboxTreeOnTheKindRigLive` (`packages/daemon/internal/daemon/stage4b_kind_live_test.go`) drives an issue tree through the Go daemon on this runtime, in a kind cluster with Agent Sandbox and gVisor, against Dispatch, the Envoy listener and NATS built from the checkout and a fake GitHub, with real agents on a Messages stand-in, one subtest per checkpoint, and last restarts the daemon under `controller: daemon`.
-Two more tests of the same file start from the claims that tree holds and restart the daemon over them: `TestStage4bDaemonRestartsOnTheKindRigLive` at the same addresses and at another address of the listener, and `TestStage4bStreamMoveOnTheKindRigLive` onto a moved worker stream.
+`TestStage4bSandboxTreeOnTheKindRigLive` (`packages/daemon/internal/daemon/stage4b_kind_live_test.go`) drives an issue tree through the Go daemon on this runtime, in a kind cluster with Agent Sandbox and gVisor, against Dispatch, the Envoy listener and NATS built from the checkout and a fake GitHub, with real agents on a Messages stand-in, one subtest per checkpoint.
+Four more tests of the same file start from the claims that tree holds and restart the daemon over them: `TestStage4bDaemonRestartsOnTheKindRigLive` at the same addresses, `TestStage4bListenerAddressMoveOnTheKindRigLive` at another address of the listener, `TestStage4bStreamMoveOnTheKindRigLive` onto a moved worker stream, and `TestStage4bControllerRestartOnTheKindRigLive` under `controller: daemon`.
 Each brings up a rig of its own, since one rig running every checkpoint runs past the time a part of the kind job has.
-The kind job of `ci.yaml` runs the three in its `tree-stage4b`, `tree-stage4b-restart` and `tree-stage4b-move` parts.
+The kind job of `ci.yaml` runs the five in its `tree-stage4b`, `tree-stage4b-restart`, `tree-stage4b-address`, `tree-stage4b-move` and `tree-stage4b-controller` legs.
 
 ### Probing a configuration before the daemon boots on it
 

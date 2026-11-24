@@ -22,8 +22,8 @@ A tool that a workflow step reaches through `bun run` and that runs package scri
 The merge queue runs every job of `ci.yaml` on the merged tree, except `worker-image`.
 `worker-image` runs on the pull request and in the release; in the merge queue, the `kind-image` job builds the same image with the same image probe, and the `kind / leak-guard` leg runs the same leak-guard test in it.
 On a pull request, a job runs when its filter in `.github/ci-areas.yaml` matches a changed file, or when a changed file matches no filter, and the job is not held.
-The held jobs are the slow suites (`go-envoy-held` and the jobs that carry its legs' names), `agent-harness`, `airlock-arm` and the full browser lane: a pull request runs them only while it carries the label `full-ci`.
-`full-ci` runs no `kind`: no pull request runs `kind`.
+The held jobs are `go-daemon`, `go-envoy-held`, `envoy-held`, `scripts-held`, `pi-held`, `web-cold`, the full browser lane (`dispatch-browser`), `agent-harness` and `airlock-arm`, with the jobs that carry their legs' names: a pull request runs one only while it carries the label `full-ci` or one of that job's lane labels (`.github/ci-notes/ci.md#a-lane-label-turns-on-one-held-job-on-a-pull-request` names them).
+No label runs `kind`: no pull request runs `kind`.
 
 A `workflow_dispatch` run of `ci.yaml` runs every job but `kind` and `agent-harness`, the held jobs included.
 `gh workflow run ci.yaml --ref <branch>` starts one, and is how a pull request gets a held suite's result before the merge without the label.
@@ -217,10 +217,11 @@ itself, whose tests import its sources by relative path.
   anything else — a variable that names a binary or a service, a free port, a capability of the
   machine — does the same with `requireOrSkip(what, present, "<job>")`, and one that needs a
   database server makes a database of its own on it rather than reading the one it finds
-  (`LEGION_TEST_PG_DSN`, `packages/dispatch/e2e/__tests__/psql-session.test.ts`). One that needs
-  several builds what it lacks into a single list and hands it to one `requireOrSkip`, rather than
-  calling `skipWithout` beside it, so a host that has none reads one line naming each (`hostTool`
-  with the variable, in that file and in `harness-stacks.test.ts`). A skip that chooses a
+  (`LEGION_TEST_PG_DSN`, `packages/dispatch/e2e/__tests__/psql-session-postgres.test.ts`). One
+  that needs several builds what it lacks into a single list and hands it to one
+  `requireOrSkip`, rather than calling `skipWithout` beside it, so a host that has none reads one
+  line naming each (`hostTool` with the variable, in that file and in
+  `harness-stacks-postgres.test.ts`). A skip that chooses a
   platform, a browser, a project or a run (`LEGION_E2E_ENVOY_STACK=1`) names no prerequisite and
   keeps its plain `skipIf`.
 
@@ -271,7 +272,7 @@ itself, whose tests import its sources by relative path.
   `pi-legion` job restores `~/.cache/go-build` and `~/go/pkg/mod`, keyed
   `go-daemon-<runner os>-<runner arch>-go<version>`, before it runs that scenario
   (`.github/actions/pi/pi-legion`). Those of `scripts/e2e/lib/held-port.test.ts` stay
-  there too, although the `scripts` job's test leg that runs it restores no Go cache now that the
+  there too, although the `scripts-held` job (`test / test`) that runs it restores no Go cache now that the
   daemon's Go suite is `go-daemon`'s. The condition is the rename: `fillNativesCache` in
   `packages/pi-shared/test/omp-natives.ts` renames a directory inside the cache root, and a
   directory rename under `$HOME` panics the gVisor sandbox of a Legion pod and kills every role in
@@ -577,8 +578,8 @@ A Legion issue pod does not run that whole package: `skills/legion-worker/refere
 
 CI runs that package under `-race` in the two `envoy-go-race-api` legs of the `go-envoy-held` job,
 which split it at run time, each with its own time bound
-(`.github/actions/go-envoy-held/envoy-go-race-api`, which holds their steps); `envoy-go` leaves it out of its unit step, and `text-checks` runs its fifteen source-guard
-tests by name. `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
+(`.github/actions/go-envoy-held/envoy-go-race-api`, which holds their steps); `envoy-go` leaves it out of its unit step, and `text-checks` runs its seventeen source-guard
+tests by name. `docs` runs under `-race` in the two `envoy-go-race-docs` legs, which split it, each with its own bound (24 and 28 minutes).
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone
 rather than beside the module's other Postgres-backed packages: together they share one database
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
@@ -588,14 +589,14 @@ service and the machine's CPU, and on a small machine `api` and `docs` then each
 `go-daemon` job (`.github/actions/go-daemon`) runs it only under the race detector, once per
 run, in its step "Test the concurrent packages under the race detector"; the plain step ("Test
 the Go daemon") leaves it out,
-and `go vet ./...` in the `typecheck` job still compiles it without the detector. The
+and `go vet ./...` in the `lint` job's `typecheck` leg still compiles it without the detector. The
 figures below were measured while these steps were the `test` job's. On CI's runners, while the
 plain step still ran it, it took at most 625 s there over the 49 green main `test` jobs of
 2026-11-01 to 2026-11-03, and up to 733.581 s in the jobs whose race step timed out (job
 125688799071). Under `-race` it took up
 to 570 s over the 51 green `test` jobs of 2026-11-02 and 2026-11-03 that sjawhar/legion#2709
 measured, on main and on pull requests, and ran go test's own ten minutes out on main at
-job 125691048644 of run 41562777668; the race step gives it 30 minutes. On a busy machine it
+job 125691048644 of run 41562777668; each race leg's step gives its share 25 minutes (the job's `race` matrix value). On a busy machine it
 takes longer still (908 s under `-race` on a machine shared with other work), so a command that runs the whole
 package, alone or in a pattern that includes it, passes `-timeout 30m`:
 
@@ -631,7 +632,7 @@ The rule covers the cleanup's argument as well as its closure, so an argument th
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
 CI runs that command in the `envoy-go-docs-finalizers` leg of the `go-envoy-held` job (`.github/actions/go-envoy-held/envoy-go-docs-finalizers`, which holds the leg's steps), which the `go-envoy-held` area of `.github/ci-areas.yaml` selects.
-It is one of the held suites: a pull request runs it only with the label `full-ci`, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
+It is one of the held suites: a pull request runs it only with the label `full-ci` or one of the `go-envoy-held` job's lane labels, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
 
 That job runs the command with `-v` for a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.

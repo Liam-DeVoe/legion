@@ -12,9 +12,11 @@ first sections below.
 ## The suite, its two lanes and the budget rule every job follows
 
 Every browser job of the Dispatch suite, in one place, and the job of the suite's Bun rows that
-need a PostgreSQL. ci.yaml's dispatch-browser job calls it with the pull-request lane on a pull
-request that carries no `full-ci` label and the full lane on everything else, and the nightly
-workflow calls it with the full lane. The rows are spread over four shard machines, the three
+need a PostgreSQL. ci.yaml calls it twice, each caller with a lane of its own: its
+dispatch-browser-pr job with the pull-request lane on a pull request, and its dispatch-browser job
+with the full lane in the merge queue, on a workflow_dispatch and on a pull request labelled
+`full-ci` or `lane:dispatch_browser`; the nightly workflow calls it with the full lane. The
+rows are spread over four shard machines, the three
 `-alone` projects get a machine each, the Bun rows that need a PostgreSQL, the re-recording of
 the stubbed rows, the two-process job, the fake-embedder job and the containerised visual
 review take one each, and one merge job joins what the shard and alone legs wrote into a single
@@ -22,12 +24,11 @@ report and publishes the run's flake rate.
 
 Two lanes, one input. `pull-request` runs the projects a pull request is held to - `chromium`,
 `iphone` and the two stubbed ones - over the rows tagged `@pr` and no others, with the
-fake-embedder job and the Bun rows' job, each of which holds a check of the pull request it is
-on; `full` runs every parallel project, the three `-alone` ones, the re-recording of the stubbed
-rows, the two-process job, the visual review and those same two jobs, over every row. So an
-unlabelled pull request pays for the rows that answer it, and the merge queue, a labelled pull
-request, a workflow_dispatch and the nightly run pay for the rest, each of which has the wall
-time for them.
+fake-embedder job, which holds a check of the pull request it is on; `full` runs every parallel
+project, the three `-alone` ones, the Bun rows' job, the re-recording of the stubbed rows, the
+two-process job, the visual review and the embedder job, over every row. So a pull request pays
+for the rows that answer it, and the merge queue, a labelled pull request, a workflow_dispatch
+and the nightly run pay for the rest, each of which has the wall time for them.
 
 A reusable workflow, not a composite action, for the reason docs-site.yaml's head comment
 gives: `services:` is a job-level key and a composite action's step keys do not include
@@ -97,20 +98,21 @@ inside the run that uploaded it, and every caller runs this file - ci.yaml's dis
 and dispatch-browser-pr jobs and dispatch-browser-nightly.yaml's dispatch-browser job. A build
 left in one caller would hand the others' runs nothing, and their shard and alone jobs would
 fail downloading an artifact their run never held. The artifact is `<job>-binaries`, named for
-the caller, so the two callers of a pull request labelled `full-ci` each download their own.
+the caller, so the two callers of a pull request labelled `full-ci` or `lane:dispatch_browser`
+each download their own.
 
 Why those two jobs do not build the binaries themselves: they run in a container, and
 the filter check this repository ran before CI chose its jobs by package area counted a
 `container:` as something that can move what a go command compiles, so a go command there fell
 out of that check's reduction and was counted as reading every Go file of the repository,
-which was the opposite of what the `dispatch_browser` filter was for. So the builds live in
+which was the opposite of what the browser suite's filter was for. So the builds live in
 this job, which takes no container, and the suite's own scripts execute what it built
 instead of building it (packages/dispatch/e2e/run-server.sh's DISPATCH_E2E_SERVER_BIN and
 run-broker.sh's DISPATCH_E2E_BROKER_BIN_DIR).
 
 It carries no `if:` of its own, as no job of a reusable workflow needs one: the caller has
-already decided the call. ci.yaml's two callers hold the `dispatch_browser` and
-`dispatch_browser_pr` outputs and the merge-group attempt term, and the nightly calls this file
+already decided the call. ci.yaml's two callers hold the `dispatch-browser` and
+`dispatch-browser-pr` outputs and the merge-group attempt term, and the nightly calls this file
 unconditionally, so a condition here could only hold back a run its caller had asked for.
 
 ## The binaries job's budget
@@ -412,8 +414,8 @@ enough: `globalSetup` runs after the config has loaded. A workstation gets the b
 `bun run e2e`, which carries `build:contracts`; a job that runs Playwright itself needs
 this step. It runs `build:dispatch`, the contracts entries Dispatch imports and no other
 (.github/actions/ts/dispatch-ui's `Build contracts for the suites that spawn Playwright` says
-how that list grows), so it compiles no module the dispatch_browser filter's listed
-block leaves out - not ./legion-api, which no row loads.
+how that list grows), so it compiles no module the dispatch-browser area's listed blocks leave
+out - not ./legion-api, which no row loads.
 
 ## What the shard job's PostgreSQL reading records, and why it is a script
 
@@ -850,11 +852,12 @@ fails fails the leg, and the trace it carries is of its one attempt, which the c
 ## The Bun rows that need a PostgreSQL, and why they are a job of this file
 
 The Bun rows of packages/dispatch/e2e/__tests__ that need a PostgreSQL, which are no browser
-rows: psql-session.test.ts, whose rows read psql's answers to real statements on a database
-of their own; harness-stacks.test.ts, whose psql row reads which stack's database a worker's
-psql reaches; and second-global-setup.test.ts, whose one row starts two stacks' Postgres in
+rows: psql-session-postgres.test.ts, whose rows read psql's answers to real statements on a
+database of their own; harness-stacks-postgres.test.ts, whose psql row reads which stack's
+database a worker's psql reaches; and second-global-setup.test.ts, whose one row starts two
+stacks' Postgres in
 one process, as Playwright's UI mode does. They are packages/dispatch's `bun run
-test:postgres`, which its `bun run test` leaves out, so ci.yaml's dispatch-ui job, which has
+test:postgres`, which its `bun run test` leaves out, so ci.yaml's ts job's dispatch-ui leg, which has
 no Postgres, runs the rest of that directory and not these
 (.github/actions/ts/dispatch-ui says so beside its test step).
 
@@ -869,9 +872,11 @@ and .github/ci-notes/dispatch-browser.md#the-shard-job-its-stacks-and-its-contai
 job in this container may run none. The hook the third file drives refuses a run whose
 Chromium is not downloaded, and this image carries it.
 
-On both lanes, as the embedder job is: a change to e2e/psql.ts or to the stacks' contract
-breaks these rows on the pull request that makes it, which is where it is cheapest to read,
-and the job costs one machine for a couple of minutes. The container, the `sh -e {0}` rule
+In the full lane alone: its files hold rows that need a PostgreSQL, which main ran in no job,
+since its dispatch-ui job has none, so the pull-request lane keeps what main ran on a pull
+request and these run where the whole suite runs. The rows of psql-session.test.ts and
+harness-stacks.test.ts that need no PostgreSQL stay in the dispatch-ui leg, which a pull request
+runs. The job costs one machine for a couple of minutes. The container, the `sh -e {0}` rule
 and the `env:` rule of the shard job's head hold here too, and so do their reasons; the
 container takes the shard job's `--user 1001` and `--init` and not `--ipc=host`, which is
 shared memory for a browser, and no row here opens one.
@@ -907,8 +912,9 @@ The guard on the stubbed layer's recordings (dispatch://INFRA-1407's R3): every 
 recorded again against the real harness, and the job fails where a route no longer answers as
 its committed recording holds. A recording is a snapshot of a server that keeps moving, so the
 stubbed rows the shard legs replay rest on this, and the full lane is where it runs: the merge
-group meets it on the tree a change lands as, and a pull request carrying `full-ci` meets it
-before then. It stood as a job of dispatch-browser-nightly.yaml on a schedule of its own until
+group meets it on the tree a change lands as, and a pull request carrying `full-ci` or
+`lane:dispatch_browser` meets it before then. It stood as a job of dispatch-browser-nightly.yaml
+on a schedule of its own until
 this lane took it.
 
 It compares the status of each route and nothing else - never a body's values and never its
@@ -1577,10 +1583,10 @@ selection that no shard leg ran or that two ran.
 
 ## When the merge job posts ci-ok
 
-ci.yaml's call only: on a merge-group run whose group ci.yaml's dispatch-browser job's
-own result decides it posts the failing ci-ok at once, and on every other run it posts
-nothing, the verdict being ci.yaml's `ci-ok` job's own check run
-(.github/actions/ci-ok-report says how). This is the job that posts for that call: it
-needs every other job of this workflow, and the step is its last, which is the shape
-.github/scripts/check-ci-layout.sh's rule 7 holds a called workflow to. The
-nightly workflow passes no `ci-ok-changes`, and the step skips.
+ci.yaml's calls only: on a merge-group run whose group ci.yaml's dispatch-browser job's own
+result decides it posts the failing ci-ok at once, and on every other run, a pull request's
+dispatch-browser-pr call among them, it posts nothing, the verdict being ci.yaml's `ci-ok` job's
+own check run (.github/actions/ci-ok-report says how). This is the job that posts for each call:
+it needs every other job of this workflow, and the step is its last, which is the shape
+.github/scripts/check-ci-layout.sh's rule 7 holds a called workflow to. The nightly workflow
+passes no `ci-ok-changes`, and the step skips.

@@ -6,29 +6,31 @@ names the section below that holds the derivation or the record its step, its jo
 rests on, and the sections stand in the order their comment blocks stood when the job was a
 workflow of its own. A value's own arithmetic stays beside the value, and a comment inside a
 `run:` body stays beside its command, in the script that body is now in.
-In the text moved here, "this file" refers to that workflow.
+In the text moved here, "this file" refers to that workflow, whose steps are now ci.yaml's job
+and those actions.
 
-## The steps of ci.yaml's tool-fallback job, in a file of their own
+## The steps of ci.yaml's tool-fallback job, in actions of their own
 
-The steps of ci.yaml's `tool-fallback` job, in a file of its own.
-ci.yaml's job of the same id calls this file, and that caller keeps `needs: [changes, ci-images]`
-and the whole `if:` that decides whether these steps run, so this file carries no `if:` of its
-own. The notes on that job,
+The steps of ci.yaml's `tool-fallback` job. Each install is a step of that job, with its own
+`timeout-minutes`, which a composite action's step cannot carry; what lies between two of them
+is .github/actions/tool-fallback/start, x64 and end, and the job keeps `needs: [changes,
+ci-images]` and the whole `if:` that decides whether these steps run, so no action carries an
+`if:` of the job's. The notes on that job,
 .github/ci-notes/ci.md#the-tool-fallback-job,
 say what the proof is and why it is permanent.
 
-The split is for the filters. The tool_fallback filter names this file beside ci.yaml, so a
-change to these steps selects this job alone, where a change to ci.yaml selects every job.
+The split is for the filters. The tool-fallback area names those actions and the scripts they
+run, so a change to them selects this job, where a change to ci.yaml, which no area names,
+selects every job.
 
-The job id here is the one ci.yaml calls this file under, and it has to stay: a composite
-action reads `github.job` as the id of the job that called it, and .github/actions/setup-bun
-passes no-cache for every job whose id starts with `tool-fallback`, which is what keeps every
-case of this job a reading of an install rather than of the Actions cache.
+The job id is the one ci.yaml gives the job, and it has to stay: a composite action reads
+`github.job` as the id of the job that called it, and .github/actions/setup-bun passes no-cache
+for every job whose id starts with `tool-fallback`, which is what keeps every case of this job a
+reading of an install rather than of the Actions cache.
 
-The job's last step reports ci-ok for the caller: on a merge-group run of the queue's front
-group that this job's own result decides, it posts the failing ci-ok at once
-(.github/actions/ci-ok-report), as every job of ci.yaml ends. `ci-ok-changes` carries ci.yaml's
-`toJSON(needs.changes)` for it.
+The job's last step is the ci-ok-report step every job of ci.yaml ends with: on a merge-group
+run of the queue's front group that this job's own result decides, it posts the failing ci-ok
+at once (.github/actions/ci-ok-report), with `toJSON(needs.changes)` as its `changes` input.
 
 ## The job's budget, and the bound every install step carries
 
