@@ -9,7 +9,7 @@ import { answerIssuePatches, answerRoute } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
-import { answerStatusChanges } from "../issue/parent-status/status-change-fixtures";
+import { answerStatusChanges, fixtureRefusal } from "../issue/parent-status/status-change-fixtures";
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
@@ -2985,6 +2985,102 @@ test("Finish of a merge whose refused move waits on a target closed since refuse
   expect(sent.slice(before)).toEqual([]);
   expect(refusedWrites(client)).toEqual(["Update CORE-3 from the issues table"]);
   expect(screen.getByRole("region", { name: "Interrupted table action" })).toBeDefined();
+});
+
+// A merge whose move of its target into work was refused leaves that move in Pending changes. The
+// source then closes by another writer, so Finish has no merge left to finish, and it drops the
+// refused move there: a Retry of it would move the target into work with no merge to need it.
+test("Finish of a merge whose source closed since drops its refused move of the target into work from Pending changes", async () => {
+  const user = userEvent.setup();
+  const rows = mergeRows("backlog");
+  const sent = answerOnRows(rows, ["status-change CORE-2"]);
+  // Every issue: the source stays a row of the listing once it closes.
+  const { client } = table(rows, "?group=epic&nofilter=1");
+  await mergeInto(user, "CORE-1", "CORE-2");
+  const asked = await screen.findByRole("dialog", { name: "Move CORE-2 into work too?" });
+  await user.click(within(asked).getByRole("button", { name: "Move into work too" }));
+  await screen.findByRole("alert");
+  expect(refusedWrites(client)).toEqual(["Move CORE-2 into work from the issues table"]);
+  // Another writer closes the source.
+  rewrite(rows, "CORE-1", { status: "done" });
+  const before = sent.length;
+  await pressFinish(user);
+  await noticeOnceDone("Finished the interrupted action.");
+  expect(sent.slice(before)).toEqual([]);
+  expect(refusedWrites(client)).toEqual([]);
+});
+
+/** The dry run of a merge's close of its source CORE-1. */
+const sourceDoneDryRun = { dry_run: true, status: "done" };
+
+// A child of a merge's source can be in another project, which this table does not list, so the
+// merge does not move it. Before the close, the listing read again still counts it under the
+// source, and Dispatch's dry run of the close names it. The merge names it with its project, and
+// posts no reason and closes nothing: with the rule off the close would land over the open child,
+// and with the rule on it would be refused after the reason. Finish does the same until the child
+// has moved out, then posts the reason and closes the source.
+test.each([
+  ["off", false],
+  ["on", true],
+])("a merge whose source holds an open child in another project, with the rule %s, names the child with its project and closes nothing, on its first run and on Finish, until the child has moved", async (_rule, ruleOn) => {
+  const user = userEvent.setup();
+  const rows = mergeRows("in_progress");
+  // CORE-1 has two children: CORE-3, which the table lists, and ACME-5, which it does not. Each
+  // refusal of CORE-1's close is the recorded one (`conflict`), which names ACME-5, of the project
+  // ACME, as an open child.
+  rewrite(rows, "CORE-1", { progress: { tasks: null, children: { done: 0, total: 2 } } });
+  const sent = answerOnRows(rows);
+  let childOpen = true;
+  answerStatusChanges().mockImplementation(async (key, input) => {
+    sent.push(["status-change", key, input]);
+    throw fixtureRefusal("conflict");
+  });
+  if (ruleOn)
+    answerIssuePatches().mockImplementation(async (key, input) => {
+      sent.push(["PATCH", key, input]);
+      if (key === "CORE-1" && input.status === "done" && childOpen)
+        throw fixtureRefusal("conflict");
+      rewrite(rows, key, {
+        ...(input.parent === undefined ? {} : { parent: input.parent }),
+        ...(typeof input.status === "string" ? { status: input.status } : {}),
+      });
+      return savedIssue(key);
+    });
+  const said =
+    "The source epic CORE-1 remains open: ACME-5 “Child in work” (project ACME) still needs to move.";
+  table(rows, "?group=epic");
+  await mergeInto(user, "CORE-1", "CORE-2");
+  await user.click(
+    within(await screen.findByRole("dialog", { name: "Merge this epic?" })).getByRole("button", {
+      name: "Merge",
+    })
+  );
+  expect((await screen.findByRole("alert")).textContent).toBe(said);
+  expect(sent).toEqual([
+    ["PATCH", "CORE-3", { parent: "CORE-2" }],
+    ["status-change", "CORE-1", sourceDoneDryRun],
+  ]);
+  expect(screen.getByRole("region", { name: "Interrupted table action" })).toBeDefined();
+
+  let before = sent.length;
+  await pressFinish(user);
+  await waitFor(() =>
+    expect(sent.slice(before)).toEqual([["status-change", "CORE-1", sourceDoneDryRun]])
+  );
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toBe(said));
+  expect(await screen.findByRole("region", { name: "Interrupted table action" })).toBeDefined();
+  expect(sent.slice(before)).toEqual([["status-change", "CORE-1", sourceDoneDryRun]]);
+
+  // The reader moves ACME-5 out of CORE-1 in its own project.
+  childOpen = false;
+  rewrite(rows, "CORE-1", { progress: { tasks: null, children: { done: 0, total: 0 } } });
+  before = sent.length;
+  await pressFinish(user);
+  await noticeOnceDone("Finished the interrupted action.");
+  expect(sent.slice(before)).toEqual([
+    ["message", "CORE-1", { body: "Merged into CORE-2 (“Target”) from the issues table." }],
+    ["PATCH", "CORE-1", { status: "done" }],
+  ]);
 });
 
 test("Finish of a New epic whose refused adoption waits on an epic since out of work: a Cancel writes nothing, and a yes moves the epic into work, then adopts the issue", async () => {

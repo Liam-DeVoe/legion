@@ -44,8 +44,9 @@ import { type RefObject, useLayoutEffect } from "react";
  *   - The margin's sheet below `xl` while it is collapsed (`MarginSheet`).
  *   - The Agents page's broadcast composer, sticky to the foot of the page's scroll
  *     (`AgentsPage`), wherever it is on screen, stuck or resting at the end of the list: the
- *     wrapper that holds it with the sends, and, on a narrow or short screen, where the wrapper
- *     has no box, the composer's own section, which is what sticks there.
+ *     wrapper that holds it with the sends, and the composer's own section, which is what sticks
+ *     on a narrow or short screen, where the wrapper has no box. Elsewhere the wrapper's band
+ *     holds the section's.
  *   - The agent live view's composer (`AgentThread`), in the flow of a page that fills the
  *     screen; the rows laid out under it, the row of pickers and the switch lines, in the one box
  *     that holds both (`AgentConversationPage`); and the live thread's own `Jump to latest`, just
@@ -243,18 +244,26 @@ import { type RefObject, useLayoutEffect } from "react";
  *   while a box it holds would be clamped by losing it: a box whose scroll is off its start with
  *   less than that room left to its end (`clampsABoxItHolds`). Only a box whose scroll has moved
  *   can clamp, which is what that walk reads first.
- * - Why it runs only while a float shows or a scroller holds room. With no float nothing lies
- *   over content, so no scroller needs room, and a pass reads layout on every scroll. So while no
- *   float has a box and no scroller holds room the hook listens to nothing
- *   (`listenWhileNeeded`). When the last float loses its box it runs a pass at once, which
- *   unmarks every scroller whose reader is out of its room, and stops listening once none is
- *   left. While a float has a box, or a scroller holds room, a pass runs at most once per
- *   animation frame: after each `publish`, on any scroll, on a window resize, and when elements
- *   join or leave the page (a `MutationObserver` over `body`, for `childList` and `subtree`
- *   only). The observer does not watch attributes or styles, so the hook's marks and end room do
- *   not wake it. Only taking end room away from a scroller scrolled to its end can clamp its
- *   scroll and wake one more pass, which then finds the same marks; and the hook takes none from
- *   under the reader.
+ * - Why the passes run only while a float shows or a scroller holds room. With no float nothing
+ *   lies over content, so no scroller needs room, and a pass reads layout on every scroll. So
+ *   while no float has a box and no scroller holds room, nothing asks for a pass: the hook listens
+ *   for none of the events below (`listenWhileNeeded`). While a float has a box, or a scroller
+ *   holds room, it listens for any scroll, a window resize, and elements that join or leave the
+ *   page (a `MutationObserver` over `body`, for `childList` and `subtree` only), and each of them
+ *   asks for a pass at the next animation frame. While a float has a box, each `publish` asks for
+ *   one too. Passes asked for in one frame run once. A `publish` that leaves no float asks for
+ *   none, but the one at which the last float loses its box runs a pass at once, which unmarks
+ *   every scroller whose reader is out of its room. A pass stops the listening once no float has
+ *   a box and no scroller holds room. The observer does not watch attributes or styles, so the
+ *   hook's marks and end room do not wake it. Only taking end room away from a scroller scrolled
+ *   to its end can clamp its scroll and wake one more pass, which then finds the same marks; and
+ *   the hook takes none from under the reader.
+ * - What listens with no float shown. The measures of the foot elements listen whatever the
+ *   floats (`useFootInset`): each registered element keeps its own `ResizeObserver` and a window
+ *   resize listener, and each page element that has a box and is neither fixed nor sticky to the
+ *   top also keeps a capture scroll listener and the same observer over its parent (`followMoves`).
+ *   Each of them measures its element and publishes again, and with no float shown that `publish`
+ *   asks for no pass.
  *
  * `--foot-clearance` is registered as not inherited (`styles.css`), so a scroller inside a marked
  * one, while it holds no room of its own, reads 0, never the room of the scroller around it. The

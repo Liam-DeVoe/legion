@@ -757,10 +757,12 @@ func TestATokenBesideABrowserIdentityIsTheTokens(t *testing.T) {
 // TestAStatusChangesCommentNamesItsCallerAsItsCredentialProvedIt: the comment of an option names
 // its caller from what the request's credential proved. A session that the body names under the
 // deployment's shared token, which proves none, is quoted as code: the id with every backtick,
-// line ending and other control character removed, cut to claimedSessionNameMax runes, in one
-// code span, so a Markdown link, a new line and a block line in the id stay inside that span and
-// the comment reads as one paragraph that links nowhere. An id the cleaning empties is "a
-// session". A personal token names the person it belongs to, whatever session its body names.
+// line ending, other control character and format character removed, cut to
+// claimedSessionNameMax runes, in one code span, so a Markdown link, a new line and a block line
+// in the id stay inside that span, the comment reads as one paragraph that links nowhere, and no
+// bidirectional control or zero-width character of the id gets into it. An id the cleaning
+// empties is "a session". A personal token names the person it belongs to, whatever session its
+// body names.
 func TestAStatusChangesCommentNamesItsCallerAsItsCredentialProvedIt(t *testing.T) {
 	rig := newStatusChangeRig(t, true)
 	// started starts a new issue on the backlog, under a new parent on the backlog, with
@@ -820,6 +822,18 @@ func TestAStatusChangesCommentNamesItsCallerAsItsCredentialProvedIt(t *testing.T
 
 	t.Run("a session id the cleaning empties is a session", func(t *testing.T) {
 		parent, named := started(t, "Named by backticks alone", map[string]any{"kind": "session", "id": "``\n`\t`"}, shared)
+		requireComments(t, rig.database, []string{parent, named}, moved(parent, named, "a session"))
+	})
+
+	t.Run("a session id is quoted with no bidirectional control and no zero-width character", func(t *testing.T) {
+		// U+202E would turn the text after the span right to left, and U+200B stays in the span
+		// with no width.
+		parent, named := started(t, "Named with format characters", map[string]any{"kind": "session", "id": "ses_\u202Eevil\u200B_id"}, shared)
+		requireComments(t, rig.database, []string{parent, named}, moved(parent, named, "`ses_evil_id`"))
+	})
+
+	t.Run("a session id of format characters alone is a session", func(t *testing.T) {
+		parent, named := started(t, "Named by format characters alone", map[string]any{"kind": "session", "id": "\u202E\u200B\u2066\u200E\u061C\uFEFF"}, shared)
 		requireComments(t, rig.database, []string{parent, named}, moved(parent, named, "a session"))
 	})
 
@@ -2008,6 +2022,31 @@ func unlinkComment(key, named string) string {
 // named, as storedComments lists it.
 func movedComment(key, from, to, named string) string {
 	return optionComment(key, fmt.Sprintf("Dispatch moved this issue from `%s` to `%s` with %s, because alice's status change of %s passed `include_children`.", from, to, named, named))
+}
+
+// TestEachFieldOfAStatusChangesRecoveryPointIsTaggedWithItsMember: each field of
+// statusChangeRecovery has as its json tag the constant that names its member in every statement
+// that writes or reads the point (pointChanged and the others), and each constant tags one field,
+// so every json.Unmarshal of the point (resumedStatusChange, refuseStatusChangeKey,
+// replayRecovered) names each member as those statements do.
+func TestEachFieldOfAStatusChangesRecoveryPointIsTaggedWithItsMember(t *testing.T) {
+	members := map[string]string{
+		"Changed": pointChanged, "Events": pointEvents, "Withdrawn": pointWithdrawn, "Finished": pointFinished, "Issue": pointIssue,
+	}
+	fields := reflect.VisibleFields(reflect.TypeFor[statusChangeRecovery]())
+	if len(fields) != len(members) {
+		t.Errorf("statusChangeRecovery has %d fields, want one for each of the %d members", len(fields), len(members))
+	}
+	for _, field := range fields {
+		member, named := members[field.Name]
+		if !named {
+			t.Errorf("statusChangeRecovery.%s is the field of no member: name its member's constant here", field.Name)
+			continue
+		}
+		if tag, _, _ := strings.Cut(field.Tag.Get("json"), ","); tag != member {
+			t.Errorf("statusChangeRecovery.%s has the json tag %q, want %q, its member's constant", field.Name, tag, member)
+		}
+	}
 }
 
 // TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft: a keyed call of the route keeps its

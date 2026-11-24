@@ -27,13 +27,18 @@ var issueDepthCapSQL = strconv.Itoa(IssueDepthCap)
 // q: the issues above it on `child_of`, which is issues.parent_key (the graph_edges view's
 // child_of arm). A root issue, an issue no row has, and the empty key answer []. This is the
 // server's one recursive ancestor walk: an issue event's ancestors (api's issueAncestors), a
-// reparent's cycle refusal (api's validateIssueParent, which reads it from the proposed parent)
-// and a block pointer's ancestor rule (docs' refuseBlockPointers) are all this query.
+// reparent's cycle refusal (api's validateIssueParent, which reads it from the proposed parent),
+// a block pointer's ancestor rule (docs' refuseBlockPointers) and the plan of a status change that
+// passes include_parent (api's readStatusChange) are all this query.
 //
-// It binds no visibility predicate and takes no acting person, because it lists no issue to a
-// reader: every caller is a rule of a write - those three, the near-copy gate's exclusion of the
-// new issue's chain and the scope a result's check resolves in - and a rule that skipped an issue
-// it may not see would let a cycle through that issue, or route an event short of its root.
+// It binds no visibility predicate and takes no acting person, because every caller is a rule of
+// a write - those four, the near-copy gate's exclusion of the new issue's chain and the scope a
+// result's check resolves in - and a rule that skipped an issue it may not see would let a cycle
+// through that issue, route an event short of its root, or leave an ancestor out of work above an
+// issue in work. The status change's plan moves each ancestor that is not in work into work, so
+// that the parent status rule (R24) holds. It names those ancestors to the caller who asked to
+// move them: its dry run and its answer list them, and its 403 PROJECT_SCOPE names one that is in
+// a project the caller's credential may not write.
 func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error) {
 	ancestors := []string{}
 	if key == "" {
@@ -106,10 +111,12 @@ type IssueDescendant struct {
 // plan (api's readStatusChange) is this query.
 //
 // It binds no visibility predicate and takes no acting person, for the reason IssueAncestors
-// gives: it lists no issue to a reader. Every caller is a rule of a write: the plan of a status
-// change, which moves or unlinks every open issue under the parent so that the parent status
-// rule (R24) holds, and a plan that skipped an issue it may not see would leave that issue open
-// under a done parent.
+// gives. Every caller is a rule of a write: the plan of a status change, which moves or unlinks
+// every open issue under the parent so that the parent status rule (R24) holds, and a plan that
+// skipped an issue it may not see would leave that issue open under a done parent. The plan names
+// the issues it will move or unlink to the caller who asked to move or unlink them: its dry run
+// and its answer list them, and its 403 PROJECT_SCOPE names one that is in a project the caller's
+// credential may not write.
 //
 // The walk carries each issue's project and number, which its order needs, from the row it reads
 // already, rather than join its keys back to issues: the planner has no estimate of a recursive

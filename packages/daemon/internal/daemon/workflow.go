@@ -1630,7 +1630,7 @@ func (w *workflowRuntime) dispatchPositions(ctx context.Context) (int64, intake.
 	if err != nil {
 		return 0, intake.DispatchConsumerPosition{}, fmt.Errorf("read notification stream target: %w", err)
 	}
-	position, err := w.consumers.DispatchPosition(ctx)
+	position, err := w.consumers.ReconcilePosition(ctx)
 	if err != nil {
 		return 0, intake.DispatchConsumerPosition{}, fmt.Errorf("read Dispatch consumer position: %w", err)
 	}

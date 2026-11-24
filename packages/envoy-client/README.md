@@ -1259,11 +1259,12 @@ The one exception is a call whose whole output is one JSON object (`dispatch iss
 prints its own lines on stderr. A `409 PARENT_STATUS_CONFLICT`, whichever command Dispatch refused,
 prints the refusal, then each issue that holds the rule as `KEY [status] title`, then what to do
 next, and exits 1, as a near copy's refusal does.
-That last part follows what the call changed, so it names no step that does not work.
+That last part follows what the call changed, so it names no step that the rule refuses.
 A create (`dispatch issue`) is refused only under a done parent and takes no flag that moves it,
 so it prints how to reopen that parent first
-(`dispatch issue-update --issue <PARENT> --status <a status in work>`) or file the issue under an
-open parent or none.
+(`dispatch issue-update --issue <PARENT> --status in_progress --include-parent`, because the rule
+also refuses a plain status change of that parent where the issue above it is done or not
+started) or file the issue under an open parent or none.
 A reparent (`dispatch issue-update --parent <PARENT>`) refused for the parent it names, which no
 flag of the command moves, is told to move that parent first
 (`dispatch issue-update --issue <PARENT> --status in_progress --include-parent`), then to run the
@@ -1273,6 +1274,11 @@ Those flags go with `--status` alone, and with `--reason` for done, so a call th
 another field is told to send that change in a call of its own.
 A reparent refused for a child, against the status it also wrote, is told to run the status change
 first, in a call of its own, and the reparent after it, without `--status`.
+Dispatch refuses a credential scoped to one project each step that writes an issue of another
+project (`403 PROJECT_SCOPE`), and the CLI does not know its credential's scope. So where an issue
+the refusal names, which a flag of the line writes, is in another project than the issue the call
+names (its `--issue`, else `LEGION_ISSUE`), the line also says that such a credential is refused
+that step, and that a person, or a credential that names no project, must make it.
 When Dispatch took the call but the session's state (a picture, the ledger, the memory) could not
 be written, the result still prints, with one line saying so.
 
