@@ -297,7 +297,7 @@ against the base tree's filters: each filter it alters selects every path in tha
 
 A branch made before the gates and the `//ci:` lines moved keeps the old `RULES` and `GATES` in
 `ci_job_reads.py`, and `.github/ci-filters.yaml`, when it merges main; both are refused by name.
-`.github/scripts/ci-reads-convert.py`, run after that merge stops, moves what the branch added into the
+`.github/scripts/ci-reads-convert`, run after that merge stops, moves what the branch added into the
 gate files and the `//ci:` lines and deletes the old file.
 
 ## check-ci-filters.sh holds the table to ci.yaml
@@ -400,9 +400,7 @@ the fills live in workflows that run there.
 - The release workflows' Go builds (release.yaml's `legion_build`, release-envoy-infra.yaml's
   `build`) restore `go-daemon` and `go-envoy-infra` and save nothing, so they keep the prefix as
   `restore-keys` on main too: an entry they never save cannot grow.
-- `.github/actions/setup-bun` restores `~/.bun/bin` on every ref, keyed on the version `.bun-version` pins, and passes `no-cache: true` on every ref.
-  setup-bun then finds that binary, reads its `bun --revision`, takes it as an existing installation, and downloads nothing.
-  The action saves that `bun` family itself, on a push to main alone, which this workflow never runs on: `ci-caches.yaml`'s browsers job calls it on every one of those pushes. Use the action as it is.
+- `.github/actions/setup-bun` reads and writes its cache only on main; use it as it is.
 
 ## Choose the runner: ubuntu-24.04-arm unless the job needs an x86_64 machine
 

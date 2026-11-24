@@ -1329,6 +1329,57 @@ check "fails" "$(is "$status" 1)"
 check "names the gate, the called job, its file and its caller" \
   "$(contains "$out" "::error file=.github/workflows/called.yaml::gate app names job called-lane of .github/workflows/called.yaml, which job called calls, but that job's own if: does not test needs.changes.outputs.app through an input its caller passes")"
 
+# A lane gate whose filter is not the one its caller's own if: tests: what the called-job rule's
+# refusal and its fold are about (ci_filter_coverage.py: the called_job branch of the gate rule,
+# and gate_read_sets), which the three cases above never reach, since each gives the lane the
+# filter the caller's if: tests (dispatch://INFRA-1545, round 64). lane_gate <root> adds to
+# called_input_gate's tree a changes output lane, an input of called.yaml the caller passes it in,
+# a called-lane job gated on that input, and a gate of filter lane on that job that reads
+# docs/readme.md, which no other gate of the tree reads.
+lane_gate() {
+  called_input_gate "$1"
+  replace "$1/.github/workflows/ci.yaml" "      image: \${{ steps.filter.outputs.image }}" \
+    $'      image: ${{ steps.filter.outputs.image }}\n      lane: ${{ steps.filter.outputs.lane }}'
+  replace "$1/.github/workflows/called.yaml" "      ci-ok-changes:" \
+    $'      lane:\n        type: string\n        required: false\n        default: ""\n      ci-ok-changes:'
+  replace "$1/.github/workflows/called.yaml" "  called:" \
+    $'  called-lane:\n    if: inputs.lane == \'true\'\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo the lane\n  called:'
+  replace "$1/.github/workflows/ci.yaml" "      app: \${{ needs.changes.outputs.app }}" \
+    $'      app: ${{ needs.changes.outputs.app }}\n      lane: ${{ needs.changes.outputs.lane }}'
+  cat > "$1/.github/ci-gates/called-lane.lane.py" <<'PY'
+GATE = gate("lane", "called", reads=[Read("docs/readme.md", "the lane reads it")],
+            called_job="called-lane", workflow=".github/workflows/called.yaml")
+PY
+}
+
+echo "case: a called job gated on a filter its caller's if: neither tests nor folds in"
+# The caller's if: tests app, and no gate on that if: folds lane's reads into app, so a change
+# only lane matches would start neither job.
+root=$(fixture called-job-unfolded)
+lane_gate "$root"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the gate, the called job, its caller, what the caller tests, and the remedy" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::gate lane gates job called-lane of .github/workflows/called.yaml, which runs only inside a run of job called, but job called's if: tests needs.changes.outputs.app, and no filter of those is computed from what lane reads, so a change only lane matches starts neither job; declare a gate on job called's own if:")"
+
+echo "case: a called job's gate is folded into the filter of the gate on its caller's own if:"
+# The same tree with that gate declared, of filter app on job called itself: the caller's if:
+# tests app, and app's filter is computed from what the lane's gate reads too.
+root=$(fixture called-job-folded)
+lane_gate "$root"
+cat > "$root/.github/ci-gates/called.py" <<'PY'
+GATE = gate("app", "called", workflow=".github/workflows/called.yaml")
+PY
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+run_generate "$root"
+check "the generate mode exits 0" "$(is "$status" 0)"
+# The generation writes the one file under docs/ as the glob of that directory.
+check "the lane's filter holds what its gate reads" "$(contains "$(filter_of lane)" '^docs/\*\*$')"
+check "and so does the filter the caller's if: tests, which no gate of app reads it for but the fold" \
+  "$(contains "$(filter_of app)" '^docs/\*\*$')"
+check "with the lane's gate file beside it" "$(contains "$(filter_of app)" '^\.github/ci-gates/called-lane\.lane\.py$')"
+
 # Rule 6: a generated filter keeps test files out with `!` patterns, which only
 # some-with-excludes reads as an exclusion; under `some` a `!` pattern matches every file outside
 # it, so the check refuses the quantifier rather than writing such a filter.

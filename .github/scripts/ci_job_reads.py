@@ -124,9 +124,9 @@ RETRY_RIG = ".github/scripts/download-retry-proof.sh"
 RETRY_JOB = "download-retry"
 IMAGES_JOB = "download-retry-images"
 IMAGES_WORKER_JOB = "download-retry-images-worker"
-RETRY_FIRST_PROXY = "Start the recovering fault for install-changie"
-RETRY_FIRST_REPORT = "What install-changie's curl did under the recovering fault"
-RETRY_GO_STEP = "Download packages/envoy's Go modules under the recovering fault"
+RETRY_FIRST_PROXY = "Start the recovering fault for install-changie on github.com"
+RETRY_FIRST_REPORT = "What install-changie's curl did under the recovering fault on github.com"
+RETRY_GO_STEP = "Download packages/envoy's Go modules under the recovering fault on proxy.golang.org"
 IMAGES_WORKER_STEP = "Build the worker image under the recovering fault"
 BUILD_TAGS = ".github/scripts/go_build_tags.py"
 
@@ -2071,6 +2071,9 @@ RETRY_SITE_READS = reads(
     (FAULT_PROXY, f"{at(RETRY_JOB, RETRY_FIRST_PROXY)} and every other proxy step of the job run it"),
     (RETRY_RIG, f"{at(RETRY_JOB, RETRY_FIRST_PROXY)} starts the proxy with it and "
                 f"{at(RETRY_JOB, RETRY_FIRST_REPORT)} reads its log with it"),
+    (".github/scripts/ci-tools.sh", "install-changie sources it, and under the CI_RETRY_ATTEMPT_LOG its two recover runs set, "
+                                    f"ci_tools_curl writes the attempt log {at(RETRY_JOB, RETRY_FIRST_REPORT)} and its twin "
+                                    "read which attempt passed from"),
     (".github/actions/setup-bun/**", at(RETRY_JOB, "./.github/actions/setup-bun")),
     (".github/actions/install-changie/**", at(RETRY_JOB, "./.github/actions/install-changie")),
     (".github/actions/install-claude-code/**", at(RETRY_JOB, "./.github/actions/install-claude-code")),
@@ -2248,6 +2251,10 @@ def browser_gate(filter, job):
         *ci_retry(
             "dispatch-browser-run-reads.sh sources it from its own directory, so the merge job's read "
             "of its own attempt's jobs retries, and the blobs-refused mode makes no request"),
+        (f"{SCRIPTS}/gh-read.sh",
+         "dispatch-browser-run-reads.sh sources it from its own directory and runs the merge job's "
+         "read of its own attempt's jobs through its gh_wait_reset, and "
+         f"{at_browser(BROWSER_READ_ONE_STEP, BROWSER_MERGE)} prices its margin for that read"),
         # The container the shard and alone jobs run in, and what decides which bytes it is.
         # No step reads these three: the `container:` key does, before the first step runs, so
         # the citation is the two jobs that carry that key rather than a step of either.

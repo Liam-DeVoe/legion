@@ -726,10 +726,34 @@ ci_tools__tempfile() {
 # makes of each shape is the derivation above, and the five attempts at 0, 62, 124, 188 and
 # 256 s are this issue's own measurement of it, made twice on curl 8.14.1 and read again in
 # run 43202546798's job 131129681795, where each `ci_tools_curl` ladder made five.
+#
+# THE ATTEMPT LOG. Where CI_RETRY_ATTEMPT_LOG names a file, each attempt this curl makes appends
+# one line there as .github/scripts/ci-retry.sh's retry_fetch writes it, `attempt <n> exit
+# <status>`, 0 for the attempt that succeeded: the download-retry job's recover runs of
+# install-changie read from it which attempt passed (that file's header). curl makes the attempts
+# itself and says nothing of one that succeeds, but under `-sS` it prints one `curl: (<exit>) …`
+# line on standard error for each attempt that fails, that attempt's own exit status in the
+# parentheses, as the eight attempts of run 45383555145's recover-changie printed seven such
+# lines for the seven its proxy refused. So under that variable curl's standard error goes to a
+# file of its own for the call (`--stderr`), is copied to standard error once the call ends, and
+# each such line is one failed attempt, with one line more, exit 0, where the call succeeded.
+# Unset or empty, curl is handed the words above and nothing more.
 ci_tools_curl() {
-  local file=$1 max_time=$2 url=$3
+  local file=$1 max_time=$2 url=$3 status=0 errors=""
   shift 3
-  curl -fsSL --retry 7 --retry-all-errors --retry-max-time 300 --max-time "$max_time" -o "$file" "$@" "$url"
+  if [ -n "${CI_RETRY_ATTEMPT_LOG:-}" ]; then
+    errors=$(ci_tools__tempfile attempts) || errors=""
+    [ -z "$errors" ] || set -- "$@" --stderr "$errors"
+  fi
+  curl -fsSL --retry 7 --retry-all-errors --retry-max-time 300 --max-time "$max_time" -o "$file" "$@" "$url" || status=$?
+  if [ -n "$errors" ]; then
+    cat -- "$errors" >&2 || true
+    awk -v status="$status" '
+      /^curl: \([0-9]+\)/ { failed++; code = $2; gsub(/[()]/, "", code); printf "attempt %d exit %s\n", failed, code }
+      END { if (status == 0) printf "attempt %d exit 0\n", failed + 1 }' "$errors" >> "$CI_RETRY_ATTEMPT_LOG" || true
+    rm -f -- "$errors"
+  fi
+  return "$status"
 }
 
 # ci_tools__curl_held <file> <max_time> <url> [curl argument…]: ci_tools_curl for a request that

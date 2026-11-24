@@ -742,6 +742,33 @@ check "and its record carries that bound and that row's own URL, so --max-time f
   "$(is "$other_ladder" "$(whole_record "$other_bound" "$base/$PLUGIN_ASSET_PATH")")"
 check "and neither fetch left a temporary file" "$(is "$(temporary_files)" "")"
 
+echo "case: ci_tools_curl's attempt log, where CI_RETRY_ATTEMPT_LOG names one"
+# The download-retry job's recover runs of install-changie name a file in CI_RETRY_ATTEMPT_LOG and
+# read from it which attempt passed (.github/scripts/download-retry-proof.sh, `report`). A fetch
+# the origin serves is one attempt, exit 0. A fetch of a path the origin does not hold fails each
+# attempt with exit 22, the stand-in's `--retry-max-time 1` letting curl make one or two of them,
+# and each is one line, numbered from 1, as many as the `curl: (22)` lines the call still prints
+# on standard error once it ends. The case above runs with the variable unset, and its whole
+# record is what holds the call to the pinned words alone there.
+origin attempt-log
+export CI_RETRY_ATTEMPT_LOG="$work/attempt-log.served"
+run ci_tools_curl "$work/dest/attempt-log-served" 30 "$base/$ASSET_PATH"
+check "a fetch the origin serves exits 0" "$(is "$status" 0)"
+check "and writes one line, attempt 1 exit 0" \
+  "$(is "$(cat "$work/attempt-log.served" 2> /dev/null || true)" 'attempt 1 exit 0')"
+CI_RETRY_ATTEMPT_LOG="$work/attempt-log.refused"
+run ci_tools_curl "$work/dest/attempt-log-refused" 30 "$base/github/no-such-asset"
+unset CI_RETRY_ATTEMPT_LOG
+refused_log=$(cat "$work/attempt-log.refused" 2> /dev/null || true)
+refused_lines=$(grep -c '^curl: (22) ' <<<"$out" || true)
+indent "$refused_log"
+check "a fetch of a path the origin does not hold exits 22" "$(is "$status" 22)"
+check "and its curl: (22) lines still reach standard error, at least one of them" \
+  "$([ "${refused_lines:-0}" -ge 1 ] && echo true || echo false)"
+check "and it writes one line per such line, numbered from 1, each exit 22" \
+  "$(is "$refused_log" "$(for ((n = 1; n <= refused_lines; n++)); do echo "attempt $n exit 22"; done)")"
+check "and neither call left a temporary file" "$(is "$(temporary_files)" "")"
+
 echo "case: ghcr-mirror — the primary refuses and the copy serves the bytes"
 origin primary-refuses
 rm -- "$root/$ASSET_PATH"

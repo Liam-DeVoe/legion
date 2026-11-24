@@ -818,6 +818,61 @@ check "names the Dockerfile, the line and the verb" \
   "$(contains "$out" 'file=packages/daemon/docker/worker.Dockerfile,line=2::.apk add. fetches inside a Dockerfile RUN with no retry around it')"
 check "counts the one refusal" "$(contains "$out" '1 download(s) outside the one retry rule')"
 
+# `apk update` reads Alpine's index from the same CDN, and is the other verb of APK_SUBCOMMANDS
+# (dispatch://INFRA-1545, round 64, where a mutant that dropped it passed every case). This RUN
+# holds no `apk add`, so the update is the only fetch that can refuse it.
+echo "case: a Dockerfile with an unretried apk update is refused, naming the verb"
+root=$(fixture bare-apk-update)
+cat > "$root/packages/daemon/docker/worker.Dockerfile" <<'DOCKER'
+FROM golang:1.27.3-alpine AS go-base
+RUN apk update && echo "index read"
+DOCKER
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the Dockerfile, the line and the verb" \
+  "$(contains "$out" 'file=packages/daemon/docker/worker.Dockerfile,line=2::.apk update. fetches inside a Dockerfile RUN with no retry around it')"
+check "counts the one refusal" "$(contains "$out" '1 download(s) outside the one retry rule')"
+
+# Every subcommand the gate's verb sets name, each as a bare RUN of its own: a member dropped from
+# APT_SUBCOMMANDS, APK_SUBCOMMANDS, MISE_SUBCOMMANDS, CRANE_SUBCOMMANDS, UV_SUBCOMMANDS,
+# NPM_SUBCOMMANDS or BUN_SUBCOMMANDS fails its own row here. The list is written out rather than
+# read from the gate, so a set that loses a member cannot take the row with it. Review round 38
+# of dispatch://INFRA-1545 found `apk update` covered by no case; ten more members were in round
+# 64's search for that class (apt-get upgrade, dist-upgrade, full-upgrade, build-dep and
+# reinstall, crane manifest and blob, uv sync and pip, npm install-test).
+echo "case: every subcommand of the gate's verb sets is refused bare, each naming its verb"
+root=$(fixture every-verb-subcommand)
+every_verb=(
+  "apt-get update" "apt-get install" "apt-get download" "apt-get upgrade" "apt-get dist-upgrade"
+  "apt-get full-upgrade" "apt-get source" "apt-get build-dep" "apt-get reinstall"
+  "apk update" "apk add"
+  "mise install" "mise use"
+  "crane copy" "crane cp" "crane digest" "crane config" "crane pull" "crane export"
+  "crane manifest" "crane blob"
+  "uv sync" "uv add" "uv pip" "uv tool" "uv python" "uv lock" "uv export"
+  "npm install" "npm ci" "npm i" "npm install-test" "npm add"
+  "bun install" "bun add" "bun i"
+)
+# `apt-get update` carries the option rule 5 asks of it, so its one refusal is the missing retry.
+{
+  echo 'FROM debian:trixie-slim AS build'
+  for verb in "${every_verb[@]}"; do
+    case $verb in
+      "apt-get update") echo "RUN $verb -o APT::Update::Error-Mode=any" ;;
+      *) echo "RUN $verb x" ;;
+    esac
+  done
+} > "$root/packages/envoy/docker/Dockerfile"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+line=2
+for verb in "${every_verb[@]}"; do
+  check "refuses $verb on line $line, naming it" \
+    "$(contains "$out" "file=packages/envoy/docker/Dockerfile,line=$line::.$verb. fetches inside a Dockerfile RUN with no retry")"
+  line=$((line + 1))
+done
+check "counts one refusal for each" "$(contains "$out" "${#every_verb[@]} download(s) outside the one retry rule")"
+
 echo "case: the same apk add under the file's inline retry passes"
 root=$(fixture canonical-retry-apk)
 {

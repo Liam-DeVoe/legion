@@ -5,23 +5,29 @@
 # and prints and checks what the retry did (dispatch://INFRA-1545, T7). Five verbs:
 #
 #   start <name> --mode <recover|stall> [--hosts <csv>] [--recover-after <s>] [--per-host-window]
-#         [--bind <address>]
+#         [--bind <address>] [--attempt-log]
 #       Starts a proxy of its own for the step that follows, waits for its port, and writes
-#       `proxy`, `port` and `started` to $GITHUB_OUTPUT, so the step names the proxy in its own
-#       `env:` and nowhere else. One proxy per step and not one per job, because a recovery
-#       window is counted from the proxy's first moment: a second step under the first step's
-#       proxy would run after the window closed and prove nothing. --per-host-window is passed
-#       to the proxy as it is: each faulted host then gets a window of its own from its own first
-#       request (ci-fault-proxy.py's header), which is what a docker build needs, since it first
-#       reaches the hosts of a late RUN long after one window from the start has closed.
+#       `proxy`, `port`, `started` and `attempt_log` to $GITHUB_OUTPUT, so the step names the proxy
+#       in its own `env:` and nowhere else. One proxy per step and not one per job, because a
+#       recovery window is counted from the proxy's first moment: a second step under the first
+#       step's proxy would run after the window closed and prove nothing. --per-host-window is
+#       passed to the proxy as it is: each faulted host then gets a window of its own from its own
+#       first request (ci-fault-proxy.py's header), which is what a docker build needs, since it
+#       first reaches the hosts of a late RUN long after one window from the start has closed.
+#       --attempt-log names a file under this rig's state directory as `attempt_log`, empty
+#       without the flag, for the site's step to pass on as CI_RETRY_ATTEMPT_LOG: the retry helpers
+#       append a line there for each attempt they make (.github/scripts/ci-retry.sh's header), and
+#       `report` reads from it which attempt passed.
 #
 #   report <name> --what <phrase> --outcome <the step's outcome> --attempts <n> --floor <s>
-#          --budget <s>
+#          --budget <s> [--faulted <host>]
 #       Reads that proxy's log and says, in lines a person reading the run can count, which site
 #       it was, how many attempts reached the proxy, the offset of each from the first, the
 #       seconds between the first attempt and the last, the requests it passed on counted by
 #       host, the requests it faulted counted by host with the second each host's first request
 #       came after the proxy started, and the step's own elapsed seconds against its budget.
+#       --faulted names the one host a run faults, and the site's own refused requests for it are
+#       counted apart; a proxy started with --attempt-log has the site's attempt lines printed.
 #       Then it checks what the mode promises (below) and stops the proxy. The two counts by host
 #       are printed and checked against nothing.
 #
@@ -57,8 +63,9 @@
 #       this runner image may carry"); this verb is what proves the clearing worked, per site.
 #
 #       The faulted target is the first host of that proxy's own `--hosts`, so the probe reads
-#       the fault the site will meet and not some other one. The unfaulted target is that same
-#       host under the reserved `.invalid` suffix (RFC 2606): it is derived from `--hosts`
+#       the fault the site will meet and not some other one; under --per-host-window it is a name
+#       under that host instead (below). The unfaulted target is that same host under the
+#       reserved `.invalid` suffix (RFC 2606): it is derived from `--hosts`
 #       rather than named anew, it can never match the fault's list — `github.com.invalid`
 #       neither equals `github.com` nor ends in `.github.com` — nobody owns it, and no resolver
 #       answers for it, so only the proxy can answer it. Through the proxy it reads HTTP 502
@@ -68,10 +75,13 @@
 #
 #       The probe's own two requests are the proxy's first lines, and `report` leaves them out
 #       of the site's counts: the state file carries the line count they reached. Under
-#       --per-host-window the faulted request also opens the window of the host it names, the
-#       first entry of --hosts as written, and that line is the probe's too. A site that fetches
-#       that very host would meet a window already running, so a proxy started with that flag
-#       lists first an entry its site never fetches by that bare name.
+#       --per-host-window a request opens the window of the host it names, so a probe of the
+#       first entry by its bare name would open that host's window before the site runs, and a
+#       site that first reached that host more than 60 s later would meet no fault at all. So
+#       under that flag the faulted request names PROBE_LABEL under the first entry,
+#       `download-retry-probe.github.com` for `github.com`: the entry covers it, so it is refused
+#       as the site's host is, and no site fetches it, so the window it opens is its own, and each
+#       host the site fetches gets its window from the site's own first request to it.
 #
 #       Two things here are worth reusing in any fault rig, and both are about not depending on
 #       a client's behaviour. Read every probe twice — what the client read, and whether the
@@ -94,7 +104,14 @@
 # What `report` checks, which is what each of the three modes claims:
 #   recover  the step succeeded, the proxy refused at least one attempt (so the fault was in the
 #            site's path at all) and passed at least one on (so the site recovered through the
-#            same proxy), inside the budget.
+#            same proxy), inside the budget. With --faulted, at least one of the site's own
+#            requests for that host was refused (THE FAULTED-HOST CHECK): a run that faults one
+#            host has met no fault without it, whatever the proxy refused the probe. With an
+#            attempt log, one of its lines reads exit 0, an attempt failed before it, and none
+#            reached --attempts (THE ATTEMPT CHECK): the call passed on a retry and with an
+#            attempt to spare, where a call that passed at once met no fault it had to retry,
+#            and one that passed on its last attempt would have failed had its fault lasted one
+#            attempt longer.
 #   stall    the step failed, which is the retry exhausting its five attempts against a host
 #            that answers nothing; the proxy was reached at least once per attempt; the step
 #            took at least --floor, the loop's own sleeps, so every attempt really happened
@@ -142,6 +159,11 @@ PROBE_BOUND=10
 # request for it, and a request that was not made through the proxy reads as nothing at all.
 RESERVED_SUFFIX=".invalid"
 
+# The label the probe puts before the first --hosts entry under --per-host-window (the probe
+# paragraph of the header): a name the entry covers and no site fetches, so the window the
+# probe's request opens is that name's own and never the window of a host the site reaches.
+PROBE_LABEL="download-retry-probe"
+
 die() {
   echo "::error::download-retry: $*" >&2
   exit 1
@@ -176,6 +198,8 @@ state_read() {
       started) started=$value ;;
       probe_lines) probe_lines=$value ;;
       probe_pair) value=${value#\'}; probe_pair=${value%\'} ;;
+      per_host_window) per_host_window=$value ;;
+      attempt_log) attempt_log=$value ;;
     esac
   done < "$file"
 }
@@ -191,7 +215,7 @@ docker_bridge_gateway() {
 }
 
 start() {
-  local name=$1 mode="" hosts="" recover_after=60 per_host_window="" bind=127.0.0.1
+  local name=$1 mode="" hosts="" recover_after=60 per_host_window="" bind=127.0.0.1 attempt_log=""
   shift
   while [ "$#" -gt 0 ]; do
     case $1 in
@@ -200,6 +224,7 @@ start() {
       --recover-after) recover_after=$2; shift 2 ;;
       --per-host-window) per_host_window=$1; shift ;;
       --bind) bind=$2; shift 2 ;;
+      --attempt-log) attempt_log="$state_dir/$name.attempts"; shift ;;
       *) die "start: unknown argument '$1'" ;;
     esac
   done
@@ -208,7 +233,8 @@ start() {
 
   mkdir -p "$state_dir"
   local log="$state_dir/$name.log" port_file="$state_dir/$name.port" port="" pid=""
-  rm -f "$log" "$port_file"
+  # An attempt log a step of an earlier run of this name left would be read as this site's.
+  rm -f "$log" "$port_file" ${attempt_log:+"$attempt_log"}
   # Each line of the proxy's log is stamped with the second it was written, which is what makes
   # the attempts countable afterwards: the proxy prints one line per request it refuses or
   # stalls, and the stamps turn those lines into a schedule. The stamping is a bash `read` loop
@@ -252,15 +278,18 @@ start() {
     echo "pid=$pid"
     echo "started=$started"
     echo "proxy=http://$bind:$port"
+    echo "per_host_window=${per_host_window:+1}"
+    echo "attempt_log=$attempt_log"
   } > "$(state_file "$name")"
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
     {
       echo "proxy=http://$bind:$port"
       echo "port=$port"
       echo "started=$started"
+      echo "attempt_log=$attempt_log"
     } >> "$GITHUB_OUTPUT"
   fi
-  echo "download-retry: the $name fault proxy is http://$bind:$port (--mode $mode${per_host_window:+ $per_host_window}, faulting ${hosts:-every host})"
+  echo "download-retry: the $name fault proxy is http://$bind:$port (--mode $mode${per_host_window:+ $per_host_window}, faulting ${hosts:-every host})${attempt_log:+, logging the attempts of its site to $attempt_log}"
 }
 
 # One request through the proxy, made the way the site makes its own fetch: the two variables
@@ -316,14 +345,18 @@ probe() {
   local file
   file=$(state_file "$name")
   [ -f "$file" ] || die "probe: no proxy named $name was started"
-  local mode hosts log proxy
-  state_read "$file" mode hosts log proxy
+  local mode hosts log proxy per_host_window=""
+  state_read "$file" mode hosts log proxy per_host_window
 
-  local faulted control
+  local faulted control entry
   if [ -n "$hosts" ]; then
-    faulted=${hosts%%,*}
-    faulted=${faulted#.}
-    control="$faulted$RESERVED_SUFFIX"
+    entry=${hosts%%,*}
+    entry=${entry#.}
+    control="$entry$RESERVED_SUFFIX"
+    # Under --per-host-window a name under the entry rather than the entry itself, so the window
+    # this request opens is no host's the site reaches (the header's probe paragraph).
+    faulted=$entry
+    [ -z "$per_host_window" ] || faulted="$PROBE_LABEL.$entry"
   else
     # This proxy names no host, so it faults every one of them and has no unfaulted host left to
     # read. A name nobody owns is as faulted here as any other, and it is one no bypass can
@@ -404,7 +437,7 @@ probe() {
 }
 
 report() {
-  local name=$1 what="" outcome="" attempts=1 floor=0 budget=0
+  local name=$1 what="" outcome="" attempts=1 floor=0 budget=0 faulted=""
   shift
   while [ "$#" -gt 0 ]; do
     case $1 in
@@ -413,14 +446,15 @@ report() {
       --attempts) attempts=$2; shift 2 ;;
       --floor) floor=$2; shift 2 ;;
       --budget) budget=$2; shift 2 ;;
+      --faulted) faulted=$2; shift 2 ;;
       *) die "report: unknown argument '$1'" ;;
     esac
   done
   local file
   file=$(state_file "$name")
   [ -f "$file" ] || die "report: no proxy named $name was started"
-  local mode log pid started probe_pair probe_lines
-  state_read "$file" mode log pid started probe_pair probe_lines
+  local mode log pid started probe_pair probe_lines attempt_log=""
+  state_read "$file" mode log pid started probe_pair probe_lines attempt_log
   [ -n "${probe_pair:-}" ] ||
     die "report: no probe ran before $name's site, so this result would carry no reading of its own. Every fault drive records the pair a probe read through the proxy before the site (dispatch://INFRA-1545, the Verification document's proxy clauses): run \`download-retry-proof.sh probe $name\` in the step that starts the proxy."
   local now elapsed
@@ -469,11 +503,13 @@ report() {
   # The requests it faulted, counted the same way, each host with the second its first request
   # reached the proxy, counted from the proxy's start: what shows whether a host the site first
   # reached late met its fault at all. Under --per-host-window that second is the proxy's own,
-  # from the line it writes as the host's window opens, read from the whole log, since a window
-  # the probe opened is still the one the site met; the proxy names that host lower-cased, so the
-  # request's host is too. With one window for every host a faulted host's first request is its
-  # first refused one, as no request is refused after one is passed, so it is that line's stamp.
-  # Printed beside the passes and checked against nothing.
+  # from the line it writes as the host's window opens, read from the whole log, so a window
+  # opened before the site ran would show its true second; the probe's own request names a host
+  # of its own under that flag (the header's probe paragraph), and only the site's refused
+  # requests are counted, so the probe's window is never printed. The proxy names that host
+  # lower-cased, so the request's host is too. With one window for every host a faulted host's
+  # first request is its first refused one, as no request is refused after one is passed, so it
+  # is that line's stamp. Printed beside the passes and checked against nothing.
   fault_hosts=$(awk -v t="$started" -v skip="${probe_lines:-0}" "$request_host"'
                   $3 == "window" { opened[$4] = $6; sub(/s$/, "", opened[$4]) }
                   NR > skip && ($3 == "504" || $3 == "stall") {
@@ -483,6 +519,25 @@ report() {
                   }
                   END { for (host in count) print host, count[host], ((host in opened) ? opened[host] : first[host]) }' "$log" |
     LC_ALL=C sort | awk '{ printf "    %s %s, first request at %s s\n", $2, $1, $3 }')
+  # The site's own refused requests for the one host a run faults, counted as the lines above
+  # count them: the probe's two lines are out of the site's log, so its request is never one of
+  # them (THE FAULTED-HOST CHECK, the header's `report` checks).
+  local faulted_count=0
+  if [ -n "$faulted" ]; then
+    faulted_count=$(awk -v want="$faulted" "$request_host"'
+                      ($3 == "504" || $3 == "stall") && tolower(request_host()) == tolower(want) { n++ }
+                      END { print n + 0 }' "$site_log")
+  fi
+  # The site's attempt lines, `attempt <n> exit <status>` as the retry helpers write them under
+  # CI_RETRY_ATTEMPT_LOG (THE ATTEMPT CHECK): the attempt that passed, and the highest attempt any
+  # call of the step reached, since a second call that ran its ladder out is a call that passed
+  # on no attempt to spare too.
+  local attempt_lines="" passed_on="" highest=0
+  if [ -n "$attempt_log" ]; then
+    attempt_lines=$(cat "$attempt_log" 2> /dev/null || true)
+    passed_on=$(awk '$1 == "attempt" && $3 == "exit" && $4 == "0" { print $2; exit }' <<<"$attempt_lines")
+    highest=$(awk '$1 == "attempt" && $2 + 0 > n { n = $2 + 0 } END { print n + 0 }' <<<"$attempt_lines")
+  fi
 
   echo "download-retry: $what, under --mode $mode"
   echo "  the step's own outcome: $outcome"
@@ -498,6 +553,13 @@ report() {
   echo "  requests the proxy faulted: $fault_count, by host, each with its first request in seconds after the proxy started:"
   [ -z "$fault_hosts" ] || printf '%s\n' "$fault_hosts"
   echo "  it ran ${elapsed}s from the proxy's start, against a budget of ${budget}s and a floor of ${floor}s for its $attempts attempt(s)"
+  if [ -n "$faulted" ]; then
+    echo "  requests of this site for $faulted, the one host this run faults, that the proxy refused: $faulted_count"
+  fi
+  if [ -n "$attempt_log" ]; then
+    echo "  the attempts the site's call logged, of the $attempts it may make:"
+    if [ -n "$attempt_lines" ]; then sed 's/^/    /' <<<"$attempt_lines"; else echo "    none at all"; fi
+  fi
 
   kill "$pid" 2> /dev/null || true
 
@@ -520,6 +582,20 @@ report() {
       ;;
     *) fail "unknown mode $mode" ;;
   esac
+  # The two checks a run that faults one host carries, whatever its mode (the header says what
+  # each is for), each failing by its name.
+  if [ -n "$faulted" ] && [ "$faulted_count" -lt 1 ]; then
+    fail "the faulted-host check: none of this site's own requests for $faulted was refused (the probe's request is not counted), so the one host this run faults met no fault of this site"
+  fi
+  if [ -n "$attempt_log" ]; then
+    if [ -z "$passed_on" ]; then
+      fail "the attempt check: the attempt log $attempt_log holds no attempt that passed, so which attempt passed is unknown; the site's step passes this log to the retry as CI_RETRY_ATTEMPT_LOG"
+    elif [ "$passed_on" -lt 2 ]; then
+      fail "the attempt check: the call passed with no retry, on its first attempt, so the fault this run injects never made it retry"
+    elif [ "$highest" -ge "$attempts" ]; then
+      fail "the attempt check: the call reached attempt $highest of the $attempts it may make, its last, so it passed with no attempt to spare"
+    fi
+  fi
   [ "$elapsed" -le "$budget" ] || fail "it took ${elapsed}s, over its ${budget}s budget"
   [ "$problems" -eq 0 ] || exit 1
   echo "  as this mode promises"

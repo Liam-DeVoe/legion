@@ -10,7 +10,7 @@
 # outputs whose expression reads the pull request's labels, every paths filter saying yes. A read
 # that finds none fails, since every case below would then pass over nothing. Each of them is on
 # in a merge group but download_retry, which no merge group runs
-# (.github/ci-notes/ci.md#the-two-jobs-that-prove-the-retries-and-why-neither-runs-in-a-merge-group),
+# (.github/ci-notes/ci.md#the-three-jobs-that-prove-the-retries-and-why-none-runs-in-a-merge-group),
 # so a pull request runs that one only under its label or full-ci. Two copies of ci.yaml, each
 # with one label literal broken, show that a broken term fails its case rather than leaving the
 # set.

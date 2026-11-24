@@ -93,10 +93,7 @@ jobs:
         run: |
           . .github/scripts/ci-retry.sh
           retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
-      # The go run of .github/scripts/pg-connection-ceiling.sh builds envoy's
-      # internal/dispatch/store/cmd/connections after the cache restore and the retried download
-      # above, as daemon-go-race's step of this name runs after its own, so that it reads the
-      # modules those two leave and fetches none unretried.
+      # why: .github/ci-notes/ci.md#why-a-lanes-sizing-step-comes-after-its-retried-module-download
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # Under the sampler, not bare: the race detector maps about four bytes of shadow memory per

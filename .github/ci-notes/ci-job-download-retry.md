@@ -22,32 +22,71 @@ The second is the probe's 20 s. None of those keys holds the probe, which is thi
 made between the two, each bounded at 10 s by the rig's PROBE_BOUND. Every site of the
 download-retry job carries the same 20 s.
 
-The third is 70 s for each listed host the build reaches (dispatch://INFRA-1545, round 63). Each
-arm's proxy runs `--per-host-window`, so each host its `--hosts` lists answers 504 for 60 s from
-that host's own first request, wherever in the build that request comes, and is passed on after.
-Until round 63 one window ran from the proxy's start, and a host the build first reached after its
-first minute met no fault at all: the worker image's seven model-catalog hosts, which the final
-RUN's `legion probe-image` reaches about 529 s in, were listed and never faulted. What a window
-per host costs a build, and why the count of hosts bounds it:
+The third is what the injected fault can add to a build that passes (dispatch://INFRA-1545, round
+64, INFRA-1310's architect's rule): for each retried call of its Dockerfile, the sleeps of that
+call's ladder, and the time its failed attempts took in this head's run. Each arm's proxy runs
+`--per-host-window`, so each host its `--hosts` lists answers 504 for 60 s from that host's own
+first request, wherever in the build that request comes, and is passed on after. Until round 63
+one window ran from the proxy's start, and a host the build first reached after its first minute
+met no fault at all: the worker image's seven model-catalog hosts, which the final RUN's `legion
+probe-image` reaches about 529 s in, were listed and never faulted. What a window per host costs
+a build:
 
 - docker build stops at the first RUN that fails, so at most one ladder runs out, and the build
   has failed by then. The longest single ladder in the first term pays for that.
-- A RUN that passes waits out at most one window for each listed host it is the first to reach.
-  A 504 answers at once, so the attempts inside a window cost about nothing, and the inline
-  retry sleeps 10, 20 and 40 s, so its fourth attempt starts 70 s after its first, the first
-  attempt after a 60 s window. So one window costs a RUN 70 s.
-- Hosts are counted as the proxy keys its windows, by the host a request names, lower-cased, not
-  by the `--hosts` entry it matched. The hosts one RUN first reaches together share one 70 s
-  wait, so the count is an upper bound.
+- A retried call that passes spends at most its ladder's sleeps, however many listed hosts it
+  meets: 10 + 20 + 40 + 80 = 150 s for the inline `retry()`, and 1 + 2 + 4 + 8 + 16 + 32 + 64 =
+  127 s for a curl that makes its own eight attempts (`--retry 7`: the worker image's mise
+  download and its notices stage's 24 reads). Under `--mode recover` a faulted host answers 504
+  at once, so a failed attempt costs the work it did before it met that host, not its
+  per-attempt bound, and the attempt that passed is in the build's measured time already. So the
+  term is every retried call's sleeps plus its failed attempts' time, read from BuildKit's own
+  times for each RUN's output in run 45383555145 at fbcc6647 (jobs 138409597173 and
+  138409597020): a call's next attempt starts at its failed attempt's last line plus the sleep,
+  and each failed attempt's time is its last line less its start.
+- The unit is the retried call, not the RUN line. One RUN line can hold several calls, each with a
+  ladder of its own: the worker image's toolchain RUN (#45 of job 138409597020) slept
+  150 + 4 x 70 = 430 s across its uv, Node, AWS CLI, Go and kubectl downloads and passed, and its
+  runtime-base RUN (#16) slept 3 x 70 = 210 s, so 150 s a RUN line bounds neither. Every call is
+  counted, whether this head's run saw it meet a fault or not, since which call first reaches a
+  host turns on the order BuildKit runs the stages in.
 
-The hosts counted are the hosts each arm's `--hosts` lists that a RUN line of its Dockerfile
+Until round 64 this term was 70 s for each listed host the build reached, which held only for a
+host a call meets on its first attempt: the ladder starts its attempts at 0, 10, 30, 70 and 150
+s, so a host first met on a later attempt costs more, up to the whole ladder (review round 38 of
+dispatch://INFRA-1545).
+
+THE LIMIT OF A WINDOW PER HOST. A call that meets listed hosts one after another, each first on a
+later attempt, spends its ladder on them in turn, where a real outage is one window: two such
+hosts cost a call its spare attempt, and three fail its arm although its retry works. In run
+45383555145 at fbcc6647 these calls met two listed hosts in turn and passed only on their last
+attempt:
+
+- the worker image (job 138409597020): the go-licenses install (#22: github.com, then
+  sum.golang.org), the go-modules download (#24: the go-get hosts, then sum.golang.org and
+  modernc.org), the gopls install (#25: golang.org, then sum.golang.org), mise's curl (#43, on its
+  eighth attempt of eight: github.com, then release-assets.githubusercontent.com), the toolchain
+  RUN's uv download (#45: the same two hosts) and the azure-cli wheels (#94: pypi.org, then
+  files.pythonhosted.org);
+- the held-port image's `go mod download` (#10 of job 138409597173: proxy.golang.org and the go-get
+  hosts, then sum.golang.org);
+- the Envoy image's go-licenses install (#30 of the same job: proxy.golang.org, then
+  sum.golang.org).
+
+Splitting the image builds per host would multiply builds that run up to an hour, so the limit
+stays. Each report prints the requests it faulted by host, each with the second its first request
+came, so a red arm whose call met three hosts in turn can be read for what it is.
+
+The hosts below are the hosts each arm's `--hosts` lists that a RUN line of its Dockerfile
 reaches, from round 61 and 62's table of every host the four builds fetch from, with the hosts
-images job 138228770096 (at f3e50c3f) showed each proxy passing:
+images job 138228770096 (at f3e50c3f) showed each proxy passing and the two run 45383555145
+showed each proxy faulting besides. They are the evidence of what each arm faults, not a price:
+the budgets count retried calls.
 
-- The worker image, 63 hosts: deb.debian.org; registry.npmjs.org; github.com,
+- The worker image, 64 hosts: deb.debian.org; registry.npmjs.org; github.com,
   objects.githubusercontent.com, release-assets.githubusercontent.com and
-  raw.githubusercontent.com; mise.jdx.dev; nodejs.org; awscli.amazonaws.com; go.dev and
-  dl.google.com; dl.k8s.io and cdn.dl.k8s.io; storage.googleapis.com; releases.astral.sh; pypi.org
+  raw.githubusercontent.com; mise.jdx.dev; nodejs.org; awscli.amazonaws.com; go.dev, pkg.go.dev
+  and dl.google.com; dl.k8s.io and cdn.dl.k8s.io; storage.googleapis.com; releases.astral.sh; pypi.org
   and files.pythonhosted.org; www.postgresql.org and apt.postgresql.org; cdn.playwright.dev and
   playwright.download.prss.microsoft.com; azcliprod.blob.core.windows.net; proxy.golang.org,
   sum.golang.org, golang.org and google.golang.org; go.googlesource.com; cloud.google.com;
@@ -59,51 +98,68 @@ images job 138228770096 (at f3e50c3f) showed each proxy passing:
   Pi's model catalog, catalog.stencil.so, api.commandcode.ai, api.kilo.ai, api.venice.ai,
   coding-intl.dashscope.aliyuncs.com, hyper.charm.land and zenmux.ai. www.authelia.com is where
   authelia.com's go-get page sends the go command (the Envoy arm's proxy passed both), and
-  www.gonum.org is where gonum.org's does.
+  www.gonum.org is where gonum.org's does. pkg.go.dev is the one the go.dev entry faulted in job
+  138409597020 beside go.dev, first at 159.5 s.
 - The Envoy image, 24 hosts: registry.npmjs.org; deb.debian.org; proxy.golang.org,
   sum.golang.org, golang.org and google.golang.org; storage.googleapis.com; github.com, which its
   proxy passed ten requests to in job 138228770096; and the go-get hosts authelia.com and
   www.authelia.com, cloud.google.com, dario.cat, dmitri.shuralyov.com, go.opencensus.io,
   go.opentelemetry.io, go.uber.org, go.yaml.in, gonum.org and www.gonum.org, gopkg.in,
   gotest.tools, honnef.co, k8s.io and rsc.io.
-- The held-port image, 29 hosts: proxy.golang.org, sum.golang.org, golang.org and
+- The held-port image, 30 hosts: proxy.golang.org, sum.golang.org, golang.org and
   google.golang.org; storage.googleapis.com; and the go-get hosts authelia.com and
   www.authelia.com, cel.dev, charm.land, cloud.google.com, codeberg.org, dario.cat, git.sr.ht,
-  go.mongodb.org, go.opencensus.io, go.opentelemetry.io, go.uber.org, go.yaml.in, gocloud.dev,
-  gonum.org and www.gonum.org, gopkg.in, gotest.tools, honnef.co, lukechampine.com, modernc.org,
-  mvdan.cc, pgregory.net and rsc.io. Its golang image carries no git, so it clones nothing.
+  go.mongodb.org, go.opencensus.io and contrib.go.opencensus.io, go.opentelemetry.io, go.uber.org,
+  go.yaml.in, gocloud.dev, gonum.org and www.gonum.org, gopkg.in, gotest.tools, honnef.co,
+  lukechampine.com, modernc.org, mvdan.cc, pgregory.net and rsc.io. Its golang image carries no
+  git, so it clones nothing. contrib.go.opencensus.io's go-get page is one its `go mod download`
+  asked for after a proxy error in job 138409597173, first at 87.7 s.
 - The browser image, 5 hosts: www.postgresql.org and apt.postgresql.org;
   azure.archive.ubuntu.com and security.ubuntu.com; deb.nodesource.com.
 
-The four budgets:
+The four budgets, each call's sleeps and its failed attempts read from run 45383555145's two
+images jobs as the third term above says:
 
 - The worker image: the key of `.github/workflows/worker-image.yaml`'s `build` job, which holds
   that build and no other fetch but the ci-ok report: 1800 s, the 30 minutes the job carried,
   which holds its build, plus the `go` stage's `go mod download` of
   packages/daemon/docker/worker.Dockerfile, 5 x 900 + 150 = 4650 s. That key names no measured
-  build of its own, so its 1800 s is the measured term here too.
-  1800 + 4650 + 20 + 63 x 70 = 10880 s.
+  build of its own, so its 1800 s is the measured term here too. Its Dockerfile makes 39 inline
+  retries in 17 RUN lines and 25 curl ladders in two (mise's tarball, and the notices stage's 17
+  reads and 7 HEAD checks), and their failed attempts took 337.0 s in job 138409597020, 338 s
+  rounded up: the go-modules download's four, 133.2 s; the plugin workspace install's one,
+  56.8 s; the runtime-base RUN's apt and pgdg calls, 45.9 s; the three other `apt-get update`
+  calls' three each, 64.2 s; the azure-cli wheels' four, 21.5 s; the WebKit download's three,
+  8.1 s; and 7.3 s across the rest. 1800 + 4650 + 20 + 39 x 150 + 25 x 127 + 338 = 15833 s.
 - The Envoy image: the key of `.github/workflows/ci-job-envoy-smoke.yaml`'s job, whose comment
   names this build's own 203 s (job 133743044741), plus the `bun install` and the `go mod
-  download` of packages/envoy/docker/Dockerfile at 5 x 600 + 150 = 3150 s each.
-  203 + 3150 + 20 + 24 x 70 = 5053 s.
+  download` of packages/envoy/docker/Dockerfile at 5 x 600 + 150 = 3150 s each. Its five retried
+  calls are in four RUN lines (`apt-get update` and `apt-get install`, `bun install`, the
+  go-licenses install and `go mod download`), and their failed attempts took 139.7 s in job
+  138409597173, 140 s rounded up: the `bun install`'s one, 108.5 s, which bun's own retries of
+  each tarball kept running across the window; the `apt-get update`'s three, 21.5 s; `go mod
+  download`'s three, 9.3 s; and the go-licenses install's four, 0.5 s.
+  203 + 3150 + 20 + 5 x 150 + 140 = 4263 s.
 - The held-port image: the same key, whose comment names this build's 11 s in the same job, plus
   the wrapper stage's `go mod download` of packages/envoy/infra/host/heldportwrapper/Dockerfile,
-  5 x 600 + 150 = 3150 s. 11 + 3150 + 20 + 29 x 70 = 5211 s.
+  5 x 600 + 150 = 3150 s. That `go mod download` is its one retried call, and its four failed
+  attempts took 28.7 s, 29 s rounded up. 11 + 3150 + 20 + 150 + 29 = 3360 s.
 - The browser image: the key of `.github/workflows/browser-image.yaml`'s "Build and push" step:
   66 s, the slowest of the image's 33 cold builds measured in that job (job 128991520632 of run
   42565616054), plus the package set's `apt-get install` of .github/docker/browser.Dockerfile,
-  5 x 300 + 150 = 1650 s, above the signing key's and the index read's 750 s each.
-  66 + 1650 + 20 + 5 x 70 = 2086 s.
+  5 x 300 + 150 = 1650 s, above the signing key's and the index read's 750 s each. Its one RUN
+  line makes three retried calls, the signing key, `apt-get update` and `apt-get install`, and
+  their failed attempts took 21.3 s, 22 s rounded up: the update's three, 21.2 s, and the key's
+  three, 0.2 s. 66 + 1650 + 20 + 3 x 150 + 22 = 2208 s.
 
-The four builds no longer fit one job. With its 300 s of base image pulls, the 900 s smoke build
-and about 200 s of checkout, bypass clearing and rig steps, the one job came to
-1400 + 10880 + 5053 + 5211 + 2086 = 24630 s, and with the single slowest retried step that the
-Budgets note adds, the worker image's 4650 s ladder, to 29280 s, above the 360 minutes GitHub
+The four builds do not fit one job. With its 300 s of base image pulls, the 900 s smoke build
+and about 200 s of checkout, bypass clearing and rig steps, the one job would come to
+1400 + 15833 + 4263 + 3360 + 2208 = 27064 s, and with the single slowest retried step that the
+Budgets note adds, the worker image's 4650 s ladder, to 31714 s, above the 360 minutes GitHub
 gives a job on a hosted runner. So the worker image's build runs in a job of its own,
-download-retry-images-worker, at 200 + 10880 = 11080 s and 11080 + 4650 = 15730 s, 263 minutes;
-the other three stay in download-retry-images, at 1400 + 5053 + 5211 + 2086 = 13750 s and
-13750 + 3150 = 16900 s, 282 minutes, where 3150 s is the longest single ladder of the three
+download-retry-images-worker, at 200 + 15833 = 16033 s and 16033 + 4650 = 20683 s, 345 minutes;
+the other three stay in download-retry-images, at 1400 + 4263 + 3360 + 2208 = 11231 s and
+11231 + 3150 = 14381 s, 240 minutes, where 3150 s is the longest single ladder of the three
 Dockerfiles that job builds. Each key is the whole minute strictly above its sum, and each job's
 comment derives it.
 
@@ -125,37 +181,84 @@ that every fetch after the fault meets a healthy host. That job's four arms took
 From then until round 63 they carried the first two terms alone, 6470, 3373, 3181 and 1736 s, and
 one job held the four builds at 347 minutes: 16160 + 4650 = 20810 s. In images job 138228770096
 (at f3e50c3f) the four took 607, 264, 132 and 99 s under one window from each proxy's start.
+Round 63 added 70 s for each listed host the build reached, 10880, 5053, 5211 and 2086 s, at
+263 and 282 minutes for the two jobs, and in jobs 138409597020 and 138409597173 (at fbcc6647)
+the four took 1024, 362, 213 and 192 s under a window per host.
 
 ## The sites lane's arms with a window per host
 
-Three recover arms of the download-retry job run their proxy with `--per-host-window`
-(dispatch://INFRA-1545, round 63), because each first reaches a host its fault lists only once
-another listed host has passed, after one window from the proxy's start had closed. Job
-138228769946 of run 45329962650 (at f3e50c3f) showed it:
+install-changie, install-omp and the Go module download each run once per outage of their call's
+chain (dispatch://INFRA-1545, round 64, INFRA-1310's architect's ruling), each run faulting that
+outage's host in a way only the call's retry passes:
 
-- recover-changie and recover-omp fault github.com and githubusercontent.com. Their release
-  asset's URL on github.com redirects to release-assets.githubusercontent.com, which a client can
-  reach only once github.com answers: at +68 s and +75 s in that job, after the window, so that
-  host was listed and never faulted.
-- recover-go faults every host. proxy.golang.org sends a module zip to storage.googleapis.com, and
-  the go command reads sum.golang.org after a download, so both are reached only once
-  proxy.golang.org answers: at +80 s in that job, and neither was faulted.
+- install-changie and install-omp: github.com; and release-assets.githubusercontent.com, where the
+  release asset's address on github.com redirects. Each run lists its one host under
+  `--per-host-window`.
+- the Go download. With `|direct` in GOPROXY a go command falls through to the module's own source
+  after an error, so a run whose direct sources answered would pass with no retry at all (check
+  #0946ed09). The proxy.golang.org run faults every host in one window from the proxy's start,
+  as recover-go did before round 63: the proxy and every direct source are down together for
+  60 s, and the hosts first reached after that window have runs of their own. The sum.golang.org
+  run lists that host alone: go 1.27.3 asks it itself about a module go.sum does not hold, and its
+  504 fails the attempt (driven on this issue's pod in round 64, with proxy.golang.org answering).
+  The storage.googleapis.com run lists the zips' host and the direct sources of packages/envoy's
+  modules under `--per-host-window`: the module path hosts of its go.sum and the workspace's, and
+  the repository hosts their go-get pages name (github.com, go.googlesource.com, gitlab.com).
+  A module's direct host is first asked a second or so after its zip's 504, in the same attempt,
+  so the windows overlap into one outage. golang.org cannot be listed without faulting
+  proxy.golang.org and sum.golang.org, so go.googlesource.com, where its modules' repositories
+  are, stands for it; a module whose direct host is not listed is fetched directly, and the call
+  still needs its retry for the others.
 
-With a window per host each of those hosts answers 504 for 60 s from its own first request. Each
-arm's budget takes one window for each listed host it first reaches late, at 70 s each, the
-derivation the images arms' budgets use: a 504 answers at once, and the helper's sleeps of 10, 20
-and 40 s put an attempt 70 s after the one that met the window. On top of its stall twin's figure,
-the ladder its own retry guarantees (.github/ci-budgets.md, "The download-retry job's rig"):
+Round 63 faulted each chain's hosts together, each in a window of its own, after job 138228769946
+of run 45329962650 (at f3e50c3f) showed one window from the proxy's start closing before the call
+first reached its second host: release-assets.githubusercontent.com at +68 s and +75 s, and
+storage.googleapis.com and sum.golang.org at +80 s, none of them faulted. But a call that reaches
+each host only once the last has passed then meets the windows in a series. In job 138409596939
+of run 45383555145 (at fbcc6647) recover-go met three in a row, proxy.golang.org from +5.1 s,
+sum.golang.org from +90.9 s and storage.googleapis.com from +167.4 s, and passed on attempt 5 of
+5 with none to spare; recover-omp passed only after "attempt 4 of 5 failed", and recover-changie's
+curl on its eighth attempt of eight. A real outage is one window, and one host a run is one
+outage, under which each ladder keeps attempts to spare: changie's curl, its attempts at 0, 1, 3,
+7, 15, 31 and 63 s from its first, passes on its seventh of eight once a 60 s window from its
+first request has closed, and install-omp's retry_fetch, at 0, 10, 30 and 70 s, on its fourth of
+five.
 
-- recover-changie: 710 + 1 x 70 = 780 s, for release-assets.githubusercontent.com.
-- recover-omp: 530 + 1 x 70 = 600 s, for release-assets.githubusercontent.com.
-- recover-go: 1130 + 2 x 70 = 1270 s, for storage.googleapis.com and sum.golang.org.
+Each run's window opens on its site's own first request to its host, not on the probe's: under
+`--per-host-window` the probe asks for `download-retry-probe.<host>`, a name the entry covers and
+no site fetches (.github/scripts/download-retry-proof.sh, `probe`), and the proxy keys a window by
+the host a request names. Each run's report checks two things beyond what every recover arm
+checks (the same script's `report`), and fails naming which:
 
-The ladders and the steps' own keys are unchanged, and a step cannot outlast its own key:
-install-omp's 8 minutes and the Go download's 18, with the probe's 20 s, are 500 s and 1100 s,
-under the budgets above. The two arms of github.com list githubusercontent.com first, because the
-probe asks for the first entry by its bare name and opens that host's window
-(.github/scripts/download-retry-proof.sh, `probe`): no site fetches githubusercontent.com bare,
-and each fetches github.com. The job's key moves with the recover half's sum, from
-6740 s to 7020 s: .github/workflows/ci-job-download-retry.yaml's comment above the job's id
-derives 14710 + 3416 = 18126 s and 303 minutes, where it read 298.
+- the faulted-host check: at least one of the site's own requests for its one host was refused,
+  the probe's not counted, so a run whose site met no fault fails;
+- the attempt check: the call passed on a retry and before its last attempt, so a call that
+  passed at once ("the call passed with no retry") fails, and so does one that passed on its last.
+  Which attempt passed is read from the retry helper's own attempt log, which `start
+  --attempt-log` names and the site's step passes on as CI_RETRY_ATTEMPT_LOG: retry_fetch writes
+  it for install-omp's curl and the Go download (.github/scripts/ci-retry.sh), and ci-tools.sh's
+  ci_tools_curl for the eight attempts install-changie's curl makes itself, from curl's own line
+  for each attempt that failed. Neither is inferred from the proxy's log.
+
+Each run's budget is its ladder's sleeps plus the call measured at fbcc6647, plus the probe's
+20 s, as every site carries it (.github/ci-budgets.md, "The download-retry job's rig"). The
+measured call is the arm's time from its proxy's start less the sleeps its ladder took before the
+attempt that passed, which the helper's own lines count: one `curl: (22)` line, or one "attempt
+n of 5 failed" line, for each attempt that failed.
+
+- install-changie: recover-changie ran 133 s and its curl failed seven attempts, which slept
+  1 + 2 + 4 + 8 + 16 + 32 + 64 = 127 s, so the call took 6 s. Each of its two runs:
+  127 + 6 + 20 = 153 s.
+- install-omp: recover-omp ran 158 s and failed four attempts, which slept 10 + 20 + 40 + 80 =
+  150 s, so the call took 8 s. Each of its two runs: 150 + 8 + 20 = 178 s.
+- the Go download: recover-go ran 290 s and failed four attempts, which slept 150 s, so the call
+  took 140 s. Each of its three runs: 150 + 140 + 20 = 310 s. That arm faulted every host, each
+  in a window of its own, so it is the measured call of all three runs, and the change of round
+  64 to how each run faults its hosts leaves the figure where it was.
+
+The steps' own keys are unchanged, and each is above its runs' budget, so a run's report can now
+fail it first: install-changie's 29 minutes, install-omp's 8 and the Go download's 18.
+Between the Go runs a step empties the module cache, so no run reads what an earlier one fetched.
+The job's key moves with the recover half's sum, from 7020 s to 5962 s:
+.github/workflows/ci-job-download-retry.yaml's comment above the job's id derives
+13652 + 3416 = 17068 s and 285 minutes, where it read 303.

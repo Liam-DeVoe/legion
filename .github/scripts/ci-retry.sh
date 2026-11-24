@@ -140,6 +140,16 @@ fi
 # last attempt's own standard output on standard error, inside that attempt's block, before its
 # close, and returns that attempt's exit status.
 #
+# AN ATTEMPT LOG, FOR A RIG THAT COUNTS THE ATTEMPTS. Where CI_RETRY_ATTEMPT_LOG names a file,
+# each attempt appends one line to it as it ends, `attempt <n> exit <status>`: its number and its
+# command's exit status, 0 for the attempt that succeeded. Nothing else this function prints says
+# which attempt succeeded, and the download-retry job's recover runs must know it: each sets the
+# variable for its site (.github/scripts/download-retry-proof.sh, `start --attempt-log`) and its
+# report refuses a call that passed only on its last attempt. .github/scripts/ci-tools.sh's
+# ci_tools_curl writes the same lines for the attempts curl makes itself. Unset or empty, nothing
+# is written. A line that cannot be written leaves bash's own refusal on standard error and
+# changes nothing else, so the call still returns the command's status.
+#
 # THREE STATED LIMITS. First, a successful attempt's standard output that the caller neither
 # captures nor sends to standard error reaches the log outside any block, as the command printed
 # it, so a caller whose command prints on success sends it with `>&2`. No call of the tree is left
@@ -258,6 +268,9 @@ retry_fetch() {
     # block.
     status=0
     timeout "$bound" "$@" > "$buffer" || status=$?
+    if [ -n "${CI_RETRY_ATTEMPT_LOG:-}" ]; then
+      printf 'attempt %s exit %s\n' "$attempt" "$status" >> "$CI_RETRY_ATTEMPT_LOG" || true
+    fi
     if [ "$status" -eq 0 ]; then
       # The copy is the caller's answer, so its status is this call's: a full disk, an I/O error
       # or a reader that closed the pipe cuts the answer short, and `cat` says so. Without this

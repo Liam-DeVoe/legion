@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Tests for `ci-fault-proxy.py`: each of its three modes over plain HTTP and over CONNECT, a
 # host outside --hosts passed on in every one of them, --bind, and the window of its own that
-# --per-host-window gives each host under --mode recover; and the counts by host that
+# --per-host-window gives each host under --mode recover; the counts by host that
 # download-retry-proof.sh's `report` makes of the requests the proxy logged as passed on and as
-# faulted.
+# faulted; and, for a run that faults one host, the window the rig's probe opens and the report's
+# faulted-host and attempt checks.
 #
 # Nothing here touches the real internet. The host that is passed on is an origin this test
 # starts, a `python3 -m http.server` on a loopback port, and the host that is faulted is either
@@ -357,8 +358,8 @@ rig_probe=$?
 set -e
 indent "$(cat "$work/rig-perhost-probe.out")"
 check "and its probe reads the pair as it must" "$(is "$rig_probe" 0)"
-check "and prints the 504 as the proxy's line for its faulted request, not the line of the window that request opened" \
-  "$(contains "$(cat "$work/rig-perhost-probe.out")" "^  the proxy's own line for it: [0-9]* ci-fault-proxy: 504 GET http://fetch\.invalid/\$")"
+check "and prints the 504 as the proxy's line for its faulted request, a name under the first entry, not the line of the window that request opened" \
+  "$(contains "$(cat "$work/rig-perhost-probe.out")" "^  the proxy's own line for it: [0-9]* ci-fault-proxy: 504 GET http://download-retry-probe\.fetch\.invalid/\$")"
 rig_proxy=$(sed -n 's/^proxy=//p' "$rig_state" 2> /dev/null || true)
 run_curl -x "$rig_proxy" http://a.fetch.invalid/tool.tar.gz
 run_curl -x "$rig_proxy" --proxytunnel http://a.fetch.invalid/tool.tar.gz
@@ -383,5 +384,77 @@ check "and the first line after it names a.fetch.invalid, faulted twice, the CON
   "$(contains "$(sed -n "/$faulted_header/{n;p;}" <<<"$rig_out")" '^    2 a\.fetch\.invalid, first request at [0-9][0-9]*\.[0-9] s$')"
 check "and the second names localhost, faulted once, with its own" \
   "$(contains "$(sed -n "/$faulted_header/{n;n;p;}" <<<"$rig_out")" '^    1 localhost, first request at [0-9][0-9]*\.[0-9] s$')"
+
+echo "case: a run that faults one host: the probe opens no window the site meets, and the report checks the host and the attempts"
+# The rig as the download-retry job's sites runs use it: --per-host-window with one host in
+# --hosts, fetch.invalid, and --attempt-log. The probe's faulted request names
+# download-retry-probe.fetch.invalid, so the window it opens is that name's and fetch.invalid's
+# opens on the site's own first request. The site asks fetch.invalid once, refused, and 127.0.0.1
+# once, passed on. The attempt log is written here as the retry helpers write it under
+# CI_RETRY_ATTEMPT_LOG (.github/scripts/ci-retry.test.sh and ci-tools.test.sh hold the helpers to
+# it), and each report below reads the same proxy log against another --faulted or another log.
+rig_state="$work/rig/download-retry/onehost.state"
+onehost_log="$work/rig/download-retry/onehost.log"
+onehost_attempts="$work/rig/download-retry/onehost.attempts"
+set +e
+env RUNNER_TEMP="$work/rig" GITHUB_OUTPUT="$work/onehost.output" no_proxy= NO_PROXY= \
+  "$script_dir/download-retry-proof.sh" start onehost --mode recover --per-host-window --hosts fetch.invalid --attempt-log \
+  > "$work/rig-onehost-start.out" 2>&1
+rig_start=$?
+set -e
+[ ! -f "$rig_state" ] || pids+=("$(sed -n 's/^pid=//p' "$rig_state")")
+indent "$(cat "$work/rig-onehost-start.out")"
+check "the rig's start exits 0, and writes the attempt log it names to the step's outputs" \
+  "$(is "$rig_start:$(grep -c "^attempt_log=$onehost_attempts\$" "$work/onehost.output" 2> /dev/null || true)" 0:1)"
+set +e
+rig probe onehost > "$work/rig-onehost-probe.out" 2>&1
+rig_probe=$?
+set -e
+indent "$(cat "$work/rig-onehost-probe.out")"
+check "and its probe reads the pair as it must" "$(is "$rig_probe" 0)"
+check "its faulted request names download-retry-probe.fetch.invalid, which the entry covers" \
+  "$(contains "$(cat "$work/rig-onehost-probe.out")" "^  the proxy's own line for it: [0-9]* ci-fault-proxy: 504 GET http://download-retry-probe\.fetch\.invalid/\$")"
+check "and the window it opened is that name's, with none yet for fetch.invalid" \
+  "$(is "$(contains "$(cat "$onehost_log")" ' window download-retry-probe\.fetch\.invalid opened '):$(contains "$(cat "$onehost_log")" ' window fetch\.invalid opened ')" true:false)"
+rig_proxy=$(sed -n 's/^proxy=//p' "$rig_state" 2> /dev/null || true)
+run_curl -x "$rig_proxy" http://fetch.invalid/tool.tar.gz
+run_curl -x "$rig_proxy" "http://127.0.0.1:$origin_port/hello.txt"
+# The probe's own refusal and the site's one, and the site's one pass, waited for as above.
+for _ in $(seq 100); do
+  [ "$(grep -c 'ci-fault-proxy: 504 ' "$onehost_log" 2> /dev/null || true)" -lt 2 ] ||
+    [ "$(grep -c 'ci-fault-proxy: pass ' "$onehost_log" 2> /dev/null || true)" -lt 1 ] || break
+  sleep 0.05
+done
+check "the site's own first request for fetch.invalid opened that host's window" \
+  "$(contains "$(cat "$onehost_log")" ' window fetch\.invalid opened ')"
+# onehost_report <attempt log lines, or - for none> <--faulted host>: the report against that
+# log, its output in rig_out and its exit in rig_report.
+onehost_report() {
+  rm -f "$onehost_attempts"
+  [ "$1" = - ] || printf '%s\n' "$1" > "$onehost_attempts"
+  set +e
+  rig_out=$(rig report onehost --what "the one-host case" --outcome success --attempts 5 --floor 0 --budget 600 --faulted "$2" 2>&1)
+  rig_report=$?
+  set -e
+  indent "$rig_out"
+}
+onehost_report "$(printf 'attempt 1 exit 22\nattempt 2 exit 0')" fetch.invalid
+check "a site that met its one host's fault and passed on attempt 2 of 5 passes the report" "$(is "$rig_report" 0)"
+check "which counts the site's own refused requests for that host apart" \
+  "$(contains "$rig_out" '^  requests of this site for fetch\.invalid, the one host this run faults, that the proxy refused: 1$')"
+check "and prints the attempt lines the site's call logged" \
+  "$(is "$(sed -n "/^  the attempts the site's call logged, of the 5 it may make:\$/{n;p;n;p;}" <<<"$rig_out")" "$(printf '    attempt 1 exit 22\n    attempt 2 exit 0')")"
+onehost_report "$(printf 'attempt 1 exit 22\nattempt 2 exit 0')" download-retry-probe.fetch.invalid
+check "a faulted host only the probe asked for fails the faulted-host check, the probe's request not counted" \
+  "$(is "$rig_report:$(contains "$rig_out" '::error::download-retry: the one-host case: the faulted-host check: none of this site.s own requests for download-retry-probe\.fetch\.invalid was refused')" 1:true)"
+onehost_report "$(printf 'attempt 1 exit 22\nattempt 2 exit 22\nattempt 3 exit 22\nattempt 4 exit 22\nattempt 5 exit 0')" fetch.invalid
+check "a call that passed on its last attempt fails the attempt check" \
+  "$(is "$rig_report:$(contains "$rig_out" '::error::download-retry: the one-host case: the attempt check: the call reached attempt 5 of the 5 it may make, its last')" 1:true)"
+onehost_report 'attempt 1 exit 0' fetch.invalid
+check "and so does a call that passed on its first attempt, with no retry" \
+  "$(is "$rig_report:$(contains "$rig_out" '::error::download-retry: the one-host case: the attempt check: the call passed with no retry, on its first attempt')" 1:true)"
+onehost_report - fetch.invalid
+check "and so does a site that logged no attempt at all" \
+  "$(is "$rig_report:$(contains "$rig_out" '::error::download-retry: the one-host case: the attempt check: the attempt log .* holds no attempt that passed')" 1:true)"
 
 summary "ci-fault-proxy.py and download-retry-proof.sh's counts by host"

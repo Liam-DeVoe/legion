@@ -1522,7 +1522,7 @@ What that gives, with each job's 90th percentile in minutes:
   envoy-smoke 11.4 and download-retry 118.6 (both its lanes, over this pull request's 30
   successful attempt-1 runs to 2026-11-23, the 90th percentile run 44624765546), which no merge
   group runs either, so it runs only under `full-ci` or `lane:download_retry`
-  (.github/ci-notes/ci.md#the-two-jobs-that-prove-the-retries-and-why-neither-runs-in-a-merge-group);
+  (.github/ci-notes/ci.md#the-three-jobs-that-prove-the-retries-and-why-none-runs-in-a-merge-group);
 - on the pull request: envoy-go-build 6.8 and the halves split off the jobs above -
   tooling-checks 1.0, pi-legion-build 0.8 and envoy-infra-build 3.0 - dispatch-browser-pr 14.2,
   and every other job, each at 9.8 or less: among them dispatch-ui (the dashboard's and the
@@ -2860,7 +2860,7 @@ own did. The two lanes are one ci.yaml job, and so one call of a reusable workfl
 ci.yaml calls as many reusable workflows as .github/scripts/check-workflow-files.sh allows it
 already.
 
-## The two jobs that prove the retries, and why neither runs in a merge group
+## The three jobs that prove the retries, and why none runs in a merge group
 
 The `changes` job's three outputs for the download-retry job and its two lanes, download_retry,
 download_retry_sites and download_retry_images, are the only outputs here that read the event
@@ -2888,6 +2888,17 @@ minutes a hosted runner gives a job; its rig is .github/ci-budgets.md, "The down
 job's rig". Each lane's steps, and the budget they add up to, are in the called file, and each
 lane is gated there on an input this job fills from its own filter's output (the download_retry
 section of these notes says why one job).
+
+## Why a lane's sizing step comes after its retried module download
+
+Eight jobs size their PostgreSQL service for the Dispatch processes they start in a step named
+"Size the service for this lane's Dispatch processes": dispatch-memory, dispatch-multiprocess,
+envoy-go, envoy-go-docs-finalizers, envoy-go-race, envoy-go-race-api, envoy-go-race-docs and
+envoy-session-stall. That step runs .github/scripts/pg-connection-ceiling.sh, whose `go run`
+builds envoy's internal/dispatch/store/cmd/connections, so each puts it after the job's retried
+`go mod download`, and after its module cache restore where the job has one: the build then reads
+the modules those leave and fetches none unretried, as daemon-go-race's step of that name runs
+after its own download (dispatch://INFRA-1545). The step names this section with a `# why:` line.
 
 ## The pr-title job's budget
 

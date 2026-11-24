@@ -113,8 +113,9 @@ chmod +x "$work/flaky"
 : > "$work/flaky.starts"
 flaky_start=$(date +%s)
 # Called bare, under this harness's errexit and pipefail: if a failed attempt leaked out of the
-# helper, this script would end here and print no summary.
-retry_fetch "the twice-failing tool" 5 -- "$work/flaky" > "$work/flaky.log" 2>&1
+# helper, this script would end here and print no summary. CI_RETRY_ATTEMPT_LOG names the file
+# the download-retry job's reports read which attempt passed from.
+CI_RETRY_ATTEMPT_LOG="$work/flaky.attempts" retry_fetch "the twice-failing tool" 5 -- "$work/flaky" > "$work/flaky.log" 2>&1
 flaky_elapsed=$(($(date +%s) - flaky_start))
 flaky_out=$(cat "$work/flaky.log")
 mapfile -t flaky_starts < "$work/flaky.starts"
@@ -131,6 +132,20 @@ check "it named the first failure, its status and what was left" \
   "$(contains "$flaky_out" '^the twice-failing tool: attempt 1 of 5 failed (exit 1); 4 attempts left$')"
 check "and the second" \
   "$(contains "$flaky_out" '^the twice-failing tool: attempt 2 of 5 failed (exit 1); 3 attempts left$')"
+check "with CI_RETRY_ATTEMPT_LOG naming a file, each attempt appended its number and exit status, the third's 0" \
+  "$(is "$(cat "$work/flaky.attempts" 2> /dev/null)" "$(printf 'attempt 1 exit 1\nattempt 2 exit 1\nattempt 3 exit 0')")"
+
+echo "case: an attempt log that cannot be written changes nothing else"
+# Called bare too, with no `||` that would suspend errexit inside the helper: a line that cannot
+# be appended must not end a caller that has errexit on, and the call must still return the
+# command's own status, 0, which this harness's errexit reads. A leak of either would end this
+# script here, with no summary printed.
+CI_RETRY_ATTEMPT_LOG="$work/no-such-directory/attempts" retry_fetch "a tool whose attempt log cannot be written" 5 -- true \
+  2> "$work/unwritable.err"
+indent "$(cat "$work/unwritable.err")"
+check "the caller's shell survived the refused line under set -e, so the call returned 0" true
+check "and bash's own refusal of the line is on standard error" \
+  "$(contains "$(cat "$work/unwritable.err")" 'no-such-directory/attempts: No such file or directory')"
 
 echo "case: the helper's own lines go to standard error, so a caller may capture the command's output"
 # A caller that reads a download into a variable — `names=$(retry_fetch … -- gh api …)` — gets the
