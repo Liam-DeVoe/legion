@@ -1351,6 +1351,11 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers || issue.Phase == phase.Done {
 		return intake.Result{}, err
 	}
+	// The implementer's claim failing while it runs a fix ends the fix, not the step of the
+	// issue's phase, and holds nothing (fixClaimFailed).
+	if took, err := e.fixClaimFailed(ctx, tx, *issue, fact); err != nil || took {
+		return intake.Result{}, err
+	}
 	working := issue.WorkingPhase()
 	failure := noticeFailure(fact)
 	if phase.RoleFor(working) != fact.Role {

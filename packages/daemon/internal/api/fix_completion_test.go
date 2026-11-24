@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -56,7 +57,7 @@ func seedReviewStep(t *testing.T, h *harness, fixRuns bool) {
 	if fixRuns {
 		row.Entry, row.HandoffCommit, row.HandoffRecord, row.HandoffVersion = fixEntry, "", "", 0
 	}
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutPlan(ctx, tx, v, tasks, steps); err != nil {
 			return err
 		}

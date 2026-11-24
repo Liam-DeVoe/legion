@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -112,7 +113,7 @@ func (r *ownerStepsRig) seedAdmitted(rank string, seq int64) {
 	t := r.t
 	t.Helper()
 	ctx := context.Background()
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutIssue(ctx, tx, record.Issue{
 			Key: r.key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.key, Project: r.cfg.Project,
 			Title: r.title(), Phase: phase.Admitted, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",

@@ -49,7 +49,9 @@ type roleForReader struct {
 // (phase.Of), or reads only the phases of a plan's steps, which admitted never is (reportsBefore,
 // and Engine.restartTask, which reads its task's first step: a planner's or an implementer's, as
 // plan.Supported holds every task to an implementer step with each tester, reviewer and
-// acceptance step after it),
+// acceptance step after it; and a fix's three: Engine.startFix reads the step at the fix's
+// place, Engine.tellStepsOfFix each step of the fix's task, passing over the architect as it
+// passes over no role, and Engine.moveFromHold the step of the task its way returns to),
 // or reads the retro's own phase and the phase of the last step of a parent's task, neither of
 // which is admitted (retroHeldNotice and Engine.startHeldRetro, which run only for a parent held
 // before its retro for the issues beneath it), or never reads admitted at all because a check
@@ -79,6 +81,9 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/engine.go", fn: "Engine.restartPhase"}:              {calls: 1, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
 	{file: "internal/workflow/engine.go", fn: "Engine.retryPhase"}:                {calls: 1, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
 	{file: "internal/workflow/engine.go", fn: "backwardRefusal"}:                  {calls: 2, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
+	{file: "internal/workflow/fix.go", fn: "Engine.startFix"}:                     {calls: 1, test: "TestTheFixStartsInItsOwnCopyWithItsJob"},
+	{file: "internal/workflow/fix.go", fn: "Engine.tellStepsOfFix"}:               {calls: 1, test: "TestTheReviewerIsToldOfTheFix"},
+	{file: "internal/workflow/fix.go", fn: "Engine.moveFromHold"}:                 {calls: 1, test: "TestRows3And4ForAnImplementerReviewerTask"},
 	{file: "internal/workflow/engine.go", fn: "Engine.transition"}:                {calls: 2, test: "TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody"},
 	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                        {calls: 3, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},
 	{file: "internal/workflow/plan_stop.go", fn: "StoppedStepRole"}:               {calls: 1, test: "TestStopTaskHoldsTheIssueAndStopsTheStep"},

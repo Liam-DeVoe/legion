@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
@@ -75,7 +76,7 @@ func newCopyRig(t *testing.T) *copyRig {
 	// directory, so a jj on PATH that is itself a wrapper never finds this one again.
 	bin := t.TempDir()
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + r.record + "\nPATH=\"${PATH#*:}\" exec " + jj + " \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
+	if err := writeExecutable(filepath.Join(bin, "jj"), []byte(script)); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -131,6 +132,24 @@ func (r *copyRig) write(dir, name, body string) {
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
 		r.t.Fatal(err)
 	}
+}
+
+// writeExecutable writes body to a new executable file at path. It holds syscall.ForkLock for
+// reading while the file is open for writing, as the leak guard's writeCopyFile does: a child that
+// another goroutine forks in that span holds the write descriptor until its own exec closes it,
+// and the kernel refuses to exec a file open for writing ("text file busy").
+func writeExecutable(path string, body []byte) error {
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o700)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(body); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
 }
 
 // commit writes name in dir's working copy and commits it there, as a role's step does, and
