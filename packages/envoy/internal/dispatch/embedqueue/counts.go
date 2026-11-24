@@ -46,13 +46,17 @@ const (
 // The counts loop's settings a test sets, as identityRecheckInterval is a var for a test to shrink.
 var (
 	// coverageFillTimeout bounds the whole fill (FillCoverage): a fill that reaches it is a failed
-	// fill. Its value is four times the fill's longest time on scripts/coverage-scale.sh's corpus
-	// at scale 3.
-	coverageFillTimeout = 30 * time.Minute
+	// fill. Its value is four times the longest fill measured at scale 3.6 of
+	// scripts/coverage-scale.sh's corpus (3,582,232 items, 2.2 times production's 1,622,093 on
+	// 2026-11-24), rounded up to the next 10 s: the server's own fill at its first start, 15,104 ms,
+	// in the builds Job infra-4864-coverage-scale-h96p8 at f28566f1 (2026-11-24); the scale test's
+	// fill there took 10,659 ms.
+	coverageFillTimeout = 70 * time.Second
 	// coverageRecountTimeout is T, the one deadline of a whole recount (RecountCoverage): every
 	// refresh batch and every group statement runs under the time left to it. Its value is four
-	// times the recount's longest whole time on scripts/coverage-scale.sh's corpus at scale 3.
-	coverageRecountTimeout = 2 * time.Minute
+	// times the longest whole recount measured in that Job at scale 3.6, 16,213 ms in the state
+	// where no page of embeddings is all-visible ("all"), rounded up to the next 10 s.
+	coverageRecountTimeout = 70 * time.Second
 	// coverageRecountInterval and coverageRecountJitter space the recounts: each starts the interval
 	// plus up to the jitter after the one before started (recountGap). Both follow from T
 	// (recountSchedule).
