@@ -122,7 +122,15 @@ func TestAnElementThisBuildReadsButCannotCreateIsReadAndNeverCreated(t *testing.
 		}
 	}
 
-	shipped, shippedCreatable := SchemaVersion(), SchemaCreatable()
+	// R of the shipped manifest at the version after its own: the elements it stages for that
+	// version count there, and future, which the staged manifest below only reads, adds nothing.
+	shipped := SchemaVersion()
+	restoreRaised, err := UseManifestForTest(manifestAheadForTest(t, func(*BlockSchema, int) {}))
+	if err != nil {
+		t.Fatalf("install the shipped manifest at the version after its own: %v", err)
+	}
+	raisedCreatable := SchemaCreatable()
+	restoreRaised()
 	restoreCreatable, err := UseStagedBlockForTest("future", true)
 	if err != nil {
 		t.Fatalf("stage the future block as creatable: %v", err)
@@ -151,8 +159,8 @@ func TestAnElementThisBuildReadsButCannotCreateIsReadAndNeverCreated(t *testing.
 	if got, want := SchemaVersion(), shipped+1; got != want {
 		t.Fatalf("SchemaVersion() = %d, want %d", got, want)
 	}
-	if got := SchemaCreatable(); got != shippedCreatable {
-		t.Fatalf("SchemaCreatable() where future is not creatable = %d, want the shipped manifest's %d", got, shippedCreatable)
+	if got := SchemaCreatable(); got != raisedCreatable {
+		t.Fatalf("SchemaCreatable() where future is not creatable = %d, want the shipped manifest's %d at the version after its own", got, raisedCreatable)
 	}
 	versions, declared := Element{Kind: TypedBlockElement, Name: "future"}.Versions()
 	if !declared || versions != (BlockElementVersions{Since: shipped + 1, CreatableSince: shipped + 2}) {
@@ -278,9 +286,10 @@ func manifestAsOf(t *testing.T, version int) []byte {
 // (ErrUnknownElement), which the document service answers 409 DOC_NEWER_CONTENT for rather than
 // repairing or rebuilding the document. The name says "this version" from when version 3 was the
 // manifest's; the Verification document's check names the row, so it keeps its name, and the
-// elements versions 4 and 5 add each have a row of their own
+// elements versions 4, 5 and 13 add each have a row of their own
 // (TestTheAttributeVersionFourAddsIsUnknownToABuildAtVersionThree,
-// TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour).
+// TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour,
+// TestTheAttributeVersionThirteenAddsIsReadAtThirteenAndCreatedFromFourteen).
 func TestTheTypedBlocksThisVersionAddsAreUnknownToABuildAtTheVersionBefore(t *testing.T) {
 	const adds = 3
 	added := []string{"requirement", "plan_task", "check"}
@@ -413,6 +422,53 @@ func TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour(t *testing.T)
 	}
 	if err := stored.Validate(); !errors.Is(err, ErrUnknownElement) {
 		t.Errorf("a build at version %d reading a stored plan task carrying steps = %v, want ErrUnknownElement", before, err)
+	}
+}
+
+// The plan_task block's parent attribute, which manifest version 13 adds (the block a task block
+// stands under), is the first element a release reads and does not create: a build at version 13
+// reads it and creates it from version 14. So this build reads a stored plan task carrying one and
+// edits a document that already holds one. It refuses a write that puts one into a document that
+// holds none, saying it cannot write it yet. A build at version 12, the release before, does not
+// declare the attribute, and reads a stored plan task carrying one as an element it does not know
+// (ErrUnknownElement, answered 409 DOC_NEWER_CONTENT).
+func TestTheAttributeVersionThirteenAddsIsReadAtThirteenAndCreatedFromFourteen(t *testing.T) {
+	const adds = 13
+	attribute := Element{Kind: AttributeElement, Block: "plan_task", Name: "parent"}
+	versions, declared := attribute.Versions()
+	if !declared || versions.Since != adds || versions.CreatableSince != adds+1 {
+		t.Fatalf("attribute parent of plan_task = %+v, %t; want since %d and creatable_since %d", versions, declared, adds, adds+1)
+	}
+	if SchemaVersion() != adds {
+		t.Fatalf("SchemaVersion() = %d; this row holds the release at version %d, which reads parent and does not create it", SchemaVersion(), adds)
+	}
+	const markdown = ":::plan_task{#t2 parent=\"dispatch://ACME-1/artifact/plan-md#b-t1\"}\nBody.\n:::\n"
+	stored, err := Parse(markdown)
+	if err != nil {
+		t.Fatalf("this build reads a plan task carrying parent: %v", err)
+	}
+	_, err = ParseForWrite(markdown, nil)
+	if !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), `this Dispatch build reads attribute "parent" of typed block "plan_task" but cannot write it yet`) {
+		t.Errorf("this build writing a plan task carrying parent into no document = %v, want ErrSchema saying it reads parent but cannot write it yet", err)
+	}
+	if _, err := ParseForWrite(markdown+"\n:::plan_task{#t3 parent=\"dispatch://ACME-1/artifact/plan-md#b-t1\"}\nMore.\n:::\n", stored); err != nil {
+		t.Errorf("this build writing a second plan task carrying parent into a document that holds one = %v, want it taken", err)
+	}
+
+	before := adds - 1
+	restore, err := UseManifestForTest(manifestAsOf(t, before))
+	if err != nil {
+		t.Fatalf("install the manifest as of version %d: %v", before, err)
+	}
+	t.Cleanup(restore)
+	if _, declared := (Element{Kind: AttributeElement, Block: "plan_task", Name: "parent"}).Versions(); declared {
+		t.Fatalf("a build at version %d declares parent, which version %d adds", before, adds)
+	}
+	if _, err := ParseForWrite(markdown, nil); !errors.Is(err, ErrUnknownElement) || !strings.Contains(err.Error(), "parent") {
+		t.Errorf("a build at version %d writing a plan task carrying parent = %v, want ErrUnknownElement naming it", before, err)
+	}
+	if err := stored.Validate(); !errors.Is(err, ErrUnknownElement) {
+		t.Errorf("a build at version %d reading a stored plan task carrying parent = %v, want ErrUnknownElement", before, err)
 	}
 }
 
