@@ -56,11 +56,6 @@ func readMerge(t *testing.T, ctx context.Context, pool *store.Pool, repo string,
 	return merge
 }
 
-// sameTime reports whether a stored time is want, read as an instant.
-func sameTime(got *time.Time, want time.Time) bool {
-	return got != nil && got.Equal(want)
-}
-
 // numbersOf is the pull request numbers of merged, in its order, which is what a failure names.
 func numbersOf(merged []MergedPullRequest) []int {
 	numbers := make([]int, len(merged))
