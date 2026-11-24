@@ -526,7 +526,7 @@ export function createLegionTool(deps: {
     // after that contract the shared sentences on request_backward_move (an architect's names
     // the issue it returns from accepting) and read_build, then the architect's
     // retry_or_escalate, its register_plan and stop_task, its sign_off and the controller's
-    // operations.
+    // operations. tools.test.ts holds stop_task's and sign_off's parts to their terms.
     // The rules for ending a child are the words of the daemon's record.EndChildRule, and the
     // sentence after them is the daemon's record.StatusNotTakenYet (both in
     // packages/daemon/internal/record/project.go). These tests hold the copies together: the
