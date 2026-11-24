@@ -309,7 +309,7 @@ func embeddingStates(t *testing.T, database *store.Store) map[string]string {
 // its batch is bisected, so the two texts beside it embed in the first cycle, and its own failure
 // is confirmed by the canary Azure answers, one confirmed failure a cycle, until it is dead at
 // retry.DeadLetterAttempts. The failing halves of the bisection leave the shared pace where it
-// was, since Azure is answering (cmd/dispatch's RateLimitedEmbedder, wrapped here for the first
+// was, since Azure is answering (the pace cmd/dispatch asks for, Deps.Paced, for the first
 // cycle). Read as a throttle, the three were retried whole together, in step, and none ever
 // embedded.
 func TestATextAzureFailsOnEveryTimeHoldsUpNoOtherText(t *testing.T) {
@@ -321,18 +321,17 @@ func TestATextAzureFailsOnEveryTimeHoldsUpNoOtherText(t *testing.T) {
 	server := httptest.NewServer(fake)
 	defer server.Close()
 	client := azureClientFor(t, server)
-	paced := embed.NewRateLimitedEmbedder(client)
-	pace := paced.Interval()
-	deps := Deps{Store: database, Embedder: paced}
+	deps := Deps{Store: database, Embedder: client}.Paced()
+	pace := deps.pace.Interval()
 
 	succeeded, failed, blocked, throttled, err := ProcessBatch(context.Background(), deps)
 	if err != nil || blocked || throttled || succeeded != 2 || failed != 1 {
 		t.Fatalf("cycle 0: ProcessBatch = %d, %d, %v, %v, %v; want 2, 1, not blocked, not throttled", succeeded, failed, blocked, throttled, err)
 	}
-	if got := paced.Interval(); got != pace {
+	if got := deps.pace.Interval(); got != pace {
 		t.Fatalf("cycle 0 moved the pace from %v to %v, want it where it was", pace, got)
 	}
-	deps.Embedder = client // the later cycles' pace is the limiter's own rows'; unpaced, they wait nothing
+	deps = Deps{Store: database, Embedder: client} // the later cycles' pace is the limiter's own rows'; unpaced, they wait nothing
 	if requests := fake.take(); len(requests) != 4 || len(requests[0]) != 3 || requests[2][0] != embedCanary {
 		t.Fatalf("cycle 0: Azure saw %v, want the batch, the poison alone, the canary and the other two", requests)
 	}
@@ -360,9 +359,9 @@ func TestATextAzureFailsOnEveryTimeHoldsUpNoOtherText(t *testing.T) {
 // no answer to any of them in the call's time - through the real AzureClient, is counted against
 // no row however long it lasts: each row's failure is met by a canary that fails too, so nothing
 // is confirmed and nothing dead-letters. Each such canary backs the shared pace off
-// (RateLimitedEmbedder.BackOff, wrapped here for one last cycle), so a cycle that bisects two rows
-// and sends two canaries leaves it four times slower. Read as untroubled, as they once were, the
-// calls that ran out of time raised the rate, and their canaries did not back it off.
+// (RateLimitedEmbedder.BackOff, on the pace Deps.Paced gives one last cycle), so a cycle that
+// bisects two rows and sends two canaries leaves it four times slower. Read as untroubled, as they
+// once were, the calls that ran out of time raised the rate, and their canaries did not back it off.
 func TestAnAzureWideOutageCountsAgainstNoRow(t *testing.T) {
 	for i, tc := range []struct {
 		name   string
@@ -417,16 +416,15 @@ func TestAnAzureWideOutageCountsAgainstNoRow(t *testing.T) {
 					t.Fatalf("%s after a sustained %s: %s, want nothing confirmed and nothing dead", id, tc.name, state)
 				}
 			}
-			paced := embed.NewRateLimitedEmbedder(client)
-			pace := paced.Interval()
-			deps.Embedder = paced
+			deps = deps.Paced()
+			pace := deps.pace.Interval()
 			for _, id := range ids {
 				forceEligible(t, database, "issue", id)
 			}
 			if _, _, _, _, err := ProcessBatch(context.Background(), deps); err != nil {
 				t.Fatalf("the paced cycle: ProcessBatch: %v", err)
 			}
-			if got := paced.Interval(); got != 4*pace {
+			if got := deps.pace.Interval(); got != 4*pace {
 				t.Fatalf("the paced cycle's two failing canaries took the pace from %v to %v, want %v", pace, got, 4*pace)
 			}
 		})

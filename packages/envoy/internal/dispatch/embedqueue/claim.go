@@ -3,6 +3,7 @@ package embedqueue
 import (
 	"context"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
@@ -41,6 +42,15 @@ func (c *claimRenewal) renew(ctx context.Context) {
 	if err := c.extend(ctx, c.rows); err != nil {
 		slog.Error("dispatch embedqueue: bisection claim renewal failed", "error", err)
 	}
+}
+
+// due is how long until c's next renewal falls due, renewClaimInterval after its last, and 0 once
+// it has. A nil *claimRenewal, which renews nothing, is never due.
+func (c *claimRenewal) due() time.Duration {
+	if c == nil {
+		return math.MaxInt64
+	}
+	return max(renewClaimInterval-time.Since(c.last), 0)
 }
 
 // extendClaim pushes next_attempt_at of each of rows claimWindow past now, keeping scanPending's
@@ -142,12 +152,12 @@ func reserveBackgroundTokens(ctx context.Context, deps Deps, texts []string, ren
 //
 // chunkForBudget already keeps one reservation's own tokens at or under ceilingPerMinute, but the
 // wait can still run past renewClaimInterval when other debt was already on the row (another
-// process's, or this one's own earlier groups) - renewal is woken (renew) at every
-// renewClaimInterval-sized slice of the wait, not only before or after it, so a claim never lapses
-// mid-wait; renewal.renew is a safe no-op on nil (a caller with no claim to protect, such as a
-// test exercising the budget alone). ceilingPerMinute is a parameter rather than read from deps
-// here so a test can use a tiny ceiling and observe a real, short wait instead of needing to
-// simulate a whole minute.
+// process's, or this one's own earlier groups) - waitOutDebt renews the claim each time it falls
+// due during the wait, not only before or after it, so a claim never lapses mid-wait;
+// renewal.renew is a safe no-op on nil (a caller with no claim to protect, such as a test
+// exercising the budget alone). ceilingPerMinute is a parameter rather than read from deps here so
+// a test can use a tiny ceiling and observe a real, short wait instead of needing to simulate a
+// whole minute.
 func reserveTokens(ctx context.Context, deps Deps, tokens, ceilingPerMinute int, renewal *claimRenewal) {
 	var available float64
 	if err := deps.Store.Pool.QueryRow(ctx, `
@@ -163,24 +173,24 @@ func reserveTokens(ctx context.Context, deps Deps, tokens, ceilingPerMinute int,
 		return
 	}
 	wait := time.Duration(-available / (float64(ceilingPerMinute) / 60.0) * float64(time.Second))
-	waitOutDebt(ctx, wait, renewal, renewClaimInterval)
+	waitOutDebt(ctx, wait, renewal)
 }
 
 // waitOutDebt is the wait loop of reserveTokens and of the pace's wait before an Embed call
-// (embedDocuments), pulled out so a test can drive it with a tiny segment instead of
-// renewClaimInterval's real one minute: it sleeps out wait in slices of at most segment, calling
-// renewal.renew between every slice (not only before or after the whole wait), so a wait longer
-// than segment still renews partway through rather than only at the end.
-func waitOutDebt(ctx context.Context, wait time.Duration, renewal *claimRenewal, segment time.Duration) {
-	for wait > 0 {
-		s := wait
-		if s > segment {
-			s = segment
-		}
+// (embedDocuments). Each slice of the wait ends when renewal's next renewal falls due (due),
+// renewClaimInterval after its last one however long before the wait that one was, and the
+// renewal is made there (renew), and once more when the wait ends if it is due then. So through
+// a wait each renewal comes renewClaimInterval, half claimWindow, after the one before it, late
+// only by the timer's own lateness, and the claim never runs out mid-wait. A nil renewal (a call
+// that holds no claim) sleeps the wait out whole.
+func waitOutDebt(ctx context.Context, wait time.Duration, renewal *claimRenewal) {
+	for wait > 0 && ctx.Err() == nil {
+		renewal.renew(ctx)
+		s := min(wait, renewal.due())
 		if !pauseFor(ctx, s) {
 			return
 		}
 		wait -= s
-		renewal.renew(ctx)
 	}
+	renewal.renew(ctx)
 }

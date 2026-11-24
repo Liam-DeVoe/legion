@@ -93,6 +93,24 @@ type Deps struct {
 	// itself rather than through embeddings_enqueue, so no notification announces what it makes
 	// pending, and Run's scan loop wakes on this instead. Nil for a caller that builds Deps itself.
 	enqueued chan struct{}
+	// pace is the pace every Embed call this queue makes waits on (embedDocuments), which Paced
+	// sets and cmd/dispatch asks for: the wait renews the claim on the rows the call carries, and a
+	// canary that meets an outage backs the pace off (confirmSoloFailure). It is a field of its own
+	// rather than found by Embedder's type, so no wrapper of the embedder turns either off. Nil for
+	// an embedder no pace holds back (a test's fake, or a caller that builds Deps itself).
+	pace *embed.RateLimitedEmbedder
+}
+
+// Paced returns d with its embedder paced: Embedder becomes an embed.RateLimitedEmbedder around
+// it, which d keeps as its pace (Deps.pace). A wrapper of the embedder (metrics, tracing) goes in
+// Embedder before Paced, so it sits inside the pace and sees every call. A nil Embedder stays nil,
+// so Run still starts nothing for it.
+func (d Deps) Paced() Deps {
+	if d.Embedder != nil {
+		d.pace = embed.NewRateLimitedEmbedder(d.Embedder)
+		d.Embedder = d.pace
+	}
+	return d
 }
 
 // proof is a record, set once, that an Embed call this process's queue made has succeeded.
@@ -121,19 +139,18 @@ func (p *proof) answered() <-chan struct{} {
 
 // embedDocuments embeds texts as documents with the configured embedder and, when the call
 // succeeds, records that the embedder works (Deps.proven). Every Embed call this package makes
-// goes through it, the canaries' included. An embedder that paces its calls
-// (embed.RateLimitedEmbedder, which cmd/dispatch wraps around the queue's embedder) waits before
-// each one, at its slowest retry.MaxDelay (5 minutes), longer than claimWindow, so that wait
-// renews renewal's claim as a reservation's wait does (waitOutDebt): unrenewed, the claim would
-// lapse mid-wait, and another process's scan would claim the rows and embed them again. The wait
-// is the pace's in full, so the pace holds. A nil renewal (a call that holds no claim) waits
-// without renewing.
+// goes through it, the canaries' included. With a pace (Deps.pace, which cmd/dispatch sets
+// through Paced) the call waits on it first, at its slowest retry.MaxDelay (5 minutes), longer
+// than claimWindow, so that wait renews renewal's claim as a reservation's wait does
+// (waitOutDebt): unrenewed, the claim would lapse mid-wait, and another process's scan would claim
+// the rows and embed them again. The wait is the pace's in full, so the pace holds. A nil renewal
+// (a call that holds no claim) waits without renewing.
 func (d Deps) embedDocuments(ctx context.Context, texts []string, renewal *claimRenewal) ([][]float32, error) {
 	var vectors [][]float32
 	var err error
-	if paced, ok := d.Embedder.(*embed.RateLimitedEmbedder); ok {
-		vectors, err = paced.EmbedAfter(ctx, texts, embed.InputDocument, func(ctx context.Context, wait time.Duration) bool {
-			waitOutDebt(ctx, wait, renewal, renewClaimInterval)
+	if d.pace != nil {
+		vectors, err = d.pace.EmbedAfter(ctx, texts, embed.InputDocument, func(ctx context.Context, wait time.Duration) bool {
+			waitOutDebt(ctx, wait, renewal)
 			return ctx.Err() == nil
 		})
 	} else {

@@ -2,57 +2,126 @@ package embedqueue
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // A call the shared pace holds at its slowest, retry.MaxDelay (5 minutes, past claimWindow's 2),
-// keeps its rows claimed through the whole wait: the claim is renewed during the wait, so it is
-// never older than claimWindow, and another process's scan cannot take the rows mid-wait and embed
-// them again. A canary that meets an outage drives the pace there (confirmSoloFailure). The row
-// runs on a synctest fake clock, where the wait takes no real time and no Postgres statement may
-// run, so each renewal is recorded (claimRenewal.extend) rather than written. Renewed only before
-// the call, the claim was 5 minutes old when the call went out.
+// keeps its rows claimed through the whole wait, however late after the claim's last renewal the
+// wait starts: each renewal comes renewClaimInterval (half claimWindow) after the one before it,
+// and the call goes out no later than that after the last, so another process's scan cannot take
+// the rows mid-wait and embed them again. A canary that meets an outage drives the pace there
+// (confirmSoloFailure). The rows run on a synctest fake clock, where the wait takes no real time
+// and no Postgres statement may run, so each renewal is recorded (claimRenewal.extend) rather than
+// written. With the wait's first renewal a whole slice after the wait began, a wait that began
+// 59.9 s after a renewal renewed first 119.9 s after it, 0.1 s inside claimWindow.
 func TestAClaimIsRenewedThroughThePacesWaitAtItsSlowest(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		inner := &fakeEmbedder{}
-		paced := embed.NewRateLimitedEmbedder(inner)
-		deps := Deps{Embedder: paced}
-		ctx := context.Background()
-		// The first call takes the pace's one token at once; then failing canaries back the pace
-		// off to its slowest, and the next call waits that whole interval.
-		if _, err := deps.embedDocuments(ctx, []string{"first"}, nil); err != nil {
-			t.Fatalf("first call: %v", err)
-		}
-		for paced.Interval() < retry.MaxDelay {
-			paced.BackOff()
-		}
-		renewal := newClaimRenewal(deps, []pendingRow{{kind: "issue", id: "pace", text: "second"}})
-		claimed := []time.Time{time.Now()}
-		renewal.extend = func(context.Context, []pendingRow) error {
-			claimed = append(claimed, time.Now())
-			return nil
-		}
-		started := time.Now()
-		if _, err := deps.embedDocuments(ctx, []string{"second"}, renewal); err != nil {
-			t.Fatalf("second call: %v", err)
-		}
-		called := time.Now()
-		if waited := called.Sub(started); waited != retry.MaxDelay || len(inner.calls) != 2 {
-			t.Fatalf("the second call went out after %v, call %d; want after the pace's slowest, %v, call 2", waited, len(inner.calls), retry.MaxDelay)
-		}
-		for i, until := range append(claimed[1:], called) {
-			if age := until.Sub(claimed[i]); age >= claimWindow {
-				t.Errorf("the claim made at +%v was %v old at +%v, not less than claimWindow (%v): another scan could take its rows; renewals at %v",
-					claimed[i].Sub(started), age, until.Sub(started), claimWindow, offsets(claimed, started))
+	for _, late := range []time.Duration{0, renewClaimInterval / 2, renewClaimInterval - 100*time.Millisecond} {
+		t.Run(fmt.Sprintf("the wait starts %v after the last renewal", late), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				inner := &fakeEmbedder{}
+				requireRenewedThroughTheSlowestWait(t, Deps{Embedder: inner}.Paced(), late)
+				if len(inner.calls) != 2 {
+					t.Errorf("the embedder got %d calls, want 2", len(inner.calls))
+				}
+			})
+		})
+	}
+}
+
+// A wrapper of the embedder (metrics, tracing) leaves the queue's pace in force: Paced puts the
+// pace around whatever Embedder holds, so the wrapper sees every call, the pace's wait still renews
+// the claim, and a canary that meets an outage still backs the pace off. Found by Embedder's type,
+// the pace was lost to a wrapper around it, and both stopped with nothing failing.
+func TestAWrappedEmbedderIsStillPaced(t *testing.T) {
+	t.Run("the pace's wait renews the claim", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			wrapper := &passThrough{Embedder: &fakeEmbedder{}}
+			requireRenewedThroughTheSlowestWait(t, Deps{Embedder: wrapper}.Paced(), renewClaimInterval-100*time.Millisecond)
+			if wrapper.calls != 2 {
+				t.Errorf("the wrapper saw %d calls, want 2", wrapper.calls)
 			}
+		})
+	})
+	t.Run("a canary that meets an outage backs the pace off", func(t *testing.T) {
+		database := storetest.Open(t)
+		seedIssue(t, database, "WRAP", "WRAP-1", "Title of WRAP-1")
+		wrapper := &passThrough{Embedder: &fakeEmbedder{err: simulatedOutage{}}}
+		deps := Deps{Store: database, Embedder: wrapper}.Paced()
+		pace := deps.pace.Interval()
+		succeeded, failed, blocked, throttled, err := ProcessBatch(context.Background(), deps)
+		if err != nil || succeeded != 0 || failed != 1 || blocked || throttled {
+			t.Fatalf("ProcessBatch = %d, %d, %v, %v, %v; want 0, 1, not blocked, not throttled", succeeded, failed, blocked, throttled, err)
+		}
+		if wrapper.calls != 2 {
+			t.Errorf("the wrapper saw %d calls, want the row's and its canary's", wrapper.calls)
+		}
+		if got := deps.pace.Interval(); got != 2*pace {
+			t.Errorf("the canary's outage left the pace at %v, want it backed off from %v to %v", got, pace, 2*pace)
 		}
 	})
 }
+
+// requireRenewedThroughTheSlowestWait backs deps' pace off to its slowest, then sends a call whose
+// claim was last renewed late before it, and requires each renewal through the pace's wait, and the
+// call itself, to come no later than renewClaimInterval after the renewal before it.
+func requireRenewedThroughTheSlowestWait(t *testing.T, deps Deps, late time.Duration) {
+	t.Helper()
+	ctx := context.Background()
+	// The first call takes the pace's one token at once; then the pace is backed off to its
+	// slowest, as failing canaries back it off, and the next call waits that whole interval.
+	if _, err := deps.embedDocuments(ctx, []string{"first"}, nil); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	for deps.pace.Interval() < retry.MaxDelay {
+		deps.pace.BackOff()
+	}
+	renewal := newClaimRenewal(deps, []pendingRow{{kind: "issue", id: "pace", text: "second"}})
+	started := time.Now()
+	renewal.last = started.Add(-late)
+	claimed := []time.Time{renewal.last}
+	renewal.extend = func(context.Context, []pendingRow) error {
+		claimed = append(claimed, time.Now())
+		return nil
+	}
+	if _, err := deps.embedDocuments(ctx, []string{"second"}, renewal); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	called := time.Now()
+	if waited := called.Sub(started); waited != retry.MaxDelay {
+		t.Fatalf("the second call went out after %v; want after the pace's slowest, %v", waited, retry.MaxDelay)
+	}
+	for i, until := range append(claimed[1:], called) {
+		if gap := until.Sub(claimed[i]); gap > renewClaimInterval {
+			t.Errorf("the claim renewed at %v was next renewed or sent at %v, %v later: past renewClaimInterval (%v), within %v of claimWindow (%v); renewals at %v",
+				claimed[i].Sub(started), until.Sub(started), gap, renewClaimInterval, claimWindow-gap, claimWindow, offsets(claimed, started))
+		}
+	}
+}
+
+// passThrough wraps an embedder as a metrics or tracing wrapper would, counting the calls that
+// reach it.
+type passThrough struct {
+	embed.Embedder
+	calls int
+}
+
+func (p *passThrough) Embed(ctx context.Context, texts []string, inputType embed.InputType) ([][]float32, error) {
+	p.calls++
+	return p.Embedder.Embed(ctx, texts, inputType)
+}
+
+// simulatedOutage is an embedder's error marked as an outage (embed.IsOutage), as Azure's 500 is.
+type simulatedOutage struct{}
+
+func (simulatedOutage) Error() string { return "simulated: the model service failed" }
+func (simulatedOutage) Outage() bool  { return true }
 
 // offsets is each of times as its distance from start.
 func offsets(times []time.Time, start time.Time) []time.Duration {

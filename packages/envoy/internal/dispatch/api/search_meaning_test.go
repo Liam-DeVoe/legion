@@ -312,12 +312,12 @@ func askPartID(t *testing.T, database *store.Store, askID string, position int) 
 }
 
 // TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled proves a live
-// query embedding priority over background work: cmd/dispatch wires embedqueue's own Embedder
-// behind embed.RateLimitedEmbedder and never wraps the one api.Deps holds, so a live search
-// request's own query embedding is never paced or blocked by that limiter, however deep into
-// backoff it currently is. This drives that exact scenario with one shared fake embedder whose
-// errFor discriminates by InputType, matching how the two callers actually differ in production
-// (embedqueue always calls with InputDocument, search's embedQuery always calls with
+// query embedding priority over background work: cmd/dispatch paces embedqueue's own Embedder
+// (embedqueue.Deps.Paced, an embed.RateLimitedEmbedder) and never wraps the one api.Deps holds, so
+// a live search request's own query embedding is never paced or blocked by that limiter, however
+// deep into backoff it currently is. This drives that exact scenario with one shared fake embedder
+// whose errFor discriminates by InputType, matching how the two callers actually differ in
+// production (embedqueue always calls with InputDocument, search's embedQuery always calls with
 // InputQuery): a background goroutine keeps embedqueue's own ProcessBatch throttled and backing
 // off for the whole test, simulating a backlog saturating the model service's quota for bulk
 // document traffic, while concurrent live search requests keep succeeding non-degraded, because
@@ -347,7 +347,7 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 
 	bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	backgroundDeps := embedqueue.Deps{Store: database, Embedder: embed.NewRateLimitedEmbedder(embedder)}
+	backgroundDeps := embedqueue.Deps{Store: database, Embedder: embedder}.Paced()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

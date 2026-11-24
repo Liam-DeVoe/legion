@@ -42,10 +42,10 @@ const (
 // RateLimitedEmbedder paces calls to an inner Embedder so Dispatch's background embedding work -
 // internal/dispatch/embedqueue, its only caller - never saturates the model service's quota to
 // the point a live search request's own query embedding gets caught in the same throttling.
-// cmd/dispatch wires this wrapper only around the Embedder it hands to
-// embedqueue.Deps; api.Deps keeps the unwrapped client directly, so a live query is never
-// paced by this limiter and never queues behind background work, however deep into backoff that
-// work currently is - bounded instead only by its own ordinary searchEmbedTimeout.
+// embedqueue.Deps.Paced wraps one around the queue's embedder, which cmd/dispatch asks for;
+// api.Deps keeps the unwrapped client directly, so a live query is never paced by this limiter
+// and never queues behind background work, however deep into backoff that work currently is -
+// bounded instead only by its own ordinary searchEmbedTimeout.
 //
 // The pacing is AIMD (additive increase, multiplicative decrease) on the rate of calls, as TCP's
 // is on its window: it starts at rateLimitFloor, halves the rate (doubles the interval, by

@@ -647,21 +647,21 @@ func TestReserveTokensSharesItsBudgetAcrossConnections(t *testing.T) {
 // TestWaitOutDebtRenewsTheClaimMidWaitSoNoSecondWorkerClaimsIt proves a single reservation's own
 // wait can run past claimWindow (a full batch of maximum-length documents can need far more than
 // one minute's token ceiling to wait out), so waitOutDebt must renew the claim partway through a
-// long wait, not only before or after it. A tiny segment stands in for renewClaimInterval's real
-// one minute so the test itself takes a little over a second, not several minutes, while
-// exercising the identical loop.
+// long wait, not only before or after it. renewClaimInterval is shrunk well below its real one
+// minute so the test itself takes a little over a second, not several minutes, while exercising
+// the identical loop: a claim renewed just before the wait is renewed again inside it.
 func TestWaitOutDebtRenewsTheClaimMidWaitSoNoSecondWorkerClaimsIt(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "LONG", "LONG-1", "A title")
 	ctx := context.Background()
-	renewal := newClaimRenewal(Deps{Store: database}, []pendingRow{{kind: "issue", id: "LONG-1", contentHash: contentHashOf(t, database, "issue", "LONG-1")}})
-	// Looks stale from the start, so the very first segment's renew() call actually renews
-	// rather than being skipped as "too soon since the last one".
-	renewal.last = time.Now().Add(-time.Hour)
-
 	const segment = 300 * time.Millisecond
+	oldInterval := renewClaimInterval
+	renewClaimInterval = segment
+	t.Cleanup(func() { renewClaimInterval = oldInterval })
+	renewal := newClaimRenewal(Deps{Store: database}, []pendingRow{{kind: "issue", id: "LONG-1", contentHash: contentHashOf(t, database, "issue", "LONG-1")}})
+
 	before := time.Now()
-	waitOutDebt(ctx, 4*segment, renewal, segment)
+	waitOutDebt(ctx, 4*segment, renewal)
 
 	if !renewal.last.After(before) {
 		t.Error("renewal.last was never updated - waitOutDebt never actually renewed during its wait")
