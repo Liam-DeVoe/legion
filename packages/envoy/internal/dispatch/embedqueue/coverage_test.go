@@ -1142,6 +1142,31 @@ func TestTheIdentityStepsRunOnceTheQueueFirstEmbeds(t *testing.T) {
 	})
 }
 
+// issueWritten is the created_at of issue key, the moment an item with no embeddings row ages
+// from (Coverage).
+func issueWritten(t *testing.T, database *store.Store, key string) time.Time {
+	t.Helper()
+	var written time.Time
+	if err := database.Pool.QueryRow(context.Background(), `select created_at from issues where key = $1`, key).Scan(&written); err != nil {
+		t.Fatalf("read when %s was written: %v", key, err)
+	}
+	return written
+}
+
+// requireAgedFrom fails t unless oldest is the age, in whole seconds, of a wait that began at
+// from, read by a Coverage that ran between before and after on the database's clock
+// (testdb.ClockTimestamp): Coverage floors its statement's now() less the oldest wait's start.
+// The ages the row stages are hours, and the bounds are the same hours plus no more than the
+// time the row took, so a slow row widens them without putting a correct age outside them.
+func requireAgedFrom(t *testing.T, what string, oldest *int64, from, before, after time.Time) {
+	t.Helper()
+	low, high := int64(before.Sub(from)/time.Second), int64(after.Sub(from)/time.Second)
+	if oldest == nil || *oldest < low || *oldest > high {
+		t.Errorf("%s = %v, want %d to %d seconds: the wait from %s read between %s and %s", what, oldest, low, high,
+			from.Format(time.RFC3339Nano), before.Format(time.RFC3339Nano), after.Format(time.RFC3339Nano))
+	}
+}
+
 // Coverage over every state an item can be in: no row (aging from when it was written), stale
 // hash, another identity's vector, no vector, dead, current; then with no embedder; then an empty
 // backlog.
@@ -1170,7 +1195,9 @@ func TestCoverageCountsEveryStateAnItemCanBeIn(t *testing.T) {
 	mustExec(t, database.Pool, `update issues set created_at = now() - interval '3 hours' where key in ('CVRG-4', 'CVRG-5')`)
 	mustExec(t, database.Pool, `update embeddings set pending_since = now() - interval '30 minutes' where id = 'CVRG-5'`)
 
+	before := testdb.ClockTimestamp(t, database.Pool)
 	report, err := Coverage(ctx, database, configuredIdentity)
+	after := testdb.ClockTimestamp(t, database.Pool)
 	if err != nil {
 		t.Fatalf("Coverage: %v", err)
 	}
@@ -1181,18 +1208,17 @@ func TestCoverageCountsEveryStateAnItemCanBeIn(t *testing.T) {
 	if issues.Items != 6 || issues.Current != 1 || issues.Lacking != 4 || issues.Failed != 1 {
 		t.Errorf("issue counts %+v, want 6 items, 1 current, 4 lacking, 1 failed", issues)
 	}
-	if issues.OldestLackingSeconds == nil || *issues.OldestLackingSeconds < 3*3600 || *issues.OldestLackingSeconds > 3*3600+60 {
-		t.Errorf("oldest lacking = %v, want about 3 hours (Foreign, aged from its write)", issues.OldestLackingSeconds)
-	}
+	requireAgedFrom(t, "oldest lacking (Foreign, aged from its write)", issues.OldestLackingSeconds, issueWritten(t, database, "CVRG-4"), before, after)
 	if report.Total != issues {
 		t.Errorf("total %+v, want the issue counts %+v (no other kind has items)", report.Total, issues)
 	}
 
 	// No row's own age counts from its write.
 	mustExec(t, database.Pool, `update issues set created_at = now() where key in ('CVRG-4', 'CVRG-5')`)
-	if _, _, _, _, oldest := coverage(t, database, configuredIdentity); oldest == nil || *oldest < 2*3600 || *oldest > 2*3600+60 {
-		t.Errorf("oldest lacking = %v, want about 2 hours (No row, aged from its write)", oldest)
-	}
+	before = testdb.ClockTimestamp(t, database.Pool)
+	_, _, _, _, oldest := coverage(t, database, configuredIdentity)
+	after = testdb.ClockTimestamp(t, database.Pool)
+	requireAgedFrom(t, "oldest lacking (No row, aged from its write)", oldest, issueWritten(t, database, "CVRG-1"), before, after)
 
 	unconfigured, err := Coverage(ctx, database, "")
 	if err != nil {

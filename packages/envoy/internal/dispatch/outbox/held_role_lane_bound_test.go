@@ -13,10 +13,10 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// heldRoleLaneBound is the longest a role route's forward waits for an unnamed mention, measured
-// from that mention's attempt's creation: two claim leases. It is written out rather than read
-// from unnamedForwardBound, so that a change which widens that bound fails the test below instead
-// of moving the test's own clock with it.
+// heldRoleLaneBound is the longest a role route's forward waits for an unnamed mention in the
+// outbox cmd/dispatch runs, measured from that mention's attempt's creation: two claim leases. It
+// is written out rather than read from unnamedForwardBound, so that a change to that bound fails
+// the test below.
 const heldRoleLaneBound = 2 * model.DeliveryClaimLapse
 
 // A comment's role route forwards to the role's holder, and the comment names two roles whose
@@ -25,12 +25,23 @@ const heldRoleLaneBound = 2 * model.DeliveryClaimLapse
 // writes each attempt's claim again and again, so neither attempt is abandoned and neither settles
 // (agedUnnamedAttempts). While the forward waits, the holder receives nothing further of the issue:
 // the owner's later event is held behind the holder's key (planChains). That starvation ends at
-// heldRoleLaneBound after the attempts' creation and no later: just past it the holder receives the
-// later event, and once the mentions' sends settle the comment's copy reaches it, once.
+// the bound after the attempts' creation and no later: just past it the holder receives the later
+// event, and once the mentions' sends settle the comment's copy reaches it, once.
+//
+// The bound the outbox cmd/dispatch runs is heldRoleLaneBound (Deps.unnamedForwardWait with no
+// Deps.forwardBound), which the row reads first. The wait itself runs on stagedForwardBound, so
+// that the attempts the row ages within the bound stay within it however long the row takes: two
+// leases leave an attempt past its lease less than one lease within them. The attempts are aged
+// half that bound, which is past heldRoleLaneBound, so a read that judged them by any bound but
+// the outbox's own would hold the forward as a row there and fail the first half.
 //
 // An earlier event of the issue, already published to the holder, stands before the comment, so
 // the comment's copy has an earlier event to keep after; it owes nothing more, and holds nothing.
 func TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound(t *testing.T) {
+	if got := (Deps{}).unnamedForwardWait(); got != heldRoleLaneBound {
+		t.Fatalf("the outbox cmd/dispatch runs bounds a role route's forward's wait for an unnamed mention at %s, want %s: two claim leases",
+			got, heldRoleLaneBound)
+	}
 	t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 	const routed = "routed-role-of-the-issue"
 	const first = "first-unanswered-role"
@@ -41,6 +52,7 @@ func TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound(t *test
 	roleTopic := contracts.RoleTopicPrefix + routed
 
 	rig := newRoleRig(t)
+	rig.forwardBound = stagedForwardBound
 	rig.claim(t, routed, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, roleTopic)
 	recv := rig.receiver(t, holder)
@@ -71,20 +83,20 @@ func TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound(t *test
 	seedDelivery(t, rig.database, commentID, "role:"+second, "", "resumed")
 	_, later := comment("and one more thing")
 
-	// Within the bound: the attempts are ten seconds short of it, their claims this moment's.
-	agedUnnamedAttempts(t, rig.database, commentID, heldRoleLaneBound-10*time.Second)
+	// Within the bound: the attempts are half of it old, their claims this moment's.
+	agedUnnamedAttempts(t, rig.database, commentID, stagedForwardBound/2)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 	recv.settle(t)
 	if got := recv.received(); len(got) != 1 {
 		t.Fatalf("%s was sent %v with the attempts %s short of the bound, want the earlier comment alone: the forward waits for the unnamed mentions, and the later event waits behind it",
-			holder, keysOf(got), 10*time.Second)
+			holder, keysOf(got), stagedForwardBound/2)
 	}
 	if publishedAt(t, rig.database, held.ID) != nil || publishedAt(t, rig.database, later.ID) != nil {
 		t.Fatal("the comment or the later event is published within the bound, want both waiting")
 	}
 
 	// Just past the bound, the sender still alive and its claims written again just now.
-	agedUnnamedAttempts(t, rig.database, commentID, heldRoleLaneBound+time.Second)
+	agedUnnamedAttempts(t, rig.database, commentID, stagedForwardBound+time.Second)
 	dueNow(t, rig.database, held.ID)
 	dueNow(t, rig.database, later.ID)
 	passed := time.Now()

@@ -56,6 +56,11 @@ func heldDestinations(t *testing.T, database *store.Store, commentID string) []s
 // settles, and the holder's later events of the issue flow again (holdsTheForwardAsARow,
 // destination.heldAsARow, planChains).
 //
+// The row runs the wait on stagedForwardBound (Deps.forwardBound), so that the attempts it ages
+// within the bound stay within it however long the row takes, which two leases do not leave an
+// attempt past its lease; TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound
+// reads the bound the outbox cmd/dispatch runs.
+//
 // The sender here is alive and its lane is held, which is what makes the bound the only thing
 // that ends this wait: it writes the claim on each attempt again every mentionClaimRefresh, so
 // neither attempt is ever abandoned and neither is the delivery sweep's to resume
@@ -80,6 +85,7 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 	roleTopic := contracts.RoleTopicPrefix + routed
 
 	rig := newRoleRig(t)
+	rig.forwardBound = stagedForwardBound
 	rig.claim(t, routed, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, roleTopic)
 	recv := rig.receiver(t, holder)
@@ -98,7 +104,7 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 	seedDelivery(t, rig.database, commentID, firstTarget, "", "resumed")
 	seedDelivery(t, rig.database, commentID, secondTarget, "", "resumed")
 	// Both attempts are past their lease and within the bound, their claims this moment's.
-	agedUnnamedAttempts(t, rig.database, commentID, unnamedForwardBound/2)
+	agedUnnamedAttempts(t, rig.database, commentID, stagedForwardBound/2)
 
 	// The owner's next event of the same issue, which the forward's wait holds behind it: the
 	// holder's key is the one both reach (destination.key, planChains).
@@ -116,7 +122,7 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 
 	if got := recv.received(); len(got) != 0 {
 		t.Fatalf("%s was sent %v within the bound, want nothing: the forward waits while a send of an unnamed mention no key stands for is owed on an attempt younger than %s, and the owner's later event waits behind it",
-			holder, keysOf(got), unnamedForwardBound)
+			holder, keysOf(got), stagedForwardBound)
 	}
 	if at := publishedAt(t, rig.database, comment.ID); at != nil {
 		t.Fatalf("published_at = %v within the bound, want the comment still waiting on its unnamed mentions", at)
@@ -130,7 +136,7 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 
 	// The bound passes with the sender still alive: it wrote both claims again just now, so
 	// nothing of the attempts settled and nothing else ends the wait.
-	agedUnnamedAttempts(t, rig.database, commentID, unnamedForwardBound+30*time.Second)
+	agedUnnamedAttempts(t, rig.database, commentID, stagedForwardBound+30*time.Second)
 	dueNow(t, rig.database, comment.ID)
 	dueNow(t, rig.database, later.ID)
 
@@ -139,7 +145,7 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 	if publishedAt(t, rig.database, comment.ID) == nil {
 		attempts, failure, reached := eventState(t, rig.database, comment.ID)
 		t.Fatalf("the comment was not published past the forward's bound of %s: attempt_count %d, publish_error %s, reached %v. The wait has a bound of its own, the sender's claim keeping its attempts pending for as long as its process lives",
-			unnamedForwardBound, attempts, publishFailure(failure), reached)
+			stagedForwardBound, attempts, publishFailure(failure), reached)
 	}
 	_, _, reached := eventState(t, rig.database, comment.ID)
 	if slices.Contains(reached, roleTopic) || slices.Contains(reached, contracts.LegacyAgentSubject(holder)) {

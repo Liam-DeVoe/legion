@@ -44,6 +44,10 @@ import (
 // the route was held by nobody when it was written, so the role route is published and resolves
 // to a session this comment mentions (resolveRoleHolders, destinations.leftToMention leaving
 // that session's own copy to the mention that delivered it).
+//
+// Both rows read the unnamed attempts within the bound, so each runs the outbox on
+// stagedForwardBound: past unnamedForwardBound, which a resumed attempt reaches half a lease
+// after it is staged (seedDelivery), the forward would be held as a row in either case.
 func TestAForwardKeyedByADeliveredMentionSkipsTheWaitForAnUnnamedMention(t *testing.T) {
 	const routed = "routed-to-a-session-either-unnamed-mention-may-name"
 	const first = "mentioned-first-whose-attempt-is-past-its-lease"
@@ -56,6 +60,7 @@ func TestAForwardKeyedByADeliveredMentionSkipsTheWaitForAnUnnamedMention(t *test
 	roleTopic := contracts.RoleTopicPrefix + routed
 
 	rig := newRoleRig(t)
+	rig.forwardBound = stagedForwardBound
 	rig.silent(t, roleTopic)
 	recv := rig.receiver(t, holder)
 
@@ -156,6 +161,7 @@ func TestAForwardKeyedByAFailedMentionStillWaitsForAnUnnamedMention(t *testing.T
 	roleTopic := contracts.RoleTopicPrefix + routed
 
 	rig := newRoleRig(t)
+	rig.forwardBound = stagedForwardBound
 	rig.silent(t, roleTopic)
 	recv := rig.receiver(t, holder)
 

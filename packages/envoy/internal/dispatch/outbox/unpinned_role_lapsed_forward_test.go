@@ -37,10 +37,11 @@ import (
 // nothing else delivering a role copy (destination.waiting, planChains).
 //
 // What holds here is the wait within its bound: both attempts are past their lease and younger
-// than unnamedForwardBound, which is what seedDelivery's resumed attempt is staged at. Past
-// that bound the copy is held as a row of the role's own topic after all, since nothing in an
-// attempt whose sender is alive ever ends this wait, and the owner's order to that one holder
-// is its price (holdsTheForwardAsARow,
+// than the bound, which seedDelivery's resumed attempt is staged within. The row runs the outbox
+// on stagedForwardBound, since a resumed attempt passes unnamedForwardBound half a lease after it
+// is staged. Past the bound the copy is held as a row of the role's own topic after all, since
+// nothing in an attempt whose sender is alive ever ends this wait, and the owner's order to that
+// one holder is its price (holdsTheForwardAsARow,
 // TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents).
 func TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease(t *testing.T) {
 	const routed = "routed-to-a-session-either-mention-may-name"
@@ -53,6 +54,7 @@ func TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease(t *testing.T) {
 	route := "role:" + routed
 
 	rig := newRoleRig(t)
+	rig.forwardBound = stagedForwardBound
 	rig.claim(t, routed, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, contracts.RoleTopicPrefix+routed)
 	recv := rig.receiver(t, holder)

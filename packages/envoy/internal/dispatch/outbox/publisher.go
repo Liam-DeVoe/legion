@@ -119,6 +119,15 @@ type Deps struct {
 	// cmd/dispatch runs. A test names the moment with a fake; it is unexported, so no importer
 	// can.
 	keepClock clock.Clock
+	// forwardBound is how long a role route's forward waits in its event's list for an attempt of
+	// the comment that names no session yet and that no one key stands for, measured from that
+	// attempt's creation, and zero is unnamedForwardBound, which is what cmd/dispatch runs. The
+	// read of a batch's mention deliveries and the fallback pass's read of one comment's judge
+	// each attempt's age against it (mentionDeliveryQuery). A test sets it longer than its own
+	// run, so that an attempt it stages past its lease reads within the bound however long the
+	// test takes to read it, which the two leases of unnamedForwardBound leave a staged attempt
+	// less than one lease of; it is unexported, so no importer can.
+	forwardBound time.Duration
 	// PublishFailures counts a destination of a publish attempt that did not reach it, by
 	// reason (countPublishFailure), and RoleForwardsHeld a role forward its holder's resolution
 	// held pending, by that holder's state (countRoleForwardHeld). cmd/dispatch registers both
@@ -161,6 +170,15 @@ func (d Deps) keptNow() time.Time {
 		return time.Now()
 	}
 	return d.keepClock.Now()
+}
+
+// unnamedForwardWait is the bound this outbox's role forwards wait an unnamed mention out for
+// (unnamedForwardBound), from forwardBound.
+func (d Deps) unnamedForwardWait() time.Duration {
+	if d.forwardBound > 0 {
+		return d.forwardBound
+	}
+	return unnamedForwardBound
 }
 
 // countPublishFailure counts one destination of a publish attempt that did not reach it, under
@@ -1055,7 +1073,7 @@ func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) (
 	var found *lookups
 	if err := deps.lanes.statement(func() error {
 		var err error
-		found, err = loadLookups(ctx, deps.Store.Pool, want)
+		found, err = loadLookups(ctx, deps.Store.Pool, want, deps.unnamedForwardWait())
 		return err
 	}); err != nil {
 		return nil, err

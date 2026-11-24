@@ -107,7 +107,14 @@ func TestAnOwnerOfTheStalledHoldersBatchIsReleasedBeforeTheBatchEnds(t *testing.
 // so no batch beside it reads the owner's second event and the holder receives the first forward
 // alone.
 func TestAnOwnersSecondEventDoesNotOvertakeItsFirstWhileItsForwardIsUnacknowledged(t *testing.T) {
-	const stalledRole, stalledHolder = "stalled-reviewer", "ses_never_acknowledged"
+	const (
+		stalledRole, stalledHolder = "stalled-reviewer", "ses_never_acknowledged"
+		// What the outbox waits for the first forward's acknowledgement (Deps.forwardAckWait).
+		// It outlasts the whole test, so the first event's wait is still running when the span
+		// below ends, however slow the machine is: on roleForwardAckTimeout's 5 s the forward
+		// would time out and be sent again inside the span once the row had taken a few seconds.
+		stalledForwardWait = 10 * time.Minute
+	)
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	rig := newRoleRig(t)
 	rig.claim(t, stalledRole, stalledHolder, session.SessionEntry{SelfSubscribed: true})
@@ -117,6 +124,7 @@ func TestAnOwnersSecondEventDoesNotOvertakeItsFirstWhileItsForwardIsUnacknowledg
 
 	deps := rig.deps()
 	deps.Listen = rig.database.Pool.Listener
+	deps.forwardAckWait = stalledForwardWait
 	stop := runDeps(t, deps)
 	defer stop()
 
@@ -126,9 +134,8 @@ func TestAnOwnersSecondEventDoesNotOvertakeItsFirstWhileItsForwardIsUnacknowledg
 		t.Fatalf("the stalled holder received event %s first, want event %d", forward.SourceEventID, first.ID)
 	}
 
-	// Committed on the same owner while the first event's wait for an acknowledgement runs, and
-	// well inside roleForwardAckTimeout, so the first event has not been settled when the span
-	// below ends.
+	// Committed on the same owner while the first event's wait for an acknowledgement runs, which
+	// lasts stalledForwardWait, so the first event has not been settled when the span below ends.
 	second := rig.laterEvent(t, "T-1", alice)
 	testwait.Quiet(t, fmt.Sprintf("the stalled holder's subject (its issue's second event is %d, its first %d "+
 		"unacknowledged)", second.ID, first.ID), silent.arrived, 2*time.Second,

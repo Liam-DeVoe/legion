@@ -41,6 +41,21 @@ func seedCreatedAttempt(t *testing.T, database *store.Store, commentID, target, 
 	}
 }
 
+// keepLive dates every pending attempt of commentID liveAhead past the database's clock, its
+// creation and its claim, for a row that reads an attempt seedCreatedAttempt opened as live: that
+// statement dates both now(), as the API's does, which reads live for model.DeliveryClaimLapse
+// only (model.MentionLiveSQL), so a row that took a minute to read it would read it past its
+// lease. Dated ahead it reads live for that hour and the lease past it.
+func keepLive(t *testing.T, database *store.Store, commentID string) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		update comment_deliveries set created_at = now() + $2::interval, claimed_at = now() + $2::interval
+		where comment_id = $1 and state = 'pending'
+	`, commentID, liveAhead); err != nil {
+		t.Fatalf("keep the attempts of comment %s live: %v", commentID, err)
+	}
+}
+
 // A session an unanswered @role: mention names is shown the comment once even when the outbox's
 // own resolution of that role names no holder at all.
 //
@@ -104,6 +119,7 @@ func TestACommentAnUnansweredRoleMentionWhoseHolderTheOutboxCannotNameReachesTha
 		},
 	})
 	seedCreatedAttempt(t, rig.database, commentID, target, "steer")
+	keepLive(t, rig.database, commentID)
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 

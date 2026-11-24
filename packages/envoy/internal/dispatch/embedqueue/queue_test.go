@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/embed/embedtest"
@@ -190,11 +191,21 @@ func TestProcessBatchEmbedsAPendingRowTheWriteTimeTriggerEnqueued(t *testing.T) 
 // TestProcessBatchRetriesWithBackoffOnEmbedFailure is the durable-retry-queue acceptance
 // criterion: a write never fails because the embedder did, and a failed attempt leaves the row
 // pending, retried later rather than lost.
+//
+// The backoff is counted from the queue's clock (Deps.Clock), which here reads an hour past the
+// wall clock with the wall clock's waits: the row's next_attempt_at is then retry.Delay(1) past
+// that moment, an hour past the database's now(), so the row is still backed off when the
+// database reads it and when the second batch runs, however slow the row is, where a second's
+// backoff on the wall clock could pass before either.
 func TestProcessBatchRetriesWithBackoffOnEmbedFailure(t *testing.T) {
+	const ahead = time.Hour
 	database := storetest.Open(t)
 	seedIssue(t, database, "RETR", "RETR-1", "A title")
 	embedder := &fakeEmbedder{err: errors.New("bedrock: simulated outage")}
-	succeeded, failed, blocked, throttled, err := ProcessBatch(context.Background(), Deps{Store: database, Embedder: embedder})
+	deps := Deps{Store: database, Embedder: embedder, Clock: clocktest.WithNow(clock.Real(), func() time.Time { return time.Now().Add(ahead) })}
+	before := time.Now()
+	succeeded, failed, blocked, throttled, err := ProcessBatch(context.Background(), deps)
+	after := time.Now()
 	if err != nil {
 		t.Fatalf("ProcessBatch: %v", err)
 	}
@@ -205,21 +216,27 @@ func TestProcessBatchRetriesWithBackoffOnEmbedFailure(t *testing.T) {
 		t.Fatalf("pending after a failed attempt = %d, want 1 (still pending, not lost)", got)
 	}
 	var attempts int
+	var due time.Time
 	var backedOff bool
-	// next_attempt_at is written on the database's clock, so the database is what judges it.
+	// next_attempt_at is judged on the database's clock, so the database is what judges it.
 	if err := database.Pool.QueryRow(context.Background(), `
-		select attempt_count, next_attempt_at > now() from embeddings where kind = 'issue' and id = 'RETR-1'
-	`).Scan(&attempts, &backedOff); err != nil {
+		select attempt_count, next_attempt_at, next_attempt_at > now() from embeddings where kind = 'issue' and id = 'RETR-1'
+	`).Scan(&attempts, &due, &backedOff); err != nil {
 		t.Fatalf("read retry state: %v", err)
 	}
 	if attempts != 1 {
 		t.Errorf("attempt_count = %d, want 1", attempts)
 	}
+	// The backoff is retry.Delay(1) past the queue's clock as the batch read it, a moment between
+	// before and after on that clock, at the microsecond the database keeps.
+	if low, high := before.Add(ahead+retry.Delay(1)).Truncate(time.Microsecond), after.Add(ahead+retry.Delay(1)); due.Before(low) || due.After(high) {
+		t.Errorf("next_attempt_at = %v, want retry.Delay(1) = %v past the queue's clock during the batch, between %v and %v", due, retry.Delay(1), low, high)
+	}
 	if !backedOff {
 		t.Error("next_attempt_at is not past the database's now(), want it backed off into the future")
 	}
 	// Immediately re-processing finds nothing: the row is backed off, not eligible yet.
-	succeeded, failed, _, _, err = ProcessBatch(context.Background(), Deps{Store: database, Embedder: embedder})
+	succeeded, failed, _, _, err = ProcessBatch(context.Background(), deps)
 	if err != nil || succeeded != 0 || failed != 0 {
 		t.Fatalf("ProcessBatch immediately after backoff = %d, %d, %v, want 0, 0, nil", succeeded, failed, err)
 	}
@@ -1829,8 +1846,14 @@ func TestAClaimLeftByAnotherProcessIsTakenWhenItLapses(t *testing.T) {
 // one is; and never a time sooner than retryInterval from its end - not for a claim lapsing
 // sooner, and not for a row already due that another process holds under skip locked, which the
 // scan could not claim and an immediate rescan would not either. The floor is on the queue's
-// clock, a fake here that the row sets to the database's clock just after each row's stamp, so
-// the claim's lapse is read against the same moment the floor is, and the floor is exact.
+// clock, a fake here that the row sets just after each row's stamp, so the claim's lapse is read
+// against the same moment the floor is, and the floor is exact.
+//
+// The other process's claim is put an hour past the database's clock before each pass that must
+// find it held, so it holds there however long the pass takes to read it: claimWindow's two
+// minutes, and a second, could pass before the pass and leave the row due, claimed by this scan.
+// "Lapsing in a second" is then read on the queue's clock, which the row sets a second short of
+// the lapse.
 func TestScanPassReturnsWhenThePendingRowsFallDue(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -1845,25 +1868,27 @@ func TestScanPassReturnsWhenThePendingRowsFallDue(t *testing.T) {
 	if claimed, _, err := scanPending(ctx, Deps{Store: storetest.SecondProcess(t, database), Embedder: newPlaceEmbedder(configuredIdentity)}); err != nil || len(claimed) != 1 {
 		t.Fatalf("the other process's claim = %v, %v; want DUE-2", claimed, err)
 	}
+	// The other process's claim, held an hour past the database's clock.
 	var lapses time.Time
-	if err := database.Pool.QueryRow(ctx, `select next_attempt_at from embeddings where id = 'DUE-2'`).Scan(&lapses); err != nil {
-		t.Fatalf("read the claim's lapse: %v", err)
+	if err := database.Pool.QueryRow(ctx, `
+		update embeddings set next_attempt_at = now() + interval '1 hour' where id = 'DUE-2' returning next_attempt_at
+	`).Scan(&lapses); err != nil {
+		t.Fatalf("hold the claim an hour: %v", err)
 	}
 	fake.Set(testdb.Now(t, database.Pool))
 	if next := scanPass(ctx, deps); !next.Equal(lapses) {
 		t.Errorf("with DUE-2 claimed elsewhere: due %v, want the claim's lapse %v", next, lapses)
 	}
 
-	requireFloor := func(when string) {
+	requireFloor := func(when string, at time.Time) {
 		t.Helper()
-		fake.Set(testdb.Now(t, database.Pool))
+		fake.Set(at)
 		floor := fake.Now().Add(retryInterval)
 		if next := scanPass(ctx, deps); !next.Equal(floor) {
 			t.Errorf("%s: due %v, want %v, retryInterval after the pass on the queue's clock", when, next, floor)
 		}
 	}
-	mustExec(t, database.Pool, `update embeddings set next_attempt_at = now() + interval '1 second' where id = 'DUE-2'`)
-	requireFloor("a claim lapsing in a second")
+	requireFloor("a claim lapsing in a second", lapses.Add(-time.Second))
 
 	mustExec(t, database.Pool, `update embeddings set next_attempt_at = now() - interval '1 second' where id = 'DUE-2'`)
 	holder, err := database.Pool.Begin(ctx)
@@ -1874,7 +1899,7 @@ func TestScanPassReturnsWhenThePendingRowsFallDue(t *testing.T) {
 	if _, err := holder.Exec(ctx, `select 1 from embeddings where id = 'DUE-2' for update`); err != nil {
 		t.Fatalf("hold DUE-2: %v", err)
 	}
-	requireFloor("a due row another process holds")
+	requireFloor("a due row another process holds", testdb.Now(t, database.Pool))
 	if got := pendingCount(t, database); got != 1 {
 		t.Errorf("pending = %d, want DUE-2 still pending: the scan skips a held row", got)
 	}

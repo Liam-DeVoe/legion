@@ -119,7 +119,7 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 	}
 	want := newWanted()
 	_, _ = eventDestinations(ctx, deps, single, want)
-	found, err := loadLookups(ctx, deps.Store.Pool, want)
+	found, err := loadLookups(ctx, deps.Store.Pool, want, deps.unnamedForwardWait())
 	if err != nil {
 		return err
 	}
@@ -192,7 +192,7 @@ func routeTopics(t *testing.T, database *store.Store, event model.Event, add fun
 	t.Helper()
 	want := newWanted()
 	_ = add(event, routing{}, want, &destinations{seen: map[string]struct{}{}})
-	found, err := loadLookups(context.Background(), database.Pool, want)
+	found, err := loadLookups(context.Background(), database.Pool, want, unnamedForwardBound)
 	if err != nil {
 		t.Fatalf("read the lookups: %v", err)
 	}
@@ -1119,7 +1119,7 @@ func TestLoadRootCommentAuthorsTerminatesOnACycle(t *testing.T) {
 	go func() {
 		defer close(done)
 		var found *lookups
-		if found, err = loadLookups(context.Background(), database.Pool, &wanted{comments: map[string]struct{}{commentID: {}}}); err == nil {
+		if found, err = loadLookups(context.Background(), database.Pool, &wanted{comments: map[string]struct{}{commentID: {}}}, unnamedForwardBound); err == nil {
 			_, ok, err = found.rootCommentAuthor(commentID)
 		}
 	}()
@@ -1865,9 +1865,13 @@ func run(t *testing.T, database *store.Store, publisher Publisher, broker *event
 
 // runDeps runs New(deps) until the returned func stops it (runOn). A test that needs more of Deps
 // than run's store, publisher and broker - a metrics counter among them - builds it itself and
-// calls this.
+// calls this. The publisher hold lasts past the test (holdPastTheRun): its rows read what the
+// outbox sent and recorded, which a hold lost to a renewal that came late and taken again would
+// change - a batch it ends sends nothing more, its owners wait for the next take, and one whose
+// record the lapsed hold refused is read and sent again.
 func runDeps(t *testing.T, deps Deps) func() {
 	t.Helper()
+	holdPastTheRun(t)
 	return runOn(t, New(deps))
 }
 

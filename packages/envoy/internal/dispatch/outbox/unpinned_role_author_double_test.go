@@ -91,6 +91,7 @@ func TestAnUnnamedRoleMentionPinnedToTheThreadAuthorShowsItTheCommentTwice(t *te
 		},
 	})
 	seedCreatedAttempt(t, rig.database, commentID, target, "steer")
+	keepLive(t, rig.database, commentID)
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 
@@ -200,6 +201,7 @@ func TestAnUnnamedRoleMentionPinnedToAFollowerShowsItTheCommentTwice(t *testing.
 		},
 	})
 	seedCreatedAttempt(t, rig.database, commentID, target, "steer")
+	keepLive(t, rig.database, commentID)
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 
@@ -300,6 +302,7 @@ func TestAnUnnamedRoleMentionPinnedToAPrimaryDocumentAuthorShowsItTheCommentTwic
 		},
 	})
 	seedCreatedAttempt(t, rig.database, commentID, target, "steer")
+	keepLive(t, rig.database, commentID)
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 

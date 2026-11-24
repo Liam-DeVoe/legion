@@ -161,6 +161,20 @@ func (t failOnce) Fatalf(format string, args ...any) {
 	t.T.Fatalf(format, args...)
 }
 
+// holdPastTheRun sets publisherHoldOptions' TTL and Margin to a day and an hour for the rest of t,
+// and puts them back once t ends, for a row whose verdict reads a hold held throughout: an outbox
+// that takes the hold then reports it lost only 23 hours after its last confirmed renewal, and
+// its row lapses on the database's clock a day after it, so no stall of the machine running the
+// row loses it. On publisherHoldOptions' own 6 s and 2 s a renewal that goes unanswered for 4 s
+// loses the hold, and the outbox gives it up and takes it again while the row reads it. Renew
+// stays the package's, so the hold is still renewed every second.
+func holdPastTheRun(t *testing.T) {
+	t.Helper()
+	saved := publisherHoldOptions
+	publisherHoldOptions.TTL, publisherHoldOptions.Margin = 24*time.Hour, time.Hour
+	t.Cleanup(func() { publisherHoldOptions = saved })
+}
+
 // publishing is the processes that publish now.
 func publishing(processes ...*process) []string {
 	var names []string
@@ -289,8 +303,10 @@ func (r *holderRest) await(t *testing.T, what string) {
 // broker - is claimed at once by the LISTEN on dispatch_events, and a back-off is claimed when it
 // falls due, by the one timer armed to it, with nothing else waking the outbox in between. Every
 // step is read from what the outbox and the database recorded - the waits armed, the claims made,
-// the moment the database marked the event published - and never from how long a step took.
+// the moment the database marked the event published - and never from how long a step took. The
+// hold lasts past the row (holdPastTheRun), since a hold lost and taken again scans once more.
 func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
+	holdPastTheRun(t)
 	database := storetest.Open(t)
 	other := storetest.SecondProcess(t, database)
 	seedIssue(t, database, "T-1", nil)
@@ -501,13 +517,28 @@ func backOffState(t *testing.T, database *store.Store, eventID int64) (published
 // either process writes is sent once, by whichever holds the publisher hold. The row samples the
 // two for as long as it takes the hold to be renewed a whole TTL past the deadline it had when the
 // sampling began, so the samples span renewals and a lapse the hold would have come to unrenewed.
+//
+// The hold has publisherHoldOptions' shape scaled from seconds to hours: it lasts six hours past
+// each renewal, is renewed every hour and reports itself lost two hours before it lapses. Both
+// processes' holds and their bus clients' windows run on one fake (Outbox.holdClock,
+// bus.WithWindowClock), which the row moves one renewal at a time, writing a message through
+// either process at each move, and moves again only once the renewal the last move fired is
+// confirmed: so no renewal comes late however slow the machine, which on the real clock a
+// renewal unanswered for 4 s would, leaving neither process publishing until the other took the
+// hold. The hold's row lasts six hours on the database's clock too, which no fake moves and no
+// run reaches, so it never lapses there and the standby never takes it.
 func TestOnlyOneOutboxPublishesAtATime(t *testing.T) {
+	saved := publisherHoldOptions
+	publisherHoldOptions.TTL, publisherHoldOptions.Renew, publisherHoldOptions.Margin = 6*time.Hour, time.Hour, 2*time.Hour
+	t.Cleanup(func() { publisherHoldOptions = saved })
 	_, url := testnats.Start(t)
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
 	counter := &sendCounter{}
-	first := startProcess(t, "first", database, url, counter)
-	second := startProcess(t, "second", storetest.SecondProcess(t, database), url, counter)
+	holds := clocktest.New(time.Now())
+	onHolds := func(o *Outbox) { o.holdClock = holds }
+	first := startProcessWith(t, "first", database, url, counter, onHolds, bus.WithWindowClock(holds))
+	second := startProcessWith(t, "second", storetest.SecondProcess(t, database), url, counter, onHolds, bus.WithWindowClock(holds))
 	holder := waitForOnePublisher(t, first, second)
 	hold := holder.outbox.hold.Load()
 	if hold == nil {
@@ -516,19 +547,29 @@ func TestOnlyOneOutboxPublishesAtATime(t *testing.T) {
 	renewedPast := hold.Deadline().Add(publisherHoldOptions.TTL)
 
 	var written []model.Event
-	sample := 0
+	sample, moves := 0, 0
+	// confirmed is the holder's deadline when the fake last moved: a later one is the renewal
+	// that move fired, confirmed.
+	confirmed := hold.Deadline()
 	testwait.Eventually(t, "the publisher hold renewed a whole TTL past its deadline when the sampling began", func() bool {
 		if names := publishing(first, second); len(names) != 1 {
-			t.Fatalf("sample %d: publishing %v, want exactly one outbox", sample, names)
-		}
-		if sample%50 == 0 {
-			writer := []*process{first, second}[(sample/50)%2]
-			written = append(written, writeMessage(t, writer, fmt.Sprintf("message %d", sample)))
+			t.Fatalf("sample %d, %d renewals in: publishing %v, want exactly one outbox", sample, moves, names)
 		}
 		sample++
 		for _, p := range []*process{first, second} {
-			if hold := p.outbox.hold.Load(); hold != nil && hold.Deadline().After(renewedPast) {
+			hold := p.outbox.hold.Load()
+			if hold == nil {
+				continue
+			}
+			if hold.Deadline().After(renewedPast) {
 				return true
+			}
+			if moves == 0 || hold.Deadline().After(confirmed) {
+				confirmed = hold.Deadline()
+				writer := []*process{first, second}[moves%2]
+				written = append(written, writeMessage(t, writer, fmt.Sprintf("message %d", moves)))
+				moves++
+				holds.Advance(publisherHoldOptions.Renew)
 			}
 		}
 		return false
@@ -565,8 +606,10 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 
 // A holder whose NATS connection is cut releases the publisher hold once it has been without NATS
 // for natsLossGrace, and the other process, whose NATS works, takes the hold and publishes what is
-// written after the cut.
+// written after the cut. The hold lasts past the row (holdPastTheRun): the row reads at one moment
+// that the working process publishes, which a renewal of its own that came late would end.
 func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
+	holdPastTheRun(t)
 	_, url := testnats.Start(t)
 	proxy := testnats.StartProxy(t, url)
 	proxied := proxy.URL()
@@ -605,9 +648,7 @@ func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 // row moves its fake, so the row gives the hold a TTL and Margin no run reaches: its row cannot
 // lapse on the database, and the hand-over is the silent holder's release alone.
 func TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther(t *testing.T) {
-	saved := publisherHoldOptions
-	publisherHoldOptions.TTL, publisherHoldOptions.Margin = 24*time.Hour, time.Hour
-	t.Cleanup(func() { publisherHoldOptions = saved })
+	holdPastTheRun(t)
 	_, url := testnats.Start(t)
 	proxy := testnats.StartProxy(t, url)
 	database := storetest.Open(t)
@@ -757,9 +798,7 @@ func TestAStandbyTakesTheHoldOfAHolderThatStoppedRenewingOnceItsRowLapses(t *tes
 // lost, the holder releases it, and the standby, woken by that release, tries the hold once. The
 // holder, whose NATS works, tries it again at once too, so either of them may take it.
 func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
-	saved := publisherHoldOptions
-	publisherHoldOptions.TTL, publisherHoldOptions.Margin = 24*time.Hour, time.Hour
-	t.Cleanup(func() { publisherHoldOptions = saved })
+	holdPastTheRun(t)
 	_, url := testnats.Start(t)
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)

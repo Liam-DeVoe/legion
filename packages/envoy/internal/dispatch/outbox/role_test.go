@@ -79,14 +79,19 @@ func (unreadableRoleClaims) ReleaseExpiredRoleClaim(context.Context, string, str
 
 // roleRig is a real NATS server whose stream captures agent subjects, the outbox's client on it,
 // the role and session registries a session plugin registers through, and a migrated database.
+// forwardBound is the bound the Deps it builds give a role route's forward's wait for an unnamed
+// mention (Deps.forwardBound): zero, which newRoleRig leaves, is unnamedForwardBound, and a row
+// that stages an attempt past its lease that must read within that bound sets stagedForwardBound
+// before it builds any.
 type roleRig struct {
-	url      string
-	client   *bus.Client
-	conn     *natsgo.Conn
-	registry *envoystore.Registry
-	sessions *session.SessionRegistry
-	database *store.Store
-	broker   *events.Broker
+	url          string
+	client       *bus.Client
+	conn         *natsgo.Conn
+	registry     *envoystore.Registry
+	sessions     *session.SessionRegistry
+	database     *store.Store
+	broker       *events.Broker
+	forwardBound time.Duration
 }
 
 func newRoleRig(t *testing.T) *roleRig {
@@ -138,7 +143,8 @@ func newRoleRigOn(t *testing.T, url string, client *bus.Client, conn *natsgo.Con
 // roles.Buckets on the outbox's own client, judged by the package's own windows, which is what
 // a deployment that sets neither ENVOY_SESSION_LIVE_WINDOW nor ENVOY_SESSION_GONE_HORIZON
 // gives it, and that client the reader of a role's kept lane and its drain cursor, which a
-// keep's handover makes its pass over (Deps.KeptLanes).
+// keep's handover makes its pass over (Deps.KeptLanes). The one thing it may set that
+// cmd/dispatch does not is the rig's forwardBound.
 func (r *roleRig) deps() Deps {
 	return r.depsJudgedBy(roles.Windows{})
 }
@@ -148,7 +154,7 @@ func (r *roleRig) deps() Deps {
 func (r *roleRig) depsJudgedBy(windows roles.Windows) Deps {
 	holders := roles.NewBuckets(r.client, windows)
 	return Deps{Store: r.database, Publisher: r.client, Broker: r.broker, RoleClaims: holders, Sessions: holders,
-		KeptLanes: r.client}
+		KeptLanes: r.client, forwardBound: r.forwardBound}
 }
 
 // claim makes holder role's holder, registered with entry, as a session plugin's registration

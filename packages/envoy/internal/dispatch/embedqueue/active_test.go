@@ -15,19 +15,25 @@ import (
 )
 
 // liveProcess writes the server_processes row of a server process whose embedder has identity,
-// started startedAgo before the database's now() and live now, and returns its instance id. The
-// row names this build's owner lock protocol, as processes.Register writes it.
+// started startedAgo before the database's now() and live, and returns its instance id. The row
+// names this build's owner lock protocol, as processes.Register writes it. Its heartbeat is
+// heartbeatAhead past now(), so it reads live (processes.Live) however long the row takes to read
+// it, where one stamped now() would lapse processes.LiveWindow later.
 func liveProcess(t *testing.T, database *store.Store, identity string, startedAgo time.Duration) string {
 	t.Helper()
 	var id string
 	if err := database.Pool.QueryRow(context.Background(), `
 		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, embedder_identity, file_store, started_at, heartbeat_at, owner_lock_protocol)
-		values (gen_random_uuid(), '{fingerprint}', 1, 1, $1, false, now() - make_interval(secs => $2), now(), $3)
-		returning instance::text`, identity, startedAgo.Seconds(), store.OwnerLockProtocol).Scan(&id); err != nil {
+		values (gen_random_uuid(), '{fingerprint}', 1, 1, $1, false, now() - make_interval(secs => $2), now() + make_interval(secs => $4), $3)
+		returning instance::text`, identity, startedAgo.Seconds(), store.OwnerLockProtocol, heartbeatAhead.Seconds()).Scan(&id); err != nil {
 		t.Fatalf("add a server process embedding with %q: %v", identity, err)
 	}
 	return id
 }
+
+// heartbeatAhead is how far past the database's now() a live process's heartbeat is put
+// (liveProcess): far enough that no run outlasts it, where processes.LiveWindow is seconds.
+const heartbeatAhead = time.Hour
 
 // expireProcess moves the heartbeat of the process id past the registry's live window, as a
 // process that stopped without deregistering leaves it.
@@ -125,7 +131,8 @@ func TestOnlyTheActiveEmbedderIdentityDropsAndEmbeds(t *testing.T) {
 	}
 
 	// The first process serves again: the second identity is still carried, so it stays active.
-	mustExec(t, database.Pool, `update server_processes set heartbeat_at = now() where instance = $1::uuid`, first)
+	mustExec(t, database.Pool, `update server_processes set heartbeat_at = now() + make_interval(secs => $2) where instance = $1::uuid`,
+		first, heartbeatAhead.Seconds())
 	firstEmbedder.calls = nil
 	before = snapshotRows(t, database)
 	cover(t, firstDeps)
@@ -150,11 +157,13 @@ func TestARestartKeepsItsIdentityActive(t *testing.T) {
 	drain(t, Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity)})
 
 	// The restart: the new process's row is written before the old one's is deleted, in one
-	// transaction here, and it starts after the other identity's process.
+	// transaction here, and it starts after the other identity's process. Its heartbeat is put
+	// ahead as liveProcess puts one.
 	mustExec(t, database.Pool, `
 		with gone as (delete from server_processes where instance = $1::uuid)
-		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, embedder_identity, file_store, owner_lock_protocol)
-		values (gen_random_uuid(), '{fingerprint}', 1, 1, $2, false, $3)`, first, configuredIdentity, store.OwnerLockProtocol)
+		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, embedder_identity, file_store, heartbeat_at, owner_lock_protocol)
+		values (gen_random_uuid(), '{fingerprint}', 1, 1, $2, false, now() + make_interval(secs => $4), $3)`,
+		first, configuredIdentity, store.OwnerLockProtocol, heartbeatAhead.Seconds())
 
 	secondEmbedder := newPlaceEmbedder(foreignIdentity)
 	cover(t, Deps{Store: second, Embedder: secondEmbedder})

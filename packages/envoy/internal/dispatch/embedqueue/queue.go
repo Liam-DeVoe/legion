@@ -84,11 +84,13 @@ type Deps struct {
 	// Clock is what the queue's own waits and ages run on: the coverage loop's wait for the next
 	// identity recheck, the pauses between batches and after a throttle, a reservation's wait on
 	// the shared token budget, a claim renewal's age, the floor a scan pass holds its due time to
-	// (scanPass), and Run's scan loop's one timer and its gap (duty.WokenLoop.Clock). clock.Real
-	// when nil, and a test's clocktest.Fake, whose timers fire only where the test moves it. The
-	// queue's other times - a row's next_attempt_at, pending_since, embedded_at - are the
-	// database's own clock, which no fake reaches: the scan loop arms its timer for such a moment
-	// on this clock, so a test on a fake moves it there once the database's clock has passed it.
+	// (scanPass), Run's scan loop's one timer and its gap (duty.WokenLoop.Clock), and the moment a
+	// failed row's backoff is counted from (retryRows), which it writes as next_attempt_at.
+	// clock.Real when nil, and a test's clocktest.Fake, whose timers fire only where the test
+	// moves it. The queue's other times - a claim's next_attempt_at, pending_since, embedded_at -
+	// are the database's own clock, which no fake reaches, and the database judges every
+	// next_attempt_at against its own now(): the scan loop arms its timer for such a moment on
+	// this clock, so a test on a fake moves it there once the database's clock has passed it.
 	Clock clock.Clock
 	// proven records that an Embed call this process's queue made has succeeded (embedDocuments
 	// records it), which is what lets Cover act on rows another identity left with no canary of
@@ -938,7 +940,7 @@ func retryRows(ctx context.Context, deps Deps, rows []pendingRow, permanent bool
 		kinds[i], ids[i], hashes[i] = row.kind, row.id, row.contentHash
 		attempts[i] = int32(n)
 		confirmedFailures[i] = int32(confirmed)
-		nextAttempts[i] = time.Now().Add(retry.Delay(n))
+		nextAttempts[i] = deps.clock().Now().Add(retry.Delay(n))
 		deads[i] = dead
 	}
 	_, err := deps.Store.Pool.Exec(ctx, `
