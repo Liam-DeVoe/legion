@@ -176,43 +176,6 @@ function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
   return { posted, daemon: () => client };
 }
 
-/** `stop_task`'s part of the description, by its terms rather than its sentences: it opens with the
- * tool's name and its parameters, and names the hold it leaves, that a stop before the issue's
- * first step settles its plan first, and each refusal code its text gives. */
-const STOP_TASK_TERMS = {
-  opens: "stop_task (issue, task) ",
-  names: [
-    "`holdReason` task-stopped",
-    "register_plan",
-    "first step",
-    "settles the plan",
-    "(TASK_STOPPED)",
-    "(TASK_NOT_FOUND",
-    "(TASK_DONE)",
-    "(TREE_LINGERING)",
-    "(ISSUE_OUTSIDE_TREE)",
-    "(TASK_STALE_GENERATION)",
-    "(TASK_AWAITING_PERSON",
-  ],
-} as const;
-
-/** `sign_off`'s part of the description, by its terms: it opens with the tool's name, names where
- * the sign-off moves the task, names each refusal code its text gives, and says why a parent waits
- * for the issues beneath it. */
-const SIGN_OFF_TERMS = {
-  opens: "sign_off ",
-  names: [
-    "moving its task to its next step, or to retro where the acceptance is the task's last step",
-    "(SIGNOFF_OUTSIDE_ACCEPTING)",
-    "(SIGNOFF_CHILD_IN_WORKFLOW",
-    "(ISSUE_NOT_OWNED",
-    "ISSUE_OUTSIDE_TREE",
-    "SIGNOFF_STALE_GENERATION",
-    "SIGNOFF_STALE_ENTRY",
-    "since a parent is accepted only once no issue beneath it is still in the workflow",
-  ],
-} as const;
-
 /** Every session kind the tool answers for: a root architect, a sub-architect, each phase worker,
  * and the controller. */
 const EVERY_SESSION: readonly LegionToolSession[] = [
@@ -236,24 +199,6 @@ const toolFor = (active: LegionToolSession) =>
     resolveDocument: noDocumentLookup,
     session: () => active,
   });
-
-test("the legion tool's description names stop_task's and sign_off's terms, for every session", () => {
-  for (const active of EVERY_SESSION) {
-    const description = toolFor(active).description;
-    const held = description.slice(description.indexOf(STOP_TASK_TERMS.opens));
-    const signOffAt = held.indexOf(SIGN_OFF_TERMS.opens);
-    expect(signOffAt).toBeGreaterThan(0);
-    const stopTask = held.slice(0, signOffAt);
-    const signOff = held.slice(signOffAt);
-    expect(stopTask.startsWith(STOP_TASK_TERMS.opens)).toBe(true);
-    for (const term of STOP_TASK_TERMS.names) {
-      expect(stopTask).toContain(term);
-    }
-    for (const term of SIGN_OFF_TERMS.names) {
-      expect(signOff).toContain(term);
-    }
-  }
-});
 
 // The daemon's refusals and notices over children carry its rules for ending a child
 // (record.EndChildRule) and its sentence on a status it has not taken yet

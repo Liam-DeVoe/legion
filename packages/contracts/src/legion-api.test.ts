@@ -1136,6 +1136,12 @@ test("the state golden carries the experiments each issue was drawn for", () => 
   ]);
   // An issue no experiment has reached carries no key.
   expect(issueOf("LEGION-211").assignments).toBeUndefined();
+  // The group an experiment that sets how its issues are done gave the child, as its draw
+  // recorded it: the parse keeps it, and a group that is no string is refused.
+  const planned = LegionStateResponse.parse(state).issues["LEGION-209"]?.assignments?.find(
+    (row) => row.experiment === "planning"
+  );
+  expect(planned?.plan).toBe("default");
 
   const parses = () => LegionStateResponse.safeParse(state).success;
   expect(parses()).toBeTrue();
@@ -1163,6 +1169,12 @@ test("the state golden carries the experiments each issue was drawn for", () => 
   expect(parses()).toBeTrue();
   drawn.assignments = [{ experiment: "memory", variant: "memory" }];
   expect(parses()).toBeTrue();
+  // A group that is no string, and an empty one: the daemon leaves the key off where the arm
+  // named no group.
+  drawn.assignments = [{ experiment: "planning", variant: "b", mode: "random", plan: 1 }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = [{ experiment: "planning", variant: "b", mode: "random", plan: "" }];
+  expect(parses()).toBeFalse();
   drawn.assignments = held;
   expect(parses()).toBeTrue();
 });
@@ -2788,11 +2800,12 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // aside: the mark names the contract the caller is served at, 199, the recorded contract below
   // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
-  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Two bands stand
-  // above 199: the repositories block's, and the roles of a deployment's (contract 221), which
-  // serves the state golden's issues at step and its claims of a role of the deployment as a
+  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Three bands stand
+  // above 199: the repositories block's; contract 220's, which takes `plan` off each assignment, so
+  // the golden's rows are compared without it; and the roles of a deployment's (contract 221),
+  // which serves the state golden's issues at step and its claims of a role of the deployment as a
   // caller below 221 reads them (`belowDeploymentRoles`). So the narrowing changes this one block
-  // and, beside it, only what that second band changes. One value strip stands above 199 as well:
+  // and, beside it, only what those two bands change. One value strip stands above 199 as well:
   // `caches`, the source of the repository-cache-room row, arrived at contract 213, so that row is
   // served here without its `source`, every other field of it and every other row as the state
   // golden holds them.
@@ -2817,6 +2830,19 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     lowestPluginContract: _lowest,
     ...rest
   } = fixtureBody("state.json");
+  const issues = Object.fromEntries(
+    Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => [
+      key,
+      issue.assignments === undefined
+        ? issue
+        : {
+            ...issue,
+            assignments: (issue.assignments as Record<string, unknown>[]).map(
+              ({ plan: _plan, ...row }) => row
+            ),
+          },
+    ])
+  );
   const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);
   expect(capabilities.some((row) => row.source === "caches")).toBeTrue();
   const withoutCachesSource = capabilities.map((row) => {
@@ -2827,7 +2853,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     return kept;
   });
   expect(narrowedRest).toEqual(
-    belowDeploymentRoles({ ...rest, capabilities: withoutCachesSource })
+    belowDeploymentRoles({ ...rest, issues, capabilities: withoutCachesSource })
   );
 
   // What serving the current block would do: the reader of 152 refuses it for the three keys it
