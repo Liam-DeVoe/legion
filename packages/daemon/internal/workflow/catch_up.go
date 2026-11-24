@@ -213,9 +213,8 @@ func untoldMergeForward(ctx context.Context, tx pgx.Tx, store record.Store, issu
 	if pending, err := store.MergeForwardAskPending(ctx, tx, issue.Key, asked.Agent, asked.Head); err != nil || pending {
 		return nil, err
 	}
-	if told, err := toldNow(ctx, tx, store, issue, asked.Told, launch); err != nil || told {
-		return nil, err
-	}
+	// Planted fault, a control of a test, never merged: the told mark is not read, so every open
+	// ask with no queued row is named, told or not.
 	return pr, nil
 }
 
