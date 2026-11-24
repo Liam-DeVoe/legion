@@ -242,6 +242,13 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 	publicRead.Scope = ciphertoken.ScopeRead
 	publicScoped := jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic)
 	publicScoped.Scope = "person"
+	// A job's named token holds no OAuth scope either, a word the broker grants or one it does not
+	// know, while a person's named token keeps the scope its entry grants, as at main.
+	scoped := func(answer ciphertoken.Introspection, scope string) ciphertoken.Introspection {
+		answer.Scope = scope
+		return answer
+	}
+	namedForJob := jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopeNamed, "ACME")
 	// Each row names whether Verify admits it, so a row that answers otherwise fails by name with
 	// Verify's own error, rather than as a count that names none.
 	for _, row := range []struct {
@@ -270,6 +277,10 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 		{"a public token holding an OAuth scope", publicScoped, false},
 		{"a job's named token naming no project", jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopeNamed), false},
 		{"a job's named token naming two projects", jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopeNamed, "ACME", "OTHER"), false},
+		{"a job's named token holding the scope person", scoped(namedForJob, "person"), false},
+		{"a job's named token holding the scope approve", scoped(namedForJob, "approve"), false},
+		{"a job's named token holding an unknown scope word", scoped(namedForJob, "write"), false},
+		{"a person's named token holding the scope person", scoped(liveToken(caller.jkt, time.Hour), "person"), true},
 		{"a public token whose list is not sorted", jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic, "OTHER", "ACME"), false},
 	} {
 		t.Run(row.name, func(t *testing.T) {

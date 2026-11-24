@@ -501,13 +501,14 @@ const (
 	// shapeNotASession is an answer no verifier reads as a session's token, whatever its
 	// switch: a project scope that is absent or a word this package does not know, the project
 	// scope none in any shape but shapeReadOnly's, the project scope public beside a person,
-	// without a service or beside any OAuth scope, or the scope read beside the project scope
-	// named or person.
+	// without a service or beside any OAuth scope, the project scope named beside no person and
+	// any OAuth scope, or the scope read beside the project scope named or person.
 	shapeNotASession tokenShape = iota
-	// shapeOrdinary is the project scope named or person with no scope read beside it, or the
-	// project scope public beside a service, no person and no OAuth scope: every token the
-	// broker minted before read entries existed, every job's token, and every token it mints
-	// from any other entry now.
+	// shapeOrdinary is the project scope named beside a person with no scope read beside it,
+	// named beside no person and no OAuth scope, the project scope person with no scope read
+	// beside it, or the project scope public beside a service, no person and no OAuth scope:
+	// every token the broker minted before read entries existed, every job's token, and every
+	// token it mints from any other entry now.
 	shapeOrdinary
 	// shapeReadOnly is the token a read entry mints (BROKER_EXCHANGE_READ_ACCOUNTS): the
 	// project scope none, the scope exactly the one word read, a service, and no person and no
@@ -515,16 +516,19 @@ const (
 	shapeReadOnly
 )
 
-// shapeOf is the one rule that says what a read-only token is and what a public token is, and so
+// shapeOf is the one rule that says what a read-only token is and what a job's token is, and so
 // what every other answer is beside them. The read-only shape is exact: the project scope
 // ProjectScopeNone, a Scope that is the one word ScopeRead, a service, and no person and no
-// projects. An answer carrying none in any other shape is no session's token. The public shape
-// is a job's token: the project scope ProjectScopePublic beside a service, no person and no
-// OAuth scope at all, since the broker grants a job's token none; public beside a person, which
-// no entry that names a person mints, with no service, or beside any scope word is no session's
-// token either. So is an answer whose Scope holds the word read beside the project scope named
-// or person, since no broker mints either and read beside a project scope that writes would let
-// a token meant to read write. The list beside each shape is sessionCaller's to hold.
+// projects. An answer carrying none in any other shape is no session's token. A job's token
+// names no person and holds no OAuth scope at all, since the broker grants a job's token none.
+// Its public shape is ProjectScopePublic beside a service, no person and no scope word; public
+// beside a person, which no entry that names a person mints, with no service, or beside any
+// scope word is no session's token. Its named shape is ProjectScopeNamed beside no person and
+// no scope word; named beside no person and any scope word, person and approve included, is no
+// session's token, while named beside a person keeps the scope its entry grants. An answer whose
+// Scope holds the word read beside the project scope named or person is no session's token
+// either, since no broker mints either and read beside a project scope that writes would let a
+// token meant to read write. The list beside each shape is sessionCaller's to hold.
 //
 // Scope is read as RFC 7662 spells it, words separated by spaces, one word at a time and with
 // no slice built of them, because this runs on every request a verifier decides, an answer
@@ -538,7 +542,13 @@ func shapeOf(answer Introspection) tokenShape {
 		}
 	}
 	switch answer.ProjectScope {
-	case ProjectScopeNamed, ProjectScopePerson:
+	case ProjectScopeNamed:
+		// A named token that names no person is a job's, and a job's token holds no OAuth scope.
+		if read || (answer.Person == "" && words > 0) {
+			return shapeNotASession
+		}
+		return shapeOrdinary
+	case ProjectScopePerson:
 		if read {
 			return shapeNotASession
 		}
