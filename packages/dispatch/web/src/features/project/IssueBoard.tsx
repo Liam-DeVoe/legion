@@ -685,99 +685,86 @@ export function IssueBoard({
   // whatever the list read shows, so a read that fails while it is open leaves it to be answered,
   // and its answer ends the move that holds every later read of the list.
   const questionDialog = question === undefined ? null : <ParentStatusDialog question={question} />;
-  if (issues.isPending) {
-    return (
-      <>
-        {questionDialog}
-        <LoadingSkeleton label="Loading board" />
-      </>
-    );
-  }
-  if (issues.isError) {
-    return (
-      <>
-        {questionDialog}
-        <p className={textSecondaryOnSurface}>Could not load board.</p>
-      </>
-    );
-  }
-
+  const body = issues.isPending ? (
+    <LoadingSkeleton label="Loading board" />
+  ) : issues.isError ? (
+    <p className={textSecondaryOnSurface}>Could not load board.</p>
+  ) : (
+    <section aria-label="Project board" className="min-w-0" ref={boardRef}>
+      {error === undefined ? null : (
+        <div
+          aria-live="assertive"
+          className={`mb-4 rounded-xl border px-4 py-3 text-sm ${card} ${textPrimaryOnSurface}`}
+          role="alert"
+        >
+          {error}
+        </div>
+      )}
+      <p aria-label="Board announcements" aria-live="polite" className="sr-only" role="status">
+        {announcement}
+      </p>
+      {issues.data.length === 0 ? (
+        // The active query is the label-filtered list, so an empty answer under a label filter
+        // means "nothing matches", not "empty project" - the same copy the List shows.
+        labels.length === 0 ? (
+          <EmptyState label="Empty project board" message="No issues in this project." />
+        ) : (
+          <EmptyState label="No matching project issues" message="No issues match these filters." />
+        )
+      ) : (
+        <DndContext
+          accessibility={{
+            screenReaderInstructions: {
+              draggable:
+                "Focus a card and press Shift with J, K, H or L to move it; press ? for every shortcut.",
+            },
+          }}
+          collisionDetection={boardCollisionDetection}
+          onDragCancel={landCard}
+          onDragEnd={onDragEnd}
+          onDragStart={liftCard}
+          sensors={sensors}
+        >
+          {lanes ? (
+            <div className="flex flex-col gap-6" data-testid="board-lanes-container">
+              {boardLanes.map((boardLane) => (
+                <BoardLaneRow
+                  boardLane={boardLane}
+                  dragging={dragging}
+                  isCollapsed={isCollapsed}
+                  key={laneKey(boardLane.lane)}
+                  userState={userState.data}
+                />
+              ))}
+            </div>
+          ) : (
+            <div
+              className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
+              data-testid="board-scroll-container"
+            >
+              <div className="flex w-max items-stretch gap-4">
+                {columns.map((column) =>
+                  isCollapsed(column.status) ? (
+                    <CollapsedColumn column={column} key={column.status} />
+                  ) : (
+                    <BoardColumnView
+                      column={column}
+                      key={column.status}
+                      userState={userState.data}
+                    />
+                  )
+                )}
+              </div>
+            </div>
+          )}
+        </DndContext>
+      )}
+    </section>
+  );
   return (
     <>
       {questionDialog}
-      <section aria-label="Project board" className="min-w-0" ref={boardRef}>
-        {error === undefined ? null : (
-          <div
-            aria-live="assertive"
-            className={`mb-4 rounded-xl border px-4 py-3 text-sm ${card} ${textPrimaryOnSurface}`}
-            role="alert"
-          >
-            {error}
-          </div>
-        )}
-        <p aria-label="Board announcements" aria-live="polite" className="sr-only" role="status">
-          {announcement}
-        </p>
-        {issues.data.length === 0 ? (
-          // The active query is the label-filtered list, so an empty answer under a label filter
-          // means "nothing matches", not "empty project" - the same copy the List shows.
-          labels.length === 0 ? (
-            <EmptyState label="Empty project board" message="No issues in this project." />
-          ) : (
-            <EmptyState
-              label="No matching project issues"
-              message="No issues match these filters."
-            />
-          )
-        ) : (
-          <DndContext
-            accessibility={{
-              screenReaderInstructions: {
-                draggable:
-                  "Focus a card and press Shift with J, K, H or L to move it; press ? for every shortcut.",
-              },
-            }}
-            collisionDetection={boardCollisionDetection}
-            onDragCancel={landCard}
-            onDragEnd={onDragEnd}
-            onDragStart={liftCard}
-            sensors={sensors}
-          >
-            {lanes ? (
-              <div className="flex flex-col gap-6" data-testid="board-lanes-container">
-                {boardLanes.map((boardLane) => (
-                  <BoardLaneRow
-                    boardLane={boardLane}
-                    dragging={dragging}
-                    isCollapsed={isCollapsed}
-                    key={laneKey(boardLane.lane)}
-                    userState={userState.data}
-                  />
-                ))}
-              </div>
-            ) : (
-              <div
-                className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
-                data-testid="board-scroll-container"
-              >
-                <div className="flex w-max items-stretch gap-4">
-                  {columns.map((column) =>
-                    isCollapsed(column.status) ? (
-                      <CollapsedColumn column={column} key={column.status} />
-                    ) : (
-                      <BoardColumnView
-                        column={column}
-                        key={column.status}
-                        userState={userState.data}
-                      />
-                    )
-                  )}
-                </div>
-              </div>
-            )}
-          </DndContext>
-        )}
-      </section>
+      {body}
     </>
   );
 }

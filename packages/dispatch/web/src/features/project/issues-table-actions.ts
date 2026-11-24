@@ -103,9 +103,9 @@ function targetMustMove(
 
 /** The steps of an interrupted action that Finish decides afresh rather than sending again: the
  *  move of its epic into work, which the guard makes or finds it need not (`intoWorkOnFinish`),
- *  and a merge's close of its source, which `closeMerge` sends only once no issue is left under
- *  the source. Every other step is a write Finish sends again once the kind's guard, where it has
- *  one, lets it through (`resendsStep`). */
+ *  and a merge's close of its source, which `closeMerge` sends only once no issue is open under
+ *  the source (`refuseHeldClose`). Every other step is a write Finish sends again once the kind's
+ *  guard, where it has one, lets it through (`resendsStep`). */
 function afreshSteps(record: TableAction): readonly string[] {
   return record.kind === "merge" && record.source !== undefined
     ? ["intoWork", record.source]
@@ -717,6 +717,7 @@ export function useIssueTableActions({
    * rule is on, whatever its setting, and its `409 PARENT_STATUS_CONFLICT` names each issue that
    * holds the close: the refusal names each one with its project. A dry run that is not answered
    * refuses the close too. Either refusal comes before the merge's reason, with nothing written.
+   * Its one caller is `closeMerge`, before its first write.
    */
   const refuseHeldClose = async (source: string, current: readonly IssueSummary[]) => {
     const row = current.find((issue) => issue.key === source);
@@ -738,10 +739,23 @@ export function useIssueTableActions({
       );
     }
   };
-  const closeMerge = async (record: TableAction, resumed: boolean) => {
+  /**
+   * Closes the merge's source as the last step of the merge `record`, and writes nothing once the
+   * action is no longer in hand. First it refuses a close that an open issue under the source
+   * holds (`refuseHeldClose`), from the listing `current` that its caller read just before. Then
+   * it posts the merge reason on the source, except on a resume (`resumed`) that finds the reason
+   * already in the source's messages, and closes the source as done. Its callers are the merge's
+   * first run (`mergeEpic`) and merge's `resume`.
+   */
+  const closeMerge = async (
+    record: TableAction,
+    resumed: boolean,
+    current: readonly IssueSummary[]
+  ) => {
     const from = record.source;
     const into = record.target;
     if (!from || !into || !recovery.active(record.id)) return;
+    await refuseHeldClose(from, current);
     // Whether the reason was posted is the server's answer on a resume: a recorded key says
     // only that a write was made, and a write discarded in Pending changes leaves that key
     // behind. `settle` has already waited on any write of this action still in flight, so a
@@ -815,8 +829,7 @@ export function useIssueTableActions({
         );
       }
       if (!recovery.active(record.id)) return undefined;
-      await refuseHeldClose(from, await listAll());
-      await closeMerge(record, false);
+      await closeMerge(record, false, await listAll());
       if (!recovery.active(record.id)) return undefined;
       recovery.dismiss();
       return members;
@@ -953,8 +966,7 @@ export function useIssueTableActions({
           throw new Error(
             `The source epic ${source} remains open: ${remaining.join(", ")} still need to move.`
           );
-        await refuseHeldClose(source, latest);
-        await closeMerge(record, true);
+        await closeMerge(record, true, latest);
         return true;
       },
     },

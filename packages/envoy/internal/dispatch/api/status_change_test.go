@@ -757,12 +757,12 @@ func TestATokenBesideABrowserIdentityIsTheTokens(t *testing.T) {
 // TestAStatusChangesCommentNamesItsCallerAsItsCredentialProvedIt: the comment of an option names
 // its caller from what the request's credential proved. A session that the body names under the
 // deployment's shared token, which proves none, is quoted as code: the id with every backtick,
-// line ending, other control character and format character removed, cut to
-// claimedSessionNameMax runes, in one code span, so a Markdown link, a new line and a block line
-// in the id stay inside that span, the comment reads as one paragraph that links nowhere, and no
-// bidirectional control or zero-width character of the id gets into it. An id the cleaning
-// empties is "a session". A personal token names the person it belongs to, whatever session its
-// body names.
+// line ending, other control character, format character, variation selector and other
+// default-ignorable character removed, cut to claimedSessionNameMax runes, in one code span, so a
+// Markdown link, a new line and a block line in the id stay inside that span, the comment reads as
+// one paragraph that links nowhere, and no bidirectional control or zero-width character of the id
+// gets into it. An id the cleaning empties is "a session". A personal token names the person it
+// belongs to, whatever session its body names.
 func TestAStatusChangesCommentNamesItsCallerAsItsCredentialProvedIt(t *testing.T) {
 	rig := newStatusChangeRig(t, true)
 	// started starts a new issue on the backlog, under a new parent on the backlog, with
@@ -826,14 +826,15 @@ func TestAStatusChangesCommentNamesItsCallerAsItsCredentialProvedIt(t *testing.T
 	})
 
 	t.Run("a session id is quoted with no bidirectional control and no zero-width character", func(t *testing.T) {
-		// U+202E would turn the text after the span right to left, and U+200B stays in the span
-		// with no width.
-		parent, named := started(t, "Named with format characters", map[string]any{"kind": "session", "id": "ses_\u202Eevil\u200B_id"}, shared)
+		// U+202E would turn the text after the span right to left. U+200B, the combining grapheme
+		// joiner U+034F, the variation selector U+FE0F and the Hangul filler U+3164 each stay in the
+		// span with no width: only U+200B of them is a format character.
+		parent, named := started(t, "Named with format characters", map[string]any{"kind": "session", "id": "ses_\u202Eevil\u200B\u034F\uFE0F\u3164_id"}, shared)
 		requireComments(t, rig.database, []string{parent, named}, moved(parent, named, "`ses_evil_id`"))
 	})
 
-	t.Run("a session id of format characters alone is a session", func(t *testing.T) {
-		parent, named := started(t, "Named by format characters alone", map[string]any{"kind": "session", "id": "\u202E\u200B\u2066\u200E\u061C\uFEFF"}, shared)
+	t.Run("a session id of format characters and other zero-width characters alone is a session", func(t *testing.T) {
+		parent, named := started(t, "Named by format characters alone", map[string]any{"kind": "session", "id": "\u202E\u200B\u2066\u200E\u061C\uFEFF\u034F\uFE0F\u3164"}, shared)
 		requireComments(t, rig.database, []string{parent, named}, moved(parent, named, "a session"))
 	})
 

@@ -678,14 +678,16 @@ const claimedSessionNameMax = 64
 
 // claimedSessionName is the id of a session that only a request's body named, as a comment quotes
 // it: an inline code span of the id with every backtick, every line ending, every other control
-// character and every format character (Unicode's Cf, which holds the bidirectional controls and
-// the zero-width characters) removed, its spaces at both ends trimmed, and cut to
-// claimedSessionNameMax runes, so no text of the caller's leaves the span as a link, a new line
-// or a block, turns the direction of the text after it, or stays in it with no width. An id with
-// nothing left is "a session".
+// character, every format character (Unicode's Cf, which holds the bidirectional controls and the
+// zero-width spaces and joiners), every variation selector (Variation_Selector) and every other
+// character that Unicode lets a reader show with no width (Other_Default_Ignorable_Code_Point,
+// which holds the combining grapheme joiner and the Hangul fillers) removed, its spaces at both
+// ends trimmed, and cut to claimedSessionNameMax runes, so no text of the caller's leaves the span
+// as a link, a new line or a block, turns the direction of the text after it, or stays in it with
+// no width. An id with nothing left is "a session".
 func claimedSessionName(id string) string {
 	quoted := strings.TrimSpace(strings.Map(func(r rune) rune {
-		if r == '`' || unicode.In(r, unicode.Cc, unicode.Cf, unicode.Zl, unicode.Zp) {
+		if r == '`' || unicode.In(r, unicode.Cc, unicode.Cf, unicode.Zl, unicode.Zp, unicode.Variation_Selector, unicode.Other_Default_Ignorable_Code_Point) {
 			return -1
 		}
 		return r
